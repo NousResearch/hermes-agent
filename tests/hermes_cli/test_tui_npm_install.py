@@ -137,14 +137,15 @@ def test_no_stray_lockfiles_in_workspace_subdirs(main_mod) -> None:
     )
 
 
-def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
+def test_make_tui_argv_omits_workspace_and_scrubs_esbuild_override(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:
     """When ui-tui/ has its own package-lock.json, _workspace_root returns
     tui_dir itself.  npm install --workspace ui-tui would fail in that case
     because npm cannot find a workspace named "ui-tui" inside ui-tui/.
     The fix omits --workspace and runs plain npm install from tui_dir.
-    See #42973.
+    See #42973. The npm child must also ignore an inherited esbuild binary
+    override: a version mismatch makes esbuild's postinstall abort (#87405).
     """
     tui_dir = tmp_path / "ui-tui"
     tui_dir.mkdir()
@@ -156,6 +157,7 @@ def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
 
     monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setenv("ESBUILD_BINARY_PATH", "/opt/esbuild-0.28.2")
     monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
     calls = []
@@ -173,6 +175,10 @@ def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
     assert "--workspace" not in install_cmd, (
         f"npm install should omit --workspace when tui_dir has its own lockfile, got: {install_cmd}"
     )
-    assert install_cmd[:2] == ["/bin/npm", "install"]
+    assert Path(install_cmd[0]).name in {"npm", "npm.cmd"}
+    assert install_cmd[1] == "install"
     # cwd must be tui_dir (standalone), not parent
     assert calls[0][1]["cwd"] == str(tui_dir)
+    assert "ESBUILD_BINARY_PATH" not in calls[0][1]["env"]
+    assert calls[1][0][0][1:] == ["run", "build"]
+    assert "ESBUILD_BINARY_PATH" not in calls[1][1]["env"]

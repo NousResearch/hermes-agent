@@ -4,6 +4,7 @@ description: Teams meeting summaries, job replay, Graph subscriptions.
 version: 1.1.0
 author: Hermes Agent + Teknium
 license: MIT
+platforms: [linux, macos, windows]
 prerequisites:
   env_vars: [MSGRAPH_TENANT_ID, MSGRAPH_CLIENT_ID, MSGRAPH_CLIENT_SECRET]
   commands: [hermes]
@@ -69,6 +70,7 @@ hermes teams-pipeline subscriptions         # current Graph webhook subscription
 hermes teams-pipeline run <job-id>          # replay a stored job (re-summarize, re-deliver)
 hermes teams-pipeline fetch --meeting-id <id>   # dry-run: resolve meeting + transcript without persisting
 hermes teams-pipeline fetch --join-web-url "<url>"   # dry-run by join URL
+hermes teams-pipeline fetch --join-web-url "<url>" --organizer-user-id <id>   # organizer-scoped lookup (required for /meet/ short URLs)
 ```
 
 ### Subscription management

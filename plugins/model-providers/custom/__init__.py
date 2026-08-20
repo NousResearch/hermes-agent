@@ -64,7 +64,18 @@ class CustomProfile(ProviderProfile):
                 top_level["reasoning_effort"] = "none"
                 extra_body["think"] = False
             elif _effort:
-                top_level["reasoning_effort"] = _effort
+                # Clamp the internal ladder onto the widest OpenAI-compatible
+                # wire vocabulary (shared policy in agent.reasoning_effort) —
+                # GLM/ARK, vLLM and SGLang all top out at "max"; forwarding
+                # "ultra" verbatim is a guaranteed 400 (#89503).
+                from agent.reasoning_effort import (
+                    OPENAI_COMPAT_WIRE_EFFORTS,
+                    clamp_effort,
+                )
+
+                top_level["reasoning_effort"] = clamp_effort(
+                    _effort, OPENAI_COMPAT_WIRE_EFFORTS
+                )
 
         return extra_body, top_level
 

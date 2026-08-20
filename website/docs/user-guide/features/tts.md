@@ -44,7 +44,7 @@ Convert text to speech with eleven providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper" — or "nous" for the managed Tool Gateway (written when you pick Nous Subscription in `hermes tools`)
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -149,7 +149,7 @@ The rewrite uses `auxiliary.tts_audio_tags` and defaults to your main chat model
 
 ### Input length limits
 
-Each provider has a documented per-request input-character cap. Hermes truncates text before calling the provider so requests never fail with a length error:
+Each provider has a documented per-request input-character cap. Hermes splits longer replies into ordered, sentence-aware chunks before calling the provider, so the full normalized text is preserved instead of silently truncated:
 
 | Provider | Default cap (chars) |
 |----------|---------------------|
@@ -182,7 +182,7 @@ tts:
     max_text_length: 8192   # raise or lower the provider cap
 ```
 
-Only positive integers are honored. Zero, negative, non-numeric, or boolean values fall through to the provider default, so a broken config can't accidentally disable truncation.
+Only positive integers are honored. Zero, negative, non-numeric, or boolean values fall through to the provider default, so a broken config can't accidentally bypass the provider request limit.
 
 ### Telegram Voice Bubbles & ffmpeg
 
@@ -346,7 +346,7 @@ Use `{{` and `}}` for literal braces.
 | `timeout`          | `120`   | Idle seconds; stdout or stderr output resets the deadline. The process tree is killed after inactivity (Unix `killpg`, Windows `taskkill /T`). |
 | `output_format`    | `mp3`   | One of `mp3` / `wav` / `ogg` / `flac`. Auto-inferred from the output extension if Hermes picks a path.      |
 | `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble.      |
-| `max_text_length`  | `5000`  | Input is truncated to this length before rendering the command.                                             |
+| `max_text_length`  | `5000`  | Maximum input characters per command invocation; longer text is split into ordered chunks.                  |
 | `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                           |
 
 #### Behavior notes
@@ -525,10 +525,12 @@ Hermes writes the incoming voice message to `{input_path}`, runs the command, an
 
 ### Fallback Behavior
 
-If your configured provider isn't available, Hermes automatically falls back:
+An **explicit** `stt.provider` selection (written in `config.yaml`, e.g. via `hermes tools`) is honored strictly — if that provider can't run, transcription fails with a clear error (`stt is configured to use <provider> (set via hermes tools), but <failure>. Run 'hermes tools' to change it.`) instead of silently switching engines. Note that `stt.provider: local` written in your config counts as an explicit selection.
+
+When **no provider has ever been selected**, Hermes auto-detects from what's available:
 - **Local faster-whisper unavailable** → Tries a local `whisper` CLI or `HERMES_LOCAL_STT_COMMAND` before cloud providers
-- **Groq key not set** → Falls back to local transcription, then OpenAI
-- **OpenAI key not set** → Falls back to local transcription, then Groq
+- **Groq key not set** → Skipped; next available provider
+- **OpenAI key not set** → Skipped; next available provider
 - **Mistral key/SDK not set** → Skipped in auto-detect; falls through to next available provider
 - **Nothing available** → Voice messages pass through with an accurate note to the user
 

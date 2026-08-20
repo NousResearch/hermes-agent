@@ -238,3 +238,7 @@ HERMES_STREAM_READ_TIMEOUT=1800
 | API call (non-streaming) | 1800s | No change needed | `HERMES_API_TIMEOUT` |
 
 The stream read timeout is the one most likely to cause issues — it's the socket-level deadline for receiving the next chunk of data. During prefill on large contexts, local models may produce no output for minutes while processing the prompt. The auto-detection handles this transparently.
+
+:::tip A silent first turn is usually prefill, not a hang
+Hermes sends its system prompt and tool schemas on every call, so on slower hardware the first turn can involve minutes of silence while the model processes that prompt before generating anything. That's prefill at work, not a stalled session. See [Slow first response (prefill)](./local-ollama-setup.md#slow-first-response-prefill) in the Ollama guide for mitigations like keeping the model loaded and trimming the fixed prompt with `hermes prompt-size`.
+:::

@@ -20,6 +20,10 @@ export const HERMES_BASE_PATH = readBasePath();
 const BASE = HERMES_BASE_PATH;
 
 import type { DashboardTheme } from "@/themes/types";
+import {
+  attemptDashboardTokenReloadOnce,
+  clearDashboardTokenReloadAttempt,
+} from "@/lib/dashboard-auth-reload";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -160,20 +164,7 @@ export async function fetchJSON<T>(
     // handled above, so reaching here in gated mode means a real
     // middleware failure that should not reload-loop.
     if (!window.__HERMES_AUTH_REQUIRED__ && !options?.allowUnauthorized) {
-      let alreadyReloaded = false;
-      try {
-        alreadyReloaded =
-          sessionStorage.getItem("hermes.tokenReloadAttempted") === "1";
-      } catch {
-        /* SSR / privacy mode — fall through to throw */
-      }
-      if (!alreadyReloaded) {
-        try {
-          sessionStorage.setItem("hermes.tokenReloadAttempted", "1");
-        } catch {
-          /* SSR / privacy mode — best effort */
-        }
-        window.location.reload();
+      if (attemptDashboardTokenReloadOnce()) {
         return new Promise<T>(() => {});
       }
     }
@@ -182,11 +173,7 @@ export async function fetchJSON<T>(
     // Clear the stale-token reload guard: a successful 2xx proves the
     // current ``window.__HERMES_SESSION_TOKEN__`` is valid, so the next
     // 401 — if any — should be allowed to trigger its own reload cycle.
-    try {
-      sessionStorage.removeItem("hermes.tokenReloadAttempted");
-    } catch {
-      /* SSR / privacy mode — ignore */
-    }
+    clearDashboardTokenReloadAttempt();
   }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
@@ -398,7 +385,10 @@ export const api = {
   },
   getSessionMessages: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionMessagesResponse>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
+      appendProfileParam(
+        `/api/sessions/${encodeURIComponent(id)}/messages?limit=500&order=latest`,
+        profile,
+      ),
     ),
   getSessionDetail: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionInfo>(
@@ -462,11 +452,18 @@ export const api = {
     source?: string,
     profile = getManagementProfile(),
   ) =>
-    fetchJSON<{ ok: boolean; removed: number }>("/api/sessions/prune", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ older_than_days, source, profile: profile || undefined }),
-    }),
+    fetchJSON<{ ok: boolean; removed: number; skipped_open: number }>(
+      "/api/sessions/prune",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          older_than_days,
+          source,
+          profile: profile || undefined,
+        }),
+      },
+    ),
   listFiles: (path?: string) => {
     const query = path ? `?path=${encodeURIComponent(path)}` : "";
     return fetchJSON<ManagedFilesResponse>(`/api/files${query}`);
@@ -1725,14 +1722,17 @@ export interface MemoryProviderFieldOption {
 export interface MemoryProviderField {
   key: string;
   label: string;
-  kind: "text" | "secret" | "select" | "boolean";
+  kind: "text" | "secret" | "select" | "boolean" | "integer" | "number";
   description: string;
   placeholder: string;
   required: boolean;
-  value: string | boolean;
+  value: string | boolean | number;
   is_set: boolean;
   options: MemoryProviderFieldOption[];
   url: string;
+  minimum?: number | null;
+  maximum?: number | null;
+  step?: number | null;
   when?: Record<string, string | boolean | number> | null;
 }
 
@@ -1868,11 +1868,13 @@ export interface StatusResponse {
    * fail-closed state (the dashboard will refuse to bind). */
   auth_providers?: string[];
   /** Supported dashboard auth flows for the client to choose from. In gated
-   * mode always includes ``"cookie"``; includes ``"native_pkce"`` when a
-   * brokerable OAuth provider is registered, signalling that the desktop can
-   * use the RFC 8252 system-browser + loopback + PKCE flow (no embedded
-   * webview, no session cookies). Absent / missing ``"native_pkce"`` ⇒ an
-   * older gateway ⇒ the desktop falls back to the embedded-webview flow. */
+   * mode always includes ``"cookie"``; includes ``"native_pkce"`` when any
+   * interactive session provider is registered (OAuth providers broker the
+   * IDP redirect; password providers complete at /login in the system
+   * browser), signalling that the desktop can use the RFC 8252
+   * system-browser + loopback + PKCE flow (no embedded webview, no session
+   * cookies). Absent / missing ``"native_pkce"`` ⇒ an older gateway ⇒ the
+   * desktop falls back to the embedded-webview flow. */
   auth_flows?: string[];
   /** False when the dashboard is running in a hosted/managed layout where
    * updates are handled by the outer launcher instead of ``hermes update``. */
@@ -1889,8 +1891,42 @@ export interface StatusResponse {
   gateway_updated_at: string | null;
   hermes_home: string;
   latest_config_version: number;
+  /** NS-656: memory-pressure rollup from the gateway heartbeat +
+   * lifecycle ledger. Absent on older gateways. */
+  memory?: MemoryPressureStatus;
+  /** NS-656: disk-usage rollup for the HERMES_HOME volume. Absent on
+   * older gateways. */
+  disk?: DiskPressureStatus;
   release_date: string;
   version: string;
+}
+
+/** NS-656: coarse memory telemetry served by /api/status. */
+export interface MemoryPressureStatus {
+  pressure: "ok" | "elevated" | "critical" | "unknown";
+  gateway_rss_mb?: number | null;
+  system_total_mb?: number | null;
+  system_available_mb?: number | null;
+  swap_used_mb?: number | null;
+  sampled_at?: string | null;
+  /** Previous gateway life died without running any exit path. */
+  last_boot_unclean?: boolean;
+  /** ...and its final heartbeat showed near-exhausted memory. Heuristic —
+   * strong evidence of an OOM kill, not proof the kernel OOM killer acted. */
+  last_boot_suspected_oom?: boolean;
+  /** Identity of the current gateway life (sentinel started_at). Changes on
+   * every restart; keys per-incident banner dismissal. */
+  boot_id?: string | null;
+}
+
+/** NS-656: coarse disk telemetry served by /api/status. Live statvfs
+ * sample of the HERMES_HOME volume — no staleness dimension, so no
+ * sampled_at. */
+export interface DiskPressureStatus {
+  pressure: "ok" | "elevated" | "critical" | "unknown";
+  total_mb?: number | null;
+  free_mb?: number | null;
+  used_percent?: number | null;
 }
 
 export interface SessionInfo {
@@ -2014,6 +2050,12 @@ export interface SessionMessage {
 export interface SessionMessagesResponse {
   session_id: string;
   messages: SessionMessage[];
+  pagination?: {
+    limit: number;
+    offset: number;
+    order: "latest" | "oldest";
+    returned: number;
+  };
 }
 
 export interface LogsResponse {
@@ -2138,6 +2180,7 @@ export interface ProfileInfo {
   gateway_running: boolean;
   description: string;
   description_auto: boolean;
+  display_name?: string;
   distribution_name: string | null;
   distribution_version: string | null;
   distribution_source: string | null;
@@ -2233,6 +2276,7 @@ export interface CronJob {
   last_status?: string | null;
   last_error?: string | null;
   last_delivery_error?: string | null;
+  last_fire_error?: { at?: string | null; detail?: string | null } | null;
 }
 
 export interface CronDeliveryTarget {

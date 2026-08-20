@@ -3,8 +3,9 @@
  *
  * Default: a single pane isn't a "tab", so the header auto-hides. Exceptions
  * force it on so a closeable surface never becomes an unclosable dead zone:
- *  - session tiles (`session-tile:*`) — even before chrome registers
- *  - any closeable `placement: 'main'` contribution
+ *  - a closeable `placement: 'main'` pane — every mirrored TILE (a session, a
+ *    page, a preview) is one, so dragging a tile into a zone of its own keeps
+ *    its tab and its ✕
  *  - a collapse tool panel dragged into its own zone
  */
 
@@ -18,10 +19,8 @@ export function forceLoneHeaderForPanes(
   chromeOf: (id: string) => LoneHeaderChrome,
   isCollapsePane: (id: string) => boolean
 ): boolean {
-  if (shown.some(id => id.startsWith('session-tile:'))) {
-    return true
-  }
-
+  // "This pane can be closed, so it must expose the ✕." Only the uncloseable
+  // workspace is exempt; standing side chrome (files / sessions) isn't 'main'.
   if (
     shown.some(id => {
       const chrome = chromeOf(id)

@@ -414,6 +414,7 @@ def _chat_messages_to_responses_input(
     is_github_responses: bool = False,
     replay_encrypted_reasoning: bool = True,
     current_issuer_kind: Optional[str] = None,
+    native_compaction_eligible: bool = False,
 ) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
@@ -458,6 +459,24 @@ def _chat_messages_to_responses_input(
     ``replay_encrypted_reasoning=False`` is the session-wide kill switch
     (drops ALL replay); ``current_issuer_kind`` is the per-item filter
     that runs only when replay is still enabled.
+
+    ``native_compaction_eligible`` mirrors, for THIS request, the decision
+    made by ``native_compaction.native_compaction_context_management`` — it
+    is True only when that gate returned a payload, i.e. when the request
+    actually carries ``context_management``. It controls two things that
+    must never outlive the gate: replaying ``type: "compaction"`` checkpoint
+    items, and restructuring the wire around them
+    (``prune_pre_checkpoint_items``). Checkpoints are persisted in the
+    ``codex_reasoning_items`` sidecar and survive a mid-session model swap,
+    a ``compression.enabled: false`` flip, the rejection kill switch and a
+    resumed session; without this flag a single captured checkpoint would
+    keep deleting every pre-checkpoint item from every later request, on a
+    model that cannot decrypt the blob (#85914). Default False = pre-feature
+    wire, which is also correct for every caller that never sends
+    ``context_management`` (auxiliary/compression client, ad-hoc
+    ``convert_messages``). Dropping the checkpoint costs nothing: Hermes'
+    local history is never truncated by native compaction, so the full
+    conversation is still on the wire.
     """
     items: List[Dict[str, Any]] = []
     seen_item_ids: set = set()
@@ -498,6 +517,20 @@ def _chat_messages_to_responses_input(
                         if isinstance(ri, dict) and ri.get("encrypted_content"):
                             item_id = ri.get("id")
                             if item_id and item_id in seen_item_ids:
+                                continue
+                            # Native-compaction gate: a checkpoint is only
+                            # meaningful to the endpoint/model that minted it
+                            # AND only while this request still asks for
+                            # server-side compaction. Once the gate closes
+                            # (model swapped out of the gpt-5.6 family,
+                            # compression disabled, rejection kill switch),
+                            # the persisted checkpoint must not be replayed —
+                            # replaying it is what makes the wire restructure
+                            # below erase pre-checkpoint history forever.
+                            if (
+                                ri.get("type") == "compaction"
+                                and not native_compaction_eligible
+                            ):
                                 continue
                             # Cross-issuer guard: drop reasoning blocks that
                             # were minted by a different Responses endpoint.
@@ -690,7 +723,23 @@ def _chat_messages_to_responses_input(
                 "output": output_value,
             })
 
-    return items
+    # Native server-side compaction: when a replayed checkpoint is present,
+    # restructure the wire around it. The server renders nothing placed
+    # before a compaction item (live-verified Aug 2026), so pre-checkpoint
+    # history is dead upload weight and — worse — the user's plaintext asks
+    # from before the boundary silently vanish from the model's view. Keep
+    # the newest checkpoint first, retain pre-checkpoint USER messages
+    # verbatim within a token budget (Codex CLI parity), and leave the
+    # post-checkpoint tail untouched. Gated on the CURRENT request's native
+    # eligibility, not merely on the presence of a checkpoint: a persisted
+    # checkpoint outlives the gate, and pruning for a request that carries no
+    # ``context_management`` deletes history the server never compacted.
+    if not native_compaction_eligible:
+        return items
+
+    from agent.native_compaction import prune_pre_checkpoint_items
+
+    return prune_pre_checkpoint_items(items)
 
 
 # ---------------------------------------------------------------------------
@@ -820,6 +869,17 @@ def _preflight_codex_input_items(
                 else:
                     reasoning_item["summary"] = []
                 normalized.append(reasoning_item)
+            continue
+
+        if item_type == "compaction":
+            # Replayed native server-side compaction checkpoint (gpt-5.6,
+            # direct OpenAI/Codex routes). Opaque, issuer-sealed; forward
+            # only the fields the API defines.
+            encrypted = item.get("encrypted_content")
+            if isinstance(encrypted, str) and encrypted:
+                normalized.append(
+                    {"type": "compaction", "encrypted_content": encrypted}
+                )
             continue
 
         if item_type == "message":
@@ -1030,7 +1090,7 @@ def _preflight_codex_api_kwargs(
         "model", "instructions", "input", "tools", "store",
         "reasoning", "include", "max_output_tokens", "temperature",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key",
-        "prompt_cache_retention", "service_tier",
+        "prompt_cache_retention", "service_tier", "context_management",
         "extra_headers", "extra_body", "timeout",
     }
     normalized: Dict[str, Any] = {
@@ -1078,6 +1138,13 @@ def _preflight_codex_api_kwargs(
         val = api_kwargs.get(passthrough_key)
         if val is not None:
             normalized[passthrough_key] = val
+
+    # Native server-side compaction directive (gpt-5.6 on direct OpenAI /
+    # Codex routes — eligibility already resolved upstream in
+    # agent/native_compaction.py; the preflight only preserves the shape).
+    context_management = api_kwargs.get("context_management")
+    if isinstance(context_management, list) and context_management:
+        normalized["context_management"] = context_management
 
     extra_headers = api_kwargs.get("extra_headers")
     if extra_headers is not None:
@@ -1416,6 +1483,23 @@ def _normalize_codex_response(
                             raw_summary.append({"type": "summary_text", "text": text})
                     raw_item["summary"] = raw_summary
                 reasoning_items_raw.append(raw_item)
+        elif item_type == "compaction":
+            # Native server-side compaction checkpoint (gpt-5.6 on direct
+            # OpenAI/Codex routes). The encrypted blob stands in for the
+            # pruned older context on subsequent requests. It rides the
+            # codex_reasoning_items sidecar so it inherits persistence
+            # (state.db), session replay, the cross-issuer guard, and the
+            # invalid-encrypted-content kill switch without new state.
+            encrypted = getattr(item, "encrypted_content", None)
+            if isinstance(encrypted, str) and encrypted:
+                raw_item = {"type": "compaction", "encrypted_content": encrypted}
+                if issuer_kind:
+                    raw_item["_issuer_kind"] = issuer_kind
+                reasoning_items_raw.append(raw_item)
+                logger.info(
+                    "Native Responses compaction item captured (%d chars encrypted).",
+                    len(encrypted),
+                )
         elif item_type == "function_call":
             if item_status in {"queued", "in_progress", "incomplete"}:
                 continue

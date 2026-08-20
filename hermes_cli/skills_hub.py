@@ -11,6 +11,7 @@ handler are thin wrappers that parse args and delegate.
 """
 
 import json
+import logging
 import re
 import shutil
 import stat
@@ -25,7 +26,6 @@ from rich.table import Table
 # Lazy imports to avoid circular dependencies and slow startup.
 # tools.skills_hub and tools.skills_guard are imported inside functions.
 from hermes_constants import display_hermes_home
-from agent.skill_utils import is_excluded_skill_path
 
 _console = Console()
 
@@ -42,6 +42,17 @@ def _display_source(r) -> str:
         if provider:
             return provider
     return r.source
+
+
+def _scan_provenance_for_source(
+    source: str,
+    identifier: str = "",
+    fallback: str = "",
+) -> tuple[str, bool]:
+    """Return scan identity and whether reserved origin markers may elevate."""
+    if source in {"official", "agent-created"}:
+        return source, True
+    return identifier or fallback or "community", False
 
 
 # ---------------------------------------------------------------------------
@@ -62,56 +73,6 @@ def _audit_path_is_redirect(path: Path) -> bool:
         return True
 
 
-def _normalized_bundle_files(bundle: Any) -> Optional[Dict[str, bytes]]:
-    """Return a validated, normalized bundle file map or ``None``."""
-    try:
-        expected: Dict[str, bytes] = {}
-        for raw_path, content in bundle.files.items():
-            relative = Path(str(raw_path))
-            normalized = relative.as_posix()
-            if (
-                relative.is_absolute()
-                or normalized in {"", "."}
-                or ".." in relative.parts
-                or normalized in expected
-            ):
-                return None
-            expected[normalized] = (
-                content if isinstance(content, bytes) else content.encode("utf-8")
-            )
-        return expected or None
-    except (AttributeError, TypeError, UnicodeEncodeError, ValueError):
-        return None
-
-
-def _installed_skill_matches_bundle(skill_path: Path, bundle: Any) -> bool:
-    """Compare an installed skill with a canonical bundle byte-for-byte."""
-    expected = _normalized_bundle_files(bundle)
-    if expected is None:
-        return False
-    try:
-        if _audit_path_is_redirect(skill_path) or not skill_path.is_dir():
-            return False
-
-        seen: set[str] = set()
-        for path in skill_path.rglob("*"):
-            if _audit_path_is_redirect(path):
-                return False
-            if path.is_dir():
-                continue
-            if not path.is_file():
-                return False
-            if path.stat(follow_symlinks=False).st_mode & 0o111:
-                return False
-            relative = path.relative_to(skill_path).as_posix()
-            if relative not in expected or path.read_bytes() != expected[relative]:
-                return False
-            seen.add(relative)
-        return seen == set(expected)
-    except (OSError, ValueError):
-        return False
-
-
 def _audit_fallback_source(entry: Dict[str, Any]) -> str:
     identifier = str(entry.get("identifier") or "community")
     if entry.get("source") == "official" or identifier == "official":
@@ -119,76 +80,87 @@ def _audit_fallback_source(entry: Dict[str, Any]) -> str:
     return identifier
 
 
-def _canonical_official_audit_bundle(entry: Dict[str, Any]) -> Any:
-    """Resolve audit provenance only from the tree shipped beside Hermes code.
+def _audit_tree_has_redirect(skill_path: Path) -> bool:
+    try:
+        if _audit_path_is_redirect(skill_path) or not skill_path.is_dir():
+            return True
+        return any(_audit_path_is_redirect(path) for path in skill_path.rglob("*"))
+    except OSError:
+        return True
 
-    Package-manager overrides remain valid for discovery and installation, but
-    an external tree cannot establish builtin audit trust until its root is
-    cryptographically or otherwise authentically bound to that package.
+
+def _audit_install_attestation(
+    entry: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    attestation = entry.get("install_attestation")
+    if isinstance(attestation, dict) and attestation:
+        return attestation
+    return None
+
+
+def _audit_scan_identity_for_lock_entry(
+    entry: Dict[str, Any], skill_path: Path
+) -> tuple[str, bool]:
+    """Replay scanner origin from a matching v2 install-content record.
+
+    The record is same-user metadata, not a cryptographic package signature.
     """
+    from tools.skills_guard import TREE_HASH_SCHEME, full_content_hash
+
     identifier = str(entry.get("identifier") or "")
     if (
-        entry.get("source") != "official"
-        or entry.get("trust_level") != "builtin"
-        or not identifier.startswith("official/")
+        entry.get("source") == "agent-created"
+        and entry.get("trust_level") == "agent-created"
+        and identifier == "agent-created"
     ):
-        return None
+        return "agent-created", True
 
-    import tools.skills_hub as skills_hub
-
-    try:
-        # Audit trust must be anchored to the optional-skills tree shipped beside
-        # the loaded Hermes code. OptionalSkillSource() intentionally honors the
-        # wrapper-facing HERMES_OPTIONAL_SKILLS override, which is valid for
-        # discovery/install but is not a provenance authority.
-        module_file = skills_hub.__file__
-        if not module_file:
-            return None
-        source = skills_hub.OptionalSkillSource.__new__(skills_hub.OptionalSkillSource)
-        source._optional_dir = Path(module_file).resolve().parent.parent / "optional-skills"
-        bundle = source.fetch(identifier)
-        if (
-            bundle is None
-            or bundle.source != "official"
-            or bundle.trust_level != "builtin"
-            or bundle.identifier != identifier
-            or _normalized_bundle_files(bundle) is None
-        ):
-            return None
-        return bundle
-    except (AttributeError, OSError, TypeError, ValueError):
-        return None
-
-
-def _audit_scan_source_for_lock_entry(
-    entry: Dict[str, Any], skill_path: Optional[Path] = None
-) -> str:
-    """Return a scanner source bound to installed content, not lock claims."""
-    bundle = _canonical_official_audit_bundle(entry)
+    attestation = _audit_install_attestation(entry)
     if (
-        bundle is not None
-        and skill_path is not None
-        and _installed_skill_matches_bundle(skill_path, bundle)
+        entry.get("source") == "official"
+        and entry.get("trust_level") == "builtin"
+        and identifier.startswith("official/")
+        and isinstance(attestation, dict)
+        and attestation.get("version") == 2
+        and attestation.get("hash_scheme") == TREE_HASH_SCHEME
+        and attestation.get("source") == "official"
+        and attestation.get("identifier") == identifier
+        and attestation.get("trust_level") == "builtin"
+        and not _audit_tree_has_redirect(skill_path)
+        and attestation.get("bundle_hash") == full_content_hash(skill_path)
     ):
-        return "official"
-    return _audit_fallback_source(entry)
+        return "official", True
+    return _audit_fallback_source(entry), False
 
 
-def _scan_skill_for_audit(entry: Dict[str, Any], skill_path: Path, scan_skill: Any):
-    """Scan official content from a verified private snapshot."""
-    source = _audit_scan_source_for_lock_entry(entry, skill_path)
-    if source != "official":
-        return scan_skill(skill_path, source=source)
+def _scan_skill_for_audit(
+    entry: Dict[str, Any],
+    skill_path: Path,
+    scan_skill: Any,
+    ast_scan_path: Any = None,
+):
+    """Scan one immutable private snapshot with attested source identity."""
+    if _audit_tree_has_redirect(skill_path):
+        raise OSError("installed skill path contains a redirect")
+    with tempfile.TemporaryDirectory(prefix="hermes-skills-audit-") as directory:
+        snapshot_path = Path(directory) / skill_path.name
+        shutil.copytree(skill_path, snapshot_path, symlinks=True)
+        if _audit_tree_has_redirect(skill_path):
+            raise OSError("installed skill path changed to a redirect during snapshot")
+        from tools.skills_guard import full_content_hash
 
-    try:
-        with tempfile.TemporaryDirectory(prefix="hermes-skills-audit-") as directory:
-            snapshot_path = Path(directory) / skill_path.name
-            shutil.copytree(skill_path, snapshot_path, symlinks=True)
-            if _audit_scan_source_for_lock_entry(entry, snapshot_path) != "official":
-                return scan_skill(skill_path, source="community")
-            return scan_skill(snapshot_path, source="official")
-    except (OSError, shutil.Error):
-        return scan_skill(skill_path, source="community")
+        if full_content_hash(skill_path) != full_content_hash(snapshot_path):
+            raise OSError("installed skill changed while the audit snapshot was created")
+        source, allow_origin_markers = _audit_scan_identity_for_lock_entry(
+            entry, snapshot_path
+        )
+        result = scan_skill(
+            snapshot_path,
+            source=source,
+            allow_origin_markers=allow_origin_markers,
+        )
+        ast_result = ast_scan_path(snapshot_path) if ast_scan_path else None
+        return result, ast_result
 
 
 def _resolve_short_name(name: str, sources, console: Console) -> str:
@@ -240,6 +212,41 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
     return ""
 
 
+def _print_tier1_advisory(skill_dir, console) -> None:
+    """Print the advisory SkillEvaluator Tier 1 report, if available.
+
+    Never raises and never blocks the install: scanner missing, disabled
+    via ``skills.tier1_advisory: false``, or erroring all degrade to
+    silence. Secrets-class findings render red, the rest yellow.
+    """
+    try:
+        from tools.skillevaluator_scan import (
+            format_tier1_report, run_tier1_scan, tier1_advisory_enabled,
+        )
+        if not tier1_advisory_enabled():
+            return
+        report = run_tier1_scan(Path(skill_dir))
+        if not report.available:
+            return
+        text = format_tier1_report(report)
+        if not report.findings:
+            console.print(f"[dim]{text}[/]")
+            return
+        style = "red" if report.secrets_findings else "yellow"
+        console.print(Panel(
+            text,
+            title="SkillEvaluator Tier 1 (advisory)",
+            border_style=style,
+        ))
+        if report.secrets_findings:
+            console.print(
+                "[bold red]Possible credentials detected above.[/] "
+                "Review the flagged lines before using this skill.\n"
+            )
+    except Exception as exc:  # advisory only — never break an install
+        logging.getLogger(__name__).debug("Tier 1 advisory scan skipped: %s", exc)
+
+
 def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
     lines: list[str] = []
     if not extra:
@@ -269,33 +276,39 @@ def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
 
 
 def _resolve_source_meta_and_bundle(identifier: str, sources):
-    """Resolve metadata and bundle for a specific identifier."""
-    meta = None
-    bundle = None
-    matched_source = None
+    """Resolve metadata and bundle from a single source adapter.
+
+    Meta and bundle must come from the same adapter. Keeping catalog
+    metadata from skills.sh while taking a ClawHub zip of a same-named
+    skill is how ``hermes skills inspect owner/repo/skills/foo`` showed
+    the requested identifier and the wrong SKILL.md.
+    """
+    first_meta = None
+    first_meta_source = None
 
     for src in sources:
-        if meta is None:
-            try:
-                meta = src.inspect(identifier)
-                if meta:
-                    matched_source = src
-            except Exception:
-                meta = None
+        meta = None
+        bundle = None
+        try:
+            meta = src.inspect(identifier)
+        except Exception:
+            meta = None
         try:
             bundle = src.fetch(identifier)
         except Exception:
             bundle = None
         if bundle:
-            matched_source = src
             if meta is None:
                 try:
                     meta = src.inspect(identifier)
                 except Exception:
                     meta = None
-            break
+            return meta, bundle, src
+        if first_meta is None and meta:
+            first_meta = meta
+            first_meta_source = src
 
-    return meta, bundle, matched_source
+    return first_meta, None, first_meta_source
 
 
 def _derive_category_from_install_path(install_path: str) -> str:
@@ -329,29 +342,18 @@ def _existing_categories() -> List[str]:
     Used to suggest reusable categories when interactively installing from a
     URL. Hidden dirs (``.hub``, ``.trash``) are skipped.
     """
-    from tools.skills_hub import SKILLS_DIR
-    out: List[str] = []
+    from tools.skills_hub import SKILLS_DIR, _category_skill_dirs
     try:
-        for entry in SKILLS_DIR.iterdir():
-            if not entry.is_dir() or entry.name.startswith("."):
-                continue
-            # Only count as a category if it contains skills, not if it IS a skill.
-            # Heuristic: if ``<entry>/SKILL.md`` exists, it's a skill at the
-            # top level (no category); otherwise treat as a category bucket.
-            if (entry / "SKILL.md").exists():
-                continue
-            # Has at least one nested SKILL.md (excluding dependency/cache dirs)?
-            try:
-                if any(
-                    not is_excluded_skill_path(p)
-                    for p in entry.rglob("SKILL.md")
-                ):
-                    out.append(entry.name)
-            except OSError:
-                continue
+        # _category_skill_dirs returns children containing any active
+        # SKILL.md — including top-level skills themselves. Only children
+        # WITHOUT their own SKILL.md are category buckets.
+        return sorted(
+            name
+            for name in set(_category_skill_dirs(SKILLS_DIR))
+            if not (SKILLS_DIR / name / "SKILL.md").exists()
+        )
     except (FileNotFoundError, OSError):
         return []
-    return sorted(set(out))
 
 
 def _prompt_for_skill_name(c: Console, url: str, default: str = "") -> Optional[str]:
@@ -367,8 +369,10 @@ def _prompt_for_skill_name(c: Console, url: str, default: str = "") -> Optional[
         f"[bold]Enter a skill name{default_hint}:[/] "
         f"[dim](lowercase letters, digits, hyphens, underscores; starts with a letter)[/]"
     )
+    from hermes_cli.cli_output import line_input
+
     try:
-        answer = input("Name: ").strip()
+        answer = line_input("Name: ").strip()
     except (EOFError, KeyboardInterrupt):
         return None
     if not answer and default:
@@ -392,8 +396,10 @@ def _prompt_for_category(c: Console, existing: List[str]) -> str:
         c.print(
             "[bold]Category[/] [dim](optional — press Enter to install flat at ~/.hermes/skills/<name>/)[/]"
         )
+    from hermes_cli.cli_output import line_input
+
     try:
-        answer = input("Category: ").strip()
+        answer = line_input("Category: ").strip()
     except (EOFError, KeyboardInterrupt):
         return ""
     if not answer:
@@ -806,18 +812,16 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     # Scan
     c.print("[bold]Running security scan...[/]")
-    if bundle.source == "official":
-        scan_source = "official"
-    else:
-        scan_source = (
-            getattr(bundle, "identifier", "")
-            or getattr(meta, "identifier", "")
-            or identifier
-        )
+    scan_source, allow_origin_markers = _scan_provenance_for_source(
+        bundle.source,
+        getattr(bundle, "identifier", "") or getattr(meta, "identifier", ""),
+        identifier,
+    )
     from tools.skills_hub import HUB_DIR, source_url_for_bundle
     result, scan_provenance = scan_skill_cached(
         q_path,
         source=scan_source,
+        allow_origin_markers=allow_origin_markers,
         source_url=source_url_for_bundle(bundle),
         cache_dir=HUB_DIR / "scan-cache",
     )
@@ -844,6 +848,12 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                          bundle.trust_level, result.verdict,
                          f"{len(result.findings)}_findings")
         return
+
+    # Advisory SkillEvaluator Tier 1 scan (optional second opinion).
+    # Warn-and-continue by design: PII-class findings are informational
+    # (known false-positive classes upstream), and the existing install
+    # confirmation below is where the user decides. Never blocks.
+    _print_tier1_advisory(q_path, c)
 
     if extra_metadata:
         metadata_lines = _format_extra_metadata_lines(extra_metadata)
@@ -894,7 +904,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                          bundle.trust_level, "invalid_path", str(exc))
         return
     from tools.skills_hub import SKILLS_DIR
-    c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
+    c.print(f"[bold green]Installed:[/] {install_dir.resolve().relative_to(Path(SKILLS_DIR).resolve()).as_posix()}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 
     # Blueprint detection: if the installed skill declares a
@@ -1209,9 +1219,21 @@ def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> N
     c.print(f"[dim]{update_count} update(s) available across {len(results)} checked skill(s)[/]\n")
 
 
-def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> None:
-    """Update hub-installed skills with upstream changes."""
-    from tools.skills_hub import HubLockFile, check_for_skill_updates
+def do_update(name: Optional[str] = None, console: Optional[Console] = None,
+              force: bool = False) -> None:
+    """Update hub-installed skills with upstream changes.
+
+    Skills whose on-disk content no longer matches the hash recorded at
+    install time have been edited locally; updating them would silently
+    destroy the user's work (``do_install(force=True)`` rmtree-replaces the
+    directory). Those are skipped by default and only overwritten when
+    ``force=True``. Mirrors the user-modified protection bundled skills
+    already get from ``hermes update`` (ported from
+    paperclipai/paperclip#10978's explicit-merge-mode rule: destructive
+    replacement must be an explicit caller choice, never a rerun default).
+    """
+    from tools.skills_hub import SKILLS_DIR, HubLockFile, check_for_skill_updates
+    from tools.skills_guard import content_hash
 
     c = console or _console
     lock = HubLockFile()
@@ -1220,9 +1242,25 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
         c.print("[dim]No updates available.[/]\n")
         return
 
+    skipped_local: list[str] = []
     for entry in updates:
         installed = lock.get_installed(entry["name"])
         category = _derive_category_from_install_path(installed.get("install_path", "")) if installed else ""
+        if installed and not force:
+            recorded_hash = installed.get("content_hash", "")
+            skill_path = SKILLS_DIR / installed.get("install_path", "")
+            if recorded_hash and skill_path.is_dir():
+                try:
+                    disk_hash = content_hash(skill_path)
+                except OSError:
+                    disk_hash = recorded_hash
+                if disk_hash != recorded_hash:
+                    skipped_local.append(entry["name"])
+                    c.print(
+                        f"[yellow]Skipping:[/] {entry['name']} — you have local edits "
+                        "(update would overwrite them)."
+                    )
+                    continue
         c.print(f"[bold]Updating:[/] {entry['name']}")
         # Pin the update to the source registry recorded in the lockfile.
         # Without this, a bare (slash-less) identifier such as "reddit" falls
@@ -1239,7 +1277,15 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
             source_id=entry.get("source", "") or None,
         )
 
-    c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
+    updated_count = len(updates) - len(skipped_local)
+    if updated_count:
+        c.print(f"[bold green]Updated {updated_count} skill(s).[/]\n")
+    if skipped_local:
+        c.print(
+            f"[dim]{len(skipped_local)} skill(s) kept your local edits: "
+            f"{', '.join(sorted(skipped_local))}.[/]"
+        )
+        c.print("[dim]Overwrite with: hermes skills update <name> --force[/]\n")
 
 
 def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
@@ -1250,7 +1296,7 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
     files (review aid only — not a security gate; skills_guard.py verdicts
     are unchanged).
     """
-    from tools.skills_hub import HubLockFile, SKILLS_DIR
+    from tools.skills_hub import HubLockFile, _resolve_lock_install_path
     from tools.skills_guard import scan_skill, format_scan_report
 
     c = console or _console
@@ -1270,20 +1316,45 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
 
     c.print(f"\n[bold]Auditing {len(targets)} skill(s)...[/]\n")
 
+    ast_scan_path = None
+    format_ast_report = None
     if deep:
         from tools.skills_ast_audit import ast_scan_path, format_ast_report
 
     for entry in targets:
-        skill_path = SKILLS_DIR / entry["install_path"]
+        try:
+            skill_path = _resolve_lock_install_path(
+                entry.get("install_path", ""), entry["name"]
+            )
+        except (OSError, ValueError):
+            c.print(
+                f"[yellow]Warning:[/] {entry['name']} — invalid install path; "
+                "audit skipped."
+            )
+            continue
         if not skill_path.exists():
             c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
             continue
 
-        result = _scan_skill_for_audit(entry, skill_path, scan_skill)
+        try:
+            result, ast_result = _scan_skill_for_audit(
+                entry,
+                skill_path,
+                scan_skill,
+                ast_scan_path if deep else None,
+            )
+        except (OSError, shutil.Error):
+            c.print(
+                f"[yellow]Warning:[/] {entry['name']} — private audit snapshot "
+                "could not be created; audit skipped."
+            )
+            c.print()
+            continue
         c.print(format_scan_report(result))
 
         if deep:
-            c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
+            assert format_ast_report is not None
+            c.print(format_ast_report(ast_result, skill_name=entry["name"]))
 
         c.print()
 
@@ -1902,12 +1973,13 @@ def skills_command(args) -> None:
     elif action == "check":
         do_check(name=getattr(args, "name", None))
     elif action == "update":
-        do_update(name=getattr(args, "name", None))
+        do_update(name=getattr(args, "name", None),
+                  force=getattr(args, "force", False))
     elif action == "audit":
         do_audit(name=getattr(args, "name", None),
                  deep=getattr(args, "deep", False))
     elif action == "uninstall":
-        do_uninstall(args.name)
+        do_uninstall(args.name, skip_confirm=getattr(args, "yes", False))
     elif action == "reset":
         do_reset(args.name, restore=getattr(args, "restore", False),
                  skip_confirm=getattr(args, "yes", False))
@@ -2086,8 +2158,10 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         do_check(name=name, console=c)
 
     elif action == "update":
-        name = args[0] if args else None
-        do_update(name=name, console=c)
+        force = "--force" in args
+        pos = [a for a in args if not a.startswith("--")]
+        name = pos[0] if pos else None
+        do_update(name=name, console=c, force=force)
 
     elif action == "audit":
         name = args[0] if args and not args[0].startswith("--") else None

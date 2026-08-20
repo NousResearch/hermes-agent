@@ -66,6 +66,7 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     ("nemotron-3-ultra", 600),
     ("nemotron-3-super", 600),
     ("nemotron-3-nano",  300),
+    ("nemotron-3.5-lightning", 300),
     # DeepSeek — R1 and V4 reasoning models on hosted NIM / DeepSeek direct.
     # V4 series emits reasoning_content in a separate delta field before
     # final content, requiring the same extended stale timeout floor.
@@ -122,6 +123,7 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     ("grok-4-fast-reasoning", 300),
     ("grok-4.20-reasoning", 300),
     ("grok-4.5", 300),
+    ("grok-4.6", 300),
     ("grok-4-fast-non-reasoning", 180),
 )
 

@@ -306,6 +306,30 @@ class TestMemoryToolDispatcher:
         assert "content is required" in result["error"]
         assert "current_entries" not in result
 
+    def test_new_text_alias_for_content_on_replace(self, store):
+        # A caller mirroring old_text with new_text (the patch tool's shape)
+        # must succeed instead of erroring 'content is required'.
+        store.add("memory", "fact A")
+        result = json.loads(
+            memory_tool(action="replace", old_text="fact A", new_text="fact A refined", store=store)
+        )
+        assert result["success"] is True
+        assert "fact A refined" in store.memory_entries
+        assert "fact A" not in [e for e in store.memory_entries if e == "fact A"]
+
+    def test_new_text_alias_for_content_on_add(self, store):
+        result = json.loads(memory_tool(action="add", new_text="added via new_text", store=store))
+        assert result["success"] is True
+        assert "added via new_text" in store.memory_entries
+
+    def test_content_wins_when_both_content_and_new_text_set(self, store):
+        result = json.loads(
+            memory_tool(action="add", content="the real one", new_text="ignored", store=store)
+        )
+        assert result["success"] is True
+        assert "the real one" in store.memory_entries
+        assert "ignored" not in store.memory_entries
+
 
 class TestMemoryBatch:
     """The 'operations' batch shape: atomic, all-or-nothing, final-budget."""
@@ -328,6 +352,23 @@ class TestMemoryBatch:
         assert "stale one" not in store.memory_entries
         assert "stale two" not in store.memory_entries
         assert "usage" in result
+
+
+    def test_batch_new_text_alias_for_content(self, store):
+        # new_text works inside batch ops too (both add and replace).
+        store.add("memory", "old entry")
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=[
+                {"action": "replace", "old_text": "old entry", "new_text": "updated entry"},
+                {"action": "add", "new_text": "batched via new_text"},
+            ],
+            store=store,
+        ))
+        assert result["success"] is True
+        assert "updated entry" in store.memory_entries
+        assert "batched via new_text" in store.memory_entries
+        assert "old entry" not in store.memory_entries
 
 
     def test_batch_duplicate_add_is_noop_not_failure(self, store):
@@ -627,3 +668,41 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+class TestBomToleranceInMemoryFiles:
+    """A Notepad-edited MEMORY.md carries a UTF-8 BOM (issue #10878 / PR #10888).
+
+    Reads go through utf-8-sig so the BOM never glues U+FEFF onto the first
+    entry. Decode errors stay strict — invalid bytes must still surface as
+    unreadable (read_ok=False) rather than silently degrade via replacement
+    characters (which a read-modify-write would then persist over the real
+    file contents).
+    """
+
+    def test_bom_is_stripped_from_first_entry(self, store, tmp_path):
+        path = store._path_for("memory")
+        path.write_bytes("\ufeffFirst fact.".encode("utf-8"))
+        raw, read_ok = MemoryStore._read_raw_checked(path)
+        assert read_ok is True
+        assert not raw.startswith("\ufeff")
+        entries, ok = MemoryStore._read_entries_checked(path)
+        assert ok is True
+        assert entries == ["First fact."]
+
+    def test_bom_file_add_keeps_existing_entry_intact(self, store):
+        path = store._path_for("memory")
+        path.write_bytes("\ufeffExisting BOM fact.".encode("utf-8"))
+        result = store.add("memory", "A second fact.")
+        assert result["success"] is True
+        text = path.read_text(encoding="utf-8")
+        assert "\ufeff" not in text
+        assert "Existing BOM fact." in text
+        assert "A second fact." in text
+
+    def test_invalid_utf8_still_reports_unreadable(self, store):
+        path = store._path_for("memory")
+        path.write_bytes(b"\xff\xfe\x80\x81 not utf-8")
+        raw, read_ok = MemoryStore._read_raw_checked(path)
+        assert read_ok is False
+        assert raw == ""

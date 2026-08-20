@@ -100,6 +100,54 @@ class TestBundledPluginsRegister:
         assert provider.name == plugin_name
         assert provider.display_name == expected_display
 
+    @pytest.mark.parametrize(
+        "plugin_name",
+        ["browserbase", "firecrawl"],
+    )
+    def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
+        """``get_setup_schema()`` returns a dict the picker can consume."""
+        _ensure_plugins_loaded()
+        from agent.browser_registry import get_provider
+
+        provider = get_provider(plugin_name)
+        assert provider is not None
+        schema = provider.get_setup_schema()
+        assert isinstance(schema, dict)
+        assert "name" in schema
+        assert "env_vars" in schema
+        # Every cloud-browser plugin carries a post-setup hook so the
+        # picker can auto-install its CLI dependency on selection.
+        assert schema.get("post_setup")
+
+    def test_browser_use_hidden_from_picker(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.browser_registry import get_provider
+
+        provider = get_provider("browser-use")
+        assert provider is not None
+        assert provider.get_setup_schema() is None
+
+    @pytest.mark.parametrize(
+        "plugin_name",
+        ["browserbase", "browser-use", "firecrawl"],
+    )
+    def test_each_plugin_implements_full_lifecycle(self, plugin_name: str) -> None:
+        """The ABC's three lifecycle methods are all overridden."""
+        _ensure_plugins_loaded()
+        from agent.browser_provider import BrowserProvider
+        from agent.browser_registry import get_provider
+
+        provider = get_provider(plugin_name)
+        assert provider is not None
+        # Each method must be a real override, not the ABC's NotImplementedError
+        # default — we check by comparing the function reference.
+        assert type(provider).create_session is not BrowserProvider.create_session
+        assert type(provider).close_session is not BrowserProvider.close_session
+        assert (
+            type(provider).emergency_cleanup is not BrowserProvider.emergency_cleanup
+        )
+
+
 
 # ---------------------------------------------------------------------------
 # is_available() behavior
@@ -244,6 +292,6 @@ class TestPickerIntegration:
 
         rows = _plugin_browser_providers()
         names = sorted(r.get("browser_provider") for r in rows)
-        assert names == ["browser-use", "browserbase", "firecrawl"]
+        assert names == ["browserbase", "firecrawl"]
 
 

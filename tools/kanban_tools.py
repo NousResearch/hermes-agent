@@ -71,6 +71,17 @@ def _is_delegated_child_context() -> bool:
         return False
 
 
+def _is_dispatcher_owned_worker() -> bool:
+    """False for delegate_task children AND for cron jobs fired in-process from
+    a worker — i.e. whenever HERMES_KANBAN_* is present but not ours."""
+    try:
+        from agent.delegation_context import is_dispatcher_owned_worker_context
+
+        return is_dispatcher_owned_worker_context()
+    except Exception:
+        return True
+
+
 def _reject_delegated_child_mutation(tool_name: str) -> Optional[str]:
     """Deny Kanban mutations from delegate_task children.
 
@@ -103,7 +114,7 @@ def _check_kanban_mode() -> bool:
     """
     if _is_delegated_child_context():
         return False
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    if os.environ.get("HERMES_KANBAN_TASK") and _is_dispatcher_owned_worker():
         return True
     return _profile_has_kanban_toolset()
 
@@ -119,7 +130,7 @@ def _check_kanban_orchestrator_mode() -> bool:
     """
     if _is_delegated_child_context():
         return False
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    if os.environ.get("HERMES_KANBAN_TASK") and _is_dispatcher_owned_worker():
         return False
     return _profile_has_kanban_toolset()
 
@@ -133,6 +144,10 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
     if arg:
         return arg
     if _is_delegated_child_context():
+        return None
+    if not _is_dispatcher_owned_worker():
+        # A cron job fired in-process from a worker must never inherit the
+        # worker's task id as an implicit default.
         return None
     env_tid = os.environ.get("HERMES_KANBAN_TASK")
     return env_tid or None
@@ -234,6 +249,28 @@ def _goal_judge_available() -> bool:
     except Exception:
         return False
     return client is not None and bool(model)
+
+
+def _goal_mode_handoff_rejection(task, evidence: str) -> Optional[str]:
+    """Return a rejection reason when a goal-mode terminal handoff is premature."""
+    if not task or not task.goal_mode or not _goal_judge_available():
+        return None
+    verdict = "done"
+    reason = ""
+    try:
+        verdict, reason, _, _, _ = judge_goal(
+            goal=f"{task.title}\n\n{task.body or ''}".strip(),
+            last_response=evidence.strip(),
+        )
+    except Exception as judge_exc:
+        # Keep the existing fail-open semantics: an unavailable/broken
+        # auxiliary judge must not permanently wedge goal-mode work.
+        logger.warning(
+            "goal judge check failed, allowing lifecycle handoff: %s",
+            judge_exc,
+            exc_info=True,
+        )
+    return reason if verdict != "done" else None
 
 
 # ---------------------------------------------------------------------------
@@ -715,35 +752,18 @@ def _handle_complete(args: dict, **kw) -> str:
             # Only enforce when a judge is actually reachable — see
             # _goal_judge_available for why an unavailable judge fails open.
             task = kb.get_task(conn, tid)
-            if task and task.goal_mode and _goal_judge_available():
-                verdict = "done"
-                reason = ""
-                try:
-                    # judge_goal returns (verdict, reason, parse_failed,
-                    # wait_directive, transport_failed) — see
-                    # hermes_cli/goals.py. Unpacking fewer raises ValueError,
-                    # which the defensive handler below swallows, leaving
-                    # verdict="done" and silently disabling the gate.
-                    verdict, reason, _, _, _ = judge_goal(
-                        goal=f"{task.title}\n\n{task.body or ''}".strip(),
-                        last_response=(summary or result or "").strip(),
-                    )
-                except Exception as judge_exc:
-                    # Defensive: judge_goal swallows its own errors, but if
-                    # it ever raises, fail open rather than wedge the worker.
-                    logger.warning(
-                        "goal judge check failed, allowing completion: %s",
-                        judge_exc,
-                        exc_info=True,
-                    )
-                if verdict != "done":
-                    return tool_error(
-                        f"Goal completion rejected by judge: {reason}. "
-                        f"To proceed, either: (1) provide explicit acceptance "
-                        f"evidence in your summary matching the task's criteria, "
-                        f"or (2) create continuation tasks with parents=[{tid}] "
-                        f"and keep this task alive."
-                    )
+            rejection = _goal_mode_handoff_rejection(
+                task,
+                (summary or result or "").strip(),
+            )
+            if rejection is not None:
+                return tool_error(
+                    f"Goal completion rejected by judge: {rejection}. "
+                    f"To proceed, either: (1) provide explicit acceptance "
+                    f"evidence in your summary matching the task's criteria, "
+                    f"or (2) create continuation tasks with parents=[{tid}] "
+                    f"and keep this task alive."
+                )
 
             try:
                 ok = kb.complete_task(
@@ -873,6 +893,132 @@ def _handle_block(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_block failed")
         return tool_error(f"kanban_block: {e}")
+
+
+def _handle_request_review(args: dict, **kw) -> str:
+    """Move implementation into the first-class review phase."""
+    delegated_err = _reject_delegated_child_mutation("kanban_request_review")
+    if delegated_err:
+        return delegated_err
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    summary = args.get("summary")
+    if not summary or not str(summary).strip():
+        return tool_error(
+            "summary is required — describe what was implemented and how it "
+            "was verified so the reviewer has context"
+        )
+    summary = redact_sensitive_text(str(summary), force=True)
+    metadata = args.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        return tool_error(
+            f"metadata must be an object/dict, got {type(metadata).__name__}"
+        )
+    if metadata is not None:
+        metadata_json = redact_sensitive_text(json.dumps(metadata), force=True)
+        try:
+            metadata = json.loads(metadata_json)
+        except json.JSONDecodeError:
+            return tool_error("metadata could not be safely serialized")
+    metadata = _stamp_worker_session_metadata(tid, metadata)
+    reviewer = args.get("reviewer") or None
+    if reviewer:
+        # Model-supplied free text stored durably on the event payload —
+        # redact like summary / kanban_block's reason.
+        reviewer = redact_sensitive_text(str(reviewer), force=True)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            task = kb.get_task(conn, tid)
+            rejection = _goal_mode_handoff_rejection(task, summary)
+            if rejection is not None:
+                return tool_error(
+                    f"Goal review handoff rejected by judge: {rejection}. "
+                    "Provide acceptance evidence matching the card before "
+                    "requesting review."
+                )
+            ok, fail_reason = kb.request_review(
+                conn, tid,
+                summary=summary,
+                metadata=metadata,
+                reviewer=reviewer,
+                expected_run_id=_worker_run_id(tid),
+                with_reason=True,
+            )
+            if not ok:
+                detail = fail_reason or "unknown id or not in running/ready"
+                return tool_error(
+                    f"could not request review for {tid}: {detail}"
+                )
+            run = kb.latest_run(conn, tid)
+            landed = kb.get_task(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status=landed.status if landed else "review",
+            )
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_request_review: {e}")
+    except Exception as e:
+        logger.exception("kanban_request_review failed")
+        return tool_error(f"kanban_request_review: {e}")
+
+
+def _handle_request_changes(args: dict, **kw) -> str:
+    """Return a reviewer-owned running task to its implementer."""
+    delegated_err = _reject_delegated_child_mutation("kanban_request_changes")
+    if delegated_err:
+        return delegated_err
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    reason = args.get("reason")
+    if not reason or not str(reason).strip():
+        return tool_error("reason is required — describe the changes needed")
+    reason = redact_sensitive_text(str(reason), force=True)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            ok, detail = kb.request_changes(
+                conn,
+                tid,
+                reason=reason,
+                expected_run_id=_worker_run_id(tid),
+            )
+            if not ok:
+                return tool_error(
+                    f"could not request changes for {tid}: {detail or 'invalid review state'}"
+                )
+            landed = kb.get_task(conn, tid)
+            run = kb.latest_run(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status=landed.status if landed else "ready",
+                implementer=detail,
+            )
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_request_changes: {e}")
+    except Exception as e:
+        logger.exception("kanban_request_changes failed")
+        return tool_error(f"kanban_request_changes: {e}")
 
 
 def _handle_heartbeat(args: dict, **kw) -> str:
@@ -1410,9 +1556,12 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
                 return False  # CLI / cron / test — no persistent channel
             platform = "tui"
             chat_id = session_key
+        is_gateway_session = platform != "tui"
+        chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "") or None
+        delivery_mode = "notify+wake" if is_gateway_session else None
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
         user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
-        chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "") or None
+        user_id_alt = get_session_env("HERMES_SESSION_USER_ID_ALT", "") or None
         message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "") or ""
         notifier_profile = (
             get_session_env("HERMES_SESSION_PROFILE", "")
@@ -1445,9 +1594,10 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
         _kb.add_notify_sub(
             conn, task_id=task_id,
             platform=platform, chat_id=chat_id,
+            thread_id=thread_id, user_id=user_id, user_id_alt=user_id_alt,
             chat_type=chat_type,
-            thread_id=thread_id, user_id=user_id,
             notifier_profile=notifier_profile,
+            delivery_mode=delivery_mode,
             delivery_metadata=delivery_metadata or None,
         )
         return True
@@ -1742,6 +1892,83 @@ KANBAN_BLOCK_SCHEMA = {
                     "Why you're blocked. 'dependency' waits in todo and "
                     "resumes automatically; the others surface to a human. "
                     "Omit only if none apply."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["reason"],
+    },
+}
+
+KANBAN_REQUEST_REVIEW_SCHEMA = {
+    "name": "kanban_request_review",
+    "description": (
+        "Hand the task off for review: implementation, self-review, and "
+        "verification are complete and you want a human (or reviewer) to "
+        "look before it is marked done. Moves the task to the 'review' "
+        "column and notifies the subscriber. Unlike ``kanban_block`` this is "
+        "NOT a blocker — it never counts toward unblock-loop detection, so a "
+        "task can cycle through review across follow-ups without ever being "
+        "falsely escalated to triage. Use this instead of blocking with a "
+        "free-form 'review-required:' reason."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "summary": {
+                "type": "string",
+                "description": (
+                    "What was implemented and how it was verified, in one or "
+                    "two sentences — shown to the reviewer. Don't paste "
+                    "the whole diff; the reviewer has the board and the PR."
+                ),
+            },
+            "reviewer": {
+                "type": "string",
+                "description": (
+                    "Optional reviewer profile. When provided, the task is "
+                    "reassigned to that profile before review dispatch."
+                ),
+            },
+            "metadata": {
+                "type": "object",
+                "description": (
+                    "Optional structured handoff facts for the reviewer, such "
+                    "as changed_files, tests_run, commit, or decisions."
+                ),
+                "additionalProperties": True,
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["summary"],
+    },
+}
+
+KANBAN_REQUEST_CHANGES_SCHEMA = {
+    "name": "kanban_request_changes",
+    "description": (
+        "Reviewer verdict: return the current review run to the original "
+        "implementer with concrete required changes. This closes the review "
+        "run, reapplies parent dependency gating, and requeues the task without "
+        "using block-loop accounting. Only use from a task claimed from the "
+        "review column; use kanban_block only for a genuine external blocker."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Specific, actionable changes the implementer must make "
+                    "before requesting another review."
                 ),
             },
             "board": _board_schema_prop(),
@@ -2160,6 +2387,24 @@ registry.register(
     handler=_handle_block,
     check_fn=_check_kanban_mode,
     emoji="⏸",
+)
+
+registry.register(
+    name="kanban_request_review",
+    toolset="kanban",
+    schema=KANBAN_REQUEST_REVIEW_SCHEMA,
+    handler=_handle_request_review,
+    check_fn=_check_kanban_mode,
+    emoji="👀",
+)
+
+registry.register(
+    name="kanban_request_changes",
+    toolset="kanban",
+    schema=KANBAN_REQUEST_CHANGES_SCHEMA,
+    handler=_handle_request_changes,
+    check_fn=_check_kanban_mode,
+    emoji="↩",
 )
 
 registry.register(

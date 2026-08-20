@@ -1,17 +1,14 @@
 ---
-title: "Oss Forensics — Supply chain investigation, evidence recovery, and forensic analysis for GitHub repositories"
+title: "Oss Forensics — GitHub supply-chain forensics: recovery, IOCs, reporting"
 sidebar_label: "Oss Forensics"
-description: "Supply chain investigation, evidence recovery, and forensic analysis for GitHub repositories"
+description: "GitHub supply-chain forensics: recovery, IOCs, reporting"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Oss Forensics
 
-Supply chain investigation, evidence recovery, and forensic analysis for GitHub repositories.
-Covers deleted commit recovery, force-push detection, IOC extraction, multi-source evidence
-collection, hypothesis formation/validation, and structured forensic reporting.
-Inspired by RAPTOR's 1800+ line OSS Forensics system.
+GitHub supply-chain forensics: recovery, IOCs, reporting.
 
 ## Skill metadata
 
@@ -19,7 +16,11 @@ Inspired by RAPTOR's 1800+ line OSS Forensics system.
 |---|---|
 | Source | Optional — install with `hermes skills install official/security/oss-forensics` |
 | Path | `optional-skills/security/oss-forensics` |
+| Version | `1.0.0` |
+| Author | Teknium (teknium1), Hermes Agent |
+| License | MIT |
 | Platforms | linux, macos, windows |
+| Tags | `Security`, `Forensics`, `GitHub`, `Supply-Chain` |
 
 ## Reference: full SKILL.md
 

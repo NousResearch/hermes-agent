@@ -34,6 +34,18 @@ _PREVIEW_SCAFFOLD_WINDOW = 400
 _PREVIEW_MAX_CHARS = 60
 
 
+def escape_like(text: str) -> str:
+    """Escape SQL LIKE wildcards so operator/session-derived text matches
+    literally.  Pair with ``ESCAPE '\\'`` in the clause.
+
+    ``%`` and ``_`` are wildcards to LIKE, and ``_`` in particular is common
+    in the values these patterns run against (branch names, session titles,
+    filesystem paths).  A match documented as substring/prefix must not
+    silently widen.
+    """
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 _PREVIEW_CONTENT_SQL = "REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' ')"
 
 
@@ -86,23 +98,125 @@ _COMPRESSION_CHILD_SQL = (
 )
 
 
-# Rows that surface in pickers: roots + branch children (subagent runs and
-# compression continuations stay hidden).
-_LISTABLE_CHILD_SQL = f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')})"
+_RESET_END_REASONS = (
+    "session_reset",
+    # switch_session() never creates a child row, but pre-marker DBs can hold
+    # legacy reset children whose parent later ended with 'session_switch'
+    # (resumed then switched away before reopen-time stamping existed). Also
+    # keeps this set identical to the recovery fence in
+    # find_latest_gateway_session_for_peer, which interpolates
+    # _RESET_END_REASONS_SQL so the two cannot drift.
+    "session_switch",
+    "idle",
+    "daily",
+    "suspended",
+    "resume_pending_expired",
+)
+_RESET_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RESET_END_REASONS)
 
 
-def _ephemeral_child_sql(alias: str = "s") -> str:
-    """Subagent runs (cascade-delete targets), not branches or compression tips."""
-    branch = _BRANCH_CHILD_SQL.format(a=alias)
-    compression = _COMPRESSION_CHILD_SQL.format(a=alias)
+def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
+    """Pre-marker reset-continuation heuristic.
+
+    A child is a legacy reset continuation when it rides its parent's exact
+    non-empty routing key and the parent ended at a reset boundary. Shared by
+    the listing predicate (``_RESET_CHILD_SQL``) and ``reopen_session()``'s
+    marker-stamping UPDATE so the two sites cannot drift; ``reasons_sql`` is
+    either the literal ``_RESET_END_REASONS_SQL`` or a bound-placeholder list.
+    """
     return (
-        f"({alias}.parent_session_id IS NOT NULL"
-        f" AND NOT ({branch})"
-        f" AND NOT ({compression}))"
+        f"EXISTS (SELECT 1 FROM sessions p"
+        f"            WHERE p.id = {alias}.parent_session_id"
+        f"            AND p.end_reason IN ({reasons_sql})"
+        f"            AND {alias}.session_key IS NOT NULL"
+        f"            AND {alias}.session_key != ''"
+        f"            AND {alias}.session_key = p.session_key)"
     )
 
 
-SCHEMA_VERSION = 23
+# A reset starts a separate user-visible conversation even though gateway rows
+# retain parent_session_id for durable lineage. New rows carry the stable
+# marker; the same-key fallback recovers rows written before the marker existed.
+# Requiring the exact non-empty routing key keeps ordinary child/subagent rows
+# out even when their parent is later reset.
+_RESET_CHILD_SQL = (
+    "json_extract(COALESCE({a}.model_config, '{{}}'), '$._reset_from') IS NOT NULL"
+    " OR " + _legacy_reset_child_sql("{a}", _RESET_END_REASONS_SQL)
+)
+
+
+# Rows that surface in pickers: roots + branch/reset children. Subagent runs
+# and compression continuations stay hidden.
+_LISTABLE_CHILD_SQL = (
+    f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')}"
+    f" OR {_RESET_CHILD_SQL.format(a='s')})"
+)
+
+
+def _ephemeral_child_sql(alias: str = "s") -> str:
+    """Subagent runs, not branch, reset, or compression children."""
+    branch = _BRANCH_CHILD_SQL.format(a=alias)
+    compression = _COMPRESSION_CHILD_SQL.format(a=alias)
+    reset = _RESET_CHILD_SQL.format(a=alias)
+    return (
+        f"({alias}.parent_session_id IS NOT NULL"
+        f" AND NOT ({branch})"
+        f" AND NOT ({compression})"
+        f" AND NOT ({reset}))"
+    )
+
+
+def _sql_session_last_active(alias: str = "s") -> str:
+    """SQL expression for session recency used by list/status surfaces.
+
+    Freshest of ``last_activity_at`` (mid-turn agent activity heartbeat) and
+    the latest message timestamp, then fall back to ``started_at``.
+
+    Must not prefer a stale heartbeat over a newer message: durable
+    heartbeats are rate-limited (~60s), so after a turn writes messages
+    ``last_activity_at`` can lag ``MAX(messages.timestamp)``.
+    """
+    msg_max = (
+        f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m "
+        f"WHERE _act_m.session_id = {alias}.id)"
+    )
+    return (
+        f"COALESCE("
+        f"(SELECT MAX(_act_v.v) FROM ("
+        f"SELECT {alias}.last_activity_at AS v "
+        f"UNION ALL "
+        f"SELECT {msg_max}"
+        f") _act_v), "
+        f"{alias}.started_at)"
+    )
+
+
+def _sql_session_last_active_by_id(session_id_expr: str) -> str:
+    """Same freshest-of expression keyed by a session-id SQL expression."""
+    msg_max = (
+        f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m "
+        f"WHERE _act_m.session_id = {session_id_expr})"
+    )
+    activity = (
+        f"(SELECT last_activity_at FROM sessions _act_s "
+        f"WHERE _act_s.id = {session_id_expr})"
+    )
+    started = (
+        f"(SELECT started_at FROM sessions _act_s "
+        f"WHERE _act_s.id = {session_id_expr})"
+    )
+    return (
+        f"COALESCE("
+        f"(SELECT MAX(_act_v.v) FROM ("
+        f"SELECT {activity} AS v "
+        f"UNION ALL "
+        f"SELECT {msg_max}"
+        f") _act_v), "
+        f"{started})"
+    )
+
+
+SCHEMA_VERSION = 26
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -137,6 +251,11 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS system_prompts (
+    hash TEXT PRIMARY KEY,
+    prompt TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
@@ -151,6 +270,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
+    system_prompt_hash TEXT,
     parent_session_id TEXT,
     started_at REAL NOT NULL,
     ended_at REAL,
@@ -165,6 +285,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cwd TEXT,
     git_branch TEXT,
     git_repo_root TEXT,
+    git_metadata_generation INTEGER NOT NULL DEFAULT 0,
     billing_provider TEXT,
     billing_base_url TEXT,
     billing_mode TEXT,
@@ -174,6 +295,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    title_source TEXT,
+    last_activity_at REAL,
+    last_activity_description TEXT,
+    last_activity_provenance TEXT,
     api_call_count INTEGER DEFAULT 0,
     handoff_state TEXT,
     handoff_platform TEXT,
@@ -186,7 +311,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+    hidden INTEGER NOT NULL DEFAULT 0,
+    last_read_at REAL,
+    FOREIGN KEY (parent_session_id) REFERENCES sessions(id),
+    FOREIGN KEY (system_prompt_hash) REFERENCES system_prompts(hash)
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -250,8 +378,20 @@ CREATE TABLE IF NOT EXISTS gateway_routing (
     PRIMARY KEY (scope, session_key)
 );
 
+CREATE TABLE IF NOT EXISTS gateway_hygiene_state (
+    session_key TEXT PRIMARY KEY,
+    failure_streak INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS compression_locks (
     session_id TEXT PRIMARY KEY,
+    holder TEXT NOT NULL,
+    acquired_at REAL NOT NULL,
+    expires_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_turn_leases (
+    conversation_id TEXT PRIMARY KEY,
     holder TEXT NOT NULL,
     acquired_at REAL NOT NULL,
     expires_at REAL NOT NULL
@@ -283,7 +423,17 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
+-- Partial index for the Insights assistant tool-call scan
+-- (agent/insights.py _get_tool_usage / _get_skill_usage): those queries filter
+-- messages by role='assistant' AND tool_calls IS NOT NULL, a small fraction of
+-- rows on a large state.db. role and tool_calls are base columns, so this can
+-- live in SCHEMA_SQL rather than DEFERRED_INDEX_SQL.
+CREATE INDEX IF NOT EXISTS idx_messages_assistant_calls_by_session
+    ON messages(session_id)
+    WHERE role = 'assistant' AND tool_calls IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+CREATE INDEX IF NOT EXISTS idx_session_turn_leases_expires ON session_turn_leases(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
@@ -306,6 +456,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
     ON sessions(source, user_id, chat_id, chat_type, thread_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_system_prompt_hash
+    ON sessions(system_prompt_hash);
 """
 
 
@@ -357,7 +509,11 @@ BEGIN
     VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages
+-- UPDATE OF skips the trigger entirely for non-content column writes
+-- (status/compacted/observed/etc.), which is stronger than the WHEN gate
+-- alone and avoids FTS I/O saturation on large state.db (#68858 / #73639).
+CREATE TRIGGER IF NOT EXISTS messages_fts_update
+AFTER UPDATE OF content, tool_name, tool_calls ON messages
 WHEN (old.content IS NOT new.content
     OR old.tool_name IS NOT new.tool_name
     OR old.tool_calls IS NOT new.tool_calls)
@@ -425,7 +581,8 @@ BEGIN
     VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON messages
+CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update
+AFTER UPDATE OF content, tool_name, tool_calls, role ON messages
 WHEN (old.content IS NOT new.content
     OR old.tool_name IS NOT new.tool_name
     OR old.tool_calls IS NOT new.tool_calls
@@ -459,6 +616,14 @@ _FTS_CJK_TRIGGERS = (
 FTS_CJK_STALE_KEY = "fts_cjk_stale"
 
 
+# Durable breadcrumb for a base/trigram FTS index that was detached from the
+# canonical messages table after runtime corruption. While present, startup
+# must rebuild the complete index before reinstalling sync triggers: rows may
+# have been written while those triggers were absent, so merely recreating
+# them would preserve an unknown index gap.
+FTS_STALE_KEY = "fts_stale"
+
+
 # ── Legacy (v22 / inline-content) FTS DDL ──────────────────────────────
 # Used ONLY to keep an existing pre-v23 install's search working and its
 # triggers repairable UNTIL the user opts into `hermes db optimize`. This is
@@ -486,7 +651,8 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
     DELETE FROM messages_fts WHERE rowid = old.id;
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
+CREATE TRIGGER IF NOT EXISTS messages_fts_update
+AFTER UPDATE OF content, tool_name, tool_calls ON messages BEGIN
     DELETE FROM messages_fts WHERE rowid = old.id;
     INSERT INTO messages_fts(rowid, content) VALUES (
         new.id,
@@ -513,7 +679,8 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON message
     DELETE FROM messages_fts_trigram WHERE rowid = old.id;
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON messages BEGIN
+CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update
+AFTER UPDATE OF content, tool_name, tool_calls ON messages BEGIN
     DELETE FROM messages_fts_trigram WHERE rowid = old.id;
     INSERT INTO messages_fts_trigram(rowid, content) VALUES (
         new.id,

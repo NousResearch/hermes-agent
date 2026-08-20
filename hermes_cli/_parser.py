@@ -46,6 +46,8 @@ Examples:
     hermes -c                     Resume the most recent session
     hermes -c "my project"        Resume a session by name (latest in lineage)
     hermes --resume <session_id>  Resume a specific session by ID
+    hermes --resume latest        Resume the most recent session (same as -c)
+    hermes --tui --resume latest --in ./dir   Resume ./dir's latest session in the TUI
     hermes setup                  Run setup wizard
     hermes logout                 Clear stored authentication
     hermes auth add <provider>    Add a pooled credential
@@ -147,6 +149,18 @@ def build_top_level_parser():
             "under model.provider — use `hermes setup` or edit the file to change it."
         ),
     )
+    _inherited_flag(
+        parser,
+        "--reasoning",
+        default=None,
+        metavar="LEVEL",
+        help=(
+            "Reasoning effort for this invocation: none, minimal, low, medium, "
+            "high, xhigh, max, or ultra. Overrides agent.reasoning_effort in "
+            "config.yaml for this run only; the persistent level lives there "
+            "(or per-model under agent.reasoning_overrides)."
+        ),
+    )
     parser.add_argument(
         "-t",
         "--toolsets",
@@ -158,13 +172,28 @@ def build_top_level_parser():
         "-r",
         metavar="SESSION",
         default=None,
-        help="Resume a previous session by ID or title",
+        help=(
+            "Resume a previous session by ID or title, or pass 'latest' for "
+            "the most recent session (workspace-scoped, like -c with no name)"
+        ),
     )
     parser.add_argument(
         "--no-restore-cwd",
         action="store_true",
         default=False,
         help="Don't cd into a resumed session's recorded working directory.",
+    )
+    parser.add_argument(
+        "--in",
+        dest="in_dir",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Change into DIR before starting or resuming. Combined with "
+            "'--resume latest' or -c, the most recent session for DIR's "
+            "workspace is picked, and the session stays in DIR (skips the "
+            "recorded-cwd restore)."
+        ),
     )
     parser.add_argument(
         "--continue",
@@ -271,8 +300,19 @@ def build_top_level_parser():
         help="Interactive chat with the agent",
         description="Start an interactive chat session with Hermes Agent",
     )
-    chat_parser.add_argument(
+    _query_group = chat_parser.add_mutually_exclusive_group()
+    _query_group.add_argument(
         "-q", "--query", help="Single query (non-interactive mode)"
+    )
+    _query_group.add_argument(
+        "--query-file",
+        metavar="PATH",
+        help=(
+            "Read the single query from a file instead of the command line "
+            "('-' reads stdin). Safe for arbitrary text: nothing is shell-"
+            "interpreted, so quotes, $(...), and backticks are preserved "
+            "verbatim. Mutually exclusive with -q."
+        ),
     )
     chat_parser.add_argument(
         "--image", help="Optional local image path to attach to a single query"
@@ -298,6 +338,17 @@ def build_top_level_parser():
         "-t", "--toolsets",
         default=argparse.SUPPRESS,
         help="Comma-separated toolsets to enable",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--reasoning",
+        default=argparse.SUPPRESS,
+        metavar="LEVEL",
+        help=(
+            "Reasoning effort for this session: none, minimal, low, medium, "
+            "high, xhigh, max, or ultra. Overrides agent.reasoning_effort for "
+            "this run only (same levels as the /reasoning slash command)."
+        ),
     )
     _inherited_flag(
         chat_parser,
@@ -335,13 +386,26 @@ def build_top_level_parser():
         "-r",
         metavar="SESSION_ID",
         default=argparse.SUPPRESS,
-        help="Resume a previous session by ID (shown on exit)",
+        help=(
+            "Resume a previous session by ID (shown on exit), or 'latest' "
+            "for the most recent session"
+        ),
     )
     chat_parser.add_argument(
         "--no-restore-cwd",
         action="store_true",
         default=argparse.SUPPRESS,
         help="Don't cd into a resumed session's recorded working directory.",
+    )
+    chat_parser.add_argument(
+        "--in",
+        dest="in_dir",
+        metavar="DIR",
+        default=argparse.SUPPRESS,
+        help=(
+            "Change into DIR before starting or resuming (scopes "
+            "'--resume latest' / -c lookups to DIR's workspace)."
+        ),
     )
     chat_parser.add_argument(
         "--continue",
@@ -352,6 +416,17 @@ def build_top_level_parser():
         default=argparse.SUPPRESS,
         metavar="SESSION_NAME",
         help="Resume a session by name, or the most recent if no name given",
+    )
+    chat_parser.add_argument(
+        "--create-if-missing",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "With -c/--continue <name>: if no session matches the name, "
+            "create a new session with that title and proceed (instead of "
+            "failing with a not-found error). Programmatic callers that "
+            "want 'send to this named thread, making it if needed'."
+        ),
     )
     chat_parser.add_argument(
         "--worktree",
@@ -383,6 +458,21 @@ def build_top_level_parser():
         default=None,
         metavar="N",
         help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)",
+    )
+    chat_parser.add_argument(
+        "--run-budget",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        dest="run_budget",
+        help=(
+            "Optional wall-clock budget in seconds for each conversation run. "
+            "At 80%% elapsed the agent gets a one-time wrap-up notice, and "
+            "implicit provider stale timeouts are capped to the remaining "
+            "budget so one hung call can't consume the run. Unset = off. "
+            "Also configurable as agent.run_budget_seconds in config.yaml. "
+            "Intended for one-shot/eval invocations with a hard ceiling."
+        ),
     )
     _inherited_flag(
         chat_parser,

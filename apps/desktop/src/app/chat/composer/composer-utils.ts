@@ -9,10 +9,36 @@ import type { TriggerState } from './text-utils'
 export const COMPOSER_STACK_BREAKPOINT_PX = 320
 
 // Above the stack breakpoint but still cramped: the model pill sheds its label
-// for its chevron icon (freeing ~120px) so the controls stop crowding the input
-// before the whole row has to stack. Progressive collapse: full pill → icon
-// pill → stacked.
-export const COMPOSER_COMPACT_PILL_PX = 440
+// for its chevron icon so the controls stop crowding the input before the whole
+// row has to stack. Progressive collapse: full pill → icon pill → stacked.
+//
+// Sized off what the controls actually cost, because guessing put the two
+// stages on top of each other. With the full pill the controls take ~284px
+// (pill 111 + the icon cluster), so at the old 440 the inline input was ~156px
+// — barely over its 128px minimum. A few words wrapped, wrapping is what
+// stacks the row, and the pill's chevron arrived at the same moment the row
+// gave up, which is the one thing progressive collapse is supposed to avoid.
+// At 560 the label goes while the input still has ~276px, and the ~110px the
+// chevron frees is spent keeping the row single for another stretch.
+export const COMPOSER_COMPACT_PILL_PX = 560
+
+// The ladder keeps going below the stack breakpoint — a pane can be far
+// narrower than even the stacked controls row. Both rungs are budgeted
+// against that row's real cost: menu ~24 + surface padding 16 + the cluster
+// (~190; ~218 mid-turn with the queue button).
+//
+// At 260 the three voice toggles fold into the one menu HUD mode already
+// uses, clearing the mid-turn worst case with margin. Each stage sits clear
+// of the floor below it rather than arriving the instant the previous one
+// gives out — the mistake COMPOSER_COMPACT_PILL_PX documents.
+export const COMPOSER_FOLD_VOICE_PX = 260
+
+// Type and send, nothing else. A pane can be dragged to MIN_PANE_PX (80), and
+// even with voice folded the row still costs ~150, so the last rung drops the
+// pill AND the voice menu. Both stay reachable — the model by hotkey and the
+// full picker, dictation from any wider pane — and Send fits with room to
+// spare at any width the layout tree allows (~74 all-in).
+export const COMPOSER_MINIMAL_PX = 180
 
 // A single editor line is ~28px (--composer-input-min-height 1.625rem + 0.5rem
 // vertical padding). Anything taller means the text wrapped to a second line,

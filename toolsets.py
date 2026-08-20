@@ -23,7 +23,7 @@ Usage:
     all_tools = resolve_toolset("full_stack")
 """
 
-from typing import List, Dict, Any, Set, Optional
+from typing import Dict, List, Any, Set, Optional, Tuple
 
 
 # Shared tool list for CLI and all messaging platform toolsets.
@@ -33,11 +33,13 @@ _HERMES_CORE_TOOLS = [
     "web_search", "web_extract",
     # Terminal + process management
     "terminal", "process",
-    # Desktop GUI affordances: read the embedded terminal pane, close an agent's
-    # read-only terminal tab, open a URL/file in the preview pane, focus a
-    # pane, and react to a message with an emoji (all gated on HERMES_DESKTOP
-    # via check_fn — hidden outside the GUI).
-    "read_terminal", "close_terminal", "open_preview", "focus_pane", "react_to_message",
+    # NOTE: the desktop GUI affordances (read_terminal, open_preview, …) are
+    # deliberately NOT here, for the same reason as the `project` tools below:
+    # they only work where a GUI renderer can answer them. They live in the
+    # `desktop_ui` toolset and are enabled solely by the GUI gateway for a
+    # session whose SOURCE is the desktop app (tui_gateway/server.py::
+    # _load_enabled_toolsets) — never keyed on a process env var, which is
+    # blind to a desktop client talking to a remote/cloud backend.
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
@@ -53,6 +55,8 @@ _HERMES_CORE_TOOLS = [
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    # replaces other tools when browser.backend is "browser-use"
+    "browser_exec",
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
@@ -77,7 +81,9 @@ _HERMES_CORE_TOOLS = [
     # profile explicitly enables the kanban toolset. Gated via check_fn in
     # tools/kanban_tools.py.
     "kanban_show", "kanban_list",
-    "kanban_complete", "kanban_block", "kanban_heartbeat",
+    "kanban_complete", "kanban_block", "kanban_request_review",
+    "kanban_request_changes",
+    "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
     "kanban_unblock",
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
@@ -203,7 +209,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp",
-            "browser_dialog", "web_search"
+            "browser_dialog", "browser_exec", "web_search"
         ],
         "includes": []
     },
@@ -256,6 +262,27 @@ TOOLSETS = {
         "tools": ["project_list", "project_create", "project_switch"],
         "includes": []
     },
+
+    # Affordances that only exist because a GUI renderer is on the other end of
+    # the connection: read/close the embedded terminal pane, open/read/close the
+    # in-app browser, focus a pane, tapback a message.
+    #
+    # Enabled by the GUI gateway for a session whose SOURCE is the desktop app
+    # (tui_gateway/server.py::_load_enabled_toolsets), NOT by a process env var.
+    # The renderer is a CLIENT — it can be driving a local, SSH, URL, or cloud
+    # backend — so "was this process spawned by Electron?" is the wrong
+    # question and silently strips these tools from every remote gateway.
+    "desktop_ui": {
+        "description": "Desktop GUI affordances — in-app terminal/browser panes, pane focus, reactions (GUI sessions only)",
+        "tools": [
+            "read_terminal", "close_terminal",
+            "open_preview", "close_preview", "read_preview", "drive_preview", "annotate_preview",
+            "read_window_below",
+            "focus_pane", "react_to_message",
+            "setup_mcp", "tour",
+        ],
+        "includes": []
+    },
     
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
@@ -290,12 +317,14 @@ TOOLSETS = {
             "is spawned by the kanban dispatcher (HERMES_KANBAN_TASK env "
             "set). The dispatcher runs inside the gateway by default; see "
             "`kanban.dispatch_in_gateway` in config.yaml. Lets workers mark "
-            "tasks done with structured handoffs, block for human input, "
+            "tasks done with structured handoffs, enter first-class review "
+            "(request_review — not a block), return review changes, block for human input, "
             "heartbeat during long ops, comment on threads, attach files, and "
             "(for orchestrators) list, unblock, and fan out tasks."
         ),
         "tools": [
             "kanban_show", "kanban_list", "kanban_complete", "kanban_block",
+            "kanban_request_review", "kanban_request_changes",
             "kanban_heartbeat", "kanban_comment",
             "kanban_create", "kanban_link",
             "kanban_unblock",
@@ -371,11 +400,16 @@ TOOLSETS = {
     # code workspace; see agent/coding_context.py. Keeps everything you reach
     # for while pairing on code and drops the rest (messaging, tts, image_gen,
     # spotify, home-assistant, cron, computer-use).
+    #
+    # The GUI pane/browser affordances are NOT listed here: they belong to the
+    # client surface, not the posture, so the GUI gateway folds `desktop_ui`
+    # in alongside this selection for a desktop-sourced session (see
+    # tui_gateway/server.py::_load_enabled_toolsets).
     "coding": {
         "description": "Coding-focused toolset: files, terminal, search, web docs, skills, todo, delegate, vision, browser",
         "tools": [
             "web_search", "web_extract",
-            "terminal", "process", "read_terminal", "close_terminal",
+            "terminal", "process",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",
@@ -383,6 +417,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "browser_exec",
             "todo", "memory",
             "session_search", "clarify",
             "execute_code", "delegate_task",
@@ -415,6 +450,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "browser_exec",
             "todo", "memory",
             "session_search",
             "execute_code", "delegate_task",
@@ -444,6 +480,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "browser_exec",
             # Planning & memory
             "todo", "memory",
             # Session history search
@@ -716,6 +753,19 @@ def bundle_non_core_tools(toolset_name: str) -> Set[str]:
     return to_remove
 
 
+# Resolution memo keyed on (toolset name, include_registry, registry
+# generation). resolve_toolset() recursively walks toolset includes and, with
+# include_registry=True, merges registry-registered tools on every call —
+# measured ~2us/toolset in isolation but called dozens of times per
+# _get_platform_tools() (per-keystroke /tools completion) and per picker
+# render. The registry exposes a monotonic _generation counter (bumped on
+# every register/deregister/alias/MCP refresh — see tools/registry.py), so a
+# cache entry is valid for as long as the generation is unchanged; external
+# callers never pass ``visited``, so the memo engages exactly at the public
+# entry and the internal cycle-detection recursion stays untouched.
+_resolve_toolset_memo: Dict[Tuple[str, bool, int, int], List[str]] = {}
+
+
 def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bool = True) -> List[str]:
     """
     Recursively resolve a toolset to get all tool names.
@@ -736,6 +786,21 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
     Returns:
         List[str]: List of all tool names in the toolset
     """
+    external_call = visited is None
+    if external_call:
+        try:
+            from tools.registry import registry
+
+            registry_id = id(registry)
+            generation = getattr(registry, "_generation", 0)
+        except Exception:
+            registry_id = 0
+            generation = 0
+        memo_key = (name, include_registry, registry_id, generation)
+        cached = _resolve_toolset_memo.get(memo_key)
+        if cached is not None:
+            return list(cached)
+
     if visited is None:
         visited = set()
 
@@ -774,7 +839,7 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
                     try:
                         from tools.registry import registry
                         plugin_tools.update(
-                            e.name for e in registry._tools.values()
+                            e.name for e in registry.get_all_entries()
                             if e.toolset == platform_name
                         )
                     except Exception:
@@ -795,7 +860,22 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
         included_tools = resolve_toolset(included_name, visited, include_registry=include_registry)
         tools.update(included_tools)
 
-    return sorted(tools)
+    result = sorted(tools)
+    if external_call:
+        try:
+            from tools.registry import registry
+
+            registry_id = id(registry)
+            generation = getattr(registry, "_generation", 0)
+        except Exception:
+            registry_id = 0
+            generation = 0
+        # Entries from previous registry generations are never hit again;
+        # keep the memo bounded across long sessions with many MCP refreshes.
+        if len(_resolve_toolset_memo) >= 256:
+            _resolve_toolset_memo.clear()
+        _resolve_toolset_memo[(name, include_registry, registry_id, generation)] = list(result)
+    return result
 
 
 def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:

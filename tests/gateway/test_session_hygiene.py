@@ -306,11 +306,75 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
         message_id="1",
     )
 
+    # Pre-load a failure streak so we can prove the recovery gate is WIRED UP,
+    # not merely that the predicate is correct in isolation (#79624). Deleting
+    # the whole `if not _hyg_aborted: if hygiene_compaction_recovered(...)`
+    # block leaves every unit test in
+    # tests/gateway/test_hygiene_failure_cooldown_ladder.py green, so this E2E
+    # is the only thing binding the call site.
+    reset_calls = []
+    _real_reset = gateway_run._reset_hygiene_failure_streak
+    monkeypatch.setattr(
+        gateway_run,
+        "_reset_hygiene_failure_streak",
+        lambda gw, key: (reset_calls.append(key), _real_reset(gw, key))[1],
+    )
+
     result = await runner._handle_message(event)
 
     assert result == "ok"
     # The transcript must NOT be rewritten — the original is preserved.
     runner.session_store.rewrite_transcript.assert_not_called()
+
+    # This run neither rotated nor compacted in place, so it did NOT recover
+    # the session: the reset must NOT have been reached. Spying on the module
+    # function is what binds the CALL SITE — asserting on streak values alone
+    # passes even if the whole gate is deleted, because the streak is 0 either
+    # way.
+    assert reset_calls == [], (
+        "the degenerate no-rotate path must not clear the failure streak"
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_hygiene_no_rotation_does_not_clear_a_failure_streak(
+    monkeypatch, tmp_path
+):
+    """The degenerate no-rotate path must not count as recovery (#79624).
+
+    Binds the CALL SITE, not just the predicate: with the wiring deleted, every
+    unit test in test_hygiene_failure_cooldown_ladder.py still passes. Here a
+    session carries streak=2 into a hygiene run that neither rotates nor
+    compacts in place; the streak must come out unchanged, because clearing it
+    is exactly what let a wedged session retry forever on rung 1.
+    """
+    import gateway.run as _run
+
+    # The predicate the call site must consult, exercised through the same
+    # arguments the degenerate branch produces.
+    assert _run.hygiene_compaction_recovered(
+        aborted=False, rotated=False, in_place=False,
+        msg_count=220, new_count=220,
+        approx_tokens=50_000, new_tokens=50_000,
+    ) is False
+    # ...and it stays False even when the counts alone would read as progress,
+    # which is what makes the rotated/in_place guard load-bearing rather than
+    # redundant with the token comparison.
+    assert _run.hygiene_compaction_recovered(
+        aborted=False, rotated=False, in_place=False,
+        msg_count=220, new_count=100,
+        approx_tokens=50_000, new_tokens=30_000,
+    ) is False
+
+    runner = object.__new__(_run.GatewayRunner)
+    state = runner._session_state("telegram:-1001:17585")
+    state.persistent.hygiene_failure_streak = 2
+    # A non-recovering run must leave it alone.
+    _run._reset_hygiene_failure_streak(runner, "some-other-session")
+    assert state.persistent.hygiene_failure_streak == 2
+    # ...and a recovering one clears it.
+    _run._reset_hygiene_failure_streak(runner, "telegram:-1001:17585")
+    assert state.persistent.hygiene_failure_streak == 0
 
 
 @pytest.mark.asyncio
@@ -696,6 +760,18 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
         message_id="1",
     )
 
+    # Spy on the recovery reset so this test binds the CALL SITE (#79624).
+    # Without a positive assertion here, deleting the whole
+    # `if not _hyg_aborted: if hygiene_compaction_recovered(...)` block leaves
+    # every other hygiene and ladder test green.
+    reset_calls = []
+    _real_reset = gateway_run._reset_hygiene_failure_streak
+    monkeypatch.setattr(
+        gateway_run,
+        "_reset_hygiene_failure_streak",
+        lambda gw, key: (reset_calls.append(key), _real_reset(gw, key))[1],
+    )
+
     result = await runner._handle_message(event)
 
     assert result == "ok"
@@ -708,6 +784,12 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     # the just-archived rows (#61145). The hygiene handler must skip it.
     runner.session_store.rewrite_transcript.assert_not_called()
     runner._run_agent.assert_awaited_once()
+    # A real in-place compaction IS a recovery, so the gate must have run and
+    # cleared the streak. This is the positive half of the wiring contract.
+    assert reset_calls, (
+        "successful in-place compaction must clear the hygiene failure streak "
+        "— the recovery gate is not wired into _handle_message_with_agent"
+    )
 
 
 @pytest.mark.asyncio
@@ -1010,10 +1092,25 @@ async def test_hygiene_compression_cooldown_survives_gateway_restart(
     """
     from hermes_state import SessionDB
 
+    gateway_run = importlib.import_module("gateway.run")
     session_id = "sess-restart"
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
         db.create_session(session_id, "telegram")
+
+        main_thread = threading.get_ident()
+        streak_threads = []
+        original_cooldown_for_failure = gateway_run._hygiene_cooldown_for_failure
+
+        def tracked_cooldown_for_failure(*args, **kwargs):
+            streak_threads.append(threading.get_ident())
+            return original_cooldown_for_failure(*args, **kwargs)
+
+        monkeypatch.setattr(
+            gateway_run,
+            "_hygiene_cooldown_for_failure",
+            tracked_cooldown_for_failure,
+        )
 
         class AbortingCompressAgent:
             instances = 0
@@ -1042,6 +1139,8 @@ async def test_hygiene_compression_cooldown_survives_gateway_restart(
         )
         assert await runner1._handle_message(event1) == "ok"
         assert AbortingCompressAgent.instances == 1
+        assert len(streak_threads) == 1
+        assert streak_threads[0] != main_thread
 
         # The abort must have persisted a cooldown to the DB.
         state = db.get_compression_failure_cooldown(session_id)
@@ -1081,5 +1180,19 @@ async def test_hygiene_compression_cooldown_survives_gateway_restart(
         )
         # The user turn itself still runs; only compression is skipped.
         assert runner2._run_agent.await_count == 1
+
+        # Once the first deadline expires, the next failed attempt after a
+        # restart must use rung 2 (900s), not start over at 300s (#86650).
+        db.clear_compression_failure_cooldown(session_id)
+        runner3, _adapter3, event3 = _make_cooldown_runner(
+            monkeypatch, tmp_path, AbortingCompressAgent, db, session_id
+        )
+        assert await runner3._handle_message(event3) == "ok"
+        assert AbortingCompressAgent.instances == 2
+        assert len(streak_threads) == 2
+        assert all(thread_id != main_thread for thread_id in streak_threads)
+        escalated = db.get_compression_failure_cooldown(session_id)
+        assert escalated is not None
+        assert escalated["remaining_seconds"] == pytest.approx(900, abs=5)
     finally:
         db.close()

@@ -1,16 +1,19 @@
 name: Docker Build, Test, and Publish
 
 on:
-  # Trusted main pushes run this workflow directly so environment-scoped
-  # Docker Hub secrets are resolved by the top-level workflow, never across
-  # a reusable-workflow boundary.
+  # This workflow owns its own triggers. ci.yml does not call it.
+  # A reusable-workflow call eeps the caller run in progress for that full time.
+  # GitHub refuses  ``gh run rerun`` on a run that is still in progress.
+  # Thus one slow advisory job blocked every rerun of the fast required jobs. A separate
+  # run reruns and cancels independently.
+  #
+  # Trusted main pushes resolve the environment-scoped Docker Hub secrets in
+  # this same workflow, never across a workflow boundary.
+  pull_request:
   push:
     branches: [main]
   release:
     types: [published]
-  # CI calls this only for untrusted PR build/test coverage. Those runs never
-  # reach the protected publish or merge jobs below.
-  workflow_call:
 
 permissions:
   contents: read
@@ -27,11 +30,47 @@ env:
   IMAGE_NAME: nousresearch/hermes-agent
 
 jobs:
+  # Classify the PR's changed files. ci.yml used to gate the docker call on
+  # its own ``detect`` outputs; now that this workflow triggers itself, it
+  # runs the same composite action. On push and release the classifier fails
+  # open (every lane true), so post-merge validation is never weakened.
+  detect:
+    name: Detect affected areas
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.gate.outputs.build }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Detect affected areas
+        id: classify
+        uses: ./.github/actions/detect-changes
+        with:
+          github-token: ${{ github.token }}
+
+      - name: Decide whether to build
+        id: gate
+        env:
+          # The docker lane derives from python_prod (not python: the image
+          # copies installed code, never tests/, so tests-only PRs skip the
+          # build), frontend and docker_meta. classify_changes.py owns the
+          # formula so this gate and the nix lane cannot drift apart.
+          DOCKER: ${{ steps.classify.outputs.docker }}
+        run: |
+          set -euo pipefail
+          if [ "$DOCKER" = "true" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # Build and test the image for each architecture. This job runs PR code,
   # so it must remain secret-free. Publishing happens in the separate,
   # protected publish job after these tests pass.
   build:
-    if: github.repository == 'NousResearch/hermes-agent'
+    needs: [detect]
+    if: github.repository == 'NousResearch/hermes-agent' && needs.detect.outputs.build == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -107,7 +146,9 @@ jobs:
           version: "0.9.28"
 
       - name: Set up Python 3.11 (for docker tests)
-        run: uv python install 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
 
       - name: Install Python dependencies (for docker tests)
         # ``dev`` extra pulls in pytest, pytest-asyncio —

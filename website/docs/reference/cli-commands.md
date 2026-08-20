@@ -22,8 +22,9 @@ hermes [global-options] <command> [subcommand/options]
 |--------|-------------|
 | `--version`, `-V` | Show version and exit. |
 | `--profile <name>`, `-p <name>` | Select which Hermes profile to use for this invocation. Overrides the sticky default set by `hermes profile use`. |
-| `--resume <session>`, `-r <session>` | Resume a previous session by ID or title. |
+| `--resume <session>`, `-r <session>` | Resume a previous session by ID or title. The keyword `latest` resumes the most recent session (workspace-scoped, same lookup as `-c`). |
 | `--continue [name]`, `-c [name]` | Resume the most recent session, or the most recent session matching a title. |
+| `--in <dir>` | Change into `<dir>` before starting or resuming. Scopes `--resume latest` / `-c` lookups to that directory's workspace and keeps the session there (skips the recorded-cwd restore). |
 | `--worktree`, `-w` | Start in an isolated git worktree for parallel-agent workflows. |
 | `--yolo` | Bypass dangerous-command approval prompts. |
 | `--pass-session-id` | Include the session ID in the agent's system prompt. |
@@ -52,6 +53,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes auth` | Manage credentials — add, list, remove, reset, status, logout. Handles OAuth flows for Codex/Nous/Anthropic. |
 | `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes send` | Send a one-shot message to a configured messaging platform (Telegram, Discord, Slack, Signal, SMS, …). Useful from shell scripts, cron jobs, CI hooks, and monitoring daemons — no agent loop, no LLM. |
+| `hermes peer` | Register peer Hermes gateways on other machines and DM their agents' canonical Bot Chats (`hermes peer dm <peer>[/<agent>] "…"`). The transport behind cross-machine bot-to-bot messaging. |
 | `hermes secrets` | Manage external secret sources (currently Bitwarden Secrets Manager) for pulling API keys at process startup instead of from `~/.hermes/.env`. |
 | `hermes migrate` | Diagnose and (optionally) rewrite `config.yaml` to replace references to retired models or deprecated settings (e.g. `migrate xai`). |
 | `hermes status` | Show agent, auth, and platform status. |
@@ -95,7 +97,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes desktop` (alias `gui`) | Build and launch the native Electron desktop app. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh/fish). |
-| `hermes version` | Show version information. |
+| `hermes --version` | Show version information. |
 | `hermes update` | Pull latest code and reinstall dependencies. `--check` previews without installing; `--backup` takes a pre-pull `HERMES_HOME` snapshot. |
 | `hermes uninstall` | Remove Hermes from the system. |
 
@@ -110,9 +112,10 @@ Common options:
 | Option | Description |
 |--------|-------------|
 | `-q`, `--query "..."` | One-shot, non-interactive prompt. |
+| `--query-file PATH` | Read the one-shot prompt from a file (`-` = stdin). Nothing is shell-interpreted, so quotes, `$(...)`, and backticks arrive verbatim — use this for programmatic or untrusted message bodies (Bot Mode teammate DMs use it). Mutually exclusive with `-q`. |
 | `-m`, `--model <model>` | Override the model for this run. |
 | `-t`, `--toolsets <csv>` | Enable a comma-separated set of toolsets. |
-| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `gemini`, `huggingface`, `novita` (aliases `novita-ai`, `novitaai`), `openai-api`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `upstage` (alias `solar`), `alibaba`, `alibaba-coding-plan` (alias `alibaba_coding`), `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `xai-oauth` (alias `grok-oauth`), `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `ai-gateway`, `azure-foundry`, `lmstudio`, `stepfun`, `tencent-tokenhub` (alias `tencent`, `tokenhub`). |
+| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `gemini`, `huggingface`, `novita` (aliases `novita-ai`, `novitaai`), `openai-api`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `upstage` (alias `solar`), `alibaba`, `alibaba-coding-plan` (alias `alibaba_coding`), `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `xai-oauth` (alias `grok-oauth`), `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `ai-gateway`, `azure-foundry`, `lmstudio`, `stepfun`, `tencent-tokenhub` (alias `tencent`, `tokenhub`). |
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
@@ -437,6 +440,42 @@ hermes send --list telegram         # filter by platform
 ```
 
 
+
+## `hermes peer`
+
+```bash
+hermes peer add <name> --url http://host:port --key <API_SERVER_KEY>
+hermes peer list
+hermes peer dm <peer>[/<agent>] "message"
+hermes peer remove <name>
+```
+
+Bot-to-bot DMs across machines. Register another Hermes gateway (any machine
+running the `api_server` platform) as a *peer*, then message its agents:
+`hermes peer dm` resolves the remote agent's canonical **Bot Chat** session
+over the peer's API server, runs one agent turn there, and prints the reply
+on stdout — the cross-machine twin of the local
+`hermes -p <bot> chat --in ~ -c "Bot Chat" …` bot-messaging command.
+
+`<peer>` alone targets the peer gateway's main agent;
+`<peer>/<agent>` targets a named profile on a multiplexed peer (routed via
+its `/p/<profile>/` mirror).
+
+| Subcommand | Description |
+|--------|-------------|
+| `add <name> --url <URL> [--key <KEY>] [--note TEXT]` | Register or update a peer. The URL goes to `config.yaml` (`bot_peers`); the key is stored as `HERMES_PEER_<NAME>_KEY` in `~/.hermes/.env`. |
+| `list` | List peers and whether each has a key configured. |
+| `dm <peer>[/<agent>] [message]` | Message the peer agent's canonical Bot Chat and print the reply (`--json` for machine-readable output; message falls back to stdin). |
+| `remove <name>` | Remove a peer from the registry (the `.env` key entry is left in place). |
+
+When at least one peer is registered, the Bot Mode messaging protocol
+(`agent.bot_mode_protocol`) taught to every canonical Bot Chat automatically
+includes the peer roster and the `hermes peer dm` pattern, so agents discover
+cross-machine teammates without SOUL edits. See
+[Bot Mode](../user-guide/bot-mode.md).
+
+Exit codes: `0` on success, `1` on delivery/peer failure, `2` on usage errors.
+
 ## `hermes secrets`
 
 ```bash
@@ -595,7 +634,7 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 |------|---------|
 | `--board <slug>` | Operate on a specific board. Defaults to the current board (set via `hermes kanban boards switch`, the `HERMES_KANBAN_BOARD` env var, or `default`). |
 
-**This is the human / scripting surface.** Agent workers spawned by the dispatcher drive the board through a dedicated `kanban_*` [toolset](/user-guide/features/kanban#how-workers-interact-with-the-board) (`kanban_show`, `kanban_complete`, `kanban_block`, `kanban_create`, `kanban_link`, `kanban_comment`, `kanban_heartbeat`; orchestrator profiles also get `kanban_list` and `kanban_unblock`) instead of shelling to `hermes kanban`. Workers have `HERMES_KANBAN_BOARD` pinned in their env so they physically cannot see other boards.
+**This is the human / scripting surface.** Agent workers spawned by the dispatcher drive the board through a dedicated `kanban_*` [toolset](/user-guide/features/kanban#how-workers-interact-with-the-board) (`kanban_show`, `kanban_complete`, `kanban_request_review`, `kanban_request_changes`, `kanban_block`, `kanban_create`, `kanban_link`, `kanban_comment`, `kanban_heartbeat`; orchestrator profiles also get `kanban_list` and `kanban_unblock`) instead of shelling to `hermes kanban`. Workers have `HERMES_KANBAN_BOARD` pinned in their env so they physically cannot see other boards.
 
 | Action | Purpose |
 |--------|---------|
@@ -616,8 +655,11 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `comment <id> "<text>"` | Append a comment. The next worker that claims the task reads it as part of its `kanban_show()` response. |
 | `complete <id>` | Mark task done. Flags: `--result`, `--summary`, `--metadata`. |
 | `block <id> "<reason>"` | Mark task blocked for human input. Also appends the reason as a comment. |
+| `request-review <id>` | Move a task to `review` with a reviewer handoff — NOT a block. Flags: `--summary`, `--metadata`, `--reviewer` (reassigns before review dispatch). |
+| `request-changes <id> <reason>` | Reviewer verdict for an active review run: close the review attempt and route the task back to its original implementer. |
+| `reopen-review <id>...` | Send review task(s) back for changes (`review` → ready/todo). Flag: `--reason` (appended as a comment). |
 | `schedule <id> "<reason>"` | Park time-delay/follow-up work in `scheduled` so it is not shown as a human blocker. |
-| `unblock <id>` | Return a blocked or scheduled task to ready (or `todo` if dependencies are still open). |
+| `unblock <id>` | Restore a blocked task to its source phase (`review` or `ready`), or `todo` while dependencies remain open. |
 | `archive <id>` | Hide from default list. `gc` will remove scratch workspaces. |
 | `tail <id>` | Follow a task's event stream. |
 | `dispatch` | One dispatcher pass on the active board. Flags: `--dry-run`, `--max N`, `--failure-limit N`, `--json`. |
@@ -1370,18 +1412,26 @@ Unified plugin management — general plugins, memory providers, and context eng
 | Subcommand | Description |
 |------------|-------------|
 | *(none)* | Composite interactive UI — general plugin toggles + provider plugin configuration. |
-| `install <identifier> [--force]` | Install a plugin from a Git URL or `owner/repo`. |
-| `update <name>` | Pull latest changes for an installed plugin. |
+| `install <identifier> [--force] [--ref COMMIT_SHA]` | Install a plugin from a Git URL, `owner/repo`, or a bare index name. Bare names (no slash) are resolved through the community plugin index to `owner/repo` plus the index-pinned commit; ambiguous names list candidates and exit. `--ref` accepts only a full 40-character commit SHA, installs that exact immutable revision, and overrides any index pin. |
+| `search [term] [--json] [--capability CAP] [--refresh]` | Search the community plugin index (fuzzy match on name/description/tags; omit `term` to browse). Fetched from `plugins.index_url` (default: the NousResearch plugin index), cached under `~/.hermes/cache/` for 24h, falling back to the stale cache and then the bundled seed when offline. Indexed ≠ audited — inclusion is a metadata review only. |
+| `update <name>` | Pull latest changes for an unpinned installed plugin. Pinned plugins must be reinstalled with `--force --ref <new-commit>` to move. |
 | `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
 | `enable <name>` | Enable a disabled plugin. |
 | `disable <name>` | Disable a plugin without removing it. |
 | `list` (alias: `ls`) | List installed plugins with enabled/disabled status. |
+| `doctor [path-or-id] [--ci]` | Validate a native plugin through the real manifest parser, loader, and registration path. `--ci` exits 1 on errors. |
+| `pack install <path-or-url> [--force]` | Install a plugin pack (`hermes-pack.yaml`) — a declarative set of plugins each pinned to an exact 40-character commit SHA. Shows a mandatory review screen (every plugin, source, pinned ref, declared capabilities), asks one confirmation for the pack contents, then runs ordinary pinned installs. Each plugin's declared capabilities still go through the standard per-plugin consent — a pack never bulk-grants. Partial failures are reported per plugin; exits non-zero when any plugin failed. Interactive only (no `--yes`). |
+| `pack export [--enabled-only] [--name NAME]` | Emit a pack YAML on stdout from the current install: repo + exact SHA of each git-installed plugin plus sanitized non-secret `plugins.entries` config. Local-only plugins (no git provenance) are listed as warning comments, never as installable entries. Secrets, capability grants, and `allow_*` gates are always stripped. |
+| `pack show <path-or-url>` | Dry-run: parse, validate, and display a pack without installing anything. |
 
 Provider plugin selections are saved to `config.yaml`:
 - `memory.provider` — active memory provider (empty = built-in only)
 - `context.engine` — active context engine (`"compressor"` = built-in default)
 
 General plugin disabled list is stored in `config.yaml` under `plugins.disabled`.
+Git installs also record only their canonical source, exact installed revision, and
+pin status in the profile-local `plugins/.install-metadata.json` sidecar. It does
+not contain plugin config, environment values, secrets, or capability grants.
 
 See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../developer-guide/plugins/index.md).
 
@@ -1410,6 +1460,9 @@ Subcommands:
 | `install` | Run the upstream cua-driver installer (macOS, Windows, and Linux). |
 | `install --upgrade` | Re-run the installer even if cua-driver is already on PATH. The upstream script always pulls the latest release, so this performs an in-place upgrade. |
 | `status` | Print whether `cua-driver` is on `$PATH` and which version is installed. |
+| `doctor [--include CHECK] [--skip CHECK] [--json]` | Run cua-driver's health report and show its platform checks. |
+| `permissions status [--json]` | Report macOS Accessibility and Screen Recording grants. |
+| `permissions grant` | Ask macOS to grant Accessibility and Screen Recording to Cua Driver. |
 
 `hermes computer-use install` is the stable entry point for installing the
 [cua-driver](https://github.com/trycua/cua) binary used by the
@@ -1417,6 +1470,24 @@ Subcommands:
 `hermes tools` invokes when you first enable Computer Use, so it's safe
 to use for re-running the install if the toolset toggle didn't trigger
 it (for example, on returning-user setups).
+
+If cua-driver is already present, Hermes checks its version and runtime
+manifest. A compatible 0.20.0 or newer installation is left in place. An old or
+incomplete standard installation is repaired with the current upstream
+installer. Hermes never replaces a custom binary selected through
+`HERMES_CUA_DRIVER_CMD`; update that binary directly or remove the override.
+`hermes computer-use status` reports when repair is required.
+
+The built-in `computer_use` toolset is the recommended Hermes integration.
+Registering raw Cua MCP tools is an alternative when you need Cua's low-level
+tool vocabulary. `cua-driver skills install` detects Hermes and links Cua's
+skill pack into the Hermes skills directory automatically.
+
+Permission mode, capability-manifest approval, and the existing-profile grant
+belong to runtime launch. In bounded mode Hermes passes Cua's canonical
+`--capability-manifest` and `--approve-capability-manifest` flags. Every MCP
+transport owns a private lifecycle session inside its runtime. Public session
+names label cursor and session state; they do not own or share the runtime.
 
 `hermes update` automatically re-runs the upstream installer at the end
 of the update if cua-driver is on PATH, so most users will not need to
@@ -1455,13 +1526,19 @@ Subcommands:
 | Subcommand | Description |
 |------------|-------------|
 | `list` | List recent sessions. |
-| `browse` | Interactive session picker with search and resume. |
+| `browse` | Interactive session picker with search and resume. Each row shows a lifecycle status tag (`done` / `intr` / `err` / `empty`, derived from the session's final message) and its message count. Press `d` on a highlighted row (while the search filter is empty) to delete that session after a y/N confirmation; while a filter is active, `d` types into the search instead. |
 | `export <output> [--session-id ID]` | Export sessions to JSONL. |
 | `delete <session-id>` | Delete one session. |
 | `prune` | Delete sessions matching filters: time bounds `--older-than`/`--newer-than`/`--before`/`--after` (durations like `5h`/`2d`, bare days, or ISO timestamps); attributes `--source`, `--title`, `--model`, `--provider`, `--branch`, `--end-reason`, `--user`, `--chat-id`, `--chat-type`, `--cwd`; numeric bounds `--min/--max-messages`, `--min/--max-tokens`, `--min/--max-cost`, `--min/--max-tool-calls`; plus `--include-archived`, `--dry-run`, `--yes`. Default: older than 90 days. |
 | `archive` | Bulk-archive (soft-hide, no deletion) sessions matching the same filters as `prune`. Requires at least one filter. |
 | `stats` | Show session-store statistics. |
 | `rename <session-id> <title>` | Set or change a session title. |
+| `optimize` | Reclaim disk space: merge FTS5 index segments + VACUUM. Non-destructive — no session data changes. |
+| `optimize-storage` | Migrate the full-text search index to the compact v23 external-content layout; on large databases this reclaims a large fraction of `state.db`. |
+| `repair` | Repair a malformed `state.db` schema (e.g. `table messages_fts already exists`) so hidden sessions reappear; a backup is made first. |
+| `repair-routing` | Re-attach gateway conversations stranded in session rows that lost their routing identity (a chat "jumping back in time" after a restart). Dry-run by default; `--apply` performs the adoptions (stop the gateway first); `--max-gap-seconds N` tunes the contiguity window. Only unambiguous cases are repaired. See [Sessions → Repair Stranded Gateway Sessions](../user-guide/sessions.md#repair-stranded-gateway-sessions). |
+| `recover` | Offline, non-destructive recovery of a damaged `state.db` into a separate clean database. |
+| `retitle-skills` | Regenerate titles for sessions opened with a `/skill`, using what the user actually typed; lists changes unless `--apply` is passed. |
 
 ## `hermes insights`
 
@@ -1681,7 +1758,7 @@ Additional behavior:
 
 | Command | Description |
 |---------|-------------|
-| `hermes version` | Print version information. |
+| `hermes --version` | Print version information. |
 | `hermes update` | Pull latest changes and reinstall dependencies. |
 
 | `hermes uninstall [--full] [--gui] [--dry-run] [--yes]` | Remove Hermes, optionally deleting all config/data. `--gui` removes only the desktop Chat GUI, leaving the agent intact; `--full` also deletes config/data; `--dry-run` prints what would be removed without changing anything; `--yes` skips prompts. |

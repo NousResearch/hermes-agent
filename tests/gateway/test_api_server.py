@@ -209,7 +209,7 @@ class TestAdapterInit:
         )
         monkeypatch.setattr(
             "gateway.run.GatewayRunner._load_reasoning_config",
-            staticmethod(lambda: {"enabled": True, "effort": "xhigh"}),
+            staticmethod(lambda model="": {"enabled": True, "effort": "xhigh"}),
         )
         monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
         monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
@@ -391,6 +391,235 @@ class TestAgentExecution:
             conversation_history=[],
             task_id="session-123",
         )
+
+    @pytest.mark.asyncio
+    async def test_run_agent_sets_and_clears_process_ownership_markers(self, adapter):
+        """#76188 review: this surface runs its own agent lifecycle outside
+        TurnRunner, so it needs its own baseline snapshot/clear — verify the
+        markers _reap_disconnected_agent_processes() reads are actually
+        populated during the turn and cleared once it finishes."""
+        mock_agent = MagicMock()
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        captured = {}
+
+        def _capture_markers(**_kwargs):
+            captured["task_id"] = mock_agent._gateway_turn_process_task_id
+            captured["baseline"] = mock_agent._gateway_turn_process_baseline
+            return {"final_response": "ok"}
+
+        mock_agent.run_conversation.side_effect = _capture_markers
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="session-456",
+                requested_model="MiniMax-M3",
+                requested_provider="minimax",
+                model_options={"reasoning": {"enabled": False}, "fast": False},
+            )
+
+        assert captured["task_id"] == "session-456"
+        assert isinstance(captured["baseline"], frozenset)
+        # Turn completed normally — markers must be cleared so a disconnect
+        # arriving after this point can't reap work this turn left running.
+        assert mock_agent._gateway_turn_process_task_id == ""
+        assert mock_agent._gateway_turn_process_baseline == frozenset()
+
+
+class TestDisconnectedAgentReap:
+    """#76188 review: SSE disconnect handlers must reap only the background
+    processes the disconnected turn created, and must no-op when no turn
+    ownership was ever recorded on the agent."""
+
+    def test_reaps_baseline_diff_for_owned_turn(self, monkeypatch):
+        from gateway.platforms.api_server import _reap_disconnected_agent_processes
+        from tools.process_registry import process_registry
+
+        calls = []
+        monkeypatch.setattr(
+            process_registry,
+            "kill_started_since",
+            lambda task_id, baseline, *, source: calls.append(
+                (task_id, baseline, source)
+            )
+            or 1,
+        )
+        agent = types.SimpleNamespace(
+            _gateway_turn_process_task_id="session-abc",
+            _gateway_turn_process_baseline=frozenset({"proc-1"}),
+        )
+
+        _reap_disconnected_agent_processes(agent)
+
+        deadline = time.time() + 1.0
+        while not calls and time.time() < deadline:
+            time.sleep(0.01)
+        assert calls == [
+            ("session-abc", frozenset({"proc-1"}), "api_server_sse_disconnect")
+        ]
+
+    def test_noop_when_agent_has_no_ownership_markers(self, monkeypatch):
+        from gateway.platforms.api_server import _reap_disconnected_agent_processes
+        from tools.process_registry import process_registry
+
+        calls = []
+        monkeypatch.setattr(
+            process_registry,
+            "kill_started_since",
+            lambda *a, **k: calls.append(True),
+        )
+        agent = types.SimpleNamespace(
+            _gateway_turn_process_task_id="",
+            _gateway_turn_process_baseline=None,
+        )
+
+        _reap_disconnected_agent_processes(agent)
+
+        time.sleep(0.1)
+        assert calls == []
+
+    def test_stale_epoch_skips_reap_when_newer_run_claimed_task_id(self, monkeypatch):
+        """#76188 follow-up: concurrent API runs can share a client-provided
+        session_id (same task_id). A disconnecting run whose epoch has been
+        superseded must NOT kill the newer run's processes."""
+        from gateway.platforms.api_server import (
+            _clear_turn_process_ownership,
+            _publish_turn_process_ownership,
+            _reap_disconnected_agent_processes,
+        )
+        from tools.process_registry import process_registry
+
+        calls = []
+        monkeypatch.setattr(
+            process_registry,
+            "kill_started_since",
+            lambda *a, **k: calls.append(True) or 1,
+        )
+        monkeypatch.setattr(
+            process_registry, "snapshot_running_ids", lambda _tid: frozenset()
+        )
+
+        run_a = types.SimpleNamespace()
+        run_b = types.SimpleNamespace()
+        _publish_turn_process_ownership(run_a, "shared-session")
+        # Run B claims the same session_id — supersedes A's epoch.
+        _publish_turn_process_ownership(run_b, "shared-session")
+
+        _reap_disconnected_agent_processes(run_a)
+        time.sleep(0.2)
+        assert calls == [], "stale run A must not reap run B's processes"
+
+        # Run B disconnecting IS current — its reap proceeds.
+        _reap_disconnected_agent_processes(run_b)
+        deadline = time.time() + 1.0
+        while not calls and time.time() < deadline:
+            time.sleep(0.01)
+        assert calls == [True]
+        _clear_turn_process_ownership(run_b)
+
+    def test_reap_proceeds_when_own_clear_pruned_the_epoch_entry(self, monkeypatch):
+        """A missing epoch entry (the abandoned run's own finally already
+        cleared it) means no newer claimant — the reap must proceed using a
+        pre-captured marker snapshot, or the leak survives."""
+        from gateway.platforms.api_server import (
+            _clear_turn_process_ownership,
+            _publish_turn_process_ownership,
+            _reap_disconnected_agent_processes,
+        )
+        from tools.process_registry import process_registry
+
+        calls = []
+        monkeypatch.setattr(
+            process_registry,
+            "kill_started_since",
+            lambda *a, **k: calls.append(True) or 1,
+        )
+        monkeypatch.setattr(
+            process_registry, "snapshot_running_ids", lambda _tid: frozenset()
+        )
+
+        run = types.SimpleNamespace()
+        _publish_turn_process_ownership(run, "solo-session")
+        # Simulate the disconnect handler capturing the agent while the
+        # worker's finally clears ownership: snapshot markers, then clear.
+        stale_view = types.SimpleNamespace(
+            _gateway_turn_process_task_id=run._gateway_turn_process_task_id,
+            _gateway_turn_process_baseline=run._gateway_turn_process_baseline,
+            _gateway_turn_process_epoch=run._gateway_turn_process_epoch,
+        )
+        _clear_turn_process_ownership(run)
+
+        _reap_disconnected_agent_processes(stale_view)
+        deadline = time.time() + 1.0
+        while not calls and time.time() < deadline:
+            time.sleep(0.01)
+        assert calls == [True]
+
+    def test_publish_and_clear_ownership_roundtrip(self, monkeypatch):
+        from gateway.platforms.api_server import (
+            _TURN_PROCESS_EPOCHS,
+            _clear_turn_process_ownership,
+            _publish_turn_process_ownership,
+        )
+        from tools.process_registry import process_registry
+
+        monkeypatch.setattr(
+            process_registry,
+            "snapshot_running_ids",
+            lambda tid: frozenset({f"pre-{tid}"}),
+        )
+
+        agent = types.SimpleNamespace()
+        _publish_turn_process_ownership(agent, "sess-rt")
+        assert agent._gateway_turn_process_task_id == "sess-rt"
+        assert agent._gateway_turn_process_baseline == frozenset({"pre-sess-rt"})
+        assert isinstance(agent._gateway_turn_process_epoch, int)
+        assert "sess-rt" in _TURN_PROCESS_EPOCHS
+
+        _clear_turn_process_ownership(agent)
+        assert agent._gateway_turn_process_task_id == ""
+        assert agent._gateway_turn_process_baseline == frozenset()
+        assert agent._gateway_turn_process_epoch is None
+        # Entry pruned — dict stays bounded to in-flight runs.
+        assert "sess-rt" not in _TURN_PROCESS_EPOCHS
+
+    @pytest.mark.asyncio
+    async def test_stop_run_reaps_owned_processes(self, adapter, monkeypatch):
+        """POST /v1/runs/{id}/stop abandons the run — it must reap the
+        background processes that run created (#76115 sibling surface)."""
+        from gateway.platforms.api_server import _publish_turn_process_ownership
+        from tools.process_registry import process_registry
+
+        calls = []
+        monkeypatch.setattr(
+            process_registry,
+            "kill_started_since",
+            lambda task_id, baseline, *, source: calls.append(
+                (task_id, baseline, source)
+            )
+            or 1,
+        )
+        monkeypatch.setattr(
+            process_registry, "snapshot_running_ids", lambda _tid: frozenset()
+        )
+
+        agent = MagicMock()
+        _publish_turn_process_ownership(agent, "run-stop-sess")
+        adapter._active_run_agents["run_x"] = agent
+
+        request = MagicMock()
+        request.match_info = {"run_id": "run_x"}
+        resp = await adapter._handle_stop_run(request)
+        assert resp.status == 200
+
+        deadline = time.time() + 1.0
+        while not calls and time.time() < deadline:
+            time.sleep(0.01)
+        assert calls == [("run-stop-sess", frozenset(), "api_server_run_stop")]
+        agent.interrupt.assert_called_once()
 
 
 class TestRunEventCallback:
@@ -684,6 +913,7 @@ class TestToolsetsEndpoint:
             ("default", "Default Tools", "Core tools"),
             ("web", "Web Tools", "Search and extract"),
         ]
+        feature_snapshot = object()
         with patch(
             "hermes_cli.tools_config._get_effective_configurable_toolsets",
             return_value=fake_toolsets,
@@ -691,9 +921,12 @@ class TestToolsetsEndpoint:
             "hermes_cli.tools_config._get_platform_tools",
             return_value={"default"},
         ), patch(
+            "hermes_cli.tools_config.get_nous_subscription_features",
+            return_value=feature_snapshot,
+        ) as resolve_features, patch(
             "hermes_cli.tools_config._toolset_has_keys",
             return_value=True,
-        ), patch(
+        ) as has_keys, patch(
             "toolsets.resolve_toolset",
             side_effect=lambda name: {
                 "default": ["terminal", "read_file"],
@@ -713,6 +946,13 @@ class TestToolsetsEndpoint:
                 assert by_name["web"]["enabled"] is False
                 assert by_name["web"]["tools"] == ["web_search"]
                 assert by_name["default"]["configured"] is True
+
+        resolve_features.assert_called_once()
+        assert has_keys.call_count == len(fake_toolsets)
+        assert all(
+            call.kwargs["features"] is feature_snapshot
+            for call in has_keys.call_args_list
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1434,13 +1674,15 @@ class TestResponsesStreaming:
 
         # Patch web.StreamResponse for the duration of the writer call.
         import gateway.platforms.api_server as api_mod
-        import queue as _q
 
-        stream_q: _q.Queue = _q.Queue()
+        # The SSE writers consume an asyncio queue (ThreadSafeAsyncQueue),
+        # not a plain queue.Queue — a stdlib queue would block the drain
+        # loop's ``await stream_q.get()`` forever.
+        stream_q = api_mod.ThreadSafeAsyncQueue()
 
         async def _agent_coro():
             # Feed one partial delta into the stream queue...
-            stream_q.put("partial output")
+            stream_q.put_nowait("partial output")
             # ...then give the drain loop a moment to pick it up before
             # raising CancelledError to simulate a server-side cancel.
             await asyncio.sleep(0.01)
@@ -1505,11 +1747,12 @@ class TestResponsesStreaming:
                     raise ConnectionResetError("simulated client disconnect")
 
         import gateway.platforms.api_server as api_mod
-        import queue as _q
 
-        stream_q: _q.Queue = _q.Queue()
-        stream_q.put("some streamed text")
-        stream_q.put(None)  # EOS sentinel
+        # asyncio queue to match the writers' consumer (see the note in
+        # test_stream_cancelled_persists_incomplete_snapshot).
+        stream_q = api_mod.ThreadSafeAsyncQueue()
+        stream_q.put_nowait("some streamed text")
+        stream_q.put_nowait(None)  # EOS sentinel
 
         async def _agent_coro():
             await asyncio.sleep(0.01)
@@ -1790,9 +2033,15 @@ class TestToolCallsInOutput:
             assert output[0]["name"] == "calculator"
             assert output[0]["arguments"] == '{"expression": "6*7"}'
             assert output[0]["call_id"] == "call_abc123"
+            # Replayed server-executed calls must be marked completed so
+            # OpenAI clients don't treat them as pending calls to execute.
+            assert output[0]["status"] == "completed"
+            assert output[0]["id"].startswith("fc_")
             assert output[1]["type"] == "function_call_output"
             assert output[1]["call_id"] == "call_abc123"
             assert output[1]["output"] == "42"
+            assert output[1]["status"] == "completed"
+            assert output[1]["id"].startswith("fco_")
             assert output[2]["type"] == "message"
             assert output[2]["content"][0]["text"] == "The result is 42."
 
@@ -2343,6 +2592,27 @@ class TestModelRoutesAgentCreation:
         assert captured["api_key"] == "sk-session"
 
 
+class TestStoredSessionModelFilter:
+    """A session row that persisted the advertised virtual model must read as
+    "no stored model" — replaying "hermes-agent" upstream 400s. Found live
+    (Aug 2026): the first cross-gateway `hermes peer dm` against a fresh
+    api_server failed every turn with "hermes-agent is not a valid model ID".
+    """
+
+    def test_virtual_model_is_filtered(self):
+        adapter = _make_routing_adapter({})
+        assert adapter._stored_session_model({"model": adapter._model_name}) is None
+
+    def test_real_model_passes_through(self):
+        adapter = _make_routing_adapter({})
+        assert adapter._stored_session_model({"model": "google/gemini-3.7-flash"}) == "google/gemini-3.7-flash"
+
+    def test_missing_or_bad_shapes(self):
+        adapter = _make_routing_adapter({})
+        assert adapter._stored_session_model({}) is None
+        assert adapter._stored_session_model(None) is None
+
+
 # ---------------------------------------------------------------------------
 # Event-loop offloading for synchronous SessionDB calls (P1)
 # ---------------------------------------------------------------------------
@@ -2374,6 +2644,93 @@ class TestSessionDbOffEventLoop:
         # The blocking DB call must NOT execute on the event-loop thread.
         assert captured["thread"] is not None
         assert captured["thread"] != threading.current_thread()
+
+    @pytest.mark.asyncio
+    async def test_create_session_without_model_does_not_persist_virtual_alias(self, auth_adapter):
+        """A session created with no ``model`` field must not persist the
+        virtual model alias (self._model_name, e.g. "hermes-agent") as if it
+        were a real provider model id.
+
+        Regression: _handle_create_session previously did
+        ``model = body.get("model") or self._model_name``, so an omitted
+        model fell back to the virtual alias and that string got stored on
+        the session row. _handle_session_chat later reads it back as a raw
+        session_model override (since it's not a model_routes alias) and
+        sends it to the provider literally — Bedrock/OpenAI then reject
+        "hermes-agent" as an invalid model identifier on every turn.
+        """
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/sessions",
+                json={},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["session"]["model"] != auth_adapter._model_name
+            assert data["session"]["model"] is None
+
+    @pytest.mark.asyncio
+    async def test_create_session_with_explicit_virtual_alias_does_not_persist_it(self, auth_adapter):
+        """Sending ``model: "hermes-agent"`` explicitly (the virtual alias
+        itself, e.g. a client that just echoes /v1/models' advertised id)
+        must be treated the same as omitting model entirely."""
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/sessions",
+                json={"model": auth_adapter._model_name},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["session"]["model"] is None
+
+    @pytest.mark.asyncio
+    async def test_create_session_with_real_model_persists_it(self, auth_adapter):
+        """Regression guard: a genuine model id must still be stored as before."""
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/sessions",
+                json={"model": "openai/gpt-5"},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["session"]["model"] == "openai/gpt-5"
+
+    @pytest.mark.asyncio
+    async def test_create_session_with_provider_prefixed_virtual_alias_does_not_persist_it(self, auth_adapter):
+        """A provider-prefixed echo of the virtual alias (e.g. a client that
+        threads /v1/models' advertised id through a provider:: prefix) must
+        also be treated as "no model", not stored as a raw override.
+
+        Regression: _handle_create_session used to re-derive its own `model`
+        straight from the raw request body, bypassing the provider-prefix
+        split that _session_runtime_request_from_body performs — so
+        "openrouter::hermes-agent" never matched self._model_name and leaked
+        through as a literal session override.
+        """
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/sessions",
+                json={"model": f"openrouter::{auth_adapter._model_name}"},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["session"]["model"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -2617,4 +2974,97 @@ class TestCreateAgentModelRecovery:
         adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
         assert captured[1]["model"] == "minimax/minimax-m3"
 
+    # ── Recovery-net alias guards (PR for #79101) ──────────────────────
 
+    def test_create_agent_does_not_cache_virtual_alias(self, monkeypatch):
+        """Write-side guard: the advertised virtual model (``hermes-agent``)
+        must never enter ``_last_resolved_model``, even when a prior turn
+        (or the session-row bug) dispatched it."""
+        captured = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.append(dict(kwargs))
+
+        _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        virtual = adapter._model_name
+        # Make _resolve_gateway_model return the virtual alias — the
+        # condition the session-row bug can produce after a prior turn.
+        monkeypatch.setattr(
+            "gateway.run._resolve_gateway_model", lambda: virtual,
+        )
+
+        adapter._create_agent(session_id="s1", gateway_session_key="ch")
+        assert captured[0]["model"] == virtual
+        # Cache must reject the alias.
+        assert adapter._last_resolved_model.get("ch") != virtual
+        assert adapter._last_resolved_model.get("*") != virtual
+
+    def test_create_agent_rejects_virtual_alias_from_cache(self, monkeypatch):
+        """Read-side gate: an empty-model dispatch with the alias in
+        ``_last_resolved_model`` must NOT recover it — the recovery net
+        must never serve the advertised virtual model."""
+        captured = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.append(dict(kwargs))
+
+        _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        # Seed the cache with the alias (simulate a prior poisoned turn).
+        adapter._last_resolved_model["ch"] = adapter._model_name
+        adapter._last_resolved_model["*"] = adapter._model_name
+
+        # Trigger an empty resolution.
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": None, "base_url": None, "api_mode": None},
+        )
+        adapter._create_agent(session_id="s1", gateway_session_key="ch")
+
+        # The alias must not be dispatched.
+        assert captured[0]["model"] != adapter._model_name
+
+    def test_create_agent_recovery_still_works_for_legitimate_model(
+        self, monkeypatch,
+    ):
+        """Non-regression: a real dispatched model still enters the cache
+        and recovers on a subsequent empty-resolution turn — the alias
+        guard must not break legitimate recovery."""
+        captured = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.append(dict(kwargs))
+
+        _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        # Turn 1: legitimate model — must enter the cache.
+        monkeypatch.setattr(
+            "gateway.run._resolve_gateway_model",
+            lambda: "anthropic/claude-opus-4.6",
+        )
+        adapter._create_agent(session_id="s1", gateway_session_key="ch")
+        assert captured[0]["model"] == "anthropic/claude-opus-4.6"
+        assert adapter._last_resolved_model["ch"] == "anthropic/claude-opus-4.6"
+
+        # Turn 2: empty resolution — must recover the legitimate model.
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": None, "base_url": None, "api_mode": None},
+        )
+        adapter._create_agent(session_id="s2", gateway_session_key="ch")
+        assert captured[1]["model"] == "anthropic/claude-opus-4.6"

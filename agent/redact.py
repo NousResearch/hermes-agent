@@ -11,7 +11,15 @@ import logging
 import os
 import re
 import shlex
+import threading
 from urllib.parse import unquote_plus
+
+# Basenames treated as ``.env`` files by _command_reads_env_file. Imported
+# from agent/file_safety (the read-block list) so the two defenses can't
+# drift: if file_tools blocks a read and the agent falls back to ``cat``,
+# the terminal redactor still catches it. file_safety matches
+# case-insensitively (``resolved.name.lower()``); the lookup mirrors that.
+from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
 
 logger = logging.getLogger(__name__)
 
@@ -128,14 +136,31 @@ _PREFIX_PATTERNS = [
     r"glffct-[A-Za-z0-9_\-]{10,}",      # GitLab feature-flags client token
     r"glwt-[A-Za-z0-9_\-]{10,}",        # GitLab workspace token
     r"GR1348941[A-Za-z0-9_\-]{10,}",    # GitLab legacy runner registration token
+    r"pk-lf-[A-Za-z0-9\-]{8,}",         # Langfuse public key (sk-lf- already covered by sk- pattern)
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name.
 # Uppercase keys tolerate spaces around "=" (e.g. ``FOO_SECRET = bar``) because
 # an all-caps key is almost never prose/code.
-_SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
+# Bare ``KEY`` / ``PASS`` / ``PW`` suffixes are included (``FAL_KEY=…``,
+# ``MYSQL_PASS=…``, ``DB_PW=…``) — issue #77484. The regex is IGNORECASE so
+# lowercase env names (``openai_key=…``) are caught here too. The secret name
+# must sit at a word boundary (``_``-delimited or whole-word) so generic
+# prose words (``password=``, ``token=``, ``KEYBOARD=``, ``PASSAGE=``) do not
+# match — those are handled by the config/form/URL paths, and a bare
+# ``password=…`` in a form body must not be swallowed greedily by ``\S+``.
+_SECRET_ENV_NAMES = r"(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|PW|CREDENTIAL|AUTH)"
+# Uppercase keys keep the legacy embedded match (``MYTOKEN=…``, ``FOO_SECRET``)
+# — an all-caps key is almost never prose.
 _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
+)
+# Lowercase env names: only underscore-boundary forms (``openai_key=…``,
+# ``FAL_KEY=…``, ``db_pw=…``) — NOT bare ``password=``/``token=``/``secret=``,
+# which appear in prose, URLs, and form bodies (issue #77484).
+_ENV_ASSIGN_LOWER_RE = re.compile(
+    rf"([a-z0-9_]+(?:_|^)(?:key|pass|pw|token|secret|password|passwd|credential|auth)(?=[^a-z0-9_]|$))\s*=\s*(['\"]?)(\S+)\2",
+    re.IGNORECASE,
 )
 
 # Lowercase / dotted / hyphenated config keys from config files
@@ -229,8 +254,8 @@ _YAML_ASSIGN_RE = re.compile(
 # match. ALL-CAPS keys keep the legacy embedded matching (``MYTOKEN=…``) — an
 # all-caps key is almost never prose, the same rationale as _ENV_ASSIGN_RE.
 _KEY_KEYWORD_RE = re.compile(
-    r"(?:api|auth|access|refresh|session|secret)[ _.\-]?(?:key|token)"
-    r"|token|secret|passwd|password|credential|auth",
+    r"(?:api|auth|access|refresh|session|secret)[ _.\\-]?(?:key|token)"
+    r"|token|secret|passwd|password|pass|pw|credential|auth|key",
     re.IGNORECASE,
 )
 
@@ -276,7 +301,15 @@ def _key_has_secret_keyword(key: str) -> bool:
     """
     letters = [c for c in key if c.isalpha()]
     if letters and all(c.isupper() for c in letters):
-        return True  # legacy all-caps behavior (MYTOKEN=…)
+        # Legacy all-caps behavior (MYTOKEN=…): an all-caps key is almost
+        # never prose. Exception: a bare ``KEY``/``PASS``/``PW`` embedded in
+        # a longer all-caps word (``KEYBOARD``, ``PASSAGE``) is prose, not a
+        # credential — only a word-bounded compound (``API_KEY``,
+        # ``MYSQL_PASSWORD``, ``FAL_KEY``, ``DB_PW``) counts (issue #77484).
+        for m in _KEY_KEYWORD_RE.finditer(key):
+            if _is_word_start(key, m.start()) and _is_word_end(key, m.end()):
+                return True
+        return False
     for m in _KEY_KEYWORD_RE.finditer(key):
         if _is_word_start(key, m.start()) and _is_word_end(key, m.end()):
             return True
@@ -433,9 +466,85 @@ _FORM_BODY_RE = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*(?:&[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*)+$"
 )
 
+# Control / zero-width characters that can split a token body: a secret
+# smuggled as ``sk-abc\x1bdef…`` or ``ghp_abc\n123…`` escapes the contiguous
+# prefix regexes (issue #77484). Used by _mask_control_split_tokens.
+_CONTROL_CHARS_RE = re.compile(
+    r"[\x00-\x1f\x7f\u200b-\u200f\u2028-\u202f\u2060\ufeff]"
+)
+
+# Union of every _PREFIX_PATTERNS body class — a control-stripped match may
+# only span original chars that are token-body or control chars (see
+# _mask_control_split_tokens). ``=`` is deliberately excluded: a KEY=value
+# assignment separator must never let a match span across unrelated text.
+_TOKEN_BODY_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-."
+)
+
 # Compile known prefix patterns into one alternation
 _PREFIX_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(" + "|".join(_PREFIX_PATTERNS) + r")(?![A-Za-z0-9_-])"
+)
+
+
+def _mask_control_split_tokens(text: str, mask_fn) -> str:
+    """Mask tokens whose body is split by control/zero-width characters.
+
+    A credential like ``sk-abc\\x1bdef456…`` or ``ghp_abc\\n123def…`` has its
+    token body interrupted, so the contiguous _PREFIX_RE cannot match it and
+    the secret leaks verbatim (issue #77484). Strategy: build a copy with all
+    control chars removed (the token is contiguous again, matching even when
+    each fragment alone is too short), match on that, then mask the
+    corresponding span in the *original* — but only when the original span
+    contains solely token-body and control chars (a match that crosses into a
+    different line's unrelated text, e.g. ``EXA_API_KEY=*** is rejected).
+    """
+    stripped = _CONTROL_CHARS_RE.sub("", text)
+    if stripped == text:
+        return text
+    orig_idx = [i for i, c in enumerate(text) if not _CONTROL_CHARS_RE.match(c)]
+    out = list(text)
+    matches = []
+    for m in _PREFIX_RE.finditer(stripped):
+        body = m.group(1)
+        start_orig = orig_idx[m.start(1)]
+        end_orig = orig_idx[m.end(1) - 1] + 1
+        # If a fragment inside the span already matches _PREFIX_RE on its
+        # own AND the span crosses a LINE boundary (\n / \r), do NOT join.
+        # A complete token at end-of-line followed by a word line
+        # (``ghp_<token>\nbutton [ref=e3]``) joins into one stripped-copy
+        # match and the mask eats ``button``. Line structure is legitimate;
+        # the self-matching fragment is handled by the ordinary prefix pass
+        # (any remainder past the newline is left unmasked — accepted
+        # residual to preserve line structure).
+        # For NON-newline controls (ESC, ZWSP, ...) the join proceeds even
+        # when a fragment self-matches: those bytes never legitimately sit
+        # between a token and adjacent prose, and skipping there let the
+        # non-matching remainder of a split token leak
+        # (``sk-<head>\x1b<tail>`` masked only the head).
+        span = text[start_orig:end_orig]
+        if ("\n" in span or "\r" in span) and _PREFIX_RE.search(span):
+            continue
+        # Reject matches whose original span crosses a non-token char
+        # (e.g. ``sk_abc…\nTAVILY_API_KEY=…`` — the ``=`` is not part of a
+        # token body, so the regex matched across unrelated lines). Also
+        # reject when the match runs into a ``KEY=`` name: a real token value
+        # is followed by a newline/space/end, not ``=``.
+        if (all(c in _TOKEN_BODY_CHARS or _CONTROL_CHARS_RE.match(c)
+                for c in span)
+                and (end_orig >= len(text) or text[end_orig] != "=")):
+            matches.append((start_orig, end_orig, mask_fn(body)))
+    for start_orig, end_orig, replacement in reversed(matches):
+        out[start_orig:end_orig] = list(replacement)
+    return "".join(out)
+
+
+# Display-mask strip for mask_secret: EVERY control char incl. \n/\t, C1,
+# DEL, and zero-width/format chars — a masked secret must never emit
+# multiline, tabbed, or invisible bytes into config/status/dump display
+# output (#55319, #55321).
+_DISPLAY_CONTROL_RE = re.compile(
+    r"[\x00-\x1f\x7f\x80-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2064]"
 )
 
 
@@ -479,6 +588,12 @@ def mask_secret(
         >>> mask_secret("long-token", head=6, tail=4, floor=18)
         '***'
     """
+    if not value:
+        return empty
+    # Visible head/tail must not carry control bytes (newline, NUL, DEL, C1)
+    # into config/status/dump output (#55319, #55321). Strip them before
+    # slicing — the length check below then sees the displayable length.
+    value = _DISPLAY_CONTROL_RE.sub("", value)
     if not value:
         return empty
     if len(value) < floor:
@@ -718,6 +833,13 @@ def redact_sensitive_text(
     # Known prefixes (sk-, ghp_, etc.) — gate on substring presence
     if _has_known_prefix_substring(text):
         _prefix_sub = _mask_token_nonreusable if file_read else _mask_token
+        # Control/zero-width chars (\\n, \\r, ESC, U+200B, …) split a token
+        # body so _PREFIX_RE cannot match across them — a secret smuggled as
+        # ``sk-abc\\x1bdef…`` leaks verbatim (issue #77484). Mask such runs by
+        # first matching on a control-stripped copy, then re-masking the
+        # corresponding span in the original (the stripped copy and the
+        # original are aligned 1:1 for non-control chars).
+        text = _mask_control_split_tokens(text, _prefix_sub)
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
 
     # ENV assignments: OPENAI_API_KEY=***  (skip for code files — false positives)
@@ -739,6 +861,14 @@ def redact_sensitive_text(
                     return m.group(0)
                 return f"{name}={quote}{_mask_token(value)}{quote}"
             text = _ENV_ASSIGN_RE.sub(_redact_env, text)
+            # Lowercase env names (``openai_key=…``). Skip URLs — the query
+            # string may contain ``token=``/``key=`` params that are
+            # intentionally passed through (see note near the bottom of this
+            # function; _redact_strict_url_credentials handles the opt-in
+            # case). The uppercase regex above is all-caps-only, so it never
+            # matches URL params; the lowercase one would (issue #77484).
+            if "://" not in text:
+                text = _ENV_ASSIGN_LOWER_RE.sub(_redact_env, text)
             # Lowercase/dotted config keys (issue #16413). Skip URLs entirely —
             # web-URL query params are intentionally passed through (see note
             # near the bottom of this function); _DB_CONNSTR_RE still guards
@@ -888,6 +1018,61 @@ def redact_sensitive_text(
 # fixtures, ``postgresql://{user}`` f-string templates). See issue #43025.
 _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
 
+# Commands that read file contents to stdout. When the target is a ``.env``
+# file, the output is a credential dump — the same as ``printenv`` — so the
+# ENV-assignment pass must run (code_file=False). Per AGENTS.md, ``.env`` is
+# for secrets only; behavioral settings belong in config.yaml, so running
+# the generic ENV redactor on ``.env`` content is the correct behavior.
+_FILE_READ_COMMANDS = frozenset({
+    "cat", "head", "tail", "type", "bat", "less", "more", "nl",
+    "zcat", "tac", "view", "batcat",
+})
+
+# Basenames that are treated as ``.env`` files for redaction purposes are
+# imported at module top as ``_ENV_FILE_BASENAMES`` (see the
+# ``agent.file_safety`` import).
+
+
+def _command_reads_env_file(command: str | None) -> bool:
+    """Return True if ``command`` reads a ``.env`` file to stdout.
+
+    Detects file-read commands (``cat``, ``head``, ``tail``, etc.) where any
+    argument's basename is a ``.env``-style file. Template files
+    (``.env.example``, ``.env.sample``, ...) are not in the basename list and
+    therefore never match. Handles pipelines and command sequences.
+
+    Conservative defense-in-depth, not a boundary — indirect reads
+    (``sudo cat .env``, ``/bin/cat .env``, ``$(cat .env)``, redirection,
+    ``sed``/``awk``/``xxd`` readers) are not detected, matching the
+    precedent of ``is_env_dump_command`` below.
+    """
+    if not command:
+        return False
+    segments = re.split(r"[|;&]+", command)
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        # Use plain split() instead of shlex.split — shlex treats backslashes
+        # as escape chars, which mangles Windows paths (``C:\Users\...\.env``).
+        # We only need the command name and filename, so shell quoting is not
+        # a concern here.
+        tokens = seg.split()
+        if not tokens or tokens[0] not in _FILE_READ_COMMANDS:
+            continue
+        # Check all arguments (skip flags like -n, -A, etc.)
+        for arg in tokens[1:]:
+            if arg.startswith("-"):
+                continue
+            # Strip shell quotes that plain split() leaves attached
+            # (``cat ".env"`` / ``cat '.env'``), then any leading path to
+            # get the basename. Handle both / and \.
+            arg = arg.strip("\"'")
+            basename = arg.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            if basename.lower() in _ENV_FILE_BASENAMES:
+                return True
+    return False
+
 
 def is_env_dump_command(command: str | None) -> bool:
     """Return True if ``command`` dumps environment variables to stdout.
@@ -923,10 +1108,15 @@ def redact_terminal_output(
     Single redaction policy for ALL terminal-output surfaces — foreground
     ``terminal`` results AND background ``process(action=poll/log/wait)``
     output — so they can't diverge. Picks ``code_file`` based on whether
-    ``command`` is an environment dump:
+    ``command`` is an environment dump or reads a ``.env`` file:
 
     - env-dump command (``env``/``printenv``/``set``/``export``/``declare``)
       → ``code_file=False`` so the ENV-assignment pass masks opaque tokens.
+    - file-read command targeting a ``.env`` file (``cat .env``,
+      ``head .env.local``, etc.) → ``code_file=False`` for the same reason.
+      Per AGENTS.md, ``.env`` files contain only secrets, so the generic
+      ENV pass is the right one (keys whose names carry no secret keyword
+      can still slip through it — same limit as the env-dump path).
     - anything else (or unknown command) → ``code_file=True`` to avoid
       false positives on source/config dumps.
 
@@ -935,7 +1125,8 @@ def redact_terminal_output(
     """
     if not output:
         return output
-    code_file = not is_env_dump_command(command or "")
+    cmd = command or ""
+    code_file = not (is_env_dump_command(cmd) or _command_reads_env_file(cmd))
     return redact_sensitive_text(output, force=force, code_file=code_file)
 
 
@@ -965,6 +1156,99 @@ def _extract_literal_prefix(pattern: str) -> str:
     return pattern
 
 
+def _has_top_level_alternation(pattern: str) -> bool:
+    """True if ``pattern`` contains a ``|`` outside any group or class.
+
+    A top-level alternation defeats the literal-prefix guarantee:
+    ``_extract_literal_prefix`` stops at ``|``, so for ``ab|.*`` it
+    returns ``ab`` even though the ``.*`` branch is not bound by that
+    prefix and matches anything. Grouped alternation after the prefix
+    (``ab(?:x|y)``) keeps the guarantee and stays allowed.
+    """
+    depth = 0
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "[":
+            i += 1
+            if i < len(pattern) and pattern[i] == "]":
+                i += 1
+            while i < len(pattern) and pattern[i] != "]":
+                if pattern[i] == "\\":
+                    i += 1
+                i += 1
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == "|" and depth == 0:
+            return True
+        i += 1
+    return False
+
+
+def _has_nested_unbounded_repeat(pattern: str) -> bool:
+    """True if an unbounded quantifier applies to a group containing one.
+
+    ``(a+)+``, ``(?:x*)*``, ``(a{2,})+`` — the canonical catastrophic-
+    backtracking (ReDoS) shape. Registered patterns run against every log
+    line, tool output, and transcript chunk, so a pathological pattern from
+    a buggy plugin would stall the host process, not just the plugin.
+
+    Detects structural nesting only; ambiguity between overlapping
+    alternation branches (``(a|aa)+``) is not statically detected and
+    remains the plugin author's responsibility.
+    """
+
+    def _unbounded_quantifier_follows(j: int) -> bool:
+        # Is pattern[j:] an unbounded quantifier (* + {m,}) for the atom
+        # that just ended at j?
+        if j >= len(pattern):
+            return False
+        if pattern[j] in "*+":
+            return True
+        if pattern[j] == "{":
+            k = pattern.find("}", j)
+            body = pattern[j + 1:k] if k != -1 else ""
+            # {m,} is open-ended; {m} and {m,n} are bounded.
+            return body[:-1].isdigit() and body.endswith(",")
+        return False
+
+    # Stack of flags: does the group at this depth contain an unbounded
+    # repeat? Index 0 is the top level.
+    contains_unbounded = [False]
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "[":
+            i += 1
+            if i < len(pattern) and pattern[i] == "]":
+                i += 1
+            while i < len(pattern) and pattern[i] != "]":
+                if pattern[i] == "\\":
+                    i += 1
+                i += 1
+        elif ch == "(":
+            contains_unbounded.append(False)
+        elif ch == ")":
+            inner = contains_unbounded.pop() if len(contains_unbounded) > 1 else False
+            if inner and _unbounded_quantifier_follows(i + 1):
+                return True
+            contains_unbounded[-1] = contains_unbounded[-1] or inner
+        elif _unbounded_quantifier_follows(i):
+            contains_unbounded[-1] = True
+            if ch == "{":
+                i = pattern.find("}", i)  # skip the {m,} body
+        i += 1
+    return False
+
+
 _PREFIX_SUBSTRINGS = tuple(
     _extract_literal_prefix(p) for p in _PREFIX_PATTERNS
 )
@@ -976,6 +1260,141 @@ def _has_known_prefix_substring(text: str) -> bool:
     Used as a cheap pre-check before invoking the expensive ``_PREFIX_RE``.
     """
     return any(p in text for p in _PREFIX_SUBSTRINGS)
+
+
+# ---------------------------------------------------------------------------
+# Plugin-registered redaction patterns
+# ---------------------------------------------------------------------------
+#
+# Every new vendor token format has historically required a core PR appending
+# to ``_PREFIX_PATTERNS`` above (fw_, retaindb_, hsk-, mem0_, brv_, ...).
+# This registry lets plugins add their provider's format instead. It is
+# ADDITIVE-ONLY by design: a plugin can extend what gets masked but has no
+# API to remove or weaken a built-in pattern, so a plugin can only ever
+# over-redact, never expose. The operator's global opt-out
+# (``security.redact_secrets: false`` / HERMES_REDACT_SECRETS) applies to
+# plugin patterns exactly as it does to built-ins.
+
+# Keyed by registration source (e.g. "plugin:my-plugin") so the plugin
+# lifecycle/ownership-ledger work (#64229) has a clean seam to drop ONE
+# plugin's patterns on unload. There is deliberately no public removal
+# API — additive-only stands; unload is a host-owned lifecycle concern.
+_PLUGIN_PREFIX_PATTERNS: dict = {}
+_registry_lock = threading.Lock()
+
+
+def _plugin_patterns() -> list:
+    """All plugin-registered patterns in registration order."""
+    return [p for patterns in _PLUGIN_PREFIX_PATTERNS.values() for p in patterns]
+
+
+def _rebuild_prefix_matcher() -> None:
+    """Recompile the prefix alternation and pre-screen substrings.
+
+    ``redact_sensitive_text`` and ``_mask_token_nonreusable`` look these
+    globals up at call time, so swapping the module attributes (atomic
+    under the GIL) propagates immediately to every caller.
+    """
+    global _PREFIX_RE, _PREFIX_SUBSTRINGS
+    combined = _PREFIX_PATTERNS + _plugin_patterns()
+    _PREFIX_RE = re.compile(
+        r"(?<![A-Za-z0-9_-])(" + "|".join(combined) + r")(?![A-Za-z0-9_-])"
+    )
+    _PREFIX_SUBSTRINGS = tuple(_extract_literal_prefix(p) for p in combined)
+
+
+def register_redaction_patterns(patterns, source: str = "plugin") -> int:
+    """Additively register credential-token regexes with the redaction engine.
+
+    Each accepted pattern joins the vendor-prefix alternation used by
+    ``redact_sensitive_text`` (same masking, same head/tail rules, same
+    non-reusable sentinel on ``file_read``) — everywhere built-in patterns
+    apply: logs, terminal output, transport errors, transcripts.
+
+    Per-pattern validation (invalid entries are warned and skipped, never
+    raised — a broken plugin must not break startup):
+
+    * must be a non-empty string that compiles as a regex;
+    * must not contain a top-level alternation (``ab|.*`` would escape
+      the literal-prefix guarantee below through its unprefixed branch;
+      grouped alternation after the prefix, ``ab(?:x|y)``, is allowed);
+    * must not nest unbounded quantifiers (``(a+)+``-style patterns can
+      backtrack catastrophically, and registered patterns run against
+      every log line and tool output — see
+      ``_has_nested_unbounded_repeat``);
+    * must start with at least 2 literal characters (the pre-screen
+      substring gate in ``_has_known_prefix_substring`` needs a literal
+      anchor; it also structurally rules out redact-everything patterns
+      like ``.*``);
+    * duplicates of built-in or already-registered patterns are skipped.
+
+    Args:
+        patterns: iterable of regex strings (e.g. ``[r"nvapi-[A-Za-z0-9_-]{20,}"]``).
+        source: attribution label for log lines (e.g. ``"plugin:my-plugin"``).
+
+    Returns:
+        The number of patterns actually accepted.
+    """
+    accepted = []
+    for pattern in patterns or []:
+        if not isinstance(pattern, str) or not pattern.strip():
+            logger.warning("%s: skipping empty/non-string redaction pattern", source)
+            continue
+        pattern = pattern.strip()
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            logger.warning(
+                "%s: skipping invalid redaction pattern %r (%s)",
+                source, pattern, exc,
+            )
+            continue
+        if _has_top_level_alternation(pattern):
+            logger.warning(
+                "%s: skipping redaction pattern %r — top-level alternation "
+                "escapes the literal-prefix guarantee (in 'ab|.*' the "
+                "prefix binds only the first branch); wrap alternation in "
+                "a group after the prefix, e.g. 'ab(?:x|y)'",
+                source, pattern,
+            )
+            continue
+        if _has_nested_unbounded_repeat(pattern):
+            logger.warning(
+                "%s: skipping redaction pattern %r — nested unbounded "
+                "quantifiers (e.g. '(a+)+') can backtrack catastrophically, "
+                "and registered patterns run on every log line and tool "
+                "output",
+                source, pattern,
+            )
+            continue
+        if len(_extract_literal_prefix(pattern)) < 2:
+            logger.warning(
+                "%s: skipping redaction pattern %r — must start with at "
+                "least 2 literal characters (needed for the pre-screen "
+                "substring gate)",
+                source, pattern,
+            )
+            continue
+        if pattern in _PREFIX_PATTERNS or pattern in _plugin_patterns() or pattern in accepted:
+            logger.debug("%s: redaction pattern %r already registered", source, pattern)
+            continue
+        accepted.append(pattern)
+
+    if accepted:
+        with _registry_lock:
+            _PLUGIN_PREFIX_PATTERNS.setdefault(source, []).extend(accepted)
+            _rebuild_prefix_matcher()
+        logger.info(
+            "%s: registered %d redaction pattern(s)", source, len(accepted)
+        )
+    return len(accepted)
+
+
+def _reset_plugin_redaction_patterns() -> None:
+    """Drop all plugin-registered patterns (tests/teardown only)."""
+    with _registry_lock:
+        _PLUGIN_PREFIX_PATTERNS.clear()
+        _rebuild_prefix_matcher()
 
 
 _HTTP_METHOD_SUBSTRINGS = (

@@ -1,7 +1,8 @@
 import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
 import { summarizeShellCommand } from '@/lib/summarize-command'
-import { capitalize, normalize } from '@/lib/text'
+import { capitalize, firstStringField, normalize } from '@/lib/text'
+import { isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
 import {
@@ -31,11 +32,10 @@ export * from './format'
 export * from './targets'
 export * from './types'
 
-const FILE_EDIT_TOOL_NAMES = new Set(['edit_file', 'patch', 'write_file'])
-
-export function isFileEditTool(toolName: string): boolean {
-  return FILE_EDIT_TOOL_NAMES.has(toolName)
-}
+// The transcript's render budget prices a turn by the same classification, so
+// it lives in `@/lib/tool-render-class` where both sides can reach it without
+// pulling this module's formatting/i18n weight into the cost path.
+export { isCardTool, isFileEditTool, isSilentTool }
 
 export interface DiffLineStats {
   added: number
@@ -593,18 +593,6 @@ function summarizeBrowserSnapshot(snapshot: string): string {
     .slice(0, 4)
 
   return labels.length ? `${stats}\nTop controls: ${labels.join(', ')}` : stats
-}
-
-export function firstStringField(record: Record<string, unknown>, keys: readonly string[]): string {
-  for (const key of keys) {
-    const value = record[key]
-
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim()
-    }
-  }
-
-  return ''
 }
 
 function collectResultItems(value: unknown): unknown[] {

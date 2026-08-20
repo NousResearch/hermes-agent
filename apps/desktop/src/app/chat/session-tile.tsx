@@ -33,8 +33,8 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { sessionTitle } from '@/lib/chat-runtime'
-import { createComposerAttachmentScope } from '@/store/composer'
+import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
+import { createComposerAttachmentScope, draftTitleFor } from '@/store/composer'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
@@ -61,6 +61,7 @@ import type { SessionDragPayload } from './composer/inline-refs'
 import { type ComposerScope, ComposerScopeProvider } from './composer/scope'
 import { useComposerActions } from './hooks/use-composer-actions'
 import { paneMirror } from './pane-mirror'
+import { SessionDraftTitle } from './session-draft-title'
 import { startSessionDrag } from './session-drag'
 import { SessionStatusDot } from './session-status-dot'
 import { useSessionTileActions } from './session-tile-actions'
@@ -100,9 +101,17 @@ function buildTileView(storedSessionId: string): SessionView {
     $reasoningEffort: computed($state, state => state?.reasoningEffort ?? ''),
     $runtimeId,
     // Constant for the tile's lifetime — a plain atom, not a computed.
-    $storedId: atom(storedSessionId)
+    $storedId: atom(storedSessionId),
+    $turnStartedAt: computed($state, state => state?.turnStartedAt ?? null)
   }
 }
+
+// Module-level constants so these ChatView props are referentially stable —
+// tiles have no pin/delete affordance, and transcription needs no per-tile state.
+const noop = () => undefined
+
+const tileTranscribeAudio = async (audio: Blob) =>
+  (await transcribeAudio(await blobToDataUrl(audio), audio.type)).transcript
 
 function TileChat({
   runtimeId,
@@ -141,8 +150,37 @@ function TileChat({
     activeSessionId: runtimeId,
     currentCwd: cwd,
     requestGateway,
-    scope: { add: attachments.add, remove: attachments.remove, target: scope.target }
+    scope: {
+      add: attachments.add,
+      remove: attachments.remove,
+      target: scope.target,
+      update: attachments.update,
+      updateIfCurrent: attachments.updateIfCurrent
+    }
   })
+
+  // ChatView is memo()d — every callback prop must be referentially stable or
+  // the memo never holds and each tile-level render (idle ticks, unrelated
+  // store updates) re-renders the whole chat shell. The individual composer
+  // functions are useCallback'd inside useComposerActions, so hoisting these
+  // wrappers onto them keeps identity stable across renders.
+  const { addContextRefAttachment, pasteClipboardImage, pickContextPaths, pickImages, removeAttachment } = composer
+
+  const onAddUrl = useCallback(
+    (url: string) => addContextRefAttachment(`@url:${formatRefValue(url)}`, url),
+    [addContextRefAttachment]
+  )
+
+  const onPasteClipboardImage = useCallback(
+    (opts?: { silent?: boolean }) => pasteClipboardImage(opts),
+    [pasteClipboardImage]
+  )
+
+  const onPickFiles = useCallback(() => void pickContextPaths('file'), [pickContextPaths])
+  const onPickFolders = useCallback(() => void pickContextPaths('folder'), [pickContextPaths])
+  const onPickImages = useCallback(() => void pickImages(), [pickImages])
+  const onRemoveAttachment = useCallback((id: string) => void removeAttachment(id), [removeAttachment])
+  const onRetryResume = useCallback(() => patchSessionTile(storedSessionId, { error: undefined }), [storedSessionId])
 
   // Per-tile model menu — rendered under this tile's SessionView so the pill
   // + switch target THIS runtime, not the primary (which may be mid-turn).
@@ -165,27 +203,28 @@ function TileChat({
         <ChatView
           gateway={gateway}
           modelMenuContent={modelMenuContent}
-          onAddContextRef={composer.addContextRefAttachment}
-          onAddUrl={url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url)}
+          onAddContextRef={addContextRefAttachment}
+          onAddUrl={onAddUrl}
           onAttachDroppedItems={composer.attachDroppedItems}
           onAttachImageBlob={composer.attachImageBlob}
+          onAttachPrCommentUrl={composer.attachPrCommentUrl}
           onCancel={actions.cancelRun}
-          onDeleteSelectedSession={() => undefined}
+          onDeleteSelectedSession={noop}
           onDismissError={actions.dismissError}
           onEdit={actions.editMessage}
-          onPasteClipboardImage={opts => composer.pasteClipboardImage(opts)}
-          onPickFiles={() => void composer.pickContextPaths('file')}
-          onPickFolders={() => void composer.pickContextPaths('folder')}
-          onPickImages={() => void composer.pickImages()}
+          onPasteClipboardImage={onPasteClipboardImage}
+          onPickFiles={onPickFiles}
+          onPickFolders={onPickFolders}
+          onPickImages={onPickImages}
           onReload={actions.reloadFromMessage}
-          onRemoveAttachment={id => void composer.removeAttachment(id)}
+          onRemoveAttachment={onRemoveAttachment}
           onRestoreToMessage={actions.restoreToMessage}
-          onRetryResume={() => patchSessionTile(storedSessionId, { error: undefined })}
+          onRetryResume={onRetryResume}
           onSteer={actions.steerPrompt}
           onSubmit={actions.submitText}
           onThreadMessagesChange={actions.handleThreadMessagesChange}
-          onToggleSelectedPin={() => undefined}
-          onTranscribeAudio={async audio => (await transcribeAudio(await blobToDataUrl(audio), audio.type)).transcript}
+          onToggleSelectedPin={noop}
+          onTranscribeAudio={tileTranscribeAudio}
         />
       </ComposerScopeProvider>
     </SessionViewProvider>
@@ -344,19 +383,24 @@ export function tileStoredRow(storedSessionId: string): SessionInfo | undefined 
   )
 }
 
+/** The tab's REGISTERED name. Deliberately the bare placeholder for a draft
+ *  rather than its live composer title (`tabTitle` renders that): re-registering
+ *  per keystroke would re-render the strip, and holding the draft's text here
+ *  would let the registered name already match the row that lands on send —
+ *  skipping the re-register that hands the tab back to this string. */
 function tileTitle(storedSessionId: string): string {
   const stored = tileStoredRow(storedSessionId)
 
-  // A tab-strip "+" tab is unlisted until its first turn persists, so it isn't
-  // in $sessions yet — label it "New session" rather than a bare "Session".
-  return stored ? sessionTitle(stored) : 'New session'
+  return stored ? sessionTitle(stored) : NEW_SESSION_TITLE
 }
 
-/** The `@session` link payload for a tile tab drag — id + owning profile + title. */
+/** The `@session` link payload for a tile tab drag — id + owning profile + title.
+ *  Resolved at drag time, so an unsent tab drags under its draft name. */
 function tileDragPayload(storedSessionId: string): SessionDragPayload {
   const stored = tileStoredRow(storedSessionId)
+  const title = stored ? sessionTitle(stored) : draftTitleFor(storedSessionId) || NEW_SESSION_TITLE
 
-  return { id: storedSessionId, profile: stored?.profile ?? '', title: tileTitle(storedSessionId) }
+  return { id: storedSessionId, profile: stored?.profile ?? '', title }
 }
 
 // ---------------------------------------------------------------------------
@@ -558,6 +602,9 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   tabLead: storedSessionId => (
     <SessionStatusDot session={tileStoredRow(storedSessionId)} storedSessionId={storedSessionId} />
   ),
+  // Until the first turn lists a row there is no title to register, so the tab
+  // takes its name from the composer instead — live, without re-registering.
+  tabTitle: storedSessionId => (tileStoredRow(storedSessionId) ? null : <SessionDraftTitle scope={storedSessionId} />),
   render: storedSessionId => <SessionTilePane storedSessionId={storedSessionId} />,
   tabWrap: (storedSessionId, tab) => (
     <SessionTabMenu

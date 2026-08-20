@@ -9,6 +9,11 @@ for the full rationale):
 
 * Core tools defined in ``toolsets._HERMES_CORE_TOOLS`` are *never* deferred.
   Always-load means always-load. No exceptions.
+* Session-gated GUI toolsets (``desktop_ui``, ``project``) are also never
+  deferred. They stay off the core list so CLI and messaging never pay for
+  their schemas, but once a session enables them they stay in the
+  model-facing array. Tool Search is for MCP/plugin catalog bloat, not for
+  hiding the tools that define this session's surface.
 * Tiered disclosure (July 2026 plan): the moment ANY deferrable (MCP/plugin)
   tools are present, they hide behind the bridge. What scales with catalog
   size is the *listing*, not the activation decision:
@@ -95,7 +100,7 @@ class ToolSearchConfig:
     listing: str = "auto"  # "auto" | "on" | "off"
     # Absolute cap on the embedded listing, regardless of context size.
     # Effective budget = min(listing_max_tokens, threshold_pct% of context).
-    listing_max_tokens: int = 20000
+    listing_max_tokens: int = 4000
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -143,7 +148,7 @@ class ToolSearchConfig:
             listing = listing_raw
         else:
             listing = "auto"
-        listing_max_tokens = max(200, min(60000, _safe_int(raw.get("listing_max_tokens"), 20000)))
+        listing_max_tokens = max(200, min(60000, _safe_int(raw.get("listing_max_tokens"), 4000)))
 
         return cls(
             enabled=enabled,
@@ -201,12 +206,18 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
+# Session-gated GUI toolsets. Off ``_HERMES_CORE_TOOLS`` so non-GUI clients
+# never pay their schema; once a session enables them they stay direct.
+_DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
+
+
 def is_deferrable_tool_name(name: str) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
     A tool is deferrable iff it is registered with an MCP toolset prefix
-    OR it is not in ``_HERMES_CORE_TOOLS``. Core tools are never deferred
-    even when their toolset is technically plugin-provided (this protects
+    OR it is neither in ``_HERMES_CORE_TOOLS`` nor a session-gated GUI
+    surface toolset. Core and direct surface tools are never deferred even
+    when their toolset is technically plugin-provided (this protects
     against accidental shadowing).
     """
     if name in BRIDGE_TOOL_NAMES:
@@ -221,6 +232,8 @@ def is_deferrable_tool_name(name: str) -> bool:
             return False
         if entry.toolset.startswith("mcp-"):
             return True
+        if entry.toolset in _DIRECT_SURFACE_TOOLSETS:
+            return False
         # Non-MCP, non-core → plugin tool, eligible.
         return True
     except Exception:
@@ -231,8 +244,8 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
     """Split a tool-defs list into (visible, deferrable).
 
     ``visible`` retains every tool that must stay in the model-facing array:
-    every core tool, plus any tool we can't classify. ``deferrable`` is the
-    candidate set for catalog entry.
+    every core tool, every session-gated GUI surface tool, plus any tool we
+    can't classify. ``deferrable`` is the candidate set for catalog entry.
     """
     visible: List[Dict[str, Any]] = []
     deferrable: List[Dict[str, Any]] = []
@@ -512,7 +525,7 @@ def _listing_group_label(source_name: str) -> str:
 def build_catalog_listing(
     deferrable: List[Dict[str, Any]],
     *,
-    max_tokens: int = 20000,
+    max_tokens: int = 4000,
 ) -> Optional[str]:
     """Render a skills-style manifest of the deferred catalog.
 
@@ -545,7 +558,7 @@ def build_catalog_listing(
 def build_catalog_listing_with_form(
     deferrable: List[Dict[str, Any]],
     *,
-    max_tokens: int = 20000,
+    max_tokens: int = 4000,
 ) -> Tuple[Optional[str], str]:
     """Like :func:`build_catalog_listing` but also reports the form used.
 
@@ -861,6 +874,26 @@ def _format_search_hit(entry: CatalogEntry) -> Dict[str, Any]:
     }
 
 
+def _available_source_summary(catalog: List[CatalogEntry]) -> List[Dict[str, Any]]:
+    """Return a compact, deterministic summary of connected deferred sources.
+
+    Included only when search returns no matches. This gives the model enough
+    evidence to retry with a source/action query instead of treating a lexical
+    miss as proof that the capability is unavailable, without adding anything
+    to the fixed per-turn prompt.
+    """
+    counts: Dict[str, int] = {}
+    for entry in catalog:
+        # _listing_group_label already falls back to "other" for empty
+        # source names, matching the listing path's grouping.
+        label = _listing_group_label(entry.source_name)
+        counts[label] = counts.get(label, 0) + 1
+    return [
+        {"name": name, "tool_count": counts[name]}
+        for name in sorted(counts)
+    ]
+
+
 def dispatch_tool_search(args: Dict[str, Any],
                          *,
                          current_tool_defs: List[Dict[str, Any]],
@@ -881,11 +914,20 @@ def dispatch_tool_search(args: Dict[str, Any],
     _, deferrable = classify_tools(current_tool_defs)
     catalog = build_catalog(deferrable)
     hits = search_catalog(catalog, query, limit=limit)
-    return json.dumps({
+    result: Dict[str, Any] = {
         "query": query,
         "total_available": len(catalog),
         "matches": [_format_search_hit(h) for h in hits],
-    }, ensure_ascii=False)
+    }
+    if not hits and catalog:
+        result["available_sources"] = _available_source_summary(catalog)
+        result["hint"] = (
+            "No lexical match was found, but the sources above are connected "
+            "and their tools remain available. Retry tool_search with the "
+            "service name plus a concrete action or object before concluding "
+            "the capability is unavailable."
+        )
+    return json.dumps(result, ensure_ascii=False)
 
 
 def dispatch_tool_describe(args: Dict[str, Any],

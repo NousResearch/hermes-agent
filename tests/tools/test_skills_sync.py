@@ -2,6 +2,8 @@
 
 import shutil
 import json
+import os
+import stat
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -48,6 +50,18 @@ class TestReadWriteManifest:
             result = _read_manifest()
 
         assert result == {"old-skill": "", "new-skill": "abc123"}
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are platform-specific")
+    def test_write_manifest_preserves_existing_file_mode(self, tmp_path):
+        manifest_file = tmp_path / ".bundled_manifest"
+        manifest_file.write_text("old-skill:oldhash\n", encoding="utf-8")
+        os.chmod(manifest_file, 0o660)
+
+        with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+            _write_manifest({"new-skill": "newhash"})
+
+        assert manifest_file.read_text(encoding="utf-8") == "new-skill:newhash\n"
+        assert stat.S_IMODE(manifest_file.stat().st_mode) == 0o660
 
 
 class TestDirHash:
@@ -922,3 +936,245 @@ class TestUpdateBackupRecovery:
             result2 = sync_skills(quiet=True)
         assert "old-skill" in result2["updated"]
         assert result2["user_modified"] == []
+
+
+class TestOptionalProvenanceAttestation:
+    def test_backfill_records_full_install_attestation(self, tmp_path):
+        import tools.skills_sync as ss
+        from tools.skills_guard import full_content_hash
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+
+        skills_dir = tmp_path / "home" / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Demo\n")
+
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == ["demo"]
+
+        lock = json.loads((skills_dir / ".hub" / "lock.json").read_text())
+        entry = lock["installed"]["demo"]
+        assert entry["install_attestation"] == {
+            "version": 2,
+            "hash_scheme": "sha256-tree-v2",
+            "source": "official",
+            "identifier": "official/devops/demo",
+            "trust_level": "builtin",
+            "bundle_hash": full_content_hash(installed),
+        }
+
+    def test_backfill_repairs_malformed_installed_mapping(self, tmp_path):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+
+        skills_dir = tmp_path / "home" / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Demo\n")
+        lock_path = skills_dir / ".hub" / "lock.json"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text(json.dumps({"version": 1, "installed": 7}))
+
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == ["demo"]
+
+        data = json.loads(lock_path.read_text())
+        assert set(data["installed"]) == {"demo"}
+
+    def test_backfill_upgrades_matching_legacy_official_entry(self, tmp_path):
+        import tools.skills_sync as ss
+        from tools.skills_guard import full_content_hash
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+
+        skills_dir = tmp_path / "home" / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Demo\n")
+        lock_path = skills_dir / ".hub" / "lock.json"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text(json.dumps({
+            "version": 1,
+            "installed": {
+                "demo": {
+                    "source": "official",
+                    "identifier": "official/devops/demo",
+                    "trust_level": "builtin",
+                    "install_path": "devops/demo",
+                }
+            },
+        }))
+
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == ["demo"]
+
+        entry = json.loads(lock_path.read_text())["installed"]["demo"]
+        assert entry["install_attestation"]["bundle_hash"] == full_content_hash(installed)
+
+    def test_backfill_rejects_existing_lock_path_escape(self, tmp_path):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+
+        skills_dir = tmp_path / "home" / "skills"
+        outside = tmp_path / "outside" / "demo"
+        outside.mkdir(parents=True)
+        (outside / "SKILL.md").write_text("# Demo\n")
+        lock_path = skills_dir / ".hub" / "lock.json"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text(json.dumps({
+            "version": 1,
+            "installed": {
+                "demo": {
+                    "source": "official",
+                    "identifier": "official/devops/demo",
+                    "trust_level": "builtin",
+                    "install_path": "../../outside/demo",
+                }
+            },
+        }))
+
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == []
+
+        entry = json.loads(lock_path.read_text())["installed"]["demo"]
+        assert "install_attestation" not in entry
+
+    def test_backfill_refuses_redirected_active_copy(self, tmp_path):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+
+        skills_dir = tmp_path / "home" / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        target = tmp_path / "target.md"
+        target.write_text("# Demo\n")
+        try:
+            (installed / "SKILL.md").symlink_to(target)
+        except OSError:
+            pytest.skip("symlinks unavailable")
+
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == []
+
+        lock_path = skills_dir / ".hub" / "lock.json"
+        assert not lock_path.exists() or "demo" not in json.loads(lock_path.read_text()).get(
+            "installed", {}
+        )
+
+    def test_backfill_rejects_legacy_hash_tree_collision(self, tmp_path):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        (source / "references").mkdir(parents=True)
+        official_text = b"# Official\n"
+        payload = b"payload\n"
+        (source / "SKILL.md").write_bytes(official_text)
+        (source / "references" / "payload.md").write_bytes(payload)
+
+        skills_dir = tmp_path / "home" / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_bytes(
+            official_text + b"references/payload.md" + payload
+        )
+
+        assert ss._dir_hash(source) == ss._dir_hash(installed)
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == []
+
+        lock_path = skills_dir / ".hub" / "lock.json"
+        assert not lock_path.exists() or "demo" not in json.loads(lock_path.read_text()).get(
+            "installed", {}
+        )
+
+
+class TestCallTimeDirResolution:
+    """Regression for #65828: skills_sync bound SKILLS_DIR/MANIFEST_FILE/
+    HERMES_HOME at import, so a long-lived dashboard/TUI process serving a
+    console skills command for another profile resolved (and for
+    reset_bundled_skill DELETED) against whichever home was live at import.
+    The accessors must follow set_hermes_home_override() at call time, while
+    an explicitly patched module global (tests, _profile_scope retargeting)
+    still wins.
+    """
+
+    def test_accessors_follow_hermes_home_override(self, tmp_path):
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        import tools.skills_sync as ss
+
+        profile_home = tmp_path / "profiles" / "research"
+        token = set_hermes_home_override(str(profile_home))
+        try:
+            assert ss._hermes_home() == profile_home
+            assert ss._skills_dir() == profile_home / "skills"
+            assert ss._manifest_file() == profile_home / "skills" / ".bundled_manifest"
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_explicit_module_patch_wins_over_override(self, tmp_path):
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        import tools.skills_sync as ss
+
+        patched = tmp_path / "patched-skills"
+        token = set_hermes_home_override(str(tmp_path / "other-profile"))
+        try:
+            with patch("tools.skills_sync.SKILLS_DIR", patched):
+                assert ss._skills_dir() == patched
+                # MANIFEST_FILE unpatched -> derives from the patched skills dir.
+                assert ss._manifest_file() == patched / ".bundled_manifest"
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_rmtree_guard_anchors_on_overridden_profile(self, tmp_path):
+        """The #48200 strict-child rmtree guard must anchor on the OVERRIDDEN
+        profile's skills root. Under the stale import-time binding the guard
+        was computed against the wrong home (#65828's sharpest edge): a
+        legitimate delete in the scoped profile would be refused, and a stale
+        path under the import-time home would pass the guard."""
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        import tools.skills_sync as ss
+
+        profile_home = tmp_path / "profiles" / "worker"
+        victim = profile_home / "skills" / "doomed-skill"
+        victim.mkdir(parents=True)
+        (victim / "SKILL.md").write_text("---\nname: doomed-skill\n---\n", encoding="utf-8")
+
+        token = set_hermes_home_override(str(profile_home))
+        try:
+            # Allowed: strict child of the overridden profile's skills root.
+            ss._rmtree_writable(victim)
+            assert not victim.exists()
+
+            # Refused: a path under the import-time home is OUTSIDE the
+            # overridden profile's skills root now.
+            foreign = ss._SKILLS_DIR_AT_IMPORT / "some-skill"
+            with pytest.raises(ValueError):
+                ss._rmtree_writable(foreign)
+        finally:
+            reset_hermes_home_override(token)

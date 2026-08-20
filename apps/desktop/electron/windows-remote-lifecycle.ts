@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 
-import { redactSecrets, SSH_ERROR } from './ssh-connection'
+import { assertBootstrapNotSuperseded, redactSecrets, SSH_ERROR } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
 const PROTOCOL_VERSION = 1
@@ -149,12 +149,17 @@ function validLock(lock, ownershipId) {
   )
 }
 
-function assertCurrent(signal) {
-  if (signal?.aborted) {
-    const error: any = new Error('SSH bootstrap was cancelled.')
-    error.kind = 'superseded'
-    throw error
-  }
+function reusableWindowsLock(lock, state, profile, reuseToken, runtime) {
+  return Boolean(
+    state.alive &&
+    state.owned &&
+    lock.port > 0 &&
+    lock.profile === profile &&
+    reuseToken &&
+    lock.tokenFingerprint === fingerprintToken(reuseToken) &&
+    lock.hermesPath === runtime.hermesPath &&
+    lock.hermesHome === runtime.hermesHome
+  )
 }
 
 async function processState(ssh, runtime, lock) {
@@ -202,7 +207,7 @@ async function waitReady(ssh, runtime, ownershipId, lock, timeoutMs, signal) {
   const deadline = Date.now() + timeoutMs
 
   while (Date.now() < deadline) {
-    assertCurrent(signal)
+    assertBootstrapNotSuperseded(signal)
     let state
 
     try {
@@ -273,7 +278,7 @@ async function connectWindowsRemote(deps) {
     readyTimeoutMs = 45_000
   } = deps
 
-  assertCurrent(signal)
+  assertBootstrapNotSuperseded(signal)
   const runtime = await probeWindowsRemote(ssh, remoteHermesPath)
   const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
 
@@ -299,14 +304,7 @@ async function connectWindowsRemote(deps) {
       throw error
     }
 
-    const reusable =
-      state.alive &&
-      state.owned &&
-      lock.port > 0 &&
-      Boolean(reuseToken) &&
-      lock.tokenFingerprint === fingerprintToken(reuseToken) &&
-      lock.hermesPath === runtime.hermesPath &&
-      lock.hermesHome === runtime.hermesHome
+    const reusable = reusableWindowsLock(lock, state, profile, reuseToken, runtime)
 
     if (reusable) {
       const localPort = await pickLocalPort()
@@ -350,7 +348,7 @@ async function connectWindowsRemote(deps) {
     await helper(ssh, runtime, 'remove-lock', [ownershipId])
   }
 
-  assertCurrent(signal)
+  assertBootstrapNotSuperseded(signal)
   const token = crypto.randomBytes(32).toString('hex')
   const spawnNonce = crypto.randomBytes(8).toString('hex')
   await helper(ssh, runtime, 'upload-token', [ownershipId, spawnNonce], token)
@@ -399,7 +397,7 @@ async function connectWindowsRemote(deps) {
     await forward(localPort, remotePort)
     const baseUrl = `http://127.0.0.1:${localPort}`
     await waitForHermes(baseUrl, token)
-    assertCurrent(signal)
+    assertBootstrapNotSuperseded(signal)
     await helper(ssh, runtime, 'write-lock', [ownershipId], JSON.stringify({ ...owned, port: remotePort }))
 
     return {
@@ -451,5 +449,6 @@ export {
   powerShellCommand,
   probeWindowsRemote,
   psLiteral,
+  reusableWindowsLock,
   validLock
 }

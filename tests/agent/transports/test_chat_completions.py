@@ -1,7 +1,11 @@
 """Tests for the ChatCompletionsTransport."""
 
-import pytest
+import json
 from types import SimpleNamespace
+
+import httpx
+import pytest
+from openai import OpenAI
 
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse
@@ -14,8 +18,70 @@ def transport():
 
 
 class TestChatCompletionsBasic:
+    @pytest.mark.parametrize(
+        "choice",
+        [SimpleNamespace(message=SimpleNamespace()), SimpleNamespace()],
+    )
+    def test_normalize_response_allows_missing_optional_message_fields(
+        self, transport, choice
+    ):
+        response = SimpleNamespace(choices=[choice], usage=None)
 
+        normalized = transport.normalize_response(response)
 
+        assert normalized.content is None
+        assert normalized.tool_calls is None
+        assert normalized.finish_reason == "stop"
+
+    def test_normalize_response_allows_sparse_tool_call_fields(self, transport):
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                function=SimpleNamespace(arguments='{"city":"Paris"}')
+                            ),
+                            SimpleNamespace(),
+                            SimpleNamespace(
+                                id="call-3",
+                                function=SimpleNamespace(name="lookup"),
+                            ),
+                            SimpleNamespace(
+                                id="call-4",
+                                function=SimpleNamespace(name="", arguments="{}"),
+                            ),
+                            SimpleNamespace(
+                                function=SimpleNamespace(
+                                    name="weather", arguments="{}"
+                                )
+                            ),
+                        ]
+                    )
+                )
+            ],
+            usage=None,
+        )
+
+        normalized = transport.normalize_response(response)
+
+        assert normalized.finish_reason == "stop"
+        assert normalized.tool_calls is not None
+        assert [tool.id for tool in normalized.tool_calls] == [
+            "call-3",
+            "call-4",
+            None,
+        ]
+        assert [tool.name for tool in normalized.tool_calls] == [
+            "lookup",
+            "",
+            "weather",
+        ]
+        assert [tool.arguments for tool in normalized.tool_calls] == [
+            "{}",
+            "{}",
+            "{}",
+        ]
 
     @pytest.mark.parametrize("provider", ["nous", "openrouter"])
     def test_gpt56_ultra_uses_max_wire_effort(self, transport, provider):
@@ -196,7 +262,7 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "medium"}
 
-    def test_nous_omits_disabled_reasoning(self, transport):
+    def test_nous_omits_disabled_reasoning_for_unknown_model(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("nous")
         msgs = [{"role": "user", "content": "Hi"}]
@@ -206,7 +272,10 @@ class TestChatCompletionsBuildKwargs:
             supports_reasoning=True,
             reasoning_config={"enabled": False},
         )
-        # Nous rejects enabled=false; reasoning omitted entirely
+        # Not a Portal model id, so the catalog can't rule out a
+        # reasoning-mandatory route (which 400s on a disable) — omit.
+        # tests/plugins/model_providers/test_nous_profile.py covers the
+        # catalog-known cases where the disable IS forwarded.
         assert "reasoning" not in kw.get("extra_body", {})
 
     def test_ollama_num_ctx(self, transport):
@@ -247,6 +316,40 @@ class TestChatCompletionsBuildKwargs:
             "include_thoughts": True,
             "thinking_level": "high",
         }
+
+    def test_gemini_ultra_thinking_raises_first_request_max_tokens(self, transport):
+        from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("gemini")
+        kw = transport.build_kwargs(
+            model="gemini-3.7-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            provider_name="gemini",
+            base_url=profile.base_url,
+            max_tokens=4096,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+            reasoning_config={"enabled": True, "effort": "ultra"},
+        )
+        assert kw["max_tokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+        assert kw["extra_body"]["thinking_config"]["thinkingLevel"] == "high"
+
+    def test_gemini_without_thinking_keeps_explicit_max_tokens(self, transport):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("gemini")
+        kw = transport.build_kwargs(
+            model="gemini-3.7-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            provider_name="gemini",
+            base_url=profile.base_url,
+            max_tokens=4096,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["max_tokens"] == 4096
+
 
 
 
@@ -537,3 +640,238 @@ class TestChatCompletionsGeminiNativeExtraBodyStrip:
         eb = kw.get("extra_body")
         assert eb and "tags" in eb
 
+    def test_tags_pass_through_on_gemini_openai_compat(self, transport):
+        # /openai compat endpoint is not "native" — unchanged behavior.
+        kw = transport.build_kwargs(
+            "anthropic/claude-sonnet-4.6",
+            [{"role": "user", "content": "hi"}],
+            None,
+            provider_profile=self._nous_profile(),
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            session_id="s1",
+            max_tokens=None,
+        )
+        eb = kw.get("extra_body")
+        assert eb and "tags" in eb
+
+
+class TestPromptCacheKeyCapability:
+    """Chat Completions cache routing is opt-in and body-safe."""
+
+    @staticmethod
+    def _messages(instructions="You are stable."):
+        return [
+            {"role": "system", "content": instructions},
+            {"role": "user", "content": "hello"},
+        ]
+
+    @staticmethod
+    def _tools(name="lookup"):
+        return [{
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": "Look something up.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+
+    def _request_body(self, kwargs, *, stream=False):
+        captured = {}
+
+        def handler(request):
+            captured.update(json.loads(request.content))
+            if stream:
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=(
+                        'data: {"id":"chatcmpl_1","object":"chat.completion.chunk",'
+                        '"choices":[{"index":0,"delta":{"content":"ok"},'
+                        '"finish_reason":null}]}\n\n'
+                        "data: [DONE]\n\n"
+                    ),
+                )
+            return httpx.Response(200, json={
+                "id": "chatcmpl_1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": kwargs["model"],
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }],
+            })
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+            client = OpenAI(
+                api_key="test-key",
+                base_url="https://cache-capable.test/v1",
+                http_client=http_client,
+            )
+            result = client.chat.completions.create(**kwargs, stream=stream)
+            if stream:
+                list(result)
+        return captured
+
+    def test_profile_capability_emits_content_key_in_nonstream_request_body(self, transport):
+        from providers.base import ProviderProfile
+
+        kwargs = transport.build_kwargs(
+            model="cache-model",
+            messages=self._messages(),
+            tools=self._tools(),
+            session_id="cron_job_2026-07-15T10:00:00Z",
+            provider_profile=ProviderProfile(
+                name="cache-capable", supports_prompt_cache_key=True,
+            ),
+        )
+
+        body = self._request_body(kwargs)
+
+        assert body["prompt_cache_key"].startswith("pck_")
+        assert body["prompt_cache_key"] == kwargs["prompt_cache_key"]
+
+    def test_legacy_capability_emits_same_key_in_streaming_request_body(self, transport):
+        kwargs = transport.build_kwargs(
+            model="cache-model",
+            messages=self._messages(),
+            tools=self._tools(),
+            session_id="cron_job_2026-07-15T10:05:00Z",
+            supports_prompt_cache_key=True,
+        )
+
+        body = self._request_body(kwargs, stream=True)
+
+        assert body["prompt_cache_key"] == kwargs["prompt_cache_key"]
+
+    def test_openai_api_base_url_implies_capability(self, transport):
+        """api.openai.com gets the key WITHOUT an explicit flag (exact host)."""
+        kwargs = transport.build_kwargs(
+            model="gpt-cache-model",
+            messages=self._messages(),
+            tools=self._tools(),
+            session_id="cron_job_2026-07-15T10:07:00Z",
+            base_url="https://api.openai.com/v1",
+        )
+
+        assert kwargs["prompt_cache_key"].startswith("pck_")
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://myproxy.example.com/api.openai.com/v1",  # host embedded in path
+            "https://api.openai.com.evil.example/v1",  # prefix-spoofed host
+            "https://eastus.api.cognitive.microsoft.com/openai/v1",  # Azure
+        ],
+    )
+    def test_non_openai_hosts_do_not_imply_capability(self, transport, base_url):
+        kwargs = transport.build_kwargs(
+            model="strict-model",
+            messages=self._messages(),
+            tools=self._tools(),
+            session_id="cron_job_2026-07-15T10:08:00Z",
+            base_url=base_url,
+        )
+
+        assert "prompt_cache_key" not in kwargs
+
+    @pytest.mark.parametrize("provider", [None, "anthropic", "custom"])
+    def test_default_off_never_leaks_unknown_body_field(self, transport, provider):
+        from providers import get_provider_profile
+
+        kwargs = transport.build_kwargs(
+            model="strict-model",
+            messages=self._messages(),
+            tools=self._tools(),
+            session_id="cron_job_2026-07-15T10:00:00Z",
+            provider_profile=(get_provider_profile(provider) if provider else None),
+        )
+
+        body = self._request_body(kwargs)
+
+        assert "prompt_cache_key" not in kwargs
+        assert "prompt_cache_key" not in body
+
+    def test_explicit_top_level_and_extra_body_overrides_are_preserved(self, transport):
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(name="cache-capable", supports_prompt_cache_key=True)
+        top_level = transport.build_kwargs(
+            model="cache-model", messages=self._messages(), tools=self._tools(),
+            provider_profile=profile,
+            request_overrides={"prompt_cache_key": "caller-top-level"},
+        )
+        in_extra_body = transport.build_kwargs(
+            model="cache-model", messages=self._messages(), tools=self._tools(),
+            provider_profile=profile,
+            request_overrides={"extra_body": {"prompt_cache_key": "caller-extra-body"}},
+        )
+
+        assert top_level["prompt_cache_key"] == "caller-top-level"
+        assert "prompt_cache_key" not in top_level.get("extra_body", {})
+        assert "prompt_cache_key" not in in_extra_body
+        assert in_extra_body["extra_body"]["prompt_cache_key"] == "caller-extra-body"
+
+    def test_cron_ids_share_static_prefix_key_and_content_changes_invalidate(self, transport):
+        def key(session_id, *, instructions="You are stable.", tool_name="lookup"):
+            return transport.build_kwargs(
+                model="cache-model",
+                messages=self._messages(instructions),
+                tools=self._tools(tool_name),
+                session_id=session_id,
+                supports_prompt_cache_key=True,
+            )["prompt_cache_key"]
+
+        first = key("cron_job_20260715_100000")
+        second = key("cron_job_20260715_100500")
+
+        assert first == second
+        assert first != key("cron_job_20260715_100500", instructions="You are different.")
+        assert first != key("cron_job_20260715_100500", tool_name="search")
+
+    def test_unrelated_sessions_get_distinct_keys(self, transport):
+        """#78941: identical static prefix across unrelated (non-cron) sessions
+        must not collapse onto one shared prompt_cache_key."""
+        kw1 = transport.build_kwargs(
+            model="cache-model",
+            messages=self._messages("You are stable."),
+            tools=self._tools("lookup"),
+            session_id="session_alice_1",
+            supports_prompt_cache_key=True,
+        )
+        kw2 = transport.build_kwargs(
+            model="cache-model",
+            messages=self._messages("You are stable."),
+            tools=self._tools("lookup"),
+            session_id="session_bob_1",
+            supports_prompt_cache_key=True,
+        )
+        assert kw1["prompt_cache_key"] != kw2["prompt_cache_key"]
+
+    def test_stale_profile_without_supports_prompt_cache_key_does_not_crash(self, transport):
+        """A ProviderProfile from a stale sys.modules cache (pre-#f4fb23f3d)
+        won't have the ``supports_prompt_cache_key`` field. Accessing it via
+        ``profile.supports_prompt_cache_key`` raises AttributeError and crashes
+        every API call. Use getattr with a False default so it degrades to
+        "no prompt cache key" instead of crashing.
+
+        Regression: 'NousProfile' object has no attribute
+        'supports_prompt_cache_key' (Aug 2026, after partial update).
+        """
+        from providers.base import ProviderProfile
+
+        # Simulate a stale class that predates supports_prompt_cache_key
+        # by creating a profile and deleting the attribute.
+        profile = ProviderProfile(name="stale-provider")
+        del profile.supports_prompt_cache_key
+
+        # Must not raise AttributeError — should fall back to False.
+        kwargs = transport.build_kwargs(
+            model="stale-model",
+            messages=self._messages(),
+            tools=self._tools(),
+            provider_profile=profile,
+        )
+        assert "prompt_cache_key" not in kwargs

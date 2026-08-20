@@ -98,6 +98,7 @@ def _(rid, params: dict) -> dict:
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id,
             "pending_title": title or None,
+            "pending_hidden": is_truthy_value(params.get("hidden", False)),
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False,
             "session_key": key,
@@ -176,7 +177,55 @@ def _(rid, params: dict) -> dict:
             # their own source.
             deny = frozenset({"kanban", "tool"})
 
+            # ``title``: EXACT-title registry lookup, not a listing. The core
+            # UNIQUE title index means at most one session per db carries a
+            # given exact title, so callers that treat a title as an identity
+            # key (Bot Mode's canonical "Bot Chat" — Profile → Named Session)
+            # get a window-free O(1) answer instead of scanning a recency
+            # window that a busy profile can push the row out of. Hidden rows
+            # resolve (canonical chats are born hidden); archived rows and
+            # deny-listed sources do not; compression lineages resolve to the
+            # live tip (``resolved_id``), mirroring profiles.list's
+            # preferred_session resolver. Older clients never send this param;
+            # newer clients falling back to older gateways just get the normal
+            # windowed listing back (the param is ignored) and scan it.
+            title_lookup = str(params.get("title") or "").strip()
+            if title_lookup:
+                row = db.get_session_by_title(title_lookup)
+                if (
+                    not row
+                    or row.get("archived")
+                    or (row.get("source") or "").strip().lower() in deny
+                ):
+                    return _ok(rid, {"sessions": []})
+                try:
+                    tip = db.resolve_resume_session_id(row["id"]) or row["id"]
+                except Exception:
+                    tip = row["id"]
+                tip_row = (db.get_session(tip) or row) if tip != row["id"] else row
+                return _ok(
+                    rid,
+                    {
+                        "sessions": [
+                            {
+                                "id": row["id"],
+                                "resolved_id": tip,
+                                "title": row.get("title") or "",
+                                "preview": tip_row.get("preview") or "",
+                                "started_at": row.get("started_at") or 0,
+                                "message_count": tip_row.get("message_count") or 0,
+                                "source": row.get("source") or "",
+                            }
+                        ]
+                    },
+                )
+
             limit = int(params.get("limit", 200) or 200)
+            # ``include_hidden``: surfaces that OWN hidden sessions (the Bots
+            # pane's per-profile browser, plugin session pickers) need to list
+            # them; the flag stays off for the resume picker and every other
+            # global caller so `hidden` keeps meaning "not in shared lists".
+            include_hidden = is_truthy_value(params.get("include_hidden", False))
             # Over-fetch modestly so per-source filtering doesn't leave us
             # short; the compression-tip projection in ``list_sessions_rich``
             # can also merge rows.
@@ -188,6 +237,7 @@ def _(rid, params: dict) -> dict:
                     limit=fetch_limit,
                     order_by_last_active=True,
                     compact_rows=True,
+                    include_hidden=include_hidden,
                 )
                 if (s.get("source") or "").strip().lower() not in deny
             ][:limit]
@@ -316,377 +366,560 @@ def _(rid, params: dict) -> dict:
     # local profile's state.db. None/own profile → the launch profile (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    defer_history = is_truthy_value(params.get("defer_history", False))
+    # Desktop hydrates persisted transcripts through the authenticated REST
+    # route in parallel. Suppress the duplicate WebSocket transcript only when
+    # the caller explicitly requests it; other clients keep upstream behavior.
+    omit_messages = is_truthy_value(params.get("omit_messages", False))
 
-    # In a profile scope, the agent OWNS a long-lived db handle bound to that
-    # profile (do NOT auto-close it here). Otherwise reuse the shared launch db.
+    # In a profile scope this opens a DEDICATED handle we own until the agent
+    # takes it (see the ownership transfer at _init_session below); every path
+    # that returns before that transfer must close it. Otherwise reuse the
+    # shared launch db, which outlives the RPC and is never closed here.
+    owns_db = False
     if profile_home is not None:
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=profile_home / "state.db")
+        owns_db = True
     else:
         db = _get_db()
-    if db is None:
-        return _db_unavailable_error(rid, code=5000)
-
-    found = db.get_session(target)
-    if not found:
-        found = db.get_session_by_title(target)
-        if found:
-            target = found["id"]
-        elif is_truthy_value(params.get("lazy", False)) and _child_run_active(target):
-            # Race: a watch window opened on a freshly-spawned subagent. The
-            # child relays `subagent.start` (which carries child_session_id and
-            # triggers the window) BEFORE its first run_conversation() flushes
-            # the DB row via _ensure_db_session, so db.get_session(target) is
-            # momentarily empty. On slower hosts (notably WSL2, where SQLite +
-            # process scheduling widen the gap) the window's resume consistently
-            # lands inside this window and used to hard-fail "session not found"
-            # — the frontend then 404'd on the REST messages fallback and the
-            # window spun forever. The child is provably live (_child_run_active),
-            # so proceed into the lazy branch with empty history; the live mirror
-            # streams the whole turn anyway and the row exists by upgrade time.
-            found = {}
-        else:
-            return _err(rid, 4007, "session not found")
-
-    # Follow the compression-continuation chain to the live tip so a resume on
-    # a rotated-out parent id binds to the descendant that actually holds the
-    # post-compression turns. Auto-compression ends the session and forks a
-    # continuation child; without this, resuming the original id (the desktop's
-    # routed id when the chat was opened before it rotated) reloads the parent
-    # transcript and the response generated after compression is missing — the
-    # "I came back and the reply isn't there" bug on large sessions. Resolving
-    # here also re-anchors the fast path below so a still-live rotated session
-    # is reused (by its new key) instead of rebuilding a duplicate agent on the
-    # stale parent. Skipped for lazy watch windows, which intentionally attach
-    # to the exact child branch they were opened on.
-    if found and not is_truthy_value(params.get("lazy", False)):
-        try:
-            tip = db.resolve_resume_session_id(target)
-        except Exception:
-            tip = target
-        if tip and tip != target:
-            target = tip
-            found = db.get_session(target) or found
-
-    profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
-        profile_home
-    )
-
-    def _reuse_live_payload(sid: str, session: dict) -> dict:
-        payload = _live_session_payload(
-            sid,
-            session,
-            cols=cols,
-            touch=True,
-            transport=current_transport() or _stdio_transport,
-        )
-        payload["resumed"] = target
-        # A lazy watch session never owns a run loop, so its payload's running
-        # flag is always False — overlay the child-run registry so a reconnecting
-        # watch window keeps its busy indicator while the child is still mid-run.
-        if session.get("agent") is None and _child_run_active(target):
-            payload["running"] = True
-            payload["status"] = "streaming"
-        return payload
-
-    # Fast path: if the session is already live, reuse it under the lock.
-    with _session_resume_lock:
-        live = _find_live_session_by_key(target)
-        if live is not None:
-            return _ok(rid, _reuse_live_payload(*live))
-
-    # Lazy/watch resume: register the live session WITHOUT building an agent.
-    # Used by the desktop's subagent windows — the child runs inside the
-    # parent's turn, so its window only needs the stored history plus a
-    # transport for the child-mirror's live events. Skipping _make_agent here
-    # is what keeps the window cheap while the backend is busy running the
-    # delegation. A later prompt.submit upgrades it via _start_agent_build
-    # (resume_session_id keeps the upgrade on the stored conversation).
-    if is_truthy_value(params.get("lazy", False)):
-        sid = uuid.uuid4().hex[:8]
-        source = _resolve_session_source(str(params.get("source") or "").strip() or None)
-        lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
-        try:
-            db.reopen_session(target)
-            # The child's OWN conversation only — include_ancestors would prepend
-            # the parent's transcript onto the subagent's branch.
-            # repair_alternation: this resume feeds LIVE REPLAY (the loaded
-            # history becomes the resumed session record's working conversation),
-            # so heal a durable ``user;user`` violation once here instead of
-            # re-firing the pre-request repair on every subsequent turn.
-            history = db.get_messages_as_conversation(target, repair_alternation=True)
-        except Exception as e:
-            if lease is not None:
-                lease.release()
-            return _err(rid, 5000, f"resume failed: {e}")
-        cwd = profile_resume_cwd or _default_session_cwd()
-        record = _deferred_session_record(
-            target,
-            cols=cols,
-            cwd=cwd,
-            history=history,
-            lease=lease,
-            source=source,
-            close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
-            profile_home=profile_home,
-            lazy=True,
-        )
-        if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
-            return _ok(rid, _reuse_live_payload(*live))
-        # A delegated child mid-run emits no session events of its own — report
-        # its liveness from the relay registry so the window shows a busy turn.
-        child_running = _child_run_active(target)
-        # User-visible messages use the VERBATIM display projection (child-only,
-        # no ancestors — matching the repaired read above), so model-invisible
-        # rows persisted by #65919 (verification candidates collapsed by
-        # repair_message_sequence) survive in the watch window just as they do
-        # on the eager resume + REST paths. The repaired ``history`` above still
-        # feeds live replay. Fall back to it if the display read fails.
-        try:
-            display_history = db.get_messages_as_conversation(
-                target, repair_alternation=False, include_row_ids=True
-            )
-        except Exception:
-            logger.debug("child-watch display projection read failed", exc_info=True)
-            display_history = history
-        messages = _history_to_messages(display_history)
-        return _ok(
-            rid,
-            {
-                "session_id": sid,
-                "resumed": target,
-                "message_count": len(messages),
-                "messages": messages,
-                "info": _lazy_resume_info(cwd, profile=profile),
-                "inflight": None,
-                "running": child_running,
-                "session_key": target,
-                "started_at": record["created_at"],
-                "status": "streaming" if child_running else "idle",
-            },
-        )
-
-    # Cold resume default: register the live session and read its stored
-    # transcript, but build the agent OFF the response path. _make_agent can
-    # block for seconds (MCP discovery, prompt/skill build, AIAgent
-    # construction), and every resume caller (desktop + Ink TUI) awaits this RPC
-    # before it paints — so building eagerly is the bulk of the multi-second
-    # "switching sessions is frozen" latency. Return the full display transcript
-    # immediately and pre-warm the agent on a short timer (the same deferred-
-    # build contract session.create uses); _sess() also builds on demand if the
-    # first prompt beats the timer. A caller that needs the agent built
-    # synchronously (e.g. tests of the build race) passes ``eager_build: true``
-    # to fall through to the eager path below. Distinct from the lazy/watch
-    # branch above: a normal resume restores the full ancestor history and the
-    # session's persisted runtime identity, and is a real (upgradable) session.
-    if not is_truthy_value(params.get("eager_build", False)):
-        sid = uuid.uuid4().hex[:8]
-        source = _resolve_session_source(str(params.get("source") or "").strip() or None)
-        lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
-        # Interactive resume routes approvals/clarify through gateway prompts;
-        # the deferred build wires the remaining per-session callbacks.
-        _enable_gateway_prompts()
-        try:
-            db.reopen_session(target)
-            # One lineage SELECT feeds both projections (#67142-adjacent perf,
-            # from the desktop audit): the model-fed copy is alternation-repaired
-            # (raw_history → sanitize_replay_history → the resumed session's
-            # working conversation) and the display copy stays verbatim —
-            # inspection/export must show what is actually stored.
-            raw_history, display_history = db.get_resume_conversations(target)
-        except Exception as e:
-            if lease is not None:
-                lease.release()
-            return _err(rid, 5000, f"resume failed: {e}")
-        # Display keeps the full transcript; the model-fed history drops a
-        # dangling/interrupted tool-call tail so a session killed mid-loop does
-        # not replay the unanswered call forever (#29086).
-        prefix = db.get_ancestor_display_prefix(target)
-        history = sanitize_replay_history(raw_history)
-        # Restore the model/provider/reasoning/tier this chat last used so the
-        # deferred build (and the info below) match the eager path — without them
-        # the build drops the provider ("No LLM provider configured").
-        overrides = _stored_session_runtime_overrides(found) or {}
-        model_override = overrides.get("model_override") or {}
-        cwd = profile_resume_cwd or _default_session_cwd()
-        record = _deferred_session_record(
-            target,
-            cols=cols,
-            cwd=cwd,
-            history=history,
-            lease=lease,
-            source=source,
-            close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
-            display_history_prefix=prefix,
-            profile_home=profile_home,
-            model_override=overrides.get("model_override"),
-            resume_runtime_overrides=overrides or None,
-        )
-        if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
-            return _ok(rid, _reuse_live_payload(*live))
-
-        _schedule_agent_build(sid)
-        _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
-        auto_continue = _maybe_schedule_auto_continue(sid, record, target)
-
-        messages = _history_to_messages(display_history)
-        payload = {
-            "session_id": sid,
-            "resumed": target,
-            "message_count": len(messages),
-            "messages": messages,
-            "info": _lazy_resume_info(
-                cwd,
-                model=model_override.get("model") or "",
-                provider=overrides.get("provider_override") or "",
-                profile=profile,
-            ),
-            "inflight": None,
-            "running": False,
-            "session_key": target,
-            "started_at": record["created_at"],
-            "status": "idle",
-        }
-        if auto_continue is not None:
-            payload["auto_continue"] = auto_continue
-        return _ok(rid, payload)
-
-    # Build the agent OUTSIDE the lock — _make_agent can block for seconds
-    # (MCP discovery, prompt/skill build, AIAgent construction). Holding
-    # _session_resume_lock across it would stall session.close on the main
-    # dispatch thread (it's not a _LONG_HANDLER), blocking fast-path RPCs.
-    sid = uuid.uuid4().hex[:8]
-    source = _resolve_session_source(str(params.get("source") or "").strip() or None)
-    lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
-    _enable_gateway_prompts()
-    home_token = (
-        set_hermes_home_override(str(profile_home)) if profile_home is not None else None
-    )
-    secret_token = (
-        set_secret_scope(build_profile_secret_scope(Path(str(profile_home))))
-        if profile_home is not None
-        else None
-    )
     try:
-        db.reopen_session(target)
-        # One lineage SELECT feeds both projections (see the interactive resume
-        # above): the model-fed copy is alternation-repaired for LIVE REPLAY, the
-        # display copy stays verbatim.
-        raw_history, display_history = db.get_resume_conversations(target)
-        # The display transcript keeps every row so the user still sees their
-        # full history.  The model-fed history is sanitized: a session whose
-        # last turn died mid-tool-loop persists a dangling assistant(tool_calls)
-        # (or interrupted assistant→tool) tail; replaying it makes the model
-        # re-issue the unanswered call forever — the permanent-"thinking" stuck
-        # session in #29086.  The messaging gateway already strips this; this is
-        # the WebUI/TUI resume path picking up the same cleanup.
-        display_history_prefix = db.get_ancestor_display_prefix(target)
-        history = sanitize_replay_history(raw_history)
-        messages = _history_to_messages(display_history)
-        tokens = _set_session_context(target)
-        try:
-            # Pass the profile's db so the agent persists turns to the right
-            # state.db; home override is active here so config/skills/model
-            # resolve to the profile too. Runtime identity is restored from the
-            # stored session row so switching chats does not inherit whatever
-            # global model another chat last selected.
-            stored_runtime_overrides = _stored_session_runtime_overrides(found)
-            agent = _make_agent(
-                sid,
-                target,
-                session_id=target,
-                session_db=db,
-                platform_override=source,
-                **stored_runtime_overrides,
-            )
-        finally:
-            _clear_session_context(tokens)
-    except Exception as e:
-        if lease is not None:
-            lease.release()
-        return _err(rid, 5000, f"resume failed: {e}")
-    finally:
-        if home_token is not None:
-            reset_hermes_home_override(home_token)
-        if secret_token is not None:
-            reset_secret_scope(secret_token)
+        if db is None:
+            return _db_unavailable_error(rid, code=5000)
 
-    # Double-checked locking: another concurrent resume may have created the
-    # live session while we were building. Re-check under the lock; if it won,
-    # discard our just-built agent and reuse theirs (no worker/poller wired yet).
-    with _session_resume_lock:
-        live = _find_live_session_by_key(target)
-        if live is not None:
+        found = db.get_session(target)
+        if not found:
+            found = db.get_session_by_title(target)
+            if found:
+                target = found["id"]
+            elif is_truthy_value(params.get("lazy", False)) and _child_run_active(target):
+                # Race: a watch window opened on a freshly-spawned subagent. The
+                # child relays `subagent.start` (which carries child_session_id and
+                # triggers the window) BEFORE its first run_conversation() flushes
+                # the DB row via _ensure_db_session, so db.get_session(target) is
+                # momentarily empty. On slower hosts (notably WSL2, where SQLite +
+                # process scheduling widen the gap) the window's resume consistently
+                # lands inside this window and used to hard-fail "session not found"
+                # — the frontend then 404'd on the REST messages fallback and the
+                # window spun forever. The child is provably live (_child_run_active),
+                # so proceed into the lazy branch with empty history; the live mirror
+                # streams the whole turn anyway and the row exists by upgrade time.
+                found = {}
+            else:
+                return _err(rid, 4007, "session not found")
+
+        # Follow the compression-continuation chain to the live tip so a resume on
+        # a rotated-out parent id binds to the descendant that actually holds the
+        # post-compression turns. Auto-compression ends the session and forks a
+        # continuation child; without this, resuming the original id (the desktop's
+        # routed id when the chat was opened before it rotated) reloads the parent
+        # transcript and the response generated after compression is missing — the
+        # "I came back and the reply isn't there" bug on large sessions. Resolving
+        # here also re-anchors the fast path below so a still-live rotated session
+        # is reused (by its new key) instead of rebuilding a duplicate agent on the
+        # stale parent. Skipped for lazy watch windows, which intentionally attach
+        # to the exact child branch they were opened on.
+        if found and not is_truthy_value(params.get("lazy", False)):
             try:
-                if hasattr(agent, "close"):
-                    agent.close()
+                tip = db.resolve_resume_session_id(target)
             except Exception:
-                pass
-            if lease is not None:
-                lease.release()
-            other_sid, other_session = live
+                tip = target
+            if tip and tip != target:
+                target = tip
+                found = db.get_session(target) or found
+
+        # Every interactive resume path materializes the model history, even when
+        # omit_messages suppresses the response copy. Count the complete lineage
+        # before any reopen/history read so a runaway transcript cannot exhaust
+        # the dashboard. The metadata fallback keeps lightweight test/adaptor DBs
+        # that predate the shared SessionDB guard compatible. The limit resolves
+        # from config (sessions.max_resume_messages, 0 disables).
+        from hermes_state import (
+            SessionResumeTooLargeError,
+            resolved_max_resume_messages,
+        )
+
+        safety_check = getattr(db, "assert_resume_safe", None)
+        try:
+            if callable(safety_check):
+                safety_check(target)
+            else:
+                resume_limit = resolved_max_resume_messages()
+                stored_message_count = int(found.get("message_count") or 0)
+                if resume_limit and stored_message_count > resume_limit:
+                    raise SessionResumeTooLargeError(stored_message_count, resume_limit)
+        except SessionResumeTooLargeError as exc:
+            return _err(rid, 4130, str(exc))
+        except Exception as exc:
+            # Fail OPEN: a transient guard failure (locked DB, schema skew on
+            # an adaptor store) must not turn the safety check into a new way
+            # to lose access to a session. Only a genuine over-limit blocks.
+            logger.warning(
+                "resume safety check failed for %s (proceeding without guard): %s",
+                target, exc,
+            )
+
+        profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
+            profile_home
+        )
+
+        def _reuse_live_payload(sid: str, session: dict) -> dict:
             payload = _live_session_payload(
-                other_sid,
-                other_session,
+                sid,
+                session,
                 cols=cols,
                 touch=True,
                 transport=current_transport() or _stdio_transport,
+                omit_messages=omit_messages,
             )
             payload["resumed"] = target
-            return _ok(rid, payload)
-        try:
-            init_home_token = (
-                set_hermes_home_override(str(profile_home))
-                if profile_home is not None
-                else None
-            )
-            init_secret_token = (
-                set_secret_scope(build_profile_secret_scope(Path(str(profile_home))))
-                if profile_home is not None
-                else None
-            )
+            if defer_history:
+                payload["messages"] = []
+                payload["message_count"] = int(
+                    session.get("resume_message_count") or payload["message_count"]
+                )
+                payload["hydrating"] = bool(session.get("resume_hydrating"))
+            # A lazy watch session never owns a run loop, so its payload's running
+            # flag is always False — overlay the child-run registry so a reconnecting
+            # watch window keeps its busy indicator while the child is still mid-run.
+            if session.get("agent") is None and _child_run_active(target):
+                payload["running"] = True
+                payload["status"] = "streaming"
+            return payload
+
+        # Fast path: if the session is already live, reuse it under the lock.
+        with _session_resume_lock:
+            live = _find_live_session_by_key(target)
+            if live is not None:
+                return _ok(rid, _reuse_live_payload(*live))
+
+        # Lazy/watch resume: register the live session WITHOUT building an agent.
+        # Used by the desktop's subagent windows — the child runs inside the
+        # parent's turn, so its window only needs the stored history plus a
+        # transport for the child-mirror's live events. Skipping _make_agent here
+        # is what keeps the window cheap while the backend is busy running the
+        # delegation. A later prompt.submit upgrades it via _start_agent_build
+        # (resume_session_id keeps the upgrade on the stored conversation).
+        if is_truthy_value(params.get("lazy", False)):
+            sid = uuid.uuid4().hex[:8]
+            source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+            lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
             try:
-                _init_session(
+                db.reopen_session(target)
+                # The child's OWN conversation only — include_ancestors would prepend
+                # the parent's transcript onto the subagent's branch.
+                # repair_alternation: this resume feeds LIVE REPLAY (the loaded
+                # history becomes the resumed session record's working conversation),
+                # so heal a durable ``user;user`` violation once here instead of
+                # re-firing the pre-request repair on every subsequent turn.
+                history = db.get_messages_as_conversation(
+                    target, repair_alternation=True, include_row_ids=True
+                )
+            except Exception as e:
+                if lease is not None:
+                    lease.release()
+                return _err(rid, 5000, f"resume failed: {e}")
+            cwd = profile_resume_cwd or _default_session_cwd()
+            record = _deferred_session_record(
+                target,
+                cols=cols,
+                cwd=cwd,
+                history=history,
+                lease=lease,
+                source=source,
+                close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
+                profile_home=profile_home,
+                lazy=True,
+            )
+            if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
+                return _ok(rid, _reuse_live_payload(*live))
+            # A delegated child mid-run emits no session events of its own — report
+            # its liveness from the relay registry so the window shows a busy turn.
+            child_running = _child_run_active(target)
+            # User-visible messages use the VERBATIM display projection (child-only,
+            # no ancestors — matching the repaired read above), so model-invisible
+            # rows persisted by #65919 (verification candidates collapsed by
+            # repair_message_sequence) survive in the watch window just as they do
+            # on the eager resume + REST paths. The repaired ``history`` above still
+            # feeds live replay. Fall back to it if the display read fails.
+            try:
+                display_history = db.get_messages_as_conversation(
+                    target, repair_alternation=False, include_row_ids=True
+                )
+            except Exception:
+                logger.debug("child-watch display projection read failed", exc_info=True)
+                display_history = history
+            messages = [] if omit_messages else _history_to_messages(display_history)
+            return _ok(
+                rid,
+                {
+                    "session_id": sid,
+                    "resumed": target,
+                    "message_count": len(display_history) if omit_messages else len(messages),
+                    "messages": messages,
+                    "messages_omitted": omit_messages,
+                    "info": _lazy_resume_info(cwd, profile=profile),
+                    "inflight": None,
+                    "running": child_running,
+                    "session_key": target,
+                    "started_at": record["created_at"],
+                    "status": "streaming" if child_running else "idle",
+                },
+            )
+
+        # Desktop can ask for a bounded acknowledgement and hydrate the display
+        # transcript through the paginated REST endpoint. Register the runtime now,
+        # then load model history and initialize optional providers in background.
+        # Repeated requests reuse the record through the live fast path above.
+        #
+        # Precedence vs omit_messages: defer_history SUPERSEDES omit_messages.
+        # Desktop sends both flags on a cold resume; when defer_history is set the
+        # response never carries a transcript (messages is always []) and the ONE
+        # history read happens in the background hydration worker — the synchronous
+        # omit_messages read below (cold resume default) is skipped entirely, so
+        # the transcript is never loaded twice for one resume. omit_messages only
+        # governs the response shape of the non-deferred paths.
+        if defer_history and not is_truthy_value(params.get("eager_build", False)):
+            sid = uuid.uuid4().hex[:8]
+            source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+            lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
+            _enable_gateway_prompts()
+            overrides = _stored_session_runtime_overrides(found) or {}
+            model_override = overrides.get("model_override") or {}
+            cwd = profile_resume_cwd or _default_session_cwd()
+            record = _deferred_session_record(
+                target,
+                cols=cols,
+                cwd=cwd,
+                history=[],
+                lease=lease,
+                source=source,
+                close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
+                profile_home=profile_home,
+                model_override=overrides.get("model_override"),
+                resume_runtime_overrides=overrides or None,
+            )
+            record["resume_history_ready"] = threading.Event()
+            record["resume_hydrating"] = True
+            record["resume_message_count"] = int(found.get("message_count") or 0)
+            if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
+                return _ok(rid, _reuse_live_payload(*live))
+
+            _schedule_resume_hydration(sid, target, db, close_db=owns_db)
+            # The hydration worker now owns a profile-scoped handle and closes it
+            # after the transcript read. The shared launch DB is process-owned.
+            if owns_db:
+                owns_db = False
+            _schedule_session_cap_enforcement()
+            return _ok(
+                rid,
+                {
+                    "session_id": sid,
+                    "resumed": target,
+                    "message_count": record["resume_message_count"],
+                    "messages": [],
+                    "hydrating": True,
+                    "info": _lazy_resume_info(
+                        cwd,
+                        model=model_override.get("model") or "",
+                        provider=overrides.get("provider_override") or "",
+                        profile=profile,
+                    ),
+                    "inflight": None,
+                    "running": False,
+                    "session_key": target,
+                    "started_at": record["created_at"],
+                    "status": "resuming",
+                },
+            )
+
+        # Cold resume default: register the live session and read its stored
+        # transcript, but build the agent OFF the response path. _make_agent can
+        # block for seconds (MCP discovery, prompt/skill build, AIAgent
+        # construction), and every resume caller (desktop + Ink TUI) awaits this RPC
+        # before it paints — so building eagerly is the bulk of the multi-second
+        # "switching sessions is frozen" latency. Return the full display transcript
+        # immediately and pre-warm the agent on a short timer (the same deferred-
+        # build contract session.create uses); _sess() also builds on demand if the
+        # first prompt beats the timer. A caller that needs the agent built
+        # synchronously (e.g. tests of the build race) passes ``eager_build: true``
+        # to fall through to the eager path below. Distinct from the lazy/watch
+        # branch above: a normal resume restores the full ancestor history and the
+        # session's persisted runtime identity, and is a real (upgradable) session.
+        if not is_truthy_value(params.get("eager_build", False)):
+            sid = uuid.uuid4().hex[:8]
+            source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+            lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
+            # Interactive resume routes approvals/clarify through gateway prompts;
+            # the deferred build wires the remaining per-session callbacks.
+            _enable_gateway_prompts()
+            try:
+                db.reopen_session(target)
+                # One lineage SELECT feeds both projections (#67142-adjacent perf,
+                # from the desktop audit): the model-fed copy is alternation-repaired
+                # (raw_history → sanitize_replay_history → the resumed session's
+                # working conversation) and the display copy stays verbatim —
+                # inspection/export must show what is actually stored.
+                if omit_messages:
+                    raw_history = db.get_messages_as_conversation(
+                        target, repair_alternation=True, include_row_ids=True
+                    )
+                    display_history = []
+                else:
+                    raw_history, display_history = db.get_resume_conversations(target)
+            except Exception as e:
+                if lease is not None:
+                    lease.release()
+                return _err(rid, 5000, f"resume failed: {e}")
+            # Display keeps the full transcript; the model-fed history drops a
+            # dangling/interrupted tool-call tail so a session killed mid-loop does
+            # not replay the unanswered call forever (#29086).
+            prefix = [] if omit_messages else db.get_ancestor_display_prefix(target)
+            history = sanitize_replay_history(raw_history)
+            # Restore the model/provider/reasoning/tier this chat last used so the
+            # deferred build (and the info below) match the eager path — without them
+            # the build drops the provider ("No LLM provider configured").
+            overrides = _stored_session_runtime_overrides(found) or {}
+            model_override = overrides.get("model_override") or {}
+            cwd = profile_resume_cwd or _default_session_cwd()
+            record = _deferred_session_record(
+                target,
+                cols=cols,
+                cwd=cwd,
+                history=history,
+                lease=lease,
+                source=source,
+                close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
+                display_history_prefix=prefix,
+                profile_home=profile_home,
+                model_override=overrides.get("model_override"),
+                resume_runtime_overrides=overrides or None,
+            )
+            if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
+                return _ok(rid, _reuse_live_payload(*live))
+
+            _schedule_agent_build(sid)
+            _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
+            auto_continue = _maybe_schedule_auto_continue(sid, record, target)
+
+            messages = [] if omit_messages else _history_to_messages(display_history)
+            payload = {
+                "session_id": sid,
+                "resumed": target,
+                "message_count": len(raw_history) if omit_messages else len(messages),
+                "messages": messages,
+                "messages_omitted": omit_messages,
+                "info": _lazy_resume_info(
+                    cwd,
+                    model=model_override.get("model") or "",
+                    provider=overrides.get("provider_override") or "",
+                    profile=profile,
+                ),
+                "inflight": None,
+                "running": False,
+                "session_key": target,
+                "started_at": record["created_at"],
+                "status": "idle",
+            }
+            if auto_continue is not None:
+                payload["auto_continue"] = auto_continue
+            return _ok(rid, payload)
+
+        # Build the agent OUTSIDE the lock — _make_agent can block for seconds
+        # (MCP discovery, prompt/skill build, AIAgent construction). Holding
+        # _session_resume_lock across it would stall session.close on the main
+        # dispatch thread (it's not a _LONG_HANDLER), blocking fast-path RPCs.
+        sid = uuid.uuid4().hex[:8]
+        source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+        lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
+        _enable_gateway_prompts()
+        home_token = (
+            set_hermes_home_override(str(profile_home)) if profile_home is not None else None
+        )
+        secret_token = (
+            set_secret_scope(build_profile_secret_scope(Path(str(profile_home))))
+            if profile_home is not None
+            else None
+        )
+        try:
+            db.reopen_session(target)
+            # One lineage SELECT feeds both projections (see the interactive resume
+            # above): the model-fed copy is alternation-repaired for LIVE REPLAY, the
+            # display copy stays verbatim.
+            if omit_messages:
+                raw_history = db.get_messages_as_conversation(
+                    target, repair_alternation=True, include_row_ids=True
+                )
+                display_history = []
+            else:
+                raw_history, display_history = db.get_resume_conversations(target)
+            # The display transcript keeps every row so the user still sees their
+            # full history.  The model-fed history is sanitized: a session whose
+            # last turn died mid-tool-loop persists a dangling assistant(tool_calls)
+            # (or interrupted assistant→tool) tail; replaying it makes the model
+            # re-issue the unanswered call forever — the permanent-"thinking" stuck
+            # session in #29086.  The messaging gateway already strips this; this is
+            # the WebUI/TUI resume path picking up the same cleanup.
+            display_history_prefix = (
+                [] if omit_messages else db.get_ancestor_display_prefix(target)
+            )
+            history = sanitize_replay_history(raw_history)
+            messages = [] if omit_messages else _history_to_messages(display_history)
+            tokens = _set_session_context(target)
+            try:
+                # Pass the profile's db so the agent persists turns to the right
+                # state.db; home override is active here so config/skills/model
+                # resolve to the profile too. Runtime identity is restored from the
+                # stored session row so switching chats does not inherit whatever
+                # global model another chat last selected.
+                stored_runtime_overrides = _stored_session_runtime_overrides(found)
+                agent = _make_agent(
                     sid,
                     target,
-                    agent,
-                    history,
-                    cols=cols,
-                    cwd=profile_resume_cwd,
+                    session_id=target,
                     session_db=db,
-                    source=source,
+                    platform_override=source,
+                    **stored_runtime_overrides,
                 )
             finally:
-                if init_home_token is not None:
-                    reset_hermes_home_override(init_home_token)
-                if init_secret_token is not None:
-                    reset_secret_scope(init_secret_token)
-            if sid in _sessions:
-                if stored_runtime_overrides.get("model_override") is not None:
-                    _sessions[sid]["model_override"] = stored_runtime_overrides[
-                        "model_override"
-                    ]
-                _sessions[sid]["display_history_prefix"] = display_history_prefix
-                # Remember the profile home so each turn re-binds HERMES_HOME (the
-                # agent persists to its own db, but mid-turn home reads — memory,
-                # skills — must resolve to the resumed profile too).
-                if profile_home is not None:
-                    _sessions[sid]["profile_home"] = str(profile_home)
-                _sessions[sid]["active_session_lease"] = lease
+                _clear_session_context(tokens)
         except Exception as e:
             if lease is not None:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
-        session = _sessions.get(sid) or {}
+        finally:
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
+            if secret_token is not None:
+                reset_secret_scope(secret_token)
+
+        # Double-checked locking: another concurrent resume may have created the
+        # live session while we were building. Re-check under the lock; if it won,
+        # discard our just-built agent and reuse theirs (no worker/poller wired yet).
+        with _session_resume_lock:
+            live = _find_live_session_by_key(target)
+            if live is not None:
+                try:
+                    if hasattr(agent, "close"):
+                        agent.close()
+                except Exception:
+                    pass
+                if lease is not None:
+                    lease.release()
+                other_sid, other_session = live
+                payload = _live_session_payload(
+                    other_sid,
+                    other_session,
+                    cols=cols,
+                    touch=True,
+                    transport=current_transport() or _stdio_transport,
+                    omit_messages=omit_messages,
+                )
+                payload["resumed"] = target
+                return _ok(rid, payload)
+            try:
+                init_home_token = (
+                    set_hermes_home_override(str(profile_home))
+                    if profile_home is not None
+                    else None
+                )
+                init_secret_token = (
+                    set_secret_scope(build_profile_secret_scope(Path(str(profile_home))))
+                    if profile_home is not None
+                    else None
+                )
+                try:
+                    _init_session(
+                        sid,
+                        target,
+                        agent,
+                        history,
+                        cols=cols,
+                        cwd=profile_resume_cwd,
+                        session_db=db,
+                        source=source,
+                    )
+                    # Ownership TRANSFER — the registered session's agent now
+                    # holds this handle for its whole life, and _init_session
+                    # never closes a caller-supplied session_db (its
+                    # _init_owns_db stays False). Closing it in the finally
+                    # below would fault every later turn on this session with
+                    # "Cannot operate on a closed database".
+                    #
+                    # Ownership moves ONTO the agent rather than just being
+                    # dropped: AIAgent.close() (reached from _teardown_session
+                    # on session.close and the orphaned-session reaper) closes
+                    # a handle it owns, so the dedicated fds and the token
+                    # writer are released at teardown instead of living as
+                    # long as the gateway process.
+                    #
+                    # The drop is UNCONDITIONAL and the transfer is best-effort
+                    # on top of it, deliberately. Past this line the session is
+                    # registered and holding this handle, so the finally must
+                    # not close it even if the transfer was refused — a refusal
+                    # leaves the old leak, which is survivable; closing under a
+                    # live session is the permanent "Cannot operate on a closed
+                    # database" break this patch exists to avoid.
+                    _transfer_db_to_agent(agent, db)
+                    owns_db = False
+                finally:
+                    if init_home_token is not None:
+                        reset_hermes_home_override(init_home_token)
+                    if init_secret_token is not None:
+                        reset_secret_scope(init_secret_token)
+                if sid in _sessions:
+                    if stored_runtime_overrides.get("model_override") is not None:
+                        _sessions[sid]["model_override"] = stored_runtime_overrides[
+                            "model_override"
+                        ]
+                    _sessions[sid]["display_history_prefix"] = display_history_prefix
+                    # Remember the profile home so each turn re-binds HERMES_HOME (the
+                    # agent persists to its own db, but mid-turn home reads — memory,
+                    # skills — must resolve to the resumed profile too).
+                    if profile_home is not None:
+                        _sessions[sid]["profile_home"] = str(profile_home)
+                    _sessions[sid]["active_session_lease"] = lease
+            except Exception as e:
+                # _init_session registers _sessions[sid] BEFORE its first read
+                # through this handle. If it raised in between — "database is
+                # locked" is the realistic trigger — the half-built session is
+                # still registered while the finally below closes the handle it
+                # holds, and the live-session fast path above would then serve
+                # that dead session on every later resume of this id
+                # ("'NoneType' object has no attribute 'execute'", permanently).
+                # owns_db still True means ownership never transferred, so the
+                # registration is ours to undo.
+                if owns_db:
+                    with _sessions_lock:
+                        _sessions.pop(sid, None)
+                if lease is not None:
+                    lease.release()
+                return _err(rid, 5000, f"resume failed: {e}")
+            session = _sessions.get(sid) or {}
+    finally:
+        # Every return that does NOT reach the transfer above abandons this
+        # handle — session-not-found, both "resume failed" paths, the live-session
+        # fast path (the hot one: reconnects re-resume live chats through it), the
+        # deferred cold/lazy returns, and the double-checked-locking discard.
+        # Dropping it merely relied on refcounting to release the sqlite fds; that
+        # stops being true the moment anything pins the instance — SessionDB pins
+        # ITSELF once its background token writer starts, via
+        # atexit.register(_drain_token_queue_at_exit) (hermes_state.py), which only
+        # close() unregisters. A pinned handle keeps its db/-wal/-shm fds and its
+        # writer thread for the life of the process.
+        if owns_db and db is not None:
+            with contextlib.suppress(Exception):
+                db.close()
     auto_continue = (
         _maybe_schedule_auto_continue(sid, session, target) if session else None
     )
     payload = {
         "session_id": sid,
         "resumed": target,
-        "message_count": len(messages),
+        "message_count": len(raw_history) if omit_messages else len(messages),
         "messages": messages,
+        "messages_omitted": omit_messages,
         "info": _session_info(agent, session),
         "inflight": None,
         "running": False,
@@ -722,6 +955,81 @@ def _(rid, params: dict) -> dict:
     }
     _emit("session.info", params.get("session_id", ""), info)
     return _ok(rid, info)
+
+
+@method("session.workspace.move")
+def _(rid, params: dict) -> dict:
+    """Re-home a STORED session's workspace into another folder/project.
+
+    Unlike ``session.cwd.set`` (which acts on a live runtime session by its UI
+    id), this targets a persisted row by ``session_key`` so the desktop can fix
+    a session that was created in the wrong directory — no live agent required.
+    The git branch/root columns are REPLACED (not merely enriched), because the
+    whole point of the move is to change which project claims the session; a
+    stale ``git_repo_root`` would keep it grouped under the project it left.
+
+    A live agent bound to the row follows through the runtime path too, so its
+    terminal/file tools re-anchor immediately. An explicit move wins even
+    mid-turn: refusing a running session made the desktop's "Move to project"
+    claim success in the UI while ``state.db`` kept the old cwd — two sources
+    of truth disagreeing (#86626). In-flight tool calls keep the cwd they were
+    launched with; the NEXT tool call uses the new workspace.
+    """
+    target = str(params.get("session_key") or "").strip()
+    if not target:
+        return _err(rid, 4007, "session_key required")
+    raw = str(params.get("cwd", "") or "").strip()
+    if not raw:
+        return _err(rid, 4016, "cwd required")
+    from hermes_constants import translate_cwd_for_wsl_backend
+
+    resolved = os.path.abspath(os.path.expanduser(translate_cwd_for_wsl_backend(raw)))
+    if not os.path.isdir(resolved):
+        return _err(rid, 4017, f"working directory does not exist: {raw}")
+
+    # Snapshot under the lock — concurrent RPCs mutate _sessions (same pattern
+    # as _cwd_for_session_key).
+    live = None
+    live_sid = ""
+    with _sessions_lock:
+        for sid, sess in list(_sessions.items()):
+            if sess.get("session_key") == target:
+                live, live_sid = sess, sid
+                break
+
+    branch = _git_branch_for_cwd(resolved)
+    root = _git_common_repo_root_for_cwd(resolved)
+    with _profile_db(params) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5007)
+        # A brand-new draft has no persisted row yet; the live re-home below
+        # still applies and the row inherits the cwd when it is first written.
+        row_exists = bool(db.get_session(target))
+        if not row_exists and live is None:
+            return _err(rid, 4007, "session not found")
+        if row_exists:
+            try:
+                db.update_session_cwd(
+                    target, resolved, branch, root, replace_git_meta=True
+                )
+            except Exception as e:
+                return _err(rid, 5007, f"move failed: {e}")
+
+    if live is not None:
+        try:
+            _set_session_cwd(live, resolved)
+        except ValueError as e:
+            return _err(rid, 4017, str(e))
+        agent = live.get("agent")
+        info = _session_info(agent, live) if agent is not None else {
+            "cwd": resolved,
+            "branch": branch,
+            "project": _project_info_for_cwd(resolved),
+            "lazy": True,
+        }
+        _emit("session.info", live_sid, info)
+
+    return _ok(rid, {"cwd": resolved, "branch": branch, "git_repo_root": root})
 
 
 @method("session.active_list")
@@ -782,6 +1090,7 @@ def _(rid, params: dict) -> dict:
             session,
             touch=True,
             transport=current_transport() or _stdio_transport,
+            omit_messages=is_truthy_value(params.get("omit_messages", False)),
         ),
     )
 
@@ -916,6 +1225,58 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"pending": True, "title": title})
         except ValueError as e:
             return _err(rid, 4022, str(e))
+        except Exception as e:
+            return _err(rid, 5007, str(e))
+
+
+@method("session.set_hidden")
+def _(rid, params: dict) -> dict:
+    """Set/clear the generic ``hidden`` flag on a session (and its lineage).
+
+    Mirrors the durable ``pinned``/``archived`` setters: a hidden session is
+    dropped from the default global Sessions list (``list_sessions_rich``
+    without ``include_hidden``) but stays fully resumable by the surface that
+    owns it — for plugins that manage their own sessions and don't want them
+    cluttering the shared recents list. Flips the whole compression chain as a
+    unit in the DB layer.
+
+    Resolution is two-tier: a LIVE runtime session id first (which also
+    covers the not-yet-persisted draft via the ``pending_hidden`` deferral),
+    then a durable stored id/key against the target profile's state.db —
+    plugins reconciling sessions they own (e.g. Bot Mode's hide sweep) hold
+    stored ids for chats that aren't live right now, and the live-only
+    lookup silently failed those with 4001.
+    """
+    hidden = is_truthy_value(params.get("hidden", True))
+    session, err = _sess_nowait(params, rid)
+    if session is not None:
+        with _session_db(session) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5007)
+            key = session["session_key"]
+            try:
+                changed = db.set_session_hidden(key, hidden)
+                if not changed:
+                    # No row yet (write deferred to the first prompt): remember the
+                    # intent so _ensure_session_db_row is born hidden, mirroring the
+                    # pending_title deferral.
+                    session["pending_hidden"] = hidden
+                return _ok(rid, {"hidden": hidden, "session_key": key})
+            except Exception as e:
+                return _err(rid, 5007, str(e))
+    # Durable fallback: a stored session id (or key) in the requested
+    # profile's db. ``resolve_session_id`` follows key/title aliases the
+    # same way the REST pin/archive path does.
+    target = str(params.get("session_id") or "").strip()
+    with _profile_db(params) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5007)
+        try:
+            resolved = db.resolve_session_id(target) if hasattr(db, "resolve_session_id") else target
+            if not resolved:
+                return err
+            db.set_session_hidden(resolved, hidden)
+            return _ok(rid, {"hidden": hidden, "session_key": resolved})
         except Exception as e:
             return _err(rid, 5007, str(e))
 
@@ -1245,7 +1606,17 @@ def _(rid, params: dict) -> dict:
         if not enabled or pet is None or not pet.exists:
             return _ok(rid, {"enabled": False})
 
-        return _ok(rid, {"enabled": True, **_pet_sprite_payload(pet, scale=scale)})
+        payload = {"enabled": True, **_pet_sprite_payload(pet, scale=scale)}
+
+        # Send-once semantics for the multi-MB spritesheet (#54730): a caller
+        # that already holds the sheet passes the revision it has, and an
+        # unchanged sheet comes back as metadata only (spritesheetUnchanged).
+        known_revision = str(params.get("knownRevision", "") or "")
+        if known_revision and known_revision == payload.get("spritesheetRevision"):
+            payload.pop("spritesheetBase64", None)
+            payload["spritesheetUnchanged"] = True
+
+        return _ok(rid, payload)
     except Exception as exc:  # noqa: BLE001 - cosmetic, never break the surface
         logger.debug("pet.info failed: %s", exc)
         return _ok(rid, {"enabled": False})
@@ -1299,7 +1670,7 @@ def _(rid, params: dict) -> dict:
         except Exception:
             pet_cfg = {}
 
-        if not bool(pet_cfg.get("enabled")):
+        if not is_truthy_value(pet_cfg.get("enabled"), default=False):
             return _ok(rid, {"enabled": False})
 
         pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or ""))
@@ -1452,7 +1823,7 @@ def _(rid, params: dict) -> dict:
         return _ok(
             rid,
             {
-                "enabled": bool(pet_cfg.get("enabled")),
+                "enabled": is_truthy_value(pet_cfg.get("enabled"), default=False),
                 "active": str(pet_cfg.get("slug", "") or ""),
                 "pets": gallery,
             },
@@ -2266,8 +2637,16 @@ def _(rid, params: dict) -> dict:
         with _session_db(session) as db:
             if db is not None:
                 try:
+                    # include_row_ids: the durable row id is how clients address
+                    # a specific persisted turn (reactions, and the Desktop's
+                    # content-based truncation-target resolution — #87059). The
+                    # projection in _history_to_messages only forwards row_id
+                    # when the row carries a stamp, so an unstamped read here
+                    # silently strips the one durable address clients can use.
                     history = db.get_messages_as_conversation(
-                        session["session_key"], include_ancestors=True
+                        session["session_key"],
+                        include_ancestors=True,
+                        include_row_ids=True,
                     )
                 except Exception:
                     pass
@@ -2297,15 +2676,18 @@ def _(rid, params: dict) -> dict:
     removed = 0
     with session["history_lock"]:
         history = session.get("history", [])
-        # Truncate from the last *real* user turn (no display_kind). Popping
-        # only trailing assistant/tool then one user left timeline markers
-        # (async_delegation_complete, model_switch, …) as the undo target —
-        # so session.undo removed bookkeeping instead of the last exchange.
+        # Truncate from the last *real* user turn. Popping only trailing
+        # assistant/tool then one user left timeline markers
+        # (async_delegation_complete, model_switch, …) or compaction
+        # handoffs as the undo target — so session.undo removed
+        # bookkeeping instead of the last exchange (#80622).
         # Match list_recent_user_messages / CLI turn counting.
+        from agent.context_compressor import is_user_originated_turn
+
         last_user_idx = None
         for i in range(len(history) - 1, -1, -1):
             msg = history[i]
-            if msg.get("role") == "user" and not msg.get("display_kind"):
+            if is_user_originated_turn(msg):
                 last_user_idx = i
                 break
         if last_user_idx is not None:
@@ -2583,7 +2965,41 @@ def _(rid, params: dict) -> dict:
             return _db_unavailable_error(rid, code=5008)
         old_key = session["session_key"]
         with session["history_lock"]:
-            history = [dict(msg) for msg in session.get("history", [])]
+            in_memory_history = [
+                dict(msg)
+                for msg in list(session.get("display_history_prefix") or []) + list(session.get("history", []))
+                if isinstance(msg, dict)
+            ]
+
+        def _visible_branch_history(messages):
+            visible = []
+            for message in messages or []:
+                if not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}:
+                    continue
+                if not _coerce_message_text(message.get("content")).strip():
+                    continue
+                # Keep the FULL row — the copy loop below preserves reasoning
+                # fields and timeline-marker tags (display_kind/display_metadata,
+                # #82756); a minimal role/content copy would silently drop them.
+                visible.append(dict(message))
+            return visible
+
+        # The live session history is the model projection. After compaction it
+        # may contain only a summary and the protected tail, while the persisted
+        # display projection still contains the complete visible transcript. A
+        # branch must snapshot the latter; otherwise the child permanently loses
+        # every turn archived before the fork.
+        history = None
+        get_resume_conversations = getattr(db, "get_resume_conversations", None)
+        if callable(get_resume_conversations):
+            try:
+                _, display_history = get_resume_conversations(old_key)
+                display_history = _reconcile_display_with_live(display_history, in_memory_history)
+                history = _visible_branch_history(display_history)
+            except Exception:
+                logger.debug("branch display projection read failed", exc_info=True)
+        if not history:
+            history = _visible_branch_history(in_memory_history)
         if not history:
             return _err(rid, 4008, "nothing to branch — send a message first")
         count = params.get("count")
@@ -2625,20 +3041,44 @@ def _(rid, params: dict) -> dict:
                     else None
                 ),
             )
-            for msg in history:
-                db.append_message(
-                    session_id=new_key,
-                    role=msg.get("role", "user"),
-                    content=msg.get("content"),
-                    # Preserve the parent's original message timestamps —
-                    # branch copies are history, not new activity (9d73006ad).
-                    timestamp=msg.get("timestamp"),
-                )
+            # Copy the whole parent history in bounded-chunk transactions —
+            # a branch seed can be hundreds of rows, and per-row transactions
+            # were the write-amplification pattern removed in #23254.
+            db.append_messages_batch(
+                new_key,
+                [
+                    {
+                        "role": msg.get("role", "user"),
+                        "content": msg.get("content"),
+                        "reasoning": msg.get("reasoning"),
+                        "reasoning_content": msg.get("reasoning_content"),
+                        "reasoning_details": msg.get("reasoning_details"),
+                        "codex_reasoning_items": msg.get("codex_reasoning_items"),
+                        "codex_message_items": msg.get("codex_message_items"),
+                        # Timeline markers (model_switch, personality_switch,
+                        # auto_continue, …) ride as role=user; dropping the tag
+                        # here re-planted them as bare user turns after a
+                        # restart, corrupting the truncate ordinal address
+                        # space the same way #82756 did.
+                        "display_kind": msg.get("display_kind"),
+                        "display_metadata": msg.get("display_metadata"),
+                        # Preserve the parent's original message timestamps —
+                        # branch copies are history, not new activity (9d73006ad).
+                        "timestamp": msg.get("timestamp"),
+                    }
+                    for msg in history
+                ],
+                chunk_rows=500,
+            )
             db.set_session_title(new_key, title)
         except Exception as e:
             if lease is not None:
                 lease.release()
             return _err(rid, 5008, f"branch failed: {e}")
+    # Bound before the try so the ownership finally below can never see them
+    # unbound, whatever raises inside.
+    branch_db = None
+    branch_owns_db = False
     try:
         # Bind the branched AGENT to the parent's profile, mirroring
         # session.create/resume: home override so config/skills/memory resolve
@@ -2648,13 +3088,26 @@ def _(rid, params: dict) -> dict:
         # parent's db while the agent stayed on the launch handle would
         # recreate the cross-profile split one turn later.
         parent_home = session.get("profile_home")
-        branch_db = None
         if parent_home:
             from hermes_state import SessionDB
 
+            # DEDICATED handle, same ownership rule as session.resume: ours
+            # until the branched agent takes it below. _make_agent raising, or
+            # _init_session raising, both leave here without that transfer.
             branch_db = SessionDB(db_path=Path(parent_home) / "state.db")
+            branch_owns_db = True
         home_token = (
             set_hermes_home_override(parent_home) if parent_home else None
+        )
+        # The home override alone only moves config/skills/memory; credentials
+        # resolve through get_secret(), which without a scope falls through to
+        # process os.environ — the LAUNCH profile's .env. Install the parent's
+        # secret scope for the build, exactly as session.create/resume do
+        # (#67605), so the branched agent authenticates as its own profile.
+        secret_token = (
+            set_secret_scope(build_profile_secret_scope(Path(parent_home)))
+            if parent_home
+            else None
         )
         try:
             tokens = _set_session_context(new_key)
@@ -2679,7 +3132,16 @@ def _(rid, params: dict) -> dict:
                 source=source,
                 profile_home=parent_home,
             )
+            # Ownership TRANSFER — the branched session's agent holds this
+            # handle for its whole life and closes it on teardown. Drop is
+            # unconditional for the same reason as session.resume: past
+            # _init_session the branched session is registered against this
+            # handle, so the finally must not close it.
+            _transfer_db_to_agent(agent, branch_db)
+            branch_owns_db = False
         finally:
+            if secret_token is not None:
+                reset_secret_scope(secret_token)
             if home_token is not None:
                 reset_hermes_home_override(home_token)
         if new_sid in _sessions:
@@ -2688,6 +3150,10 @@ def _(rid, params: dict) -> dict:
         if lease is not None:
             lease.release()
         return _err(rid, 5000, f"agent init failed on branch: {e}")
+    finally:
+        if branch_owns_db and branch_db is not None:
+            with contextlib.suppress(Exception):
+                branch_db.close()
     branched_session = _sessions.get(new_sid)
     return _ok(
         rid,
@@ -2749,8 +3215,10 @@ def _(rid, params: dict) -> dict:
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
-    if should_interrupt and hasattr(session["agent"], "interrupt"):
-        session["agent"].interrupt()
+    if should_interrupt:
+        from agent.interrupt_compat import request_hard_interrupt
+
+        request_hard_interrupt(session["agent"])
     if not run_thread_alive:
         with session["history_lock"]:
             if session.get("running"):
@@ -2812,6 +3280,52 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4000, "subagent_id required")
     ok = interrupt_subagent(subagent_id)
     return _ok(rid, {"found": ok, "subagent_id": subagent_id})
+
+
+@method("subagent.steer")
+def _(rid, params: dict) -> dict:
+    """Queue steering text into a live delegated child without stopping it.
+
+    The redirection-side mirror of subagent.interrupt: resolves the child in
+    the delegation registry and calls AIAgent.steer(), which appends the text
+    to the child's last tool result at its next iteration boundary — the
+    in-flight tool call is never cut. "queued" is not "delivered": a child
+    already past its final tool batch has no boundary left to drain into,
+    and that race surfaces as ``missed_steer`` on the parent's completion
+    entry instead of being silently dropped.
+    """
+    from tools.delegate_tool import steer_subagent
+
+    subagent_id = str(params.get("subagent_id") or "").strip()
+    if not subagent_id:
+        return _err(rid, 4000, "subagent_id required")
+    text = (params.get("text") or "").strip()
+    if not text:
+        return _err(rid, 4002, "text is required")
+    _invoking_session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    invoking_session_id = str(params.get("session_id") or "").strip()
+    invoking_transport, invoking_session = _current_session_steer_authority(
+        invoking_session_id
+    )
+    queued = False
+    if invoking_transport is not None and invoking_session is not None:
+        queued = steer_subagent(
+            subagent_id,
+            text,
+            owner_session_id=invoking_session_id,
+            owner_transport=invoking_transport,
+            owner_session_record=invoking_session,
+        )
+    return _ok(
+        rid,
+        {
+            "status": "queued" if queued else "rejected",
+            "subagent_id": subagent_id,
+            "text": text,
+        },
+    )
 
 
 @method("spawn_tree.save")
@@ -2961,6 +3475,10 @@ def _(rid, params: dict) -> dict:
         # text has no user bubble — the "my message vanished on reload" loss.
         with session["history_lock"]:
             _record_inflight_correction(session, text)
+            # #84417: steer does not cancel the live original, but a server
+            # queue self-copy of that original must still not re-fire after
+            # settle (same class as redirect).
+            _drop_queued_duplicates_of_inflight_user(session)
             session["last_active"] = time.time()
     return _ok(rid, {"status": "queued" if accepted else "rejected", "text": text})
 
@@ -2997,6 +3515,9 @@ def _(rid, params: dict) -> dict:
     if accepted:
         with session["history_lock"]:
             _record_inflight_correction(session, text)
+            # #84417: purge server-queue self-duplicates of the live original
+            # so post-turn drain cannot restart the pre-correction prompt.
+            _drop_queued_duplicates_of_inflight_user(session)
             session["last_active"] = time.time()
     return _ok(
         rid,

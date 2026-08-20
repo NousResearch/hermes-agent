@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 from gateway.relay.ws_transport import PassthroughForward, _passthrough_from_wire
@@ -120,9 +120,21 @@ async def test_discord_interaction_routes_through_handle_message(adapter, monkey
     assert ev.source.chat_id == "chan-9"
     assert ev.source.scope_id == "guild-7"
     assert ev.source.user_id == "user-3"
-    assert ev.source.chat_type == "channel"
+    # LOGICAL platform + native-parity chat_type: the session key must match
+    # the connector's capability-vault binding (interactionSessionSource →
+    # buildSessionKey: platform "discord", chat_type "group") and the relay
+    # text lane. Platform.RELAY / "channel" here forked the session and made
+    # /sethome file the home channel under platforms.relay (invisible to cron).
+    assert ev.source.platform == Platform.DISCORD
+    assert ev.source.chat_type == "group"
+    # Authenticated upstream-trust marker, parity with the relay text lane
+    # (ws_transport._event_from_wire) — /sethome's via_relay guard keys on it.
+    assert ev.source.delivered_via_upstream_relay is True
     # Scope captured so the agent's reply re-asserts scope_id for egress.
     assert adapter._scope_by_chat.get("chan-9") == "guild-7"
+    # The logical platform is now recorded for egress sender selection too
+    # (_capture_scope skips only the generic "relay").
+    assert adapter._platform_by_chat.get("chan-9") == "discord"
 
 
 @pytest.mark.asyncio
@@ -164,5 +176,37 @@ async def test_application_command_subcommand_nesting_renders_names_then_values(
     assert ev.is_command() is True
     assert ev.get_command() == "skill"
     assert ev.get_command_args() == "run deploy"
+
+
+@pytest.mark.asyncio
+async def test_dm_interaction_keys_as_discord_dm(adapter, monkeypatch):
+    """A guild-less (DM) interaction keys as a Discord DM: logical platform,
+    chat_type 'dm', and the authenticated relay marker — the /sethome-in-DM
+    shape must file under platforms.discord, never platforms.relay."""
+    await adapter.connect()
+    stub = adapter._transport
+    seen = []
+
+    async def fake_handle(event):
+        seen.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+    fwd = _interaction_forward(
+        {
+            "id": "i-dm",
+            "type": 2,
+            "channel_id": "dm-chan-1",
+            "data": {"name": "sethome"},
+            "user": {"id": "u9", "username": "ben"},
+        }
+    )
+    await stub.push_passthrough(fwd)
+    assert len(seen) == 1
+    ev = seen[0]
+    assert ev.source.platform == Platform.DISCORD
+    assert ev.source.chat_type == "dm"
+    assert ev.source.scope_id is None
+    assert ev.source.user_id == "u9"
+    assert ev.source.delivered_via_upstream_relay is True
 
 

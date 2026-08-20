@@ -67,6 +67,30 @@ from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
 
 from .auth import load_project_credentials
 
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
+
+
+def _get_scoped_secret(name, default=None):
+    """Scope-aware credential read with the default-profile startup fallback.
+
+    Secondary profiles construct their adapters under a profile secret
+    scope -- the scope is authoritative and a scoped miss returns ``default``
+    (no cross-profile borrow from ``os.environ``, which may hold another
+    profile's value). The DEFAULT profile's adapter constructs and sends
+    *unscoped* under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash this path; there ``os.environ`` is that
+    profile's own value, so fall back to it. Same pattern as the Slack
+    ``SLACK_APP_TOKEN`` read (#59739) and
+    ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -258,6 +282,23 @@ _DEFAULT_MENTION_PATTERNS = [
 
 # ---------------------------------------------------------------------------
 # Module-level helpers — also used by check_fn / standalone send
+
+class PhotonSidecarStartupError(RuntimeError):
+    """Typed startup failure raised by ``_start_sidecar`` (OOF-156).
+
+    Carries the fatal-error classification instead of relying on
+    ``connect()``'s catch-all, which used to collapse every startup failure
+    into ``SIDECAR_FAILED, retryable=True`` — including deterministic ones
+    (deps that can't install on an immutable image, missing node binary)
+    that then retried forever with zero owner signal. ``retryable`` defaults
+    to True: only failures known to be deterministic mark themselves False.
+    """
+
+    def __init__(self, message: str, *, code: str = "SIDECAR_FAILED", retryable: bool = True) -> None:
+        self.code = code
+        self.retryable = retryable
+        super().__init__(message)
+
 
 class PhotonSidecarError(RuntimeError):
     """Structured failure returned by the supervised Photon sidecar."""
@@ -511,7 +552,7 @@ def _reinstall_sidecar_deps() -> None:
 def validate_config(cfg: PlatformConfig) -> bool:
     extra = cfg.extra or {}
     project_id = extra.get("project_id") or os.getenv("PHOTON_PROJECT_ID")
-    project_secret = extra.get("project_secret") or os.getenv("PHOTON_PROJECT_SECRET")
+    project_secret = extra.get("project_secret") or _get_scoped_secret("PHOTON_PROJECT_SECRET")
     if not project_id or not project_secret:
         # Fall back to auth.json
         stored_id, stored_sec = load_project_credentials()
@@ -694,7 +735,7 @@ class PhotonAdapter(BasePlatformAdapter):
             or ""
         )
         self._project_secret: str = (
-            os.getenv("PHOTON_PROJECT_SECRET")
+            _get_scoped_secret("PHOTON_PROJECT_SECRET")
             or extra.get("project_secret")
             or stored_sec
             or ""
@@ -707,7 +748,7 @@ class PhotonAdapter(BasePlatformAdapter):
         )
         self._sidecar_bind = _DEFAULT_SIDECAR_BIND
         self._sidecar_token = (
-            os.getenv("PHOTON_SIDECAR_TOKEN") or secrets.token_hex(16)
+            _get_scoped_secret("PHOTON_SIDECAR_TOKEN") or secrets.token_hex(16)
         )
         self._autostart_sidecar = str(
             os.getenv("PHOTON_SIDECAR_AUTOSTART", "true")
@@ -876,11 +917,22 @@ class PhotonAdapter(BasePlatformAdapter):
             try:
                 await self._start_sidecar()
             except Exception as e:
-                self._set_fatal_error(
-                    "SIDECAR_FAILED",
-                    f"failed to start Photon sidecar: {e}",
-                    retryable=True,
-                )
+                # Honor typed classification from _start_sidecar (OOF-153):
+                # deterministic failures (deps can't install on an immutable
+                # image, node binary missing) are retryable=False so they
+                # surface as fatal instead of silently spinning in the
+                # reconnect queue. Everything else — sidecar crashed before
+                # ready, /healthz timeout — stays retryable=True; ambiguity
+                # resolves toward retry, with the gateway's NEEDS_ATTENTION
+                # escalation as the backstop for long-lived loops.
+                if isinstance(e, PhotonSidecarStartupError):
+                    self._set_fatal_error(e.code, str(e), retryable=e.retryable)
+                else:
+                    self._set_fatal_error(
+                        "SIDECAR_FAILED",
+                        f"failed to start Photon sidecar: {e}",
+                        retryable=True,
+                    )
                 # No live sidecar — make sure no stale runtime record
                 # survives to mislead standalone senders.
                 _delete_runtime_record()
@@ -1551,10 +1603,16 @@ class PhotonAdapter(BasePlatformAdapter):
             )
             await asyncio.to_thread(_reinstall_sidecar_deps)
             if not sidecar_deps_installed():
-                raise RuntimeError(
+                # Deterministic on managed/immutable images: npm ci failed and
+                # will fail identically on every retry (OOF-153) — surface as
+                # non-retryable so it doesn't spin silently in the reconnect
+                # queue for weeks.
+                raise PhotonSidecarStartupError(
                     f"Photon sidecar deps could not be installed into "
                     f"{_sidecar_dir()} (see log for the npm error). "
-                    f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)"
+                    f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)",
+                    code="SIDECAR_DEPS_MISSING",
+                    retryable=False,
                 )
         # A `hermes update` that bumps the spectrum-ts pin rewrites
         # package-lock.json but never reinstalls node_modules, so the sidecar
@@ -1618,19 +1676,28 @@ class PhotonAdapter(BasePlatformAdapter):
                 exc,
             )
 
-        self._sidecar_proc = subprocess.Popen(  # noqa: S603
-            [self._node_bin, str(_sidecar_dir() / "index.mjs")],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=(sys.platform != "win32"),
-            # Windows: run the persistent sidecar headless so it does not open
-            # (or leave) a visible console window. CREATE_NO_WINDOW only (no
-            # DETACHED_PROCESS) so the stdin/stdout pipes above stay usable.
-            creationflags=windows_hide_flags(),
-        )
-
+        try:
+            self._sidecar_proc = subprocess.Popen(  # noqa: S603
+                [self._node_bin, str(_sidecar_dir() / "index.mjs")],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+                start_new_session=(sys.platform != "win32"),
+                # Windows: run the persistent sidecar headless so it does not open
+                # (or leave) a visible console window. CREATE_NO_WINDOW only (no
+                # DETACHED_PROCESS) so the stdin/stdout pipes above stay usable.
+                creationflags=windows_hide_flags(),
+            )
+        except FileNotFoundError as exc:
+            # Deterministic: node isn't on PATH / PHOTON_NODE_BIN points at
+            # nothing. Retrying can never fix a missing binary (OOF-153).
+            raise PhotonSidecarStartupError(
+                f"node binary not found ({self._node_bin!r}) — install Node.js "
+                f"or set PHOTON_NODE_BIN: {exc}",
+                code="SIDECAR_NODE_MISSING",
+                retryable=False,
+            ) from exc
         # Pump sidecar stderr/stdout into our logger so users see crashes.
         loop = asyncio.get_event_loop()
         self._sidecar_supervisor_task = loop.create_task(
@@ -2730,7 +2797,7 @@ async def _standalone_send(
         (pconfig.extra or {}).get("sidecar_port") or os.getenv("PHOTON_SIDECAR_PORT"),
         _DEFAULT_SIDECAR_PORT,
     )
-    token = os.getenv("PHOTON_SIDECAR_TOKEN")
+    token = _get_scoped_secret("PHOTON_SIDECAR_TOKEN")
     if not token:
         # Fall back to the runtime record the gateway persists once its
         # sidecar passes /healthz (issue #69960) — the token only exists in

@@ -34,6 +34,7 @@ from typing import Any, Dict, List
 from urllib.parse import quote
 
 from agent.memory_provider import MemoryProvider
+from agent.secret_scope import get_secret
 from agent.file_safety import raise_if_read_blocked
 from tools.registry import tool_error
 
@@ -41,6 +42,30 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "https://api.retaindb.com"
 _ASYNC_SHUTDOWN = object()
+
+
+def _load_retaindb_config() -> Dict[str, Any]:
+    """Return the ``memory.retaindb`` block from config.yaml (empty on any error).
+
+    Non-secret fields (``base_url``, ``project``) are persisted here by the
+    Dashboard; the runtime must read them back when the matching env var is
+    unset. The secret ``api_key`` continues to come through profile-scoped
+    secret resolution rather than config.yaml.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+        memory_config = config.get("memory", {}) if isinstance(config, dict) else {}
+        provider_config = memory_config.get("retaindb", {}) if isinstance(memory_config, dict) else {}
+        return dict(provider_config) if isinstance(provider_config, dict) else {}
+    except Exception:
+        return {}
+
+
+def _config_str(value: Any) -> str:
+    """Return a stripped string for a config value, else ``""``."""
+    return value.strip() if isinstance(value, str) else ""
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +364,10 @@ class _WriteQueue:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         # Thread-local connection cache — one connection per thread, reused.
         self._local = threading.local()
+        self._connections: set[sqlite3.Connection] = set()
+        self._connections_lock = threading.Lock()
+        self._shutdown_lock = threading.Lock()
+        self._shutdown = False
         self._init_db()
         self._thread.start()
         # Replay any rows left from a previous crash
@@ -349,10 +378,37 @@ class _WriteQueue:
         """Return a cached connection for the current thread."""
         conn = getattr(self._local, "conn", None)
         if conn is None:
-            conn = sqlite3.connect(str(self._db_path), timeout=30)
+            conn = sqlite3.connect(
+                str(self._db_path), timeout=30, check_same_thread=False
+            )
             conn.row_factory = sqlite3.Row
             self._local.conn = conn
+            with self._connections_lock:
+                self._connections.add(conn)
         return conn
+
+    def _close_thread_conn(self) -> None:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            return
+        self._local.conn = None
+        with self._connections_lock:
+            self._connections.discard(conn)
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    def _close_all_connections(self) -> None:
+        """Close tracked connections left by short-lived worker threads."""
+        with self._connections_lock:
+            connections = list(self._connections)
+            self._connections.clear()
+        for conn in connections:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _init_db(self) -> None:
         conn = self._get_conn()
@@ -369,14 +425,17 @@ class _WriteQueue:
 
     def enqueue(self, user_id: str, session_id: str, messages: list) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        conn = self._get_conn()
-        cur = conn.execute(
-            "INSERT INTO pending (user_id, session_id, messages_json, created_at) VALUES (?,?,?,?)",
-            (user_id, session_id, json.dumps(messages, ensure_ascii=False), now),
-        )
-        row_id = cur.lastrowid
-        conn.commit()
-        self._q.put((row_id, user_id, session_id, messages))
+        with self._shutdown_lock:
+            if self._shutdown:
+                return
+            conn = self._get_conn()
+            cur = conn.execute(
+                "INSERT INTO pending (user_id, session_id, messages_json, created_at) VALUES (?,?,?,?)",
+                (user_id, session_id, json.dumps(messages, ensure_ascii=False), now),
+            )
+            row_id = cur.lastrowid
+            conn.commit()
+            self._q.put((row_id, user_id, session_id, messages))
 
     def _flush_row(self, row_id: int, user_id: str, session_id: str, messages: list) -> None:
         try:
@@ -392,20 +451,35 @@ class _WriteQueue:
             time.sleep(2)
 
     def _loop(self) -> None:
-        while True:
-            try:
-                item = self._q.get(timeout=5)
-                if item is _ASYNC_SHUTDOWN:
-                    break
-                self._flush_row(*item)
-            except queue.Empty:
-                continue
-            except Exception as exc:
-                logger.error("RetainDB writer error: %s", exc)
+        try:
+            while True:
+                try:
+                    item = self._q.get(timeout=5)
+                    if item is _ASYNC_SHUTDOWN:
+                        break
+                    self._flush_row(*item)
+                except queue.Empty:
+                    continue
+                except Exception as exc:
+                    logger.error("RetainDB writer error: %s", exc)
+        finally:
+            # sqlite3 connections must close on their owning thread.
+            self._close_thread_conn()
 
     def shutdown(self) -> None:
-        self._q.put(_ASYNC_SHUTDOWN)
+        with self._shutdown_lock:
+            if self._shutdown:
+                return
+            self._shutdown = True
+            self._q.put(_ASYNC_SHUTDOWN)
+        # Caller thread owns connection opened by _init_db/_pending_rows.
+        self._close_thread_conn()
         self._thread.join(timeout=10)
+        if not self._thread.is_alive():
+            # MemoryManager's executor may have opened a connection on a
+            # worker that has already exited; check_same_thread=False lets
+            # shutdown close that tracked handle deterministically.
+            self._close_all_connections()
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +550,7 @@ class RetainDBMemoryProvider(MemoryProvider):
         return "retaindb"
 
     def is_available(self) -> bool:
-        return bool(os.environ.get("RETAINDB_API_KEY"))
+        return bool(get_secret("RETAINDB_API_KEY"))
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return [
@@ -488,12 +562,20 @@ class RetainDBMemoryProvider(MemoryProvider):
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        api_key = os.environ.get("RETAINDB_API_KEY", "")
-        base_url = re.sub(r"/+$", "", os.environ.get("RETAINDB_BASE_URL", _DEFAULT_BASE_URL))
+        # Non-secret fields fall back to config.yaml (written by the Dashboard)
+        # when the env var is unset: env -> config.yaml -> default.
+        provider_config = _load_retaindb_config()
+        api_key = get_secret("RETAINDB_API_KEY", "") or ""
+        base_url_raw = (
+            os.environ.get("RETAINDB_BASE_URL")
+            or _config_str(provider_config.get("base_url"))
+            or _DEFAULT_BASE_URL
+        )
+        base_url = re.sub(r"/+$", "", base_url_raw)
 
-        # Project resolution: RETAINDB_PROJECT > hermes-<profile> > "default"
+        # Project resolution: RETAINDB_PROJECT > config.yaml project > hermes-<profile> > "default"
         # If unset, the API auto-creates and uses the "default" project — no config required.
-        explicit = os.environ.get("RETAINDB_PROJECT")
+        explicit = os.environ.get("RETAINDB_PROJECT") or _config_str(provider_config.get("project"))
         if explicit:
             project = explicit
         else:
@@ -548,6 +630,9 @@ class RetainDBMemoryProvider(MemoryProvider):
         # Prevents thread accumulation if turns fire faster than prefetches complete.
         for t in self._prefetch_threads:
             t.join(timeout=2.0)
+        if any(t.is_alive() for t in self._prefetch_threads):
+            logger.debug("RetainDB prefetch still running; skipping new batch")
+            return
         threads = [
             threading.Thread(target=self._prefetch_context, args=(query,), name="retaindb-ctx", daemon=True),
             threading.Thread(target=self._prefetch_dialectic, args=(query,), name="retaindb-dialectic", daemon=True),
@@ -762,8 +847,12 @@ class RetainDBMemoryProvider(MemoryProvider):
     def shutdown(self) -> None:
         for t in self._prefetch_threads:
             t.join(timeout=3.0)
-        if self._queue:
-            self._queue.shutdown()
+        self._prefetch_threads = []
+        queue_obj = self._queue
+        self._queue = None
+        if queue_obj:
+            queue_obj.shutdown()
+        self._client = None
 
 
 def register(ctx) -> None:

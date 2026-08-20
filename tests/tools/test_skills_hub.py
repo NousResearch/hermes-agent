@@ -797,6 +797,129 @@ class TestOptionalSkillSourceBinaryAssets:
         assert bundle is None
 
 
+class TestOptionalSkillSourceLiveRepoFallback:
+    """Skills merged to main after the local install was cut must still be
+    searchable and installable without `hermes update` (live-repo fallback)."""
+
+    def _make_source(self, tmp_path, remote_dirs):
+        optional_root = tmp_path / "optional-skills"
+        optional_root.mkdir(exist_ok=True)
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+        src._remote_dirs = dict.fromkeys(remote_dirs, True)
+        return src
+
+    @staticmethod
+    def _fake_github_with_tree(remote_dirs, extra_files=()):
+        """MagicMock GitHubSource whose repo tree contains each skill dir's
+        SKILL.md plus any extra files, served byte-exact by _fetch_file_bytes."""
+        entries = []
+        contents = {}
+        for rel_dir in remote_dirs:
+            p = f"optional-skills/{rel_dir}/SKILL.md"
+            entries.append({"type": "blob", "path": p, "mode": "100644"})
+            contents[p] = b"---\nname: " + rel_dir.rsplit("/", 1)[-1].encode() + b"\n---\nBody"
+        for rel_path, data in extra_files:
+            entries.append({"type": "blob", "path": rel_path, "mode": "100644"})
+            contents[rel_path] = data
+        fake = MagicMock()
+        fake._get_repo_tree.return_value = ("main", entries)
+        fake._fetch_file_bytes.side_effect = lambda repo, path: contents.get(path)
+        return fake
+
+    def test_fetch_falls_back_to_live_repo_when_missing_locally(self, tmp_path):
+        src = self._make_source(tmp_path, ["software-development/ast-grep"])
+        src._github = self._fake_github_with_tree(
+            ["software-development/ast-grep"],
+            extra_files=[
+                ("optional-skills/software-development/ast-grep/install.sh", b"#!/bin/sh\n"),
+                ("optional-skills/software-development/ast-grep/LICENSE", b"MIT"),
+            ],
+        )
+
+        bundle = src.fetch("official/software-development/ast-grep")
+
+        assert bundle is not None
+        # Provenance is rewritten to official/builtin
+        assert bundle.source == "official"
+        assert bundle.identifier == "official/software-development/ast-grep"
+        assert bundle.trust_level == "builtin"
+        # FULL directory arrives — including root-level files GitHubSource.fetch drops
+        assert bundle.files["install.sh"] == b"#!/bin/sh\n"
+        assert bundle.files["LICENSE"] == b"MIT"
+
+    def test_fetch_bare_name_resolves_via_remote_tree(self, tmp_path):
+        src = self._make_source(tmp_path, ["software-development/ast-grep"])
+        src._github = self._fake_github_with_tree(["software-development/ast-grep"])
+
+        bundle = src.fetch("official/ast-grep")
+
+        assert bundle is not None
+        assert bundle.identifier == "official/software-development/ast-grep"
+
+    def test_fetch_ambiguous_bare_name_refuses(self, tmp_path):
+        src = self._make_source(
+            tmp_path, ["security/scanner", "devops/scanner"]
+        )
+        fake_github = MagicMock()
+        src._github = fake_github
+
+        assert src.fetch("official/scanner") is None
+        fake_github.fetch.assert_not_called()
+
+    def test_local_checkout_wins_over_remote(self, tmp_path):
+        src = self._make_source(tmp_path, ["research/local-skill"])
+        skill_dir = src._optional_dir / "research" / "local-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: local-skill\ndescription: local\n---\nBody",
+            encoding="utf-8",
+        )
+        fake_github = MagicMock()
+        src._github = fake_github
+
+        bundle = src.fetch("official/research/local-skill")
+
+        assert bundle is not None
+        fake_github.fetch.assert_not_called()
+
+    def test_fallback_rejects_traversal_rel(self, tmp_path):
+        src = self._make_source(tmp_path, ["security/whatever"])
+        fake_github = MagicMock()
+        src._github = fake_github
+
+        assert src._fetch_from_live_repo("../../etc/passwd") is None
+        fake_github.fetch.assert_not_called()
+
+    def test_search_surfaces_remote_only_skills(self, tmp_path):
+        src = self._make_source(tmp_path, ["software-development/ast-grep"])
+
+        results = src.search("ast-grep")
+
+        assert any(
+            r.identifier == "official/software-development/ast-grep"
+            and r.trust_level == "builtin"
+            for r in results
+        )
+
+    def test_inspect_surfaces_remote_only_skill(self, tmp_path):
+        src = self._make_source(tmp_path, ["software-development/ast-grep"])
+
+        meta = src.inspect("official/software-development/ast-grep")
+
+        assert meta is not None
+        assert meta.repo == "NousResearch/hermes-agent"
+        assert meta.path == "optional-skills/software-development/ast-grep"
+
+    def test_offline_degrades_to_local_only(self, tmp_path):
+        src = self._make_source(tmp_path, [])
+        fake_github = MagicMock()
+        src._github = fake_github
+
+        assert src.fetch("official/never-heard-of-it") is None
+        assert src.search("never-heard-of-it") == []
+
+
 class TestQuarantineBundleBinaryAssets:
     def test_quarantine_bundle_writes_binary_files(self, tmp_path):
         import tools.skills_hub as hub
@@ -879,6 +1002,63 @@ class TestQuarantineBundleBinaryAssets:
                 quarantine_bundle(bundle)
 
         assert not absolute_target.exists()
+
+    def test_quarantine_bundle_rejects_ads_colon_file_paths(self, tmp_path):
+        """F-02: a bundle member with a colon in a component (``file.py:payload``)
+        is an NTFS Alternate Data Stream marker — the visible file passes
+        ``rglob``-based review while hidden, scanner-invisible bytes are written
+        into it. Reject it before it reaches disk, on any OS."""
+        import tools.skills_hub as hub
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="demo",
+                files={
+                    "SKILL.md": "---\nname: demo\n---\n",
+                    "scripts/helper.py:payload": "print(24680)",
+                },
+                source="well-known",
+                identifier="well-known:https://example.com/.well-known/skills/demo",
+                trust_level="community",
+            )
+
+            with pytest.raises(ValueError, match="Unsafe bundle file path"):
+                quarantine_bundle(bundle)
+
+        assert not (tmp_path / "skills" / "scripts").exists()
+
+    def test_normalize_bundle_path_rejects_colon_anywhere(self):
+        """The colon guard covers the whole class, not just ``helper.py:payload``:
+        a colon in any component (leading drive letter, mid-path, or bare) is
+        rejected, while ordinary portable paths still normalize."""
+        from tools.skills_hub import _normalize_bundle_path
+
+        rejected = (
+            "scripts/helper.py:payload",   # trailing-component ADS marker
+            "scripts/a:b.py",              # mid-component colon
+            "a:b/scripts/helper.py",       # leading-component colon
+            "scripts/helper.py:",          # empty stream name
+            "C:",                          # bare Windows drive letter
+            "C:/Windows/System32",         # drive-qualified absolute-ish path
+        )
+        for bad in rejected:
+            with pytest.raises(ValueError, match="Unsafe bundle file path"):
+                _normalize_bundle_path(bad, field_name="bundle file path", allow_nested=True)
+
+        # Legitimate portable paths are unaffected.
+        assert _normalize_bundle_path(
+            "scripts/helper.py", field_name="bundle file path", allow_nested=True
+        ) == "scripts/helper.py"
+        assert _normalize_bundle_path(
+            "assets/data/sample.wav", field_name="bundle file path", allow_nested=True
+        ) == "assets/data/sample.wav"
 
 
 # ---------------------------------------------------------------------------
@@ -1148,14 +1328,332 @@ class TestInstallPathSafety:
         )
 
         with patch.object(hub, "SKILLS_DIR", skills_dir), \
-             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
+             patch("tools.skill_usage.record_installed") as record_installed:
             with pytest.raises(ValueError, match="symlink"):
                 hub.install_from_quarantine(
                     q_dir, "bad-skill", "", bundle, scan_result,
                 )
 
+        record_installed.assert_not_called()
         assert not (skills_dir / "bad-skill" / "leak.txt").exists()
         assert secret.read_text() == "data exfiltration payload\n"
+
+    def test_install_from_quarantine_rejects_category_bucket_overwrite(self, tmp_path):
+        """Installing a skill whose name matches an existing category directory
+        that contains other skills must NOT silently wipe that entire directory.
+
+        Regression test for GitHub issue #75983: ``hermes skills install … --name
+        research`` deleted the whole ``skills/research/`` category bucket,
+        destroying 16 unrelated skills.
+        """
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        # Simulate a user-created category bucket with multiple skills.
+        category = skills_dir / "research"
+        category.mkdir()
+        for skill in ("alpha", "bravo", "charlie"):
+            (category / skill).mkdir()
+            (category / skill / "SKILL.md").write_text(f"name: {skill}")
+
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: research\n---\n")
+
+        bundle = hub.SkillBundle(
+            name="research",
+            files={"SKILL.md": "---\nname: research\n---\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="research",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+            with pytest.raises(ValueError, match="Refusing to overwrite category directory"):
+                hub.install_from_quarantine(
+                    q_dir, "research", "", bundle, scan_result,
+                )
+
+        # Verify the category bucket and its skills are intact.
+        assert (category / "alpha" / "SKILL.md").exists()
+        assert (category / "bravo" / "SKILL.md").exists()
+        assert (category / "charlie" / "SKILL.md").exists()
+
+    def test_install_from_quarantine_allows_existing_skill_overwrite(self, tmp_path):
+        """Installing over an existing skill directory (containing SKILL.md) is
+        still allowed — that scenario is already guarded by the lock-file check
+        in do_install()."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        # Existing skill directory with SKILL.md.
+        existing = skills_dir / "my-skill"
+        existing.mkdir()
+        (existing / "SKILL.md").write_text("old content")
+        (existing / "refs").mkdir()
+        (existing / "refs" / "guide.md").write_text("old guide")
+
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: my-skill\n---\nnew")
+        (q_dir / "refs").mkdir()
+        (q_dir / "refs" / "guide.md").write_text("new guide")
+
+        bundle = hub.SkillBundle(
+            name="my-skill",
+            files={"SKILL.md": "---\nname: my-skill\n---\nnew"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="my-skill",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+            installed = hub.install_from_quarantine(
+                q_dir, "my-skill", "", bundle, scan_result,
+            )
+
+        # The old directory was replaced by the new one.
+        assert installed.exists()
+        assert (installed / "SKILL.md").read_text().strip() == "---\nname: my-skill\n---\nnew"
+
+    def test_install_from_quarantine_allows_empty_category_dir(self, tmp_path):
+        """Installing into an existing but empty category directory is allowed
+        (no sibling skills to destroy)."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        # Empty category directory (no skills inside).
+        category = skills_dir / "research"
+        category.mkdir()
+
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: research\n---\n")
+
+        bundle = hub.SkillBundle(
+            name="research",
+            files={"SKILL.md": "---\nname: research\n---\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="research",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+            installed = hub.install_from_quarantine(
+                q_dir, "research", "", bundle, scan_result,
+            )
+
+        assert installed.exists()
+        assert (installed / "SKILL.md").exists()
+
+    def test_install_from_quarantine_rejects_nested_only_category(self, tmp_path):
+        """A category whose skills live only in sub-categories (depth >= 2,
+        e.g. ``mlops/training/<skill>``) must also be protected — the guard
+        must not be fooled by the absence of direct-child skills (#75983)."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        # Nested-only category: no skill directly under mlops/, skills at depth 2.
+        for sub, name in (("training", "trl"), ("inference", "vllm")):
+            skill = skills_dir / "mlops" / sub / name
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\n")
+
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: mlops\n---\n")
+
+        bundle = hub.SkillBundle(
+            name="mlops",
+            files={"SKILL.md": "---\nname: mlops\n---\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="mlops",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+            with pytest.raises(ValueError, match="category directory"):
+                hub.install_from_quarantine(
+                    q_dir, "mlops", "", bundle, scan_result,
+                )
+
+        # Every nested skill must survive.
+        assert (skills_dir / "mlops" / "training" / "trl" / "SKILL.md").is_file()
+        assert (skills_dir / "mlops" / "inference" / "vllm" / "SKILL.md").is_file()
+
+    def test_install_from_quarantine_rejects_category_inside_skill(self, tmp_path):
+        """Installing with --category naming an existing *skill* directory must
+        be refused: it would create a hybrid skill-plus-category dir whose later
+        update/uninstall rmtree would destroy the nested skill (#75983 sibling)."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        # Existing normal skill directory.
+        outer = skills_dir / "devops"
+        outer.mkdir(parents=True)
+        (outer / "SKILL.md").write_text("---\nname: devops\n---\n")
+
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: docker\n---\n")
+
+        bundle = hub.SkillBundle(
+            name="docker",
+            files={"SKILL.md": "---\nname: docker\n---\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="docker",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+            with pytest.raises(ValueError, match="existing skill directory"):
+                hub.install_from_quarantine(
+                    q_dir, "docker", "devops", bundle, scan_result,
+                )
+
+        # The outer skill is untouched and no hybrid child was created.
+        assert (outer / "SKILL.md").is_file()
+        assert not (outer / "docker").exists()
+
+    def test_install_from_quarantine_rejects_regular_file_collision(self, tmp_path):
+        """A stray regular file at the install path must produce the caller's
+        ValueError contract, not an uncaught NotADirectoryError from iterdir/rmtree."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        (skills_dir / "notes").write_text("not a directory")
+
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: notes\n---\n")
+
+        bundle = hub.SkillBundle(
+            name="notes",
+            files={"SKILL.md": "---\nname: notes\n---\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="notes",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+            with pytest.raises(ValueError, match="not a directory"):
+                hub.install_from_quarantine(
+                    q_dir, "notes", "", bundle, scan_result,
+                )
+
+        assert (skills_dir / "notes").read_text() == "not a directory"
+
+    def test_install_from_quarantine_records_successful_install(self, tmp_path):
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir(parents=True)
+        skill_md = "---\nname: good-skill\n---\n\n# Good skill\n"
+        (q_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
+        bundle = hub.SkillBundle(
+            name="good-skill",
+            files={"SKILL.md": skill_md},
+            source="community",
+            identifier="good/source",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="good-skill",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
+             patch("tools.skill_usage.record_installed") as record_installed:
+            installed = hub.install_from_quarantine(
+                q_dir,
+                "good-skill",
+                "",
+                bundle,
+                scan_result,
+            )
+
+        assert installed == skills_dir / "good-skill"
+        assert installed.is_dir()
+        record_installed.assert_called_once_with("good-skill")
 
 
 # ---------------------------------------------------------------------------

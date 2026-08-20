@@ -1,4 +1,6 @@
 from io import StringIO
+from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -186,7 +188,7 @@ def test_check_for_skill_updates_does_not_fall_back_across_registries():
     assert "bundle" not in results[0], "must not carry a foreign registry's bundle"
 
 
-def test_do_audit_replays_official_lock_entries_with_source_provenance(
+def test_do_audit_replays_matching_install_attestation_without_refetch(
     monkeypatch, tmp_path, hub_env
 ):
     import tools.skills_guard as guard
@@ -196,25 +198,26 @@ def test_do_audit_replays_official_lock_entries_with_source_provenance(
     skill_dir.mkdir(parents=True)
     skill_text = "# Honcho\nRun `hermes honcho setup`.\n"
     (skill_dir / "SKILL.md").write_text(skill_text)
+    identifier = "official/autonomous-ai-agents/honcho"
 
     entry = {
         "name": "honcho",
         "source": "official",
-        "identifier": "official/autonomous-ai-agents/honcho",
+        "identifier": identifier,
         "trust_level": "builtin",
         "install_path": "autonomous-ai-agents/honcho",
+        "install_attestation": guard.build_install_attestation(
+            skill_dir,
+            source="official",
+            identifier=identifier,
+            trust_level="builtin",
+        ),
     }
-    official_bundle = hub.SkillBundle(
-        name="honcho",
-        files={"SKILL.md": skill_text},
-        source="official",
-        identifier=entry["identifier"],
-        trust_level="builtin",
-    )
     scanned = {}
 
-    def _scan_skill(skill_path, source="community"):
+    def _scan_skill(skill_path, source="community", **kwargs):
         scanned["source"] = source
+        scanned["allow_origin_markers"] = kwargs.get("allow_origin_markers")
         return guard.ScanResult(
             skill_name="honcho",
             source=source,
@@ -223,7 +226,7 @@ def test_do_audit_replays_official_lock_entries_with_source_provenance(
         )
 
     monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([entry]))
-    monkeypatch.setattr(hub.OptionalSkillSource, "fetch", lambda _self, _identifier: official_bundle)
+    monkeypatch.setattr(hub.OptionalSkillSource, "fetch", lambda *_args: None)
     monkeypatch.setattr(guard, "scan_skill", _scan_skill)
     monkeypatch.setattr(
         guard,
@@ -236,7 +239,34 @@ def test_do_audit_replays_official_lock_entries_with_source_provenance(
     do_audit("honcho", console=console)
 
     assert scanned["source"] == "official"
+    assert scanned["allow_origin_markers"] is True
     assert "trust=builtin" in sink.getvalue()
+
+
+def test_audit_rejects_legacy_scan_provenance_as_official_proof(tmp_path):
+    import tools.skills_guard as guard
+    from hermes_cli.skills_hub import _audit_scan_identity_for_lock_entry
+
+    skill_path = tmp_path / "demo"
+    skill_path.mkdir()
+    (skill_path / "SKILL.md").write_text("# Demo\n")
+    identifier = "official/devops/demo"
+    entry = {
+        "source": "official",
+        "identifier": identifier,
+        "trust_level": "builtin",
+        "scan_provenance": {
+            "source": "official",
+            "trust_level": "builtin",
+            "bundle_hash": guard.full_content_hash(skill_path),
+            "scanner_version": guard.SCANNER_VERSION,
+        },
+    }
+
+    assert _audit_scan_identity_for_lock_entry(entry, skill_path) == (
+        "community",
+        False,
+    )
 
 
 def test_do_audit_scans_verified_official_snapshot(monkeypatch, tmp_path, hub_env):
@@ -254,17 +284,16 @@ def test_do_audit_scans_verified_official_snapshot(monkeypatch, tmp_path, hub_en
         "identifier": "official/devops/demo",
         "trust_level": "builtin",
         "install_path": "devops/demo",
+        "install_attestation": guard.build_install_attestation(
+            skill_dir,
+            source="official",
+            identifier="official/devops/demo",
+            trust_level="builtin",
+        ),
     }
-    official_bundle = hub.SkillBundle(
-        name="demo",
-        files={"SKILL.md": official_text},
-        source="official",
-        identifier=entry["identifier"],
-        trust_level="builtin",
-    )
     scanned = {}
 
-    def _scan_skill(skill_path, source="community"):
+    def _scan_skill(skill_path, source="community", **_kwargs):
         installed_file.write_text("# Replaced after verification\n")
         scanned["path"] = skill_path
         scanned["source"] = source
@@ -277,11 +306,6 @@ def test_do_audit_scans_verified_official_snapshot(monkeypatch, tmp_path, hub_en
         )
 
     monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([entry]))
-    monkeypatch.setattr(
-        hub.OptionalSkillSource,
-        "fetch",
-        lambda _self, _identifier: official_bundle,
-    )
     monkeypatch.setattr(guard, "scan_skill", _scan_skill)
     monkeypatch.setattr(guard, "format_scan_report", lambda _result: "scan complete")
 
@@ -291,6 +315,246 @@ def test_do_audit_scans_verified_official_snapshot(monkeypatch, tmp_path, hub_en
     assert scanned["source"] == "official"
     assert scanned["content"] == official_text
     assert installed_file.read_text() == "# Replaced after verification\n"
+
+
+def test_do_audit_deep_scan_uses_the_same_private_snapshot(monkeypatch, hub_env):
+    import tools.skills_ast_audit as ast_audit
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    skill_dir = hub.SKILLS_DIR / "devops" / "demo"
+    skill_dir.mkdir(parents=True)
+    installed_file = skill_dir / "SKILL.md"
+    installed_file.write_text("# Original\n")
+    identifier = "official/devops/demo"
+    entry = {
+        "name": "demo",
+        "source": "official",
+        "identifier": identifier,
+        "trust_level": "builtin",
+        "install_path": "devops/demo",
+        "install_attestation": guard.build_install_attestation(
+            skill_dir,
+            source="official",
+            identifier=identifier,
+            trust_level="builtin",
+        ),
+    }
+    observed = {}
+
+    def _scan_skill(path, source="community", **_kwargs):
+        observed["guard_path"] = path
+        observed["guard_content"] = (path / "SKILL.md").read_text()
+        installed_file.write_text("# Changed after guard scan\n")
+        return guard.ScanResult(
+            skill_name="demo",
+            source=source,
+            trust_level="builtin",
+            verdict="safe",
+        )
+
+    def _ast_scan(path):
+        observed["ast_path"] = path
+        observed["ast_content"] = (path / "SKILL.md").read_text()
+        return object()
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([entry]))
+    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(guard, "format_scan_report", lambda _result: "guard")
+    monkeypatch.setattr(ast_audit, "ast_scan_path", _ast_scan)
+    monkeypatch.setattr(ast_audit, "format_ast_report", lambda *_args, **_kwargs: "ast")
+
+    do_audit(
+        "demo",
+        deep=True,
+        console=Console(file=StringIO(), force_terminal=False),
+    )
+
+    assert observed["guard_path"] == observed["ast_path"]
+    assert observed["guard_path"] != skill_dir
+    assert observed["guard_content"] == "# Original\n"
+    assert observed["ast_content"] == "# Original\n"
+
+
+def test_scan_skill_for_audit_rejects_redirected_source_root(tmp_path):
+    from hermes_cli.skills_hub import _scan_skill_for_audit
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "SKILL.md").write_text("# Demo\n")
+    source = tmp_path / "demo"
+    try:
+        source.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks unavailable")
+
+    with pytest.raises(OSError, match="redirect"):
+        _scan_skill_for_audit(
+            {
+                "source": "official",
+                "identifier": "official/demo",
+                "trust_level": "builtin",
+            },
+            source,
+            lambda *_args, **_kwargs: object(),
+        )
+
+
+def test_scan_skill_for_audit_rejects_source_change_during_snapshot(
+    monkeypatch, tmp_path
+):
+    import shutil
+    from hermes_cli.skills_hub import _scan_skill_for_audit
+
+    source = tmp_path / "demo"
+    source.mkdir()
+    skill_md = source / "SKILL.md"
+    skill_md.write_text("# Original\n")
+    real_copytree = shutil.copytree
+
+    def _copy_then_change(src, dst, **kwargs):
+        result = real_copytree(src, dst, **kwargs)
+        skill_md.write_text("# Changed\n")
+        return result
+
+    monkeypatch.setattr("hermes_cli.skills_hub.shutil.copytree", _copy_then_change)
+    with pytest.raises(OSError, match="changed"):
+        _scan_skill_for_audit(
+            {
+                "source": "github",
+                "identifier": "github/example/demo",
+                "trust_level": "community",
+            },
+            source,
+            lambda *_args, **_kwargs: object(),
+        )
+
+
+def test_do_audit_skips_when_private_snapshot_cannot_be_created(
+    monkeypatch, hub_env
+):
+    import tools.skills_ast_audit as ast_audit
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    skill_dir = hub.SKILLS_DIR / "devops" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# Demo\n")
+    entry = {
+        "name": "demo",
+        "source": "github",
+        "identifier": "github/example/demo",
+        "trust_level": "community",
+        "install_path": "devops/demo",
+    }
+    calls = {"guard": 0, "ast": 0}
+
+    def _guard(*_args, **_kwargs):
+        calls["guard"] += 1
+        raise AssertionError("live tree must not be scanned after snapshot failure")
+
+    def _ast(*_args, **_kwargs):
+        calls["ast"] += 1
+        raise AssertionError("live tree must not be deep-scanned after snapshot failure")
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([entry]))
+    monkeypatch.setattr(guard, "scan_skill", _guard)
+    monkeypatch.setattr(ast_audit, "ast_scan_path", _ast)
+    monkeypatch.setattr("hermes_cli.skills_hub.shutil.copytree", lambda *_a, **_k: (_ for _ in ()).throw(OSError("copy failed")))
+
+    sink = StringIO()
+    do_audit(
+        "demo",
+        deep=True,
+        console=Console(file=sink, force_terminal=False, color_system=None),
+    )
+
+    assert calls == {"guard": 0, "ast": 0}
+    assert "snapshot" in sink.getvalue().lower()
+    assert "skipped" in sink.getvalue().lower()
+
+
+def test_do_audit_rejects_lock_path_outside_skills_root(monkeypatch, tmp_path, hub_env):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    outside = tmp_path / "outside" / "demo"
+    outside.mkdir(parents=True)
+    (outside / "SKILL.md").write_text("# Outside\n")
+    entry = {
+        "name": "demo",
+        "source": "github",
+        "identifier": "github/example/demo",
+        "trust_level": "community",
+        "install_path": str(outside),
+    }
+    calls = {"scan": 0}
+
+    def _scan(*_args, **_kwargs):
+        calls["scan"] += 1
+        raise AssertionError("an out-of-root lock path must not be scanned")
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([entry]))
+    monkeypatch.setattr(guard, "scan_skill", _scan)
+
+    sink = StringIO()
+    do_audit(
+        "demo",
+        console=Console(file=sink, force_terminal=False, color_system=None),
+    )
+
+    assert calls == {"scan": 0}
+    assert "invalid" in sink.getvalue().lower()
+    assert "skipped" in sink.getvalue().lower()
+
+
+def test_do_audit_rejects_symlinked_parent_category(monkeypatch, tmp_path, hub_env):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    outside_category = tmp_path / "outside-devops"
+    target = outside_category / "demo"
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_text("# Demo\n")
+    hub.SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        (hub.SKILLS_DIR / "devops").symlink_to(
+            outside_category,
+            target_is_directory=True,
+        )
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    entry = {
+        "name": "demo",
+        "source": "official",
+        "identifier": "official/devops/demo",
+        "trust_level": "builtin",
+        "install_path": "devops/demo",
+        "install_attestation": guard.build_install_attestation(
+            target,
+            source="official",
+            identifier="official/devops/demo",
+            trust_level="builtin",
+        ),
+    }
+    calls = {"scan": 0}
+
+    def _scan(*_args, **_kwargs):
+        calls["scan"] += 1
+        raise AssertionError("a redirected category must not be scanned")
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([entry]))
+    monkeypatch.setattr(guard, "scan_skill", _scan)
+    sink = StringIO()
+    do_audit(
+        "demo",
+        console=Console(file=sink, force_terminal=False, color_system=None),
+    )
+
+    assert calls == {"scan": 0}
+    assert "invalid" in sink.getvalue().lower()
+    assert "skipped" in sink.getvalue().lower()
 
 
 def test_audit_path_is_redirect_detects_windows_reparse_points():
@@ -306,7 +570,7 @@ def test_audit_path_is_redirect_detects_windows_reparse_points():
         def lstat(self):
             return SimpleNamespace(st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
-    assert _audit_path_is_redirect(JunctionLikePath()) is True  # type: ignore[arg-type]
+    assert _audit_path_is_redirect(cast(Path, JunctionLikePath())) is True
 
 
 @pytest.mark.parametrize(
@@ -319,7 +583,7 @@ def test_audit_path_is_redirect_detects_windows_reparse_points():
                 "trust_level": "community",
                 "scan_source": "official",
             },
-            "github/example/community-skill",
+            ("github/example/community-skill", False),
             id="ignore-stored-community-source",
         ),
         pytest.param(
@@ -329,7 +593,7 @@ def test_audit_path_is_redirect_detects_windows_reparse_points():
                 "trust_level": "trusted",
                 "scan_source": "anthropics/skills/frontend-design",
             },
-            "skills-sh/anthropics/skills/frontend-design",
+            ("skills-sh/anthropics/skills/frontend-design", False),
             id="derive-trusted-source-from-identifier",
         ),
         pytest.param(
@@ -339,7 +603,7 @@ def test_audit_path_is_redirect_detects_windows_reparse_points():
                 "trust_level": "builtin",
                 "scan_source": "official",
             },
-            "github/example/community-skill",
+            ("github/example/community-skill", False),
             id="reject-forged-builtin-trust",
         ),
         pytest.param(
@@ -348,12 +612,12 @@ def test_audit_path_is_redirect_detects_windows_reparse_points():
                 "identifier": "github/example/community-skill",
                 "trust_level": "builtin",
             },
-            "community",
+            ("community", False),
             id="reject-forged-official-source",
         ),
         pytest.param(
             {"source": "official", "trust_level": "builtin"},
-            "community",
+            ("community", False),
             id="reject-missing-official-identifier",
         ),
         pytest.param(
@@ -362,93 +626,198 @@ def test_audit_path_is_redirect_detects_windows_reparse_points():
                 "identifier": "official",
                 "trust_level": "community",
             },
-            "community",
+            ("community", False),
             id="reject-bare-official-identifier",
+        ),
+        pytest.param(
+            {
+                "source": "agent-created",
+                "identifier": "agent-created",
+                "trust_level": "agent-created",
+            },
+            ("agent-created", True),
+            id="preserve-internal-agent-created-origin",
         ),
     ],
 )
-def test_audit_scan_source_rejects_unverified_lock_provenance(entry, expected):
-    from hermes_cli.skills_hub import _audit_scan_source_for_lock_entry
-
-    assert _audit_scan_source_for_lock_entry(entry) == expected
-
-
-def test_audit_scan_source_requires_package_bound_optional_skills_root(monkeypatch, tmp_path):
-    import tools.skills_hub as hub
-    from hermes_cli.skills_hub import _audit_scan_source_for_lock_entry
-
-    hostile_root = tmp_path / "hostile-optional-skills"
-    hostile_skill = hostile_root / "devops" / "demo"
-    hostile_skill.mkdir(parents=True)
-    hostile_text = "# Hostile replacement\n"
-    (hostile_skill / "SKILL.md").write_text(hostile_text)
-
-    installed_skill = tmp_path / "installed" / "demo"
-    installed_skill.mkdir(parents=True)
-    (installed_skill / "SKILL.md").write_text(hostile_text)
-    monkeypatch.setenv("HERMES_OPTIONAL_SKILLS", str(hostile_root))
-
-    entry = {
-        "source": "official",
-        "identifier": "official/devops/demo",
-        "trust_level": "builtin",
-    }
-
-    assert hub.OptionalSkillSource()._optional_dir == hostile_root
-    assert _audit_scan_source_for_lock_entry(entry, installed_skill) == "community"
-
-
-@pytest.mark.parametrize("installed_kind", ["modified", "symlink", "hash-collision"])
-def test_audit_scan_source_downgrades_noncanonical_official_content(
-    installed_kind, monkeypatch, tmp_path
+def test_audit_scan_identity_rejects_unattested_lock_provenance(
+    entry, expected, tmp_path
 ):
-    import tools.skills_hub as hub
-    from hermes_cli.skills_hub import _audit_scan_source_for_lock_entry
+    from hermes_cli.skills_hub import _audit_scan_identity_for_lock_entry
 
-    official_text = "# Official\n"
     skill_path = tmp_path / "demo"
     skill_path.mkdir()
-    bundle_files: dict[str, str | bytes]
+    (skill_path / "SKILL.md").write_text("# Demo\n")
+
+    assert _audit_scan_identity_for_lock_entry(entry, skill_path) == expected
+
+
+@pytest.mark.parametrize("installed_kind", ["modified", "symlink"])
+def test_audit_install_attestation_downgrades_changed_or_redirected_content(
+    installed_kind, tmp_path
+):
+    import tools.skills_guard as guard
+    from hermes_cli.skills_hub import _audit_scan_identity_for_lock_entry
+
+    skill_path = tmp_path / "demo"
+    skill_path.mkdir()
+    installed_file = skill_path / "SKILL.md"
+    installed_file.write_text("# Official\n")
+    identifier = "official/devops/demo"
+    attested_hash = guard.full_content_hash(skill_path)
     if installed_kind == "modified":
-        (skill_path / "SKILL.md").write_text("# Modified\n")
-        bundle_files = {"SKILL.md": official_text}
-    elif installed_kind == "symlink":
+        installed_file.write_text("# Modified\n")
+    else:
         target = tmp_path / "target.md"
-        target.write_text(official_text)
+        target.write_text("# Official\n")
+        installed_file.unlink()
         try:
-            (skill_path / "SKILL.md").symlink_to(target)
+            installed_file.symlink_to(target)
         except OSError:
             pytest.skip("symlinks unavailable")
-        bundle_files = {"SKILL.md": official_text}
-    else:
-        payload = b"payload\n"
-        (skill_path / "SKILL.md").write_bytes(
-            official_text.encode() + b"references/payload.md\x00" + payload
-        )
-        bundle_files = {
-            "SKILL.md": official_text,
-            "references/payload.md": payload,
-        }
 
     entry = {
         "source": "official",
-        "identifier": "official/devops/demo",
+        "identifier": identifier,
         "trust_level": "builtin",
+        "install_attestation": {
+            "version": 2,
+            "hash_scheme": guard.TREE_HASH_SCHEME,
+            "source": "official",
+            "identifier": identifier,
+            "trust_level": "builtin",
+            "bundle_hash": attested_hash,
+        },
     }
-    official_bundle = hub.SkillBundle(
-        name="demo",
-        files=bundle_files,
-        source="official",
-        identifier=entry["identifier"],
-        trust_level="builtin",
-    )
-    monkeypatch.setattr(
-        hub.OptionalSkillSource,
-        "fetch",
-        lambda _self, _identifier: official_bundle,
+
+    assert _audit_scan_identity_for_lock_entry(entry, skill_path) == (
+        "community",
+        False,
     )
 
-    assert _audit_scan_source_for_lock_entry(entry, skill_path) == "community"
+
+def test_audit_install_attestation_does_not_reject_executable_mode(tmp_path):
+    import tools.skills_guard as guard
+    from hermes_cli.skills_hub import _audit_scan_identity_for_lock_entry
+
+    skill_path = tmp_path / "demo"
+    skill_path.mkdir()
+    script = skill_path / "run.sh"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+    (skill_path / "SKILL.md").write_text("# Demo\n")
+    identifier = "official/devops/demo"
+    entry = {
+        "source": "official",
+        "identifier": identifier,
+        "trust_level": "builtin",
+        "install_attestation": guard.build_install_attestation(
+            skill_path,
+            source="official",
+            identifier=identifier,
+            trust_level="builtin",
+        ),
+    }
+
+    assert _audit_scan_identity_for_lock_entry(entry, skill_path) == (
+        "official",
+        True,
+    )
+
+
+def test_resolve_does_not_pair_catalog_meta_with_foreign_same_name_bundle():
+    """Inspect metadata from one registry must not ship with another registry's files.
+
+    skills.sh can inspect ``owner/repo/skills/skillopt`` while ClawHub used to
+    fetch by last path segment ``skillopt`` and return a different author's
+    SKILL.md. The header then showed the requested identifier and the preview
+    showed the wrong skill.
+    """
+    from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
+    from tools.skills_hub import SkillBundle, SkillMeta
+
+    class CatalogSource:
+        def inspect(self, identifier):
+            return SkillMeta(
+                name="skillopt",
+                description="kanban-based pipelines",
+                source="skills.sh",
+                identifier="skills-sh/latipun7/agent-skill-collections/skills/skillopt",
+                trust_level="community",
+            )
+
+        def fetch(self, identifier):
+            return None
+
+    class ForeignSlugSource:
+        def inspect(self, identifier):
+            return SkillMeta(
+                name="skillopt",
+                description="Train, evaluate, and improve Agent skill files",
+                source="clawhub",
+                identifier="skillopt",
+                trust_level="community",
+            )
+
+        def fetch(self, identifier):
+            return SkillBundle(
+                name="skillopt",
+                files={"SKILL.md": "# Train, evaluate, and improve Agent skill files\n"},
+                source="clawhub",
+                identifier="skillopt",
+                trust_level="community",
+            )
+
+    meta, bundle, matched = _resolve_source_meta_and_bundle(
+        "latipun7/agent-skill-collections/skills/skillopt",
+        [CatalogSource(), ForeignSlugSource()],
+    )
+
+    assert bundle is not None
+    assert bundle.source == "clawhub"
+    assert meta is not None
+    assert meta.source == "clawhub"
+    assert meta.identifier == "skillopt"
+    assert "kanban-based" not in (meta.description or "")
+    assert matched is not None
+    assert matched.__class__ is ForeignSlugSource
+
+
+def test_resolve_keeps_catalog_meta_when_later_sources_do_not_fetch():
+    from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
+    from tools.skills_hub import SkillMeta
+
+    class CatalogSource:
+        def inspect(self, identifier):
+            return SkillMeta(
+                name="skillopt",
+                description="kanban-based pipelines",
+                source="skills.sh",
+                identifier="skills-sh/latipun7/agent-skill-collections/skills/skillopt",
+                trust_level="community",
+            )
+
+        def fetch(self, identifier):
+            return None
+
+    class QuietSource:
+        def inspect(self, identifier):
+            return None
+
+        def fetch(self, identifier):
+            return None
+
+    meta, bundle, matched = _resolve_source_meta_and_bundle(
+        "latipun7/agent-skill-collections/skills/skillopt",
+        [CatalogSource(), QuietSource()],
+    )
+
+    assert bundle is None
+    assert meta is not None
+    assert meta.source == "skills.sh"
+    assert meta.identifier.endswith("latipun7/agent-skill-collections/skills/skillopt")
+    assert matched is not None
+    assert matched.__class__ is CatalogSource
 
 
 # ---------------------------------------------------------------------------
@@ -509,13 +878,94 @@ def _install_mocks(monkeypatch, tmp_path, source_factory, category_hint=""):
     )
     monkeypatch.setattr(
         guard, "scan_skill",
-        lambda skill_path, source="community": guard.ScanResult(
+        lambda skill_path, source="community", **_kwargs: guard.ScanResult(
             skill_name="pending", source=source, trust_level="community", verdict="safe",
         ),
     )
     monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
     monkeypatch.setattr(guard, "should_allow_install", lambda result, force=False: (True, "ok"))
     return install_calls
+
+
+def test_do_install_denies_reserved_origin_marker_from_external_identifier(
+    monkeypatch, tmp_path
+):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    bundle = hub.SkillBundle(
+        name="demo",
+        files={"SKILL.md": "# Demo\n"},
+        source="clawhub",
+        identifier="official",
+        trust_level="community",
+    )
+
+    class Source:
+        def inspect(self, _identifier):
+            return hub.SkillMeta(
+                name="demo",
+                description="demo",
+                source="clawhub",
+                identifier="official",
+                trust_level="community",
+            )
+
+        def fetch(self, _identifier):
+            return bundle
+
+    q_path = tmp_path / "skills" / ".hub" / "quarantine" / "demo"
+    q_path.mkdir(parents=True)
+    (q_path / "SKILL.md").write_text("# Demo\n")
+    observed = {}
+
+    def _scan_cached(path, source="community", **kwargs):
+        observed["source"] = source
+        observed["allow_origin_markers"] = kwargs.get("allow_origin_markers")
+        result = guard.ScanResult(
+            skill_name="demo",
+            source=source,
+            trust_level="community",
+            verdict="safe",
+        )
+        provenance = {
+            "fresh": True,
+            "scanner_version": "test",
+            "bundle_hash": guard.full_content_hash(path),
+            "rules": [],
+            "source_url": "",
+            "scanned_at": "now",
+        }
+        return result, provenance
+
+    monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path / "skills")
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(hub, "create_source_router", lambda _auth: [Source()])
+    monkeypatch.setattr(hub, "quarantine_bundle", lambda _bundle: q_path)
+    monkeypatch.setattr(
+        hub,
+        "HubLockFile",
+        lambda: type("Lock", (), {"get_installed": lambda self, _name: None})(),
+    )
+    monkeypatch.setattr(
+        hub,
+        "install_from_quarantine",
+        lambda *_args, **_kwargs: tmp_path / "skills" / "demo",
+    )
+    monkeypatch.setattr(guard, "scan_skill_cached", _scan_cached)
+    monkeypatch.setattr(guard, "format_scan_report", lambda _result: "scan")
+    monkeypatch.setattr(guard, "should_allow_install", lambda *_args, **_kwargs: (True, "ok"))
+
+    do_install(
+        "clawhub/official",
+        skip_confirm=True,
+        console=Console(file=StringIO(), force_terminal=False),
+    )
+
+    assert observed == {
+        "source": "official",
+        "allow_origin_markers": False,
+    }
 
 
 
@@ -576,3 +1026,84 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
 
+
+
+# ---------------------------------------------------------------------------
+# Local-edit protection in do_update (ported from paperclipai/paperclip#10978)
+# ---------------------------------------------------------------------------
+
+
+def _update_env(monkeypatch, tmp_path, *, edit_after_install: bool):
+    """Install a fake hub skill on disk, optionally edit it, and wire mocks.
+
+    Returns (console_sink, installs_list).
+    """
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+    from tools.skills_guard import content_hash
+
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "category" / "hub-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# hub-skill\noriginal\n")
+
+    recorded = content_hash(skill_dir)
+    if edit_after_install:
+        (skill_dir / "SKILL.md").write_text("# hub-skill\nuser edited\n")
+
+    monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(hub, "check_for_skill_updates", lambda **_kwargs: [{
+        "name": "hub-skill",
+        "identifier": "someone/hub-skill",
+        "source": "github",
+        "status": "update_available",
+    }])
+    monkeypatch.setattr(hub, "HubLockFile", lambda: type("L", (), {
+        "get_installed": lambda self, name: {
+            "install_path": "category/hub-skill",
+            "content_hash": recorded,
+        }
+    })())
+
+    installs = []
+    monkeypatch.setattr(
+        cli_hub, "do_install",
+        lambda identifier, category="", force=False, console=None, source_id=None:
+            installs.append(identifier),
+    )
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    return console, sink, installs
+
+
+def test_do_update_skips_locally_edited_skill(monkeypatch, tmp_path):
+    """A hub skill whose on-disk hash drifted from the lockfile is skipped."""
+    console, sink, installs = _update_env(monkeypatch, tmp_path, edit_after_install=True)
+
+    do_update(console=console)
+
+    assert installs == []
+    out = sink.getvalue()
+    assert "local edits" in out
+    assert "--force" in out
+
+
+def test_do_update_force_overwrites_local_edits(monkeypatch, tmp_path):
+    """--force restores the destructive replace for edited skills."""
+    console, sink, installs = _update_env(monkeypatch, tmp_path, edit_after_install=True)
+
+    do_update(console=console, force=True)
+
+    assert installs == ["someone/hub-skill"]
+    assert "local edits" not in sink.getvalue()
+
+
+def test_do_update_unmodified_skill_updates_normally(monkeypatch, tmp_path):
+    """No local drift -> the update proceeds without --force."""
+    console, sink, installs = _update_env(monkeypatch, tmp_path, edit_after_install=False)
+
+    do_update(console=console)
+
+    assert installs == ["someone/hub-skill"]
+    assert "Updated 1 skill(s)" in sink.getvalue()

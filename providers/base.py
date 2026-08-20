@@ -72,6 +72,12 @@ class ProviderProfile:
     # (e.g. Xiaomi MiMo, which returns 400 "text is not set").
     supports_vision_tool_messages: bool = True
 
+    # True only when this provider's Chat Completions endpoint explicitly
+    # documents ``prompt_cache_key`` as an accepted request body field.  This
+    # is deliberately opt-in: many OpenAI-compatible endpoints reject unknown
+    # top-level fields rather than ignoring them.
+    supports_prompt_cache_key: bool = False
+
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.
     # Only agentic models that support tool calling should appear here.
@@ -94,6 +100,22 @@ class ProviderProfile:
     # empty = use main model
 
     # ── Hooks (override in subclass for complex providers) ───
+
+    def resolve_aux_model(self, *, vision: bool = False) -> str:
+        """Return a LIVE cheap-model id for auxiliary tasks, or "".
+
+        ``default_aux_model`` is a hardcoded id in source, so it rots: when the
+        provider retires that model every auxiliary call spends a round-trip
+        404ing before the retry net catches it. Providers that publish a
+        machine-readable recommendation should override this and query it, so
+        the cheap tier tracks the upstream catalog instead of a constant a human
+        has to remember to bump.
+
+        Contract: cheap to call (implementations must cache — this runs on
+        client-resolution paths), never raises, and returns "" when it has no
+        answer so the caller falls through to ``default_aux_model``.
+        """
+        return ""
 
     def get_hostname(self) -> str:
         """Return the provider's base hostname for URL-based detection.
@@ -185,11 +207,17 @@ class ProviderProfile:
         the provider does not support live model listing.
 
         Resolution order for the endpoint URL:
-          1. self.models_url  (explicit override — use when the models
+          1. base_url + "/models", but ONLY when the caller passed a base_url
+             that differs from this profile's default (a user-configured
+             model.base_url pointing at a proxy/custom endpoint). Callers
+             pass base_url unconditionally — falling back to the profile
+             default when the user configured nothing — so equality with
+             self.base_url means "not customised" and must not shadow
+             models_url.
+          2. self.models_url  (explicit override — use when the models
              endpoint differs from the inference base URL, e.g. OpenRouter
              exposes a public catalog at /api/v1/models while inference is
              at /api/v1)
-          2. base_url (caller override — user-configured model.base_url)
           3. self.base_url + "/models"  (standard OpenAI-compat fallback)
 
         The default implementation sends Bearer auth when api_key is given
@@ -199,12 +227,19 @@ class ProviderProfile:
         Callers must always fall back to the static _PROVIDER_MODELS list
         when this returns None.
         """
-        effective_base = base_url or self.base_url
-        url = (self.models_url or "").strip()
-        if not url:
-            if not effective_base:
-                return None
-            url = effective_base.rstrip("/") + "/models"
+        caller_base = (base_url or "").strip()
+        effective_base = caller_base or self.base_url
+        custom_base = bool(caller_base) and (
+            caller_base.rstrip("/") != (self.base_url or "").rstrip("/")
+        )
+        if custom_base:
+            url = caller_base.rstrip("/") + "/models"
+        else:
+            url = (self.models_url or "").strip()
+            if not url:
+                if not effective_base:
+                    return None
+                url = effective_base.rstrip("/") + "/models"
 
         import json
         import urllib.request

@@ -19,6 +19,16 @@ database:
   # journal_size_limit: 67108864 # cap the WAL/journal file size in bytes
 
 # =============================================================================
+# Runtime Limits
+# =============================================================================
+# Long-running Hermes server processes raise their RLIMIT_NOFILE soft limit to
+# this value when the operating system permits it. The value is clamped to the
+# hard limit and never lowers an already higher soft limit. Set to 0, false, or
+# null to disable the adjustment. Default: 4096.
+runtime:
+  nofile_soft_limit: 4096
+
+# =============================================================================
 # Model Configuration
 # =============================================================================
 model:
@@ -122,6 +132,67 @@ model:
   #       CF-Access-Client-Id: "xxxx.access"
   #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"
   #       X-Client-Name: "hermes-agent"
+# providers:
+#   meta:
+#     base_url: https://api.meta.ai/v1
+#     api_key: ${MODEL_API_KEY}
+#     # api_mode auto-detected as codex_responses for api.meta.ai; no need to set
+#     # (the bundled meta-ai provider covers this — a named custom provider is
+#     # only needed for a non-default Meta-compatible endpoint)
+
+
+# Command-minted credentials (optional): key_cmd
+# ------------------------------------------------------------------
+# Enterprise gateways often issue SHORT-LIVED bearers (SSO/OIDC brokers, cloud
+# IAM, internal auth proxies) rather than static API keys, so a value copied
+# into .env via `key_env` is stale within the hour and every later request 401s.
+# `key_cmd` names a command that PRINTS a token instead: Hermes runs it per
+# request (cached until shortly before expiry), so long sessions keep working
+# with no restart.
+#
+# Contract: print ONLY the token on stdout, either bare or as JSON with an
+# "access_token" field ("expires_in" is honoured). Same shape as OAuth 2.0
+# token endpoints, Claude Code's `apiKeyHelper`, `gcloud auth
+# print-access-token`, and `aws ecr get-login-password`.
+#
+# Precedence: an explicit --api-key still wins; otherwise key_cmd is preferred
+# over inline api_key / key_env on that entry.
+#
+# Applies to the main agent turn and to auxiliary tasks (title generation,
+# context compression, vision, embedding) alike.
+#
+# Not to be confused with `secrets.command`, which is a different mechanism:
+# that one runs a helper ONCE at startup to populate env vars for many secrets
+# at the process level. Use it for a vault or keychain helper that hands back a
+# KEY=VALUE blob. Use `key_cmd` when ONE provider needs a credential refreshed
+# DURING a session, because a startup-time env var cannot be re-minted after it
+# expires.
+#
+# providers:
+#   my-gateway:
+#     base_url: "https://gateway.internal.example.com/v1"
+#     api_mode: chat_completions
+#     key_cmd: "my-auth-cli print-token --profile prod"
+#
+# Worked example — an AI gateway that routes by model family, so one entry per
+# wire format shares the same credential helper:
+#
+# providers:
+#   dbx:                             # OpenAI-compatible (MLflow) route
+#     base_url: "https://<workspace>.cloud.databricks.com/ai-gateway/mlflow/v1"
+#     api_mode: chat_completions
+#     model: databricks-claude-sonnet-4-6
+#     key_cmd: "databricks auth token -p MY-PROFILE"
+#   dbx-gpt:                         # OpenAI Responses route
+#     base_url: "https://<workspace>.cloud.databricks.com/ai-gateway/openai/v1"
+#     api_mode: codex_responses
+#     model: databricks-gpt-5-5
+#     key_cmd: "databricks auth token -p MY-PROFILE"
+#   dbx-claude:                      # Anthropic Messages route
+#     base_url: "https://<workspace>.cloud.databricks.com/ai-gateway/anthropic"
+#     api_mode: anthropic_messages
+#     model: databricks-claude-fable-5
+#     key_cmd: "databricks auth token -p MY-PROFILE"
 
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,
@@ -155,6 +226,26 @@ model:
 #     models:
 #       gpt-5.4:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
+
+# =============================================================================
+# Unified Timeouts (operation deadlines)
+# =============================================================================
+# One place to override Hermes's internal operation deadlines (seconds).
+# Keys are dotted paths resolved by agent/deadline.py:resolve_timeout().
+# Precedence: this section > legacy HERMES_* env var (back-compat) > built-in
+# default. 0 or a negative value disables the bound (unbounded); very large
+# values are clamped to a platform-safe maximum automatically.
+#
+# Currently resolved keys (more paths migrate here over time — see issue #85125):
+#
+# timeouts:
+#   tools:
+#     concurrent_batch: 420   # Deadline for a parallel tool-call batch
+#                             # (legacy env: HERMES_CONCURRENT_TOOL_TIMEOUT_S)
+#     sequential_call: 420    # Deadline for one sequentially-executed tool call.
+#                             # Defaults to concurrent_batch's value so the two
+#                             # executor paths stay in sync; human waits
+#                             # (approval prompts, clarify) never count against it.
 
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
@@ -215,6 +306,16 @@ model:
 # worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
 # =============================================================================
+# Kanban Review Dispatch
+# =============================================================================
+# First-class review tasks are dispatched automatically by default. The worker
+# is spawned with the bundled sdlc-review skill and can approve, request changes
+# back to the original implementer, or escalate a genuine external blocker.
+# Disable this only when every review is performed manually from the dashboard.
+kanban:
+  review_dispatch: true
+
+# =============================================================================
 # Terminal Tool Configuration
 # =============================================================================
 # Choose ONE of the following terminal configurations by uncommenting it.
@@ -230,6 +331,8 @@ model:
 terminal:
   backend: "local"
   cwd: "."  # For local backend: "." = current directory. Ignored for remote backends unless a backend documents otherwise.
+  # Desktop xterm font. Install the font locally; Nerd Fonts render Powerlevel10k glyphs.
+  # font_family: "MesloLGS NF"  # Also accepts a CSS stack; blank uses bundled JetBrains Mono.
   timeout: 180
   # HOME policy for tool subprocesses:
   #   auto    - default: host uses your real HOME; containers use HERMES_HOME/home
@@ -374,6 +477,9 @@ terminal:
 #   tirith_path: "tirith"       # Path to tirith binary (supports ~ expansion)
 #   tirith_timeout: 5           # Scan timeout in seconds
 #   tirith_fail_open: true      # Allow commands if tirith unavailable
+#   approval:
+#     transport: builtin        # Or an explicitly enabled plugin transport name
+#     transport_fallback: deny  # Set builtin to opt into fallback on transport failure
 
 # =============================================================================
 # Browser Tool Configuration
@@ -500,6 +606,18 @@ compression:
   #   off    = Hermes will not auto-trigger compaction; Codex may still compact natively
   codex_app_server_auto: native
 
+  # Native OpenAI Responses server-side compaction (default: false). When true,
+  # gpt-5.6-family models on the DIRECT OpenAI API (api.openai.com) or a ChatGPT
+  # Codex subscription compact server-side: OpenAI prunes older context into an
+  # encrypted checkpoint that Hermes replays on later turns. No other provider,
+  # route, or model is affected. Hermes' local compression stays armed as the
+  # fallback and still handles every non-eligible session.
+  codex_responses_native: false
+
+  # Server-side compaction trigger in input tokens. Clamped below the local
+  # compression threshold at request time so the server compacts first.
+  codex_responses_compact_threshold: 200000
+
   # Number of non-system messages to protect at the head of the transcript, in
   # ADDITION to the system prompt (which is always implicitly protected).
   # Head messages are NEVER summarized — they survive every compression
@@ -552,6 +670,19 @@ compression:
 
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
+
+# =============================================================================
+# Tool-result budget (optional)
+# =============================================================================
+# Controls when a large tool result is spilled to disk (full output saved to
+# $HERMES_HOME/cache/spillover, preview + path kept in context). MCP tool
+# results (tools named mcp_*) spill at a tighter 50,000-char threshold than
+# the generic 100K default: MCP servers routinely return un-paginated 20-50K
+# payloads that bloat context and slow every subsequent turn. Nothing is
+# lost — the full result is on disk and readable with read_file.
+#
+# tool_budget:
+#   mcp_result_size_chars: 50000   # per-result spillover threshold for mcp_* tools
 
 # =============================================================================
 # Anthropic prompt caching TTL
@@ -650,6 +781,33 @@ prompt_caching:
 #                           # extra_body:
 #                           #   chat_template_kwargs:
 #                           #     enable_thinking: false
+#
+#   # Auto-generated short session titles after the first exchange.
+#   # Each active Discord/Telegram channel can spawn a background title
+#   # call.  Cap concurrency to keep retries during provider incidents
+#   # from amplifying the request burst.  Leave unset for legacy behavior
+#   # (unlimited).
+#   title_generation:
+#     provider: "auto"
+#     model: ""
+#     # max_concurrency: 2    # Optional: cap simultaneous title calls
+#
+#   # Context compression — summarizes long sessions to shrink the prompt.
+#   # Heavy and often hits the slowest provider chain.  Setting a small
+#   # cap prevents many sessions from compressing simultaneously during
+#   # provider degradation.  Leave unset for legacy behavior (unlimited).
+#   compression:
+#     provider: "auto"
+#     model: ""
+#     # max_concurrency: 2    # Optional: cap simultaneous compression calls
+#
+#   # Post-turn memory/skill self-improvement review fork. Runs after a turn
+#   # when the nudge intervals fire; writes skills/memories in a daemon thread.
+#   # Usage is recorded under session_model_usage task='background_review'.
+#   background_review:
+#     enabled: true            # false = skip automatic forks (/refine still works)
+#     provider: "auto"         # or pin a cheaper model (see memory.md)
+#     model: ""
 
 # =============================================================================
 # Persistent Memory
@@ -674,11 +832,6 @@ memory:
   # Periodic memory nudge: remind the agent to consider saving memories
   # every N user turns. Set to 0 to disable. Only active when memory is enabled.
   nudge_interval: 10        # Nudge every 10 user turns (0 = disabled)
-
-  # Memory flush: give the agent one turn to save memories before context is
-  # lost (compression, /new, /reset, exit). Set to 0 to disable.
-  # For exit/reset, only fires if the session had at least this many user turns.
-  flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
 
 # =============================================================================
 # Session Reset Policy (Messaging Platforms)
@@ -805,16 +958,50 @@ agent:
   # API responses.  Only fires after the agent has been idle for this duration.
   # gateway_timeout: 1800
 
+  # Maximum time an alias routing key waits for an active turn holding the same
+  # resolved session lease. On expiry Hermes rejects this inbound message and
+  # asks the user to resend rather than running it without serialization.
+  # Non-positive values fall back to the 1800-second default.
+  # gateway_turn_lease_timeout: 1800
+
   # Staged warning: send a warning before escalating to full timeout.
   # Fires once per run when inactivity reaches this threshold (seconds).
   # Set to 0 to disable the warning.
   # gateway_timeout_warning: 900
+
+  # Session stall watchdog (seconds). When a busy session has a pending
+  # inbound follow-up and the agent activity clock is idle this long, the
+  # gateway logs a WARNING and notifies the user to try /new. Does not kill
+  # the turn (see gateway_timeout). 0 = disable. Default 300.
+  # session_stall_timeout: 300
+
+  # Related in-agent compression timeouts (they live under the top-level
+  # compression: block, shown here for discoverability next to the stall
+  # watchdog they complement — a hung compression is a common stall cause):
+  # compression:
+  #   context_timeout_seconds: 120          # inactivity budget for in-agent
+  #                                         # compress_context (0 = disable)
+  #   context_total_ceiling_seconds: 600    # absolute cap on the pre-commit
+  #                                         # wait even while tokens stream
 
   # Graceful drain timeout for gateway stop/restart (seconds).
   # Default 0 = no drain: a restart interrupts in-flight agents immediately,
   # cleans up, and exits. Set a positive value only if you want a grace
   # window on /restart, and keep it well under systemd's TimeoutStopSec.
   # restart_drain_timeout: 0
+
+  # Cron-only floor under the same drain (seconds). Default 30.
+  # restart_drain_timeout above is written for chat turns, which are cheap to
+  # interrupt: the user is told the gateway is restarting and the session
+  # resumes on their next message. A cron run has no such safety net — it is
+  # recorded in jobs.json as a permanent failure, nobody is waiting on it, and
+  # a recurring job simply skips to its next schedule. So in-flight cron work
+  # gets its own grace window instead of inheriting the 0 above.
+  # Clamped at runtime to the shutdown-watchdog leash (restart_drain_timeout
+  # + 60s) minus teardown headroom, so values past ~50s need a matching
+  # TimeoutStopSec bump to take effect. Set 0 to opt out and drain cron on
+  # restart_drain_timeout like before.
+  # cron_drain_timeout: 30
 
   # Upper bound (seconds) a submitted prompt waits for the deferred agent
   # build (MCP discovery, model metadata, skills scan) before failing with a
@@ -879,22 +1066,19 @@ agent:
   #   "deepseek/deepseek-v4-pro": "xhigh" # dots and dashes are interchangeable
   reasoning_overrides: {}
   
-  # Predefined personalities (use with /personality command)
-  personalities:
-    helpful: "You are a helpful, friendly AI assistant."
-    concise: "You are a concise assistant. Keep responses brief and to the point."
-    technical: "You are a technical expert. Provide detailed, accurate technical information."
-    creative: "You are a creative assistant. Think outside the box and offer innovative solutions."
-    teacher: "You are a patient teacher. Explain concepts clearly with examples."
-    kawaii: "You are a kawaii assistant! Use cute expressions like (◕‿◕), ★, ♪, and ~! Add sparkles and be super enthusiastic about everything! Every response should feel warm and adorable desu~! ヽ(>∀<☆)ノ"
-    catgirl: "You are Neko-chan, an anime catgirl AI assistant, nya~! Add 'nya' and cat-like expressions to your speech. Use kaomoji like (=^･ω･^=) and ฅ^•ﻌ•^ฅ. Be playful and curious like a cat, nya~!"
-    pirate: "Arrr! Ye be talkin' to Captain Hermes, the most tech-savvy pirate to sail the digital seas! Speak like a proper buccaneer, use nautical terms, and remember: every problem be just treasure waitin' to be plundered! Yo ho ho!"
-    shakespeare: "Hark! Thou speakest with an assistant most versed in the bardic arts. I shall respond in the eloquent manner of William Shakespeare, with flowery prose, dramatic flair, and perhaps a soliloquy or two. What light through yonder terminal breaks?"
-    surfer: "Duuude! You're chatting with the chillest AI on the web, bro! Everything's gonna be totally rad. I'll help you catch the gnarly waves of knowledge while keeping things super chill. Cowabunga! 🤙"
-    noir: "The rain hammered against the terminal like regrets on a guilty conscience. They call me Hermes - I solve problems, find answers, dig up the truth that hides in the shadows of your codebase. In this city of silicon and secrets, everyone's got something to hide. What's your story, pal?"
-    uwu: "hewwo! i'm your fwiendwy assistant uwu~ i wiww twy my best to hewp you! *nuzzles your code* OwO what's this? wet me take a wook! i pwomise to be vewy hewpful >w<"
-    philosopher: "Greetings, seeker of wisdom. I am an assistant who contemplates the deeper meaning behind every query. Let us examine not just the 'how' but the 'why' of your questions. Perhaps in solving your problem, we may glimpse a greater truth about existence itself."
-    hype: "YOOO LET'S GOOOO!!! 🔥🔥🔥 I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS! 💪😤🚀"
+  # Custom personalities (use with /personality command).
+  # Built-ins (helpful, concise, technical, creative, teacher, kawaii, catgirl,
+  # pirate, shakespeare, surfer, noir, uwu, philosopher, hype) are always
+  # available on every surface — defined once in hermes_cli/personality.py.
+  # Entries here ADD new personalities or OVERRIDE a built-in by name.
+  # The active selection is stored in display.personality (never here, and
+  # never in agent.system_prompt — that field is your manual system prompt).
+  personalities: {}
+  #   mentor: "You are a supportive mentor. Guide, don't lecture."
+  #   reviewer:
+  #     system_prompt: "You are a meticulous code reviewer."
+  #     tone: "direct"
+  #     style: "terse"
 
 # =============================================================================
 # Toolsets
@@ -986,6 +1170,11 @@ platform_toolsets:
 #         priority_mode: prepend
 #         priority:
 #           - my_plugin_command
+#   slack:
+#     extra:
+#       # Render live tool calls as Slack-native plan/task cards. This explicit
+#       # opt-in works even though Slack text tool_progress defaults to off.
+#       native_task_cards: false
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under
@@ -1151,6 +1340,37 @@ platform_toolsets:
 stt:
   enabled: true
   # provider: "local"          # auto-detected if omitted
+  # --- Cloud pre-upload silence trim (groq/openai/mistral/xai/elevenlabs/deepinfra) ---
+  # Local whisper gets Silero VAD; cloud endpoints otherwise receive raw audio —
+  # silence inflates upload time, per-audio-minute billing, and hallucination risk.
+  # Collapses pauses with ffmpeg client-side; clips under 12s skip the trim, and
+  # on any failure the original uploads untouched.
+  # cloud_trim_silence: true   # set false to always upload the original audio
+  # cloud_trim_threshold_db: -40  # audio quieter than this counts as silence
+  # cloud_trim_keep_ms: 300    # how much of each pause survives (keeps natural pacing)
+  # Optional static transcription prompt: vocabulary/context hints for
+  # prompt-capable backends. Composition is deterministic: this config value
+  # is the base, then `pre_transcription` hooks run in registration order with
+  # last-writer-wins semantics per field.
+  #
+  # Privacy: the final prompt is sent to the configured STT provider alongside
+  # the audio. Do not include secrets or session context you would not send to
+  # that provider.
+  #
+  # Length / truncation contract: Whisper-family backends (local, openai,
+  # groq, deepinfra) only use the final ~224 prompt tokens, so Hermes
+  # truncates longer prompts client-side (keeping the tail) with a WARNING
+  # log — never an error. Other backends own their own validation.
+  #
+  # Provider behavior:
+  #   local (faster-whisper)  -> `initial_prompt`, forwarded unchanged
+  #   openai / groq          -> `prompt`, forwarded unchanged
+  #   mistral                -> `prompt`, forwarded unchanged
+  #   deepinfra              -> OpenAI-compatible `prompt`, unchanged
+  #   local_command/xai/
+  #   elevenlabs             -> unsupported; DEBUG log, then continue
+  #   plugin providers       -> `prompt` in `**extra`; plugin owns limits
+  # prompt: "Hermes, Teknium, Nous Research, kanban"
   local:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
@@ -1160,7 +1380,8 @@ stt:
     #                          # Set false to restore raw behavior (e.g. transcribing music/ambient audio).
     # vad_min_silence_ms: 500  # min silence (ms) that splits speech chunks when vad is on
     # no_speech_prob_threshold: 0.6  # drop a segment only if no_speech_prob > this...
-    # logprob_threshold: -1.0        # ...AND avg_logprob < this (both must hit — quiet real speech survives)
+    # logprob_threshold: -1.0       # ...AND avg_logprob < this (both must hit — quiet real speech survives)
+    # unload_after_idle_seconds: 0  # 0=never unload (default); e.g. 300 releases the model after 5min idle (frees VRAM on GPU; next voice message reloads it)
   language: "en"               # GLOBAL language hint for every STT provider (per-provider language wins). Set "" for auto-detect.
   # groq:
   #   model: "whisper-large-v3-turbo"
@@ -1188,6 +1409,19 @@ stt:
 #     # live result.
 #     model: ""
 #     voice: "default"
+
+# "Hey Hermes" hands-free wake word (off by default; toggle with /wake).
+# Full engine/provider options inherit from DEFAULT_CONFIG in
+# hermes_cli/config_defaults.py — only capture placement is documented here.
+# wake_word:
+#   enabled: false
+#   capture: "auto"    # auto | local | client
+#                      # auto: backend PortAudio mic when one exists; a remote
+#                      #       desktop on a mic-less (headless/VPS) backend
+#                      #       streams its own mic via the wake.feed RPC.
+#                      # local: always the backend mic (wake_word.input_device).
+#                      # client: always desktop-streamed PCM (detection stays
+#                      #         on the backend).
 
 # Image generation. Each provider plugin reads its own ``image_gen.<name>``
 # block; deepinfra discovers models live from
@@ -1238,8 +1472,8 @@ code_execution:
 # The delegate_task tool spawns child agents with isolated context.
 # Supports single tasks and batch mode (default 3 parallel, configurable).
 delegation:
-  max_iterations: 50                          # Max tool-calling turns per child (default: 50)
-  # max_concurrent_children: 3                # Max parallel child agents per batch (default: 3, floor: 1, no ceiling).
+  max_iterations: 250                         # Max tool-calling turns per child (default: 250)
+  # max_concurrent_children: 10               # Max parallel child agents per batch (default: 10, floor: 1, no ceiling).
                                               # WARNING: values above 10 multiply API cost linearly.
   # max_spawn_depth: 1                        # Delegation tree depth cap (range: 1-3, default: 1 = flat).
                                               # Raise to 2 to allow workers to spawn their own subagents.
@@ -1254,6 +1488,10 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  #                                           # Cost tip: keep the parent on a frontier model and pin
+  #                                           # delegation.model to an inexpensive one — children carry the
+  #                                           # vast majority of tokens, so this is where spend is cut while
+  #                                           # planning quality stays with the frontier parent.
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)
@@ -1352,11 +1590,13 @@ display:
   # Background process notifications (gateway/messaging only).
   # Controls how chatty the process watcher is when you use
   # terminal(background=true, notify_on_complete=true) from Telegram/Discord/etc.
+  #   concise: One-line status message on completion; failures include a short
+  #            output tail (default)
   #   off:     No watcher messages at all
-  #   result:  Only the final completion message
-  #   error:   Only the final message when exit code != 0
-  #   all:     Running output updates + final message (default)
-  background_process_notifications: all
+  #   result:  Only the final raw-output completion message
+  #   error:   Only the final raw-output message when exit code != 0
+  #   all:     Running output updates + final raw-output message
+  background_process_notifications: concise
 
 
   # Play terminal bell when agent finishes a response.
@@ -1669,3 +1909,6 @@ updates:
 #     command: "cat /run/user/1000/hermes-secrets.env"
 #     helper_timeout_seconds: 3
 #     override_existing: false             # .env/shell win by default
+#   # This runs ONCE per process at startup, so it cannot replace a credential
+#   # that expires mid-session. For a single provider whose token needs
+#   # re-minting during a session, use `providers.<name>.key_cmd` instead.

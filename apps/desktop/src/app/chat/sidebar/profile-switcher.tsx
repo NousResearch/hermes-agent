@@ -28,8 +28,17 @@ import { Codicon } from '@/components/ui/codicon'
 import { ColorSwatches } from '@/components/ui/color-swatches'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -42,6 +51,7 @@ import {
   reorderStepHaptic
 } from '@/lib/reorder'
 import { cn } from '@/lib/utils'
+import { $hasMultipleConnections } from '@/store/connections'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -52,6 +62,7 @@ import {
   $profileScope,
   ALL_PROFILES,
   normalizeProfileKey,
+  profileLabel,
   refreshActiveProfile,
   selectProfile,
   setProfileColor,
@@ -59,20 +70,22 @@ import {
   setShowAllProfiles,
   sortByProfileOrder
 } from '@/store/profile'
+import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
-import { PROFILES_ROUTE } from '../../routes'
+import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../../routes'
 
 import { useProfilePrewarm } from './use-profile-prewarm'
+import { useProfileRailRefreshOnActive } from './use-profile-rail-refresh-on-active'
 
 const RAIL_GAP = 4 // px — matches gap-1 between squares.
 
 // Past this many profiles the strip of colored squares stops scaling (tiny
 // drag targets, endless horizontal scroll), so the rail collapses to a compact
-// select. Drag-reorder and long-press-recolor live only on the squares path.
+// menu. Drag-reorder and long-press-recolor live only on the squares path.
 const PROFILE_DROPDOWN_THRESHOLD = 13
 
 // Neighbors reflow on RAIL_TRANSITION; the dragged square glides between
@@ -100,10 +113,9 @@ const stepThroughCells: Modifier = ({ containerNodeRect, draggingNodeRect, trans
 
 // Arc-Spaces-style profile rail at the sidebar foot: a default↔all toggle pinned
 // left, the colored named profiles scrolling between, and Manage pinned right.
-// The active profile pops in its own color — the "where am I" cue. Single-
-// profile users see the "+" (create their first profile) and the Manage
-// overflow (edit the default profile's SOUL.md); the colored named squares
-// and the default↔all toggle only appear once a second profile exists.
+// The active profile pops in its own color — the "where am I" cue. Gateway
+// identity lives in the statusbar, so this strip remains entirely available to
+// profiles regardless of how many backends are registered.
 export function ProfileRail() {
   const { t } = useI18n()
   const p = t.profiles
@@ -112,6 +124,7 @@ export function ProfileRail() {
   const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
+  const multipleConnections = useStore($hasMultipleConnections)
   const navigate = useNavigate()
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -202,11 +215,13 @@ export function ProfileRail() {
     }
   }
 
-  // Re-pull the running profile + list on mount so a profile created elsewhere
-  // shows up; cheap and best-effort.
-  useEffect(() => {
-    void refreshActiveProfile()
-  }, [])
+  // Re-pull the running profile + list on mount, and again whenever the window
+  // regains focus/visibility -- a profile created, deleted, or renamed by
+  // another surface (Manage Profiles, another window, the CLI) leaves this
+  // rail's cached $profiles stale until something re-fetches it. See
+  // use-profile-rail-refresh-on-active.ts for the extracted (and tested)
+  // wiring.
+  useProfileRailRefreshOnActive()
 
   // Open the create dialog when the `profile.create` hotkey fires (the dialog
   // state lives here, so the global keybind bumps a request atom we watch).
@@ -224,7 +239,7 @@ export function ProfileRail() {
   }, [createRequest])
 
   return (
-    <div aria-label="Profiles" className="flex items-center gap-0.5" data-slot="profile-rail" role="tablist">
+    <div aria-label={p.title} className="flex min-w-0 items-center gap-0.5" data-slot="profile-rail" role="group">
       {/* One button toggles default ↔ all: home face when scoped to a profile,
           layers face when showing everything. Pinned left like Manage is right.
           Hidden until a second profile exists. */}
@@ -235,7 +250,7 @@ export function ProfileRail() {
           <ProfilePill
             active={isAll || onDefault}
             glyph={isAll ? 'layers' : 'home'}
-            label={onDefault ? p.showAllProfiles : p.switchToProfile(defaultProfile.name)}
+            label={onDefault ? p.showAllProfiles : p.switchToProfile(profileLabel(defaultProfile))}
             onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
           />
         ) : (
@@ -247,7 +262,7 @@ export function ProfileRail() {
         <ProfilePill
           active
           glyph="home"
-          label={defaultProfile.name}
+          label={profileLabel(defaultProfile)}
           onSelect={() => selectProfile(defaultProfile.name)}
         />
       )}
@@ -260,10 +275,11 @@ export function ProfileRail() {
           <ProfileDropdown
             activeKey={isAll ? null : activeKey}
             colors={colors}
+            onCreate={() => setCreateOpen(true)}
+            onImport={() => void runImportProfileFlow()}
             onSelect={selectProfile}
             profiles={named}
           />
-          <AddProfileButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
         </div>
       ) : (
         <div
@@ -288,7 +304,7 @@ export function ProfileRail() {
                       active={!isAll && normalizeProfileKey(profile.name) === activeKey}
                       color={resolveProfileColor(profile.name, colors)}
                       key={profile.name}
-                      label={profile.name}
+                      label={profileLabel(profile)}
                       onDelete={() => setPendingDelete(profile)}
                       onEditSoul={() => setPendingSoul(profile.name)}
                       onRecolor={color => setProfileColor(profile.name, color)}
@@ -302,6 +318,7 @@ export function ProfileRail() {
           )}
 
           <AddProfileButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
+          <ImportProfileButton label={p.importProfile} />
         </div>
       )}
 
@@ -310,6 +327,18 @@ export function ProfileRail() {
           single-profile user must be able to edit the default's persona
           without first creating a throwaway second profile. */}
       <ProfilePill active={false} glyph="ellipsis" label={p.manageProfiles} onSelect={() => navigate(PROFILES_ROUTE)} />
+
+      {/* Multi-gateway discoverability: before a second source exists, a plug
+          pinned beside Manage deep-links to the unified Gateways page. Once
+          there are several sources, the same action lives in their selector. */}
+      {!multipleConnections && (
+        <ProfilePill
+          active={false}
+          glyph="plug"
+          label={p.connectGateway}
+          onSelect={() => navigate(`${SETTINGS_ROUTE}?tab=gateway`)}
+        />
+      )}
 
       {/* Land in the new profile on a fresh chat (selectProfile triggers the
           new-session reset), not stuck on the session you were just in. */}
@@ -325,6 +354,7 @@ export function ProfileRail() {
 
       <RenameProfileDialog
         currentName={pendingRename?.name ?? ''}
+        isDefault={pendingRename?.is_default ?? false}
         onClose={() => setPendingRename(null)}
         onRenamed={refreshActiveProfile}
         open={pendingRename !== null}
@@ -435,17 +465,39 @@ function AddProfileButton({ label, onClick }: { label: string; onClick: () => vo
   )
 }
 
-// The condensed rail: every named profile in one compact select. The trigger
+// Import-archive door beside the "+": adopt a shared profile bundle (theme,
+// skills, layout) as a new profile. Same chrome as AddProfileButton; the whole
+// flow (picker → import → apply overlay → switch) lives in the store.
+function ImportProfileButton({ label }: { label: string }) {
+  return (
+    <Tip label={label}>
+      <button
+        aria-label={label}
+        className="grid size-5 shrink-0 place-items-center rounded-[3px] text-(--ui-text-tertiary) opacity-55 transition hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100"
+        onClick={() => void runImportProfileFlow()}
+        type="button"
+      >
+        <Codicon name="cloud-download" size="0.75rem" />
+      </button>
+    </Tip>
+  )
+}
+
+// The condensed rail: every named profile in one compact menu. The trigger
 // shows the active profile (tinted initial + name); on default/all scope it
 // falls back to the placeholder since the left toggle pill carries that state.
 function ProfileDropdown({
   activeKey,
   colors,
+  onCreate,
+  onImport,
   onSelect,
   profiles
 }: {
   activeKey: null | string
   colors: Record<string, string>
+  onCreate: () => void
+  onImport: () => void
   onSelect: (name: string) => void
   profiles: ProfileInfo[]
 }) {
@@ -453,44 +505,79 @@ function ProfileDropdown({
   const p = t.profiles
 
   const value = activeKey ? (profiles.find(profile => normalizeProfileKey(profile.name) === activeKey)?.name ?? '') : ''
+  const activeProfile = profiles.find(profile => profile.name === value)
 
   return (
-    <Select onValueChange={name => name && onSelect(name)} value={value}>
-      <SelectTrigger aria-label={p.title} className="min-w-0 flex-1" size="xs">
-        <SelectValue placeholder={p.title} />
-      </SelectTrigger>
-      <SelectContent collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }} side="top">
-        {profiles.map(profile => (
-          <ProfileDropdownItem
-            color={resolveProfileColor(profile.name, colors)}
-            key={profile.name}
-            name={profile.name}
-          />
-        ))}
-      </SelectContent>
-    </Select>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          aria-label={p.title}
+          className="min-w-0 flex-1 justify-between overflow-hidden px-1 text-(--ui-text-secondary) data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground"
+          data-slot="profile-dropdown"
+          size="xs"
+          type="button"
+          variant="ghost"
+        >
+          <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+            {activeProfile ? (
+              <>
+                <ProfileGlyph
+                  aria-hidden="true"
+                  color={resolveProfileColor(activeProfile.name, colors)}
+                  isDefault={false}
+                  name={activeProfile.name}
+                />
+                <span className="truncate">{profileLabel(activeProfile)}</span>
+              </>
+            ) : (
+              <span className="truncate">{p.title}</span>
+            )}
+          </span>
+          <Codicon aria-hidden="true" className="shrink-0 opacity-60" name="chevron-down" size="0.875rem" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-48 max-w-72" collisionPadding={8} side="top">
+        <DropdownMenuItem onSelect={onCreate}>
+          <Codicon aria-hidden="true" name="add" size="0.875rem" />
+          <span className="truncate">{p.newProfile}</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onImport}>
+          <Codicon aria-hidden="true" name="cloud-download" size="0.875rem" />
+          <span className="truncate">{p.importProfile}</span>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuRadioGroup onValueChange={name => name && onSelect(name)} value={value}>
+          {profiles.map(profile => (
+            <ProfileDropdownItem
+              color={resolveProfileColor(profile.name, colors)}
+              key={profile.name}
+              label={profileLabel(profile)}
+              name={profile.name}
+            />
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
 // One dropdown row per profile — its own component so each row can own a
 // hover-intent prewarm timer (see useProfilePrewarm).
-function ProfileDropdownItem({ color, name }: { color: null | string; name: string }) {
-  const hue = color ?? 'var(--ui-text-quaternary)'
+function ProfileDropdownItem({ color, label, name }: { color: null | string; label: string; name: string }) {
   const { cancelPrewarm, startPrewarm } = useProfilePrewarm(name)
 
   return (
-    <SelectItem onPointerEnter={startPrewarm} onPointerLeave={cancelPrewarm} value={name}>
+    <DropdownMenuRadioItem
+      className="min-w-0"
+      onPointerEnter={startPrewarm}
+      onPointerLeave={cancelPrewarm}
+      value={name}
+    >
       <span className="flex min-w-0 items-center gap-1.5">
-        <span
-          aria-hidden="true"
-          className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none"
-          style={{ backgroundColor: profileColorSoft(hue, 22), color: color ?? undefined }}
-        >
-          {name.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
-        </span>
-        <span className="truncate">{name}</span>
+        <ProfileGlyph aria-hidden="true" color={color} isDefault={false} name={name} />
+        <span className="truncate">{label}</span>
       </span>
-    </SelectItem>
+    </DropdownMenuRadioItem>
   )
 }
 
@@ -691,6 +778,10 @@ function ProfileSquare({
           <ContextMenuItem onSelect={onEditSoul}>
             <Codicon name="edit" size="0.875rem" />
             <span>{p.editSoul}</span>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => void runExportProfileFlow(label)}>
+            <Codicon name="package" size="0.875rem" />
+            <span>{p.exportProfile}</span>
           </ContextMenuItem>
           <ContextMenuItem
             className="text-destructive focus:text-destructive"

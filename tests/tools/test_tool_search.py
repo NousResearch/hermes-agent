@@ -85,6 +85,67 @@ class TestClassification:
         for name in BRIDGE_TOOL_NAMES:
             assert not is_deferrable_tool_name(name)
 
+    def test_gui_surface_tools_never_defer(self):
+        """Session-gated GUI tools stay direct and stay off the global core list."""
+        from tools.registry import discover_builtin_tools
+        from tools.tool_search import is_deferrable_tool_name
+        from toolsets import _HERMES_CORE_TOOLS
+
+        discover_builtin_tools()
+        for name in ("read_window_below", "apply_layout", "project_list"):
+            assert not is_deferrable_tool_name(name), name
+            assert name not in _HERMES_CORE_TOOLS
+
+    def test_gui_surface_alone_does_not_activate_the_bridge(self):
+        from tools.registry import discover_builtin_tools
+        from tools.tool_search import ToolSearchConfig, assemble_tool_defs
+
+        discover_builtin_tools()
+        names = {"read_window_below", "apply_layout", "project_list"}
+        assembled = assemble_tool_defs(
+            [_td(name, f"GUI {name}") for name in names],
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        assert not assembled.activated
+        assert {td["function"]["name"] for td in assembled.tool_defs} == names
+
+    def test_gui_surface_stays_direct_when_mcp_activates_the_bridge(self):
+        """MCP/plugin tools turn Tool Search on; the session's GUI tools stay
+        in the model-facing array so HUD can still name read_window_below."""
+        from tools.registry import discover_builtin_tools, registry
+        from tools.tool_search import (
+            BRIDGE_TOOL_NAMES,
+            ToolSearchConfig,
+            assemble_tool_defs,
+        )
+
+        discover_builtin_tools()
+        mcp_name = "mcp_gui_surface_probe"
+        registry.register(
+            name=mcp_name,
+            handler=lambda args, **kw: "{}",
+            schema=_td(mcp_name, "Deferred MCP capability")["function"],
+            toolset="mcp-gui-surface-probe",
+        )
+
+        assembled = assemble_tool_defs(
+            [
+                _td("read_window_below", "Identify the window below"),
+                _td("apply_layout", "Apply a layout preset"),
+                _td("computer_use", "Drive the OS"),
+                _td(mcp_name, "Deferred MCP capability"),
+            ],
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        names = {td["function"]["name"] for td in assembled.tool_defs}
+
+        assert assembled.activated
+        assert mcp_name not in names
+        assert BRIDGE_TOOL_NAMES <= names
+        assert {"read_window_below", "apply_layout", "computer_use"} <= names
+
     def test_unknown_tool_not_deferrable(self):
         """Defensive: a tool name we cannot resolve to a registry entry must
         not be claimed as deferrable. This protects against the OpenClaw
@@ -231,6 +292,32 @@ class TestBridgeDispatch:
         result = dispatch_tool_search({}, current_tool_defs=[])
         assert "error" in json.loads(result)
 
+    def test_empty_search_keeps_connected_sources_discoverable(self):
+        from tools.registry import registry
+        from tools.tool_search import dispatch_tool_search
+
+        name = "recovery_catalog_create_record"
+        tool_def = _td(name, "Create a record in the connected catalog service.")
+        registry.register(
+            name=name,
+            handler=lambda args, **kwargs: "{}",
+            schema=tool_def,
+            toolset="mcp-recovery-catalog",
+        )
+
+        result = json.loads(dispatch_tool_search(
+            {"query": "unrelated vocabulary"},
+            current_tool_defs=[tool_def],
+        ))
+
+        assert result["matches"] == []
+        assert result["total_available"] == 1
+        assert result["available_sources"] == [
+            {"name": "recovery-catalog", "tool_count": 1},
+        ]
+        assert "remain available" in result["hint"]
+        assert "before concluding" in result["hint"]
+
 
     def test_resolve_underlying_call_parses_object_args(self):
         from tools.tool_search import resolve_underlying_call
@@ -270,6 +357,48 @@ class TestHandleFunctionCallIntegration:
         # Without a real registry, the matches will be empty, but the
         # dispatch path completed without error.
         assert "matches" in parsed or "error" in parsed
+
+    def test_tool_search_emits_one_terminal_hook(self, monkeypatch):
+        """Inline bridge results still complete the tool lifecycle."""
+        import model_tools
+        from hermes_cli import lifecycle
+        from tools import tool_search
+
+        events = []
+        monkeypatch.setattr(
+            lifecycle,
+            "has_hook",
+            lambda name: name == "post_tool_call",
+        )
+        monkeypatch.setattr(
+            lifecycle,
+            "invoke_hook",
+            lambda name, **kwargs: events.append((name, kwargs)),
+        )
+        monkeypatch.setattr(
+            tool_search,
+            "dispatch_tool_search",
+            lambda *args, **kwargs: json.dumps({"matches": []}),
+        )
+
+        result = model_tools.handle_function_call(
+            function_name="tool_search",
+            function_args={"query": "private-query"},
+            session_id="private-session",
+            task_id="private-task",
+            turn_id="private-turn",
+            api_request_id="private-request",
+            tool_call_id="private-call",
+        )
+
+        assert json.loads(result) == {"matches": []}
+        assert len(events) == 1
+        hook_name, payload = events[0]
+        assert hook_name == "post_tool_call"
+        assert payload["status"] == "ok"
+        assert payload["turn_id"] == "private-turn"
+        assert payload["api_request_id"] == "private-request"
+        assert payload["tool_call_id"] == "private-call"
 
 
 class TestRegression_OpenClawCron84141:
@@ -403,10 +532,42 @@ class TestCatalogListing:
         from tools.tool_search import ToolSearchConfig
         cfg = ToolSearchConfig.from_raw(None)
         assert cfg.listing == "auto"
-        assert cfg.listing_max_tokens == 20000
+        assert cfg.listing_max_tokens == 4000
         # legacy bool shapes keep defaults too
         assert ToolSearchConfig.from_raw(True).listing == "auto"
 
+
+    def test_default_listing_cap_bounds_fixed_catalog_overhead(self):
+        """The default manifest must not grow back to the old 20K-token cap."""
+        from tools.registry import registry
+        from tools.tool_search import (
+            ToolSearchConfig,
+            assemble_tool_defs,
+            estimate_tokens_from_schemas,
+        )
+
+        defs = []
+        for i in range(500):
+            name = f"lean_catalog_tool_{i:04d}"
+            registry.register(
+                name=name,
+                handler=lambda args, **kwargs: "{}",
+                schema=_td(name, "Perform a deliberately verbose connected service action."),
+                toolset="mcp-lean-catalog",
+            )
+            defs.append(_td(name, "Perform a deliberately verbose connected service action."))
+
+        cfg = ToolSearchConfig.from_raw(None)
+        result = assemble_tool_defs(defs, context_length=1_000_000, config=cfg)
+        search = next(
+            td for td in result.tool_defs
+            if td["function"]["name"] == "tool_search"
+        )
+        description_tokens = estimate_tokens_from_schemas([search])
+        # Includes the bridge schema around the listing, so allow modest
+        # framing overhead above the 4K listing budget.
+        assert description_tokens < 4500
+        assert result.listing_form in {"names", "groups", "mixed"}
 
     def test_short_desc_first_sentence_and_clip(self):
         from tools.tool_search import _short_desc

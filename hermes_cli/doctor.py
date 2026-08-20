@@ -16,6 +16,7 @@ from hermes_cli.config import (
     get_env_path,
     get_hermes_home,
     get_project_root,
+    is_nix_install_method,
     recommended_update_command_for_method,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -52,6 +53,8 @@ _PROVIDER_ENV_HINTS = (
     "KIMI_CN_API_KEY",
     "GMI_API_KEY",
     "FIREWORKS_API_KEY",
+    "ACTUAL_API_KEY",
+    "ACTUAL_BASE_URL",
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
     "KILOCODE_API_KEY",
@@ -61,6 +64,7 @@ _PROVIDER_ENV_HINTS = (
     "AI_GATEWAY_API_KEY",
     "OPENCODE_ZEN_API_KEY",
     "OPENCODE_GO_API_KEY",
+    "COMMANDCODE_API_KEY",
     "XIAOMI_API_KEY",
     "TOKENHUB_API_KEY",
 )
@@ -87,14 +91,146 @@ def _sqlite_upgrade_hint(install_method: str | None = None) -> str:
     if method == "docker":
         command = recommended_update_command_for_method(method)
         action = f"run `{command}`, then recreate all Hermes containers"
-    elif method in {"nix", "nixos"}:
+    elif is_nix_install_method(method):
+        # The Nix helper is prose guidance, not a literal shell command.
         action = recommended_update_command_for_method(method)
+    elif method == "apt":
+        action = f"run `{recommended_update_command_for_method(method)}`"
     else:
         action = "run `hermes update`"
     return (
         f"({action}; fixed versions: 3.51.3+ / 3.50.7 / 3.44.6 — "
         "see https://sqlite.org/wal.html#walresetbug)"
     )
+
+
+def _hermes_database_paths(hermes_home: Path) -> list[tuple[str, Path]]:
+    """Return (display name, path) pairs for Hermes-managed SQLite databases."""
+    # backup.py owns the canonical list of per-profile stores; reuse it.
+    from hermes_cli.backup import _QUICK_STATE_FILES
+
+    entries = [
+        (name, hermes_home / name)
+        for name in _QUICK_STATE_FILES
+        if name.endswith(".db")
+    ]
+    # Non-default kanban boards each keep their own kanban.db.
+    for board_db in sorted((hermes_home / "kanban" / "boards").glob("*/kanban.db")):
+        entries.append((str(board_db.relative_to(hermes_home)), board_db))
+    return entries
+
+
+_SQLITE_HEADER_MAGIC = b"SQLite format 3\x00"
+
+
+def _unreadable_reason(db_path: Path) -> str:
+    """Explain why a database file could not be read, without opening it.
+
+    ``read_header_bytes_preopen`` collapses every ``OSError`` into ``None``,
+    but doctor's job is to say *which* problem it hit. ``stat()`` and
+    ``access()`` answer that from directory metadata alone — neither takes a
+    file descriptor, so neither can cancel the file's POSIX advisory locks.
+    """
+    try:
+        db_path.stat()
+    except OSError as exc:
+        return str(exc)
+    if not os.access(db_path, os.R_OK):
+        return f"permission denied: {db_path}"
+    return "file could not be read"
+
+
+def _read_journal_mode(db_path: Path) -> tuple[str | None, str | None]:
+    """Return (journal mode, error) from the file header without opening the database.
+
+    Header byte 18 is 2 for WAL and 1 for a rollback journal. Opening the
+    database through the SQLite engine — even read-only — creates -wal/-shm
+    sidecar files, which a diagnostic must not do.
+
+    The byte read is routed through ``read_header_bytes_preopen`` rather than
+    a bare ``open()``: closing *any* descriptor for a database file cancels
+    this process's POSIX advisory locks on it, so a raw read would drop the
+    locks a live connection is holding (see ``hermes_cli.sqlite_safe_read``).
+    ``run_doctor`` is also called in-process by the dashboard console, which
+    holds live ``SessionDB`` connections. The helper refuses in that case and
+    the mode is reported as unreadable instead.
+    """
+    from hermes_cli.sqlite_safe_read import (
+        has_live_connection,
+        read_header_bytes_preopen,
+    )
+
+    header = read_header_bytes_preopen(db_path, length=20)
+    if header is None:
+        if has_live_connection(db_path):
+            return None, "database is open in this process"
+        return None, _unreadable_reason(db_path)
+    if len(header) == 0:
+        return None, "file is empty"
+    if len(header) < 20 or not header.startswith(_SQLITE_HEADER_MAGIC):
+        return None, "file is not a database"
+    if header[18] == 2:
+        return "wal", None
+    if header[18] == 1:
+        return "rollback", None
+    return None, f"unrecognized file-format version {header[18]}"
+
+
+def _format_db_size(db_path: Path) -> str:
+    # backup.py owns human-readable size formatting; reuse it (as with
+    # _QUICK_STATE_FILES above) and keep only the stat-failure wrap here.
+    from hermes_cli.backup import _format_size
+
+    try:
+        nbytes = db_path.stat().st_size
+    except OSError:
+        return "size unknown"
+    return _format_size(nbytes)
+
+
+def _report_database_journal_modes(
+    hermes_home: Path | None = None,
+    version_info: tuple[int, ...] | None = None,
+) -> None:
+    """List each database's journal mode; warn on WAL under a vulnerable SQLite."""
+    from hermes_state import _wal_reset_repair_hint, is_sqlite_wal_reset_vulnerable
+
+    vulnerable = is_sqlite_wal_reset_vulnerable(version_info)
+    home = hermes_home if hermes_home is not None else HERMES_HOME
+    try:
+        databases = _hermes_database_paths(home)
+    except Exception as exc:
+        check_warn(f"Could not list Hermes databases: {exc}")
+        return
+    exposed = []
+    for name, path in databases:
+        if not path.is_file():
+            continue
+        mode, error = _read_journal_mode(path)
+        size = _format_db_size(path)
+        if error is not None:
+            if vulnerable:
+                check_warn(
+                    f"{name}: journal mode could not be read",
+                    f"({error}; cannot rule out WAL exposure)",
+                )
+            else:
+                check_info(f"{name}: journal mode could not be read ({error})")
+        elif mode == "wal":
+            if vulnerable:
+                exposed.append(name)
+                check_warn(
+                    f"{name} is in WAL mode ({size})",
+                    "(exposed to the WAL-reset bug until SQLite is upgraded)",
+                )
+            else:
+                check_info(f"{name}: WAL journal mode ({size})")
+        elif vulnerable:
+            check_info(f"{name}: rollback journal mode ({size}, not exposed)")
+        else:
+            check_info(f"{name}: rollback journal mode ({size})")
+    if exposed:
+        check_info(f"To clear the exposure: {_wal_reset_repair_hint()}")
 
 
 def _safe_which(cmd: str) -> str | None:
@@ -159,6 +295,60 @@ def _doctor_tool_availability_detail(toolset: str) -> str:
     return ""
 
 
+def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
+    """Return doctor rows for web search/extract provider readiness (#78412).
+
+    Each row is ``(status, label, detail)`` where *status* is ``ok`` or ``warn``.
+    Uses the same active-provider resolvers as the tools, but reports readiness
+    from ``is_available()`` so an explicitly selected but unconfigured backend
+    does not look healthy.
+    """
+    rows: list[tuple[str, str, str]] = []
+    try:
+        from agent.web_search_registry import (
+            get_active_extract_provider,
+            get_active_search_provider,
+        )
+        from tools.web_tools import _ensure_web_plugins_loaded, _provider_is_ready
+
+        # Doctor runs in a fresh process — bundled web providers register
+        # during plugin discovery, which nothing has triggered yet here.
+        # Without this the registry is empty and every row reads
+        # "no provider selected or registered" (idempotent, cheap on rerun).
+        _ensure_web_plugins_loaded()
+    except Exception:
+        return rows
+
+    for capability, getter in (
+        ("web search", get_active_search_provider),
+        ("web extract", get_active_extract_provider),
+    ):
+        try:
+            provider = getter()
+        except Exception:
+            provider = None
+        if provider is None:
+            rows.append(
+                (
+                    "warn",
+                    capability,
+                    "(no provider selected or registered)",
+                )
+            )
+            continue
+        name = getattr(provider, "name", None) or type(provider).__name__
+        if _provider_is_ready(provider):
+            rows.append(("ok", capability, f"({name})"))
+        else:
+            rows.append(
+                (
+                    "warn",
+                    capability,
+                    f"({name} selected; provider not configured)",
+                )
+            )
+    return rows
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
     updated_available = list(available)
@@ -212,6 +402,96 @@ def check_fail(text: str, detail: str = ""):
 
 def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
+
+
+# ── state.db health/stats thresholds (advisory only — module constants,
+# deliberately NOT config: doctor warnings are guidance, not policy) ──
+STATE_DB_SIZE_WARN_BYTES = 1 * 1024 * 1024 * 1024   # 1 GiB logical size
+
+
+# Shared byte formatter, aliased to the name this module's three rendering
+# call sites already use.
+from hermes_cli.sizefmt import format_bytes as _human_bytes
+
+
+def _render_state_db_stats(stats: dict, holders=None) -> list:
+    """Turn a collect_state_db_stats() dict into doctor output lines.
+
+    Returns a list of ``(kind, text, detail)`` tuples where kind is one of
+    'info' / 'warn'. Pure formatting — no I/O — so it is unit-testable
+    without spawning the doctor CLI. Tolerates None in every field.
+    """
+    lines: list = []
+    stats = stats or {}
+
+    logical = stats.get("logical_size_bytes")
+    wal = stats.get("wal_size_bytes")
+    freelist = stats.get("freelist_count")
+
+    size_bits = []
+    if logical is not None:
+        size_bits.append(f"logical size {_human_bytes(logical)}")
+    if stats.get("page_count") is not None:
+        size_bits.append(f"{stats['page_count']:,} pages")
+    if freelist is not None:
+        size_bits.append(f"{freelist:,} free")
+    if wal is not None:
+        size_bits.append(f"WAL {_human_bytes(wal)}")
+    if size_bits:
+        lines.append(("info", "state.db " + ", ".join(size_bits), ""))
+
+    row_bits = []
+    if stats.get("messages") is not None:
+        row_bits.append(f"{stats['messages']:,} messages")
+    if stats.get("sessions") is not None:
+        row_bits.append(f"{stats['sessions']:,} sessions")
+    if stats.get("journal_mode"):
+        row_bits.append(f"journal_mode={stats['journal_mode']}")
+    if holders is not None:
+        row_bits.append(f"{holders} process(es) holding the DB open")
+    if row_bits:
+        lines.append(("info", ", ".join(row_bits), ""))
+
+    fts = stats.get("fts_tables")
+    if fts:
+        present = [t for t, ok in fts.items() if ok]
+        lines.append((
+            "info",
+            "FTS tables: " + (", ".join(present) if present else "none"),
+            "",
+        ))
+
+    # Advisory: oversized database. Suggest auto_prune, and — when the v23
+    # FTS rebuild is pending OR the DB still carries the legacy inline
+    # trigram layout (fts_storage_version marker absent) — the offline
+    # optimize-storage pass that migrates/compacts the FTS indexes.
+    if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:
+        detail = (
+            "consider enabling sessions.auto_prune in config.yaml "
+            "to bound growth"
+        )
+        legacy_trigram = (
+            fts is not None
+            and fts.get("messages_fts_trigram")
+            and stats.get("fts_storage_version") is None
+        )
+        if stats.get("fts_rebuild_pending") or legacy_trigram:
+            detail += (
+                "; run 'hermes sessions optimize-storage' offline "
+                "(with the gateway stopped) to compact FTS storage"
+            )
+        lines.append((
+            "warn",
+            f"state.db is large ({_human_bytes(logical)})",
+            f"({detail})",
+        ))
+
+    # WAL runaway is deliberately NOT warned here: the pre-existing WAL
+    # check later in the state.db section already warns above 50 MB and
+    # offers a checkpoint via --fix; a second warning at a higher threshold
+    # would only duplicate it.
+
+    return lines
 
 
 def _section(title: str) -> None:
@@ -299,6 +579,46 @@ def collect_deprecated_env_vars(env_map: dict | None) -> list[tuple[str, str]]:
     return findings
 
 
+def collect_relay_plugin_cutover_findings(
+    raw_config: dict | None,
+    env_map: dict | None,
+) -> list[tuple[str, str]]:
+    """Return actionable findings for the removed Hermes Relay plugin."""
+    from hermes_cli.relay_plugin_cutover import (
+        LEGACY_RELAY_EXPORT_ENV_VARS,
+        RELAY_PLUGINS_CONFIG_ENV,
+        configured_legacy_relay_env_vars,
+        legacy_relay_plugin_keys,
+    )
+
+    findings: list[tuple[str, str]] = []
+    if isinstance(raw_config, dict):
+        plugins = raw_config.get("plugins")
+        if isinstance(plugins, dict):
+            for key in legacy_relay_plugin_keys(plugins.get("enabled")):
+                findings.append(
+                    (
+                        f"plugins.enabled: {key}",
+                        f"remove it and configure {RELAY_PLUGINS_CONFIG_ENV}",
+                    )
+                )
+
+    effective_env = dict(env_map or {})
+    for name in (*LEGACY_RELAY_EXPORT_ENV_VARS, RELAY_PLUGINS_CONFIG_ENV):
+        if name not in effective_env and os.environ.get(name) is not None:
+            effective_env[name] = os.environ[name]
+    if not str(effective_env.get(RELAY_PLUGINS_CONFIG_ENV, "")).strip():
+        for name in configured_legacy_relay_env_vars(effective_env):
+            findings.append(
+                (
+                    name,
+                    f"move exporter settings to {RELAY_PLUGINS_CONFIG_ENV}; "
+                    "this variable is now ignored",
+                )
+            )
+    return findings
+
+
 def report_deprecated_config_and_env(
     raw_config: dict | None = None,
     env_map: dict | None = None,
@@ -309,18 +629,26 @@ def report_deprecated_config_and_env(
     (empty when nothing deprecated is present). Does not mutate config/env and
     does not append to the blocking ``issues`` list.
     """
-    findings = collect_deprecated_config_keys(raw_config)
-    findings.extend(collect_deprecated_env_vars(env_map))
+    deprecated = collect_deprecated_config_keys(raw_config)
+    deprecated.extend(collect_deprecated_env_vars(env_map))
+    relay_cutover = collect_relay_plugin_cutover_findings(raw_config, env_map)
+    findings = deprecated + relay_cutover
     if not findings:
         check_ok("No deprecated config keys or env vars")
         return findings
 
-    for legacy, replacement in findings:
+    for legacy, replacement in deprecated:
         check_warn(
             f"Deprecated: {legacy}",
             f"(use {replacement} instead)",
         )
         check_info(f"Replace {legacy} → {replacement} (warn-only; not auto-migrated here)")
+    for legacy, replacement in relay_cutover:
+        check_warn(
+            f"Breaking Relay migration: {legacy}",
+            f"({replacement})",
+        )
+        check_info(f"Migrate {legacy}: {replacement}")
     return findings
 
 
@@ -863,6 +1191,7 @@ def run_doctor(args):
             check_ok(f"SQLite {_sqlite_ver}")
         if _sqlite_src_short:
             check_info(f"SQLite source id: {_sqlite_src_short}")
+        _report_database_journal_modes()
     except Exception as e:
         check_warn(f"SQLite version probe failed: {e}")
     # Check if in virtual environment
@@ -1592,6 +1921,36 @@ def run_doctor(args):
                     )
             else:
                 check_warn(f"{_DHH}/state.db exists but has issues: {e}")
+
+        # Health/stats snapshot (#statedb-visibility): a multi-GB state.db
+        # with a runaway WAL was previously invisible to every Hermes
+        # surface. Strictly read-only (mode=ro) so it is safe against a
+        # live DB held by the gateway; any failure degrades to one info
+        # line rather than failing doctor.
+        try:
+            from hermes_state import collect_state_db_stats, count_db_holders
+
+            _db_stats = collect_state_db_stats(state_db_path)
+            _db_holders = count_db_holders(state_db_path)
+            for _kind, _text, _detail in _render_state_db_stats(
+                _db_stats, holders=_db_holders
+            ):
+                if _kind == "warn":
+                    check_warn(_text, _detail)
+                    if "auto_prune" in _detail:
+                        issues.append(
+                            "state.db is large — enable sessions.auto_prune "
+                            "in config.yaml"
+                            + (
+                                " and run 'hermes sessions optimize-storage' "
+                                "offline (gateway stopped)"
+                                if "optimize-storage" in _detail else ""
+                            )
+                        )
+                else:
+                    check_info(_text + (f" {_detail}" if _detail else ""))
+        except Exception as _stats_exc:
+            check_info(f"state.db stats unavailable ({_stats_exc})")
     else:
         check_info(f"{_DHH}/state.db not created yet (will be created on first session)")
 
@@ -1885,49 +2244,42 @@ def run_doctor(args):
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):
         check_ok("Node.js")
-        # Check if agent-browser is installed
-        agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
+        # agent-browser is no longer a root package.json dependency (#43564)
+        # — it resolves lazily via npx (or a global/Hermes-managed install)
+        # at first use. Mirror tools.browser_tool._find_agent_browser's own
+        # resolution cascade here so doctor can't diverge from what browser
+        # tools will actually find; validate=False keeps this a cheap
+        # existence check with no subprocess spawn or install side effects.
         agent_browser_ok = False
-        _which_ab = shutil.which("agent-browser")
-        # `hermes acp --setup-browser` installs agent-browser into the
-        # Hermes-managed node prefix, which isn't necessarily on PATH. Mirror
-        # dep_ensure._has_hermes_agent_browser() so doctor and dep_ensure agree
-        # on what "installed" means; otherwise doctor false-negatives (#53192).
-        # Resolve with PATHEXT-aware ``shutil.which`` (not a bare is_file())
-        # so Windows picks the executable ``.cmd`` shim — the same class of
-        # miss fixed for _has_agent_browser() in #73932.
-        def _which_in(directory) -> str | None:
-            try:
-                if not directory.is_dir():
-                    return None
-                return shutil.which("agent-browser", path=str(directory))
-            except Exception:
-                return None
+        try:
+            from tools.browser_tool import _find_agent_browser, _is_npx_agent_browser_sentinel
+            _resolved_ab = _find_agent_browser(validate=False)
+        except Exception:
+            _resolved_ab = None
 
-        _managed_ab = (
-            _which_in(HERMES_HOME / "node" / "bin")
-            or _which_in(HERMES_HOME / "node")
-        )
-        _legacy_ab = _which_in(HERMES_HOME / "node_modules" / ".bin")
-        if agent_browser_path.exists():
-            check_ok("agent-browser (Node.js)", "(browser automation)")
+        if _resolved_ab and _is_npx_agent_browser_sentinel(_resolved_ab):
+            check_ok("agent-browser", "(resolves via npx on first use)")
             agent_browser_ok = True
-        elif _which_ab and agent_browser_runnable(_which_ab):
+            if should_fix:
+                # Doctor can't tell from here whether npx's cache already
+                # has agent-browser warm — just fire the same warm-up
+                # `hermes update` does, so a session's first browser call
+                # doesn't pay the registry fetch either way.
+                from tools.browser_tool import warm_agent_browser_npx_cache
+                if warm_agent_browser_npx_cache():
+                    check_info("  Warmed npx cache for agent-browser")
+                else:
+                    check_info("  Could not warm npx cache (offline or npx unavailable)")
+        elif _resolved_ab and agent_browser_runnable(_resolved_ab):
             check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
-        elif _managed_ab and agent_browser_runnable(_managed_ab):
-            check_ok("agent-browser", "(browser automation)")
-            agent_browser_ok = True
-        elif _legacy_ab and agent_browser_runnable(_legacy_ab):
-            check_ok("agent-browser", "(browser automation)")
-            agent_browser_ok = True
-        elif _which_ab:
+        elif _resolved_ab:
             # Found on PATH but won't run — almost always a dangling global
             # symlink left behind by agent-browser's npm postinstall after a
             # `hermes update` wiped node_modules (issue #48521).
             check_warn(
                 "agent-browser found but not runnable",
-                f"(broken symlink at {_which_ab}? run: npm install)",
+                f"(broken symlink at {_resolved_ab}? run: npx agent-browser --version)",
             )
         elif _is_termux():
             check_info("agent-browser is not installed (expected in the tested Termux path)")
@@ -1936,7 +2288,7 @@ def run_doctor(args):
             for step in _termux_browser_setup_steps(node_installed=True):
                 check_info(step)
         else:
-            check_warn("agent-browser not installed", "(run: npm install)")
+            check_warn("agent-browser not installed", "(requires npm/npx on PATH)")
 
         # Chromium presence — the browser tools silently fail to register when
         # agent-browser is found but no Playwright-managed Chromium is on disk
@@ -2537,11 +2889,26 @@ def run_doctor(args):
         
         available, unavailable = check_tool_availability()
         available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
-        
+
+        # Web is split into search/extract readiness rows so an explicitly
+        # selected but unconfigured backend cannot look healthy (#78412).
+        web_rows = []
+        if "web" in available or any(item.get("name") == "web" for item in unavailable):
+            web_rows = _doctor_web_capability_rows()
+            if web_rows:
+                available = [tid for tid in available if tid != "web"]
+                unavailable = [item for item in unavailable if item.get("name") != "web"]
+
         for tid in available:
             info = TOOLSET_REQUIREMENTS.get(tid, {})
             check_ok(info.get("name", tid), _doctor_tool_availability_detail(tid))
-        
+
+        for status, label, detail in web_rows:
+            if status == "ok":
+                check_ok(label, detail)
+            else:
+                check_warn(label, detail)
+
         for item in unavailable:
             env_vars = item.get("missing_vars") or item.get("env_vars") or []
             if env_vars:
@@ -2554,7 +2921,8 @@ def run_doctor(args):
         # current CLI platform. Default-off or explicitly disabled toolsets may
         # still show warnings above, but should not pollute the final summary.
         api_disabled = _missing_api_key_toolsets_for_summary(unavailable)
-        if api_disabled:
+        web_not_ready = any(status != "ok" for status, _, _ in web_rows)
+        if api_disabled or web_not_ready:
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
     except Exception as e:
         check_warn("Could not check tool availability", f"({e})")
@@ -2742,6 +3110,14 @@ def run_doctor(args):
                         pass
     except ImportError:
         pass
+    except Exception:
+        pass
+
+    # Opt-in live backend probes run AFTER all static checks, only with
+    # `hermes doctor --live` (real network calls; bounded + read-only).
+    try:
+        from hermes_cli.doctor_live import maybe_run_live_checks
+        maybe_run_live_checks(args, manual_issues)
     except Exception:
         pass
 

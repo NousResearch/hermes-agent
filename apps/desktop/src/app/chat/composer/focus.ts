@@ -19,7 +19,7 @@ import { RICH_INPUT_SLOT } from './rich-editor'
 /** Composer routing key. The main chat is `'main'`, the edit composer
  *  `'edit'`; scoped composers (session tiles) use `'tile:<id>'`. */
 export type ComposerTarget = 'edit' | 'main' | (string & {})
-export type ComposerInsertMode = 'block' | 'inline'
+export type ComposerInsertMode = 'block' | 'inline' | 'prefix'
 
 export interface FocusDetail {
   target: ComposerTarget
@@ -38,8 +38,14 @@ interface InsertRefsDetail {
   target: ComposerTarget
 }
 
+interface AttachImagesDetail {
+  blobs: Blob[]
+  target: ComposerTarget
+}
+
 const FOCUS_EVENT = 'hermes:composer-focus'
 const INSERT_EVENT = 'hermes:composer-insert'
+const ATTACH_IMAGES_EVENT = 'hermes:composer-attach-images'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
 const SUBMIT_EVENT = 'hermes:composer-submit'
 const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
@@ -61,8 +67,13 @@ const cssEscape = (value: string): string => {
 }
 
 interface SubmitDetail {
+  /** Unique mounted composer surface captured at click time. */
+  surfaceId: string
   target: ComposerTarget
   text: string
+  /** `hidden` types the persisted user row so no bubble renders — the
+   *  off-screen path for widget intents. Omit for normal visible sends. */
+  displayKind?: 'hidden'
 }
 
 let activeTarget: ComposerTarget = 'main'
@@ -146,6 +157,38 @@ const dispatch = <T>(name: string, detail: T) => {
   window.setTimeout(() => window.dispatchEvent(new CustomEvent<T>(name, { detail })), 0)
 }
 
+/** Submit is the one bus mutation that must preserve the chat visible at click
+ * time. Deferring it lets a parent click handler/tab reveal switch the active
+ * keep-alive pane before subscribers run, so the task is dropped or claimed by
+ * another composer. Other bus events intentionally defer for focus restoration.
+ */
+const dispatchNow = <T>(name: string, detail: T) => {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent<T>(name, { detail }))
+  }
+}
+
+/** Unique identity for the visible composer surface addressed by a submit. */
+const getVisibleComposerSurfaceId = (target: ComposerTarget): string | null => {
+  if (typeof document === 'undefined') {
+    return null
+  }
+
+  const surface = queryVisible<HTMLElement>(`[data-composer-target="${cssEscape(target)}"]`)
+
+  return surface?.dataset.composerSurfaceId || null
+}
+
+const composerSurfaceIsVisible = (target: ComposerTarget, surfaceId: string): boolean => {
+  if (typeof document === 'undefined') {
+    return false
+  }
+
+  return queryAllVisible<HTMLElement>(`[data-composer-target="${cssEscape(target)}"]`).some(
+    surface => surface.dataset.composerSurfaceId === surfaceId
+  )
+}
+
 const subscribe = <T>(name: string, handler: (detail: T) => void) => {
   if (typeof window === 'undefined') {
     return () => undefined
@@ -220,6 +263,22 @@ export const onComposerFocusRequest = (handler: (detail: FocusDetail) => void) =
 export const onComposerInsertRequest = (handler: (detail: InsertDetail) => void) =>
   subscribe<InsertDetail>(INSERT_EVENT, handler)
 
+/** Attach image blobs to a composer's attachment set — the unfocused-paste
+ *  path (paste-to-focus) hands clipboard images over here. The edit composer
+ *  takes no attachments (its own paste path ignores images), so a request
+ *  resolving to `'edit'` is dropped by that surface's target filter. */
+export const requestComposerAttachImages = (
+  blobs: Blob[],
+  { target = 'active' }: { target?: ComposerTarget | 'active' } = {}
+) => {
+  if (blobs.length) {
+    dispatch<AttachImagesDetail>(ATTACH_IMAGES_EVENT, { blobs, target: resolve(target) })
+  }
+}
+
+export const onComposerAttachImagesRequest = (handler: (detail: AttachImagesDetail) => void) =>
+  subscribe<AttachImagesDetail>(ATTACH_IMAGES_EVENT, handler)
+
 /** Insert typed ref chips (carrying a display label) into a composer — the
  * structured cousin of {@link requestComposerInsert}, used for session links. */
 export const requestComposerInsertRefs = (
@@ -239,13 +298,36 @@ export const onComposerInsertRefsRequest = (handler: (detail: InsertRefsDetail) 
  * the agent a task without the user round-tripping through the input. */
 export const requestComposerSubmit = (
   text: string,
-  { target = 'active' }: { target?: ComposerTarget | 'active' } = {}
-) => {
+  {
+    displayKind,
+    surfaceId: requestedSurfaceId,
+    target = 'active'
+  }: { displayKind?: 'hidden'; surfaceId?: null | string; target?: ComposerTarget | 'active' } = {}
+): boolean => {
   const trimmed = text.trim()
 
-  if (trimmed) {
-    dispatch<SubmitDetail>(SUBMIT_EVENT, { target: resolve(target), text: trimmed })
+  if (!trimmed) {
+    return false
   }
+
+  const resolvedTarget = resolve(target)
+
+  const surfaceId = requestedSurfaceId === undefined ? getVisibleComposerSurfaceId(resolvedTarget) : requestedSurfaceId
+
+  // Fail closed: without an exact visible surface identity, broadcasting a
+  // submit could make more than one keep-alive/new-chat composer claim it.
+  if (!surfaceId || (requestedSurfaceId !== undefined && !composerSurfaceIsVisible(resolvedTarget, surfaceId))) {
+    return false
+  }
+
+  dispatchNow<SubmitDetail>(SUBMIT_EVENT, {
+    surfaceId,
+    target: resolvedTarget,
+    text: trimmed,
+    ...(displayKind ? { displayKind } : {})
+  })
+
+  return true
 }
 
 export const onComposerSubmitRequest = (handler: (detail: SubmitDetail) => void) =>

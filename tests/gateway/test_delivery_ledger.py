@@ -10,6 +10,7 @@ id stability, and the startup redelivery sweep's contract:
 """
 
 import time
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -48,6 +49,33 @@ def _row(oid):
     return None if r is None else {
         "state": r[0], "attempts": r[1], "owner_pid": r[2], "content": r[3],
     }
+
+
+def _blocking_probe():
+    """Return a blocking ledger call and an event-loop progress witness."""
+    ledger_started = threading.Event()
+    event_loop_progressed = threading.Event()
+    blocked_event_loop = []
+
+    def _slow_ledger_call(*args, **kwargs):
+        ledger_started.set()
+        # Generous timeout: a genuinely blocked loop can never set the event
+        # (the witness coroutine cannot run), so a longer wait only guards
+        # against loaded-CI scheduling flake, not against missing the bug.
+        if not event_loop_progressed.wait(timeout=5.0):
+            blocked_event_loop.append(True)
+
+    async def _event_loop_witness():
+        import asyncio
+
+        deadline = asyncio.get_running_loop().time() + 10
+        while not ledger_started.is_set():
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError("ledger call never started")
+            await asyncio.sleep(0)
+        event_loop_progressed.set()
+
+    return _slow_ledger_call, _event_loop_witness, blocked_event_loop
 
 
 def _orphan(oid):
@@ -171,6 +199,28 @@ class TestGatewayRedeliverySweep:
         assert sent["content"].startswith(dl.RECOVERED_MARKER)
         assert sent["content"].endswith("the final answer")
 
+    @pytest.mark.parametrize(
+        ("send_success", "ledger_method"),
+        [(True, "mark_delivered"), (False, "mark_failed")],
+    )
+    @pytest.mark.asyncio
+    async def test_slow_state_update_does_not_block_event_loop(
+        self, send_success, ledger_method
+    ):
+        import asyncio
+
+        _record()
+        _orphan("ob-1")
+        runner = self._runner(self._adapter(success=send_success))
+        slow_update, event_loop_witness, blocked_event_loop = _blocking_probe()
+
+        with patch.object(dl, ledger_method, side_effect=slow_update):
+            await asyncio.gather(
+                runner._redeliver_pending_obligations(), event_loop_witness()
+            )
+
+        assert blocked_event_loop == []
+
 
 class TestAttemptsOnlySpentOnRealSends:
     """``attempts`` is the redelivery budget — it must buy a send.
@@ -247,3 +297,59 @@ class TestUnconnectedPlatformKeepsItsBudget:
         )
         assert _row("ob-1")["attempts"] == 0
 
+
+
+class TestOwnerAlivePidProbe:
+    """_owner_alive's no-start-time fallback must route through
+    gateway.status._pid_exists, never a raw ``os.kill(pid, 0)`` probe.
+
+    On Windows ``os.kill(pid, 0)`` is NOT a no-op: CPython maps sig=0 to
+    ``GenerateConsoleCtrlEvent(0, pid)`` (bpo-14484), so probing a LIVE pid
+    whose start time psutil could not read would Ctrl+C its console group.
+    Pattern per the windows-native-support reference: patch
+    ``gateway.status._pid_exists``, not ``os.kill``.
+    """
+
+    def _no_start_time(self, monkeypatch):
+        from gateway import status
+
+        monkeypatch.setattr(status, "get_process_start_time", lambda pid: None)
+
+    def test_alive_when_pid_exists(self, monkeypatch):
+        from gateway import status
+
+        self._no_start_time(monkeypatch)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        assert dl._owner_alive(12345, 999) is True
+
+    def test_dead_when_pid_gone(self, monkeypatch):
+        from gateway import status
+
+        self._no_start_time(monkeypatch)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
+        assert dl._owner_alive(12345, 999) is False
+
+    def test_raw_os_kill_probe_never_used(self, monkeypatch):
+        """Regression guard: the probe must not touch os.kill when
+        gateway.status._pid_exists is importable (i.e. always in-tree)."""
+        from gateway import status
+
+        self._no_start_time(monkeypatch)
+        calls = []
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: calls.append(pid) or True)
+        monkeypatch.setattr(
+            dl.os, "kill", lambda *a, **k: (_ for _ in ()).throw(AssertionError("raw os.kill probe used"))
+        )
+        assert dl._owner_alive(4242, 999) is True
+        assert calls == [4242]
+
+    def test_probe_exception_means_dead(self, monkeypatch):
+        from gateway import status
+
+        self._no_start_time(monkeypatch)
+
+        def boom(pid):
+            raise RuntimeError("probe blew up")
+
+        monkeypatch.setattr(status, "_pid_exists", boom)
+        assert dl._owner_alive(12345, 999) is False

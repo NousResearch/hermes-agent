@@ -143,6 +143,61 @@ def test_billing_rotation_marks_all_entries_sharing_failed_key(tmp_path, monkeyp
     assert statuses["cred-model-config"] == STATUS_EXHAUSTED
 
 
+def test_stale_credential_id_prefers_api_key_hint(tmp_path, monkeypatch):
+    """#79156: disagreeing credential_id + api_key_hint must mark the key.
+
+    After per-turn env refresh rewrites ``api_key`` without rebinding the
+    pool entry id, recovery still passes the stale id of the healthy
+    fallback together with the primary key that actually failed. The
+    healthy key must not inherit the primary's 429.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-primary",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-ant-api-primary",
+                    },
+                    {
+                        "id": "cred-backup",
+                        "label": "backup",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-ant-api-backup",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+
+    pool = load_pool("anthropic")
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=429,
+        api_key_hint="sk-ant-api-primary",
+        credential_id="cred-backup",  # stale id after env refresh (#79156)
+    )
+
+    statuses = {entry.id: entry.last_status for entry in pool.entries()}
+    assert statuses["cred-primary"] == STATUS_EXHAUSTED
+    assert statuses["cred-backup"] != STATUS_EXHAUSTED
+    # Rotation hands the healthy backup (or None if selection prefers next).
+    if next_entry is not None:
+        assert next_entry.id == "cred-backup"
+        assert next_entry.runtime_api_key == "sk-ant-api-backup"
+
+
 def test_unmatched_api_key_hint_rotates_without_benching_innocent_key(tmp_path, monkeypatch):
     """An api_key_hint matching no entry must not quarantine a healthy key.
 
@@ -1350,6 +1405,151 @@ def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
     assert entries[0].source == "gh_cli"
     assert entries[0].access_token == "gho_fake_token_abc123"
     assert entries[0].base_url == "https://api.githubcopilot.com"
+
+
+def test_load_pool_skips_exchange_for_suppressed_copilot(tmp_path, monkeypatch):
+    """A suppressed copilot source must NOT run the token exchange.
+
+    Regression test: the suppression gate used to sit AFTER
+    ``get_copilot_api_token`` (which retries 3x with backoff, ~13s worst
+    case), so every pool load — model picker open, /model, agent startup —
+    burned the full exchange dead time for a source the user had already
+    removed with ``hermes auth remove copilot gh_cli``.  The gate must run
+    BEFORE the network call.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {},
+            "suppressed_sources": {"copilot": ["gh_cli"]},
+        },
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_fake_token_abc123", "gh auth token"),
+    )
+
+    exchange_called = False
+
+    def _boom(token):
+        nonlocal exchange_called
+        exchange_called = True
+        raise AssertionError("exchange must not run for a suppressed source")
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        _boom,
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert not exchange_called
+    assert not pool.has_credentials()
+    assert pool.entries() == []
+
+
+def test_load_pool_respects_env_var_copilot_suppression(tmp_path, monkeypatch):
+    """Suppressing env:GH_TOKEN must gate a GH_TOKEN-sourced token.
+
+    Regression test for the source_name classification: a substring match
+    (``"gh" in source.lower()``) classified GH_TOKEN/GITHUB_TOKEN as gh_cli,
+    so a user's env-var-specific suppression was silently bypassed and the
+    exchange ran anyway.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {},
+            "suppressed_sources": {"copilot": ["env:GH_TOKEN"]},
+        },
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_fake_token_env", "GH_TOKEN"),
+    )
+
+    exchange_called = False
+
+    def _boom(token):
+        nonlocal exchange_called
+        exchange_called = True
+        raise AssertionError("exchange must not run for a suppressed env source")
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        _boom,
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert not exchange_called
+    assert pool.entries() == []
+
+
+def test_load_pool_gh_cli_suppression_does_not_block_env_tokens(tmp_path, monkeypatch):
+    """Suppressing gh_cli must NOT swallow an env-var-sourced token.
+
+    The inverse of the substring bug: GH_TOKEN misclassified as gh_cli meant
+    suppressing the CLI path also silently dropped env tokens.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {},
+            "suppressed_sources": {"copilot": ["gh_cli"]},
+        },
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_fake_token_env", "GH_TOKEN"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        lambda token: ("capi_exchanged_token", None),
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert [e.source for e in pool.entries()] == ["env:GH_TOKEN"]
+
+
+def test_load_pool_skips_resolve_when_all_copilot_sources_suppressed(tmp_path, monkeypatch):
+    """With every copilot source suppressed, resolve_copilot_token (which
+    shells out to ``gh auth token``) must not run at all."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from hermes_cli.copilot_auth import COPILOT_ENV_VARS
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {},
+            "suppressed_sources": {
+                "copilot": ["gh_cli"] + [f"env:{v}" for v in COPILOT_ENV_VARS],
+            },
+        },
+    )
+
+    def _boom():
+        raise AssertionError("resolve_copilot_token must not run when all sources are suppressed")
+
+    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", _boom)
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert pool.entries() == []
 
 
 

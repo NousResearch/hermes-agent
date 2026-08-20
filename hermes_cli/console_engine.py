@@ -57,16 +57,24 @@ def _capture_output(fn: Callable[[], object]) -> str:
     stdout = io.StringIO()
     stderr = io.StringIO()
     code = 0
+    message = ""
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
         try:
             result = fn()
             if isinstance(result, int) and result:
                 raise SystemExit(result)
         except SystemExit as exc:
-            code = int(exc.code or 0)
+            # sys.exit("msg") / raise SystemExit("msg") is the standard non-zero-exit idiom:
+            # exc.code is the message string, not an int. int() would raise ValueError here,
+            # which escapes execute()'s ConsoleCommandError handler and crashes the REPL.
+            if isinstance(exc.code, str):
+                message = exc.code
+                code = 1
+            else:
+                code = int(exc.code or 0)
     text = stdout.getvalue() + stderr.getvalue()
     if code:
-        raise ConsoleCommandError(text.strip() or f"Command exited with status {code}")
+        raise ConsoleCommandError(message.strip() or text.strip() or f"Command exited with status {code}")
     return text.rstrip()
 
 
@@ -110,7 +118,12 @@ def _table_summary(summary: str, *, limit: int = 76) -> str:
 
 def _split_line(line: str) -> list[str]:
     try:
-        return shlex.split(line, comments=False, posix=True)
+        # Windows-safe splitter: plain shlex posix=True eats backslashes, so
+        # `sessions export C:\Users\me\out.jsonl` silently became a mangled
+        # relative filename in the cwd (#83934).
+        from hermes_cli._subprocess_compat import split_command_line
+
+        return split_command_line(line)
     except ValueError as exc:
         raise ConsoleCommandError(f"Could not parse command: {exc}") from exc
 
@@ -140,9 +153,11 @@ def _format_sessions(sessions: Sequence[dict]) -> str:
 
 
 def _format_job(job: dict, action: str) -> str:
+    from cron.jobs import effective_job_state
+
     job_id = job.get("id") or job.get("job_id") or "?"
     name = job.get("name") or "(unnamed)"
-    state = job.get("state") or ("scheduled" if job.get("enabled", True) else "paused")
+    state = effective_job_state(job)
     return f"{action} job: {name} ({job_id}) [{state}]"
 
 
@@ -552,6 +567,7 @@ class HermesConsoleEngine:
 
     def _register_defaults(self) -> None:
         self.register(("status",), "status", "Show Hermes component status.", _status)
+        self.register(("version",), "version", "Show Hermes version information.", _version)
         self.register(("doctor",), "doctor", "Run diagnostics without auto-fix.", _doctor)
         self.register(("logs",), "logs [name] [-n N]", "Show recent Hermes logs.", _logs)
         self.register(("sessions", "list"), "sessions list [--limit N]", "List recent sessions.", _sessions_list)
@@ -598,13 +614,6 @@ class HermesConsoleEngine:
         """Register non-admin CLI commands that are safe for Hermes Console."""
 
         extracted = {
-            "version": (
-                "hermes_cli.subcommands.version",
-                "build_version_parser",
-                "cmd_version",
-                [()],
-                set(),
-            ),
             "dump": (
                 "hermes_cli.subcommands.dump",
                 "build_dump_parser",
@@ -1239,7 +1248,10 @@ def _apply_confirmed_defaults(args: argparse.Namespace) -> None:
             setattr(args, attr, True)
     if getattr(args, "_console_command", None) == "import":
         setattr(args, "force", True)
-    if getattr(args, "checkpoints_command", None) in {"clear", "clear-legacy"}:
+    # Every checkpoints subcommand the console registers as mutating gates its
+    # own confirmation on --force, so all three belong here. `prune` reaches
+    # _confirm() for its orphan preview, and the console never redirects stdin.
+    if getattr(args, "checkpoints_command", None) in {"prune", "clear", "clear-legacy"}:
         setattr(args, "force", True)
     if getattr(args, "plugins_action", None) == "install":
         if not getattr(args, "enable", False) and not getattr(args, "no_enable", False):
@@ -1260,6 +1272,13 @@ def _apply_confirmed_defaults(args: argparse.Namespace) -> None:
         setattr(args, "yes", True)
     if getattr(args, "memory_command", None) == "reset":
         setattr(args, "yes", True)
+
+
+def _version(_engine: HermesConsoleEngine, args: list[str]) -> str:
+    _expect_no_args(args, "version")
+    from hermes_cli._startup_fast import print_fast_version_info
+
+    return _capture_output(lambda: print_fast_version_info(check_updates=True))
 
 
 def _status(_engine: HermesConsoleEngine, args: list[str]) -> str:
@@ -1406,19 +1425,49 @@ def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> str:
     ns = parser.parse_args(args)
 
     def _run() -> None:
-        from hermes_state import SessionDB
+        from hermes_state import (
+            SessionDB,
+            SessionExportTooLargeError,
+            resolved_max_export_messages,
+        )
 
         db = SessionDB()
         try:
+            def _guard_exports(session_ids: list[str]) -> None:
+                # Per-session budget: each session is checked independently
+                # against the configured limit, so a full-DB backup of many
+                # small sessions never trips the guard — only an individual
+                # runaway transcript does. 0 disables the guard.
+                limit = resolved_max_export_messages()
+                if limit <= 0:
+                    return
+                try:
+                    for session_id in session_ids:
+                        db.assert_export_safe(session_id, max_messages=limit)
+                except SessionExportTooLargeError as exc:
+                    raise ConsoleCommandError(
+                        f"Session '{exc.session_id}' has more than {limit:,} active "
+                        "messages; in-memory export is capped per session. "
+                        "Use the Sessions page's streaming Export action, or set "
+                        "sessions.max_export_messages: 0 in config.yaml to disable "
+                        "the guard."
+                    ) from exc
+
             if ns.session_id:
                 resolved_session_id = db.resolve_session_id(ns.session_id)
                 if not resolved_session_id:
                     raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
+                _guard_exports([resolved_session_id])
                 data = db.export_session(resolved_session_id)
                 if not data:
                     raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
                 rows = [data]
             else:
+                session_ids = [
+                    session["id"]
+                    for session in db.search_sessions(source=ns.source, limit=100000)
+                ]
+                _guard_exports(session_ids)
                 rows = db.export_all(source=ns.source)
 
             lines = [json.dumps(row, ensure_ascii=False) for row in rows]

@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,21 +20,24 @@ from hermes_cli.auth import AuthError, get_provider_auth_state, resolve_nous_run
 
 
 class TestResolveVerifyFallback:
-    """Verify _resolve_verify falls back to True when CA bundle path doesn't exist."""
-
-    @pytest.fixture(autouse=True)
-    def _pin_platform_to_linux(self, monkeypatch):
-        """Pin sys.platform so the macOS certifi fallback doesn't alter the
-        generic "default trust" return value asserted by these tests."""
-        monkeypatch.setattr("sys.platform", "linux")
+    """Verify _resolve_verify falls back to default trust when the CA bundle
+    path doesn't exist."""
 
     def test_missing_ca_bundle_in_auth_state_falls_back(self):
+        import ssl
         from hermes_cli.auth import _resolve_verify
 
         result = _resolve_verify(auth_state={
             "tls": {"insecure": False, "ca_bundle": "/nonexistent/ca-bundle.pem"},
         })
-        assert result is True
+        # The subject is "falls back to _default_verify()", not the literal
+        # True. Deriving the expectation from the real host keeps the
+        # regression covered on the macOS lane too, where _default_verify
+        # pins certifi's bundle and returns a context instead.
+        if sys.platform == "darwin":
+            assert isinstance(result, ssl.SSLContext)
+        else:
+            assert result is True
 
     def test_valid_ca_bundle_in_auth_state_is_returned(self, tmp_path, monkeypatch):
         import ssl
@@ -1064,3 +1068,113 @@ class TestStalePortalBaseUrlMigration:
 
         auth_mod.resolve_nous_runtime_credentials()
         assert refresh_calls == [auth_mod.DEFAULT_NOUS_PORTAL_URL]
+
+
+# =============================================================================
+# Device-auth timeout guidance (#20605 kernel from PR #75290)
+# =============================================================================
+
+
+class TestNousDeviceAuthTimeoutMessage:
+    def test_timeout_message_mentions_captcha_login_and_retry(self):
+        from hermes_cli.auth import _nous_device_auth_timeout_message
+
+        msg = _nous_device_auth_timeout_message("https://portal.nousresearch.com")
+        assert "CAPTCHA" in msg
+        assert "hermes portal" in msg
+        assert "https://portal.nousresearch.com/login" in msg
+        # Must NOT point at the nonexistent /device page (live Portal 404s it).
+        assert "/device" not in msg
+
+    def test_timeout_message_falls_back_to_default_portal(self):
+        from hermes_cli.auth import (
+            DEFAULT_NOUS_PORTAL_URL,
+            _nous_device_auth_timeout_message,
+        )
+
+        msg = _nous_device_auth_timeout_message("")
+        assert f"{DEFAULT_NOUS_PORTAL_URL.rstrip('/')}/login" in msg
+
+
+def test_poll_for_token_timeout_raises_actionable_message():
+    """The poll deadline must raise the CAPTCHA-aware guidance at the SOURCE,
+    so both the CLI login and the dashboard poller (web_server._nous_poller,
+    which surfaces str(e) to the UI) inherit it."""
+    import httpx
+    import pytest
+
+    import hermes_cli.auth as auth_mod
+
+    class _PendingClient:
+        def post(self, url, data=None):
+            request = httpx.Request("POST", url)
+            return httpx.Response(
+                400,
+                json={"error": "authorization_pending"},
+                request=request,
+            )
+
+    from typing import cast
+
+    with pytest.raises(TimeoutError) as excinfo:
+        auth_mod._poll_for_token(
+            client=cast(httpx.Client, _PendingClient()),
+            portal_base_url="https://portal.nousresearch.com",
+            client_id="hermes-cli",
+            device_code="device",
+            expires_in=1,
+            poll_interval=1,
+        )
+
+    msg = str(excinfo.value)
+    assert "CAPTCHA" in msg
+    assert "hermes portal" in msg
+    assert "https://portal.nousresearch.com/login" in msg
+
+
+def test_nous_device_code_login_timeout_raises_actionable_message(monkeypatch):
+    """Poll timeout must surface the CAPTCHA-aware guidance through the CLI
+    login flow (propagates unchanged from _poll_for_token)."""
+    import pytest
+
+    import hermes_cli.auth as auth_mod
+
+    monkeypatch.setattr(
+        auth_mod,
+        "_request_device_code",
+        lambda **kwargs: {
+            "device_code": "device",
+            "user_code": "SMCL-97YT",
+            "verification_uri": "https://portal.nousresearch.com/manage-subscription",
+            "verification_uri_complete": (
+                "https://portal.nousresearch.com/manage-subscription"
+                "?user_code=SMCL-97YT"
+            ),
+            "expires_in": 600,
+            "interval": 1,
+        },
+    )
+
+    def _timeout(**kwargs):
+        raise TimeoutError(
+            auth_mod._nous_device_auth_timeout_message(
+                kwargs.get("portal_base_url", "")
+            )
+        )
+
+    monkeypatch.setattr(auth_mod, "_poll_for_token", _timeout)
+    monkeypatch.setattr(auth_mod.webbrowser, "open", lambda url: True)
+    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
+
+    with pytest.raises(TimeoutError) as excinfo:
+        auth_mod._nous_device_code_login(
+            portal_base_url="https://portal.nousresearch.com",
+            inference_base_url="https://inference.example.com/v1",
+            open_browser=False,
+            timeout_seconds=1,
+        )
+
+    msg = str(excinfo.value)
+    assert "CAPTCHA" in msg
+    assert "hermes portal" in msg
+    assert "https://portal.nousresearch.com/login" in msg

@@ -139,6 +139,18 @@ def get_hermes_home() -> Path:
     return _hermes_home_from_env()
 
 
+def hermes_home_key(path: str | Path | None = None) -> str:
+    """Return a stable key for a Hermes home/profile directory.
+
+    Runtime registries use this key to isolate plugin-owned entries while
+    keeping built-in registrations process-global.  ``strict=False`` preserves
+    useful behavior for profiles whose directories have not been created yet.
+    """
+    candidate = Path(path) if path is not None else get_hermes_home()
+    resolved = candidate.expanduser().resolve(strict=False)
+    return os.path.normcase(str(resolved))
+
+
 def get_process_hermes_home() -> Path:
     """Return the Hermes home for the running process, ignoring task overrides.
 
@@ -158,6 +170,16 @@ def get_process_hermes_home() -> Path:
     return _hermes_home_from_env()
 
 
+# Process-level memo for get_default_hermes_root(). The function resolves
+# HERMES_HOME against the native home on every call (~80us of path
+# resolution), and it is called at 31+ sites — every _load_global_auth_store()
+# (per provider row in the /model picker), kanban, backup, gateway, update.
+# Its result depends only on (HERMES_HOME, platform native home), which are
+# compared for free on each call, so the memo is freshness-correct even if a
+# test or plugin mutates HERMES_HOME mid-process.
+_default_hermes_root_memo: "tuple[str, str, Path] | None" = None
+
+
 def get_default_hermes_root() -> Path:
     """Return the root Hermes directory for profile-level operations.
 
@@ -175,27 +197,34 @@ def get_default_hermes_root() -> Path:
 
     Import-safe — no dependencies beyond stdlib.
     """
+    global _default_hermes_root_memo
     native_home = _get_platform_default_hermes_home()
     env_home = os.environ.get("HERMES_HOME", "")
+    if _default_hermes_root_memo is not None:
+        memo_native, memo_env, memo_result = _default_hermes_root_memo
+        if memo_native == str(native_home) and memo_env == env_home:
+            return memo_result
+
     if not env_home:
-        return native_home
-    env_path = Path(env_home)
-    try:
-        env_path.resolve().relative_to(native_home.resolve())
-        # HERMES_HOME is under ~/.hermes (normal or profile mode)
-        return native_home
-    except ValueError:
-        pass
-
-    # Docker / custom deployment.
-    # Check if this is a profile path: <root>/profiles/<name>
-    # If the immediate parent dir is named "profiles", the root is
-    # the grandparent — this covers Docker profiles correctly.
-    if env_path.parent.name == "profiles":
-        return env_path.parent.parent
-
-    # Not a profile path — HERMES_HOME itself is the root
-    return env_path
+        result = native_home
+    else:
+        env_path = Path(env_home)
+        try:
+            env_path.resolve().relative_to(native_home.resolve())
+            # HERMES_HOME is under ~/.hermes (normal or profile mode)
+            result = native_home
+        except ValueError:
+            # Docker / custom deployment.
+            # Check if this is a profile path: <root>/profiles/<name>
+            # If the immediate parent dir is named "profiles", the root is
+            # the grandparent — this covers Docker profiles correctly.
+            if env_path.parent.name == "profiles":
+                result = env_path.parent.parent
+            else:
+                # Not a profile path — HERMES_HOME itself is the root
+                result = env_path
+    _default_hermes_root_memo = (str(native_home), env_home, result)
+    return result
 
 
 def get_optional_skills_dir(default: Path | None = None) -> Path:
@@ -294,8 +323,9 @@ def iter_hermes_node_dirs(home: Path | None = None) -> list[Path]:
     dirs = [root / "node"]
     bin_dir = root / "node" / "bin"
     # NOTE: keep this ordering in sync with hermesManagedNodePathEntries() in
-    # apps/desktop/electron/main.cjs — the Electron main process is Node and
-    # cannot import this module, so the platform-ordering rule is mirrored there.
+    # apps/desktop/electron/backend-env.ts — the Electron main process is Node
+    # and cannot import this module, so the platform-ordering rule is mirrored
+    # there (once; main.ts imports it rather than keeping its own copy).
     if sys.platform == "win32":
         return dirs + [bin_dir]
     return [bin_dir] + dirs
@@ -375,11 +405,116 @@ def hermes_managed_node_tree_present(home: Path | None = None) -> bool:
     return False
 
 
-def _heal_managed_node_windows() -> bool:
-    """Redownload the portable Node zip into ``%HERMES_HOME%\\node`` on Windows."""
+def _path_under_any(path: str, roots: list[str]) -> bool:
+    """Return True when *path* sits inside one of *roots* (same drive).
+
+    Windows paths are case-insensitive and psutil / env vars can disagree on
+    drive-letter casing, so compare through ``normcase`` (a no-op on POSIX).
+    Each root is evaluated individually so disjoint roots both work.
+    """
+    path_norm = os.path.normcase(os.path.normpath(path))
+    for root in roots:
+        root_norm = os.path.normcase(os.path.normpath(root))
+        try:
+            if os.path.commonpath([path_norm, root_norm]) == root_norm:
+                return True
+        except ValueError:
+            # Different drives on Windows — commonpath raises.
+            continue
+    return False
+
+
+def managed_node_tree_in_use(home: Path | None = None) -> bool:
+    """Return True when any running process executes from the managed Node tree.
+
+    Windows locks executables and loaded scripts against deletion or
+    overwrite while a process runs them, so the updater must not rewrite
+    ``%HERMES_HOME%\\node`` while the desktop app's Node processes hold it —
+    ``PermissionError: [WinError 5]`` on ``npm.cmd`` is the classic symptom
+    (#80926). Always ``False`` on POSIX, which has no equivalent lock
+    semantics.
+
+    The scan is a fast pre-check that avoids pointless re-downloads in
+    long-lived processes; the rename-based swap in
+    :func:`_heal_managed_node_windows` is the authoritative in-use guard.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import psutil
+    except Exception:
+        return False
+    dirs: list[str] = []
+    for directory in iter_hermes_node_dirs(home):
+        try:
+            dirs.append(str(Path(directory).resolve()))
+        except OSError:
+            continue
+    if not dirs:
+        return False
+    try:
+        procs = psutil.process_iter(["exe", "cmdline"])
+    except Exception:
+        return False
+    for proc in procs:
+        try:
+            info = proc.info
+        except Exception:
+            continue
+        exe = info.get("exe")
+        if exe:
+            try:
+                exe_path = str(Path(exe).resolve())
+            except (OSError, ValueError):
+                exe_path = str(exe)
+            if _path_under_any(exe_path, dirs):
+                return True
+        for arg in info.get("cmdline") or []:
+            if _path_under_any(arg, dirs):
+                return True
+    return False
+
+
+_managed_node_in_use_notice_printed = False
+
+
+def _print_managed_node_in_use_notice() -> None:
+    """Print the managed-Node deferral notice once per process."""
+    global _managed_node_in_use_notice_printed
+    if _managed_node_in_use_notice_printed:
+        return
+    _managed_node_in_use_notice_printed = True
+    print(
+        "→ Hermes-managed Node.js is in use by a running app; deferring its "
+        "upgrade until the app is closed (re-run `hermes update` afterwards).",
+        flush=True,
+    )
+
+
+def _heal_managed_node_windows(home: Path | None = None) -> bool | None:
+    """Redownload the portable Node zip into ``%HERMES_HOME%\\node`` on Windows.
+
+    Returns ``True`` on success, ``False`` on a genuine failure (offline,
+    download error, bad archive), and ``None`` when the tree is in use and the
+    heal is deferred — callers must not record the once-per-process attempt
+    for ``None`` so a later call can retry once the tree is free.
+
+    The replacement is staging-first: the new tree is fully downloaded and
+    extracted to a sibling ``node.new-*`` directory, then the live tree is
+    renamed aside (``node.old-*``) and the staged tree renamed into place.
+    The live tree is never deleted before its replacement is ready, so an
+    interrupted heal cannot gut the running installation. Windows allows
+    renaming a tree whose executables are running (images are mapped with
+    ``FILE_SHARE_DELETE`` — the same mechanism as the hermes.exe quarantine);
+    when the OS refuses the rename, that refusal *is* the in-use signal and
+    the heal defers instead of forcing the write and crashing with
+    ``PermissionError: [WinError 5]`` on ``npm.cmd`` (#80926).
+    """
     import re
     import tempfile
+    import time
     import urllib.request
+    import uuid
     import zipfile
 
     arch = (os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE", "")).lower()
@@ -392,7 +527,35 @@ def _heal_managed_node_windows() -> bool:
     else:
         return False
 
-    home = get_hermes_home()
+    home = home or get_hermes_home()
+    target = home / "node"
+
+    # Cheap pre-check: skip the download and staging work when the tree is
+    # already visibly in use.  The rename-based swap below is the
+    # authoritative guard — this scan only avoids pointless re-downloads for
+    # long-lived processes whose npm resolution retries.
+    if managed_node_tree_in_use(home):
+        _print_managed_node_in_use_notice()
+        return None
+
+    # Best-effort sweep of staging/backup litter from interrupted runs; a
+    # locked file simply stays for the next attempt.  Only dirs older than
+    # 10 minutes are removed so a concurrent heal's in-flight swap (whose
+    # staged/backup dirs are seconds old) is never disturbed.
+    cutoff = time.time() - 600
+    for stale in home.glob("node.old-*"):
+        try:
+            if stale.stat().st_mtime < cutoff:
+                shutil.rmtree(stale, ignore_errors=True)
+        except OSError:
+            continue
+    for stale in home.glob("node.new-*"):
+        try:
+            if stale.stat().st_mtime < cutoff:
+                shutil.rmtree(stale, ignore_errors=True)
+        except OSError:
+            continue
+
     index_url = f"https://nodejs.org/dist/latest-v{_HERMES_NODE_TARGET_MAJOR}.x/"
     try:
         with urllib.request.urlopen(index_url, timeout=60) as response:
@@ -415,6 +578,9 @@ def _heal_managed_node_windows() -> bool:
     except OSError:
         return False
 
+    token = uuid.uuid4().hex[:8]
+    staged = home / f"node.new-{token}"
+    backup = home / f"node.old-{token}"
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -427,14 +593,126 @@ def _heal_managed_node_windows() -> bool:
             extracted = next(extract_dir.glob("node-v*"), None)
             if extracted is None or not extracted.is_dir():
                 return False
-            target = home / "node"
-            if target.exists():
-                shutil.rmtree(target)
-            shutil.move(str(extracted), str(target))
+            # Move the fully-extracted tree to a sibling staging dir so the
+            # swap below is a same-volume rename.
+            shutil.move(str(extracted), str(staged))
     except OSError:
         return False
 
+    if target.exists():
+        try:
+            os.replace(str(target), str(backup))
+        except OSError:
+            # The OS refuses to move the live tree — a running process holds
+            # it.  Defer; the old tree is untouched and the next resolution
+            # (e.g. the next update after the app is closed) retries.
+            _print_managed_node_in_use_notice()
+            shutil.rmtree(staged, ignore_errors=True)
+            return None
+        # A rename preserves the directory's mtime, so a backup renamed from
+        # a long-lived tree would instantly look older than the litter-sweep
+        # cutoff to a concurrent heal.  Touch it (best-effort — a failure
+        # must not abort the swap, which already succeeded) so the in-flight
+        # backup is never swept mid-swap.
+        try:
+            os.utime(backup, None)
+        except OSError:
+            pass
+        try:
+            os.replace(str(staged), str(target))
+        except OSError:
+            # Roll the live tree back and report the failure.
+            try:
+                os.replace(str(backup), str(target))
+            except OSError:
+                pass
+            shutil.rmtree(staged, ignore_errors=True)
+            return False
+        # The old tree is no longer canonical; locked files may keep it on
+        # disk until the next heal attempt, which is safe.
+        shutil.rmtree(backup, ignore_errors=True)
+    else:
+        try:
+            os.replace(str(staged), str(target))
+        except OSError:
+            shutil.rmtree(staged, ignore_errors=True)
+            return False
+
     return node_tool_runnable(str(target / "node.exe"))
+
+
+def _bootstrap_managed_node_posix() -> bool:
+    """Install a fresh managed Node under ``$HERMES_HOME/node`` on POSIX.
+
+    Shells out to ``_nb_install_bundled_node`` in ``scripts/lib/node-bootstrap.sh``
+    (the same pinned-nodejs.org path ``install.sh`` uses), so the resulting
+    tree matches what a normal install would have produced. Runs with
+    ``HERMES_NODE_SKIP_LINKS=1`` so the user's own node/npm on PATH is not
+    shadowed by ``~/.local/bin`` symlinks.
+    """
+    if not _NODE_BOOTSTRAP_SCRIPT.is_file():
+        return False
+
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'source "{_NODE_BOOTSTRAP_SCRIPT}" && _nb_install_bundled_node',
+            ],
+            env={
+                **os.environ,
+                "HERMES_HOME": str(get_hermes_home()),
+                # Private provisioning: do not symlink node/npm/npx into
+                # ~/.local/bin — the user has their own toolchain on PATH and
+                # this tree must not shadow it.
+                "HERMES_NODE_SKIP_LINKS": "1",
+            },
+            capture_output=True,
+            timeout=600,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def bootstrap_hermes_managed_node() -> str | None:
+    """Install a Hermes-managed Node tree and return its npm path.
+
+    Used when the only Node/npm on the machine belongs to the user (system,
+    nvm, brew, Nix) and cannot satisfy the repo's ``engines`` requirements —
+    Hermes never modifies a toolchain it does not own, so instead it provisions
+    its own tree under ``$HERMES_HOME/node`` (the same tree a fresh install
+    creates) and works with that.
+
+    Returns the managed npm executable path on success, ``None`` on failure.
+    No-ops (returning the existing npm) when a healthy managed tree is already
+    present.
+    """
+    existing = find_hermes_node_executable("npm")
+    if existing:
+        return existing
+
+    if sys.platform == "win32":
+        ok = _heal_managed_node_windows()
+    else:
+        ok = _bootstrap_managed_node_posix()
+    if not ok:
+        return None
+
+    for directory in iter_hermes_node_dirs():
+        for name in _candidate_node_command_names("npm"):
+            candidate = directory / name
+            if candidate.is_file() and (
+                sys.platform == "win32" or os.access(candidate, os.X_OK)
+            ):
+                resolved = str(candidate)
+                if node_tool_runnable(resolved):
+                    return resolved
+    return None
 
 
 def heal_hermes_managed_node() -> bool:
@@ -443,16 +721,26 @@ def heal_hermes_managed_node() -> bool:
     Runs at most once per process. POSIX installs shell out to
     ``heal_managed_node`` in ``scripts/lib/node-bootstrap.sh``; Windows
     downloads the portable zip directly (same source as ``install.ps1``).
+    A Windows deferral (the tree is in use by a running app) does NOT record
+    the attempt, so a later call — or the next process — can heal once the
+    tree is free (#80926).
     """
     global _managed_node_heal_attempted
     if _managed_node_heal_attempted:
         return False
     if not hermes_managed_node_tree_present():
         return False
-    _managed_node_heal_attempted = True
 
     if sys.platform == "win32":
-        return _heal_managed_node_windows()
+        result = _heal_managed_node_windows()
+        if result is None:
+            # In-use deferral: leave the attempt flag clear so a later call
+            # in this process can heal after the app releases the tree.
+            return False
+        _managed_node_heal_attempted = True
+        return bool(result)
+
+    _managed_node_heal_attempted = True
 
     if not _NODE_BOOTSTRAP_SCRIPT.is_file():
         return False
@@ -476,21 +764,54 @@ def heal_hermes_managed_node() -> bool:
     return result.returncode == 0
 
 
-def find_hermes_node_executable(command: str) -> str | None:
-    """Return a Hermes-managed Node/npm executable path, healing broken trees."""
-    names = _candidate_node_command_names(command)
-    broken_present = False
-    for directory in iter_hermes_node_dirs():
-        for name in names:
+def _managed_node_tree_outdated(home: Path | None = None) -> bool:
+    """Return True when the managed tree's node runs but is below the target major.
+
+    An outdated managed Node (e.g. a 22 tree from an older install) heals the
+    same way a broken one does: :func:`find_hermes_node_executable` triggers
+    the once-per-process heal, which redownloads
+    ``latest-v{_HERMES_NODE_TARGET_MAJOR}.x`` — so existing users are upgraded
+    on next launch, not just on the next installer re-run. Mirrors
+    ``_nb_managed_node_outdated`` in ``scripts/lib/node-bootstrap.sh``.
+    """
+    import subprocess
+
+    for directory in iter_hermes_node_dirs(home):
+        for name in _candidate_node_command_names("node"):
             candidate = directory / name
-            if candidate.is_file() and (
-                sys.platform == "win32" or os.access(candidate, os.X_OK)
+            if not candidate.is_file() or (
+                sys.platform != "win32" and not os.access(candidate, os.X_OK)
             ):
-                resolved = str(candidate)
-                if node_tool_runnable(resolved):
-                    return resolved
-                broken_present = True
-    if broken_present and heal_hermes_managed_node():
+                continue
+            try:
+                from hermes_cli._subprocess_compat import windows_hide_flags
+
+                result = subprocess.run(
+                    [str(candidate), "--version"],
+                    capture_output=True,
+                    timeout=10,
+                    creationflags=windows_hide_flags(),
+                )
+                major = int(result.stdout.decode().strip().lstrip("v").split(".")[0])
+            except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+                return False  # broken, not outdated — the runnable probe handles it
+            return major < _HERMES_NODE_TARGET_MAJOR
+    return False
+
+
+def find_hermes_node_executable(command: str) -> str | None:
+    """Return a Hermes-managed Node/npm executable path, healing broken trees.
+
+    Outdated trees (node major below ``_HERMES_NODE_TARGET_MAJOR``) heal the
+    same way broken ones do — the once-per-process heal redownloads the target
+    major, upgrading existing users on next launch rather than next reinstall.
+    When the heal fails (offline, download error), an outdated-but-runnable
+    tree is still returned: old Node beats no Node.
+    """
+    names = _candidate_node_command_names(command)
+
+    def _first_runnable() -> tuple[str | None, bool]:
+        broken = False
         for directory in iter_hermes_node_dirs():
             for name in names:
                 candidate = directory / name
@@ -499,8 +820,19 @@ def find_hermes_node_executable(command: str) -> str | None:
                 ):
                     resolved = str(candidate)
                     if node_tool_runnable(resolved):
-                        return resolved
-    return None
+                        return resolved, broken
+                    broken = True
+        return None, broken
+
+    resolved, broken_present = _first_runnable()
+    needs_heal = broken_present or (
+        resolved is not None and _managed_node_tree_outdated()
+    )
+    if needs_heal and heal_hermes_managed_node():
+        healed, _ = _first_runnable()
+        if healed:
+            return healed
+    return resolved
 
 
 def find_node_executable_on_path(command: str) -> str | None:
@@ -1276,6 +1608,22 @@ def venv_bin_dir(venv_dir, *, windows: bool | None = None) -> Path:
     if windows is None:
         windows = sys.platform == "win32"
     return Path(venv_dir) / ("Scripts" if windows else "bin")
+
+
+def project_venv_dir(project_root) -> Path | None:
+    """The project's venv directory, ``venv`` or ``.venv``, when one exists.
+
+    ``uv venv`` defaults to ``.venv`` while our installers create ``venv``, so
+    both layouts are in the wild. Call sites that only knew about ``venv``
+    silently no-oped on a ``.venv`` install — that is how the Windows
+    shim-lock preflight skipped itself entirely (#79542). ``venv`` wins when
+    both exist, matching what the installers write.
+    """
+    for name in ("venv", ".venv"):
+        candidate = Path(project_root) / name
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:

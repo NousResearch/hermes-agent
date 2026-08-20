@@ -46,7 +46,7 @@ Teams 无法向 `localhost` 投递消息。本地开发时，使用任意隧道�
 ```bash
 # devtunnel（Microsoft 官方）
 devtunnel create hermes-bot --allow-anonymous
-devtunnel port create hermes-bot -p 3978 --protocol https  # 如已修改 TEAMS_PORT，请替换 3978
+devtunnel port create hermes-bot -p 3978 --protocol http  # 如已修改 TEAMS_PORT，请替换 3978
 devtunnel host hermes-bot
 
 # ngrok
@@ -57,6 +57,8 @@ cloudflared tunnel --url http://localhost:3978  # 如已修改 TEAMS_PORT，请�
 ```
 
 从输出中复制 `https://` URL——下一步会用到。开发期间保持隧道运行。
+
+公开隧道 URL 使用 HTTPS，但 Hermes 的本地 webhook 监听器使用纯 HTTP。隧道会终止 TLS，并将 HTTP 转发到 `3978` 端口；不要将本地隧道端口配置为 HTTPS。
 
 生产环境请将机器人端点指向服务器的公开域名（参见[生产部署](#production-deployment)）。
 
@@ -201,7 +203,7 @@ platforms:
 
 ## 生产部署
 
-对于永久服务器，跳过 devtunnel，使用服务器的公开 HTTPS 端点注册机器人：
+对于永久服务器，请在反向代理处终止 TLS，并将请求转发到 Hermes 的纯 HTTP 监听器，通常为 `http://127.0.0.1:3978`。使用该代理的公开 HTTPS 端点注册机器人：
 
 ```bash
 teams app create \
@@ -215,7 +217,7 @@ teams app create \
 teams app update --id <teamsAppId> --endpoint "https://your-domain.com/api/messages"
 ```
 
-确保你配置的端口（`TEAMS_PORT`，默认 `3978`）可从互联网访问，且 TLS 证书有效——Teams 会拒绝自签名证书。
+确保公开 HTTPS 端点可从互联网访问并使用有效的 TLS 证书。Teams 会拒绝自签名证书。请将 Hermes 监听器置于代理后方；`3978` 端口本身不提供 HTTPS。
 
 ---
 
@@ -224,6 +226,7 @@ teams app update --id <teamsAppId> --endpoint "https://your-domain.com/api/messa
 | 问题 | 解决方案 |
 |------|----------|
 | `health` 端点正常但机器人不响应 | 检查隧道是否仍在运行，以及机器人的消息端点是否与隧道 URL 匹配 |
+| Teams 发送消息时日志显示 `"UNKNOWN / HTTP/1.0" 400` | 隧道或反向代理正在将 HTTPS 转发到 Hermes 的纯 HTTP 监听器。请在代理处终止 TLS，并将 HTTP 转发到 `3978` 端口 |
 | 日志中出现 `KeyError: 'teams'` | 重启容器——此问题已在当前版本中修复 |
 | 机器人响应时出现认证错误 | 验证 `TEAMS_CLIENT_ID`、`TEAMS_CLIENT_SECRET` 和 `TEAMS_TENANT_ID` 是否均已正确设置 |
 | `No inference provider configured` | 检查 `~/.hermes/.env` 中是否设置了 `ANTHROPIC_API_KEY`（或其他提供商密钥） |

@@ -13,11 +13,80 @@ from typing import Awaitable, Callable
 
 from agent.model_metadata import estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+from hermes_cli.sizefmt import format_bytes
+
+from abc import ABC, abstractmethod
+
+# ---------------------------------------------------------------------------
+# Plugin context-reference provider API (Issue #26193)
+# ---------------------------------------------------------------------------
+
+BUILTIN_PREFIXES = frozenset({"diff", "staged", "file", "folder", "git", "url"})
+
+_context_reference_providers: dict[str, "ContextReferenceProvider"] = {}
+
+
+class ContextCompletionItem:
+    """A single autocomplete result from a context reference provider."""
+
+    __slots__ = ("text", "display", "meta")
+
+    def __init__(self, text: str, display: str = "", meta: str = "") -> None:
+        self.text = text
+        self.display = display or text
+        self.meta = meta
+
+
+class ContextReferenceProvider(ABC):
+    """Base class for plugin-registered @-prefix context reference providers.
+
+    Plugins subclass this and register via
+    ``PluginContext.register_context_reference()``.
+    """
+
+    prefix: str = ""  # e.g. "issue", "channel", "doc"
+    description: str = ""  # shown in autocomplete meta column
+
+    @abstractmethod
+    async def autocomplete(self, query: str, *, limit: int = 10) -> list[ContextCompletionItem]:
+        """Return autocomplete items for the given query string."""
+        ...
+
+    @abstractmethod
+    async def expand(self, target: str) -> str | None:
+        """Expand *target* to prompt content.  Return ``None`` to skip."""
+        ...
+
+
+def register_context_reference_provider(provider: ContextReferenceProvider) -> None:
+    """Register a plugin context reference provider."""
+    if not isinstance(provider, ContextReferenceProvider):
+        raise TypeError("provider must be a ContextReferenceProvider instance")
+    prefix = provider.prefix.lower().strip()
+    if not prefix:
+        raise ValueError("prefix must be a non-empty string")
+    if prefix in BUILTIN_PREFIXES:
+        raise ValueError(f"prefix '{prefix}' is reserved for built-in references")
+    if prefix in _context_reference_providers:
+        raise ValueError(f"prefix '{prefix}' is already registered")
+    _context_reference_providers[prefix] = provider
+
+
+def get_context_reference_providers() -> dict[str, ContextReferenceProvider]:
+    """Return a snapshot of all registered plugin providers."""
+    return dict(_context_reference_providers)
+
 
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
 REFERENCE_PATTERN = re.compile(
     rf"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url):(?P<value>{_QUOTED_REFERENCE_VALUE}(?::\d+(?:-\d+)?)?|\S+))"
 )
+# Plugin fallback pattern – catches any @<word>:<value> not handled by the
+# built-in regex so that plugin-registered prefixes can be resolved.
+_PLUGIN_REFERENCE_PATTERN = re.compile(
+    rf"(?<![\w/])@(?P<kind>[a-zA-Z][a-zA-Z0-9_-]*):(?P<value>{_QUOTED_REFERENCE_VALUE}(?::\d+(?:-\d+)?)?|\S+)"
+)
+
 TRAILING_PUNCTUATION = ",.;!?"
 _NEEDS_QUOTING = re.compile(r"""[\s()\[\]{}<>"'`]""")
 _SENSITIVE_HOME_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh")
@@ -115,6 +184,27 @@ def parse_context_references(message: str) -> list[ContextReference]:
                 line_end=line_end,
             )
         )
+
+    # Second pass: resolve plugin-registered prefixes the built-in pattern missed
+    if _context_reference_providers:
+        for match in _PLUGIN_REFERENCE_PATTERN.finditer(message):
+            kind = match.group("kind")
+            if kind in BUILTIN_PREFIXES:
+                continue
+            # Skip if already captured by the built-in pattern
+            if any(r.kind == kind and r.start == match.start() for r in refs):
+                continue
+            if kind in _context_reference_providers:
+                value = _strip_trailing_punctuation(match.group("value") or "")
+                refs.append(
+                    ContextReference(
+                        raw=match.group(0),
+                        kind=kind,
+                        target=_strip_reference_wrappers(value),
+                        start=match.start(),
+                        end=match.end(),
+                    )
+                )
 
     return refs
 
@@ -261,6 +351,16 @@ async def _expand_reference(
             return None, f"🌐 {ref.raw} ({estimate_tokens_rough(content)} tokens)\n{content}"
     except Exception as exc:
         return f"{ref.raw}: {exc}", None
+
+    # Plugin-provided context references
+    provider = _context_reference_providers.get(ref.kind)
+    if provider is not None:
+        try:
+            plugin_content = await provider.expand(ref.target)
+            if plugin_content is not None:
+                return None, f"📌 {ref.raw} ({estimate_tokens_rough(plugin_content)} tokens)\n{plugin_content}"
+        except Exception as exc:
+            return f"{ref.raw}: plugin expansion error: {exc}", None
 
     return f"{ref.raw}: unsupported reference type", None
 
@@ -554,25 +654,40 @@ def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
     return files[:limit]
 
 
-def _human_bytes(n: int) -> str:
-    size = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
-            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} GB"
+def _agent_visible_path(path: Path) -> str:
+    """Map a host path to the path the agent's tools can read in the active backend.
+
+    Under a container backend (docker) the gateway host path dangles inside the
+    sandbox — the container has its own filesystem and the host path is not
+    mounted. Files staged into an auto-mounted cache dir (``images/``,
+    ``attachments/``, ...) are translated to their in-container path via the
+    existing ``tools.credential_files`` machinery (#76577). Falls back to the
+    host path when the backend is local or translation is unavailable.
+    """
+    try:
+        # Desktop/in-process gateways may not have bridged ``terminal.*``
+        # config into ``TERMINAL_ENV`` at startup; run the idempotent bridge so
+        # the credential_files translation gate sees the active backend.
+        from tools.terminal_tool import _ensure_terminal_env_bridged
+
+        _ensure_terminal_env_bridged()
+        from tools.credential_files import to_agent_visible_cache_path
+
+        return to_agent_visible_cache_path(str(path))
+    except Exception:
+        return str(path)
 
 
 def _binary_reference_block(ref: ContextReference, path: Path) -> str:
     mime, _ = mimetypes.guess_type(path.name)
     mime = mime or "application/octet-stream"
     try:
-        size = _human_bytes(path.stat().st_size)
+        size = format_bytes(path.stat().st_size)
     except OSError:
         size = "unknown size"
     return (
         f"📎 {ref.raw} ({mime}, {size}) — binary file, not inlined as text. "
-        f"It is available on disk at `{path}`. Use your tools to work with it "
+        f"It is available on disk at `{_agent_visible_path(path)}`. Use your tools to work with it "
         f"(read or convert it, extract its text, or view/render it as needed); "
         f"do not tell the user the file type is unsupported."
     )

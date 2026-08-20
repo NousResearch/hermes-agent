@@ -14,7 +14,6 @@ import pytest
 
 from tools.mcp_tool import (
     _MCP_LOG_LEVEL_MAP,
-    _MCP_LOGGING_CALLBACK_SUPPORTED,
     MCPServerTask,
 )
 
@@ -77,7 +76,14 @@ class TestSDKSupportGate:
         # The pinned MCP SDK in this repo supports logging_callback; if this
         # starts failing after an SDK downgrade the feature silently degrades
         # (by design), but we want to know.
+        #
+        # Read the flag off the module AFTER _ensure_mcp_sdk() — the SDK
+        # import (and therefore this flag) is lazy since the startup-latency
+        # work, so a by-value module-level import would freeze the pre-bind
+        # False and never observe the real support state.
         import inspect
         from mcp import ClientSession
+        from tools import mcp_tool
+        mcp_tool._ensure_mcp_sdk()
         expected = "logging_callback" in inspect.signature(ClientSession).parameters
-        assert _MCP_LOGGING_CALLBACK_SUPPORTED == expected
+        assert mcp_tool._MCP_LOGGING_CALLBACK_SUPPORTED == expected

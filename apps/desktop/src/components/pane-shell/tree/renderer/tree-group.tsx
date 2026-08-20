@@ -10,21 +10,30 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, Fragment, type ReactNode, type RefObject, useRef, useState } from 'react'
 
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { DecodeText } from '@/components/ui/decode-text'
 import { DROP_SHEET_BLUR_CLASS, DROP_SHEET_CLASS } from '@/components/ui/drop-affordance'
-import { PANE_TAB_STRIP_LINE_LEFT, PANE_TAB_STRIP_LINE_RIGHT, PaneTab, PaneTabLabel } from '@/components/ui/pane-tab'
-import { ContribBoundary } from '@/contrib/react/boundary'
+import {
+  PANE_TAB_STRIP_LINE_LEFT,
+  PANE_TAB_STRIP_LINE_RIGHT,
+  PaneStripGlyph,
+  PaneTab,
+  paneTabCloseItems,
+  PaneTabLabel,
+  PaneTabStrip
+} from '@/components/ui/pane-tab'
+import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import { $layoutEditMode } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
-import { hiddenPaneProps, PaneGroupContext, PaneVisibleContext } from '../../pane-visibility'
+import { emptyPaneLifecycleState, reconcilePaneLifecycle } from '../../pane-lifecycle'
+import { hiddenPaneProps, PaneGroupContext, PaneLifecycleContext, PaneVisibleContext } from '../../pane-visibility'
 import type { DropPosition, GroupNode } from '../model'
 import {
   $dropHint,
@@ -33,21 +42,34 @@ import {
   $newSessionTabAction,
   $panesWithCloser,
   $treeDragging,
+  $treePaneEpochs,
   activateTreePane,
   closeAllTreeTabs,
   closeOtherTreeTabs,
   closeTabPane,
   closeTreeTabsToRight,
   collapseTreePane,
+  hideOnlyZoneTabs,
   isCollapsePane,
+  isMainStripPane,
   isSessionStripPane,
   noteActiveTreeGroup,
+  reloadTreePane,
   restoreTreePane,
   SESSION_TILE_DRAG,
+  setStripTabHidden,
   setTreeGroupHeaderHidden,
   setTreeGroupMinimized,
   treeTabCloseTargets
 } from '../store'
+import {
+  $tabSelection,
+  clearTabSelection,
+  isToggleSelectClick,
+  selectionFor,
+  selectTabRange,
+  toggleTabSelected
+} from '../tab-selection'
 
 import { type DoubleTapContext, startPaneDrag } from './drag-session'
 import { forceLoneHeaderForPanes } from './lone-header'
@@ -92,34 +114,47 @@ function ZoneMenu({
   // dead action, and the counts describe the chip actually clicked.
   const items = (kit: MenuKit) => {
     const paneId = closable?.()
-    const targets = treeTabCloseTargets(targetPane())
+    const targetId = targetPane()
 
     return (
       <>
-        {paneId !== undefined &&
-          renderActionItem(kit, {
-            icon: 'close',
-            label: t.common.close,
-            onSelect: () => closeTabPane(paneId)
-          })}
         {renderActionItem(kit, {
-          disabled: !targets.others,
-          icon: 'close-all',
-          label: t.zones.closeOthers,
-          onSelect: () => closeOtherTreeTabs(targetPane())
+          icon: 'refresh',
+          label: t.zones.reload,
+          onSelect: () => reloadTreePane(targetId)
         })}
-        {renderActionItem(kit, {
-          disabled: !targets.right,
-          icon: 'arrow-right',
-          label: t.zones.closeToRight,
-          onSelect: () => closeTreeTabsToRight(targetPane())
+        <kit.Separator />
+        {paneTabCloseItems(kit, {
+          counts: treeTabCloseTargets(targetId),
+          onClose: paneId !== undefined ? () => closeTabPane(paneId) : undefined,
+          onCloseAll: () => closeAllTreeTabs(targetId),
+          onCloseOthers: () => closeOtherTreeTabs(targetId),
+          onCloseToRight: () => closeTreeTabsToRight(targetId)
         })}
-        {renderActionItem(kit, {
-          disabled: !targets.all,
-          icon: 'clear-all',
-          label: t.zones.closeAll,
-          onSelect: () => closeAllTreeTabs(targetPane())
-        })}
+        {(() => {
+          // Show/hide rows for the zone's hide-only chrome tabs (sessions /
+          // Bots) — their Close replacement. Resolved when the menu OPENS,
+          // same no-subscription contract as the close-verb counts above.
+          const hideOnly = hideOnlyZoneTabs(nodeId)
+
+          if (hideOnly.length === 0) {
+            return null
+          }
+
+          return (
+            <>
+              <kit.Separator />
+              {hideOnly.map(tab =>
+                renderActionItem(kit, {
+                  icon: tab.hidden ? 'eye' : 'eye-closed',
+                  key: `strip-tab-${tab.id}`,
+                  label: tab.hidden ? t.zones.showStripTab(tab.title) : t.zones.hideStripTab(tab.title),
+                  onSelect: () => setStripTabHidden(tab.id, !tab.hidden)
+                })
+              )}
+            </>
+          )
+        })()}
         <kit.Separator />
         {renderActionItem(kit, {
           icon: headerHidden ? 'eye' : 'eye-closed',
@@ -128,7 +163,9 @@ function ZoneMenu({
         })}
         {minimizable &&
           renderActionItem(kit, {
-            icon: minimized ? 'chevron-down' : 'chevron-up',
+            // Same action-direction contract as the strip button below: the
+            // icon points where the zone will GO (restore opens upward).
+            icon: minimized ? 'chevron-up' : 'chevron-down',
             label: minimized ? t.zones.restore : t.zones.minimize,
             onSelect: () => setTreeGroupMinimized(nodeId, !minimized)
           })}
@@ -178,6 +215,12 @@ export function TreeGroup({
   const narrow = useStore($narrowViewport)
   const newSessionTabAction = useStore($newSessionTabAction)
   const panesWithCloser = useStore($panesWithCloser)
+  // Multi-tab selection (⌥/Ctrl-click, Shift-click) — null for every zone but
+  // the one holding it, so this subscription is quiet during normal use.
+  const tabSelection = useStore($tabSelection)
+  // Reload epochs: only an explicit tab-menu Reload writes here, so this
+  // subscription costs nothing on a normal render.
+  const paneEpochs = useStore($treePaneEpochs)
 
   const paneFor = (id: string) => panes.find(p => p.id === id)
 
@@ -194,29 +237,24 @@ export function TreeGroup({
   const active = paneFor(activeId)
   const isEmpty = node.panes.length === 0
 
-  // KEEP-ALIVE: every pane that has been ACTIVE in this zone stays mounted —
-  // an inactive tab merely hides (visibility), it does not unmount. Remounting
-  // on every tab switch re-measured and re-scrolled the content from scratch
-  // (the thread visibly layout-shifted each time a session tab was revisited).
-  // Lazy on purpose: a pane first mounts when first activated, so a
-  // boot-restored tab stack doesn't resume every session up front.
-  const everActivePanesRef = useRef<Set<string>>(new Set())
+  // BOUNDED KEEP-ALIVE: the active pane is visible, a small per-zone LRU stays
+  // hot-hidden, and older panes park (unmount). This preserves fast tab
+  // round-trips without letting a long-lived zone pin every transcript it has
+  // ever visited. Stateful resources can opt out of parking (the terminal keeps
+  // its PTY alive while hidden). Lazy remains deliberate: restored background
+  // tabs have no lifecycle entry and do not mount until first activation.
+  const lifecycleRef = useRef(emptyPaneLifecycleState())
 
-  useEffect(() => {
-    if (!node.minimized && !isEmpty) {
-      everActivePanesRef.current.add(activeId)
-    }
+  if (!node.minimized && !isEmpty) {
+    lifecycleRef.current = reconcilePaneLifecycle(lifecycleRef.current, {
+      activeId,
+      keepAlive: id => Boolean(paneChrome(paneFor(id)).lifecycleKeepAlive),
+      paneIds: shown
+    })
+  }
 
-    // Prune panes that left the zone (closed / moved to another group), so a
-    // long-lived zone doesn't pin stale ids forever.
-    for (const id of everActivePanesRef.current) {
-      if (!node.panes.includes(id)) {
-        everActivePanesRef.current.delete(id)
-      }
-    }
-  })
-
-  const keptPanes = shown.filter(id => id === activeId || everActivePanesRef.current.has(id))
+  const paneLifecycle = lifecycleRef.current.entries
+  const keptPanes = shown.filter(id => paneLifecycle[id] && paneLifecycle[id].lifecycle !== 'parked')
 
   // ONE header style: the app's compact pane-header. DEFAULT is contextual —
   // a single pane isn't a "tab", so its header auto-hides; a stack shows its
@@ -275,11 +313,13 @@ export function TreeGroup({
   const targetPane = () => menuPane ?? activeId
 
   // Close targets the right-clicked chip (falling back to the active pane);
-  // only panes that declare `uncloseable` (the main workspace) are exempt.
+  // panes that declare `uncloseable` (the main workspace) or `hideOnly`
+  // (sessions / Bots — show/hide replaces Close) are exempt.
   const closable = () => {
     const paneId = targetPane()
+    const chrome = paneChrome(paneFor(paneId))
 
-    return paneChrome(paneFor(paneId)).uncloseable ? undefined : paneId
+    return chrome.uncloseable || chrome.hideOnly ? undefined : paneId
   }
 
   // The zone hosting the uncloseable workspace never minimizes — collapsing
@@ -292,8 +332,14 @@ export function TreeGroup({
 
   // A pane whose store owns Close keeps the gesture even when the pane itself
   // is uncloseable — the workspace tab empties to a fresh draft rather than
-  // leaving the tree.
-  const closeableTab = (paneId: string) => !paneChrome(paneFor(paneId)).uncloseable || panesWithCloser.has(paneId)
+  // leaving the tree. Hide-only chrome (sessions / Bots) opts out of every
+  // close gesture: its tabs are shown/hidden (zone menu, ⌘K), never closed —
+  // an accidental ✕ on standing chrome removed Bot Mode until the next launch.
+  const closeableTab = (paneId: string) =>
+    !paneChrome(paneFor(paneId)).hideOnly && (!paneChrome(paneFor(paneId)).uncloseable || panesWithCloser.has(paneId))
+
+  // A pane's own live label when it has one, else its registered string.
+  const tabLabel = (paneId: string) => paneChrome(paneFor(paneId)).tabTitle?.() ?? paneFor(paneId)?.title ?? paneId
 
   // Collapse/restore a tool panel (or plain minimize elsewhere) — the header
   // chevron + tap gesture, routed so ⌃`/the titlebar toggle stay truthful.
@@ -361,7 +407,6 @@ export function TreeGroup({
             >
               {shown.map(paneId => {
                 const closeable = closeableTab(paneId)
-                const title = paneFor(paneId)?.title ?? paneId
 
                 return (
                   <PaneTab
@@ -379,7 +424,7 @@ export function TreeGroup({
                     side={railSide}
                     vertical
                   >
-                    <PaneTabLabel>{title}</PaneTabLabel>
+                    <PaneTabLabel>{tabLabel(paneId)}</PaneTabLabel>
                   </PaneTab>
                 )
               })}
@@ -388,16 +433,13 @@ export function TreeGroup({
         </ZoneMenu>
       )}
 
-      {/* Header: the file-preview tab strip (PaneTab), one shared component. */}
+      {/* Header: the shared pane tab strip (PaneTabStrip + PaneTab). */}
       {headerVisible && (
         <ZoneMenu {...zoneMenu}>
-          <div
-            // Strip and active tab both sit on the sidebar surface, so the
-            // header reads as one piece of chrome with the titlebar above it.
-            // No bottom rule — the active tab's primary underline is the only seam.
+          <PaneTabStrip
             // data-zone-tabstrip: a drop over here STACKS (drag-session reads it).
-            className="group/pane-header relative flex h-7 shrink-0 select-none bg-(--ui-sidebar-surface-background) [-webkit-app-region:no-drag] [--pane-tab-active-bg:var(--ui-sidebar-surface-background)]"
             data-zone-tabstrip={node.id}
+            listRef={tabsRef}
             onPointerDown={e =>
               // Tap the header to collapse to it / expand back — the DetailPane
               // / sidebar-section gesture (never for the main zone). Double-tap
@@ -413,122 +455,163 @@ export function TreeGroup({
             }
             ref={stripRef}
             style={{ cursor: 'grab' }}
-          >
-            <div
-              className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-              ref={tabsRef}
-              role="tablist"
-            >
-              {shown.map(paneId => {
-                const isActive = paneId === activeId && !node.minimized
-                const chrome = paneChrome(paneFor(paneId))
-                const closeable = closeableTab(paneId)
-                const title = paneFor(paneId)?.title ?? paneId
-
-                const tab = (
-                  <PaneTab
-                    active={isActive}
-                    aria-selected={isActive}
-                    data-tree-tab={paneId}
-                    key={paneId}
-                    onClose={closeable ? () => closeTab(paneId) : undefined}
-                    onPointerDown={e => {
-                      // Tabs ACTIVATE (restoring a collapsed group). Minimize
-                      // lives on the chevron / single-pane label — overloading
-                      // the active tab made double-click a minimize/restore/hide
-                      // lottery.
-                      const onTap = () => {
-                        if (node.minimized) {
-                          restoreTreePane(paneId)
-                        }
-
-                        activateTreePane(node.id, paneId)
-                      }
-
-                      // Claim the press so the STRIP's own pane-drag handler
-                      // (parent onPointerDown) can't also fire. startPaneDrag
-                      // does this internally; the session drag (shared with
-                      // sidebar rows) doesn't, so do it here for both paths.
-                      if (e.button === 0) {
-                        e.preventDefault()
-                        e.stopPropagation()
-                      }
-
-                      // A pane may own its tab drag (a session tab speaks the
-                      // session drop language — link/stack/split); `false` defers
-                      // to the generic pane move (the workspace tab on a fresh
-                      // draft has no session to link).
-                      if (!chrome.tabDrag?.(e, onTap, hideHeaderDoubleTap)) {
-                        startPaneDrag(
-                          paneId,
-                          e,
-                          onTap,
-                          stripRef.current ? { groupId: node.id, strip: stripRef.current } : undefined,
-                          hideHeaderDoubleTap,
-                          title
-                        )
-                      }
-                    }}
-                    role="tab"
-                    style={{ cursor: 'grab' }}
+            trailing={
+              <>
+                {minimizable && (
+                  <button
+                    aria-label={node.minimized ? t.zones.restore : t.zones.minimize}
+                    className="mx-1 grid size-5 shrink-0 place-items-center self-center rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 group-hover/pane-header:opacity-100"
+                    onClick={toggleCollapse}
+                    onPointerDown={e => e.stopPropagation()}
+                    type="button"
                   >
-                    {chrome.tabLead ? (
-                      <span className="ml-2 -mr-1 flex shrink-0 items-center">{chrome.tabLead()}</span>
-                    ) : null}
-                    <PaneTabLabel>{title}</PaneTabLabel>
-                  </PaneTab>
-                )
+                    <Codicon name={node.minimized ? 'chevron-up' : 'chevron-down'} size="0.75rem" />
+                  </button>
+                )}
+                <StripDropCaret groupId={node.id} stripRef={stripRef} />
+              </>
+            }
+          >
+            {shown.map(paneId => {
+              const isActive = paneId === activeId && !node.minimized
+              const chrome = paneChrome(paneFor(paneId))
+              const closeable = closeableTab(paneId)
+              const title = paneFor(paneId)?.title ?? paneId
+              const isSelected = tabSelection?.groupId === node.id && tabSelection.ids.has(paneId)
 
-                // A pane may wrap ITS tab in a domain menu (session verbs on a
-                // tile tab); the wrapper needs the key since it's the root.
-                return <Fragment key={paneId}>{chrome.tabWrap ? chrome.tabWrap(tab) : tab}</Fragment>
-              })}
-
-              {/* Plain "+" after the last tab of a CHAT strip (the workspace
-                  zone, or any zone holding session tabs) — always shown, no
-                  tab/button chrome, just the glyph. Creates a new session tab
-                  (mirrors ⌘T) via the app-registered action; the pointerdown
-                  focuses this zone first, so the tab lands in THIS strip.
-                  Hidden when unwired or the zone is minimized. */}
-              {shown.some(isSessionStripPane) && newSessionTabAction && !node.minimized && (
-                <button
-                  aria-label={t.zones.newSessionTab}
-                  className="grid size-7 shrink-0 place-items-center self-center bg-transparent text-(--ui-text-quaternary) transition-colors hover:text-foreground [-webkit-app-region:no-drag]"
-                  onClick={() => newSessionTabAction()}
+              const tab = (
+                <PaneTab
+                  active={isActive}
+                  aria-selected={isActive}
+                  data-tree-tab={paneId}
+                  key={paneId}
+                  onClose={closeable ? () => closeTab(paneId) : undefined}
                   onPointerDown={e => {
-                    e.stopPropagation()
-                    // The action docks into the FOCUSED chat zone; clicking a
-                    // background strip's "+" must make THAT zone the focused
-                    // one first, or the tab opens in whichever zone was last
-                    // clicked. (pointerdown's own focus tracking would land
-                    // after the click handler reads the anchor.)
-                    noteActiveTreeGroup(node.id)
+                    // Chrome's tab-selection grammar, ahead of activate/drag:
+                    // Shift-click ranges from the anchor, ⌥-click (Ctrl-click
+                    // off-Mac) toggles. Neither activates nor starts a drag —
+                    // the press IS the selection edit. ⌘-click stays close
+                    // (PaneTab claims it first) and ⌃-click stays the macOS
+                    // context menu.
+                    if (e.button === 0 && e.shiftKey) {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      selectTabRange(node.id, shown, paneId, activeId)
+
+                      return
+                    }
+
+                    if (isToggleSelectClick(e)) {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      toggleTabSelected(node.id, paneId, activeId)
+
+                      return
+                    }
+
+                    // Tabs ACTIVATE (restoring a collapsed group). Minimize
+                    // lives on the chevron / single-pane label — overloading
+                    // the active tab made double-click a minimize/restore/hide
+                    // lottery. A plain click also collapses any multi-tab
+                    // selection back to the one tab (Chrome semantics).
+                    const onTap = () => {
+                      clearTabSelection()
+
+                      if (node.minimized) {
+                        restoreTreePane(paneId)
+                      }
+
+                      activateTreePane(node.id, paneId)
+                    }
+
+                    // Claim the press so the STRIP's own pane-drag handler
+                    // (parent onPointerDown) can't also fire. startPaneDrag
+                    // does this internally; the session drag (shared with
+                    // sidebar rows) doesn't, so do it here for both paths.
+                    if (e.button === 0) {
+                      e.preventDefault()
+                      e.stopPropagation()
+                    }
+
+                    // Dragging a SELECTED tab carries the whole selection as
+                    // one block through the generic pane move — a multi-tab
+                    // drag outranks the pane's own tab drag (the session drop
+                    // language is single-session).
+                    const dragSelection = selectionFor(node.id, shown, paneId)
+
+                    if (dragSelection) {
+                      startPaneDrag(
+                        paneId,
+                        e,
+                        onTap,
+                        stripRef.current ? { groupId: node.id, strip: stripRef.current } : undefined,
+                        hideHeaderDoubleTap,
+                        t.zones.tabCount(dragSelection.length),
+                        dragSelection
+                      )
+
+                      return
+                    }
+
+                    // A pane may own its tab drag (a session tab speaks the
+                    // session drop language — link/stack/split); `false` defers
+                    // to the generic pane move (the workspace tab on a fresh
+                    // draft has no session to link).
+                    if (!chrome.tabDrag?.(e, onTap, hideHeaderDoubleTap)) {
+                      startPaneDrag(
+                        paneId,
+                        e,
+                        onTap,
+                        stripRef.current ? { groupId: node.id, strip: stripRef.current } : undefined,
+                        hideHeaderDoubleTap,
+                        title
+                      )
+                    }
                   }}
-                  title={t.zones.newSessionTab}
-                  type="button"
+                  role="tab"
+                  selected={isSelected}
+                  showCloseButton={chrome.showCloseButton !== false}
+                  style={{ cursor: 'grab' }}
                 >
-                  <Codicon name="add" size="0.8125rem" />
-                </button>
-              )}
-            </div>
-            {minimizable && (
-              <button
-                aria-label={node.minimized ? t.zones.restore : t.zones.minimize}
-                className="mx-1 grid size-5 shrink-0 place-items-center self-center rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 group-hover/pane-header:opacity-100"
-                onClick={toggleCollapse}
-                onPointerDown={e => e.stopPropagation()}
-                type="button"
+                  {chrome.tabLead ? (
+                    <span className="ml-2 -mr-1 flex shrink-0 items-center">{chrome.tabLead()}</span>
+                  ) : null}
+                  <PaneTabLabel>{tabLabel(paneId)}</PaneTabLabel>
+                </PaneTab>
+              )
+
+              // A pane may wrap ITS tab in a domain menu (session verbs on a
+              // tile tab); the wrapper needs the key since it's the root.
+              return <Fragment key={paneId}>{chrome.tabWrap ? chrome.tabWrap(tab) : tab}</Fragment>
+            })}
+
+            {/* Plain "+" after the last tab of a CHAT strip (the workspace
+                zone, or any zone holding session tabs) — always shown. Creates
+                a new session tab (mirrors ⌘T) via the app-registered action;
+                the pointerdown focuses this zone first, so the tab lands in
+                THIS strip. Hidden when unwired or the zone is minimized. */}
+            {shown.some(isSessionStripPane) && newSessionTabAction && !node.minimized && (
+              <span
+                // The action docks into the FOCUSED chat zone; clicking a
+                // background strip's "+" must make THAT zone the focused one
+                // first, or the tab opens in whichever zone was last clicked.
+                // (pointerdown's own focus tracking would land after the click
+                // handler reads the anchor.)
+                onPointerDownCapture={() => noteActiveTreeGroup(node.id)}
               >
-                <Codicon name={node.minimized ? 'chevron-down' : 'chevron-up'} size="0.75rem" />
-              </button>
+                <PaneStripGlyph
+                  icon={<Codicon name="add" size="0.8125rem" />}
+                  label={t.zones.newSessionTab}
+                  onSelect={() => newSessionTabAction()}
+                />
+              </span>
             )}
-            <StripDropCaret groupId={node.id} stripRef={stripRef} />
-          </div>
+          </PaneTabStrip>
         </ZoneMenu>
       )}
 
-      {/* Body: the zone's pane content — every kept (ever-active) pane stays
-          mounted in an absolute layer; only the active one is visible.
+      {/* Body: the zone's pane content — the active pane and bounded hot-hidden
+          cache stay mounted in absolute layers; parked panes are unmounted.
           `visibility` (not display) keeps the hidden pane's layout box, so
           scroll positions and measurements survive the round-trip — which also
           makes a hidden layer's rect identical to the visible one's, hence the
@@ -557,10 +640,17 @@ export function TreeGroup({
                     // can gate its hot (per-token) subscriptions while hidden;
                     // the group id identifies the ZONE it lives in, for state
                     // that is per-zone rather than per-tab (composer pop-out).
+                    // The reload epoch keys the CONTENT, not this layer: a
+                    // Reload remounts the contribution (effects re-run, state
+                    // resets) while the layer — and every other tab — stays.
                     <PaneGroupContext.Provider value={node.id}>
-                      <PaneVisibleContext.Provider value={isActive}>
-                        <ContribBoundary id={pane.id}>{pane.render()}</ContribBoundary>
-                      </PaneVisibleContext.Provider>
+                      <PaneLifecycleContext.Provider value={paneLifecycle[paneId]?.lifecycle ?? 'visible'}>
+                        <PaneVisibleContext.Provider value={isActive}>
+                          <ContribBoundary id={pane.id} key={paneEpochs[paneId] ?? 0}>
+                            <ContribRender render={pane.render} />
+                          </ContribBoundary>
+                        </PaneVisibleContext.Provider>
+                      </PaneLifecycleContext.Provider>
                     </PaneGroupContext.Provider>
                   ) : (
                     isActive && (
@@ -700,10 +790,19 @@ function ZoneDropOverlay({ node }: { node: GroupNode }) {
   }
 
   // A session drag (sidebar row) reuses this exact overlay — over ANY zone
-  // now (stack into its tabs / split its edges); only a CHAT zone's center is
-  // a link-to-chat (the composer overlay owns that visual).
+  // that hosts a MAIN tile (stack into its tabs / split its edges); only a
+  // CHAT zone's center is a link-to-chat (the composer overlay owns that
+  // visual). Standing side chrome — the sidebar, files, terminal — hosts no
+  // main tile, so a session can't land there: those zones stay DARK rather
+  // than painting an idle outline the drop would only refuse. Same test
+  // `tileZoneHost` (session-drag.ts) resolves the drop with, so what lights
+  // up and what commits cannot disagree.
   const sessionDrag = dragging === SESSION_TILE_DRAG
   const chatZone = node.panes.some(isSessionStripPane)
+
+  if (sessionDrag && !chatZone && !node.panes.some(isMainStripPane)) {
+    return null
+  }
 
   const isDragSource = node.panes.includes(dragging)
 

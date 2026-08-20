@@ -241,6 +241,88 @@ def test_failed_assistant_persist_blocks_ui_projection_and_tool_side_effects():
     assert result["failed"] is True
     assert result["completed"] is False
     assert result["turn_exit_reason"] == "session_persistence_failed"
+    # No exception was visible (flush returned False), so the cause is
+    # unknown — but the machine-readable contract fields must still be set.
+    assert result["failure_reason"] == "session_persistence_failed:unknown"
+    assert isinstance(result.get("error"), str) and result["error"].strip() != ""
+
+
+def test_locked_flush_exception_surfaces_locked_cause_in_result_contract():
+    """SQLite write-lock contention must surface as a 'locked' cause.
+
+    Gateway contract: result['failure_reason'] is exactly
+    'session_persistence_failed:locked' and result['error'] is a non-empty
+    string whose wording talks about busy storage, NOT disk space.
+    """
+    import sqlite3
+
+    agent = _make_agent()
+    tool_call = _mock_tool_call(call_id="must-not-run")
+    agent.client.chat.completions.create.return_value = _mock_response(
+        content="I'll inspect the repository now.",
+        finish_reason="tool_calls",
+        tool_calls=[tool_call],
+    )
+    agent._flush_messages_to_session_db = MagicMock(
+        side_effect=sqlite3.OperationalError("database is locked")
+    )
+    agent.interim_assistant_callback = MagicMock()
+    agent._execute_tool_calls = MagicMock()
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("inspect the repository")
+
+    agent.interim_assistant_callback.assert_not_called()
+    agent._execute_tool_calls.assert_not_called()
+    assert result["failed"] is True
+    assert result["turn_exit_reason"] == "session_persistence_failed"
+    assert result["failure_reason"] == "session_persistence_failed:locked"
+    assert isinstance(result.get("error"), str) and result["error"].strip() != ""
+    assert "busy" in result["error"].lower()
+    assert "disk" not in result["error"].lower()
+
+
+def test_persistence_cause_resets_between_turns():
+    """A locked failure on turn 1 must not leak its cause into turn 2."""
+    import sqlite3
+
+    agent = _make_agent()
+    tool_call = _mock_tool_call(call_id="must-not-run")
+    agent.client.chat.completions.create.return_value = _mock_response(
+        content="I'll inspect the repository now.",
+        finish_reason="tool_calls",
+        tool_calls=[tool_call],
+    )
+    agent._flush_messages_to_session_db = MagicMock(
+        side_effect=sqlite3.OperationalError("database is locked")
+    )
+    agent._execute_tool_calls = MagicMock()
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        first = agent.run_conversation("inspect the repository")
+        assert first["failure_reason"] == "session_persistence_failed:locked"
+
+        # Storage recovered but the flush function now reports a bare False
+        # (no exception): the stale 'locked' cause must not be reused.
+        agent.client.chat.completions.create.side_effect = None
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="I'll inspect the repository now.",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(call_id="must-not-run-2")],
+        )
+        agent._flush_messages_to_session_db = MagicMock(return_value=False)
+        second = agent.run_conversation("inspect the repository again")
+
+    assert second["turn_exit_reason"] == "session_persistence_failed"
+    assert second["failure_reason"] == "session_persistence_failed:unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +379,48 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
         ("dispatch", "c2"),
         ("flush", "tool", "c2"),
     ]
+
+
+def test_sequential_keyboard_interrupt_emits_results_for_all_calls():
+    """A KeyboardInterrupt mid-batch must not leave dangling tool_calls.
+
+    When a tool handler raises KeyboardInterrupt, the sequential executor
+    re-raises to abort the turn — but it must first append a tool result for
+    the interrupted call AND every remaining call, or the assistant tool-call
+    turn is left without matching tool results (a message-role alternation
+    violation that malforms the next provider request). Mirrors the
+    cooperative-interrupt and concurrent paths, which already do this.
+    """
+    agent = _make_agent()
+    tool_calls = [
+        _mock_tool_call(name="web_search", call_id="c1"),
+        _mock_tool_call(name="web_search", call_id="c2"),
+        _mock_tool_call(name="web_search", call_id="c3"),
+    ]
+    messages: list = []
+    assistant_message = SimpleNamespace(content="", tool_calls=tool_calls)
+
+    def _interrupt_dispatch(function_name, function_args, effective_task_id, **kwargs):
+        # First tool raises a hard interrupt mid-batch.
+        raise KeyboardInterrupt()
+
+    agent._flush_messages_to_session_db = MagicMock()
+
+    with (
+        patch("run_agent.handle_function_call", side_effect=_interrupt_dispatch),
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
+
+    # Every call_id has a matching tool result — alternation preserved.
+    tool_results = [m for m in messages if m.get("role") == "tool"]
+    assert [m["tool_call_id"] for m in tool_results] == ["c1", "c2", "c3"]
+    # The results are marked as cancelled, not fabricated successes.
+    assert all("cancelled" in m["content"].lower() for m in tool_results)
 
 
 @pytest.mark.parametrize("executor_mode", ["sequential", "concurrent"])

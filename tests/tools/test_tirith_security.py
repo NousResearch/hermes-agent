@@ -251,6 +251,12 @@ class TestUnsupportedPlatform:
         ("Linux", "riscv64", False),
     ])
     def test_is_platform_supported(self, system, machine, expected):
+        # The patched (system, machine) pairs are table inputs, not a host
+        # fake: is_platform_supported() is a pure string mapping that touches
+        # no OS facility beneath the check, so there is nothing for a real
+        # host to falsify. Two of the rows (Windows/AMD64, Linux/riscv64)
+        # could never execute honestly anyway — the second has no CI runner
+        # on any lane.
         with patch("tools.tirith_security.platform.system", return_value=system), \
              patch("tools.tirith_security.platform.machine", return_value=machine):
             assert _tirith_mod.is_platform_supported() is expected

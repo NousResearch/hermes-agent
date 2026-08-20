@@ -4,8 +4,8 @@
  * header row (count, filter kebab, search, settings, new task — the board
  * SWITCHER lives in the titlebar, see board-switcher.tsx), columns in
  * BOARD_COLUMNS order, drag-to-move (optimistic, workflow-checked),
- * ⌘-click multi-select with a floating bulk bar, right-click actions, and
- * the detail drawer. Dispatch nudges ride every write (see api.ts).
+ * primary-modifier-click multi-select with a floating bulk bar, right-click
+ * actions, and the detail drawer. Dispatch nudges ride every write (see api.ts).
  */
 
 import {
@@ -30,6 +30,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   ErrorState,
+  formatModifierToken,
   host,
   Input,
   Loader,
@@ -78,6 +79,7 @@ import {
 } from './api'
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
+import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
 import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
@@ -308,7 +310,7 @@ function Card({
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => onToggleSelect(task.id)}>
           <Codicon name={selected ? 'close' : 'check-all'} size="0.85rem" />
-          {selected ? k.deselect : k.select}
+          {selected ? k.deselect : k.select(formatModifierToken('mod'))}
         </ContextMenuItem>
         <ContextMenuSeparator />
         {columns
@@ -570,6 +572,7 @@ function NewTaskDialog({
   // a path here overrides just this task. Only meaningful for dir/worktree.
   const [workspacePath, setWorkspacePath] = useState('')
   const [parent, setParent] = useState('')
+  const [modelOverride, setModelOverride] = useState<TaskModelOverride>(EMPTY_OVERRIDE)
   const [goalMode, setGoalMode] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<null | string>(null)
@@ -602,6 +605,7 @@ function NewTaskDialog({
       setWorkspaceKind(boardDefaultKind)
       setWorkspacePath('')
       setParent('')
+      setModelOverride(EMPTY_OVERRIDE)
       setGoalMode(false)
       setError(null)
       setBusy(false)
@@ -637,6 +641,7 @@ function NewTaskDialog({
         title: trimmed,
         triage: isTriage,
         workspace_kind: workspaceKind,
+        ...overrideCreateFields(modelOverride),
         // Empty → backend inherits the board's default project dir.
         workspace_path: workspaceKind !== 'scratch' && workspacePath.trim() ? workspacePath.trim() : undefined
       })
@@ -661,7 +666,15 @@ function NewTaskDialog({
 
   return (
     <Dialog onOpenChange={open => !open && onClose()} open={Boolean(target)}>
-      <DialogContent className="w-[min(42rem,94vw)] max-w-none">
+      {/* `overflow-visible`: DialogContent publishes ITSELF as the portal
+          container for popovers opened inside it (dialog-portal-context), and
+          its default `overflow-y-auto` then crops them at the dialog's edge —
+          the model menu below is born inside that scroll box. This dialog
+          already owns a scroller on its body div, so the shell's clip is
+          redundant here and dropping it is safe. The general fix to
+          DialogContent is in flight as #75600; when that lands this override
+          becomes a no-op and can go. */}
+      <DialogContent className="w-[min(42rem,94vw)] max-w-none overflow-visible">
         <DialogHeader>
           <DialogTitle>{target ? k.newTaskIn(columnLabel(k, target)) : k.newTask}</DialogTitle>
         </DialogHeader>
@@ -740,6 +753,11 @@ function NewTaskDialog({
 
           <Field label={k.skills}>
             <Input onChange={event => setSkills(event.target.value)} placeholder={k.skillsPlaceholder} value={skills} />
+          </Field>
+
+          <Field label={k.model}>
+            <ModelOverrideField onChange={setModelOverride} value={modelOverride} />
+            <span className="text-[0.625rem] text-(--ui-text-quaternary)">{k.modelHint}</span>
           </Field>
 
           {parents.length > 0 && (

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
@@ -86,6 +87,19 @@ test('buildSessionWindowUrl adds the watch flag for spectator windows, before th
   const url = buildSessionWindowUrl('abc', { devServer: 'http://localhost:5173', watch: true })
 
   assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1#/abc')
+})
+
+test('buildInstanceWindowUrl marks a full peer without selecting a specialized renderer', () => {
+  const url = buildInstanceWindowUrl({ devServer: 'http://localhost:5173/' })
+
+  assert.equal(url, 'http://localhost:5173/?peer=1')
+  assert.ok(!url.includes('win='))
+})
+
+test('buildInstanceWindowUrl marks a packaged full peer', () => {
+  const url = buildInstanceWindowUrl({ rendererIndexPath: '/opt/app/index.html' })
+
+  assert.match(url, /^file:\/\/.*index\.html\?peer=1$/)
 })
 
 test('instanceWindowBounds cascades a new window off its source bounds', () => {
@@ -201,6 +215,22 @@ test('chatWindowWebPreferences leaves background throttling to the runtime strea
   const prefs = chatWindowWebPreferences('/tmp/preload.cjs')
 
   assert.equal('backgroundThrottling' in prefs, false)
+})
+
+test('chat renderer navigation stays passive while explicit window actions may focus', () => {
+  const prefs = chatWindowWebPreferences('/tmp/preload.cjs')
+
+  // In-page/SPA navigation can happen while a transcript keeps streaming. It
+  // must not use Electron's default navigation focus path to activate Hermes.
+  assert.equal(prefs.focusOnNavigation, false)
+
+  // Re-opening a session is an explicit user action and must still raise the
+  // existing window; the passive navigation guard does not disable that path.
+  const registry = createSessionWindowRegistry()
+  const win = makeFakeWindow()
+  registry.openOrFocus('s1', () => win)
+  registry.openOrFocus('s1', () => win)
+  assert.equal(win.calls.focus, 1)
 })
 
 test('chatWindowWebPreferences passes the preload path through and keeps the hardened defaults', () => {

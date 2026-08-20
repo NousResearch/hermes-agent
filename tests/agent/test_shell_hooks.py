@@ -251,6 +251,34 @@ class TestCallbackSubprocess:
 
 
 
+    def test_modify_canonical_parsing(self, tmp_path):
+        """Shell hook returning canonical modify is parsed correctly."""
+        script = _write_script(
+            tmp_path, "mod_canon.sh",
+            "#!/usr/bin/env bash\n"
+            'printf \'{"action": "modify", "args": {"path": "/safe"}}\\n\'',
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=str(script),
+        )
+        cb = shell_hooks._make_callback(spec)
+        result = cb(tool_name="write_file", args={"path": "/unsafe"})
+        assert result == {"action": "modify", "args": {"path": "/safe"}}
+
+    def test_modify_claude_code_parsing(self, tmp_path):
+        """Shell hook returning Claude-Code modify is normalised."""
+        script = _write_script(
+            tmp_path, "mod_cc.sh",
+            "#!/usr/bin/env bash\n"
+            'printf \'{"decision": "modify", "tool_input": {"content": "safe"}}\\n\'',
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=str(script),
+        )
+        cb = shell_hooks._make_callback(spec)
+        result = cb(tool_name="write_file", args={"content": "danger"})
+        assert result == {"action": "modify", "args": {"content": "safe"}}
+
 
 # ── config parsing ────────────────────────────────────────────────────────
 
@@ -270,6 +298,25 @@ class TestParseHooksBlock:
 
 
 
+    def test_python_only_event_refused(self, caplog):
+        # transform_api_error_classification returns a classification directive that
+        # _parse_response has no channel for — a shell registration would
+        # be silently ignored, so it must be refused with a warning.
+        specs = shell_hooks._parse_hooks_block({
+            "transform_api_error_classification": [
+                {"command": "/tmp/hook.sh"},
+            ],
+        })
+        assert specs == []
+        assert any("Python-plugin-only" in r.message for r in caplog.records)
+
+    def test_timeout_clamped_to_max(self):
+        specs = shell_hooks._parse_hooks_block({
+            "post_tool_call": [
+                {"command": "/tmp/slow.sh", "timeout": 9999},
+            ],
+        })
+        assert specs[0].timeout == shell_hooks.MAX_TIMEOUT_SECONDS
 
 
 
@@ -419,3 +466,274 @@ class TestAllowlistConcurrency:
 
         assert len(tmp_paths_seen) == 2
         assert tmp_paths_seen[0] != tmp_paths_seen[1]
+
+
+# ── fail_closed parsing ───────────────────────────────────────────────────
+
+
+class TestFailClosedParsing:
+    def test_fail_closed_parsed(self):
+        specs = shell_hooks._parse_hooks_block({
+            "pre_tool_call": [
+                {"command": "/tmp/h.sh", "fail_closed": True},
+            ],
+        })
+        assert len(specs) == 1
+        assert specs[0].fail_closed is True
+
+    def test_fail_closed_defaults_false(self):
+        specs = shell_hooks._parse_hooks_block({
+            "pre_tool_call": [{"command": "/tmp/h.sh"}],
+        })
+        assert specs[0].fail_closed is False
+
+    def test_failclosed_camel_alias(self):
+        """Cursor/Claude Code configs spell it failClosed."""
+        specs = shell_hooks._parse_hooks_block({
+            "pre_tool_call": [
+                {"command": "/tmp/h.sh", "failClosed": True},
+            ],
+        })
+        assert specs[0].fail_closed is True
+
+    def test_canonical_wins_over_alias(self):
+        specs = shell_hooks._parse_hooks_block({
+            "pre_tool_call": [
+                {"command": "/tmp/h.sh", "fail_closed": False,
+                 "failClosed": True},
+            ],
+        })
+        assert specs[0].fail_closed is False
+
+    def test_non_bool_warns_and_defaults_false(self, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING, logger=shell_hooks.logger.name):
+            specs = shell_hooks._parse_hooks_block({
+                "pre_tool_call": [
+                    {"command": "/tmp/h.sh", "fail_closed": "yes"},
+                ],
+            })
+        assert specs[0].fail_closed is False
+        assert any(
+            "fail_closed must be a boolean" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_fail_closed_on_non_blocking_event_warns_and_ignores(self, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING, logger=shell_hooks.logger.name):
+            specs = shell_hooks._parse_hooks_block({
+                "on_session_start": [
+                    {"command": "/tmp/h.sh", "fail_closed": True},
+                ],
+            })
+        assert specs[0].fail_closed is False
+        assert any(
+            "fail_closed" in r.getMessage() and "ignored" in r.getMessage()
+            for r in caplog.records
+        )
+
+
+# ── _evaluate_result semantics ────────────────────────────────────────────
+
+
+def _spawn_result(**overrides):
+    base = {
+        "returncode": 0,
+        "stdout": "",
+        "stderr": "",
+        "timed_out": False,
+        "elapsed_seconds": 0.1,
+        "error": None,
+    }
+    base.update(overrides)
+    return base
+
+
+class TestEvaluateResult:
+    def _spec(self, event="pre_tool_call", fail_closed=False):
+        return shell_hooks.ShellHookSpec(
+            event=event, command="/tmp/h.sh", fail_closed=fail_closed,
+        )
+
+    # -- exit code 2 = block --------------------------------------------
+
+    def test_exit_2_blocks_with_stderr_message(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(),
+            _spawn_result(returncode=2, stderr="policy violation\n"),
+        )
+        assert r == {"action": "block", "message": "policy violation"}
+
+    def test_exit_2_blocks_with_default_message(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(), _spawn_result(returncode=2),
+        )
+        assert r == {
+            "action": "block",
+            "message": shell_hooks._DEFAULT_BLOCK_MESSAGE,
+        }
+
+    def test_exit_2_stdout_block_json_wins(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(),
+            _spawn_result(
+                returncode=2,
+                stdout='{"decision": "block", "reason": "from stdout"}',
+                stderr="from stderr",
+            ),
+        )
+        assert r == {"action": "block", "message": "from stdout"}
+
+    def test_exit_2_on_non_blocking_event_does_not_block(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(event="on_session_start"),
+            _spawn_result(returncode=2, stderr="boom"),
+        )
+        assert r is None
+
+    def test_other_nonzero_exit_still_parses_stdout(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(),
+            _spawn_result(
+                returncode=1,
+                stdout='{"decision": "block", "reason": "nope"}',
+            ),
+        )
+        assert r == {"action": "block", "message": "nope"}
+
+    def test_nonzero_exit_without_directive_is_none(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(), _spawn_result(returncode=1, stderr="oops"),
+        )
+        assert r is None
+
+    # -- fail_closed ------------------------------------------------------
+
+    def test_spawn_error_fails_open_by_default(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(), _spawn_result(error="No such file"),
+        )
+        assert r is None
+
+    def test_spawn_error_fail_closed_blocks(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True), _spawn_result(error="No such file"),
+        )
+        assert r["action"] == "block"
+        assert "failed closed" in r["message"]
+        assert "No such file" in r["message"]
+
+    def test_timeout_fails_open_by_default(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(), _spawn_result(timed_out=True),
+        )
+        assert r is None
+
+    def test_timeout_fail_closed_blocks(self):
+        spec = self._spec(fail_closed=True)
+        r = shell_hooks._evaluate_result(spec, _spawn_result(timed_out=True))
+        assert r["action"] == "block"
+        assert f"timed out after {spec.timeout}s" in r["message"]
+
+    def test_unparseable_stdout_fail_closed_blocks(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True),
+            _spawn_result(stdout="Traceback (most recent call last): ..."),
+        )
+        assert r["action"] == "block"
+        assert "unparseable stdout" in r["message"]
+
+    def test_unparseable_stdout_fails_open_by_default(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(),
+            _spawn_result(stdout="Traceback (most recent call last): ..."),
+        )
+        assert r is None
+
+    def test_valid_noop_json_passes_fail_closed(self):
+        """A clean {} no-op must NOT be blocked by fail_closed."""
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True), _spawn_result(stdout="{}"),
+        )
+        assert r is None
+
+    def test_empty_stdout_passes_fail_closed(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True), _spawn_result(stdout=""),
+        )
+        assert r is None
+
+    def test_fail_closed_on_non_blocking_event_still_fails_open(self):
+        """Defense in depth: even if a spec sneaks past parsing with
+        fail_closed on a non-blocking event, runtime fails open."""
+        r = shell_hooks._evaluate_result(
+            self._spec(event="on_session_start", fail_closed=True),
+            _spawn_result(error="boom"),
+        )
+        assert r is None
+
+
+# ── exit-2 / fail_closed end-to-end ──────────────────────────────────────
+
+
+class TestFailSemanticsEndToEnd:
+    def test_exit_2_script_blocks(self, tmp_path):
+        script = _write_script(
+            tmp_path, "exit2.sh",
+            "#!/usr/bin/env bash\n"
+            'echo "rm -rf is not permitted" >&2\n'
+            "exit 2\n",
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=str(script),
+        )
+        cb = shell_hooks._make_callback(spec)
+        result = cb(tool_name="terminal", args={"command": "rm -rf /"})
+        assert result == {
+            "action": "block", "message": "rm -rf is not permitted",
+        }
+
+    def test_fail_closed_missing_command_blocks(self, tmp_path):
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call",
+            command=str(tmp_path / "does-not-exist.sh"),
+            fail_closed=True,
+        )
+        cb = shell_hooks._make_callback(spec)
+        result = cb(tool_name="terminal", args={"command": "ls"})
+        assert result is not None and result["action"] == "block"
+        assert "failed closed" in result["message"]
+
+    def test_run_once_reflects_exit_2_block(self, tmp_path):
+        """hermes hooks test must mirror production semantics."""
+        script = _write_script(
+            tmp_path, "exit2.sh",
+            "#!/usr/bin/env bash\n"
+            'echo "denied" >&2\n'
+            "exit 2\n",
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=str(script),
+        )
+        result = shell_hooks.run_once(
+            spec, {"tool_name": "terminal", "args": {"command": "ls"}},
+        )
+        assert result["returncode"] == 2
+        assert result["parsed"] == {"action": "block", "message": "denied"}
+
+    def test_run_once_reflects_fail_closed_timeout(self, tmp_path):
+        script = _write_script(
+            tmp_path, "sleepy.sh",
+            "#!/usr/bin/env bash\nsleep 5\n",
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=str(script),
+            timeout=1, fail_closed=True,
+        )
+        result = shell_hooks.run_once(
+            spec, {"tool_name": "terminal", "args": {"command": "ls"}},
+        )
+        assert result["timed_out"] is True
+        assert result["parsed"]["action"] == "block"
+        assert "failed closed" in result["parsed"]["message"]

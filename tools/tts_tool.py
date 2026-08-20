@@ -37,6 +37,7 @@ Usage:
 import asyncio
 import base64
 import datetime
+import importlib.util
 import json
 import logging
 import os
@@ -50,9 +51,10 @@ import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Any, Optional
+from typing import Callable, Dict, Any, Iterator, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -91,10 +93,12 @@ def _resolve_provider_key(env_var: str, provider_id: str) -> str:
 
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
+    NOUS_MANAGED_PROVIDER,
     managed_nous_tools_enabled,
     nous_tool_gateway_unavailable_message,
-    prefers_gateway,
+    read_selection,
     resolve_openai_audio_api_key,
+    selection_error,
 )
 from tools.xai_http import hermes_xai_user_agent
 
@@ -463,6 +467,165 @@ def _resolve_max_text_length(
 
 
 # ===========================================================================
+# Long-form chunking and delivery packing
+# ===========================================================================
+
+@dataclass(frozen=True)
+class AudioDeliveryProfile:
+    """Destination-platform constraints for generated TTS audio."""
+
+    platform: str
+    max_file_bytes: int
+    safety_ratio: float = 0.85
+
+    @property
+    def target_file_bytes(self) -> int:
+        """Conservative packing target below the platform hard limit."""
+        return max(1, int(self.max_file_bytes * self.safety_ratio))
+
+
+_PLATFORM_AUDIO_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "discord": {
+        "max_file_bytes": 10 * 1024 * 1024,
+        "safety_ratio": 0.85,
+    },
+    "telegram": {
+        "max_file_bytes": 50 * 1024 * 1024,
+        "safety_ratio": 0.85,
+    },
+    "default": {
+        "max_file_bytes": 10 * 1024 * 1024,
+        "safety_ratio": 0.85,
+    },
+}
+
+
+def _resolve_audio_delivery_profile(
+    platform: Optional[str],
+    tts_config: Optional[Dict[str, Any]] = None,
+) -> AudioDeliveryProfile:
+    """Resolve upload constraints, including optional per-platform overrides."""
+    key = (platform or "default").lower().strip() or "default"
+    defaults = dict(
+        _PLATFORM_AUDIO_DEFAULTS.get(key) or _PLATFORM_AUDIO_DEFAULTS["default"]
+    )
+    cfg = tts_config or {}
+    profiles = cfg.get("delivery_profiles")
+    overrides = profiles.get(key, {}) if isinstance(profiles, dict) else {}
+    if isinstance(overrides, dict):
+        defaults.update({k: v for k, v in overrides.items() if v is not None})
+
+    max_file_bytes = defaults.get("max_file_bytes")
+    if (
+        isinstance(max_file_bytes, bool)
+        or not isinstance(max_file_bytes, int)
+        or max_file_bytes <= 0
+    ):
+        max_file_bytes = _PLATFORM_AUDIO_DEFAULTS["default"]["max_file_bytes"]
+
+    safety_ratio = defaults.get("safety_ratio", 0.85)
+    if (
+        isinstance(safety_ratio, bool)
+        or not isinstance(safety_ratio, (int, float))
+        or not 0 < safety_ratio <= 1
+    ):
+        safety_ratio = 0.85
+
+    return AudioDeliveryProfile(
+        platform=key,
+        max_file_bytes=max_file_bytes,
+        safety_ratio=float(safety_ratio),
+    )
+
+
+def _split_oversized_sentence(sentence: str, max_chars: int) -> List[str]:
+    """Split one over-limit sentence on word boundaries, then hard boundaries."""
+    words = sentence.split()
+    chunks: List[str] = []
+    current = ""
+    for word in words:
+        if len(word) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(word[i:i + max_chars] for i in range(0, len(word), max_chars))
+            continue
+        candidate = f"{current} {word}".strip()
+        if current and len(candidate) > max_chars:
+            chunks.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _split_text_for_tts(text: str, max_chars: int) -> List[str]:
+    """Split text under a provider cap without dropping normalized content."""
+    if max_chars <= 0:
+        max_chars = FALLBACK_MAX_TEXT_LENGTH
+    normalized = " ".join((text or "").split())
+    if not normalized:
+        return []
+    if len(normalized) <= max_chars:
+        return [normalized]
+
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?;:,])\s+", normalized)
+        if sentence.strip()
+    ]
+    expanded: List[str] = []
+    for sentence in sentences:
+        if len(sentence) <= max_chars:
+            expanded.append(sentence)
+        else:
+            expanded.extend(_split_oversized_sentence(sentence, max_chars))
+
+    chunks: List[str] = []
+    current = ""
+    for sentence in expanded:
+        candidate = f"{current} {sentence}".strip()
+        if current and len(candidate) > max_chars:
+            chunks.append(current)
+            current = sentence
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _pack_audio_files_for_delivery(
+    audio_paths: List[str],
+    profile: AudioDeliveryProfile,
+) -> List[List[str]]:
+    """Group already-final-encoded chunks under the conservative size target."""
+    groups: List[List[str]] = []
+    current: List[str] = []
+    current_size = 0
+    current_suffix = ""
+    for path in audio_paths:
+        size = Path(path).stat().st_size
+        suffix = Path(path).suffix.lower()
+        if current and (
+            current_size + size > profile.target_file_bytes
+            or suffix != current_suffix
+        ):
+            groups.append(current)
+            current = []
+            current_size = 0
+            current_suffix = ""
+        current.append(path)
+        current_size += size
+        current_suffix = suffix
+    if current:
+        groups.append(current)
+    return groups
+
+
+# ===========================================================================
 # Config loader -- reads tts: section from ~/.hermes/config.yaml
 # ===========================================================================
 def _load_tts_config() -> Dict[str, Any]:
@@ -490,8 +653,15 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
     Inference credentials do not imply consent to paid speech generation.
     Users opt into cloud TTS by setting ``tts.provider`` (normally through
     ``hermes tools``); otherwise the historical Edge backend remains active.
+
+    The managed "Nous Subscription" selection (``tts.provider: nous``) is
+    serviced by the OpenAI provider implementation, routed through the
+    managed openai-audio gateway by ``_resolve_openai_audio_client_config``.
     """
-    return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
+    provider = (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
+    if provider == NOUS_MANAGED_PROVIDER:
+        return "openai"
+    return provider
 
 
 @dataclass(frozen=True)
@@ -1365,6 +1535,193 @@ def _repair_ogg_container(file_str: str) -> str:
 
 
 # ===========================================================================
+# Long-form audio combination and delivery packing
+# ===========================================================================
+
+def _concat_audio_files(
+    audio_paths: List[str],
+    output_path: str,
+    *,
+    voice_compatible: bool = False,
+) -> Optional[str]:
+    """Combine independently encoded chunks with ffmpeg.
+
+    OGG/Opus is always decoded and re-encoded, even when a custom provider did
+    not opt in to voice-message presentation. Matching MP3 chunks preserve their
+    encoded frames. A failed or unavailable combine returns ``None`` so callers
+    can preserve the original, individually valid files. Structured audio
+    containers are never byte-joined.
+    """
+    if not audio_paths:
+        raise ValueError("No audio chunks to combine")
+    if len(audio_paths) == 1:
+        source = audio_paths[0]
+        if os.path.abspath(source) != os.path.abspath(output_path):
+            shutil.copyfile(source, output_path)
+        return output_path
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    concat_path = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.concat.txt")
+    temp_output = destination.with_name(
+        f".{destination.stem}.{uuid.uuid4().hex}.combining{destination.suffix}"
+    )
+    try:
+        with concat_path.open("w", encoding="utf-8") as concat_file:
+            for path in audio_paths:
+                concat_file.write(f"file {shlex.quote(os.path.abspath(path))}\n")
+
+        command = [
+            ffmpeg,
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_path),
+            "-vn",
+        ]
+        suffix = destination.suffix.lower()
+        if voice_compatible or suffix in {".ogg", ".opus"}:
+            command.extend([
+                "-c:a", "libopus", "-ac", "1", "-b:a", "64k", "-vbr", "off",
+            ])
+        elif suffix == ".mp3" and all(
+            Path(path).suffix.lower() == ".mp3" for path in audio_paths
+        ):
+            # Matching MP3 provider chunks already share one output codec/config.
+            # Preserve those encoded frames instead of imposing a second lossy pass.
+            command.extend(["-c:a", "copy"])
+        command.append(str(temp_output))
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=120,
+            stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
+        )
+        if (
+            result.returncode == 0
+            and temp_output.exists()
+            and temp_output.stat().st_size > 0
+        ):
+            os.replace(temp_output, destination)
+            return str(destination)
+        logger.warning(
+            "ffmpeg audio combine failed: %s",
+            result.stderr.decode("utf-8", errors="ignore")[:500],
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("ffmpeg audio combine failed: %s", exc)
+    finally:
+        for path in (concat_path, temp_output):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    return None
+
+
+def _build_audio_delivery_files(
+    audio_paths: List[str],
+    output_path: str,
+    profile: AudioDeliveryProfile,
+    *,
+    voice_compatible: bool = False,
+) -> Tuple[List[str], bool]:
+    """Pack final-encoded chunks and enforce the hard upload limit.
+
+    Packing uses the conservative target. Every combined artifact is then
+    checked at its actual post-encoding size; an over-limit group is split and
+    retried. If combining fails, the valid constituent files are returned
+    separately. A single final-encoded chunk above the hard limit fails closed
+    rather than returning an upload that the destination will reject.
+    """
+    if not audio_paths:
+        raise ValueError("No final-encoded TTS audio chunks")
+    for path in audio_paths:
+        size = Path(path).stat().st_size
+        if size > profile.max_file_bytes:
+            raise ValueError(
+                f"Final-encoded TTS chunk exceeds {profile.platform} delivery "
+                f"limit ({size} > {profile.max_file_bytes} bytes): {path}"
+            )
+
+    base = Path(output_path)
+    scratch_outputs: List[str] = []
+    combined_any = False
+    combine_index = 0
+
+    def emit(group: List[str]) -> List[str]:
+        nonlocal combined_any, combine_index
+        if len(group) == 1:
+            return list(group)
+
+        combine_index += 1
+        scratch = base.with_name(
+            f".{base.stem}.delivery{combine_index:03d}.{uuid.uuid4().hex}{base.suffix}"
+        )
+        combined = _concat_audio_files(
+            group, str(scratch), voice_compatible=voice_compatible,
+        )
+        if not combined:
+            return list(group)
+        scratch_outputs.append(combined)
+        combined_size = Path(combined).stat().st_size
+        if combined_size <= profile.max_file_bytes:
+            combined_any = True
+            return [combined]
+
+        try:
+            Path(combined).unlink()
+        except OSError:
+            pass
+        midpoint = max(1, len(group) // 2)
+        return emit(group[:midpoint]) + emit(group[midpoint:])
+
+    packed: List[str] = []
+    for group in _pack_audio_files_for_delivery(audio_paths, profile):
+        packed.extend(emit(group))
+
+    final_paths: List[str] = []
+    for index, source in enumerate(packed, start=1):
+        if len(packed) == 1:
+            destination = base
+        else:
+            source_suffix = Path(source).suffix or base.suffix
+            destination = base.with_name(
+                f"{base.stem}.part{index:02d}{source_suffix}"
+            )
+        if os.path.abspath(source) != os.path.abspath(destination):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(source, destination)
+        if destination.stat().st_size > profile.max_file_bytes:
+            raise ValueError(
+                f"Final TTS deliverable exceeds {profile.platform} delivery limit: "
+                f"{destination}"
+            )
+        final_paths.append(str(destination))
+
+    try:
+        return final_paths, combined_any
+    finally:
+        for scratch in scratch_outputs:
+            if scratch not in final_paths:
+                try:
+                    Path(scratch).unlink()
+                except OSError:
+                    pass
+
+
+# ===========================================================================
 # Provider: Edge TTS (free)
 # ===========================================================================
 async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
@@ -1751,7 +2108,10 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
 
     from tools.xai_http import resolve_xai_http_credentials
 
-    creds = resolve_xai_http_credentials()
+    # TTS is API-billed: a subscription OAuth bearer can authorize chat while
+    # returning 403 for /v1/tts (#87045, same root cause as x_search #88040),
+    # so prefer an explicit XAI_API_KEY with OAuth as the fallback.
+    creds = resolve_xai_http_credentials(prefer_api_key=True)
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
         raise ValueError("No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY.")
@@ -2293,11 +2653,12 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     )
     max_len = _resolve_max_text_length("gemini", tts_config)
     if len(prompt_text) > max_len:
-        logger.warning(
-            "Gemini TTS composed prompt too long (%d chars), truncating to %d",
-            len(prompt_text), max_len,
+        raise ValueError(
+            "Gemini TTS composed prompt exceeds the provider request limit "
+            f"({len(prompt_text)} > {max_len} chars). Reduce the persona/audio-tag "
+            "prompt or lower tts.gemini.max_text_length so long-form text is "
+            "split with enough prompt headroom."
         )
-        prompt_text = prompt_text[:max_len]
 
     payload: Dict[str, Any] = {
         "contents": [{"parts": [{"text": prompt_text}]}],
@@ -2778,55 +3139,30 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 # ===========================================================================
 # Main tool function
 # ===========================================================================
-def text_to_speech_tool(
+def _text_to_speech_single(
     text: str,
     output_path: Optional[str] = None,
+    *,
     speed: Optional[float] = None,
     instructions: Optional[str] = None,
     provider: Optional[str] = None,
+    tts_config_override: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """
-    Convert text to speech audio.
+    """Synthesize one provider-safe text chunk and return one final-encoded file.
 
-    Reads provider/voice config from ~/.hermes/config.yaml (tts: section).
-    The model sends text; the user configures voice and provider.
-
-    On messaging platforms, the returned MEDIA:<path> tag is intercepted
-    by the send pipeline and delivered as a native voice message.
-    In CLI mode, the file is saved to ~/voice-memos/.
-
-    Args:
-        text: The text to convert to speech.
-        output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
-        speed: Optional playback speed multiplier (0.25-4.0). Overrides config.yaml.
-        instructions: Optional voice-design guidance (tone, emotion, pacing,
-            accent, whispering). Forwarded to the OpenAI backend
-            (gpt-4o-mini-tts and OpenAI-compatible servers). Silently
-            ignored by backends that don't support it.
-        provider: Optional TTS provider override. When set, bypasses the
-            configured ``tts.provider`` and uses this provider instead.
-            Accepts built-in names (``edge``, ``openai``, ``elevenlabs``,
-            ``minimax``, ``xai``, ``mistral``, ``gemini``, ``neutts``,
-            ``kittentts``, ``piper``), user-declared command provider names
-            from ``tts.providers.<name>``, or plugin-registered provider
-            names.  When ``None`` (the default), the configured provider
-            from ``tts.provider`` in config.yaml is used.
-
-    Returns:
-        str: JSON result with success, file_path, and optionally MEDIA tag.
+    The public :func:`text_to_speech_tool` wrapper owns long-form splitting,
+    delivery packing, and post-encoding size enforcement.
     """
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
 
-    try:
-        from tools.tts_text_normalize import prepare_spoken_text
-        text = prepare_spoken_text(text, max_chars=None)
-    except Exception:
-        text = text.strip()
-    if not text:
-        return tool_error("Text is empty after TTS cleanup", success=False)
-
-    tts_config = _load_tts_config()
+    # The wrapper already normalizes text via prepare_spoken_text; the inner
+    # function should not re-normalize or truncate.
+    tts_config = (
+        tts_config_override
+        if tts_config_override is not None
+        else _load_tts_config()
+    )
 
     # When the model supplies a speed parameter, inject it into the config
     # so all downstream provider functions pick it up uniformly.
@@ -2847,15 +3183,16 @@ def text_to_speech_tool(
     # OpenAI handler.
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
 
-    # Truncate very long text with a warning. The cap is per-provider
-    # (OpenAI 4096, xAI 15k, MiniMax 10k, ElevenLabs model-aware, etc.).
+    # The wrapper splits text into provider-safe chunks before calling this
+    # function. If text exceeds the cap here, it means the caller bypassed
+    # the wrapper — log a warning but don't silently truncate.
     max_len = _resolve_max_text_length(provider, tts_config)
     if len(text) > max_len:
         logger.warning(
-            "TTS text too long for provider %s (%d chars), truncating to %d",
+            "TTS text exceeds provider %s cap (%d > %d chars) — "
+            "use text_to_speech_tool() for automatic chunking",
             provider, len(text), max_len,
         )
-        text = text[:max_len]
 
     # Detect platform from gateway env var to choose the best output format.
     # Several platforms deliver native voice bubbles only for Ogg/Opus
@@ -2894,9 +3231,9 @@ def text_to_speech_tool(
             file_path = _configured_command_tts_output_path(
                 file_path, command_provider_config
             )
-        from agent.file_safety import is_write_denied
+        from agent.file_safety import is_write_approval_required, is_write_denied
 
-        if is_write_denied(str(file_path)):
+        if is_write_denied(str(file_path)) or is_write_approval_required(str(file_path)):
             return json.dumps({
                 "success": False,
                 "error": (
@@ -3156,6 +3493,224 @@ def text_to_speech_tool(
         return tool_error(error_msg, success=False)
 
 
+def text_to_speech_tool(
+    text: str,
+    output_path: Optional[str] = None,
+    speed: Optional[float] = None,
+    instructions: Optional[str] = None,
+    provider: Optional[str] = None,
+) -> str:
+    """Convert text to speech audio with long-form chunking.
+
+    Long text is normalized, split into provider-safe chunks, synthesized
+    sequentially, and packed against destination platform upload limits.
+    Each provider request is encoded to its final format before files are
+    packed. Multi-chunk voice output is re-encoded when combined; failed
+    combines preserve separate valid files, and no over-limit final artifact
+    is returned.
+
+    On messaging platforms, the returned MEDIA:<path> tag is intercepted
+    by the send pipeline and delivered as a native voice message.
+    In CLI mode, the file is saved to ~/voice-memos/.
+
+    Args:
+        text: The text to convert to speech. Provider-specific per-request
+            character caps apply automatically (OpenAI 4096, xAI 15000,
+            MiniMax 10000, ElevenLabs 5k-40k depending on model); longer
+            input is split into ordered chunks without silent truncation.
+        output_path: Optional custom save path.
+        speed: Optional playback speed multiplier (0.25-4.0).
+        instructions: Optional voice-design guidance (tone, emotion, pacing).
+        provider: Optional TTS provider override.
+
+    Returns:
+        str: JSON result with success, file_path, file_paths, and MEDIA tag.
+    """
+    if not text or not text.strip():
+        return tool_error("Text is required", success=False)
+
+    # Normalize text via the shared cleaner: markdown, emoji, think blocks,
+    # verifier footer, units, newline flattening.
+    try:
+        from tools.tts_text_normalize import prepare_spoken_text
+        text = prepare_spoken_text(text, max_chars=None)
+    except Exception:
+        text = text.strip()
+    if not text:
+        return tool_error("Text is empty after TTS cleanup", success=False)
+
+    tts_config = _load_tts_config()
+
+    # When the model supplies a speed parameter, inject it into the config
+    # so all downstream provider functions pick it up uniformly.
+    if speed is not None:
+        clamped = max(0.25, min(4.0, float(speed)))
+        tts_config = dict(tts_config)  # shallow copy to avoid mutating the cache
+        tts_config["speed"] = clamped
+
+    # Allow per-call provider override; fall back to the configured default.
+    if provider:
+        provider = provider.lower().strip()
+    else:
+        provider = _get_provider(tts_config)
+
+    command_provider_config = _resolve_command_provider_config(provider, tts_config)
+    max_len = _resolve_max_text_length(provider, tts_config)
+    chunks = _split_text_for_tts(text, max_len)
+    if not chunks:
+        return tool_error("Text is required", success=False)
+    if len(chunks) > 1:
+        logger.info(
+            "TTS text for provider %s split into %d chunks (input=%d chars, cap=%d)",
+            provider,
+            len(chunks),
+            len(text),
+            max_len,
+        )
+
+    from gateway.session_context import get_session_env
+    platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
+    want_opus = platform in OPUS_VOICE_PLATFORMS
+    delivery_profile = _resolve_audio_delivery_profile(platform, tts_config)
+
+    # Determine output path (single-chunk short-circuit uses the final path).
+    if output_path:
+        from tools.path_security import has_traversal_component
+        if has_traversal_component(output_path):
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"output_path contains '..' traversal component: {output_path}. "
+                    "Use an absolute path or one relative to the current directory "
+                    "without '..'."
+                ),
+            }, ensure_ascii=False)
+        base_path = Path(output_path).expanduser()
+        if command_provider_config is not None:
+            base_path = _configured_command_tts_output_path(
+                base_path, command_provider_config,
+            )
+        from agent.file_safety import is_write_approval_required, is_write_denied
+        if is_write_denied(str(base_path)) or is_write_approval_required(str(base_path)):
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"output_path targets a protected credential or system path: "
+                    f"{base_path}. Choose a normal audio output location."
+                ),
+            }, ensure_ascii=False)
+    else:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        out_dir = Path(DEFAULT_OUTPUT_DIR)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if command_provider_config is not None:
+            fmt = _get_command_tts_output_format(command_provider_config)
+            base_path = out_dir / f"tts_{timestamp}.{fmt}"
+        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
+            base_path = out_dir / f"tts_{timestamp}.ogg"
+        else:
+            base_path = out_dir / f"tts_{timestamp}.mp3"
+    base_path.parent.mkdir(parents=True, exist_ok=True)
+
+    generated_artifacts: set[str] = set()
+    final_paths: List[str] = []
+    chunk_results: List[Dict[str, Any]] = []
+    try:
+        encoded_paths: List[str] = []
+        for index, chunk in enumerate(chunks, start=1):
+            if len(chunks) == 1:
+                chunk_path = base_path
+            else:
+                chunk_path = base_path.with_name(
+                    f"{base_path.stem}.chunk{index:03d}{base_path.suffix}"
+                )
+            generated_artifacts.add(str(chunk_path))
+            raw_result = _text_to_speech_single(
+                text=chunk,
+                output_path=str(chunk_path),
+                speed=speed,
+                instructions=instructions,
+                provider=provider,
+                tts_config_override=tts_config,
+            )
+            try:
+                chunk_result = json.loads(raw_result)
+            except (json.JSONDecodeError, TypeError):
+                raise RuntimeError(
+                    f"TTS chunk {index} returned invalid JSON: {str(raw_result)[:200]}"
+                )
+            if not chunk_result.get("success"):
+                error_msg = chunk_result.get("error", "unknown error")
+                return tool_error(
+                    f"TTS chunk {index} failed ({provider}): {error_msg}",
+                    success=False,
+                )
+            actual_path = str(chunk_result.get("file_path") or chunk_path)
+            if not os.path.isfile(actual_path) or os.path.getsize(actual_path) <= 0:
+                raise RuntimeError(
+                    f"TTS chunk {index} produced no final audio: {actual_path}"
+                )
+            generated_artifacts.add(actual_path)
+            encoded_paths.append(actual_path)
+            chunk_results.append(chunk_result)
+
+        voice_compatible = bool(chunk_results) and all(
+            bool(result.get("voice_compatible")) for result in chunk_results
+        )
+        delivery_base = base_path.with_suffix(Path(encoded_paths[0]).suffix)
+        final_paths, combined_chunks = _build_audio_delivery_files(
+            encoded_paths,
+            str(delivery_base),
+            delivery_profile,
+            voice_compatible=voice_compatible,
+        )
+
+        for path in final_paths:
+            logger.info(
+                "TTS audio saved: %s (%s bytes, provider: %s)",
+                path,
+                f"{os.path.getsize(path):,}",
+                provider,
+            )
+        media_tag = "\n".join(f"MEDIA:{path}" for path in final_paths)
+        if voice_compatible:
+            media_tag = f"[[audio_as_voice]]\n{media_tag}"
+
+        return json.dumps({
+            "success": True,
+            "file_path": final_paths[0],
+            "file_paths": final_paths,
+            "media_tag": media_tag,
+            "provider": chunk_results[0].get("provider", provider),
+            "voice_compatible": voice_compatible,
+            "chunk_count": len(chunks),
+            "delivery_file_count": len(final_paths),
+            "combined_chunks": bool(combined_chunks),
+            "delivery_profile": {
+                "platform": delivery_profile.platform,
+                "max_file_bytes": delivery_profile.max_file_bytes,
+                "target_file_bytes": delivery_profile.target_file_bytes,
+            },
+        }, ensure_ascii=False)
+    except ValueError as exc:
+        error_msg = f"TTS delivery error ({provider}): {exc}"
+        logger.error("%s", error_msg)
+        return tool_error(error_msg, success=False)
+    except Exception as exc:
+        error_msg = f"TTS long-form generation failed ({provider}): {exc}"
+        logger.error("%s", error_msg, exc_info=True)
+        return tool_error(error_msg, success=False)
+    finally:
+        final_absolute = {os.path.abspath(path) for path in final_paths}
+        for artifact in generated_artifacts:
+            if os.path.abspath(artifact) in final_absolute:
+                continue
+            try:
+                os.unlink(artifact)
+            except OSError:
+                pass
+
+
 # ===========================================================================
 # Requirements check
 # ===========================================================================
@@ -3185,15 +3740,11 @@ def check_tts_requirements() -> bool:
             return False
         return bool(_resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs"))
     if provider == "openai":
-        try:
-            _import_openai_client()
-        except ImportError:
+        if importlib.util.find_spec("openai") is None:
             return False
         return _has_openai_audio_backend()
     if provider == "deepinfra":
-        try:
-            _import_openai_client()
-        except ImportError:
+        if importlib.util.find_spec("openai") is None:
             return False
         return bool(_resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"))
     if provider == "minimax":
@@ -3243,24 +3794,61 @@ def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:
 
     ``is_managed`` is True when the config resolves to the Nous managed audio
     gateway (a restricted proxy), so callers can coerce the request to what the
-    gateway supports. When ``tts.use_gateway`` is set the gateway is preferred
-    even if direct OpenAI credentials are present.
+    gateway supports.
 
-    Resolution order (mirrors the STT resolver):
-    1. ``tts.openai.api_key`` / ``tts.openai.base_url`` from ``config.yaml``
-    2. ``VOICE_TOOLS_OPENAI_KEY`` / ``OPENAI_API_KEY`` environment variables
-       (still honoring ``tts.openai.base_url`` when set)
-    3. Managed OpenAI audio tool gateway
+    Strict selection semantics (switch on the stored ``tts`` provider
+    string):
+    - ``"nous"`` (or legacy ``use_gateway: true``) → managed gateway ONLY;
+      unentitled/unreachable is a selection-naming error.
+    - any other stored tts provider → direct credentials ONLY
+      (``tts.openai.api_key`` then ``VOICE_TOOLS_OPENAI_KEY``/
+      ``OPENAI_API_KEY``); missing credentials is a selection-naming error —
+      no silent managed fallback.
+    - never-configured tts section → legacy ladder: config key → env key →
+      managed gateway.
     """
     tts_config = _load_tts_config()
     openai_cfg = (tts_config.get("openai") if isinstance(tts_config, dict) else None) or {}
     cfg_api_key = openai_cfg.get("api_key") or ""
     cfg_base_url = openai_cfg.get("base_url") or ""
-    if cfg_api_key and not prefers_gateway("tts"):
+
+    selected = read_selection("tts")
+
+    if selected == NOUS_MANAGED_PROVIDER:
+        managed_gateway = resolve_managed_tool_gateway("openai-audio")
+        if managed_gateway is None:
+            raise ValueError(selection_error(
+                "tts",
+                NOUS_MANAGED_PROVIDER,
+                "the Nous Tool Gateway is not available (not entitled or "
+                "unreachable)",
+            ))
+        return (
+            managed_gateway.nous_user_token,
+            urljoin(f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"),
+            True,
+        )
+
+    if selected is not None:
+        # Stored vendor selection: direct credentials only.
+        if cfg_api_key:
+            return cfg_api_key, (cfg_base_url or DEFAULT_OPENAI_BASE_URL), False
+        direct_api_key = resolve_openai_audio_api_key()
+        if direct_api_key:
+            return direct_api_key, (cfg_base_url or DEFAULT_OPENAI_BASE_URL), False
+        raise ValueError(selection_error(
+            "tts",
+            selected,
+            "neither tts.openai.api_key in config nor "
+            "VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set",
+        ))
+
+    # Never-configured tts section: legacy credential ladder.
+    if cfg_api_key:
         return cfg_api_key, (cfg_base_url or DEFAULT_OPENAI_BASE_URL), False
 
     direct_api_key = resolve_openai_audio_api_key()
-    if direct_api_key and not prefers_gateway("tts"):
+    if direct_api_key:
         return direct_api_key, (cfg_base_url or DEFAULT_OPENAI_BASE_URL), False
 
     managed_gateway = resolve_managed_tool_gateway("openai-audio")
@@ -3269,7 +3857,7 @@ def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:
             "Neither tts.openai.api_key in config nor "
             "VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set"
         )
-        if managed_nous_tools_enabled() or prefers_gateway("tts"):
+        if managed_nous_tools_enabled():
             message += (
                 ". "
                 + nous_tool_gateway_unavailable_message(
@@ -3286,11 +3874,12 @@ def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:
 
 
 def _has_openai_audio_backend() -> bool:
-    """Return True when OpenAI audio can use config/env credentials or the managed gateway."""
-    openai_cfg = (_load_tts_config().get("openai") or {})
-    if openai_cfg.get("api_key"):
+    """Return True when the selected OpenAI audio route is usable."""
+    try:
+        _resolve_openai_audio_client_config()
         return True
-    return bool(resolve_openai_audio_api_key() or resolve_managed_tool_gateway("openai-audio"))
+    except ValueError:
+        return False
 
 
 # ===========================================================================
@@ -3348,6 +3937,98 @@ def _strip_markdown_for_tts(text: str) -> str:
     return text.strip()
 
 
+class _SyncSentencePipeline:
+    """Overlap per-sentence synthesis with playback for non-streaming providers.
+
+    The universal sync fallback used to run strictly serially per sentence —
+    synthesize, play, and only then start synthesizing the next sentence — so
+    every sentence boundary added a full synthesis-time of dead air. For local
+    model providers that cost dominates the conversation: a provider at
+    real-time-factor ~1 spends as long silent between sentences as it does
+    speaking. Chunked streamers already avoid this; this closes the same gap
+    for everyone else (edge, piper, plugin providers, …) without touching the
+    provider contract.
+
+    Shape: one synthesis worker (single-threaded executor, so sentences are
+    synthesized FIFO and providers never see concurrent calls from this loop —
+    same effective concurrency as the serial path) feeding one playback worker
+    through a small bounded queue. While sentence *n* plays, sentence *n+1* is
+    already synthesizing. The bound keeps lookahead — and the temp files it
+    implies — small, and gives natural backpressure to the caller.
+
+    ``synthesize``/``play`` are resolved late (module global / import inside
+    the worker) so tests that monkeypatch ``text_to_speech_tool`` or
+    ``tools.voice_mode`` keep working unchanged.
+    """
+
+    def __init__(self, stop_event: threading.Event, *, lookahead: int = 2):
+        self._stop = stop_event
+        self._queue: "queue.Queue[Optional[tuple[str, Future]]]" = queue.Queue(
+            maxsize=max(1, lookahead)
+        )
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="tts-sync-synth"
+        )
+        self._player = threading.Thread(
+            target=self._drain, name="tts-sync-play", daemon=True
+        )
+        self._player.start()
+
+    def speak(self, cleaned: str) -> None:
+        """Queue one sentence. Blocks only when the lookahead bound is full."""
+        if self._stop.is_set():
+            return
+        future = self._executor.submit(self._synthesize_to_tmp, cleaned)
+        self._queue.put((cleaned, future))
+
+    def close(self) -> None:
+        """Flush queued sentences in order (skipped if stopped), then join."""
+        self._queue.put(None)
+        self._player.join()
+        self._executor.shutdown(wait=True)
+
+    def _synthesize_to_tmp(self, cleaned: str) -> Optional[str]:
+        if self._stop.is_set():
+            return None
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+            os.close(fd)
+            text_to_speech_tool(text=cleaned, output_path=tmp_path)
+            return tmp_path
+        except Exception as exc:
+            logger.warning("Sync per-sentence TTS synthesis failed: %s", exc)
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            return None
+
+    def _drain(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            _sentence, future = item
+            tmp_path = None
+            try:
+                tmp_path = future.result()
+                if (tmp_path and not self._stop.is_set()
+                        and os.path.isfile(tmp_path)
+                        and os.path.getsize(tmp_path) > 0):
+                    from tools.voice_mode import play_audio_file
+                    play_audio_file(tmp_path)
+            except Exception as exc:
+                logger.warning("Sync per-sentence TTS failed: %s", exc)
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+
+
 def stream_tts_to_speaker(
     text_queue: queue.Queue,
     stop_event: threading.Event,
@@ -3372,15 +4053,25 @@ def stream_tts_to_speaker(
           waiting on it (continuous voice mode) know playback is finished.
     """
     tts_done_event.clear()
+    sync_pipeline: Optional[_SyncSentencePipeline] = None
 
     try:
         output_stream = None
+        streamer = None  # type: ignore[assignment]
+        _worker_thread = None
+        _audio_queue = None  # type: ignore[assignment]
+        _prefetch_threads = []
         tts_config = _load_tts_config()
 
         # Prefer a chunked streamer for low time-to-first-audio; fall back to
         # per-sentence sync synthesis (universal — edge + every non-streamer).
         from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
         streamer = resolve_streaming_provider(tts_config, preferred=provider)
+
+        # No chunked streamer: per-sentence sync synthesis, pipelined so the
+        # next sentence synthesizes while the current one plays (closed in the
+        # finally block, which flushes anything still queued).
+        sync_pipeline = _SyncSentencePipeline(stop_event) if streamer is None else None
 
         stream_max_len = 0
         if streamer is not None:
@@ -3418,8 +4109,210 @@ def stream_tts_to_speaker(
         queue_timeout = 0.5
         _spoken_sentences: list[str] = []  # track spoken sentences to skip duplicates
 
+        # --- Per-sentence prefetch pipeline ---
+        # Every sentence gets its own streamer.stream() call the moment it's
+        # complete. A background prefetch thread fires the HTTP request
+        # immediately, buffering PCM chunks into a per-segment queue. The
+        # single playback worker drains these queues in FIFO order. This
+        # means sentence N+1's HTTP request fires WHILE sentence N is still
+        # playing, so by the time the worker reaches it, audio is already
+        # arriving — no inter-sentence gap.
+        _audio_queue: queue.Queue[Optional[queue.Queue[Optional[bytes]]]] = queue.Queue()
+        _prefetch_threads: list[threading.Thread] = []
+        _prefetch_sem = threading.Semaphore(3)
+        _CHUNK_QUEUE_MAX = 64
+
+        def _create_output_stream():
+            """Create and start a fresh PortAudio OutputStream."""
+            sd = _import_sounddevice()
+            new_stream = sd.OutputStream(
+                samplerate=streamer.sample_rate,
+                channels=streamer.channels,
+                dtype="int16",
+            )
+            new_stream.start()
+            return new_stream
+
+        def _consume_to_queue(
+            audio_iter: Iterator[bytes],
+            chunk_queue: "queue.Queue[Optional[bytes]]",
+        ) -> None:
+            """Consume a generator into a thread-safe queue."""
+            try:
+                for chunk in audio_iter:
+                    if stop_event.is_set():
+                        logger.info(
+                            "TTS CUT: prefetch cancelled (stop_event set "
+                            "mid-sentence) — partial audio only"
+                        )
+                        break
+                    chunk_queue.put(chunk, timeout=30.0)
+            except Exception as exc:
+                logger.warning(
+                    "TTS CUT: streaming TTS prefetch failed mid-sentence "
+                    "(partial audio only): %s",
+                    exc,
+                )
+            finally:
+                chunk_queue.put(None)  # sentinel: no more chunks
+                _prefetch_sem.release()  # free a prefetch slot
+
+        def _reinit_output_stream():
+            """Close the broken PortAudio stream and try to create a fresh one."""
+            nonlocal output_stream
+            if output_stream is not None:
+                try:
+                    output_stream.stop()
+                    output_stream.close()
+                except Exception:
+                    pass
+            try:
+                new_stream = _create_output_stream()
+                output_stream = new_stream
+                logger.info(
+                    "TTS: PortAudio output stream reinitialized after error"
+                )
+                return new_stream
+            except Exception as exc:
+                logger.warning(
+                    "TTS: PortAudio stream reinit failed: %s", exc
+                )
+                output_stream = None
+                return None
+
+        def _playback_worker() -> None:
+            """Single consumer: play audio segments from the queue in order."""
+            assert streamer is not None
+            if output_stream is not None:
+                import numpy as _np
+
+                try:
+                    from tools.voice_mode import mark_audio_output_active
+                except Exception:
+                    def mark_audio_output_active(_active):
+                        return None
+
+                mark_audio_output_active(True)
+                try:
+                    _max_reinit = 3
+                    _reinit_count = 0
+                    _current_stream = output_stream
+                    while True:
+                        chunk_queue = _audio_queue.get()
+                        if chunk_queue is None:
+                            break
+                        if stop_event.is_set():
+                            continue
+                        if _current_stream is None:
+                            _chunks = []
+                            while True:
+                                chunk = chunk_queue.get()
+                                if chunk is None:
+                                    break
+                                _chunks.append(chunk)
+                            _play_via_tempfile(
+                                iter(_chunks), stop_event, streamer.sample_rate
+                            )
+                            continue
+                        _pcm_leftover = b""
+                        while True:
+                            chunk = chunk_queue.get()
+                            if chunk is None:
+                                break
+                            if stop_event.is_set():
+                                break
+                            _buf = _pcm_leftover + chunk
+                            _aligned_len = len(_buf) - (len(_buf) % 2)
+                            if _aligned_len >= 2:
+                                try:
+                                    _current_stream.write(
+                                        _np.frombuffer(
+                                            _buf[:_aligned_len], dtype="<i2"
+                                        ).reshape(-1, 1)
+                                    )
+                                except Exception as write_exc:
+                                    logger.warning(
+                                        "PortAudio write failed, attempting "
+                                        "stream reinit: %s",
+                                        write_exc,
+                                    )
+                                    if _reinit_count < _max_reinit:
+                                        _reinit_count += 1
+                                        _current_stream = _reinit_output_stream()
+                                        if _current_stream is not None:
+                                            try:
+                                                _current_stream.write(
+                                                    _np.frombuffer(
+                                                        _buf[:_aligned_len],
+                                                        dtype="<i2",
+                                                    ).reshape(-1, 1)
+                                                )
+                                            except Exception:
+                                                pass
+                                            _pcm_leftover = (
+                                                _buf[_aligned_len:]
+                                                if _aligned_len < len(_buf)
+                                                else b""
+                                            )
+                                            continue
+                                    else:
+                                        logger.warning(
+                                            "TTS: PortAudio reinit exhausted "
+                                            "after %d attempts, falling back "
+                                            "to tempfile for remaining "
+                                            "sentences",
+                                            _max_reinit,
+                                        )
+                                        _current_stream = None
+                                    break
+                            _pcm_leftover = (
+                                _buf[_aligned_len:] if _aligned_len < len(_buf) else b""
+                            )
+                finally:
+                    mark_audio_output_active(False)
+            else:
+                while True:
+                    chunk_queue = _audio_queue.get()
+                    if chunk_queue is None:
+                        break
+                    if stop_event.is_set():
+                        continue
+                    _chunks = []
+                    while True:
+                        chunk = chunk_queue.get()
+                        if chunk is None:
+                            break
+                        _chunks.append(chunk)
+                    _play_via_tempfile(
+                        iter(_chunks), stop_event, streamer.sample_rate
+                    )
+
+        def _enqueue_audio(text_to_speak: str) -> None:
+            """Synthesize *text_to_speak* and start prefetching immediately."""
+            assert streamer is not None
+            try:
+                audio_iter = streamer.stream(text_to_speak)
+            except Exception as exc:
+                logger.warning("Streaming TTS synthesis failed: %s", exc)
+                return
+            _prefetch_sem.acquire()
+            chunk_queue: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=_CHUNK_QUEUE_MAX)
+            _audio_queue.put(chunk_queue)
+            t = threading.Thread(
+                target=_consume_to_queue,
+                args=(audio_iter, chunk_queue),
+                daemon=True,
+            )
+            _prefetch_threads.append(t)
+            t.start()
+
+        _worker_thread: Optional[threading.Thread] = None
+        if streamer is not None:
+            _worker_thread = threading.Thread(target=_playback_worker, daemon=True)
+            _worker_thread.start()
+
         def _speak_sentence(sentence: str):
-            """Display sentence and optionally generate + play audio."""
+            """Display sentence and route to the appropriate audio path."""
             if stop_event.is_set():
                 return
             cleaned = _strip_markdown_for_tts(sentence).strip()
@@ -3434,63 +4327,33 @@ def stream_tts_to_speaker(
             # Display raw sentence on screen before TTS processing
             if display_callback is not None:
                 display_callback(sentence)
-            # No chunked streamer → per-sentence sync synthesis (universal).
-            if streamer is None:
-                _speak_via_sync(cleaned)
+            # No chunked streamer → per-sentence sync synthesis (universal),
+            # pipelined: this enqueues and returns, so sentence n+1 is already
+            # synthesizing while sentence n is still playing.
+            if sync_pipeline is not None:
+                sync_pipeline.speak(cleaned)
                 return
             # Truncate very long sentences to the provider's per-request cap.
             if stream_max_len and len(cleaned) > stream_max_len:
                 cleaned = cleaned[:stream_max_len]
-            try:
-                audio_iter = streamer.stream(cleaned)
-                if output_stream is not None:
-                    import numpy as _np
+            # Every sentence gets its own prefetch thread — the HTTP request
+            # fires the moment the sentence boundary is detected, so audio for
+            # sentence N+1 is already buffering while sentence N plays.
+            _enqueue_audio(cleaned)
 
-                    # Flag real speaker output for the duration of this
-                    # sentence so ambient cues (thinking sound) stay quiet.
-                    # Fail-open: stubbed/partial voice_mode modules (tests)
-                    # must never break sentence playback.
-                    try:
-                        from tools.voice_mode import mark_audio_output_active
-                    except Exception:
-                        def mark_audio_output_active(_active):
-                            return None
-                    mark_audio_output_active(True)
-                    try:
-                        for chunk in audio_iter:
-                            if stop_event.is_set():
-                                break
-                            output_stream.write(_np.frombuffer(chunk, dtype=_np.int16).reshape(-1, 1))
-                    finally:
-                        mark_audio_output_active(False)
-                else:
-                    # No audio device: buffer chunks to a temp WAV and play it.
-                    _play_via_tempfile(audio_iter, stop_event, streamer.sample_rate)
-            except Exception as exc:
-                logger.warning("Streaming TTS sentence failed: %s", exc)
-
-        def _speak_via_sync(cleaned: str):
-            """Synthesize one sentence via the proven sync tool, then block on
-            playback. No chunked API, but per-*sentence* granularity keeps the
-            flow conversational for edge and every other non-streaming provider.
-            """
-            tmp_path = None
-            try:
-                fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
-                os.close(fd)
-                text_to_speech_tool(text=cleaned, output_path=tmp_path)
-                if (not stop_event.is_set() and os.path.isfile(tmp_path)
-                        and os.path.getsize(tmp_path) > 0):
-                    from tools.voice_mode import play_audio_file
-                    play_audio_file(tmp_path)
-            except Exception as exc:
-                logger.warning("Sync per-sentence TTS failed: %s", exc)
-            finally:
-                if tmp_path:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
+        def _align_int16_chunks(chunks, stop_evt):
+            """Yield int16-aligned byte chunks from an iterable."""
+            leftover = b""
+            for chunk in chunks:
+                if stop_evt.is_set():
+                    break
+                buf = leftover + chunk
+                aligned_len = len(buf) - (len(buf) % 2)
+                if aligned_len >= 2:
+                    yield buf[:aligned_len]
+                leftover = buf[aligned_len:] if aligned_len < len(buf) else b""
+            if leftover:
+                yield b"\x00"
 
         def _play_via_tempfile(audio_iter, stop_evt, sample_rate=24000):
             """Write PCM chunks to a temp WAV file and play it."""
@@ -3504,10 +4367,8 @@ def stream_tts_to_speaker(
                     wf.setnchannels(1)
                     wf.setsampwidth(2)  # 16-bit
                     wf.setframerate(sample_rate)
-                    for chunk in audio_iter:
-                        if stop_evt.is_set():
-                            break
-                        wf.writeframes(chunk)
+                    for aligned in _align_int16_chunks(audio_iter, stop_evt):
+                        wf.writeframes(aligned)
                 # wave.open() given a file object flushes but does NOT close it
                 # (it only closes files it opened itself, by name), so the OS
                 # handle to tmp stays open.  On Windows an open write handle
@@ -3563,6 +4424,21 @@ def stream_tts_to_speaker(
     except Exception as exc:
         logger.warning("Streaming TTS pipeline error: %s", exc)
     finally:
+        # Flush the sync pipeline first: queued sentences finish playing (or
+        # are skipped when stop_event is set) BEFORE tts_done_event fires, so
+        # continuous voice mode never reopens the mic over its own voice.
+        if sync_pipeline is not None:
+            try:
+                sync_pipeline.close()
+            except Exception:
+                pass
+        # Signal the playback worker that no more audio is coming.  This lives
+        # in finally: so an exception in the text pump still sends the sentinel.
+        if streamer is not None and _worker_thread is not None:
+            _audio_queue.put(None)
+            _worker_thread.join(timeout=300.0)
+        for t in _prefetch_threads:
+            t.join(timeout=10.0)
         # Always close the audio output stream to avoid locking the device
         if output_stream is not None:
             try:
@@ -3627,7 +4503,7 @@ TTS_SCHEMA = {
         "properties": {
             "text": {
                 "type": "string",
-                "description": "The text to convert to speech. Provider-specific character caps apply and are enforced automatically (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k depending on model); over-long input is truncated."
+                "description": "The text to convert to speech. Provider-specific per-request character caps apply automatically (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k depending on model); longer input is split into ordered chunks without silent truncation."
             },
             "output_path": {
                 "type": "string",

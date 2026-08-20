@@ -9,25 +9,109 @@ which has provider-specific conditionals for max_tokens defaults,
 reasoning configuration, temperature handling, and extra_body assembly.
 """
 
+import json
 from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
+from agent.reasoning_effort import (
+    KIMI_K3_EFFORTS,
+    KIMI_K3_OVERRIDES,
+    OPENAI_COMPAT_WIRE_EFFORTS,
+    TOKENHUB_EFFORTS,
+    clamp_effort,
+    kimi_supported_efforts,
+    requested_effort,
+)
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
+def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
+    """Return the stable system/developer prefix used for cache routing.
+
+    Chat Completions carries instructions in its message list rather than a
+    separate ``instructions`` field.  Only a leading system/developer message
+    is static by contract; later messages are conversation state and must not
+    split a warm prefix bucket on every turn.
+    """
+    if not messages or not isinstance(messages[0], dict):
+        return ""
+    first = messages[0]
+    if first.get("role") not in {"system", "developer"}:
+        return ""
+    content = first.get("content")
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return str(content or "")
+
+
+def _add_prompt_cache_key(
+    api_kwargs: dict[str, Any],
+    *,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    supports_prompt_cache_key: bool,
+    session_id: str | None = None,
+    cache_scope_id: str | None = None,
+) -> None:
+    """Add a content-addressed key only for an explicitly capable endpoint.
+
+    ``cache_scope_id``, when provided, is the rotation-stable logical scope
+    (compression-lineage root — agent/prompt_cache_scope.py) and takes
+    precedence over the physical ``session_id`` so the key survives
+    context-compression session rotation (#79017).
+    """
+    if not supports_prompt_cache_key:
+        return
+
+    # An explicit caller body field is authoritative too.  Do not add a
+    # duplicate top-level field whose SDK merge precedence could overwrite it.
+    extra_body = api_kwargs.get("extra_body")
+    if "prompt_cache_key" in api_kwargs or (
+        isinstance(extra_body, dict) and "prompt_cache_key" in extra_body
+    ):
+        return
+
+    # Reuse the Responses transport's single authoritative hash algorithm and
+    # session-scope normalization so equivalent static prefixes route to the
+    # same cache bucket across modes, without concentrating unrelated
+    # sessions into one shared bucket (see #78941).
+    from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
+
+    cache_key = _content_cache_key(
+        _static_prompt_instructions(messages),
+        tools,
+        _cache_scope_from_session_id(cache_scope_id or session_id),
+    )
+    if cache_key:
+        api_kwargs["prompt_cache_key"] = cache_key
+
+
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
-    """Return the model's wire-compatible reasoning config."""
+    """Return the model's wire-compatible reasoning config.
+
+    Hermes' internal effort set extends the wire vocabulary with ``ultra``
+    (the /reasoning command documents none..xhigh|max|ultra). OpenAI-
+    compatible wires — OpenRouter chief among them — accept exactly
+    max|xhigh|high|medium|low|minimal|none and reject the extension with
+    HTTP 400 (#89503). Clamp against the declared wire vocabulary via the
+    shared policy in ``agent.reasoning_effort``; provider profiles with
+    narrower sets clamp again downstream.
+    """
     if not isinstance(reasoning_config, dict):
         return reasoning_config
-    if (
-        "gpt-5.6" in (model or "").lower()
-        and str(reasoning_config.get("effort") or "").strip().lower() == "ultra"
-    ):
+    effort = str(reasoning_config.get("effort") or "").strip().lower()
+    if not effort:
+        return reasoning_config
+    clamped = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
+    if clamped != effort:
         normalized = dict(reasoning_config)
-        normalized["effort"] = "max"
+        normalized["effort"] = clamped
         return normalized
     return reasoning_config
 
@@ -103,6 +187,26 @@ def _snake_case_gemini_thinking_config(config: dict | None) -> dict | None:
     return translated or None
 
 
+def _raise_gemini_thinking_max_tokens(
+    model: str,
+    reasoning_config: dict | None,
+    requested: Any,
+) -> Any:
+    """Raise Gemini output caps that thinking tokens would otherwise consume.
+
+    Gemini bills thought tokens against maxOutputTokens / max_tokens. A
+    global Hermes cap of 4096 is enough for visible text, but Ultra/high
+    thinking can exhaust it on the first request and abort after four
+    length-continuations.
+    """
+    thinking_config = _build_gemini_thinking_config(model, reasoning_config)
+    if not thinking_config:
+        return requested
+    from agent.gemini_native_adapter import _effective_gemini_max_output_tokens
+
+    return _effective_gemini_max_output_tokens(requested, thinking_config)
+
+
 def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
     normalized = str(base_url or "").strip().rstrip("/").lower()
     if not normalized:
@@ -110,6 +214,24 @@ def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
     if "generativelanguage.googleapis.com" not in normalized:
         return False
     return normalized.endswith("/openai")
+
+
+def _is_openai_api_base_url(base_url: Any) -> bool:
+    """True only for api.openai.com itself (exact host).
+
+    OpenAI documents ``prompt_cache_key`` as a first-class body field and
+    GPT-5.6+ docs recommend it for reliable cache routing, so the flag is
+    implied for the real endpoint. Deliberately NOT a substring match:
+    Azure OpenAI and strict OpenAI-compat endpoints may reject unknown
+    fields and must stay opt-in via ``supports_prompt_cache_key``.
+    """
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(str(base_url or "").strip()).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "api.openai.com"
 
 
 def _model_consumes_thought_signature(model: Any) -> bool:
@@ -196,6 +318,25 @@ class ChatCompletionsTransport(ProviderTransport):
                 break
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
+                # Defense-in-depth: a strict OpenAI-compatible provider
+                # (e.g. onerouter / Qwen, DeepSeek v4) rejects an assistant
+                # message carrying ``tool_calls: []`` (empty array) with
+                # HTTP 400 "Empty tool_calls is not supported in message."
+                # The pre-API sanitizer in agent_runtime_helpers drops these,
+                # but only on the conversation_loop path — other routes can
+                # reach the wire without it. For every request that
+                # serializes through this transport (conversation loop and
+                # any caller using it), this is the last boundary, so
+                # normalize here. Requests built by fully separate payload
+                # paths (e.g. some auxiliary clients) never pass through
+                # this layer and are out of scope for it. (#58755 follow-up)
+                if (
+                    msg.get("role") == "assistant"
+                    and "tool_calls" in msg
+                    and not tool_calls
+                ):
+                    needs_sanitize = True
+                    break
                 for tc in tool_calls:
                     if isinstance(tc, dict) and (
                         "call_id" in tc
@@ -206,6 +347,15 @@ class ChatCompletionsTransport(ProviderTransport):
                         break
                 if needs_sanitize:
                     break
+            elif (
+                isinstance(tool_calls, type(None))
+                and msg.get("role") == "assistant"
+                and "tool_calls" in msg
+            ):
+                # Explicit ``tool_calls: null`` is equally invalid on strict
+                # providers — treat it like the empty-array case.
+                needs_sanitize = True
+                break
 
         if not needs_sanitize:
             return messages
@@ -252,6 +402,19 @@ class ChatCompletionsTransport(ProviderTransport):
 
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
+                # Strip empty/invalid tool_calls arrays at the transport
+                # layer (see detection above). Strict OpenAI-compatible
+                # providers reject ``tool_calls: []`` with HTTP 400; dropping
+                # the key keeps the message schema-valid. Matches the
+                # pre-API sanitizer's behaviour so all routes agree.
+                if (
+                    msg.get("role") == "assistant"
+                    and "tool_calls" in msg
+                    and not tool_calls
+                ):
+                    out_msg = mutable_msg()
+                    out_msg.pop("tool_calls", None)
+                    continue
                 copied_tool_calls: list[Any] | None = None
                 for tc_idx, tc in enumerate(tool_calls):
                     if isinstance(tc, dict):
@@ -271,6 +434,14 @@ class ChatCompletionsTransport(ProviderTransport):
                             copied_tool_calls[tc_idx] = copied_tc
                 if copied_tool_calls is not None:
                     mutable_msg()["tool_calls"] = copied_tool_calls
+            elif (
+                isinstance(tool_calls, type(None))
+                and msg.get("role") == "assistant"
+                and "tool_calls" in msg
+            ):
+                # Explicit ``tool_calls: null`` is invalid on strict
+                # providers — drop the key entirely.
+                mutable_msg().pop("tool_calls", None)
         return sanitized
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -327,6 +498,8 @@ class ChatCompletionsTransport(ProviderTransport):
             # Claude on OpenRouter/Nous max output
             anthropic_max_output: int | None
             extra_body_additions: dict | None
+            supports_prompt_cache_key: bool — explicit endpoint capability for
+                the top-level Chat Completions request field; defaults off.
         """
         # Codex sanitization: drop reasoning_items / call_id / response_item_id.
         # Pass model so the Gemini thought_signature (extra_content) is kept for
@@ -383,9 +556,17 @@ class ChatCompletionsTransport(ProviderTransport):
         reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
 
         if ephemeral is not None and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(ephemeral))
+            api_kwargs.update(
+                max_tokens_fn(
+                    _raise_gemini_thinking_max_tokens(model, reasoning_config, ephemeral)
+                )
+            )
         elif max_tokens is not None and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(max_tokens))
+            api_kwargs.update(
+                max_tokens_fn(
+                    _raise_gemini_thinking_max_tokens(model, reasoning_config, max_tokens)
+                )
+            )
         elif anthropic_max_out is not None:
             api_kwargs["max_tokens"] = anthropic_max_out
 
@@ -397,11 +578,22 @@ class ChatCompletionsTransport(ProviderTransport):
                 and reasoning_config.get("enabled") is False
             )
             if not _kimi_thinking_off:
-                _kimi_effort = "medium"
-                if reasoning_config and isinstance(reasoning_config, dict):
-                    _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in {"low", "medium", "high"}:
-                        _kimi_effort = _e
+                # Kimi vocabularies are declared in agent.reasoning_effort:
+                # K3 = low/high/max (with the vendor-documented medium→high,
+                # xhigh→max rounding), K2-era = low/medium/high. Default when
+                # no effort was requested: K3's server default is high,
+                # K2-era's is medium.
+                _supported = kimi_supported_efforts(model)
+                _overrides = (
+                    KIMI_K3_OVERRIDES if _supported is KIMI_K3_EFFORTS else None
+                )
+                _e = requested_effort(reasoning_config)
+                if _e is None:
+                    _kimi_effort = (
+                        "high" if _supported is KIMI_K3_EFFORTS else "medium"
+                    )
+                else:
+                    _kimi_effort = clamp_effort(_e, _supported, _overrides)
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
         # Tencent TokenHub: top-level reasoning_effort (unless thinking disabled)
@@ -412,11 +604,13 @@ class ChatCompletionsTransport(ProviderTransport):
                 and reasoning_config.get("enabled") is False
             )
             if not _tokenhub_thinking_off:
-                _tokenhub_effort = "high"
-                if reasoning_config and isinstance(reasoning_config, dict):
-                    _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in {"low", "medium", "high"}:
-                        _tokenhub_effort = _e
+                # TokenHub accepts low/medium/high (declared in
+                # agent.reasoning_effort); default high when no effort was
+                # requested.
+                _e = requested_effort(reasoning_config)
+                _tokenhub_effort = (
+                    "high" if _e is None else clamp_effort(_e, TOKENHUB_EFFORTS)
+                )
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
 
         # LM Studio: top-level reasoning_effort. Only emit when the model
@@ -507,6 +701,16 @@ class ChatCompletionsTransport(ProviderTransport):
         if overrides:
             api_kwargs.update(overrides)
 
+        _add_prompt_cache_key(
+            api_kwargs,
+            messages=sanitized,
+            tools=api_kwargs.get("tools"),
+            supports_prompt_cache_key=bool(params.get("supports_prompt_cache_key"))
+            or _is_openai_api_base_url(params.get("base_url")),
+            session_id=params.get("session_id"),
+            cache_scope_id=params.get("cache_scope_id"),
+        )
+
         return api_kwargs
 
     def _build_kwargs_from_profile(self, profile, model, sanitized, tools, params):
@@ -567,18 +771,30 @@ class ChatCompletionsTransport(ProviderTransport):
         # they front several backends with different completion-token limits
         # (e.g. opencode-go: mimo-v2.5-pro = 131072).
         profile_max = profile.get_max_tokens(model)
+        reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
 
         if ephemeral is not None and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(ephemeral))
+            api_kwargs.update(
+                max_tokens_fn(
+                    _raise_gemini_thinking_max_tokens(model, reasoning_config, ephemeral)
+                )
+            )
         elif user_max is not None and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(user_max))
+            api_kwargs.update(
+                max_tokens_fn(
+                    _raise_gemini_thinking_max_tokens(model, reasoning_config, user_max)
+                )
+            )
         elif profile_max and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(profile_max))
+            api_kwargs.update(
+                max_tokens_fn(
+                    _raise_gemini_thinking_max_tokens(model, reasoning_config, profile_max)
+                )
+            )
         elif anthropic_max is not None:
             api_kwargs["max_tokens"] = anthropic_max
 
         # Provider-specific api_kwargs extras (reasoning_effort, metadata, etc.)
-        reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
         extra_body_from_profile, top_level_from_profile = (
             profile.build_api_kwargs_extras(
                 reasoning_config=reasoning_config,
@@ -649,6 +865,15 @@ class ChatCompletionsTransport(ProviderTransport):
             if extra_body:
                 api_kwargs["extra_body"] = extra_body
 
+        _add_prompt_cache_key(
+            api_kwargs,
+            messages=sanitized,
+            tools=api_kwargs.get("tools"),
+            supports_prompt_cache_key=bool(getattr(profile, "supports_prompt_cache_key", False)),
+            session_id=params.get("session_id"),
+            cache_scope_id=params.get("cache_scope_id"),
+        )
+
         return api_kwargs
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
@@ -661,17 +886,25 @@ class ChatCompletionsTransport(ProviderTransport):
         preserved for downstream replay.
         """
         choice = response.choices[0]
-        msg = choice.message
+        msg = getattr(choice, "message", None)
         # Poolside returns integer finish_reason (e.g. 24) instead of string
-        _fr = choice.finish_reason
+        _fr = getattr(choice, "finish_reason", None)
         if isinstance(_fr, int):
             _fr = str(_fr)
         finish_reason = _fr or "stop"
 
         tool_calls = None
-        if msg.tool_calls:
+        message_tool_calls = getattr(msg, "tool_calls", None)
+        if message_tool_calls:
             tool_calls = []
-            for tc in msg.tool_calls:
+            for tc in message_tool_calls:
+                tc_function = getattr(tc, "function", None)
+                function_name = getattr(tc_function, "name", None)
+                # Match Relay's codec: skip absent function/name fields, but
+                # preserve an explicit blank name for Hermes's recovery path.
+                if tc_function is None or function_name is None:
+                    continue
+                function_arguments = getattr(tc_function, "arguments", None)
                 # Preserve provider-specific extras on the tool call.
                 # Gemini 3 thinking models attach extra_content with
                 # thought_signature — without replay on the next turn the API
@@ -683,15 +916,24 @@ class ChatCompletionsTransport(ProviderTransport):
                 if extra is not None:
                     if hasattr(extra, "model_dump"):
                         try:
-                            extra = extra.model_dump()
+                            extra = extra.model_dump(warnings=False)
+                        except TypeError:
+                            try:
+                                extra = extra.model_dump()
+                            except Exception:
+                                pass
                         except Exception:
                             pass
                     tc_provider_data["extra_content"] = extra
                 tool_calls.append(
                     ToolCall(
-                        id=tc.id,
-                        name=tc.function.name,
-                        arguments=tc.function.arguments,
+                        id=getattr(tc, "id", None),
+                        name=function_name,
+                        arguments=(
+                            function_arguments
+                            if function_arguments is not None
+                            else "{}"
+                        ),
                         provider_data=tc_provider_data or None,
                     )
                 )
@@ -734,7 +976,7 @@ class ChatCompletionsTransport(ProviderTransport):
         # Promote it to content + a ``content_filter`` finish reason so the
         # loop's refusal handler surfaces it clearly and stops. ``refusal`` is
         # ``None`` for normal responses, so this is a no-op in the common case.
-        content = msg.content
+        content = getattr(msg, "content", None)
         refusal = getattr(msg, "refusal", None)
         if refusal is None and hasattr(msg, "model_extra"):
             _msg_extra = getattr(msg, "model_extra", None) or {}

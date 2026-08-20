@@ -369,7 +369,22 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
             continue
 
         if anchor <= archive_cutoff and current != _u.STATE_ARCHIVED:
-            ok, _msg = _u.archive_skill(name)
+            # Tag the ledger entry with the curator actor: this archive is an
+            # autonomous curator transition, not a foreground agent/user call.
+            try:
+                from tools.skill_ledger import reset_ledger_actor, set_ledger_actor
+                _tok = set_ledger_actor("curator")
+            except Exception:
+                _tok = None
+                reset_ledger_actor = None  # type: ignore[assignment]
+            try:
+                ok, _msg = _u.archive_skill(name)
+            finally:
+                if _tok is not None and reset_ledger_actor is not None:
+                    try:
+                        reset_ledger_actor(_tok)
+                    except Exception:
+                        pass
             if ok:
                 counts["archived"] += 1
         elif anchor <= stale_cutoff and current == _u.STATE_ACTIVE:
@@ -1923,6 +1938,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             credential_pool=_credential_pool,
             request_overrides=_request_overrides,
             **_agent_kwargs,
+            enabled_toolsets=["skills", "terminal"],
             # Umbrella-building over a large skill collection is worth a
             # high iteration ceiling — the pass typically takes 50-100
             # API calls against hundreds of candidate skills. The

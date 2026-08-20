@@ -1,18 +1,102 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   buildGroups,
   firstVisibleGroupIndex,
+  HIDDEN_TRANSCRIPT_RENDER_BUDGET,
   LIVE_TAIL_MIN_GROUPS,
   LIVE_TAIL_PARTS,
   liveTailStart,
-  type MessageGroup
+  type MessageGroup,
+  resolveThreadScrollTarget,
+  subscribeToThreadForeground,
+  transcriptPaneBudget
 } from './list'
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('subscribeToThreadForeground', () => {
+  it('reanchors on focus when an active turn keeps document visibility pinned visible', () => {
+    const reanchor = vi.fn()
+
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      callback(0)
+
+      return 1
+    })
+
+    const unsubscribe = subscribeToThreadForeground(() => true, reanchor)
+
+    window.dispatchEvent(new Event('focus'))
+
+    expect(raf).toHaveBeenCalledOnce()
+    expect(reanchor).toHaveBeenCalledOnce()
+    unsubscribe()
+  })
+
+  it('leaves a scrolled-up reader in place when the window focuses', () => {
+    const reanchor = vi.fn()
+    const raf = vi.spyOn(window, 'requestAnimationFrame')
+    const unsubscribe = subscribeToThreadForeground(() => false, reanchor)
+
+    window.dispatchEvent(new Event('focus'))
+
+    expect(raf).not.toHaveBeenCalled()
+    expect(reanchor).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it('drops a queued reanchor when the reader scrolls away before the frame', () => {
+    const frames: FrameRequestCallback[] = []
+    let following = true
+    const reanchor = vi.fn()
+
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      frames.push(callback)
+
+      return 7
+    })
+
+    const unsubscribe = subscribeToThreadForeground(() => following, reanchor)
+
+    window.dispatchEvent(new Event('focus'))
+    following = false
+    frames[0]?.(0)
+
+    expect(reanchor).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it('cancels a queued reanchor when its thread unmounts', () => {
+    const cancel = vi.spyOn(window, 'cancelAnimationFrame')
+    const reanchor = vi.fn()
+
+    vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(9)
+
+    const unsubscribe = subscribeToThreadForeground(() => true, reanchor)
+
+    window.dispatchEvent(new Event('focus'))
+    unsubscribe()
+
+    expect(cancel).toHaveBeenCalledWith(9)
+    expect(reanchor).not.toHaveBeenCalled()
+  })
+})
 
 // Signature rows are `${index}:${id}:${role}:${weight}` (see the useAuiState
 // selector in list.tsx).
 const signature = (rows: [string, string, number][]) =>
   rows.map(([id, role, weight], index) => `${index}:${id}:${role}:${weight}`).join('\n')
+
+describe('transcriptPaneBudget', () => {
+  it('uses a fixed live-tail budget while hidden instead of charging every mounted transcript', () => {
+    expect(transcriptPaneBudget(1, true)).toBe(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
+    expect(transcriptPaneBudget(4, true)).toBe(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
+    expect(transcriptPaneBudget(1, false)).toBeGreaterThan(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
+  })
+})
 
 describe('buildGroups', () => {
   it('returns no groups for an empty signature', () => {
@@ -60,6 +144,53 @@ describe('buildGroups', () => {
   })
 })
 
+describe('resolveThreadScrollTarget', () => {
+  const context = (scrollElement: Pick<HTMLElement, 'scrollTop'>) => ({
+    contentElement: document.createElement('div'),
+    scrollElement: scrollElement as HTMLElement
+  })
+
+  it('settles when the browser clamps the requested bottom within half a CSS pixel', () => {
+    let actualScrollTop = 0
+    let writes = 0
+
+    const scrollElement = {
+      get scrollTop() {
+        return actualScrollTop
+      },
+      set scrollTop(value: number) {
+        writes += 1
+        actualScrollTop = value - 0.125
+      }
+    }
+
+    const target = 899
+
+    const requested = resolveThreadScrollTarget(target, context(scrollElement))
+    scrollElement.scrollTop = requested
+    const settled = resolveThreadScrollTarget(target, context(scrollElement))
+
+    expect(requested).toBe(target)
+    expect(actualScrollTop).toBe(898.875)
+    expect(settled).toBe(actualScrollTop)
+    expect(actualScrollTop < settled).toBe(false)
+    expect(writes).toBe(1)
+  })
+
+  it('keeps following while more than half a CSS pixel remains', () => {
+    const scrollElement = { scrollTop: 898.25 }
+
+    expect(resolveThreadScrollTarget(899, context(scrollElement))).toBe(899)
+  })
+
+  it('re-arms after streaming content increases the target', () => {
+    const scrollElement = { scrollTop: 898.875 }
+
+    expect(resolveThreadScrollTarget(899, context(scrollElement))).toBe(898.875)
+    expect(resolveThreadScrollTarget(999, context(scrollElement))).toBe(999)
+  })
+})
+
 describe('firstVisibleGroupIndex', () => {
   const group = (id: string, weight: number): MessageGroup => ({ id, index: 0, kind: 'standalone', weight })
 
@@ -85,6 +216,20 @@ describe('firstVisibleGroupIndex', () => {
 
   it('returns groups.length for an empty list', () => {
     expect(firstVisibleGroupIndex([], 60)).toBe(0)
+  })
+
+  it('keeps a floor of turns visible however heavy they are', () => {
+    // Without the floor a session of enormous turns puts "Show earlier" two
+    // turns from the bottom, which reads as broken rather than as paging.
+    const groups = Array.from({ length: 20 }, (_, i) => group(`g${i}`, 5_000))
+
+    expect(firstVisibleGroupIndex(groups, 600, 8)).toBe(groups.length - 8)
+  })
+
+  it('does not force the floor to hide turns the budget already showed', () => {
+    const groups = Array.from({ length: 20 }, (_, i) => group(`g${i}`, 1))
+
+    expect(firstVisibleGroupIndex(groups, 600, 8)).toBe(0)
   })
 })
 

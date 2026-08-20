@@ -47,10 +47,6 @@ import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-
 from agent.secret_sources._cache import (
     CachedFetch as _CachedFetch,
     DiskCache,
@@ -58,6 +54,7 @@ from agent.secret_sources._cache import (
     is_valid_env_name as _is_valid_env_name,
 )
 from agent.secret_sources.base import ErrorKind, SecretSource
+from agent.secret_sources.base import get_source_environment
 
 logger = logging.getLogger(__name__)
 
@@ -374,6 +371,13 @@ def _b64d(text: str) -> bytes:
 
 def _derive_encrypted_cache_key(access_token: str, salt: bytes) -> bytes:
     """Derive the local cache encryption key from the bootstrap BWS token."""
+    # Keep the native cryptography extension lazy.  Most CLI commands import
+    # this module while building argparse, even though only encrypted-cache
+    # reads/writes need it.  Eagerly importing it maps ``_rust.pyd`` into a
+    # Windows updater and prevents uv from replacing that file (#73381).
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
     return HKDF(
         algorithm=hashes.SHA256(),
         length=32,
@@ -396,6 +400,8 @@ def _write_encrypted_disk_cache(
     """
     path = _encrypted_disk_cache_path(home_path)
     try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
         cache_dir = path.parent
         cache_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -458,6 +464,8 @@ def _read_encrypted_disk_cache(
         return None
     path = _encrypted_disk_cache_path(home_path)
     try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             return None
@@ -667,10 +675,15 @@ def _run_bws_list(
     bws: Path, access_token: str, project_id: str, server_url: str = ""
 ) -> Tuple[Dict[str, str], List[str]]:
     cmd = [str(bws), "secret", "list", project_id, "--output", "json"]
-    # bws child intentionally receives the access token; exact preservation
-    # (BWS_SERVER_URL manual overrides etc. must survive untouched).
-    from tools.environments.local import build_subprocess_env
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
+    # bws child intentionally receives the access token.  Under a profile-local
+    # fetch it must not inherit sibling credentials from process-global env.
+    source_env = get_source_environment()
+    if source_env is os.environ:
+        from tools.environments.local import build_subprocess_env
+
+        env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
+    else:
+        env = dict(source_env)
     env["BWS_ACCESS_TOKEN"] = access_token
     # Make sure we're not echoing telemetry / colour codes into json.
     env.setdefault("NO_COLOR", "1")
@@ -908,7 +921,7 @@ class BitwardenSource(SecretSource):
         result = FetchResult()
 
         access_token_env = str(cfg.get("access_token_env") or "BWS_ACCESS_TOKEN")
-        access_token = os.environ.get(access_token_env, "").strip()
+        access_token = get_source_environment().get(access_token_env, "").strip()
         if not access_token:
             result.error = (
                 f"secrets.bitwarden.enabled is true but {access_token_env} is "

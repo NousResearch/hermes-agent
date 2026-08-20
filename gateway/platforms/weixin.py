@@ -68,7 +68,25 @@ from gateway.platforms.base import (
 )
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
-from agent.secret_scope import get_secret
+from agent.secret_scope import UnscopedSecretError, get_secret
+
+
+def _wx_secret(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Scope-aware WEIXIN_* read with the default-profile startup fallback.
+
+    Secondary profiles construct their adapters under
+    ``_profile_runtime_scope`` — the scope is authoritative and a scoped miss
+    returns ``default`` (no cross-profile borrow from ``os.environ``). The
+    DEFAULT profile's adapter constructs and sends *unscoped* under
+    multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash its Weixin path; there ``os.environ`` is
+    that profile's own value, so fall back to it. Same pattern as the Slack
+    ``SLACK_APP_TOKEN`` read (#59739) and WhatsApp's ``_get_wsecret``.
+    """
+    try:
+        return get_secret(name, default)
+    except UnscopedSecretError:
+        return os.getenv(name, default)
 
 ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
 WEIXIN_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
@@ -1175,11 +1193,11 @@ class WeixinAdapter(BasePlatformAdapter):
         self._poll_task: Optional[asyncio.Task] = None
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
 
-        self._account_id = str(extra.get("account_id") or get_secret("WEIXIN_ACCOUNT_ID", "")).strip()
-        self._token = str(config.token or extra.get("token") or get_secret("WEIXIN_TOKEN", "")).strip()
-        self._base_url = str(extra.get("base_url") or get_secret("WEIXIN_BASE_URL", ILINK_BASE_URL)).strip().rstrip("/")
+        self._account_id = str(extra.get("account_id") or _wx_secret("WEIXIN_ACCOUNT_ID", "")).strip()
+        self._token = str(config.token or extra.get("token") or _wx_secret("WEIXIN_TOKEN", "")).strip()
+        self._base_url = str(extra.get("base_url") or _wx_secret("WEIXIN_BASE_URL", ILINK_BASE_URL)).strip().rstrip("/")
         self._cdn_base_url = str(
-            extra.get("cdn_base_url") or get_secret("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)
+            extra.get("cdn_base_url") or _wx_secret("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)
         ).strip().rstrip("/")
         self._send_chunk_delay_seconds = float(
             extra.get("send_chunk_delay_seconds") or os.getenv("WEIXIN_SEND_CHUNK_DELAY_SECONDS", "1.5")
@@ -1409,6 +1427,36 @@ class WeixinAdapter(BasePlatformAdapter):
                 await asyncio.sleep(BACKOFF_DELAY_SECONDS if consecutive_failures >= MAX_CONSECUTIVE_FAILURES else RETRY_DELAY_SECONDS)
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     consecutive_failures = 0
+                    # Recycle the poll session after a full failure streak.
+                    # Failed connection attempts through a local HTTP proxy
+                    # (e.g. Clash on 127.0.0.1:7890) can strand sockets that
+                    # never return to the connector's keepalive pool, so the
+                    # tight keepalive_timeout never reaps them. On macOS the
+                    # default 256-fd soft limit turns that drip into
+                    # `[Errno 24] Too many open files` and a gateway crash
+                    # (#79889). Closing the session tears down its connector
+                    # and every socket it holds; a fresh session starts the
+                    # next attempt from zero fds.
+                    await self._recycle_poll_session()
+
+    async def _recycle_poll_session(self) -> None:
+        """Replace ``_poll_session`` with a fresh one, closing the old.
+
+        Swap-then-close so concurrent ``_process_message`` tasks that grab
+        ``self._poll_session`` never observe a closed session; in-flight
+        requests on the old session finish or fail independently.
+        """
+        if not self._running or aiohttp is None:
+            return
+        old = self._poll_session
+        self._poll_session = aiohttp.ClientSession(
+            trust_env=True, connector=_make_ssl_connector()
+        )
+        if old is not None and not old.closed:
+            try:
+                await old.close()
+            except Exception as exc:
+                logger.debug("[%s] old poll session close failed: %s", self.name, exc)
 
     async def _process_message_safe(self, message: Dict[str, Any]) -> None:
         try:
@@ -2313,10 +2361,10 @@ async def send_weixin_direct(
 
     This bypasses the long-poll adapter lifecycle and uses the raw API directly.
     """
-    account_id = str(extra.get("account_id") or get_secret("WEIXIN_ACCOUNT_ID", "")).strip()
-    base_url = str(extra.get("base_url") or get_secret("WEIXIN_BASE_URL", ILINK_BASE_URL)).strip().rstrip("/")
-    cdn_base_url = str(extra.get("cdn_base_url") or get_secret("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)).strip().rstrip("/")
-    resolved_token = str(token or extra.get("token") or get_secret("WEIXIN_TOKEN", "")).strip()
+    account_id = str(extra.get("account_id") or _wx_secret("WEIXIN_ACCOUNT_ID", "")).strip()
+    base_url = str(extra.get("base_url") or _wx_secret("WEIXIN_BASE_URL", ILINK_BASE_URL)).strip().rstrip("/")
+    cdn_base_url = str(extra.get("cdn_base_url") or _wx_secret("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)).strip().rstrip("/")
+    resolved_token = str(token or extra.get("token") or _wx_secret("WEIXIN_TOKEN", "")).strip()
     if not resolved_token:
         return {"error": "Weixin token missing. Configure WEIXIN_TOKEN or platforms.weixin.token."}
     if not account_id:

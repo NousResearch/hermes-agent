@@ -19,6 +19,7 @@ releases it.
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -383,10 +384,35 @@ def update_managed_uv(
 # ---------------------------------------------------------------------------
 
 
-def _venv_python(venv_dir: Path) -> Path:
-    from hermes_constants import venv_python_path
+def _reload_hermes_constants():
+    """Re-execute ``hermes_constants`` from disk and return the fresh module.
 
-    return venv_python_path(venv_dir, windows=platform.system() == "Windows")
+    ``hermes update`` imports ``hermes_constants`` from the OLD checkout,
+    ``git pull`` then replaces that file, and this freshly-pulled module runs
+    its lazy imports against the module object Python already cached in
+    ``sys.modules`` — the pre-upgrade one. A symbol added by the update is
+    absent there while the file named in the resulting ``ImportError`` plainly
+    contains it, which is what made this read as a contradiction:
+
+        cannot import name 'venv_python_path' from 'hermes_constants'
+        (~/.hermes/hermes-agent/hermes_constants.py)
+
+    Reloading picks up the definitions actually on disk, so callers keep using
+    the shared helper instead of hand-rolling a second copy of its logic. Same
+    update-boundary class as the ``ensure_uv()`` arity skew on :class:`_UvResult`.
+    """
+    import hermes_constants
+
+    return importlib.reload(hermes_constants)
+
+
+def _venv_python(venv_dir: Path) -> Path:
+    windows = platform.system() == "Windows"
+    try:
+        from hermes_constants import venv_python_path
+    except ImportError:
+        venv_python_path = _reload_hermes_constants().venv_python_path
+    return venv_python_path(venv_dir, windows=windows)
 
 
 def _remove_tree(path: Path, *, boundary: Path) -> None:
@@ -488,6 +514,8 @@ def _attempt_install_generation(
     project_root: Path,
     python_root: Path,
     current: SQLiteRuntimeInfo,
+    allow_minor_upgrade: bool = False,
+    tried_versions: set[tuple[int, int, int]] | None = None,
 ) -> tuple[Path, Path, SQLiteRuntimeInfo] | None:
     """One install+probe attempt for a specific version request (bare minor
     like "3.11", or an explicit patch like "3.11.15"). Each attempt gets its
@@ -495,6 +523,12 @@ def _attempt_install_generation(
     cleaned up before the next attempt, matching --reinstall semantics.
     Returns None (and cleans up) on any failure, including a vulnerable
     or off-line candidate.
+
+    When *tried_versions* is given, the probed candidate's version is
+    recorded in it so callers looping over explicit patches can skip a
+    version a bare-minor request already resolved to (and rejected) --
+    retrying it explicitly would spend a full download+install+probe+delete
+    cycle to reach a certain rejection.
     """
     token = f"{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     generation = python_root / f"generation-{token}"
@@ -567,7 +601,20 @@ def _attempt_install_generation(
         logger.warning("could not probe candidate Python runtime: %s", python)
         _remove_tree(generation, boundary=python_root)
         return None
-    if candidate.python_version[:2] != current.python_version[:2] or (
+    if tried_versions is not None:
+        tried_versions.add(candidate.python_version[:3])
+    if allow_minor_upgrade:
+        # When falling forward to a higher minor line (e.g. 3.11 → 3.12),
+        # only reject downgrades — allow the minor to differ.
+        if candidate.python_version < current.python_version:
+            logger.warning(
+                "candidate Python downgraded from %s: %s",
+                ".".join(str(p) for p in current.python_version),
+                candidate.python_version,
+            )
+            _remove_tree(generation, boundary=python_root)
+            return None
+    elif candidate.python_version[:2] != current.python_version[:2] or (
         candidate.python_version < current.python_version
     ):
         logger.warning(
@@ -601,9 +648,11 @@ def _install_safe_python_generation(
 
     request = _runtime_request(current)
     print(f"  → Provisioning a private Python {request} runtime with fixed SQLite...")
+    tried_versions = {current.python_version[:3]}
     result = _attempt_install_generation(
         uv_bin, request, project_root=project_root,
         python_root=python_root, current=current,
+        tried_versions=tried_versions,
     )
     if result is not None:
         return result
@@ -619,7 +668,6 @@ def _install_safe_python_generation(
     patches = _list_available_patches(
         uv_bin, request, cwd=project_root, env=env_for_list
     )
-    tried_versions = {current.python_version[:3]}
     attempts = 0
     for version_tuple in patches:
         if attempts >= _MAX_PATCH_RETRIES:
@@ -647,6 +695,54 @@ def _install_safe_python_generation(
         )
         if result is not None:
             return result
+
+    # All patches on the current minor line are vulnerable or rejected.
+    # Fall forward to the next supported minor (e.g. 3.11 → 3.12) so the
+    # user isn't stuck on every `hermes update` with no path to a fixed
+    # runtime (issue #76106).  The requires-python constraint
+    # (>=3.11,<3.14) and the downstream import smoke-test gate
+    # compatibility; we only need to stay inside that window.
+    cur_major, cur_minor = current.python_version[:2]
+    fb_tried: set[tuple[int, int, int]] = set(tried_versions)
+    for next_minor in range(cur_minor + 1, 14):  # up to 3.13
+        next_request = f"{cur_major}.{next_minor}"
+        print(
+            f"  → No fixed {cur_major}.{cur_minor} build available; "
+            f"trying {next_request} as fallback..."
+        )
+        result = _attempt_install_generation(
+            uv_bin, next_request, project_root=project_root,
+            python_root=python_root, current=current,
+            allow_minor_upgrade=True,
+            tried_versions=fb_tried,
+        )
+        if result is not None:
+            return result
+        # Also try explicit patches on this minor line, skipping whatever
+        # version the bare request above already resolved to (retrying it
+        # explicitly would spend a full download+install+probe+delete cycle
+        # to reach a certain rejection).
+        env_for_list = managed_python_env(project_root, install_dir=python_root)
+        fb_patches = _list_available_patches(
+            uv_bin, next_request, cwd=project_root, env=env_for_list
+        )
+        fb_attempts = 0
+        for version_tuple in fb_patches:
+            if fb_attempts >= _MAX_PATCH_RETRIES:
+                break
+            if version_tuple in fb_tried:
+                continue
+            fb_tried.add(version_tuple)
+            explicit = ".".join(str(p) for p in version_tuple)
+            print(f"  → Retrying with explicit patch {explicit}...")
+            fb_attempts += 1
+            result = _attempt_install_generation(
+                uv_bin, explicit, project_root=project_root,
+                python_root=python_root, current=current,
+                allow_minor_upgrade=True,
+            )
+            if result is not None:
+                return result
     return None
 
 
@@ -750,6 +846,10 @@ def _stage_candidate_venv(
         logger.warning("candidate dependency sync refused: uv.lock is missing")
         _remove_tree(candidate, boundary=runtime_root)
         return None
+    # Locked sync must see project [tool.uv] exclude-newer; --no-config /
+    # UV_NO_CONFIG drops it and uv 0.12+ refuses --locked.
+    sync_env = dict(env)
+    sync_env.pop("UV_NO_CONFIG", None)
     synced = subprocess.run(
         [
             uv_bin,
@@ -759,10 +859,9 @@ def _stage_candidate_venv(
             "--locked",
             "--python",
             str(_venv_python(candidate)),
-            "--no-config",
         ],
         cwd=project_root,
-        env=env,
+        env=sync_env,
         check=False,
     )
     if synced.returncode != 0:

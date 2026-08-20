@@ -10,7 +10,9 @@ jobs as readers (concurrent with each other, excluded from a writer's run).
 These tests assert that contract.
 """
 
+import os
 import threading
+import time
 
 
 def _lock():
@@ -82,6 +84,30 @@ def test_writer_waits_for_active_reader():
     assert not rt.is_alive() and not wt.is_alive()
     # The writer only ran after the reader released — never alongside it.
     assert order == ["reader-release", "writer-acquire"]
+
+
+def test_writer_acquire_times_out_behind_active_reader():
+    """Bounded acquire prevents a stuck reader from blocking a writer forever."""
+    lock = _lock()
+    lock.acquire_read()
+    started = time.monotonic()
+    try:
+        assert lock.acquire_write(timeout=0.01) is False
+    finally:
+        lock.release_read()
+    assert time.monotonic() - started < 1.0
+
+
+def test_reader_acquire_times_out_behind_active_writer():
+    """Bounded acquire prevents a stuck writer from blocking readers forever."""
+    lock = _lock()
+    lock.acquire_write()
+    started = time.monotonic()
+    try:
+        assert lock.acquire_read(timeout=0.01) is False
+    finally:
+        lock.release_write()
+    assert time.monotonic() - started < 1.0
 
 
 def test_reader_never_observes_writer_override():
@@ -189,3 +215,86 @@ def test_run_job_releases_cwd_lock_when_body_raises(tmp_path):
     t.start()
     assert acquired.wait(timeout=5), "writer lock was leaked by run_job on exception"
     t.join(timeout=5)
+
+
+def test_run_job_fails_fast_when_cwd_lock_is_stuck(monkeypatch):
+    """Fail-closed (#79768): a reader blocked past the bound FAILS as a
+    normal cron error instead of proceeding without the lock (which would
+    expose the stuck writer's TERMINAL_CWD override to its commands)."""
+    import cron.scheduler as sched
+
+    monkeypatch.setattr(sched, "_cwd_lock_timeout_seconds", lambda: 0.05)
+    sched._terminal_cwd_lock.acquire_write()
+    try:
+        start = time.monotonic()
+        success, _out, _final, error = sched.run_job(
+            {"id": "blocked-reader", "name": "blocked-reader", "prompt": "hi"}
+        )
+    finally:
+        sched._terminal_cwd_lock.release_write()
+
+    assert success is False
+    assert "TERMINAL_CWD read lock" in (error or "")
+    assert time.monotonic() - start < 10.0
+
+
+def test_run_job_writer_fails_fast_and_never_sets_env(monkeypatch, tmp_path):
+    """A WRITER that times out must fail before touching TERMINAL_CWD —
+    the fail-open design let it clobber the active holder's override."""
+    import cron.scheduler as sched
+
+    monkeypatch.setattr(sched, "_cwd_lock_timeout_seconds", lambda: 0.05)
+    monkeypatch.setenv("TERMINAL_CWD", "/holder/dir")
+    sched._terminal_cwd_lock.acquire_write()
+    try:
+        success, _out, _final, error = sched.run_job(
+            {
+                "id": "blocked-writer",
+                "name": "blocked-writer",
+                "prompt": "hi",
+                "workdir": str(tmp_path),
+            }
+        )
+        observed_during = os.environ.get("TERMINAL_CWD")
+    finally:
+        sched._terminal_cwd_lock.release_write()
+
+    assert success is False
+    assert "TERMINAL_CWD write lock" in (error or "")
+    assert observed_during == "/holder/dir", (
+        "timed-out writer mutated the active holder's TERMINAL_CWD override"
+    )
+    assert os.environ.get("TERMINAL_CWD") == "/holder/dir"
+
+
+def test_lock_wait_shorter_than_bound_still_succeeds(monkeypatch, tmp_path):
+    """A waiter whose holder finishes inside the bound proceeds normally —
+    the fail-closed path only fires past the derived ceiling."""
+    import cron.scheduler as sched
+
+    lock = sched._terminal_cwd_lock
+    lock.acquire_write()
+    releaser = threading.Timer(0.1, lock.release_write)
+    releaser.start()
+    try:
+        assert lock.acquire_read(timeout=5.0) is True
+        lock.release_read()
+    finally:
+        releaser.cancel()
+
+
+def test_cwd_lock_timeout_derivation(monkeypatch):
+    """The bound tracks HERMES_CRON_TIMEOUT (+margin) with a floor, and
+    stays finite when the job runtime is unlimited (0)."""
+    import cron.scheduler as sched
+
+    monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+    assert sched._cwd_lock_timeout_seconds() == 660.0
+    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1800")
+    assert sched._cwd_lock_timeout_seconds() == 1860.0
+    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "30")
+    assert sched._cwd_lock_timeout_seconds() == 180.0
+    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
+    assert sched._cwd_lock_timeout_seconds() == 660.0
+    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "bogus")
+    assert sched._cwd_lock_timeout_seconds() == 660.0

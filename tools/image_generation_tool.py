@@ -13,8 +13,10 @@ Architecture:
   aspect_ratio) into the model-specific payload and filters to the
   ``supports`` whitelist so models never receive rejected keys.
 - Upscaling via FAL's Clarity Upscaler is gated per-model via the ``upscale``
-  flag — on for FLUX 2 Pro (backward-compat), off for all faster/newer models
-  where upscaling would either hurt latency or add marginal quality.
+  flag — OFF by default for every model. Clarity is an SD1.5 creative
+  tile-diffusion enhancer (creativity 0.35 redraws content); chained by
+  default it mangled GPT Image 2 / Ideogram text rendering, CJK, and faces
+  (Aug 2026 quality regression). Upscaling is strictly per-call opt-in.
 
 Pricing shown in UI strings is as-of the initial commit; we accept drift and
 update when it's noticed.
@@ -64,10 +66,12 @@ from tools.fal_common import (
 )
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
+    NOUS_MANAGED_PROVIDER,
     fal_key_is_configured,
     managed_nous_tools_enabled,
     nous_tool_gateway_unavailable_message,
-    prefers_gateway,
+    read_selection,
+    selection_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,6 +97,8 @@ logger = logging.getLogger(__name__)
 # rejected parameters (each FAL model rejects unknown keys differently).
 #
 # ``upscale`` controls whether to chain Clarity Upscaler after generation.
+# Policy (Aug 2026): False everywhere — the default-on experiment degraded
+# output quality (Clarity redraws content). Opt-in per call only.
 
 FAL_MODELS: Dict[str, Dict[str, Any]] = {
     "fal-ai/flux-2/klein/9b": {
@@ -150,7 +156,7 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
             "num_images", "output_format", "enable_safety_checker",
             "safety_tolerance", "sync_mode", "seed",
         },
-        "upscale": True,   # Backward-compat: current default behavior.
+        "upscale": False,  # opt-in only (was default-on pre-Aug 2026)
         # Edit endpoint accepts up to 9 reference images.
         "edit_endpoint": "fal-ai/flux-2-pro/edit",
         "edit_supports": {
@@ -219,6 +225,40 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
             "resolution", "enable_web_search", "limit_generations",
         },
         "max_reference_images": 2,
+    },
+    "fal-ai/nano-banana-2": {
+        "display": "Nano Banana 2 (Gemini 3.1 Flash Image)",
+        "speed": "~3s",
+        "strengths": "Fast reasoning, multilingual text, infographics",
+        "price": "Lower-cost Flash tier",
+        "size_style": "aspect_ratio",
+        "sizes": {
+            "landscape": "16:9",
+            "square": "1:1",
+            "portrait": "9:16",
+        },
+        "defaults": {
+            "num_images": 1,
+            "output_format": "png",
+            "safety_tolerance": "4",
+            "resolution": "1K",
+            "limit_generations": True,
+        },
+        "supports": {
+            "prompt", "aspect_ratio", "num_images", "output_format",
+            "safety_tolerance", "seed", "sync_mode", "system_prompt",
+            "resolution", "enable_web_search", "limit_generations",
+            "thinking_level",
+        },
+        "upscale": False,
+        "edit_endpoint": "fal-ai/nano-banana-2/edit",
+        "edit_supports": {
+            "prompt", "image_urls", "aspect_ratio", "num_images",
+            "output_format", "safety_tolerance", "seed", "sync_mode",
+            "system_prompt", "resolution", "enable_web_search",
+            "limit_generations", "thinking_level",
+        },
+        "max_reference_images": 14,
     },
     "fal-ai/gpt-image-1.5": {
         "display": "GPT Image 1.5",
@@ -417,6 +457,250 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "upscale": False,
     },
+    # ─── Aug 2026 catalog expansion ────────────────────────────────────────
+    # Endpoint ids, `supports` whitelists and enum defaults below are taken
+    # from each model's FAL OpenAPI schema, so a key we send is a key the
+    # vendor declares. Paired `/edit` apps hang off their text-to-image entry
+    # rather than appearing as separate picker rows.
+    "bytedance/seedream/v5/pro/text-to-image": {
+        "display": "Seedream 5.0 Pro",
+        "speed": "~10s",
+        "strengths": "ByteDance flagship, dense layouts, native text in 14 languages",
+        "price": "$0.0675/image (≤1536²)",
+        "size_style": "image_size_preset",
+        # Pro requires total pixels between 1024x1024 and 2048x2048 —
+        # explicit ImageSize dicts keep every aspect inside that window.
+        "sizes": {
+            "landscape": {"width": 2048, "height": 1152},
+            "square": {"width": 1536, "height": 1536},
+            "portrait": {"width": 1152, "height": 2048},
+        },
+        "defaults": {
+            "num_images": 1,
+            "output_format": "png",
+            "enable_safety_checker": False,
+        },
+        "supports": {
+            "prompt", "image_size", "num_images", "output_format",
+            "sync_mode", "enable_safety_checker",
+        },
+        "upscale": False,
+        # Region-precise editing with up to 10 reference images.
+        "edit_endpoint": "bytedance/seedream/v5/pro/edit",
+        "edit_supports": {
+            "prompt", "image_urls", "image_size", "num_images",
+            "output_format", "sync_mode", "enable_safety_checker",
+        },
+        "max_reference_images": 10,
+    },
+    "bytedance/seedream/v5/lite/text-to-image": {
+        "display": "Seedream 5.0 Lite",
+        "speed": "~5s",
+        "strengths": "Fast/cheap Seedream tier, high-res output",
+        "price": "$0.035/image",
+        "size_style": "image_size_preset",
+        # Lite wants total pixels between 2560x1440 and 4096x4096. Use the
+        # documented presets (FAL auto-scales if a preset is under the floor)
+        # instead of hand-rolled ImageSize dicts that drift from the schema.
+        "sizes": {
+            "landscape": "landscape_16_9",
+            "square": "square_hd",
+            "portrait": "portrait_16_9",
+        },
+        "defaults": {
+            "num_images": 1,
+            "enable_safety_checker": False,
+        },
+        "supports": {
+            "prompt", "image_size", "num_images", "max_images",
+            "sync_mode", "enable_safety_checker",
+        },
+        "upscale": False,
+    },
+    "ideogram/v4/instant": {
+        "display": "Ideogram V4 (Instant)",
+        "speed": "<1s",
+        "strengths": "Latest Ideogram typography, posters/logos, instant",
+        "price": "$0.0075/MP",
+        "size_style": "image_size_preset",
+        "sizes": {
+            "landscape": "landscape_16_9",
+            "square": "square_hd",
+            "portrait": "portrait_16_9",
+        },
+        "defaults": {
+            "expansion_model": "Medium",
+            "output_format": "png",
+            "enable_safety_checker": False,
+        },
+        "supports": {
+            "prompt", "image_size", "expansion_model", "num_images",
+            "seed", "sync_mode", "enable_safety_checker", "output_format",
+        },
+        "upscale": False,
+    },
+    "ideogram/v4/fast": {
+        "display": "Ideogram V4 (Fast)",
+        "speed": "~1s",
+        "strengths": "Ideogram V4 quality tiers via rendering_speed",
+        "price": "$0.005-0.018/MP",
+        "size_style": "image_size_preset",
+        "sizes": {
+            "landscape": "landscape_16_9",
+            "square": "square_hd",
+            "portrait": "portrait_16_9",
+        },
+        "defaults": {
+            "expansion_model": "Medium",
+            "rendering_speed": "BALANCED",
+        },
+        "supports": {
+            "prompt", "image_size", "expansion_model", "rendering_speed",
+            "num_images", "seed", "sync_mode",
+        },
+        "upscale": False,
+    },
+    "alibaba/qwen-image-3/text-to-image": {
+        "display": "Qwen Image 3",
+        "speed": "~8s",
+        "strengths": "Complex CN/EN text rendering, prompt-guided resolution",
+        "price": "$0.04 (1K) / $0.075 (2K) per image",
+        "size_style": "image_size_preset",
+        "sizes": {
+            "landscape": "landscape_16_9",
+            "square": "square_hd",
+            "portrait": "portrait_16_9",
+        },
+        "defaults": {
+            "num_images": 1,
+            "output_format": "png",
+            "enable_prompt_expansion": False,  # avoid the LLM rewrite surprise
+            "enable_safety_checker": False,
+        },
+        "supports": {
+            "prompt", "negative_prompt", "image_size", "num_images",
+            "seed", "sync_mode", "output_format",
+            "enable_prompt_expansion", "enable_safety_checker",
+        },
+        "upscale": False,
+        # Qwen Image 3 edit: 1-3 reference images, identity-preserving edits.
+        "edit_endpoint": "alibaba/qwen-image-3/edit",
+        "edit_supports": {
+            "prompt", "image_urls", "negative_prompt", "num_images",
+            "seed", "sync_mode", "output_format",
+            "enable_prompt_expansion", "enable_safety_checker",
+        },
+        "max_reference_images": 3,
+    },
+    "microsoft/mai-image-2.5-pro": {
+        "display": "MAI Image 2.5 Pro",
+        "speed": "~10s",
+        "strengths": "Microsoft flagship, hero imagery, precise typography",
+        "price": "~$0.17/image",
+        "size_style": "aspect_ratio",
+        "sizes": {
+            "landscape": "16:9",
+            "square": "1:1",
+            "portrait": "9:16",
+        },
+        "defaults": {
+            "num_images": 1,
+            "output_format": "png",
+        },
+        "supports": {
+            "prompt", "aspect_ratio", "num_images", "output_format",
+            "sync_mode",
+        },
+        "upscale": False,
+    },
+    "google/nano-banana-2-lite": {
+        "display": "Nano Banana 2 Lite",
+        "speed": "<2s",
+        "strengths": "Gemini image family, sub-2s, 14 aspect ratios incl. extreme",
+        "price": "~$0.04/image (1K fixed)",
+        "size_style": "aspect_ratio",
+        "sizes": {
+            "landscape": "16:9",
+            "square": "1:1",
+            "portrait": "9:16",
+        },
+        "defaults": {
+            "num_images": 1,
+            "output_format": "png",
+            "safety_tolerance": "5",
+        },
+        "supports": {
+            "prompt", "aspect_ratio", "num_images", "seed",
+            "output_format", "safety_tolerance", "sync_mode",
+            "system_prompt", "limit_generations", "thinking_level",
+        },
+        "upscale": False,
+        # Fast multi-turn local edits with reference images via `image_urls`.
+        "edit_endpoint": "google/nano-banana-2-lite/edit",
+        "edit_supports": {
+            "prompt", "image_urls", "aspect_ratio", "num_images",
+            "seed", "output_format", "safety_tolerance", "sync_mode",
+            "system_prompt",
+        },
+        "max_reference_images": 4,
+    },
+    "fal-ai/recraft/v4.1/text-to-image": {
+        "display": "Recraft V4.1",
+        "speed": "~8s",
+        "strengths": "Design-first raster, brand systems, editorial",
+        "price": "$0.035/image",
+        "size_style": "image_size_preset",
+        "sizes": {
+            "landscape": "landscape_16_9",
+            "square": "square_hd",
+            "portrait": "portrait_16_9",
+        },
+        "defaults": {
+            "enable_safety_checker": False,
+        },
+        "supports": {
+            "prompt", "image_size", "enable_safety_checker",
+            "colors", "background_color",
+        },
+        "upscale": False,
+    },
+    "xai/grok-imagine-image/v2.0/text-to-image": {
+        "display": "Grok Imagine Image 2.0",
+        "speed": "~5s",
+        "strengths": "xAI. Design-grade typography/layout, instruction following",
+        "price": "$0.06/image (1K medium)",
+        "size_style": "aspect_ratio",
+        "sizes": {
+            "landscape": "16:9",
+            "square": "1:1",
+            "portrait": "9:16",
+        },
+        "defaults": {
+            "num_images": 1,
+            "output_format": "png",
+            # 1k + medium is the cheapest sensible tier ($0.06/image);
+            # 2k roughly +33% per image.
+            "resolution": "1k",
+            "quality": "medium",
+        },
+        "supports": {
+            "prompt", "aspect_ratio", "num_images", "output_format",
+            "resolution", "quality", "sync_mode",
+        },
+        # Opt-in only (policy: default-on upscaling was disabled everywhere
+        # Aug 2026; the upscaler is a creative enhancer that can alter fine
+        # detail). 1k native is sub-2MP — pass upscale=true when needed.
+        "upscale": False,
+        # Edit endpoint takes `image_urls` (max 3) + the same knobs;
+        # aspect_ratio defaults to "auto" (follows the first input image),
+        # so we don't send it on edits.
+        "edit_endpoint": "xai/grok-imagine-image/v2.0/edit",
+        "edit_supports": {
+            "prompt", "image_urls", "num_images", "output_format",
+            "resolution", "quality", "sync_mode",
+        },
+        "max_reference_images": 3,
+    },
 }
 
 # Default model is the fastest reasonable option. Kept cheap and sub-1s.
@@ -450,9 +734,43 @@ _managed_fal_client_lock = threading.Lock()
 # Managed FAL gateway (Nous Subscription)
 # ---------------------------------------------------------------------------
 def _resolve_managed_fal_gateway():
-    """Return managed fal-queue gateway config when the user prefers the gateway
-    or direct FAL credentials are absent."""
-    if fal_key_is_configured() and not prefers_gateway("image_gen"):
+    """Resolve the FAL route from the stored `hermes tools` selection.
+
+    Dispatch is a plain switch on the stored ``image_gen`` provider string:
+    - ``"nous"`` (or legacy ``use_gateway: true``) → managed fal-queue
+      gateway ONLY; unentitled/unreachable is a selection-naming error
+      (never a silent fall back to FAL_KEY).
+    - any other stored provider (``"fal"``, ...) → direct FAL ONLY; a
+      missing FAL_KEY is an error naming FAL_KEY and the selection (never a
+      silent managed reroute).
+    - no selection ever written → legacy credential autodetect: direct when
+      FAL_KEY is set, else the managed gateway when resolvable, else None.
+
+    Returns the managed gateway config, or ``None`` for the direct route.
+    Raises ``ValueError`` with the honest error contract when the stored
+    selection cannot run.
+    """
+    selected = read_selection("image_gen")
+    if selected == NOUS_MANAGED_PROVIDER:
+        gateway = resolve_managed_tool_gateway("fal-queue")
+        if gateway is None:
+            raise ValueError(selection_error(
+                "image_gen",
+                NOUS_MANAGED_PROVIDER,
+                "the Nous Tool Gateway is not available (not entitled or "
+                "unreachable)",
+            ))
+        return gateway
+    if selected is not None:
+        if not fal_key_is_configured():
+            raise ValueError(selection_error(
+                "image_gen",
+                selected,
+                "FAL_KEY is not set",
+            ))
+        return None
+    # Never-configured category: legacy credential autodetect (do NOT persist).
+    if fal_key_is_configured():
         return None
     return resolve_managed_tool_gateway("fal-queue")
 
@@ -479,6 +797,46 @@ def _get_managed_fal_client(managed_gateway):
         )
         _managed_fal_client_config = client_config
         return _managed_fal_client
+
+
+class ImageGenerationInterrupted(Exception):
+    """Raised when the user interrupts while a FAL job is in flight."""
+
+
+def _wait_fal_result(handler, *, poll_seconds: float = 0.5):
+    """Interrupt-aware replacement for a blind ``handler.get()``.
+
+    ``handler.get()`` blocks inside the FAL SDK until the remote job
+    finishes — a 30-60s window where a user interrupt was previously
+    invisible (the reported symptom: redirects queued behind a running
+    generation). Run the blocking get on a daemon worker and poll the
+    per-thread interrupt bit between join slices; on interrupt, abandon
+    the worker (daemon thread, remote job keeps running server-side but
+    we stop waiting) and raise ``ImageGenerationInterrupted``.
+    """
+    from tools.interrupt import is_interrupted
+
+    result_box: list = []
+    error_box: list = []
+
+    def _get():
+        try:
+            result_box.append(handler.get())
+        except BaseException as exc:  # noqa: BLE001 — re-raised on the caller thread
+            error_box.append(exc)
+
+    worker = threading.Thread(target=_get, daemon=True, name="fal-result-wait")
+    worker.start()
+    while worker.is_alive():
+        if is_interrupted():
+            raise ImageGenerationInterrupted(
+                "Image generation interrupted by user — abandoned the "
+                "in-flight FAL job."
+            )
+        worker.join(timeout=poll_seconds)
+    if error_box:
+        raise error_box[0]
+    return result_box[0] if result_box else None
 
 
 def _submit_fal_request(model: str, arguments: Dict[str, Any]):
@@ -693,7 +1051,7 @@ def _upscale_image(image_url: str, original_prompt: str) -> Optional[Dict[str, A
         }
 
         handler = _submit_fal_request(UPSCALER_MODEL, arguments=upscaler_arguments)
-        result = handler.get()
+        result = _wait_fal_result(handler)
 
         if result and "image" in result:
             upscaled_image = result["image"]
@@ -712,6 +1070,10 @@ def _upscale_image(image_url: str, original_prompt: str) -> Optional[Dict[str, A
         logger.error("Upscaler returned invalid response")
         return None
 
+    except ImageGenerationInterrupted:
+        # Propagate: the user interrupt must not degrade into a silent
+        # "upscale failed, use original" fallback that keeps the turn alive.
+        raise
     except Exception as e:
         logger.error("Error upscaling image: %s", e, exc_info=True)
         return None
@@ -845,6 +1207,7 @@ def image_generate_tool(
     seed: Optional[int] = None,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    upscale: Optional[bool] = None,
 ) -> str:
     """Generate an image from a text prompt, or edit a source image, via FAL.
 
@@ -901,6 +1264,9 @@ def image_generate_tool(
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
 
+        # Strict selection check: a stored-but-broken selection raises the
+        # honest selection-naming error from _resolve_managed_fal_gateway();
+        # only the never-configured path can report "no backend at all".
         if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
             raise ValueError(_build_no_backend_setup_message())
 
@@ -958,7 +1324,7 @@ def image_generate_tool(
             )
 
         handler = _submit_fal_request(endpoint, arguments=arguments)
-        result = handler.get()
+        result = _wait_fal_result(handler)
 
         generation_time = (datetime.datetime.now() - start_time).total_seconds()
 
@@ -969,9 +1335,15 @@ def image_generate_tool(
         if not images:
             raise ValueError("No images were generated")
 
-        # Edit endpoints already return the final composition; the Clarity
-        # upscaler is a text-to-image quality pass, so skip it for edits.
-        should_upscale = bool(meta.get("upscale", False)) and not use_edit
+        # Explicit ``upscale`` (agent/user opt-in via the tool schema) wins
+        # over the per-model catalog default — including for edits, where an
+        # explicit request is intentional. The catalog default keeps skipping
+        # edits (Clarity is a text-to-image quality pass and must not alter
+        # edit compositions silently).
+        if upscale is not None:
+            should_upscale = bool(upscale)
+        else:
+            should_upscale = bool(meta.get("upscale", False)) and not use_edit
 
         formatted_images = []
         for img in images:
@@ -1007,6 +1379,7 @@ def image_generate_tool(
             "success": True,
             "image": formatted_images[0]["url"] if formatted_images else None,
             "modality": modality,
+            "upscaled": bool(formatted_images and formatted_images[0].get("upscaled")),
         }
 
         debug_call_data["success"] = True
@@ -1038,8 +1411,19 @@ def image_generate_tool(
 
 
 def check_fal_api_key() -> bool:
-    """True if the FAL.ai API key (direct or managed gateway) is available."""
-    return bool(fal_key_is_configured() or _resolve_managed_fal_gateway())
+    """True if the FAL backend selected via `hermes tools` (or, on a
+    never-configured install, any FAL backend) is available.
+
+    A stored-but-broken selection reports False here (registry gating);
+    the honest selection-naming error surfaces at call time from
+    ``_resolve_managed_fal_gateway``.
+    """
+    selected = read_selection("image_gen")
+    if selected == NOUS_MANAGED_PROVIDER:
+        return bool(resolve_managed_tool_gateway("fal-queue"))
+    if selected is not None:
+        return fal_key_is_configured()
+    return bool(fal_key_is_configured() or resolve_managed_tool_gateway("fal-queue"))
 
 
 def _build_no_backend_setup_message() -> str:
@@ -1097,7 +1481,7 @@ def check_image_generation_requirements() -> bool:
         pass
 
     configured = _read_configured_image_provider()
-    if not configured or configured == "fal":
+    if not configured or configured in ("fal", NOUS_MANAGED_PROVIDER):
         return False
 
     # Probe only the explicitly selected plugin. Merely possessing a cloud
@@ -1214,6 +1598,17 @@ IMAGE_GENERATE_SCHEMA = {
                     "capped per-model; the description above indicates the max."
                 ),
             },
+            "upscale": {
+                "type": "boolean",
+                "description": (
+                    "Optional post-generation high-resolution pass (~2x, "
+                    "extra cost/latency). Off by default for every model — "
+                    "pass true to opt in. The upscaler is a creative "
+                    "enhancer and can alter fine detail (rendered text, "
+                    "faces), so only use it when resolution matters more "
+                    "than fidelity."
+                ),
+            },
         },
         "required": ["prompt"],
     },
@@ -1264,6 +1659,7 @@ def _dispatch_to_plugin_provider(
     aspect_ratio: str,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    upscale: Optional[bool] = None,
 ):
     """Route the call to a plugin-registered provider when one is selected.
 
@@ -1278,11 +1674,16 @@ def _dispatch_to_plugin_provider(
 
     ``image_url`` / ``reference_image_urls`` enable image-to-image / editing:
     they are forwarded to the provider's ``generate()`` so the backend can
-    route to its edit endpoint.
+    route to its edit endpoint. ``upscale`` (when explicitly set) requests a
+    post-generation high-resolution pass; providers without upscale support
+    ignore it via their ``**kwargs`` (the ABC contract).
     """
     configured = _read_configured_image_provider()
-    if not configured or configured == "fal":
-        return None  # unset/explicit FAL keeps the legacy FAL path
+    if not configured or configured in ("fal", NOUS_MANAGED_PROVIDER):
+        # Unset/explicit FAL keeps the legacy FAL path; "nous" (managed
+        # Nous Subscription selection) also runs the legacy pipeline, which
+        # routes through the managed fal-queue gateway.
+        return None
 
     # Also read configured model so we can pass it to the plugin
     configured_model = _read_configured_image_model()
@@ -1334,6 +1735,8 @@ def _dispatch_to_plugin_provider(
             norm_refs = normalize_reference_images(reference_image_urls)
         if norm_refs:
             kwargs["reference_image_urls"] = norm_refs
+        if upscale is not None:
+            kwargs["upscale"] = bool(upscale)
         result = provider.generate(**kwargs)
     except TypeError as exc:
         # A provider whose generate() signature predates image_url support
@@ -1421,6 +1824,7 @@ def _maybe_route_managed_krea(
     aspect_ratio: str,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    upscale: Optional[bool] = None,
 ) -> Optional[str]:
     """Route a native ``krea-2-*`` model to the managed Krea gateway, in managed mode.
 
@@ -1434,8 +1838,13 @@ def _maybe_route_managed_krea(
 
     Direct/BYO users (no managed gateway) fall through untouched.
     """
-    # ``provider == "krea"`` is already handled by the standard plugin dispatch.
-    if _read_configured_image_provider() == "krea":
+    # Strict selection rule: an explicitly stored ``image_gen.provider``
+    # (other than the managed "nous" selection, which IS a managed-mode
+    # opt-in) disables the model-driven managed interception — the user's
+    # picker choice dispatches normally. Interception is permitted only on
+    # never-configured installs or under the managed selection.
+    configured_provider = _read_configured_image_provider()
+    if configured_provider is not None and configured_provider != NOUS_MANAGED_PROVIDER:
         return None
 
     normalized = _normalize_krea_model(_read_configured_image_model())
@@ -1479,6 +1888,8 @@ def _maybe_route_managed_krea(
             norm_refs = normalize_reference_images(reference_image_urls)
         if norm_refs:
             kwargs["reference_image_urls"] = norm_refs
+        if upscale is not None:
+            kwargs["upscale"] = bool(upscale)
         result = provider.generate(**kwargs)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Managed Krea routing failed: %s", exc)
@@ -1498,6 +1909,48 @@ def _maybe_route_managed_krea(
     return json.dumps(result)
 
 
+def _confine_source_images(
+    image_url, reference_image_urls, task_id, *, permitted: tuple = ("image",)
+):
+    """Route path-like source images through the sandbox-aware resolver.
+
+    Under a non-local terminal backend (ssh/docker/…), model-supplied local
+    paths are resolved via ``tools.image_source`` (in-sandbox exec-read,
+    media-cache host reads, credential guard, lazy env bring-up) and converted
+    to ``data:`` URLs before any provider sees them — so generation tools obey
+    the same confinement boundary as vision/video analysis, and sandbox-only
+    files actually work as edit sources. URLs and data: URLs pass through
+    untouched; the local backend is a no-op (providers keep their host reads).
+
+    Returns ``(image_url, reference_image_urls, error_json_or_None)``.
+    """
+    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    if backend in ("", "local"):
+        return image_url, reference_image_urls, None
+
+    from model_tools import _run_async
+    from tools.image_source import ImageResolutionError, resolve_local_source_to_data_url
+
+    try:
+        if isinstance(image_url, str) and image_url.strip():
+            image_url = _run_async(resolve_local_source_to_data_url(
+                image_url, task_id, permitted=permitted))
+        if isinstance(reference_image_urls, (list, tuple)):
+            reference_image_urls = [
+                _run_async(resolve_local_source_to_data_url(ref, task_id, permitted=permitted))
+                if isinstance(ref, str) else ref
+                for ref in list(reference_image_urls)
+            ]
+    except ImageResolutionError as exc:
+        return image_url, reference_image_urls, json.dumps({
+            "success": False,
+            "image": None,
+            "error": f"Could not read source image: {exc}",
+            "error_type": type(exc).__name__,
+        })
+    return image_url, reference_image_urls, None
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
@@ -1505,7 +1958,19 @@ def _handle_image_generate(args, **kw):
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     image_url = args.get("image_url")
     reference_image_urls = args.get("reference_image_urls")
+    upscale = args.get("upscale")
+    if not isinstance(upscale, bool):
+        upscale = None
     task_id = kw.get("task_id")
+
+    # Terminal-backend confinement chokepoint: convert path-like sources to
+    # data: URLs via the shared resolver BEFORE any provider dispatch, so
+    # every backend (plugin, managed Krea, in-tree FAL) gets the same
+    # sandbox-confined bytes.
+    image_url, reference_image_urls, confine_error = _confine_source_images(
+        image_url, reference_image_urls, task_id)
+    if confine_error is not None:
+        return confine_error
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path). When ``image_gen.provider == "krea"`` this
@@ -1514,6 +1979,7 @@ def _handle_image_generate(args, **kw):
         prompt, aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        upscale=upscale,
     )
     if dispatched is not None:
         return _postprocess_image_generate_result(dispatched, task_id=task_id)
@@ -1527,6 +1993,7 @@ def _handle_image_generate(args, **kw):
         prompt, aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        upscale=upscale,
     )
     if krea_routed is not None:
         return _postprocess_image_generate_result(krea_routed, task_id=task_id)
@@ -1536,6 +2003,7 @@ def _handle_image_generate(args, **kw):
         aspect_ratio=aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        upscale=upscale,
     )
     return _postprocess_image_generate_result(raw, task_id=task_id)
 

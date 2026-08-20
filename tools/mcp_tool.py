@@ -37,6 +37,11 @@ Example config::
         url: "https://my-mcp-server.example.com/mcp"
         headers:
           Authorization: "Bearer sk-..."
+        identity_header:       # optional per-user identity header attached
+          name: "X-User-Id"    # to this server's HTTP/SSE requests
+          value_from: "static" # "static" (default) or "profile"
+          value: "alice"       # required for static; profile mode uses the
+                               # active Hermes profile name
         timeout: 180
         skip_preflight: true  # bypass the content-type probe for a valid
                               # Streamable HTTP endpoint that answers HEAD/GET
@@ -112,8 +117,44 @@ from typing import Any, Coroutine, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from tools.registry import tool_error
+from tools.ansi_strip import strip_unicode_tags
 
 logger = logging.getLogger(__name__)
+
+
+# Hard allocation ceiling for a single MCP text payload (chars). This is the
+# FIRST line of defense against a buggy or malicious MCP server returning
+# multi-megabyte text: without it the full payload is allocated, JSON-encoded
+# and handed downstream before the budget/spillover layer ever sees it
+# (#56059). It deliberately sits far ABOVE the budget layer's 50K MCP
+# spillover threshold (tools/budget_config.py) so ordinary large results
+# reach spillover INTACT — spilled to disk in full, preview in context —
+# while only pathological multi-MB floods are lossy-truncated here.
+#
+# Distilled from #56060 (Stoltemberg), #56072 (AlexFucuson9) and #56511
+# (Tranquil-Flow), which capped at get_max_bytes() (50K) — correct
+# protection, but at that level it would truncate before spillover could
+# preserve the data. The 40% head / 60% tail split is #56511's shape.
+_MCP_HARD_RESULT_CAP_CHARS = 2_000_000
+
+
+def _truncate_mcp_text_result(text: str, max_chars: int = _MCP_HARD_RESULT_CAP_CHARS) -> str:
+    """Bound pathological MCP text before it propagates (#56059).
+
+    Results at or under ``max_chars`` pass through unchanged; oversized text
+    keeps a 40% head / 60% tail split with an omission notice in between.
+    """
+    if len(text) <= max_chars:
+        return text
+    head_chars = int(max_chars * 0.4)
+    tail_chars = max_chars - head_chars
+    omitted = len(text) - head_chars - tail_chars
+    return (
+        text[:head_chars]
+        + f"\n\n... [MCP RESULT TRUNCATED - {omitted:,} chars omitted "
+          f"out of {len(text):,} total] ...\n\n"
+        + text[-tail_chars:]
+    )
 
 # Upper bound for the OSV malware preflight during stdio MCP startup. The
 # check makes a blocking urllib HTTPS call whose own timeout can fail to
@@ -203,77 +244,264 @@ def _write_stderr_log_header(server_name: str) -> None:
 
 _MCP_AVAILABLE = False
 _MCP_HTTP_AVAILABLE = False
+_MCP_NEW_HTTP = False
+_MCP_LEGACY_HTTP = False
 _MCP_SAMPLING_TYPES = False
 _MCP_NOTIFICATION_TYPES = False
 _MCP_ELICITATION_TYPES = False
 _MCP_MESSAGE_HANDLER_SUPPORTED = False
+_MCP_LOGGING_CALLBACK_SUPPORTED = False
+_MCP_NEW_HTTP = False
+sse_client = None
 # Conservative fallback for SDK builds that don't export LATEST_PROTOCOL_VERSION.
 # Streamable HTTP was introduced by 2025-03-26, so this remains valid for the
 # HTTP transport path even on older-but-supported SDK versions.
 LATEST_PROTOCOL_VERSION = "2025-03-26"
+# The newest revision reachable through `ClientSession.initialize()`, which is
+# NOT the newest revision the SDK knows about: from 2026-07-28 onward the
+# handshake is replaced by a per-request envelope, so `initialize()` keeps
+# sending `LATEST_HANDSHAKE_VERSION`. Seeding the MCP-Protocol-Version header
+# from LATEST_PROTOCOL_VERSION would advertise a revision the body does not
+# speak. Defaults to the handshake fallback for SDKs predating the split.
+LATEST_HANDSHAKE_VERSION = LATEST_PROTOCOL_VERSION
+
+# The heavy SDK import is LAZY (see _ensure_mcp_sdk): importing `mcp` costs
+# ~260ms (mcp.types alone is ~60ms of pydantic model construction), which used
+# to be paid at tool-discovery time on EVERY CLI startup even with zero MCP
+# servers configured. Availability is decided here with a metadata-only
+# find_spec probe (~1ms, no module execution) so every existing
+# `if not _MCP_AVAILABLE` gate, test patch, and skipif keeps its exact
+# semantics; the symbol import itself happens on first real SDK use.
 try:
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
-    _MCP_AVAILABLE = True
-    try:
-        from mcp.client.streamable_http import streamablehttp_client
-        _MCP_HTTP_AVAILABLE = True
-    except ImportError:
-        _MCP_HTTP_AVAILABLE = False
-    # Prefer the non-deprecated API (mcp >= 1.24.0); fall back to the
-    # deprecated wrapper for older SDK versions.
-    try:
-        from mcp.client.streamable_http import streamable_http_client
-        _MCP_NEW_HTTP = True
-    except ImportError:
-        _MCP_NEW_HTTP = False
-    try:
-        from mcp.types import LATEST_PROTOCOL_VERSION
-    except ImportError:
-        logger.debug("mcp.types.LATEST_PROTOCOL_VERSION not available -- using fallback protocol version")
-    # SSE transport client (for MCP servers using SSE transport instead of Streamable HTTP)
-    try:
-        from mcp.client.sse import sse_client
-    except ImportError:
-        sse_client = None
-        logger.debug("mcp.client.sse.sse_client not available -- SSE transport disabled")
-    # Sampling types -- separated so older SDK versions don't break MCP support
-    try:
-        from mcp.types import (
-            CreateMessageResult,
-            CreateMessageResultWithTools,
-            ErrorData,
-            SamplingCapability,
-            SamplingToolsCapability,
-            TextContent,
-            ToolUseContent,
-        )
-        _MCP_SAMPLING_TYPES = True
-    except ImportError:
-        logger.debug("MCP sampling types not available -- sampling disabled")
-    # Elicitation types -- gated separately for the same reason as sampling.
-    # Added in mcp Python SDK 1.11.0 (Jul 2025); servers use elicitation to
-    # ask the client for structured input mid-tool-call (e.g. payment
-    # authorization). Missing types just disable the feature; everything
-    # else keeps working.
-    try:
-        from mcp.types import ElicitRequestParams, ElicitResult
-        _MCP_ELICITATION_TYPES = True
-    except ImportError:
-        logger.debug("MCP elicitation types not available -- elicitation disabled")
-    # Notification types for dynamic tool discovery (tools/list_changed)
-    try:
-        from mcp.types import (
-            ServerNotification,
-            ToolListChangedNotification,
-            PromptListChangedNotification,
-            ResourceListChangedNotification,
-        )
-        _MCP_NOTIFICATION_TYPES = True
-    except ImportError:
-        logger.debug("MCP notification types not available -- dynamic tool discovery disabled")
-except ImportError:
+    import importlib.util as _importlib_util
+    _MCP_AVAILABLE = _importlib_util.find_spec("mcp") is not None
+except Exception:
+    _MCP_AVAILABLE = False
+if not _MCP_AVAILABLE:
     logger.debug("mcp package not installed -- MCP tool support disabled")
+
+ClientSession: Any = None
+_MCP_SDK_IMPORT_ATTEMPTED = False
+_MCP_SDK_IMPORT_LOCK = threading.Lock()
+
+# SDK symbols that _ensure_mcp_sdk() binds on first use. Module-level
+# __getattr__ (PEP 562) below resolves external access to any of these by
+# importing the SDK first — so tests doing mock.patch("tools.mcp_tool.
+# stdio_client", ...) trigger the import when patch() saves the original,
+# and the subsequent mock is never clobbered (_ensure is idempotent).
+_MCP_SDK_LAZY_SYMBOLS = frozenset({
+    "StdioServerParameters", "stdio_client",
+    "streamablehttp_client", "streamable_http_client",
+    "CreateMessageResult", "CreateMessageResultWithTools", "ErrorData",
+    "SamplingCapability", "SamplingToolsCapability", "TextContent",
+    "ToolUseContent", "ElicitRequestParams", "ElicitResult",
+    "ServerNotification", "ToolListChangedNotification",
+    "PromptListChangedNotification", "ResourceListChangedNotification",
+})
+
+
+def __getattr__(name: str):
+    if name in _MCP_SDK_LAZY_SYMBOLS:
+        _ensure_mcp_sdk()
+        try:
+            return globals()[name]
+        except KeyError:
+            pass  # SDK missing or symbol absent on this SDK build
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _ensure_mcp_sdk() -> bool:
+    """Import the optional ``mcp`` SDK on first use. Returns availability.
+
+    Idempotent and thread-safe. Sets the module-level ``_MCP_*`` flags and
+    SDK symbol globals exactly as the old import-time block did. Honors a
+    test-patched ``_MCP_AVAILABLE=False`` (returns False without importing)
+    and test-installed mock symbols (``ClientSession`` already set → no
+    re-import, so mocks are never clobbered).
+    """
+    global _MCP_SDK_IMPORT_ATTEMPTED, _MCP_AVAILABLE, _MCP_HTTP_AVAILABLE
+    global _MCP_SAMPLING_TYPES, _MCP_NOTIFICATION_TYPES, _MCP_ELICITATION_TYPES
+    global _MCP_MESSAGE_HANDLER_SUPPORTED, _MCP_LOGGING_CALLBACK_SUPPORTED
+    global _MCP_NEW_HTTP, _MCP_LEGACY_HTTP, LATEST_PROTOCOL_VERSION, LATEST_HANDSHAKE_VERSION, sse_client
+    global ClientSession, StdioServerParameters, stdio_client
+    global streamablehttp_client, streamable_http_client
+    global CreateMessageResult, CreateMessageResultWithTools, ErrorData
+    global SamplingCapability, SamplingToolsCapability, TextContent, ToolUseContent
+    global ElicitRequestParams, ElicitResult
+    global ServerNotification, ToolListChangedNotification
+    global PromptListChangedNotification, ResourceListChangedNotification
+
+    if not _MCP_AVAILABLE:
+        return False
+    if _MCP_SDK_IMPORT_ATTEMPTED or ClientSession is not None:
+        return _MCP_AVAILABLE
+    with _MCP_SDK_IMPORT_LOCK:
+        if _MCP_SDK_IMPORT_ATTEMPTED or ClientSession is not None:
+            return _MCP_AVAILABLE
+        try:
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            _MCP_AVAILABLE = True
+            # Prefer the non-deprecated API (mcp >= 1.24.0); fall back to the
+            # deprecated wrapper for older SDK versions.
+            try:
+                from mcp.client.streamable_http import streamable_http_client
+                _MCP_NEW_HTTP = True
+            except ImportError:
+                _MCP_NEW_HTTP = False
+            try:
+                from mcp.client.streamable_http import streamablehttp_client
+                _MCP_LEGACY_HTTP = True
+            except ImportError:
+                _MCP_LEGACY_HTTP = False
+            # HTTP support requires EITHER entry point. mcp 2.0 dropped the
+            # deprecated `streamablehttp_client` alias, so gating on that name
+            # alone made _run_http raise ImportError for every HTTP and SSE
+            # server on 2.x before it could reach the `streamable_http_client`
+            # path.
+            #
+            # Reaching it was necessary and not sufficient: that path also
+            # unpacked the transport as a fixed 3-tuple, which is 1.x's shape.
+            # On 2.x it raised "not enough values to unpack (expected 3, got
+            # 2)" and every HTTP/SSE server parked after its retry ladder.
+            # Only stdio servers kept working, which is why this survived
+            # review - the common configs are all stdio.
+            _MCP_HTTP_AVAILABLE = _MCP_NEW_HTTP or _MCP_LEGACY_HTTP
+            try:
+                from mcp.types import LATEST_PROTOCOL_VERSION
+            except ImportError:
+                logger.debug("mcp.types.LATEST_PROTOCOL_VERSION not available -- using fallback protocol version")
+            try:
+                from mcp.client.session import LATEST_HANDSHAKE_VERSION
+            except ImportError:
+                # Pre-2.x SDKs make no distinction: the newest revision IS the
+                # newest handshake revision, so the header and the body agree
+                # either way.
+                LATEST_HANDSHAKE_VERSION = LATEST_PROTOCOL_VERSION
+            # SSE transport client (for MCP servers using SSE transport instead of Streamable HTTP)
+            try:
+                from mcp.client.sse import sse_client
+            except ImportError:
+                sse_client = None
+                logger.debug("mcp.client.sse.sse_client not available -- SSE transport disabled")
+            # Sampling types -- separated so older SDK versions don't break MCP support
+            try:
+                from mcp.types import (
+                    CreateMessageResult,
+                    CreateMessageResultWithTools,
+                    ErrorData,
+                    SamplingCapability,
+                    SamplingToolsCapability,
+                    TextContent,
+                    ToolUseContent,
+                )
+                _MCP_SAMPLING_TYPES = True
+            except ImportError:
+                logger.debug("MCP sampling types not available -- sampling disabled")
+            # Elicitation types -- gated separately for the same reason as sampling.
+            # Added in mcp Python SDK 1.11.0 (Jul 2025); servers use elicitation to
+            # ask the client for structured input mid-tool-call (e.g. payment
+            # authorization). Missing types just disable the feature; everything
+            # else keeps working.
+            try:
+                from mcp.types import ElicitRequestParams, ElicitResult
+                _MCP_ELICITATION_TYPES = True
+            except ImportError:
+                logger.debug("MCP elicitation types not available -- elicitation disabled")
+            # Notification types for dynamic tool discovery (tools/list_changed)
+            try:
+                from mcp.types import (
+                    ServerNotification,
+                    ToolListChangedNotification,
+                    PromptListChangedNotification,
+                    ResourceListChangedNotification,
+                )
+                _MCP_NOTIFICATION_TYPES = True
+            except ImportError:
+                logger.debug("MCP notification types not available -- dynamic tool discovery disabled")
+        except ImportError:
+            logger.debug("mcp package not installed -- MCP tool support disabled")
+
+        if _MCP_AVAILABLE:
+            try:
+                from mcp.types import METHOD_NOT_FOUND as _mnf
+                global _JSONRPC_METHOD_NOT_FOUND
+                _JSONRPC_METHOD_NOT_FOUND = _mnf
+            except Exception:  # pragma: no cover — SDK without the constant
+                pass
+
+        _MCP_MESSAGE_HANDLER_SUPPORTED = _check_message_handler_support()
+        if _MCP_AVAILABLE and not _MCP_MESSAGE_HANDLER_SUPPORTED:
+            logger.debug("MCP SDK does not support message_handler -- dynamic tool discovery disabled")
+        _MCP_LOGGING_CALLBACK_SUPPORTED = _check_logging_callback_support()
+        _MCP_SDK_IMPORT_ATTEMPTED = True
+        return _MCP_AVAILABLE
+
+
+_SDK_HTTPX_MOD = None
+
+
+def sdk_httpx():
+    """Return the httpx module the *installed* MCP SDK is built against.
+
+    mcp 2.0 moved its HTTP transports and OAuth stack from ``httpx`` to
+    ``httpx2`` — a separate distribution with the same public API, importable
+    side by side with Hermes' own pinned ``httpx``. Every object that crosses
+    the SDK boundary has to come from the module the SDK itself imports:
+    the ``AsyncClient`` handed to ``streamable_http_client``, the client the
+    ``sse_client`` factory returns, the ``Request`` built by the SDK's OAuth
+    metadata helpers, and the exception classes those raise. Mixing the two
+    fails at the transport layer rather than at import, so resolve it from the
+    SDK's own transport module instead of inferring it from a version number.
+
+    Returns ``None`` only when neither module is importable, which also means
+    the SDK import above failed and no caller here can run.
+    """
+    global _SDK_HTTPX_MOD
+    if _SDK_HTTPX_MOD is not None:
+        return _SDK_HTTPX_MOD
+    try:
+        from mcp.client import streamable_http as _transport
+        _SDK_HTTPX_MOD = getattr(_transport, "httpx2", None) or getattr(
+            _transport, "httpx", None
+        )
+    except ImportError:
+        _SDK_HTTPX_MOD = None
+    if _SDK_HTTPX_MOD is None:
+        # SDK transport module unavailable (or it stopped importing the
+        # module under a predictable name). Fall back to whichever is
+        # present, newest first.
+        try:
+            import httpx2 as _fallback
+        except ImportError:
+            try:
+                import httpx as _fallback  # type: ignore[no-redef]
+            except ImportError:
+                return None
+        _SDK_HTTPX_MOD = _fallback
+    return _SDK_HTTPX_MOD
+
+
+_MISSING = object()
+
+
+def mcp_field(obj, snake: str, camel: str, default=None):
+    """Read an MCP model field across the 1.x -> 2.x field rename.
+
+    mcp 2.0 renamed every model field to snake_case and kept the camelCase
+    spelling only as a *serialization* alias — pydantic aliases do not apply
+    to attribute access, so ``getattr(result, "isError", False)`` returns the
+    default on 2.x rather than raising. That turns a rename into silent wrong
+    behaviour: failed tool calls read as successful, tool schemas read as
+    empty, paginated lists stop after page one. Asking for both spellings
+    keeps the read correct on either SDK generation, which matters because
+    ``mcp`` is an optional extra users can install at their own version.
+    """
+    value = getattr(obj, snake, _MISSING)
+    if value is not _MISSING:
+        return value
+    value = getattr(obj, camel, _MISSING)
+    return default if value is _MISSING else value
 
 
 def _check_message_handler_support() -> bool:
@@ -288,11 +516,6 @@ def _check_message_handler_support() -> bool:
         return "message_handler" in inspect.signature(ClientSession).parameters
     except (TypeError, ValueError):
         return False
-
-
-_MCP_MESSAGE_HANDLER_SUPPORTED = _check_message_handler_support()
-if _MCP_AVAILABLE and not _MCP_MESSAGE_HANDLER_SUPPORTED:
-    logger.debug("MCP SDK does not support message_handler -- dynamic tool discovery disabled")
 
 
 def _check_logging_callback_support() -> bool:
@@ -310,8 +533,6 @@ def _check_logging_callback_support() -> bool:
     except (TypeError, ValueError):
         return False
 
-
-_MCP_LOGGING_CALLBACK_SUPPORTED = _check_logging_callback_support()
 
 # MCP logging levels (RFC 5424 syslog severities) -> Python logging levels.
 # Port of anomalyco/opencode#34529's serverLog mapping.
@@ -439,6 +660,48 @@ def _env_ref_name(ref: str) -> str:
     return ref
 
 
+def _workspace_folder() -> str:
+    """Best-effort absolute workspace root for ``${workspaceFolder}``.
+
+    Resolution order:
+
+      1. ``tools.file_tools._authoritative_workspace_root()`` — the session's
+         recorded terminal cwd, a registered task/session cwd override, or a
+         sentinel-free absolute ``$TERMINAL_CWD`` (in that order).
+      2. ``os.getcwd()`` as the final fallback when no session anchor exists.
+    """
+    try:
+        from tools.file_tools import _authoritative_workspace_root
+
+        root = _authoritative_workspace_root()
+        if root:
+            return root
+    except Exception:
+        pass
+    return os.getcwd()
+
+
+def _context_var_value(ref: str) -> Optional[str]:
+    """Resolve Cursor-style context variables in ``${...}`` references.
+
+    Supports the case-sensitive names Cursor's ``mcp.json`` interpolation
+    understands beyond env vars: ``${userHome}``, ``${workspaceFolder}``,
+    ``${workspaceFolderBasename}``, ``${pathSeparator}`` and its ``${/}``
+    shorthand. Returns ``None`` for anything else so unknown references keep
+    the existing env-var lookup semantics.
+    """
+    if ref == "userHome":
+        return os.path.expanduser("~")
+    if ref == "workspaceFolder":
+        return _workspace_folder()
+    if ref == "workspaceFolderBasename":
+        root = _workspace_folder()
+        return os.path.basename(root.rstrip("/\\")) or root
+    if ref in ("pathSeparator", "/"):
+        return os.sep
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Security helpers
 # ---------------------------------------------------------------------------
@@ -499,12 +762,38 @@ def _exc_str(exc: BaseException) -> str:
 
 # JSON-RPC "method not found" — the error a server returns when it does not
 # implement a requested method (e.g. a tool-capable server that never wired up
-# the optional ``ping`` utility). Defined locally with a fallback so detection
-# works even on SDK builds that don't export the constant.
-try:
-    from mcp.types import METHOD_NOT_FOUND as _JSONRPC_METHOD_NOT_FOUND
-except Exception:  # pragma: no cover — older/newer SDK without the constant
-    _JSONRPC_METHOD_NOT_FOUND = -32601
+# the optional ``ping`` utility). -32601 is the JSON-RPC 2.0 spec constant;
+# _ensure_mcp_sdk() overrides it from mcp.types when the SDK is loaded (kept
+# lazy so this module never triggers the ~260ms `mcp` import at import time).
+_JSONRPC_METHOD_NOT_FOUND = -32601
+
+# 2026-07-28 stateless servers answering a legacy ``initialize`` reject it
+# with one of these: UnsupportedProtocolVersion (-32022, spec-reserved range)
+# or plain method-not-found when the handshake methods are gone entirely.
+# Structural codes only — checked via _handshake_rejected_as_modern().
+_JSONRPC_UNSUPPORTED_PROTOCOL_VERSION = -32022
+
+
+def _handshake_rejected_as_modern(exc: BaseException) -> bool:
+    """True when a failed ``initialize`` signals a 2026-07-28-only server.
+
+    Mirrors :func:`_is_method_not_found_error`'s structural-then-substring
+    shape (never ``isinstance`` on SDK exception types — the SDK wraps
+    task-group errors in ``ExceptionGroup`` and symbols drift across
+    generations; see references/sdk-exceptiongroup-wrapping.md).
+    """
+    err = getattr(exc, "error", None)
+    code = getattr(err, "code", None) or getattr(exc, "code", None)
+    if code in (_JSONRPC_UNSUPPORTED_PROTOCOL_VERSION, _JSONRPC_METHOD_NOT_FOUND):
+        return True
+    msg = str(exc).lower()
+    if not msg:
+        return False
+    return (
+        "unsupported protocol version" in msg
+        or str(_JSONRPC_UNSUPPORTED_PROTOCOL_VERSION) in msg
+        or _is_method_not_found_error(exc)
+    )
 
 
 def _is_method_not_found_error(exc: BaseException) -> bool:
@@ -512,7 +801,7 @@ def _is_method_not_found_error(exc: BaseException) -> bool:
 
     ``ping`` is an *optional* MCP utility (spec: "optional ping mechanism").
     A server that doesn't implement it answers a ping with -32601 rather than
-    an empty result. Structurally inspect ``McpError.error.code`` first, then
+    an empty result. Structurally inspect ``MCPError.error.code`` first, then
     fall back to a substring match so detection survives SDK version drift and
     servers that surface the condition as a plain message.
 
@@ -523,7 +812,7 @@ def _is_method_not_found_error(exc: BaseException) -> bool:
     server is one such case (#50028). Without matching that phrasing the
     ping→list_tools fallback never latches and the keepalive reconnect-loops.
     """
-    # Structural: mcp.shared.exceptions.McpError carries ErrorData.code.
+    # Structural: mcp.shared.exceptions.MCPError carries ErrorData.code.
     err = getattr(exc, "error", None)
     code = getattr(err, "code", None)
     if code == _JSONRPC_METHOD_NOT_FOUND:
@@ -611,7 +900,8 @@ def _prepend_path(env: dict, directory: str) -> dict:
 _MCP_LIST_MAX_PAGES = 50
 
 
-async def _paginate_full_list(list_method, items_attr: str, server_name: str):
+async def _paginate_full_list(list_method, items_attr: str, server_name: str,
+                              cache_meta_out: Optional[dict] = None):
     """Drain a paginated MCP ``list_*`` call by following ``nextCursor``.
 
     The MCP spec allows servers to paginate ``tools/list``,
@@ -627,6 +917,10 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str):
         items_attr: Result attribute holding the page's items
             (``"tools"``, ``"resources"``, or ``"prompts"``).
         server_name: For log messages.
+        cache_meta_out: Optional dict that receives the first page's
+            SEP-2549 cache hints (``ttl_ms``, ``cache_scope``) when the
+            server provides them (2026-07-28 servers MUST; earlier ones
+            won't). Callers use ``ttl_ms`` to bound the schema cache.
 
     Returns:
         Combined list of items across all pages. Callers must hold the
@@ -636,9 +930,29 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str):
     items: list = []
     cursor = None
     for _ in range(_MCP_LIST_MAX_PAGES):
-        result = await (list_method(cursor=cursor) if cursor else list_method())
+        if not cursor:
+            result = await list_method()
+        else:
+            # Cursor continuation differs by SDK generation: mcp 1.x
+            # accepts ``cursor=``, mcp 2.0 takes ``params=`` (a
+            # PaginatedRequestParams). Try modern first, fall back.
+            try:
+                _params_cls = getattr(_mcp_types(), "PaginatedRequestParams", None)
+                if _params_cls is not None:
+                    result = await list_method(params=_params_cls(cursor=cursor))
+                else:
+                    result = await list_method(cursor=cursor)
+            except TypeError:
+                result = await list_method(cursor=cursor)
+        if cache_meta_out is not None and not items:
+            _ttl = mcp_field(result, "ttl_ms", "ttlMs")
+            _scope = mcp_field(result, "cache_scope", "cacheScope")
+            if _ttl is not None:
+                cache_meta_out["ttl_ms"] = _ttl
+            if _scope is not None:
+                cache_meta_out["cache_scope"] = _scope
         items.extend(getattr(result, items_attr, None) or [])
-        cursor = getattr(result, "nextCursor", None)
+        cursor = mcp_field(result, "next_cursor", "nextCursor")
         # Per the MCP spec the cursor is an opaque string; anything else
         # (including mock objects in tests) means "no more pages".
         if not isinstance(cursor, str) or not cursor:
@@ -650,6 +964,12 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str):
             server_name, items_attr, _MCP_LIST_MAX_PAGES, len(items),
         )
     return items
+
+
+def _mcp_types():
+    """Late import of ``mcp.types`` (module keeps the SDK import lazy)."""
+    import mcp.types as _t
+    return _t
 
 
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
@@ -664,6 +984,27 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     if os.sep not in resolved_command:
         path_arg = resolved_env["PATH"] if "PATH" in resolved_env else None
         which_hit = shutil.which(resolved_command, path=path_arg)
+        if which_hit is None and sys.platform == "win32" and resolved_env:
+            # shutil.which(..., path=...) resolves extensions from the PARENT
+            # process PATHEXT, not the MCP subprocess env — so a config that
+            # supplies both PATH and PATHEXT can fail to resolve a command
+            # its own env can find (#56536). Retry with the config's PATHEXT
+            # (any key casing: PATHEXT / Pathext / pathext) applied.
+            cfg_pathext = next(
+                (v for k, v in resolved_env.items()
+                 if k.upper() == "PATHEXT" and isinstance(v, str) and v.strip()),
+                None,
+            )
+            if cfg_pathext and cfg_pathext != os.environ.get("PATHEXT"):
+                _saved = os.environ.get("PATHEXT")
+                try:
+                    os.environ["PATHEXT"] = cfg_pathext
+                    which_hit = shutil.which(resolved_command, path=path_arg)
+                finally:
+                    if _saved is None:
+                        os.environ.pop("PATHEXT", None)
+                    else:
+                        os.environ["PATHEXT"] = _saved
         if which_hit:
             resolved_command = which_hit
         elif resolved_command in {"npx", "npm", "node"}:
@@ -732,6 +1073,39 @@ def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
 # ---------------------------------------------------------------------------
 
 
+def _is_reserved_mcp_meta_key(key: str) -> bool:
+    """Return True if an MCP ``_meta`` key uses a protocol-reserved prefix.
+
+    Per the MCP spec's key-name rules, a prefix is reserved when a
+    ``modelcontextprotocol`` or ``mcp`` label is followed by at least one
+    more label (``modelcontextprotocol.io/...``, ``tools.mcp.com/...``).
+    A trailing reserved word (``com.example.mcp/...``) is a legitimate
+    vendor namespace and passes through. Ported from
+    MoonshotAI/kimi-code#2600.
+    """
+    slash = key.find("/")
+    if slash <= 0:
+        return False
+    labels = key[:slash].split(".")
+    return any(
+        label in ("modelcontextprotocol", "mcp") and i < len(labels) - 1
+        for i, label in enumerate(labels)
+    )
+
+
+def _strip_reserved_meta_keys(meta) -> "Optional[Dict[str, Any]]":
+    """Drop protocol-reserved keys from a tool result's ``_meta`` mapping.
+
+    Returns the filtered dict, or ``None`` when there is nothing
+    model-facing left (or the input wasn't a mapping).
+    """
+    if not isinstance(meta, dict):
+        return None
+    out = {k: v for k, v in meta.items()
+           if isinstance(k, str) and not _is_reserved_mcp_meta_key(k)}
+    return out or None
+
+
 def _mcp_image_extension_for_mime_type(mime_type: str) -> str:
     """Return a reasonable file extension for an MCP image MIME type."""
     import mimetypes
@@ -754,7 +1128,7 @@ def _cache_mcp_image_block(block) -> str:
     import base64
 
     data = getattr(block, "data", None)
-    mime_type = getattr(block, "mimeType", None)
+    mime_type = mcp_field(block, "mime_type", "mimeType")
     normalized_mime = str(mime_type or "").split(";", 1)[0].strip().lower()
     if data is None or not normalized_mime.startswith("image/"):
         return ""
@@ -842,7 +1216,7 @@ def _cache_mcp_audio_block(block) -> str:
     import base64
 
     data = getattr(block, "data", None)
-    mime_type = str(getattr(block, "mimeType", None) or "").split(";", 1)[0].strip().lower()
+    mime_type = str(mcp_field(block, "mime_type", "mimeType") or "").split(";", 1)[0].strip().lower()
     if data is None or not mime_type.startswith("audio/"):
         return ""
     if len(data) > _MCP_RESOURCE_MAX_B64_CHARS:
@@ -896,7 +1270,7 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
         if not uri:
             return ""
         name = getattr(block, "name", "") or ""
-        mime = getattr(block, "mimeType", "") or ""
+        mime = mcp_field(block, "mime_type", "mimeType", "") or ""
         details = f"uri={uri}"
         if name:
             details += f", name={name}"
@@ -915,7 +1289,7 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
 
     text = getattr(resource, "text", None)
     if text is not None:
-        return str(text)
+        return strip_unicode_tags(str(text))
 
     blob = getattr(resource, "blob", None)
     if blob is None:
@@ -924,7 +1298,7 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
     import base64
 
     uri = str(getattr(resource, "uri", "") or "")
-    mime = str(getattr(resource, "mimeType", "") or "")
+    mime = str(mcp_field(resource, "mime_type", "mimeType", "") or "")
     if len(blob) > _MCP_RESOURCE_MAX_B64_CHARS:
         return f"[MCP embedded resource too large to cache: ~{len(blob) * 3 // 4} bytes, uri={uri}]"
     try:
@@ -1181,6 +1555,113 @@ def _resolve_client_cert(server_name: str, config: dict):
     return cert_path
 
 
+def _resolve_identity_header(server_name: str, config: dict):
+    """Resolve the optional per-server ``identity_header`` config.
+
+    Config shape (in the server's ``mcp_servers`` entry)::
+
+        identity_header:
+          name: "X-User-Id"
+          value_from: "static"   # or "profile"; default: static
+          value: "alice"         # required when value_from is static
+
+    Returns a ``(header_name, header_value)`` tuple, or ``None`` when the
+    key is unset or invalid. Invalid configs warn and are ignored — an
+    identity header must never break the server connection. ``profile``
+    mode resolves the value to the active Hermes profile name once at
+    connect time; there is no per-call mutation.
+    """
+    raw = config.get("identity_header")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        logger.warning(
+            "MCP server '%s': identity_header must be a mapping with "
+            "'name' and 'value'/'value_from' keys (got %s) — ignoring",
+            server_name, type(raw).__name__,
+        )
+        return None
+    name = raw.get("name")
+    if not isinstance(name, str) or not name.strip():
+        logger.warning(
+            "MCP server '%s': identity_header requires a non-empty "
+            "'name' — ignoring", server_name,
+        )
+        return None
+    value_from = (raw.get("value_from") or "static").strip().lower()
+    if value_from == "static":
+        value = raw.get("value")
+        if not isinstance(value, str) or not value.strip():
+            logger.warning(
+                "MCP server '%s': identity_header with value_from: static "
+                "requires a non-empty string 'value' — ignoring",
+                server_name,
+            )
+            return None
+        return (name.strip(), value)
+    if value_from == "profile":
+        from hermes_cli.profiles import get_active_profile_name
+        return (name.strip(), get_active_profile_name())
+    logger.warning(
+        "MCP server '%s': identity_header value_from must be 'static' or "
+        "'profile' (got %r) — ignoring", server_name, value_from,
+    )
+    return None
+
+
+def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dict:
+    """Merge the resolved identity header into ``headers`` (in place).
+
+    An explicit per-server ``headers`` entry with the same name (any
+    casing) wins — the identity header never silently overrides user
+    config.
+    """
+    resolved = _resolve_identity_header(server_name, config)
+    if resolved is None:
+        return headers
+    name, value = resolved
+    if any(key.lower() == name.lower() for key in headers):
+        logger.debug(
+            "MCP server '%s': identity_header '%s' already set via explicit "
+            "headers config — keeping the explicit value", server_name, name,
+        )
+        return headers
+    headers[name] = value
+    return headers
+
+
+def _make_redirect_header_stripper(
+    original_url,
+    *,
+    strict: bool = False,
+    configured_header_names: "set[str] | frozenset[str]" = frozenset(),
+):
+    """Build an httpx response hook that guards cross-origin redirects.
+
+    Always strips ``Authorization`` when a redirect leaves the original
+    origin. When *strict* is true (portable Agent Plugins v1 packages with
+    ``strict_redirect_headers``), every *configured* header (lowercase names
+    in *configured_header_names*) is stripped as well — the v1 spec forbids
+    forwarding package-configured headers to a different origin without
+    explicit user authorization.
+    """
+
+    async def _strip_on_cross_origin_redirect(response):
+        if response.is_redirect and response.next_request:
+            target = response.next_request.url
+            if (target.scheme, target.host, target.port) != (
+                original_url.scheme, original_url.host, original_url.port,
+            ):
+                response.next_request.headers.pop("authorization", None)
+                response.next_request.headers.pop("Authorization", None)
+                if strict:
+                    for _name in configured_header_names:
+                        while _name in response.next_request.headers:
+                            del response.next_request.headers[_name]
+
+    return _strip_on_cross_origin_redirect
+
+
 def _format_connect_error(exc: BaseException) -> str:
     """Render nested MCP connection errors into an actionable short message."""
 
@@ -1263,6 +1744,14 @@ def _safe_numeric(value, default, coerce=int, minimum=1):
 class SamplingHandler:
     """Handles sampling/createMessage requests for a single MCP server.
 
+    .. deprecated-upstream:: MCP 2026-07-28 deprecates the Sampling feature
+       (SEP-2577, 12-month window; suggested migration is direct LLM-provider
+       integration server-side). This handler stays fully functional for the
+       deprecation window because handshake-era servers in the wild still
+       issue sampling/createMessage — but do NOT grow new capability here;
+       modern servers use MRTR (``resultType: "input_required"``) instead of
+       server-initiated requests, which the SDK's session layer handles.
+
     Each MCPServerTask that has sampling enabled creates one SamplingHandler.
     The handler is callable and passed directly to ``ClientSession`` as
     the ``sampling_callback``.  All state (rate-limit timestamps, metrics,
@@ -1338,22 +1827,40 @@ class SamplingHandler:
         with ``isinstance`` on real SDK types when available, falling back
         to duck-typing via ``hasattr`` for compatibility.
         """
+        # The presence of a tool-use id is the discriminator for a tool
+        # *result* block, so it has to be read under both spellings (see
+        # mcp_field) — on mcp 2.x a bare ``hasattr(b, "toolUseId")`` is False
+        # for every block, which silently drops tool results out of the
+        # conversation and pushes them down the "unsupported block type" path
+        # below.
+        def _tool_use_id(block):
+            return mcp_field(block, "tool_use_id", "toolUseId", _MISSING)
+
+        def _is_tool_use(block):
+            return hasattr(block, "name") and hasattr(block, "input")
+
         messages: List[dict] = []
         for msg in params.messages:
             blocks = msg.content_as_list if hasattr(msg, "content_as_list") else (
                 msg.content if isinstance(msg.content, list) else [msg.content]
             )
 
-            # Separate blocks by kind
-            tool_results = [b for b in blocks if hasattr(b, "toolUseId")]
-            tool_uses = [b for b in blocks if hasattr(b, "name") and hasattr(b, "input") and not hasattr(b, "toolUseId")]
-            content_blocks = [b for b in blocks if not hasattr(b, "toolUseId") and not (hasattr(b, "name") and hasattr(b, "input"))]
+            # Separate blocks by kind.
+            tool_results = [b for b in blocks if _tool_use_id(b) is not _MISSING]
+            tool_uses = [
+                b for b in blocks
+                if _is_tool_use(b) and _tool_use_id(b) is _MISSING
+            ]
+            content_blocks = [
+                b for b in blocks
+                if _tool_use_id(b) is _MISSING and not _is_tool_use(b)
+            ]
 
             # Emit tool result messages (role: tool)
             for tr in tool_results:
                 messages.append({
                     "role": "tool",
-                    "tool_call_id": tr.toolUseId,
+                    "tool_call_id": _tool_use_id(tr),
                     "content": self._extract_tool_result_text(tr),
                 })
 
@@ -1382,12 +1889,15 @@ class SamplingHandler:
                 else:
                     parts = []
                     for block in content_blocks:
+                        block_mime = mcp_field(
+                            block, "mime_type", "mimeType", _MISSING
+                        )
                         if hasattr(block, "text"):
                             parts.append({"type": "text", "text": block.text})
-                        elif hasattr(block, "data") and hasattr(block, "mimeType"):
+                        elif hasattr(block, "data") and block_mime is not _MISSING:
                             parts.append({
                                 "type": "image_url",
-                                "image_url": {"url": f"data:{block.mimeType};base64,{block.data}"},
+                                "image_url": {"url": f"data:{block_mime};base64,{block.data}"},
                             })
                         else:
                             logger.warning(
@@ -1519,7 +2029,9 @@ class SamplingHandler:
             )
 
         # Resolve model
-        model = self._resolve_model(getattr(params, "modelPreferences", None))
+        model = self._resolve_model(
+            mcp_field(params, "model_preferences", "modelPreferences")
+        )
 
         # Get auxiliary LLM client via centralized router
         from agent.auxiliary_client import call_llm
@@ -1540,11 +2052,15 @@ class SamplingHandler:
 
         # Convert messages
         messages = self._convert_messages(params)
-        if hasattr(params, "systemPrompt") and params.systemPrompt:
-            messages.insert(0, {"role": "system", "content": params.systemPrompt})
+        system_prompt = mcp_field(params, "system_prompt", "systemPrompt")
+        if system_prompt:
+            messages.insert(0, {"role": "system", "content": system_prompt})
 
         # Build LLM call kwargs
-        max_tokens = min(params.maxTokens, self.max_tokens_cap)
+        max_tokens = min(
+            mcp_field(params, "max_tokens", "maxTokens", self.max_tokens_cap),
+            self.max_tokens_cap,
+        )
         call_temperature = None
         if hasattr(params, "temperature") and params.temperature is not None:
             call_temperature = params.temperature
@@ -1560,7 +2076,7 @@ class SamplingHandler:
                         "name": getattr(t, "name", ""),
                         "description": getattr(t, "description", "") or "",
                         "parameters": _normalize_mcp_input_schema(
-                            getattr(t, "inputSchema", None)
+                            mcp_field(t, "input_schema", "inputSchema")
                         ),
                     },
                 }
@@ -1730,7 +2246,19 @@ class ElicitationHandler:
         message = getattr(params, "message", "") or (
             f"MCP server '{self.server_name}' is requesting your approval"
         )
-        schema = getattr(params, "requested_schema", {}) or {}
+        # The SDK model spells this field ``requestedSchema`` on mcp 1.x (the
+        # pinned version) and ``requested_schema`` on 2.0, which renamed model
+        # fields to snake_case and kept camelCase only as a serialization
+        # alias -- and pydantic aliases do not apply to attribute access. A
+        # single-spelling read therefore returns the ``{}`` default on the
+        # other generation, and _format_elicitation_schema_summary degrades to
+        # its generic "Approval requested by ..." line, so the user is asked to
+        # approve without being told which fields the server wants.
+        schema = (
+            getattr(params, "requestedSchema", None)
+            or getattr(params, "requested_schema", None)
+            or {}
+        )
         description = _format_elicitation_schema_summary(schema, self.server_name)
 
         logger.info(
@@ -1838,7 +2366,7 @@ class MCPServerTask:
         "_pending_call_context",
         "_lifecycle_started_at", "_last_tool_call_at",
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
-        "initialize_result", "_ping_unsupported",
+        "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked",
     )
 
@@ -1906,6 +2434,8 @@ class MCPServerTask:
         # ``.capabilities.prompts``) instead of assuming every ``ClientSession``
         # method attribute corresponds to a supported server method. See #18051.
         self.initialize_result: Optional[Any] = None
+        # SEP-2549 cache hints from the last tools/list (ttl_ms, cache_scope).
+        self._list_cache_meta: dict = {}
         # Set True the first time a keepalive ``ping`` returns JSON-RPC
         # -32601 (method not found): the server is tool-capable but doesn't
         # implement the optional ``ping`` utility. Subsequent keepalives fall
@@ -1923,7 +2453,7 @@ class MCPServerTask:
         Per the MCP spec, ``InitializeResult.capabilities.tools`` is non-None
         iff the server implements the ``tools/*`` request family. Prompt-only
         or resource-only servers omit it, and calling ``tools/list`` against
-        them raises ``McpError(-32601 Method not found)`` — which previously
+        them raises ``MCPError(-32601 Method not found)`` — which previously
         killed the connection during discovery and made every keepalive fail.
         (Ported from anomalyco/opencode#31271.)
 
@@ -1936,6 +2466,87 @@ class MCPServerTask:
         if caps is None:
             return True
         return getattr(caps, "tools", None) is not None
+
+    async def _negotiate_session(self, session, connect_timeout: float):
+        """Negotiate the protocol era with the server and return its result.
+
+        MCP 2026-07-28 replaced the ``initialize``/``initialized`` handshake
+        with a stateless core: every request is self-describing and clients
+        MAY probe ``server/discover`` up front (SEP-2575). The SDK exposes
+        both paths on ``ClientSession`` (``initialize()`` / ``discover()``)
+        and ``adopt()``s whichever result installs the outbound stamp, so
+        the rest of this file is era-agnostic.
+
+        Per-server ``protocol`` config key:
+
+        - ``auto`` (default): try the legacy handshake FIRST, and fall back
+          to ``server/discover`` when the server signals it is modern-only
+          (``UnsupportedProtocolVersion`` -32022, or ``initialize`` missing
+          -32601). This is the reverse of the SDK's own discover-first auto
+          mode, on purpose: nearly every configured/catalog server today
+          speaks the handshake era, and initialize-first means ZERO extra
+          round-trips and zero behavior change for all of them, while
+          stateless-only servers still connect via the fallback.
+        - ``stateless``: probe ``server/discover`` first (one legacy retry
+          on MCPError, so a handshake-only server still connects).
+        - ``legacy``: handshake only, no fallback (escape hatch for servers
+          that misbehave on unknown methods).
+
+        Both result types expose ``.capabilities``, so downstream gates
+        (``_advertises_tools``, ``_select_utility_schemas``, the config
+        probe) work unchanged on either.
+        """
+        mode = str((self._config or {}).get("protocol", "auto")).lower().strip()
+        if mode in ("stateless", "modern", "2026-07-28"):
+            try:
+                return await asyncio.wait_for(
+                    session.discover(), timeout=connect_timeout
+                )
+            except asyncio.TimeoutError:
+                raise
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.info(
+                    "MCP server '%s': server/discover rejected (%s) despite "
+                    "protocol=%s — falling back to the legacy handshake",
+                    self.name, exc, mode,
+                )
+                return await asyncio.wait_for(
+                    session.initialize(), timeout=connect_timeout
+                )
+        if mode in ("legacy", "handshake"):
+            return await asyncio.wait_for(
+                session.initialize(), timeout=connect_timeout
+            )
+        if mode != "auto":
+            logger.warning(
+                "MCP server '%s': unknown protocol=%r — treating as 'auto' "
+                "(valid: auto, stateless, legacy)", self.name, mode,
+            )
+        try:
+            return await asyncio.wait_for(
+                session.initialize(), timeout=connect_timeout
+            )
+        except asyncio.TimeoutError:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if not _handshake_rejected_as_modern(exc):
+                raise
+            if not hasattr(session, "discover"):
+                # Legacy SDK generation (mcp 1.x) has no server/discover
+                # client — nothing to fall back to.
+                raise
+            logger.info(
+                "MCP server '%s': legacy handshake rejected (%s) — "
+                "retrying via server/discover (2026-07-28 stateless server)",
+                self.name, exc,
+            )
+            return await asyncio.wait_for(
+                session.discover(), timeout=connect_timeout
+            )
 
     def _is_recycled_stdio(self) -> bool:
         """Return True when a stdio server was intentionally recycled."""
@@ -2049,7 +2660,15 @@ class MCPServerTask:
                     logger.debug("MCP message handler (%s): exception: %s", self.name, message)
                     return
                 if _MCP_NOTIFICATION_TYPES and isinstance(message, ServerNotification):
-                    match message.root:
+                    # mcp 2.0 turned ServerNotification from a RootModel into
+                    # a plain union of the concrete notification types, so the
+                    # payload IS the message instead of living under ``.root``.
+                    # ``isinstance`` accepts a union, so the guard above still
+                    # holds on both generations; only the unwrap changes.
+                    # Without this, ``message.root`` raises AttributeError into
+                    # the catch-all below and tools/list_changed refreshes stop
+                    # firing silently.
+                    match getattr(message, "root", message):
                         case ToolListChangedNotification():
                             logger.info(
                                 "MCP server '%s': received tools/list_changed notification",
@@ -2092,7 +2711,7 @@ class MCPServerTask:
         if not self._advertises_tools():
             # A server that doesn't implement tools/* should never send
             # tools/list_changed, but guard anyway — calling tools/list
-            # would raise McpError(-32601).
+            # would raise MCPError(-32601).
             return
 
         async with self._refresh_lock:
@@ -2376,7 +2995,14 @@ class MCPServerTask:
 
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
-        if not _MCP_AVAILABLE:
+        if config.get("identity_header") is not None:
+            # Headers don't exist on stdio transports — warn and ignore so a
+            # copy-pasted HTTP config block doesn't silently mislead.
+            logger.warning(
+                "MCP server '%s': identity_header is only supported on "
+                "HTTP/SSE transports — ignored for stdio servers", self.name,
+            )
+        if not _ensure_mcp_sdk():
             raise ImportError(
                 f"MCP server '{self.name}' requires the 'mcp' Python SDK, but "
                 "it is not installed. Run `hermes setup` to install MCP support, "
@@ -2437,6 +3063,7 @@ class MCPServerTask:
             command=command,
             args=args,
             env=safe_env if safe_env else None,
+            cwd=config.get("cwd"),
             # On Windows, pipe I/O can deliver non-UTF-8 bytes at chunk
             # boundaries.  Use "replace" to substitute undecodable bytes
             # with U+FFFD instead of crashing with UnicodeDecodeError.
@@ -2521,8 +3148,8 @@ class MCPServerTask:
                     connect_timeout = float(
                         config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
                     )
-                    self.initialize_result = await asyncio.wait_for(
-                        session.initialize(), timeout=connect_timeout
+                    self.initialize_result = await self._negotiate_session(
+                        session, connect_timeout
                     )
                     self.session = session
                     self._mark_lifecycle_started()
@@ -2751,6 +3378,7 @@ class MCPServerTask:
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
+        _ensure_mcp_sdk()
         if not _MCP_HTTP_AVAILABLE:
             raise ImportError(
                 f"MCP server '{self.name}' requires HTTP transport but "
@@ -2760,12 +3388,30 @@ class MCPServerTask:
 
         url = config["url"]
         headers = dict(config.get("headers") or {})
+        # Portable Agent Plugins v1 packages set strict_redirect_headers:
+        # configured headers are visible package data and MUST NOT be
+        # forwarded to a different origin through a redirect (spec §7.2.1).
+        # Capture the configured header names before client-generated
+        # headers (identity, protocol version) are merged in.
+        _strict_cfg_headers = bool(config.get("strict_redirect_headers"))
+        _configured_header_names = {key.lower() for key in headers}
+        # Optional per-user identity header (config-gated; static or
+        # profile-derived). Explicit headers of the same name win.
+        headers = _apply_identity_header(self.name, config, headers)
         # Some MCP servers require MCP-Protocol-Version on the initial
         # initialize request and reject session-less POSTs otherwise.
         # Seed it as a client-level default, but treat user overrides as
         # case-insensitive so conventional casing is preserved.
+        #
+        # Seeded from the HANDSHAKE version, not the latest one: this transport
+        # connects via `ClientSession.initialize()`, which sends
+        # LATEST_HANDSHAKE_VERSION (2025-11-25) in the body. Advertising
+        # 2026-07-28 in the header routes the request onto the server's
+        # per-request-envelope ladder, which then rejects the legacy body for
+        # missing its required `params._meta` envelope keys. The header has to
+        # agree with what the body actually speaks.
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
-            headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
+            headers["mcp-protocol-version"] = LATEST_HANDSHAKE_VERSION
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
         ssl_verify = config.get("ssl_verify", True)
         client_cert = _resolve_client_cert(self.name, config)
@@ -2799,6 +3445,14 @@ class MCPServerTask:
         # rather than Streamable HTTP). Configure with ``transport: sse`` in the
         # mcp_servers entry in config.yaml.
         if config.get("transport") == "sse":
+            if _strict_cfg_headers:
+                # Portable packages never translate to SSE; if a config
+                # combines both anyway, fail closed rather than run a
+                # transport that cannot enforce the redirect boundary.
+                raise ValueError(
+                    f"MCP server '{self.name}': strict_redirect_headers is "
+                    "not supported on the SSE transport."
+                )
             if sse_client is None:
                 raise ImportError(
                     f"MCP server '{self.name}' requires SSE transport but "
@@ -2830,7 +3484,9 @@ class MCPServerTask:
                 # defaults (follow_redirects=True) and adds our TLS settings.
                 # The SDK calls the factory with (headers, auth, timeout); we
                 # forward all of those and layer verify/cert on top.
-                import httpx as _httpx_mod
+                # The client MUST come from the SDK's own httpx module
+                # (httpx2 on mcp >= 2.0) — see sdk_httpx().
+                _httpx_mod = sdk_httpx()
 
                 _cert_for_factory = client_cert
                 _verify_for_factory = ssl_verify
@@ -2864,8 +3520,8 @@ class MCPServerTask:
                         # stdio path (#59349): an endpoint that accepts the
                         # connection but never answers ``initialize`` parks this
                         # coroutine forever on the background loop.
-                        self.initialize_result = await asyncio.wait_for(
-                            session.initialize(), timeout=float(connect_timeout)
+                        self.initialize_result = await self._negotiate_session(
+                            session, float(connect_timeout)
                         )
                         self.session = session
                         await self._discover_tools()
@@ -2889,21 +3545,20 @@ class MCPServerTask:
             return reason
 
         if _MCP_NEW_HTTP:
-            # New API (mcp >= 1.24.0): build an explicit httpx.AsyncClient
-            # matching the SDK's own create_mcp_http_client defaults.
-            import httpx
+            # New API (mcp >= 1.24.0): build an explicit AsyncClient matching
+            # the SDK's own create_mcp_http_client defaults. It has to come
+            # from the SDK's httpx module (httpx2 on mcp >= 2.0), because the
+            # SDK sends its own Request objects through this client — see
+            # sdk_httpx().
+            httpx = sdk_httpx()
 
             _original_url = httpx.URL(url)
 
-            async def _strip_auth_on_cross_origin_redirect(response):
-                """Strip Authorization headers when redirected to a different origin."""
-                if response.is_redirect and response.next_request:
-                    target = response.next_request.url
-                    if (target.scheme, target.host, target.port) != (
-                        _original_url.scheme, _original_url.host, _original_url.port,
-                    ):
-                        response.next_request.headers.pop("authorization", None)
-                        response.next_request.headers.pop("Authorization", None)
+            _strip_auth_on_cross_origin_redirect = _make_redirect_header_stripper(
+                _original_url,
+                strict=_strict_cfg_headers,
+                configured_header_names=_configured_header_names,
+            )
 
             client_kwargs: dict = {
                 "follow_redirects": True,
@@ -2922,13 +3577,16 @@ class MCPServerTask:
             # http_client is provided, so we wrap in async-with.
             try:
                 async with httpx.AsyncClient(**client_kwargs) as http_client:
-                    async with streamable_http_client(url, http_client=http_client) as (
-                        read_stream, write_stream, _get_session_id,
-                    ):
+                    # Unpacked positionally rather than by fixed arity: mcp
+                    # 1.x yields (read, write, get_session_id) and 2.x yields
+                    # (read, write). This file supports both SDK generations,
+                    # and get_session_id was never used here.
+                    async with streamable_http_client(url, http_client=http_client) as _streams:
+                        read_stream, write_stream = _streams[0], _streams[1]
                         async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
                             # Bound the handshake (#59349) — see stdio path.
-                            self.initialize_result = await asyncio.wait_for(
-                                session.initialize(), timeout=float(connect_timeout)
+                            self.initialize_result = await self._negotiate_session(
+                                session, float(connect_timeout)
                             )
                             self.session = session
                             await self._discover_tools()
@@ -2952,6 +3610,15 @@ class MCPServerTask:
             return reason
         else:
             # Deprecated API (mcp < 1.24.0): manages httpx client internally.
+            if _strict_cfg_headers:
+                # Fail closed: without an owned httpx client we cannot hook
+                # redirects, so the v1 cross-origin header boundary cannot be
+                # enforced on this SDK version.
+                raise ImportError(
+                    f"MCP server '{self.name}' requires mcp >= 1.24.0 to "
+                    "enforce the portable redirect-header boundary "
+                    "(strict_redirect_headers). Upgrade the mcp package."
+                )
             _http_kwargs: dict = {
                 "headers": headers,
                 "timeout": float(connect_timeout),
@@ -2965,8 +3632,8 @@ class MCPServerTask:
                 ):
                     async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
                         # Bound the handshake (#59349) — see stdio path.
-                        self.initialize_result = await asyncio.wait_for(
-                            session.initialize(), timeout=float(connect_timeout)
+                        self.initialize_result = await self._negotiate_session(
+                            session, float(connect_timeout)
                         )
                         self.session = session
                         await self._discover_tools()
@@ -2993,7 +3660,7 @@ class MCPServerTask:
         """Discover tools from the connected session.
 
         Capability-gated: prompt-only / resource-only MCP servers don't
-        implement ``tools/list``, and calling it raises ``McpError(-32601)``,
+        implement ``tools/list``, and calling it raises ``MCPError(-32601)``,
         which previously aborted the connection — those servers could never
         stay connected for their prompts/resources. Skip the call when the
         server doesn't advertise the ``tools`` capability.
@@ -3015,8 +3682,10 @@ class MCPServerTask:
             self._register_discovered_tools_if_needed()
             return
         async with self._rpc_lock:
+            self._list_cache_meta = {}
             self._tools = await _paginate_full_list(
-                self.session.list_tools, "tools", self.name
+                self.session.list_tools, "tools", self.name,
+                cache_meta_out=self._list_cache_meta,
             )
         self._register_discovered_tools_if_needed()
 
@@ -3060,6 +3729,11 @@ class MCPServerTask:
         self._auth_type = (config.get("auth") or "").lower().strip()
         self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")
         self._max_lifetime_seconds = _get_lifecycle_seconds(config, "max_lifetime_seconds")
+
+        # Bind the lazily-imported SDK before reading feature flags below
+        # (_MCP_SAMPLING_TYPES / _MCP_ELICITATION_TYPES are False until the
+        # SDK import actually runs).
+        _ensure_mcp_sdk()
 
         # Set up sampling handler if enabled and SDK types are available
         sampling_config = config.get("sampling", {})
@@ -3250,27 +3924,36 @@ class MCPServerTask:
                 # should not permanently kill the server.
                 # (Ported from Kilo Code's MCP resilience fix.)
                 if not self._ready.is_set():
-                    if _is_auth_error(root):
-                        logger.warning(
-                            "MCP server '%s' failed initial OAuth authentication, "
-                            "not retrying automatically: %s: %s",
-                            self.name, type(root).__name__, root,
-                        )
-                        self._error = exc
-                        self._ready.set()
-                        return
-
                     if failure_class == "permanent":
                         # Deterministic failure (bad command, non-MCP URL,
                         # 401/403): every retry hits the same wall. Park
                         # immediately instead of burning the retry ladder
                         # and spamming N identical warnings (#65673).
-                        logger.warning(
-                            "MCP server '%s' failed initial connection with a "
-                            "permanent error, parking without retries "
-                            "(state: connecting → parked): %s: %s",
-                            self.name, type(root).__name__, root,
-                        )
+                        #
+                        # Auth failures park here too rather than returning.
+                        # Returning ends the run task, and with it the only
+                        # listener on ``_reconnect_event`` — so a 401 on the
+                        # very first connect left the server unrevivable for
+                        # the life of the process, even after the user
+                        # re-authenticated with ``hermes mcp login``. Parking
+                        # keeps the task alive so the 300s self-probe (and an
+                        # explicit /mcp refresh) can pick up fresh tokens.
+                        if _is_auth_error(root):
+                            logger.warning(
+                                "MCP server '%s' failed initial authentication, "
+                                "parking until credentials change; re-authenticate "
+                                "with `hermes mcp login %s` "
+                                "(state: connecting → parked): %s: %s",
+                                self.name, self.name,
+                                type(root).__name__, root,
+                            )
+                        else:
+                            logger.warning(
+                                "MCP server '%s' failed initial connection with a "
+                                "permanent error, parking without retries "
+                                "(state: connecting → parked): %s: %s",
+                                self.name, type(root).__name__, root,
+                            )
                         self._error = exc
                         self._ready.set()
                         self._was_parked = True
@@ -3532,6 +4215,12 @@ class MCPServerTask:
 _servers: Dict[str, MCPServerTask] = {}
 _server_connecting: set[str] = set()
 _server_connect_errors: Dict[str, str] = {}
+# Lazy MCP startup (#56832): servers whose tools were registered from the
+# on-disk schema cache without spawning/connecting. Keyed by server name;
+# entries are popped once a real connection is established on first use.
+_lazy_server_configs: Dict[str, dict] = {}
+_lazy_server_fingerprints: Dict[str, str] = {}
+_lazy_server_tool_names: Dict[str, List[str]] = {}
 # Discovery installs a task-local claim before calling ``_connect_server`` so
 # it can retain a recoverable parked task without making standalone probe calls
 # publish failed servers into module-global ownership.
@@ -3615,6 +4304,150 @@ _server_error_counts: Dict[str, int] = {}
 _server_breaker_opened_at: Dict[str, float] = {}
 _CIRCUIT_BREAKER_THRESHOLD = 3
 _CIRCUIT_BREAKER_COOLDOWN_SEC = 60.0
+
+# ---------------------------------------------------------------------------
+# Trust-tier gating state (per-server trust + per-tool readOnlyHint).
+#
+# ``trust: full | untrusted`` is a per-server key in the MCP server config
+# (config.yaml → mcp_servers.<name>.trust). On an ``untrusted`` server,
+# every WRITE-CAPABLE tool call routes through the existing dangerous-
+# approval surface before the RPC fires. A tool is write-capable unless its
+# discovery-time ``annotations.readOnlyHint`` is exactly ``True``
+# (missing/malformed annotations fail closed to write-capable).
+#
+# Security model (read this before changing defaults):
+# - ``readOnlyHint`` is a HINT supplied by the server itself. A hostile
+#   server can lie. That is precisely why the gate is tiered per-server by
+#   OPERATOR config: on an untrusted server the hint can only ever exempt
+#   tools the server claims are read-only — the worst a lie buys is
+#   skipping approval for calls the operator was already warned about when
+#   they marked the server untrusted. It can never widen access on top of
+#   the approval a write-capable tool would otherwise need.
+# - Default trust for servers with NO ``trust`` key is ``full`` (gate off)
+#   for backward compatibility — existing configs keep working unchanged.
+#   Operators opt servers into gating explicitly with ``trust: untrusted``.
+# - Any unrecognized ``trust`` value normalizes to ``untrusted``
+#   (fail closed): a typo must never silently disable the gate.
+#
+# Classification happens at CALL TIME from data captured at DISCOVERY —
+# no toolset or schema mutation, so the conversation's toolset stays
+# byte-stable and prompt caching is preserved.
+_server_trust_levels: Dict[str, str] = {}
+_tool_read_only_hints: Dict[str, Dict[str, bool]] = {}
+
+_TRUST_FULL = "full"
+_TRUST_UNTRUSTED = "untrusted"
+
+
+def _normalize_server_trust(value: Any) -> str:
+    """Normalize a config ``trust`` value to ``full`` or ``untrusted``.
+
+    Missing (None) → ``full`` (backward-compatible default, documented
+    above). Any string other than the two known tiers → ``untrusted``:
+    a misspelled tier must fail closed, never silently disable gating.
+    """
+    if value is None:
+        return _TRUST_FULL
+    text = str(value).strip().lower()
+    if text == _TRUST_FULL:
+        return _TRUST_FULL
+    if text == _TRUST_UNTRUSTED:
+        return _TRUST_UNTRUSTED
+    logger.warning(
+        "MCP trust: unrecognized trust value %r — treating as 'untrusted' "
+        "(valid values: full, untrusted)", value,
+    )
+    return _TRUST_UNTRUSTED
+
+
+def _annotation_read_only_hint(mcp_tool: Any) -> bool:
+    """Return True only when the tool's annotations carry readOnlyHint=True.
+
+    Accepts both SDK annotation objects (attribute access) and plain dicts
+    (schema-cache JSON). Anything else — missing annotations, missing key,
+    non-bool truthy values — is False: unknown metadata means the tool must
+    be treated as write-capable.
+    """
+    annotations = getattr(mcp_tool, "annotations", None)
+    if annotations is None:
+        return False
+    if isinstance(annotations, dict):
+        hint = annotations.get("readOnlyHint")
+    else:
+        hint = getattr(annotations, "readOnlyHint", None)
+    return hint is True
+
+
+def _record_tool_trust_metadata(
+    server_name: str, config: dict, tools: List[Any]
+) -> None:
+    """Capture per-server trust and per-tool readOnlyHint at discovery."""
+    with _lock:
+        _server_trust_levels[server_name] = _normalize_server_trust(
+            (config or {}).get("trust")
+        )
+        hints = _tool_read_only_hints.setdefault(server_name, {})
+        for tool in tools:
+            name = getattr(tool, "name", None)
+            if name:
+                hints[name] = _annotation_read_only_hint(tool)
+
+
+def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
+    """Consult the approval path for write-capable tools on untrusted servers.
+
+    Returns None when the call may proceed, or an error string (already
+    formatted via ``tool_error``) when the call is blocked. Fail-closed:
+    approval-system errors block the call.
+    """
+    trust = _server_trust_levels.get(server_name, _TRUST_FULL)
+    if trust != _TRUST_UNTRUSTED:
+        return None
+    if _tool_read_only_hints.get(server_name, {}).get(tool_name) is True:
+        return None
+
+    # Lazy import mirrors the elicitation handler's pattern: tools.approval
+    # routes the prompt to whichever surface owns the session (CLI, TUI,
+    # Telegram, Slack, ...) and normalizes the answer.
+    try:
+        from tools.approval import request_elicitation_consent
+
+        answer = request_elicitation_consent(
+            (
+                f"MCP tool '{tool_name}' on UNTRUSTED server "
+                f"'{server_name}' wants to run. This tool is write-capable "
+                f"(no readOnlyHint=true annotation) and may modify external "
+                f"state."
+            ),
+            (
+                f"Server '{server_name}' is configured 'trust: untrusted'. "
+                f"Approve to run '{tool_name}' once, or deny to block it."
+            ),
+            surface=f"mcp-trust/{server_name}",
+        )
+    except Exception as exc:
+        logger.error(
+            "MCP trust gate: approval check failed for %s.%s: %s",
+            server_name, tool_name, exc, exc_info=True,
+        )
+        return tool_error(
+            f"MCP tool '{tool_name}' on untrusted server '{server_name}' "
+            f"was blocked: the approval system was unavailable "
+            f"(fail-closed)."
+        )
+
+    if answer == "accept":
+        return None
+    logger.info(
+        "MCP trust gate: user %s '%s' on untrusted server '%s'",
+        "cancelled" if answer == "cancel" else "denied",
+        tool_name, server_name,
+    )
+    return tool_error(
+        f"The user did not approve running write-capable MCP tool "
+        f"'{tool_name}' on untrusted server '{server_name}'. The command "
+        f"was NOT run. Do not retry without explicit user direction."
+    )
 
 
 def _bump_server_error(server_name: str) -> None:
@@ -3767,6 +4600,32 @@ def _signal_reconnect_and_wait(
 # Cached tuple of auth-related exception types. Lazy so this module
 # imports cleanly when the MCP SDK OAuth module is missing.
 _AUTH_ERROR_TYPES: tuple = ()
+_HTTP_STATUS_ERROR_TYPES: Optional[tuple] = None
+
+
+def _http_status_error_types() -> tuple:
+    """``HTTPStatusError`` classes that can reach us, from both httpx flavours.
+
+    A 401 can be raised either by the MCP SDK's own HTTP stack (``httpx2`` on
+    mcp >= 2.0) or by Hermes' pinned ``httpx``, and the two define unrelated
+    exception classes. Both go in the tuple so ``isinstance`` covers whichever
+    layer raised.
+    """
+    global _HTTP_STATUS_ERROR_TYPES
+    if _HTTP_STATUS_ERROR_TYPES is not None:
+        return _HTTP_STATUS_ERROR_TYPES
+    found: list = []
+    sdk_mod = sdk_httpx()
+    if sdk_mod is not None:
+        found.append(sdk_mod.HTTPStatusError)
+    try:
+        import httpx
+        if httpx.HTTPStatusError not in found:
+            found.append(httpx.HTTPStatusError)
+    except ImportError:
+        pass
+    _HTTP_STATUS_ERROR_TYPES = tuple(found)
+    return _HTTP_STATUS_ERROR_TYPES
 
 
 def _get_auth_error_types() -> tuple:
@@ -3779,8 +4638,8 @@ def _get_auth_error_types() -> tuple:
         optional import for forward/backward compatibility.
       - ``tools.mcp_oauth.OAuthNonInteractiveError`` — raised by our callback
         handler when no user is present to complete a browser flow.
-      - ``httpx.HTTPStatusError`` — caller must additionally check
-        ``status_code == 401`` via :func:`_is_auth_error`.
+      - ``HTTPStatusError`` from both httpx flavours — caller must
+        additionally check ``status_code == 401`` via :func:`_is_auth_error`.
     """
     global _AUTH_ERROR_TYPES
     if _AUTH_ERROR_TYPES:
@@ -3802,11 +4661,7 @@ def _get_auth_error_types() -> tuple:
         types.append(OAuthNonInteractiveError)
     except ImportError:
         pass
-    try:
-        import httpx
-        types.append(httpx.HTTPStatusError)
-    except ImportError:
-        pass
+    types.extend(_http_status_error_types())
     _AUTH_ERROR_TYPES = tuple(types)
     return _AUTH_ERROR_TYPES
 
@@ -3814,19 +4669,16 @@ def _get_auth_error_types() -> tuple:
 def _is_auth_error(exc: BaseException) -> bool:
     """Return True if ``exc`` indicates an MCP OAuth failure.
 
-    ``httpx.HTTPStatusError`` is only treated as auth-related when the
-    response status code is 401. Other HTTP errors fall through to the
-    generic error path in the tool handlers.
+    ``HTTPStatusError`` is only treated as auth-related when the response
+    status code is 401. Other HTTP errors fall through to the generic error
+    path in the tool handlers.
     """
     types = _get_auth_error_types()
     if not types or not isinstance(exc, types):
         return False
-    try:
-        import httpx
-        if isinstance(exc, httpx.HTTPStatusError):
-            return getattr(exc.response, "status_code", None) == 401
-    except ImportError:
-        pass
+    status_error_types = _http_status_error_types()
+    if status_error_types and isinstance(exc, status_error_types):
+        return getattr(exc.response, "status_code", None) == 401
     return True
 
 
@@ -4533,16 +5385,23 @@ def _interpolate_env_vars(value):
 
     Both ``${VAR}`` and Cursor-style ``${env:VAR}`` are accepted — the
     ``env:`` prefix is stripped so a doc copied from a Cursor / Claude MCP
-    config resolves the same secret. Resolves from the active profile's secret
-    scope when multiplexing is on (so an MCP server config's ``${API_KEY}``
-    picks up the routed profile's value, not the process-global ``os.environ``
-    which may hold another profile's), falling back to ``os.environ``
-    otherwise. Unset vars keep the literal placeholder, as before.
+    config resolves the same secret. Cursor's context variables are also
+    supported (case-sensitive): ``${userHome}``, ``${workspaceFolder}``,
+    ``${workspaceFolderBasename}``, ``${pathSeparator}`` and ``${/}`` — see
+    :func:`_context_var_value` / :func:`_workspace_folder` for resolution.
+    Env refs resolve from the active profile's secret scope when multiplexing
+    is on (so an MCP server config's ``${API_KEY}`` picks up the routed
+    profile's value, not the process-global ``os.environ`` which may hold
+    another profile's), falling back to ``os.environ`` otherwise. Unset vars
+    keep the literal placeholder, as before.
     """
     from agent.secret_scope import get_secret as _get_secret
 
     if isinstance(value, str):
         def _replace(m):
+            ctx = _context_var_value(m.group(1).strip())
+            if ctx is not None:
+                return ctx
             name = _env_ref_name(m.group(1))
             return _get_secret(name, m.group(0)) or m.group(0)
         return _ENV_VAR_PATTERN.sub(_replace, value)
@@ -4650,8 +5509,8 @@ def _load_mcp_config() -> Dict[str, dict]:
             return {}
         config = load_config()
         servers = config.get("mcp_servers")
-        if not servers or not isinstance(servers, dict):
-            return {}
+        if not isinstance(servers, dict):
+            servers = {}
         # Ensure .env vars are available for interpolation
         try:
             from hermes_cli.env_loader import load_hermes_dotenv
@@ -4664,6 +5523,21 @@ def _load_mcp_config() -> Dict[str, dict]:
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated
+        try:
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+            discover_plugins()
+            portable = get_plugin_manager().get_portable_mcp_servers()
+            for name, cfg in _filter_suspicious_mcp_servers(portable).items():
+                if name in safe_servers:
+                    logger.warning(
+                        "Portable MCP server '%s' conflicts with native config; skipping",
+                        name,
+                    )
+                    continue
+                safe_servers[name] = dict(cfg)
+        except Exception:
+            logger.debug("Failed to load portable MCP servers", exc_info=True)
         return safe_servers
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
@@ -4758,10 +5632,103 @@ def _request_lazy_reconnect(server_name: str, server: MCPServerTask) -> bool:
         return False
 
 
-def _get_connected_server_for_call(server_name: str) -> Optional[MCPServerTask]:
-    """Return a connected server, lazily reconnecting recycled stdio state."""
+def _resolve_server_lazy(name: str, config: dict) -> bool:
+    """True when this server defers spawn/connect until first tool use.
+
+    Gated per-server by ``mcp_servers.<name>.lazy`` in config (default OFF),
+    following the same per-server key pattern as ``idle_timeout_seconds``.
+    Design from #56832 (Vansh5632).
+    """
+    return _parse_boolish(config.get("lazy", False), default=False)
+
+
+def _ensure_lazy_server_connected(server_name: str) -> bool:
+    """Connect a lazily-registered MCP server on demand (sync, blocks caller).
+
+    Composes with the existing connect machinery: respects the per-server
+    connect cooldown (#50394), the ``_server_connecting`` dedup set, and
+    routes through ``_discover_and_register_server`` so parked/recycle/
+    cooldown bookkeeping stays in one place. Returns True when a live
+    session is available afterwards.
+    """
     with _lock:
         server = _servers.get(server_name)
+        if server is not None and server.session is not None:
+            return True
+        config = _lazy_server_configs.get(server_name)
+        if not config:
+            return False
+        if _connect_cooldown_active(server_name):
+            return False
+        if server_name in _server_connecting:
+            return False
+        _server_connecting.add(server_name)
+        _server_connect_errors.pop(server_name, None)
+
+    logger.info("MCP server '%s': lazy start on first use", server_name)
+    _ensure_mcp_loop()
+    connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+
+    async def _connect():
+        return await _discover_and_register_server(server_name, config)
+
+    try:
+        _run_on_mcp_loop(_connect, timeout=float(connect_timeout) + 30.0)
+    except BaseException as exc:
+        message = _format_connect_error(exc)
+        with _lock:
+            _server_connecting.discard(server_name)
+            _server_connect_errors[server_name] = message
+            _record_connect_failure(server_name)
+        logger.warning(
+            "Lazy MCP connect failed for '%s': %s", server_name, message,
+        )
+        return False
+
+    with _lock:
+        _server_connecting.discard(server_name)
+        _clear_connect_failure(server_name)
+        _lazy_server_configs.pop(server_name, None)
+        stale_fingerprint = _lazy_server_fingerprints.pop(server_name, None)
+        cached_names = _lazy_server_tool_names.pop(server_name, None) or []
+        server = _servers.get(server_name)
+        live_names = set(
+            getattr(server, "_registered_tool_names", []) or []
+        )
+    # Stale-cache reconciliation: the cached manifest may advertise tools
+    # the live server no longer serves. Deregister those phantoms so the
+    # model stops seeing tools that can never succeed.
+    phantom_names = [n for n in cached_names if n not in live_names]
+    if phantom_names:
+        from tools.registry import registry
+
+        for tool_name in phantom_names:
+            registry.deregister(tool_name)
+            _forget_mcp_tool_server(tool_name)
+        logger.info(
+            "MCP server '%s': deregistered %d phantom cached tool(s) not "
+            "served live (stale schema-cache fingerprint %s): %s",
+            server_name, len(phantom_names), stale_fingerprint,
+            ", ".join(phantom_names),
+        )
+    return server is not None and server.session is not None
+
+
+def _get_connected_server_for_call(server_name: str) -> Optional[MCPServerTask]:
+    """Return a connected server, lazily reconnecting recycled stdio state.
+
+    Also the single first-use connect point for lazy (schema-cache
+    registered) servers, so raw tool calls AND the resource/prompt utility
+    handlers all trigger the deferred spawn (#56832).
+    """
+    with _lock:
+        server = _servers.get(server_name)
+        is_lazy = server_name in _lazy_server_configs
+    if is_lazy and (server is None or server.session is None):
+        _ensure_lazy_server_connected(server_name)
+        with _lock:
+            server = _servers.get(server_name)
+        return server
     if server is not None and server.session is None and server._is_recycled_stdio():
         _request_lazy_reconnect(server_name, server)
         with _lock:
@@ -4784,6 +5751,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """
 
     def _handler(args: dict, **kwargs) -> str:
+        # Trust-tier gate (security boundary): write-capable tools on
+        # servers configured ``trust: untrusted`` must be approved by the
+        # user before ANY transport work happens — including the lazy
+        # first-use spawn below. A denied call never touches the server.
+        gate_error = _trust_gate_check(server_name, tool_name)
+        if gate_error is not None:
+            return gate_error
+
         # Circuit breaker: if this server has failed too many times
         # consecutively, short-circuit with a clear message so the model
         # stops retrying and uses alternative approaches (#10447).
@@ -4861,8 +5836,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             _mark_proven = getattr(server, "_mark_session_proven", None)
             if _mark_proven is not None:
                 _mark_proven()
-            # MCP CallToolResult has .content (list of content blocks) and .isError
-            if result.isError:
+            # MCP CallToolResult has .content (list of content blocks) and
+            # .is_error (.isError before mcp 2.0)
+            if mcp_field(result, "is_error", "isError", False):
                 error_text = ""
                 for block in (result.content or []):
                     if getattr(block, "text", None):
@@ -4875,7 +5851,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     if res_text:
                         error_text += str(res_text)
                 return tool_error(_sanitize_error(
-                    error_text or "MCP tool returned an error"
+                    _truncate_mcp_text_result(
+                        error_text or "MCP tool returned an error"
+                    )
                 ))
 
             # Collect text from content blocks. MCP tool results can also
@@ -4892,7 +5870,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             parts: List[str] = []
             for block in (result.content or []):
                 if hasattr(block, "text") and block.text:
-                    parts.append(block.text)
+                    parts.append(strip_unicode_tags(block.text))
                     continue
                 image_tag = _cache_mcp_image_block(block)
                 if image_tag:
@@ -4927,18 +5905,59 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     )
             text_result = "\n".join(parts) if parts else ""
 
+            # Hard-cap pathological payloads before they propagate (#56059);
+            # ordinary large results pass untouched to the spillover layer.
+            text_result = _truncate_mcp_text_result(text_result)
+
             # Combine content + structuredContent when both are present.
             # MCP spec: content is model-oriented (text), structuredContent
             # is machine-oriented (JSON metadata).  For an AI agent, content
             # is the primary payload; structuredContent supplements it.
-            structured = getattr(result, "structuredContent", None)
+            #
+            # Server-level `_meta` is also surfaced (ported from
+            # MoonshotAI/kimi-code#2596): servers return namespaced metadata
+            # there (validated contracts, browser-handoff payloads, ...) that
+            # was previously invisible to the agent. Protocol-reserved keys
+            # are dropped first (kimi-code#2600) — per the MCP spec's key-name
+            # rules a prefix is reserved when a `modelcontextprotocol` or
+            # `mcp` label is followed by at least one more label (e.g.
+            # `modelcontextprotocol.io/...`, `tools.mcp.com/...`); those carry
+            # host/protocol plumbing, not model-facing data. Unprefixed and
+            # vendor-namespaced keys (`com.example.mcp/...`) pass through —
+            # their semantics belong to the server.
+            structured = mcp_field(result, "structured_content", "structuredContent")
+            # Cap structuredContent too — a malicious server could flood
+            # context via a multi-MB JSON payload (#56059). When the
+            # serialized form exceeds the hard cap, replace it with the
+            # truncated string (head + tail preserved) so it degrades
+            # gracefully instead of flooding downstream.
             if structured is not None:
+                try:
+                    _structured_json = json.dumps(structured, ensure_ascii=False, default=str)
+                except (TypeError, ValueError):
+                    _structured_json = None
+                if _structured_json is not None and len(_structured_json) > _MCP_HARD_RESULT_CAP_CHARS:
+                    structured = _truncate_mcp_text_result(_structured_json)
+            meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
+            if structured is not None or meta is not None:
+                payload: Dict[str, Any] = {}
                 if text_result:
-                    return json.dumps({
-                        "result": text_result,
-                        "structuredContent": structured,
-                    }, ensure_ascii=False)
-                return json.dumps({"result": structured}, ensure_ascii=False)
+                    payload["result"] = text_result
+                if structured is not None:
+                    if text_result:
+                        payload["structuredContent"] = structured
+                    else:
+                        payload["result"] = structured
+                if meta is not None:
+                    payload["_meta"] = meta
+                if "result" not in payload:
+                    payload["result"] = text_result
+                try:
+                    return json.dumps(payload, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    # Non-serializable metadata: drop the extras rather than
+                    # failing the whole tool call.
+                    return json.dumps({"result": text_result}, ensure_ascii=False)
             return json.dumps({"result": text_result}, ensure_ascii=False)
 
         def _call_once():
@@ -5014,8 +6033,11 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
                     entry["name"] = r.name
                 if hasattr(r, "description") and r.description:
                     entry["description"] = r.description
-                if hasattr(r, "mimeType") and r.mimeType:
-                    entry["mimeType"] = r.mimeType
+                # Key stays camelCase — this dict is the tool's own JSON
+                # output shape, not an SDK model.
+                _mime = mcp_field(r, "mime_type", "mimeType")
+                if _mime:
+                    entry["mimeType"] = _mime
                 resources.append(entry)
             return json.dumps({"resources": resources}, ensure_ascii=False)
 
@@ -5068,7 +6090,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             contents = result.contents if hasattr(result, "contents") else []
             for block in contents:
                 if getattr(block, "text", None) is not None:
-                    parts.append(block.text)
+                    parts.append(strip_unicode_tags(block.text))
                 elif getattr(block, "blob", None) is not None:
                     # Materialize binary resource contents into the document
                     # cache instead of discarding them (same contract as
@@ -5195,11 +6217,11 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
                 if hasattr(msg, "content"):
                     content = msg.content
                     if hasattr(content, "text"):
-                        entry["content"] = content.text
+                        entry["content"] = strip_unicode_tags(content.text)
                     elif isinstance(content, str):
-                        entry["content"] = content
+                        entry["content"] = strip_unicode_tags(content)
                     else:
-                        entry["content"] = str(content)
+                        entry["content"] = strip_unicode_tags(str(content))
                 messages.append(entry)
             resp = {"messages": messages}
             if hasattr(result, "description") and result.description:
@@ -5240,10 +6262,13 @@ def _make_check_fn(server_name: str):
     def _check() -> bool:
         with _lock:
             server = _servers.get(server_name)
-        return (
-            server is not None
-            and (server.session is not None or server._is_recycled_stdio())
-        )
+            if server is not None and (
+                server.session is not None or server._is_recycled_stdio()
+            ):
+                return True
+            # Lazy (schema-cache registered) servers are available: the
+            # first real call spawns/connects them (#56832).
+            return server_name in _lazy_server_configs
 
     return _check
 
@@ -5341,6 +6366,19 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
 
         return strip_nullable_unions(node, keep_nullable_hint=True)
 
+    def _collapse_const_unions(node):
+        """Collapse anyOf/oneOf unions of same-typed consts to property enums.
+
+        Delegates to ``tools.schema_sanitizer.collapse_const_unions``. Runs
+        AFTER the nullable strip: single-non-null unions are already collapsed
+        by then, and unions of several const branches plus a null branch are
+        handled here (consts -> enum, null -> ``nullable: true`` hint).
+        Ported from block/goose tool_schema_normalize.rs (Apache-2.0).
+        """
+        from tools.schema_sanitizer import collapse_const_unions
+
+        return collapse_const_unions(node)
+
     def _repair_object_shape(node):
         """Recursively repair object-shaped nodes: fill type, prune required."""
         if isinstance(node, list):
@@ -5381,6 +6419,7 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
 
     normalized = _rewrite_local_refs(schema)
     normalized = _strip_nullable_union(normalized)
+    normalized = _collapse_const_unions(normalized)
     normalized = _repair_object_shape(normalized)
 
     # Ensure top-level is a well-formed object schema
@@ -5430,7 +6469,7 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     Args:
         server_name: The logical server name for prefixing.
         mcp_tool:    An MCP ``Tool`` object with ``.name``, ``.description``,
-                     and ``.inputSchema``.
+                     and ``.input_schema`` (``.inputSchema`` before mcp 2.0).
 
     Returns:
         A dict suitable for ``registry.register(schema=...)``.
@@ -5438,8 +6477,12 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     prefixed_name = mcp_prefixed_tool_name(server_name, mcp_tool.name)
     return {
         "name": prefixed_name,
-        "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
-        "parameters": _normalize_mcp_input_schema(getattr(mcp_tool, "inputSchema", None)),
+        "description": strip_unicode_tags(
+            mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"
+        ),
+        "parameters": _normalize_mcp_input_schema(
+            mcp_field(mcp_tool, "input_schema", "inputSchema")
+        ),
     }
 
 
@@ -5692,6 +6735,16 @@ def _existing_tool_names() -> List[str]:
         for mcp_tool in server._tools:
             schema = _convert_mcp_schema(server.name, mcp_tool)
             names.append(schema["name"])
+    # Lazy servers registered from the schema cache have no MCPServerTask
+    # yet — their tools live in the registry only (#56832).
+    with _lock:
+        lazy_names = [
+            n
+            for sname, tool_names in _lazy_server_tool_names.items()
+            if sname not in _servers
+            for n in tool_names
+        ]
+    names.extend(lazy_names)
     return names
 
 
@@ -5741,6 +6794,12 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
     check_fn = _make_check_fn(name)
     candidates: List[dict] = []
+
+    # Trust-tier metadata (security boundary): capture the server's
+    # configured trust tier and each tool's readOnlyHint annotation NOW,
+    # at discovery, so the call-time gate in _make_tool_handler classifies
+    # from data we control rather than re-reading server-supplied state.
+    _record_tool_trust_metadata(name, config, server._tools)
 
     for mcp_tool in server._tools:
         if not _should_register(mcp_tool.name):
@@ -5810,11 +6869,41 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             candidate["origin"]
         )
 
-    ambiguous_names = {
-        registry_name: sorted(origins)
-        for registry_name, origins in origins_by_name.items()
-        if len(origins) > 1
-    }
+    # A generated resource/prompt utility that normalizes onto a server-native
+    # tool's name must not knock that native tool out of the registry: the
+    # native tool is the capability the user connected the server for, while the
+    # generated utility (read_resource/list_resources/list_prompts/get_prompt)
+    # is optional sugar that only matters when the server exposes no such tool
+    # of its own (#87112). Resolve that specific collision in favour of the
+    # native tool — keep it, drop the shadowed utility — and fall back to the
+    # conservative skip-everything only for genuinely ambiguous collisions (two
+    # or more native tools normalizing to one name, which we cannot
+    # disambiguate). The four utility keys are distinct, so a colliding set
+    # holds at most one utility origin.
+    ambiguous_names: Dict[str, List[str]] = {}
+    shadowed_utilities: set[tuple[str, str]] = set()
+    for registry_name, origins in origins_by_name.items():
+        if len(origins) <= 1:
+            continue
+        utility_origins = sorted(
+            o for o in origins if o.startswith("generated utility ")
+        )
+        native_origins = sorted(origins - set(utility_origins))
+        if len(native_origins) == 1 and utility_origins:
+            for util_origin in utility_origins:
+                shadowed_utilities.add((registry_name, util_origin))
+            logger.info(
+                "MCP server '%s': generated utility %s normalizes onto "
+                "server-native %s — keeping the native tool and dropping the "
+                "utility (the utility only applies when the server has no such "
+                "tool of its own)",
+                name,
+                ", ".join(utility_origins),
+                native_origins[0],
+            )
+            continue
+        ambiguous_names[registry_name] = sorted(origins)
+
     for registry_name, origins in sorted(ambiguous_names.items()):
         logger.error(
             "MCP server '%s': name normalization collision for '%s' from %s; "
@@ -5828,6 +6917,8 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     for candidate in unique_candidates:
         registry_name = candidate["registry_name"]
         if registry_name in ambiguous_names:
+            continue
+        if (registry_name, candidate["origin"]) in shadowed_utilities:
             continue
 
         existing_toolset = registry.get_toolset_for_tool(registry_name)
@@ -5879,7 +6970,189 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
     if registered_names:
         registry.register_toolset_alias(name, toolset_name)
+        # Write-through (#56832): refresh the on-disk schema cache after a
+        # live connect so the next startup can lazily register this server
+        # without spawning it. Cache failures never break registration.
+        try:
+            from tools.mcp_schema_cache import config_fingerprint, write_cache_entry
 
+            tools_payload: List[dict] = []
+            for mcp_tool in server._tools:
+                if not _should_register(mcp_tool.name):
+                    continue
+                schema_obj = getattr(mcp_tool, "inputSchema", None)
+                tools_payload.append({
+                    "name": mcp_tool.name,
+                    "description": mcp_tool.description or "",
+                    "inputSchema": schema_obj if isinstance(schema_obj, dict) else {},
+                    # Persist the trust-relevant annotation so the lazy
+                    # (cache-registered) path gates identically on next
+                    # startup without spawning the server.
+                    "annotations": {
+                        "readOnlyHint": _annotation_read_only_hint(mcp_tool),
+                    },
+                })
+            utility_payload = [
+                {"schema": entry["schema"], "handler_key": entry["handler_key"]}
+                for entry in _select_utility_schemas(name, server, config)
+            ]
+            write_cache_entry(
+                name,
+                config_fingerprint(config),
+                tools=tools_payload,
+                utility_tools=utility_payload,
+                ttl_ms=(getattr(server, "_list_cache_meta", None) or {}).get("ttl_ms"),
+                cache_scope=(getattr(server, "_list_cache_meta", None) or {}).get("cache_scope"),
+            )
+        except Exception as exc:
+            logger.debug("MCP schema cache write failed for '%s': %s", name, exc)
+
+    return registered_names
+
+
+class _CachedMCPTool:
+    """Minimal stand-in for MCP Tool objects loaded from the schema cache."""
+
+    __slots__ = ("name", "description", "inputSchema")
+
+    def __init__(self, name: str, description: str, inputSchema: dict):
+        self.name = name
+        self.description = description
+        self.inputSchema = inputSchema or {}
+
+
+def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]:
+    """Register a server's tools from a cached manifest, no child process.
+
+    Lazy startup (#56832, design by Vansh5632): tools appear in the registry
+    immediately; the first real call routes through
+    ``_get_connected_server_for_call`` → ``_ensure_lazy_server_connected``.
+    """
+    from tools.registry import registry
+    from tools.mcp_schema_cache import (
+        config_fingerprint,
+        tools_from_cache_entry,
+        utility_tools_from_cache_entry,
+    )
+
+    registered_names: List[str] = []
+    toolset_name = f"mcp-{name}"
+    fingerprint = config_fingerprint(config)
+    tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
+    tools_filter = config.get("tools") or {}
+    include_set = _normalize_name_filter(
+        tools_filter.get("include"), f"mcp_servers.{name}.tools.include"
+    )
+    exclude_set = _normalize_name_filter(
+        tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude"
+    )
+
+    def _should_register(tool_name: str) -> bool:
+        if include_set:
+            return matches_name_filter(tool_name, include_set)
+        if exclude_set:
+            return not matches_name_filter(tool_name, exclude_set)
+        return True
+
+    check_fn = _make_check_fn(name)
+    # Trust-tier metadata for the lazy path: the cached manifest carries
+    # each tool's readOnlyHint (written by the live discovery path), and
+    # trust comes from operator config. Recording it before registration
+    # keeps the call-time gate identical whether the server was spawned
+    # live or registered from cache. Missing "annotations" in older cache
+    # files fails closed to write-capable.
+    cached_tool_objs = [
+        SimpleNamespace(
+            name=raw.get("name"),
+            annotations=raw.get("annotations")
+            if isinstance(raw.get("annotations"), dict) else None,
+        )
+        for raw in tools_from_cache_entry(entry)
+        if isinstance(raw, dict) and raw.get("name")
+    ]
+    _record_tool_trust_metadata(name, config, cached_tool_objs)
+    for raw in tools_from_cache_entry(entry):
+        if not isinstance(raw, dict):
+            continue
+        raw_name = raw.get("name")
+        if not raw_name or not _should_register(raw_name):
+            continue
+        raw_schema = raw.get("inputSchema")
+        mcp_tool = _CachedMCPTool(
+            raw_name,
+            raw.get("description") or "",
+            raw_schema if isinstance(raw_schema, dict) else {},
+        )
+        # Defense-in-depth: the cache file is user-writable JSON, so run the
+        # same injection scan the eager discovery path applies.
+        _scan_mcp_description(name, mcp_tool.name, mcp_tool.description or "")
+        schema = _convert_mcp_schema(name, mcp_tool)
+        registry_name = schema["name"]
+        existing_toolset = registry.get_toolset_for_tool(registry_name)
+        if existing_toolset and existing_toolset != toolset_name:
+            logger.warning(
+                "MCP server '%s' (lazy): cached tool '%s' collides with "
+                "toolset '%s' — skipping",
+                name, registry_name, existing_toolset,
+            )
+            continue
+        registry.register(
+            name=registry_name,
+            toolset=toolset_name,
+            schema=schema,
+            handler=_make_tool_handler(name, raw_name, tool_timeout),
+            check_fn=check_fn,
+            is_async=False,
+            description=schema["description"],
+        )
+        if registry.get_toolset_for_tool(registry_name) != toolset_name:
+            continue
+        _track_mcp_tool_server(registry_name, name)
+        registered_names.append(registry_name)
+
+    handler_factories = {
+        "list_resources": _make_list_resources_handler,
+        "read_resource": _make_read_resource_handler,
+        "list_prompts": _make_list_prompts_handler,
+        "get_prompt": _make_get_prompt_handler,
+    }
+    for raw in utility_tools_from_cache_entry(entry):
+        if not isinstance(raw, dict):
+            continue
+        schema = raw.get("schema")
+        handler_key = raw.get("handler_key")
+        if not isinstance(schema, dict) or handler_key not in handler_factories:
+            continue
+        util_name = schema.get("name") or ""
+        if not util_name:
+            continue
+        existing_toolset = registry.get_toolset_for_tool(util_name)
+        if existing_toolset and existing_toolset != toolset_name:
+            continue
+        registry.register(
+            name=util_name,
+            toolset=toolset_name,
+            schema=schema,
+            handler=handler_factories[handler_key](name, tool_timeout),
+            check_fn=check_fn,
+            is_async=False,
+            description=schema.get("description") or "",
+        )
+        if registry.get_toolset_for_tool(util_name) != toolset_name:
+            continue
+        _track_mcp_tool_server(util_name, name)
+        registered_names.append(util_name)
+
+    if registered_names:
+        registry.register_toolset_alias(name, toolset_name)
+        with _lock:
+            _lazy_server_configs[name] = dict(config)
+            _lazy_server_fingerprints[name] = fingerprint
+            _lazy_server_tool_names[name] = list(registered_names)
+        logger.info(
+            "MCP server '%s' (lazy): registered %d tool(s) from schema cache",
+            name, len(registered_names),
+        )
     return registered_names
 
 async def _discover_and_register_server(name: str, config: dict) -> List[str]:
@@ -5960,7 +7233,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     Returns:
         List of all currently registered MCP tool names.
     """
-    if not _MCP_AVAILABLE:
+    if not _ensure_mcp_sdk():
         logger.debug("MCP SDK not available -- skipping explicit MCP registration")
         return []
 
@@ -5980,6 +7253,9 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             for k, v in servers.items()
             if k not in _servers
             and k not in connecting
+            # Servers already lazily registered from the schema cache are
+            # not re-registered; they connect on first tool use (#56832).
+            and k not in _lazy_server_configs
             and _parse_boolish(v.get("enabled", True), default=True)
             # Skip a server still serving its post-failure backoff. Without
             # this, a server that fails to connect (and is therefore never
@@ -6013,6 +7289,51 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         _signal_reconnect(srv)
 
     if not new_servers:
+        return _existing_tool_names()
+
+    # Lazy startup (#56832): servers gated with ``lazy: true`` whose config
+    # fingerprint matches a valid on-disk schema-cache entry register their
+    # tools from cache WITHOUT spawning/connecting. A missing or stale cache
+    # entry falls back to the normal eager connect below (which write-through
+    # refreshes the cache for next time).
+    eager_servers: Dict[str, dict] = dict(new_servers)
+    lazy_registered = 0
+    lazy_server_count = 0
+    try:
+        from tools.mcp_schema_cache import config_fingerprint, get_cached_entry
+    except Exception:  # pragma: no cover - cache module missing
+        config_fingerprint = None  # type: ignore[assignment]
+        get_cached_entry = None  # type: ignore[assignment]
+    if config_fingerprint is not None and get_cached_entry is not None:
+        for name, cfg in new_servers.items():
+            if not _resolve_server_lazy(name, cfg):
+                continue
+            entry = get_cached_entry(name, config_fingerprint(cfg))
+            if not entry:
+                continue
+            with _lock:
+                _server_connecting.discard(name)
+            try:
+                names = _register_from_cache_sync(name, cfg, entry)
+            except Exception as exc:
+                logger.warning(
+                    "Failed lazy MCP registration for '%s': %s", name, exc,
+                )
+                with _lock:
+                    _server_connecting.add(name)
+                continue
+            eager_servers.pop(name, None)
+            lazy_registered += len(names)
+            lazy_server_count += 1
+    new_servers = eager_servers
+
+    if not new_servers:
+        if lazy_registered:
+            logger.info(
+                "MCP: registered %d lazy tool(s) from schema cache "
+                "(no processes spawned)",
+                lazy_registered,
+            )
         return _existing_tool_names()
 
     # Start the background event loop for MCP connections
@@ -6103,8 +7424,10 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             for n in connected
         )
     failed = len(new_servers) - len(connected)
+    new_tool_count += lazy_registered
+    connected_count = len(connected) + lazy_server_count
     if new_tool_count or failed:
-        summary = f"MCP: registered {new_tool_count} tool(s) from {len(connected)} server(s)"
+        summary = f"MCP: registered {new_tool_count} tool(s) from {connected_count} server(s)"
         if failed:
             summary += f" ({failed} failed)"
         logger.info(summary)
@@ -6124,13 +7447,15 @@ def discover_mcp_tools() -> List[str]:
     Returns:
         List of all registered MCP tool names.
     """
-    if not _MCP_AVAILABLE:
-        logger.debug("MCP SDK not available -- skipping MCP tool discovery")
-        return []
-
     servers = _load_mcp_config()
     if not servers:
         logger.debug("No MCP servers configured")
+        return []
+
+    # SDK import is deferred to HERE so a config with zero MCP servers (the
+    # default) never pays the ~260ms `mcp` import on CLI startup.
+    if not _ensure_mcp_sdk():
+        logger.debug("MCP SDK not available -- skipping MCP tool discovery")
         return []
 
     # Cross-process discovery guard (#62771). A lock loser waits for
@@ -6305,7 +7630,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
         Dict mapping server name to list of (tool_name, description) tuples.
         Servers that fail to connect are omitted from the result.
     """
-    if not _MCP_AVAILABLE:
+    if not _ensure_mcp_sdk():
         return {}
 
     servers_config = _load_mcp_config()

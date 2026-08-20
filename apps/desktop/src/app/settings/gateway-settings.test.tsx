@@ -1,16 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { atom } from 'nanostores'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ProfileInfo } from '@/types/hermes'
-
 const getConnectionConfig = vi.fn()
-const profiles = atom<ProfileInfo[]>([])
-
-vi.mock('@/store/profile', () => ({
-  $profiles: profiles,
-  refreshActiveProfile: vi.fn()
-}))
+const saveConnectionConfig = vi.fn()
 
 const localConnection = {
   cloudOrg: '',
@@ -24,30 +16,11 @@ const localConnection = {
 }
 
 beforeEach(() => {
-  profiles.set([
-    {
-      has_env: false,
-      is_default: true,
-      model: null,
-      name: 'default',
-      path: '/tmp/hermes',
-      provider: null,
-      skill_count: 0
-    },
-    {
-      has_env: false,
-      is_default: false,
-      model: null,
-      name: 'work',
-      path: '/tmp/hermes/profiles/work',
-      provider: null,
-      skill_count: 0
-    }
-  ])
   getConnectionConfig.mockResolvedValue(localConnection)
+  saveConnectionConfig.mockResolvedValue(localConnection)
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: { getConnectionConfig }
+    value: { getConnectionConfig, saveConnectionConfig }
   })
 })
 
@@ -57,7 +30,7 @@ afterEach(() => {
 })
 
 describe('GatewaySettings', () => {
-  it('labels local mode as default inheritance for a named profile', async () => {
+  it('loads the machine-level connection config (no profile scoping)', async () => {
     const { GatewaySettings } = await import('./gateway-settings')
 
     render(<GatewaySettings />)
@@ -66,13 +39,14 @@ describe('GatewaySettings', () => {
       screen.getByText('Start a private Hermes backend on localhost. This is the default and works offline.')
     ).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: 'work' }))
+    // The page manages the machine's gateway connections; it must load the
+    // global config, never a per-profile override.
+    await waitFor(() => expect(getConnectionConfig).toHaveBeenCalledWith(null))
+    expect(getConnectionConfig).not.toHaveBeenCalledWith(expect.any(String))
 
-    await waitFor(() => expect(getConnectionConfig).toHaveBeenLastCalledWith('work'))
-    expect(await screen.findByText('Use default gateway')).toBeTruthy()
-    expect(screen.getByText("Remove this profile's override and use the default connection.")).toBeTruthy()
-    expect(
-      screen.queryByText('Start a private Hermes backend on localhost. This is the default and works offline.')
-    ).toBeNull()
+    // The legacy per-profile scope switcher must not render.
+    expect(screen.queryByText('Applies to')).toBeNull()
+    expect(screen.queryByText('All profiles')).toBeNull()
+    expect(screen.queryByText('Use default gateway')).toBeNull()
   })
 })

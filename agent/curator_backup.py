@@ -50,6 +50,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
 from agent.skill_utils import is_excluded_skill_path
+from hermes_cli.sizefmt import format_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -609,12 +610,19 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
         # Protect the target from this snapshot's prune step: at the steady
         # keep limit, pruning the oldest snapshot would otherwise delete the
         # very snapshot we are about to extract from.
-        snapshot_skills(
+        safety_snapshot = snapshot_skills(
             reason=f"pre-rollback to {target.name}",
             protect_ids={target.name},
         )
     except Exception as e:
         return (False, f"pre-rollback safety snapshot failed: {e}", None)
+    if safety_snapshot is None:
+        return (
+            False,
+            "pre-rollback safety snapshot failed; backups may be disabled "
+            "or unavailable, and current skills were not changed",
+            None,
+        )
 
     # Additionally move current entries into an internal staging dir so
     # the extract happens into an empty skills tree (predictable result).
@@ -733,13 +741,6 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
 # Human-readable summary for CLI
 # ---------------------------------------------------------------------------
 
-def format_size(n: int) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024 or unit == "GB":
-            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
-        n /= 1024
-    return f"{n:.1f} GB"
-
 
 def summarize_backups() -> str:
     rows = list_backups()
@@ -752,6 +753,6 @@ def summarize_backups() -> str:
             f"{r.get('id','?'):<24}  "
             f"{(r.get('reason','?') or '?')[:40]:<40}  "
             f"{r.get('skill_files', 0):>6}  "
-            f"{format_size(int(r.get('archive_bytes', 0))):>8}"
+            f"{format_bytes(int(r.get('archive_bytes', 0))):>8}"
         )
     return "\n".join(lines)

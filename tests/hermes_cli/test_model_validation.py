@@ -269,6 +269,9 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-go", "kimi-k2.7-code") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "glm-5.2") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "minimax-m3") == "anthropic_messages"
+        # GPT models on Go are Responses-only (Go endpoint table).
+        assert opencode_model_api_mode("opencode-go", "gpt-5.6-luna") == "codex_responses"
+        assert opencode_model_api_mode("opencode-go", "opencode-go/gpt-5.6-luna") == "codex_responses"
 
 
 class TestNormalizeOpencodeBaseUrl:

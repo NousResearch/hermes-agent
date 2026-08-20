@@ -151,6 +151,124 @@ class TestCleanStreamEndMidToolCall:
 
 
 
+# ── Clean stream-end before any argument byte arrives (#80498) ─────────────
+
+class TestCleanStreamEndBeforeAnyToolArgs:
+    """The upstream closes the SSE stream cleanly right after delivering the
+    tool NAME — not a single byte of the arguments delta ever arrived, no
+    exception, no finish_reason, no [DONE].
+
+    Before the fix, an empty ``arguments`` string skipped the
+    truncated-JSON check entirely (it only ran when ``arguments and
+    arguments.strip()``), so ``has_truncated_tool_args`` stayed False. With
+    no other guard catching this shape, the stub-builder fell through to
+    ``effective_finish_reason = finish_reason or "stop"`` and returned a
+    normal "stop" turn carrying a tool call with ``arguments=""`` — which
+    the dispatch boundary silently coerces to "{}" and executes with no
+    retry (#80498, e.g. ``write_file`` running with no arguments).
+    """
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_empty_tool_args_routes_to_stub_not_silent_empty_object(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        def _clean_ending_stream():
+            # Tool name arrives, then the generator simply RETURNS
+            # (StopIteration) before any arguments delta chunk — no raise,
+            # no finish_reason chunk, no [DONE].
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_x", name="write_file"),
+            ])
+            # falls off the end — clean close, no terminator, zero args bytes
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _clean_ending_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_stream_delta = lambda text: None
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID, (
+            "A tool call whose arguments never started streaming before a "
+            "clean stream end must be tagged as a partial-stream stub, not "
+            "silently returned as a completed 'stop' turn with empty "
+            "arguments (#80498)."
+        )
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+        assert response.choices[0].message.tool_calls is None, (
+            "A tool call with zero argument bytes delivered must never "
+            "auto-execute with a silently substituted empty object."
+        )
+        assert getattr(response, "_dropped_tool_names", None) == ["write_file"]
+
+
+# ── Mixed response: one complete call, one dropped (#80498) ─────────────────
+
+class TestMixedToolCallsOneDroppedOneComplete:
+    """A single response can carry more than one tool call in parallel. If
+    the stream dies before one call's arguments ever start while a sibling
+    call in the SAME response already completed with valid, parseable
+    arguments, the whole response is still discarded as one partial-stream
+    stub — ``_build_partial_stream_stub`` unconditionally sets
+    ``tool_calls=None``, so the valid sibling is not selectively kept.
+
+    This all-or-nothing behavior predates #80498 (it already applied to the
+    partial-but-nonempty-JSON case); this test just locks it in now that the
+    zero-byte case routes through the same stub path, so a future change
+    towards per-tool-call granularity doesn't silently regress either case.
+    """
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_valid_sibling_tool_call_is_discarded_with_dropped_one(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        def _clean_ending_stream():
+            # Tool call 0: complete, valid JSON arguments.
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_ok", name="read_file"),
+            ])
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"path": "a.txt"}'),
+            ])
+            # Tool call 1: name arrives, then the stream dies before a
+            # single argument byte — the #80498 zero-byte case.
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=1, tc_id="call_x", name="write_file"),
+            ])
+            # falls off the end — clean close, no terminator
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _clean_ending_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_stream_delta = lambda text: None
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+        assert response.choices[0].message.tool_calls is None, (
+            "The valid 'read_file' call must not be selectively kept — the "
+            "whole response is discarded as one stub so the retry "
+            "regenerates every call in it together."
+        )
+        assert getattr(response, "_dropped_tool_names", None) == [
+            "read_file", "write_file",
+        ], (
+            "_dropped_tool_names lists every tool call in the response, "
+            "not just the one that actually failed to complete."
+        )
+
+
 # ── Length-continuation prompt branching ──────────────────────────────────
 
 class TestLengthContinuationPromptBranching:
@@ -490,6 +608,7 @@ class TestBuildAssistantMessageEmptyContentPad:
             "Builder must store textless turns as-is — wire repair is owned "
             "by repair_empty_non_final_messages at the send boundary."
         )
+        assert isinstance(msg["timestamp"], float)
 
 
     def test_tool_call_turn_content_left_empty(self):
@@ -504,6 +623,7 @@ class TestBuildAssistantMessageEmptyContentPad:
         )
         assert msg["content"] == ""
         assert msg["tool_calls"]
+        assert isinstance(msg["timestamp"], float)
 
     def test_non_empty_content_unchanged(self):
         from agent.chat_completion_helpers import build_assistant_message
@@ -512,6 +632,7 @@ class TestBuildAssistantMessageEmptyContentPad:
         agent = self._agent_for_builder()
         msg = build_assistant_message(agent, _mock_assistant_msg(content="hi"), "stop")
         assert msg["content"] == "hi"
+        assert isinstance(msg["timestamp"], float)
 
 
 class TestSendTimeEmptyAssistantPad:

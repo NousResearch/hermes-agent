@@ -16,6 +16,8 @@ from typing import Dict, Optional
 from hermes_constants import get_hermes_home
 from hermes_state_common import (
     DEFERRED_INDEX_SQL,
+    FTS_CJK_STALE_KEY,
+    FTS_STALE_KEY,
     FTS_SQL,
     FTS_STORAGE_VERSION,
     FTS_TRIGRAM_SQL,
@@ -23,6 +25,7 @@ from hermes_state_common import (
     LEGACY_FTS_TRIGRAM_SQL,
     SCHEMA_SQL,
     SCHEMA_VERSION,
+    _FTS_CJK_TRIGGERS,
     _FTS_TRIGGERS,
     _ephemeral_child_sql,
 )
@@ -31,9 +34,97 @@ from hermes_state_common import (
 # keep that logger identity so log filtering/capture behavior is unchanged.
 logger = logging.getLogger("hermes_state")
 
+# Cache for schema_read_probe_statements() — parsing SCHEMA_SQL spins up an
+# in-memory SQLite database, so derive the statements once per process.
+_READ_PROBE_STATEMENTS: Optional[tuple] = None
+
+
+def schema_read_probe_statements() -> tuple:
+    """SELECT statements that fail iff a live store is behind SCHEMA_SQL.
+
+    Read-only opens skip ``_reconcile_columns()`` by design (no DDL against
+    another profile's live DB), so a store created before a schema addition
+    keeps 500ing on read paths until something opens it writable. Callers
+    that heal on staleness (see ``_open_session_db_at_path`` in
+    ``hermes_cli/web_server.py``) run these probes right after a read-only
+    open: any missing table raises "no such table" and any missing column
+    raises "no such column", both at prepare time.
+
+    Derived from SCHEMA_SQL — the same source of truth the writable
+    reconciler diffs against — so a column added there is covered here
+    automatically. A hand-maintained probe list went stale within days of
+    shipping (it never learned ``sessions.last_activity_at``, so the sidebar
+    served an empty session list after `hermes update` until the user's
+    first message forced a writable open).
+
+    Each statement is ``LIMIT 0``: column resolution happens at prepare
+    time, so the probe reads zero rows. Column references are qualified
+    with the table name — an unqualified double-quoted identifier that
+    fails to resolve silently degrades to a string literal (SQLite's
+    double-quoted-string misfeature), which would make the probe pass on
+    exactly the stale store it exists to catch.
+    """
+    global _READ_PROBE_STATEMENTS
+    if _READ_PROBE_STATEMENTS is None:
+        tables = SessionSchemaMixin._parse_schema_columns(SCHEMA_SQL)
+        _READ_PROBE_STATEMENTS = tuple(
+            'SELECT {} FROM "{}" LIMIT 0'.format(
+                ", ".join(
+                    '"{}"."{}"'.format(
+                        table.replace('"', '""'), col.replace('"', '""')
+                    )
+                    for col in cols
+                ),
+                table.replace('"', '""'),
+            )
+            for table, cols in sorted(tables.items())
+        )
+    return _READ_PROBE_STATEMENTS
+
 
 class SessionSchemaMixin:
     """See module docstring — mixin for SessionDB (Schema cluster)."""
+
+    def _dedupe_legacy_system_prompts(self, cursor: sqlite3.Cursor) -> None:
+        """Move inline prompt snapshots into the shared content-addressed table.
+
+        Contention-safe by design: a ``database is locked`` (or any other
+        ``OperationalError``) mid-loop returns instead of raising. Partial
+        migration is safe — the legacy ``system_prompt`` column is kept as a
+        read fallback for unmigrated rows, and the next schema init picks up
+        the remainder. Letting the error propagate aborted schema init
+        entirely, left the version below 25, and made every subsequent
+        ``SessionDB.__init__`` re-enter this migration against the same
+        contended DB (enterprise field report, 2026-08-14: gateway watchdog
+        crash loop).
+        """
+        try:
+            rows = cursor.execute(
+                "SELECT id, system_prompt FROM sessions "
+                "WHERE system_prompt IS NOT NULL"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return
+
+        for row in rows:
+            session_id = row["id"] if isinstance(row, sqlite3.Row) else row[0]
+            prompt = row["system_prompt"] if isinstance(row, sqlite3.Row) else row[1]
+            try:
+                prompt_hash = self._store_system_prompt(cursor, prompt)
+                cursor.execute(
+                    "UPDATE sessions "
+                    "SET system_prompt_hash = ?, system_prompt = NULL "
+                    "WHERE id = ?",
+                    (prompt_hash, session_id),
+                )
+            except sqlite3.OperationalError as exc:
+                logger.warning(
+                    "v25 prompt dedupe paused after contention (%s); "
+                    "unmigrated rows keep the legacy inline prompt and the "
+                    "next schema init resumes the migration.",
+                    exc,
+                )
+                return
 
     def _sqlite_supports_fts5(self, cursor: sqlite3.Cursor) -> bool:
         try:
@@ -46,6 +137,14 @@ class SessionSchemaMixin:
             self._warn_fts5_unavailable(exc)
             return False
 
+    def _drop_all_fts_triggers(self, cursor: sqlite3.Cursor) -> None:
+        self._drop_fts_triggers(cursor)
+        for trigger in _FTS_CJK_TRIGGERS:
+            try:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            except sqlite3.OperationalError:
+                pass
+
     @staticmethod
     def _fts_trigger_count(cursor: sqlite3.Cursor) -> int:
         placeholders = ",".join("?" for _ in _FTS_TRIGGERS)
@@ -55,6 +154,143 @@ class SessionSchemaMixin:
             _FTS_TRIGGERS,
         ).fetchone()
         return int(row[0] if not isinstance(row, sqlite3.Row) else row[0])
+
+
+    @staticmethod
+    def _fts_update_trigger_needs_narrowing(sql: Optional[str]) -> bool:
+        """True when trigger SQL is missing AFTER UPDATE OF (still broad)."""
+        if not sql:
+            return False
+        # Collapse whitespace so multi-line DDL still matches.
+        compact = " ".join(sql.split()).upper()
+        # Already narrowed.
+        if "AFTER UPDATE OF " in compact:
+            return False
+        # Broad UPDATE trigger that we still need to replace.
+        return "AFTER UPDATE ON " in compact
+
+    def _migrate_broad_fts_update_triggers(self, cursor: sqlite3.Cursor) -> int:
+        """Replace broad AFTER UPDATE FTS triggers with AFTER UPDATE OF variants.
+
+        ``CREATE TRIGGER IF NOT EXISTS`` will not replace an existing broad
+        trigger, so installs that already created ``AFTER UPDATE ON messages``
+        would keep firing on every messages row touch (status/compaction
+        writes included). Inspect ``sqlite_master``, drop any still-broad
+        UPDATE triggers, and re-apply the current DDL constants.
+
+        No FTS rebuild: content correctness was already gated by WHEN clauses
+        on modern installs; OF only skips unnecessary trigger evaluation.
+
+        Returns the number of triggers dropped (0 when already converged).
+        """
+        # CJK is a v23-only surface.  Decide the layout before selecting
+        # destructive candidates so the legacy branch never drops a trigger
+        # it does not recreate.
+        legacy_layout = self._db_has_legacy_inline_fts(cursor)
+        update_names = (
+            "messages_fts_update",
+            "messages_fts_trigram_update",
+        )
+        if not legacy_layout and hasattr(self, "_ensure_fts_cjk_schema"):
+            update_names += ("messages_fts_cjk_update",)
+        placeholders = ", ".join("?" for _ in update_names)
+        rows = cursor.execute(
+            "SELECT name, sql FROM sqlite_master "
+            f"WHERE type = 'trigger' AND name IN ({placeholders})",
+            update_names,
+        ).fetchall()
+        to_drop = []
+        for row in rows:
+            name = row[0] if not isinstance(row, sqlite3.Row) else row["name"]
+            sql = row[1] if not isinstance(row, sqlite3.Row) else row["sql"]
+            if self._fts_update_trigger_needs_narrowing(sql):
+                to_drop.append(name)
+        if not to_drop:
+            return 0
+
+        for name in to_drop:
+            # Names are drawn from the update_names literal allowlist above —
+            # never user input — so the identifier is interpolation-safe.
+            cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
+
+        # Re-apply current DDL so CREATE TRIGGER installs the OF variants.
+        # Choose legacy vs v23 the same way _init_schema does.
+        if legacy_layout:
+            self._ensure_fts_schema(cursor, "messages_fts", LEGACY_FTS_SQL)
+            self._ensure_fts_schema(
+                cursor, "messages_fts_trigram", LEGACY_FTS_TRIGRAM_SQL
+            )
+        else:
+            self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
+            self._ensure_fts_schema(
+                cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+            )
+            # CJK triggers live on the host SessionDB; only recreate one that
+            # this migration actually dropped. ``_ensure_fts_cjk_schema`` is
+            # documented never-raises and soft-fails OperationalError by
+            # clearing availability — raise-path handling alone is not
+            # enough. After ensure, require a narrowed CJK UPDATE trigger or
+            # durable quarantine (stale breadcrumb + unavailable).
+            if "messages_fts_cjk_update" in to_drop:
+                try:
+                    self._ensure_fts_cjk_schema(cursor)
+                except Exception:
+                    self._quarantine_cjk_after_update_of_migration(cursor)
+                    logger.exception(
+                        "CJK FTS re-ensure after UPDATE OF migration failed"
+                    )
+                    raise
+                if not self._cjk_update_trigger_is_narrowed(cursor):
+                    self._quarantine_cjk_after_update_of_migration(cursor)
+                    logger.warning(
+                        "CJK FTS UPDATE trigger missing or still broad after "
+                        "UPDATE OF migration; marked stale and unavailable"
+                    )
+
+        logger.info(
+            "Migrated %d broad FTS UPDATE trigger(s) to AFTER UPDATE OF "
+            "(no rebuild required)",
+            len(to_drop),
+        )
+        return len(to_drop)
+
+    def _cjk_update_trigger_is_narrowed(self, cursor: sqlite3.Cursor) -> bool:
+        """True when messages_fts_cjk_update exists with AFTER UPDATE OF."""
+        row = cursor.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'trigger' AND name = ?",
+            ("messages_fts_cjk_update",),
+        ).fetchone()
+        if not row:
+            return False
+        sql = row[0] if not isinstance(row, sqlite3.Row) else row["sql"]
+        return not self._fts_update_trigger_needs_narrowing(sql)
+
+    def _quarantine_cjk_after_update_of_migration(
+        self, cursor: sqlite3.Cursor
+    ) -> None:
+        """Fail-closed after dropping CJK UPDATE during OF migration.
+
+        Clears availability, persists ``fts_cjk_stale``, and drops any
+        residual broad/partial CJK UPDATE trigger so a later open cannot
+        ``CREATE TRIGGER IF NOT EXISTS`` a gap without rebuild.
+        """
+        self._fts_cjk_available = False
+        try:
+            self.set_meta(FTS_CJK_STALE_KEY, "1", cursor=cursor)
+        except Exception:
+            logger.debug(
+                "Could not persist CJK FTS stale breadcrumb",
+                exc_info=True,
+            )
+        try:
+            cursor.execute("DROP TRIGGER IF EXISTS messages_fts_cjk_update")
+        except Exception:
+            logger.debug(
+                "Could not drop residual CJK UPDATE trigger after quarantine",
+                exc_info=True,
+            )
+
 
     @staticmethod
     def _rebuild_fts_indexes(
@@ -130,6 +366,99 @@ class SessionSchemaMixin:
                 return False
             raise
 
+    def _recover_stale_fts(self, cursor: sqlite3.Cursor, *, legacy: bool) -> bool:
+        """Atomically rebuild stale base/trigram indexes and resume syncing."""
+        try:
+            trigram_status = self._fts_table_probe(cursor, "messages_fts_trigram")
+        except sqlite3.DatabaseError:
+            # A corrupt vtable may fail even a LIMIT 0 probe. It still needs
+            # to be included in the drop-and-recreate recovery below.
+            trigram_status = True
+        include_trigram = trigram_status is True
+
+        drop_sql = "".join(
+            f"DROP TRIGGER IF EXISTS {trigger};" for trigger in _FTS_TRIGGERS
+        )
+        if include_trigram:
+            drop_sql += "DROP TABLE IF EXISTS messages_fts_trigram;"
+        drop_sql += "DROP VIEW IF EXISTS messages_fts_trigram_src;"
+        drop_sql += "DROP TABLE IF EXISTS messages_fts;"
+
+        if legacy:
+            schema_sql = LEGACY_FTS_SQL
+            if include_trigram:
+                schema_sql += LEGACY_FTS_TRIGRAM_SQL
+            rebuild_sql = schema_sql + """
+                INSERT INTO messages_fts(rowid, content)
+                SELECT id,
+                       COALESCE(content, '') || ' ' ||
+                       COALESCE(tool_name, '') || ' ' ||
+                       COALESCE(tool_calls, '')
+                FROM messages;
+            """
+            if include_trigram:
+                rebuild_sql += """
+                    DELETE FROM messages_fts_trigram;
+                    INSERT INTO messages_fts_trigram(rowid, content)
+                    SELECT id,
+                           COALESCE(content, '') || ' ' ||
+                           COALESCE(tool_name, '') || ' ' ||
+                           COALESCE(tool_calls, '')
+                    FROM messages;
+                """
+        else:
+            schema_sql = FTS_SQL
+            if include_trigram:
+                schema_sql += FTS_TRIGRAM_SQL
+            rebuild_sql = schema_sql + (
+                "INSERT INTO messages_fts(messages_fts) VALUES('rebuild');"
+            )
+            if include_trigram:
+                rebuild_sql += (
+                    "INSERT INTO messages_fts_trigram(messages_fts_trigram) "
+                    "VALUES('rebuild');"
+                )
+            rebuild_sql += (
+                "DELETE FROM state_meta WHERE key IN "
+                "('fts_rebuild_high_water', 'fts_rebuild_progress');"
+            )
+
+        # One write transaction closes the dangerous gap: no canonical writer
+        # can slip between the full rebuild and trigger restoration.
+        recovery_sql = (
+            "BEGIN IMMEDIATE;"
+            + drop_sql
+            + rebuild_sql
+            + f"DELETE FROM state_meta WHERE key = '{FTS_STALE_KEY}';"
+            + "COMMIT;"
+        )
+        try:
+            cursor.executescript(recovery_sql)
+        except sqlite3.DatabaseError as exc:
+            try:
+                self._conn.rollback()
+            except sqlite3.Error:
+                pass
+            # Stale indexes must remain detached even on SQLite builds whose
+            # DDL transaction behavior differs.
+            self._drop_all_fts_triggers(cursor)
+            self._conn.commit()
+            logger.error(
+                "Automatic rebuild of stale FTS indexes failed (%s); "
+                "canonical writes remain enabled with FTS detached.",
+                exc,
+            )
+            return False
+
+        self._fts_stale = False
+        self._fts_enabled = True
+        self._trigram_available = include_trigram
+        logger.warning(
+            "Rebuilt stale state.db FTS indexes from canonical messages and "
+            "restored sync triggers."
+        )
+        return True
+
     @staticmethod
     def _parse_schema_columns(schema_sql: str) -> Dict[str, Dict[str, str]]:
         """Extract expected columns per table from SCHEMA_SQL.
@@ -142,7 +471,39 @@ class SessionSchemaMixin:
 
         Adding a column to SCHEMA_SQL is all that's needed; the
         reconciliation loop picks it up automatically.
+
+        The parse result is memoized on disk keyed by a hash of the DDL:
+        executing SCHEMA_SQL (FTS5 virtual tables included) in the scratch
+        DB costs ~85ms on every startup, but the output is a pure function
+        of the DDL text, which only changes when the shipped code changes.
+        Reconciliation itself (diffing the LIVE database) still runs every
+        startup — only the reference-side parse is cached. A corrupt or
+        stale cache degrades to recomputation.
         """
+        import hashlib as _hashlib
+        import json as _json
+
+        cache_path = None
+        schema_hash = _hashlib.sha256(schema_sql.encode("utf-8")).hexdigest()
+        try:
+            from hermes_constants import get_hermes_home
+            cache_path = get_hermes_home() / "cache" / "schema_columns.json"
+            blob = _json.loads(cache_path.read_text(encoding="utf-8"))
+            if (
+                isinstance(blob, dict)
+                and blob.get("schema_hash") == schema_hash
+                and isinstance(blob.get("tables"), dict)
+            ):
+                tables = blob["tables"]
+                if all(
+                    isinstance(cols, dict)
+                    and all(isinstance(v, str) for v in cols.values())
+                    for cols in tables.values()
+                ):
+                    return tables
+        except Exception:
+            pass  # missing/corrupt cache → recompute below
+
         ref = sqlite3.connect(":memory:")
         try:
             ref.executescript(schema_sql)
@@ -169,9 +530,25 @@ class SessionSchemaMixin:
                         parts.append(f"DEFAULT {default}")
                     cols[col_name] = " ".join(parts)
                 table_columns[tbl] = cols
-            return table_columns
         finally:
             ref.close()
+
+        if cache_path is not None:
+            try:
+                import os as _os
+                import tempfile as _tempfile
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                fd, tmp = _tempfile.mkstemp(
+                    dir=str(cache_path.parent), prefix=".schema_columns."
+                )
+                with _os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    _json.dump(
+                        {"schema_hash": schema_hash, "tables": table_columns}, fh
+                    )
+                _os.replace(tmp, cache_path)
+            except Exception:
+                pass  # cache write is best-effort
+        return table_columns
 
     def _reconcile_columns(self, cursor: sqlite3.Cursor) -> None:
         """Ensure live tables have every column declared in SCHEMA_SQL.
@@ -209,12 +586,35 @@ class SessionSchemaMixin:
                             f'ALTER TABLE "{table_name}" ADD COLUMN "{safe_name}" {col_type}'
                         )
                     except sqlite3.OperationalError as exc:
-                        # Expected: "duplicate column name" from a race or
-                        # re-run.  Unexpected: "Cannot add a NOT NULL column
-                        # with default value NULL" from a schema mistake.
-                        # Log at DEBUG so it's visible in agent.log.
-                        logger.debug(
-                            "reconcile %s.%s: %s", table_name, col_name, exc,
+                        message = str(exc).lower()
+                        if "duplicate column" in message:
+                            # Expected: a sibling process won the race to ADD
+                            # this column between our PRAGMA diff and the
+                            # ALTER. The store ends up correct either way.
+                            logger.debug(
+                                "reconcile %s.%s: %s", table_name, col_name, exc,
+                            )
+                            continue
+                        if "locked" in message or "busy" in message:
+                            # Lock contention (e.g. an orphaned sibling
+                            # backend holding the write lock, #79531). This
+                            # used to be swallowed at DEBUG, leaving the
+                            # store half-reconciled: startup "succeeded" and
+                            # every session-list read then failed with
+                            # "no such column" until an unrelated writable
+                            # open. Re-raise instead so the open-time lock
+                            # patience in _connect_and_init_with_lock_patience
+                            # retries the WHOLE init (executescript is
+                            # idempotent CREATE IF NOT EXISTS) with jittered
+                            # backoff rather than serving a stale schema.
+                            raise
+                        # Anything else ("Cannot add a NOT NULL column with
+                        # default value NULL", ...) is a schema mistake that
+                        # permanently strands the store behind SCHEMA_SQL —
+                        # be loud, don't bury it at DEBUG.
+                        logger.warning(
+                            "reconcile %s.%s failed; store remains behind "
+                            "SCHEMA_SQL: %s", table_name, col_name, exc,
                         )
 
     def _heal_gateway_routing_pk(self, cursor: sqlite3.Cursor) -> None:
@@ -481,6 +881,14 @@ class SessionSchemaMixin:
 
         fts5_available = self._sqlite_supports_fts5(cursor)
         fts_migrations_complete = True
+        self._fts_stale = cursor.execute(
+            "SELECT 1 FROM state_meta WHERE key = ? LIMIT 1",
+            (FTS_STALE_KEY,),
+        ).fetchone() is not None
+        if self._fts_stale:
+            # A prior process deliberately detached FTS after corruption.
+            # Keep every FTS writer detached until a full rebuild succeeds.
+            self._drop_all_fts_triggers(cursor)
         if not fts5_available:
             # Existing FTS triggers can still fire on messages INSERT/UPDATE
             # even though the current sqlite runtime cannot read the virtual
@@ -546,6 +954,7 @@ class SessionSchemaMixin:
             if current_version < 16:
                 # v16: tag delegate subagent rows so pickers stay clean after
                 # parent deletes that used to orphan them (parent_session_id → NULL).
+                # The shared predicate excludes user-visible reset children.
                 try:
                     cursor.execute(
                         "UPDATE sessions SET model_config = json_set("
@@ -724,13 +1133,22 @@ class SessionSchemaMixin:
                 if fts5_available and self._db_has_legacy_inline_fts(cursor):
                     self.set_meta("fts_optimize_available", "1", cursor=cursor)
 
+            if current_version < 25:
+                # v25: de-duplicate per-session system prompt snapshots into
+                # a shared content-addressed table. Keep the old column as a
+                # read fallback for partially migrated or externally written
+                # rows, but clear migrated rows so future writes do not keep
+                # one large prompt copy per session.
+                self._dedupe_legacy_system_prompts(cursor)
+
             # The FTS storage layout is versioned independently of the main
             # schema (see the v23 note above). Stamp the current layout so the
             # main version can always advance: a fresh/optimized DB is at
             # FTS_STORAGE_VERSION; a legacy DB is left at whatever it had
             # (absent/0) until `optimize-storage` runs. An INTERRUPTED
             # optimize (legacy vtables already demoted, but rebuild markers
-            # or demoted trash tables still present) is NOT stamped either —
+            # or demoted trash tables still present, or an empty external
+            # index against non-empty messages) is NOT stamped either —
             # the marker is the source of truth for "fully optimized", and
             # `fts_optimize_available()` keeps offering the resume until the
             # transition actually completes.
@@ -742,6 +1160,7 @@ class SessionSchemaMixin:
                     "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
                 ).fetchone() is None
                 and not self._has_fts_trash(cursor)
+                and not self._fts_external_index_empty_with_messages(cursor)
             ):
                 self.set_meta(
                     "fts_storage_version", str(FTS_STORAGE_VERSION), cursor=cursor
@@ -812,7 +1231,18 @@ class SessionSchemaMixin:
             # its inline triggers exist (via the legacy DDL), and skip the
             # v23 view/external tables entirely. Fresh installs and opted-in
             # DBs have no legacy inline FTS, so they get the v23 DDL.
-            if self._db_has_legacy_inline_fts(cursor):
+            legacy_fts = self._db_has_legacy_inline_fts(cursor)
+            if self._fts_stale:
+                if self._recover_stale_fts(cursor, legacy=legacy_fts):
+                    # CJK was detached alongside the corrupt base indexes and
+                    # has its own stale marker. Its existing ensure path keeps
+                    # it offline until its dedicated rebuild.
+                    self._ensure_fts_cjk_schema(cursor)
+                else:
+                    self._fts_enabled = False
+                    self._trigram_available = False
+                    self._fts_cjk_available = False
+            elif legacy_fts:
                 triggers_need_repair = (
                     self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
                 )
@@ -852,6 +1282,11 @@ class SessionSchemaMixin:
                     # CJK-bigram index (cjk_unicode61). Strictly additive to
                     # the surfaces above and gated on the loadable tokenizer:
                     self._ensure_fts_cjk_schema(cursor)
+
+            # Replace any pre-existing broad AFTER UPDATE triggers with
+            # AFTER UPDATE OF variants. IF NOT EXISTS cannot rewrite them.
+            if getattr(self, "_fts_enabled", False):
+                self._migrate_broad_fts_update_triggers(cursor)
 
         self._conn.commit()
 

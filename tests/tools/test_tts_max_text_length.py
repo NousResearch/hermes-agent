@@ -1,8 +1,8 @@
 """Tests for per-provider TTS input-character limits.
 
-Replaces the old global ``MAX_TEXT_LENGTH = 4000`` cap that truncated every
-provider at 4000 chars even though OpenAI allows 4096, xAI allows 15000,
-MiniMax allows 10000, and ElevenLabs allows 5000-40000 depending on model.
+With long-form chunking, text exceeding the provider cap is split into
+ordered chunks instead of silently truncated. Each chunk is synthesized
+separately and the results are combined or delivered as multiple files.
 """
 
 import json
@@ -56,25 +56,30 @@ class TestResolveMaxTextLength:
         assert expected.issubset(PROVIDER_MAX_TEXT_LENGTH.keys())
 
 
-class TestTextToSpeechToolTruncation:
-    """End-to-end: verify the resolver actually drives the text_to_speech_tool
-    truncation path rather than the old 4000-char global."""
+class TestTextToSpeechToolChunking:
+    """End-to-end: verify the resolver drives text_to_speech_tool to split
+    per-request chunks rather than the old 4000-char global truncation."""
 
-    def test_openai_truncates_at_4096_not_4000(self, tmp_path, monkeypatch, caplog):
-        import logging
-        caplog.set_level(logging.WARNING, logger="tools.tts_tool")
-
+    def test_openai_chunks_at_4096_without_dropping_text(self, tmp_path, monkeypatch):
         # 5000 chars -- over OpenAI's 4096 limit but under xAI's 15k
         text = "A" * 5000
-        captured_text = {}
+        captured_text = []
 
         def fake_openai(t, out, cfg, **_kw):
-            captured_text["text"] = t
+            captured_text.append(t)
             with open(out, "wb") as f:
                 f.write(b"\x00")
             return out
 
+        def fake_combine(paths, output_path, *, voice_compatible=False):
+            with open(output_path, "wb") as destination:
+                for path in paths:
+                    with open(path, "rb") as source:
+                        destination.write(source.read())
+            return output_path
+
         monkeypatch.setattr("tools.tts_tool._generate_openai_tts", fake_openai)
+        monkeypatch.setattr("tools.tts_tool._concat_audio_files", fake_combine)
         monkeypatch.setattr("tools.tts_tool._load_tts_config",
                             lambda: {"provider": "openai"})
 
@@ -83,10 +88,9 @@ class TestTextToSpeechToolTruncation:
         result = json.loads(text_to_speech_tool(text=text, output_path=out))
 
         assert result["success"] is True
-        # Should be truncated to 4096, not the old 4000
-        assert len(captured_text["text"]) == 4096
-        # And the warning should mention the provider
-        assert any("openai" in rec.message.lower() for rec in caplog.records)
+        assert [len(chunk) for chunk in captured_text] == [4096, 904]
+        assert "".join(captured_text) == text
+        assert result["chunk_count"] == 2
 
     def test_xai_accepts_much_longer_input(self, tmp_path, monkeypatch):
         # 12000 chars -- over old global 4000, under xAI's 15000
@@ -108,21 +112,29 @@ class TestTextToSpeechToolTruncation:
         result = json.loads(text_to_speech_tool(text=text, output_path=out))
 
         assert result["success"] is True
-        # xAI should accept the full 12000 chars
+        # xAI should accept the full 12000 chars in a single chunk
         assert len(captured_text["text"]) == 12000
 
     def test_user_override_is_respected(self, tmp_path, monkeypatch):
         # User says "cap openai at 100 chars" -- we must honor it
         text = "C" * 500
-        captured_text = {}
+        captured_text = []
 
         def fake_openai(t, out, cfg, **_kw):
-            captured_text["text"] = t
+            captured_text.append(t)
             with open(out, "wb") as f:
                 f.write(b"\x00")
             return out
 
+        def fake_combine(paths, output_path, *, voice_compatible=False):
+            with open(output_path, "wb") as destination:
+                for path in paths:
+                    with open(path, "rb") as source:
+                        destination.write(source.read())
+            return output_path
+
         monkeypatch.setattr("tools.tts_tool._generate_openai_tts", fake_openai)
+        monkeypatch.setattr("tools.tts_tool._concat_audio_files", fake_combine)
         monkeypatch.setattr("tools.tts_tool._load_tts_config",
                             lambda: {"provider": "openai",
                                      "openai": {"max_text_length": 100}})
@@ -132,4 +144,5 @@ class TestTextToSpeechToolTruncation:
         result = json.loads(text_to_speech_tool(text=text, output_path=out))
 
         assert result["success"] is True
-        assert len(captured_text["text"]) == 100
+        assert all(len(chunk) <= 100 for chunk in captured_text)
+        assert "".join(captured_text) == text

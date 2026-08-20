@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { ActionStatus } from '@/components/ui/action-status'
 import { Button } from '@/components/ui/button'
@@ -28,11 +28,20 @@ interface ConfirmDialogProps {
   destructive?: boolean
   /** Close as soon as onConfirm resolves — for optimistic actions that finish in the background. */
   dismissOnConfirm?: boolean
+  /** A third, non-destructive way out, shown between Cancel and Confirm (e.g.
+   *  "Remove from sidebar" beside "Delete worktree"). Closes on click. */
+  secondaryAction?: ConfirmSecondaryAction
 }
 
-// Shared confirmation dialog: Enter confirms (from anywhere in the dialog),
-// Esc/Cancel/backdrop dismiss. Owns the pending → done → close beat and inline
-// error, so callers pass only an async onConfirm that does the work.
+interface ConfirmSecondaryAction {
+  label: string
+  onClick: () => void
+}
+
+// Shared confirmation dialog: opens focused on Confirm, Enter confirms (from
+// anywhere in the dialog), Esc/Cancel/backdrop dismiss. Owns the pending → done
+// → close beat and inline error, so callers pass only an async onConfirm that
+// does the work.
 export function ConfirmDialog({
   open,
   onClose,
@@ -44,9 +53,11 @@ export function ConfirmDialog({
   doneLabel,
   cancelLabel,
   destructive = false,
-  dismissOnConfirm = false
+  dismissOnConfirm = false,
+  secondaryAction
 }: ConfirmDialogProps) {
   const { t } = useI18n()
+  const confirmRef = useRef<HTMLButtonElement>(null)
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
   const busy = status === 'saving' || status === 'done'
@@ -104,6 +115,14 @@ export function ConfirmDialog({
             void run()
           }
         }}
+        onOpenAutoFocus={event => {
+          // Focus must land inside the dialog or the handler above never sees
+          // the key: it stays on whatever opened the dialog (a menu item, a
+          // sidebar row) and Enter re-triggers that instead. Radix's default
+          // would take the X — confirm is the button Enter maps to.
+          event.preventDefault()
+          confirmRef.current?.focus()
+        }}
       >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
@@ -121,7 +140,25 @@ export function ConfirmDialog({
           <Button disabled={busy} onClick={onClose} type="button" variant="ghost">
             {resolvedCancelLabel}
           </Button>
-          <Button disabled={busy} onClick={() => void run()} variant={destructive ? 'destructive' : 'default'}>
+          {secondaryAction && (
+            <Button
+              disabled={busy}
+              onClick={() => {
+                secondaryAction.onClick()
+                onClose()
+              }}
+              type="button"
+              variant="secondary"
+            >
+              {secondaryAction.label}
+            </Button>
+          )}
+          <Button
+            disabled={busy}
+            onClick={() => void run()}
+            ref={confirmRef}
+            variant={destructive ? 'destructive' : 'default'}
+          >
             <ActionStatus
               busy={resolvedBusyLabel}
               done={resolvedDoneLabel}

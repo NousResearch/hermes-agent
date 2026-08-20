@@ -110,7 +110,7 @@ Good defaults:
 | Provider | What it is | How to set up |
 |----------|-----------|---------------|
 | **Nous Portal** | Subscription-based, zero-config | OAuth login via `hermes model` |
-| **OpenAI Codex** | ChatGPT OAuth, uses Codex models | Device code auth via `hermes model` |
+| **OpenAI Codex** | ChatGPT or Codex subscription, uses Codex models | Device code auth via `hermes model` → **ChatGPT or Codex Subscription** |
 | **Anthropic** | Claude models directly — Max plan + extra usage credits (OAuth), or API key for pay-per-token | `hermes model` → OAuth login (requires Max + extra credits), or an Anthropic API key |
 | **OpenRouter** | Multi-provider routing across many models | Enter your API key |
 | **Fireworks AI** | Direct OpenAI-compatible model API | Set `FIREWORKS_API_KEY` |
@@ -119,6 +119,7 @@ Good defaults:
 | **Kimi / Moonshot China** | China-region Moonshot endpoint | Set `KIMI_CN_API_KEY` |
 | **Arcee AI** | Trinity models | Set `ARCEEAI_API_KEY` |
 | **GMI Cloud** | Multi-model direct API | Set `GMI_API_KEY` |
+| **Actual Computer** | Your own hardware as a private inference cluster — hosted relay or local daemon | Set `ACTUAL_API_KEY` (relay) or `ACTUAL_BASE_URL=http://127.0.0.1:8080` (local, no key) |
 | **MiniMax (OAuth)** | MiniMax frontier model via browser OAuth — no API key needed (model name in `hermes_cli/models.py` may change between releases) | `hermes model` → MiniMax (OAuth) |
 | **MiniMax** | International MiniMax endpoint | Set `MINIMAX_API_KEY` |
 | **MiniMax China** | China-region MiniMax endpoint | Set `MINIMAX_CN_API_KEY` |
@@ -392,3 +393,4 @@ That sequence gets you from "broken vibes" back to a known state fast.
 - **[AI Providers](../integrations/providers.md)** — Full provider list and setup details
 - **[Skills System](../user-guide/features/skills.md)** — Reusable workflows and knowledge
 - **[Tips & Best Practices](../guides/tips.md)** — Power user tips
+- **[Moving to another machine](/reference/faq#exporting-hermes-to-another-machine)** — `hermes backup` migrates your whole setup (or [a single profile](/reference/faq#moving-a-single-profile-to-another-machine)); no need to rebuild from scratch

@@ -1,6 +1,7 @@
 export type GatewayEventName =
   | 'gateway.ready'
   | 'session.info'
+  | 'session.usage'
   | 'message.start'
   | 'message.delta'
   | 'message.interim'
@@ -26,6 +27,9 @@ export interface GatewayEvent<P = unknown> {
   payload?: P
   /** Renderer-side source tag added by the Desktop gateway registry. */
   profile?: string
+  /** Registry connection whose socket delivered the event (renderer-side tag;
+   * absent for the local/legacy primary path). */
+  connectionId?: string
   session_id?: string
   type: GatewayEventName
 }
@@ -33,12 +37,31 @@ export interface GatewayEvent<P = unknown> {
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'closed' | 'error'
 export type GatewayRequestId = number | string
 
+export interface JsonRpcErrorPayload {
+  code?: number
+  data?: unknown
+  message?: string
+}
+
 export interface JsonRpcFrame {
-  error?: { message?: string }
+  error?: JsonRpcErrorPayload
   id?: GatewayRequestId | null
   method?: string
   params?: GatewayEvent
   result?: unknown
+}
+
+/** JSON-RPC error with optional structured `data` from the gateway. */
+export class JsonRpcGatewayError extends Error {
+  readonly code?: number
+  readonly data?: unknown
+
+  constructor(message: string, options?: { code?: number; data?: unknown }) {
+    super(message)
+    this.name = 'JsonRpcGatewayError'
+    this.code = options?.code
+    this.data = options?.data
+  }
 }
 
 export type WebSocketLike = WebSocket
@@ -54,6 +77,8 @@ export interface GatewayClientOptions {
   connectErrorMessage?: string
   connectTimeoutMs?: number
   createRequestId?: (nextId: number) => GatewayRequestId
+  /** Return true to intercept the default closed-state transition. */
+  onSocketClose?: (event: CloseEvent) => boolean | void
   requestIdPrefix?: string
   requestTimeoutMs?: number
   socketFactory?: (url: string) => WebSocketLike
@@ -84,6 +109,7 @@ export class JsonRpcGatewayClient {
       connectTimeoutMs: options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
       createRequestId: options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
       notConnectedErrorMessage: options.notConnectedErrorMessage ?? 'gateway not connected',
+      onSocketClose: options.onSocketClose ?? (() => false),
       requestIdPrefix: options.requestIdPrefix ?? 'r',
       requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
       socketFactory: options.socketFactory
@@ -136,8 +162,12 @@ export class JsonRpcGatewayClient {
       this.handleMessage(message.data)
     })
 
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', event => {
       if (this.socket !== socket) {
+        return
+      }
+
+      if (this.options.onSocketClose(event)) {
         return
       }
 
@@ -364,7 +394,12 @@ export class JsonRpcGatewayClient {
       this.clearPending(frame.id)
 
       if (frame.error) {
-        call.reject(new Error(frame.error.message || 'Hermes RPC failed'))
+        call.reject(
+          new JsonRpcGatewayError(frame.error.message || 'Hermes RPC failed', {
+            code: typeof frame.error.code === 'number' ? frame.error.code : undefined,
+            data: frame.error.data
+          })
+        )
       } else {
         call.resolve(frame.result)
       }

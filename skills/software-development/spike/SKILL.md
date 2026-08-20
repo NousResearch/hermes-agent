@@ -118,7 +118,7 @@ spikes/
 terminal("mkdir -p spikes/001-websocket-streaming")
 write_file("spikes/001-websocket-streaming/README.md", "# 001: websocket-streaming\n\n...")
 write_file("spikes/001-websocket-streaming/main.py", "...")
-terminal("cd spikes/001-websocket-streaming && python3 main.py")
+terminal("cd spikes/001-websocket-streaming && python main.py")
 # Observe output, iterate.
 ```
 

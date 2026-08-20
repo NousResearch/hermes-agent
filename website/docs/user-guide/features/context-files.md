@@ -13,6 +13,7 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 | File | Purpose | Discovery |
 |------|---------|-----------| 
 | **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
+| **AGENTS.override.md** | Personal, per-directory override of AGENTS.md (typically gitignored) | CWD at startup + subdirectories progressively |
 | **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
 | **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
 | **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
@@ -20,12 +21,29 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
 
 :::info Priority system
-Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
+Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.override.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
+
+If an `AGENTS.override.md` exists next to an `AGENTS.md`, the override is loaded **instead of** the committed file — keep a personal (usually gitignored) `AGENTS.override.md` when you want different instructions than the ones checked into the repo, without editing the tracked `AGENTS.md`.
 :::
 
 ## AGENTS.md
 
 `AGENTS.md` is the primary project context file. It tells the agent how your project is structured, what conventions to follow, and any special instructions.
+
+### Directory Chain (git root → working directory)
+
+When your working directory sits inside a git repository, Hermes loads a **merged chain** of `AGENTS.md` files at session start: the git-root `AGENTS.md` first, then the `AGENTS.md` in every intermediate directory down to your working directory. Deeper files appear later in the prompt, so more specific guidance takes precedence. Each file gets its own provenance header (e.g. `## ../../AGENTS.md`), and identical copies along the chain are deduplicated.
+
+```
+monorepo/                   (git root, cwd = packages/webapp/)
+├── AGENTS.md              ← Loaded first (repo-wide conventions)
+└── packages/
+    ├── AGENTS.md          ← Loaded second
+    └── webapp/
+        └── AGENTS.md      ← Loaded last (most specific, takes precedence)
+```
+
+Outside a git repository, only the working directory itself is checked — parents are never consulted, so an `AGENTS.md` planted in `/tmp` or `$HOME` can't leak into unrelated sessions.
 
 ### Progressive Subdirectory Discovery
 

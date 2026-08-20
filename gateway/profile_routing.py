@@ -47,6 +47,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class ProfileRouteRejected(RuntimeError):
+    """An explicit route matched a profile this gateway does not serve."""
+
+
 @dataclass(frozen=True)
 class ProfileRoute:
     """A single routing rule that maps a platform scope to a profile."""

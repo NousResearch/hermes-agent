@@ -236,7 +236,9 @@ def _config_overrides(config: dict) -> dict[str, str]:
     interesting_paths = [
         ("agent", "max_turns"),
         ("agent", "gateway_timeout"),
+        ("agent", "session_stall_timeout"),
         ("agent", "tool_use_enforcement"),
+        ("agent", "execution_guidance"),
         ("terminal", "backend"),
         ("terminal", "docker_image"),
         ("terminal", "persistent_shell"),
@@ -382,6 +384,7 @@ def run_dump(args):
         ("AI_GATEWAY_API_KEY", "ai_gateway"),
         ("OPENCODE_ZEN_API_KEY", "opencode_zen"),
         ("OPENCODE_GO_API_KEY", "opencode_go"),
+        ("COMMANDCODE_API_KEY", "commandcode"),
         ("KILOCODE_API_KEY", "kilocode"),
         ("FIRECRAWL_API_KEY", "firecrawl"),
         ("TAVILY_API_KEY", "tavily"),

@@ -35,6 +35,10 @@ export interface PaneMirror<T> {
    *  self-subscribing component (e.g. a session's status dot) so the strip needn't
    *  re-sync on status/color change — only `title` drives re-registration. */
   tabLead?: (key: string) => ReactNode
+  /** Custom label NODE for the tile's tab, self-subscribing for the same reason
+   *  as `tabLead` — a name that moves faster than re-registration (see
+   *  PaneChrome.tabTitle). Falls back to `title`. */
+  tabTitle?: (key: string) => ReactNode
   render: (key: string) => ReactNode
   /** Wrap the tile's TAB (domain context menu — session verbs). */
   tabWrap?: (key: string, tab: ReactElement) => ReactNode
@@ -76,12 +80,16 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
         title,
         data: {
           tabLead: cfg.tabLead ? () => cfg.tabLead!(key) : undefined,
+          tabTitle: cfg.tabTitle ? () => cfg.tabTitle!(key) : undefined,
           dock: {
             before: cfg.before?.(tile),
             pane: cfg.anchor?.(tile) ?? 'workspace',
             pos: cfg.dir?.(tile) ?? 'right'
           },
           minWidth: cfg.minWidth,
+          // Every mirrored tile is a full workspace surface docked beside main —
+          // and closeable, which is what keeps its tab when it lands in a zone of
+          // its own (see lone-header.ts).
           placement: 'main',
           tabDrag: cfg.tabDrag
             ? (event: ReactPointerEvent<HTMLElement>, onTap: () => void, double?: DoubleTapContext) =>

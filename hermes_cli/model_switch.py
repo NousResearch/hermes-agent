@@ -20,8 +20,11 @@ OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
 
 from __future__ import annotations
 
+import http.client
 import logging
+import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, List, NamedTuple, Optional
 
@@ -45,6 +48,7 @@ from agent.models_dev import (
     get_model_info,
     list_provider_models,
 )
+from utils import base_url_host_matches, base_url_hostname
 
 # Providers whose picker model list should NOT be capped by max_models.
 # OpenCode Zen / Go are aggregators whose full catalogs (70+ models each) must
@@ -84,6 +88,13 @@ def _declared_model_ids(value: Any) -> list[str]:
 
     if isinstance(value, dict):
         for model_id in value:
+            # Backward compat: pre-fix Hermes wrote sentinel keys inside the
+            # user-facing ``models`` mapping. Never list them as model IDs.
+            if model_id in {
+                "__explicit_model_allowlist__",
+                "__discovered_model_catalog__",
+            }:
+                continue
             _add(model_id)
         return ids
 
@@ -102,8 +113,62 @@ def _declared_model_ids(value: Any) -> list[str]:
     return ids
 
 
+def _entry_models_discovered(entry: Any) -> bool:
+    """True when the entry's ``models`` mapping was auto-discovered by Hermes.
+
+    The current shape is an entry-level ``models_discovered: true`` sibling of
+    ``models``. Older Hermes versions wrote an in-mapping
+    ``__discovered_model_catalog__: true`` sentinel instead — accept that on
+    read for backward compatibility (the next discovery save migrates the
+    entry to the clean shape).
+    """
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("models_discovered") is True:
+        return True
+    models = entry.get("models")
+    return (
+        isinstance(models, dict)
+        and models.get("__discovered_model_catalog__") is True
+    )
+
+
+def _models_config_is_allowlist(value: Any, discovered: bool = False) -> bool:
+    """Return True when ``models:`` is an intentional ID allowlist.
+
+    A mapping like ``{model_id: {context_length: N}}`` is per-model *metadata*
+    written by ``_save_custom_provider`` / the ``hermes model`` wizard — not a
+    catalog narrow. Treating that shape as an allowlist made Desktop/Telegram
+    pickers show only the saved default for local Ollama (no ``api_key``),
+    while ``hermes model`` still live-probed the full ``/v1/models`` list.
+    Refresh could not help because the same gate skipped probing.
+
+    List/string shapes remain allowlists for no-key endpoints. To pin a
+    dict-shaped catalog, set ``discover_models: false``.
+
+    ``discovered`` is the entry-level ``models_discovered`` flag (see
+    ``_entry_models_discovered``): a catalog Hermes itself persisted after a
+    successful probe is never a user pin, whatever its shape.
+    """
+    if discovered:
+        return False
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return False
+    if isinstance(value, (list, tuple)):
+        return bool(_declared_model_ids(value))
+    return False
+
+
 def _save_discovered_models_to_config(
-    api_url: str, model_ids: list[str]
+    api_url: str,
+    model_ids: list[str],
+    *,
+    api_mode: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
 ) -> None:
     """Persist discovered models into ``custom_providers`` in config.yaml.
 
@@ -130,25 +195,53 @@ def _save_discovered_models_to_config(
         for entry in providers:
             if not isinstance(entry, dict):
                 continue
-            entry_url = (entry.get("base_url", "") or entry.get("url", "") or "").strip()
+            entry_url = (entry.get("base_url", "") or entry.get("url", "")).strip()
             if entry_url.rstrip("/").lower() != norm_url:
                 continue
+            entry_mode = str(
+                entry.get("api_mode") or entry.get("transport") or ""
+            ).strip().lower() or None
+            if entry_mode != api_mode:
+                continue
+            if headers is not None:
+                entry_headers = _extra_headers_from_config(entry)
+                if entry_headers != headers:
+                    continue
             existing = entry.get("models")
+            legacy_discovered = (
+                isinstance(existing, dict)
+                and existing.get("__discovered_model_catalog__") is True
+            )
+            entry_discovered = (
+                entry.get("models_discovered") is True or legacy_discovered
+            )
             # Preserve per-model metadata: when ``models`` is a mapping
             # (e.g. ``{"model-a": {"context_length": 8192}}``) or a list of
             # dicts (e.g. ``[{"id": "model-a", "context_length": 8192}]``),
             # the user has curated metadata per model — do not replace it.
-            if isinstance(existing, dict):
+            # A mapping Hermes itself discovered (``models_discovered: true``
+            # or the legacy in-mapping sentinel) is ours to refresh.
+            if isinstance(existing, dict) and not entry_discovered:
                 continue
             if isinstance(existing, list) and any(
                 isinstance(m, dict) for m in existing
             ):
                 continue
             # Only update when models are stale — avoids unnecessary
-            # config writes on every picker open.
+            # config writes on every picker open.  A legacy-shape entry
+            # (sentinel inside ``models``) is always rewritten so the next
+            # save migrates it to the clean entry-level flag.
             if isinstance(existing, list) and existing == model_ids:
                 continue
-            entry["models"] = model_ids
+            if (
+                isinstance(existing, dict)
+                and entry_discovered
+                and not legacy_discovered
+                and list(existing) == model_ids
+            ):
+                continue
+            entry["models"] = {model_id: {} for model_id in model_ids}
+            entry["models_discovered"] = True
             changed = True
 
         if changed:
@@ -173,6 +266,89 @@ def _bare_custom_provider_def(current_base_url: str) -> Optional[ProviderDef]:
         auth_type="api_key",
         source="model-config",
     )
+
+
+_MODEL_DISCOVERY_ERRORS = (
+    ImportError,
+    OSError,
+    RuntimeError,
+    TimeoutError,
+    TypeError,
+    ValueError,
+    http.client.HTTPException,
+)
+
+
+class _NativePickerModelList(list[str]):
+    """A successful native catalog, including an authoritative empty one."""
+
+
+def _fetch_picker_live_models(
+    api_key: str,
+    api_url: str,
+    native_catalog_provider: str,
+    preserve_native_models: bool,
+    headers: dict[str, str] | None = None,
+    timeout: float = 5.0,
+    api_mode: str | None = None,
+) -> list[str] | None:
+    """Fetch picker models with native Ollama and cached generic discovery."""
+    from hermes_cli.models import (
+        _get_ollama_native_headers,
+        _normalize_openai_base_url,
+        cached_fetch_api_models,
+        fetch_ollama_local_models,
+        should_use_ollama_native_catalog,
+    )
+
+    candidate_headers = _get_ollama_native_headers(api_url, api_key=api_key)
+    caller_has_authorization = any(
+        key.lower() == "authorization" for key in (headers or {})
+    )
+    if caller_has_authorization:
+        for key in tuple(candidate_headers):
+            if key.lower() == "authorization":
+                del candidate_headers[key]
+    if headers:
+        for key in tuple(candidate_headers):
+            if any(key.lower() == existing.lower() for existing in headers):
+                del candidate_headers[key]
+        candidate_headers.update(headers)
+    if api_key and not caller_has_authorization:
+        for key in tuple(candidate_headers):
+            if key.lower() == "authorization":
+                del candidate_headers[key]
+        candidate_headers["Authorization"] = f"Bearer {api_key}"
+    use_native = should_use_ollama_native_catalog(
+        native_catalog_provider, api_url, headers=candidate_headers or None
+    )
+    resolved_headers = candidate_headers or None if use_native else headers
+
+    if use_native:
+        if preserve_native_models:
+            return None
+        native_models = fetch_ollama_local_models(
+            api_url, timeout=timeout, headers=resolved_headers
+        )
+        if native_models is not None:
+            return _NativePickerModelList(native_models)
+        # A failed native probe is not authoritative: retry the cached generic
+        # OpenAI-compatible catalog before reporting no models.
+        return cached_fetch_api_models(
+            api_key,
+            _normalize_openai_base_url(api_url),
+            timeout=timeout,
+            headers=resolved_headers,
+            api_mode=api_mode,
+        )
+    generic_models = cached_fetch_api_models(
+        api_key,
+        api_url,
+        timeout=timeout,
+        headers=resolved_headers,
+        api_mode=api_mode,
+    )
+    return generic_models if generic_models else None
 
 
 # ---------------------------------------------------------------------------
@@ -860,8 +1036,24 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
     suffix = suffix_buf.lower().strip("-_.")
     suffix = suffix.strip()
 
+    # Split out YYYYMMDD date stamps (e.g. claude-opus-4-20250514): they are
+    # snapshot markers, not version components, and would otherwise dwarf
+    # real point versions (20250514 > 8).  Kept as a trailing tiebreaker so
+    # bare IDs sort before their dated snapshots, and newer snapshots before
+    # older ones.  The 19_000_101 threshold reclassifies only 8-digit stamps,
+    # so shorter numeric components (mistral-large-2411, gpt-4-0613) keep
+    # their current behavior.
+    version_nums: list[float] = []
+    date_stamp = 0.0
+    for n in nums:
+        if n >= 19_000_101:
+            date_stamp = max(date_stamp, n)
+        else:
+            version_nums.append(n)
+
     # Negate versions so higher → sorts first
-    version_key = tuple(-n for n in nums)
+    version_key = tuple(-n for n in version_nums)
+    date_key = (0.0, 0.0) if date_stamp == 0.0 else (1.0, -date_stamp)
 
     # Suffix quality ranking: pro/max > (no suffix) > omni/flash/mini/lite
     # Lower number = preferred
@@ -873,7 +1065,38 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
     _SUFFIX_RANK = {"pro": 0, "max": 0, "plus": 0, "turbo": 0, "sol": 0}
     suffix_rank = _SUFFIX_RANK.get(suffix, 1)
 
-    return version_key + (suffix_rank, suffix)
+    return version_key + (suffix_rank, suffix) + date_key
+
+
+class AmbiguousAliasError(Exception):
+    """Alias family-matches multiple catalog models; caller must disambiguate.
+
+    Raised by :func:`resolve_alias` instead of silently picking one candidate
+    via version-sort heuristics. ``candidates`` is sorted best-guess-first
+    (see :func:`_model_sort_key`) for display purposes only.
+    """
+
+    def __init__(self, alias: str, provider: str, candidates: list[str]):
+        self.alias = alias
+        self.provider = provider
+        self.candidates = candidates
+        super().__init__(
+            f"alias {alias!r} matches {len(candidates)} models on {provider}"
+        )
+
+
+def _ambiguous_alias_message(err: "AmbiguousAliasError") -> str:
+    """User-facing disambiguation list for an ambiguous alias."""
+    shown = err.candidates[:10]
+    lines = "\n".join(f"  {i}. {m}" for i, m in enumerate(shown, 1))
+    more = ""
+    if len(err.candidates) > len(shown):
+        more = f"\n  … and {len(err.candidates) - len(shown)} more"
+    return (
+        f"'{err.alias}' matches {len(err.candidates)} models on "
+        f"{err.provider} — not switching automatically:\n{lines}{more}\n"
+        f"Pick one with /model <exact-model-name>."
+    )
 
 
 def resolve_alias(
@@ -947,9 +1170,15 @@ def resolve_alias(
     if not matches:
         return None
 
-    # Sort by version descending — prefer the latest/highest version
+    # Sort by version descending (best guess first) for display, but NEVER
+    # silently pick among multiple candidates: version-sort heuristics have
+    # repeatedly guessed wrong (dated snapshots outranking point releases,
+    # suffix tiebreaks landing on the cheapest tier). One match = resolve;
+    # several = make the user choose.
     prefix_for_sort = f"{vendor}/{family}" if aggregator else family
     matches.sort(key=lambda m: _model_sort_key(m, prefix_for_sort))
+    if len(matches) > 1:
+        raise AmbiguousAliasError(key, current_provider, matches)
     return (current_provider, matches[0], key)
 
 
@@ -986,6 +1215,9 @@ def _resolve_alias_fallback(
     """
     providers = authenticated_providers or ("openrouter", "nous")
     for provider in providers:
+        # AmbiguousAliasError propagates: the alias exists on this provider,
+        # the user just has to choose — trying the next provider instead
+        # would silently switch them somewhere they didn't ask to go.
         result = resolve_alias(raw_input, provider)
         if result is not None:
             return result
@@ -1257,6 +1489,9 @@ def switch_model(
         detect_provider_for_model,
         validate_requested_model,
         opencode_model_api_mode,
+        _get_ollama_request_headers,
+        _get_provider_config_dict,
+        _same_ollama_native_root,
     )
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -1382,7 +1617,15 @@ def switch_model(
                 )
 
         # Resolve alias on the TARGET provider
-        alias_result = resolve_alias(new_model, target_provider)
+        try:
+            alias_result = resolve_alias(new_model, target_provider)
+        except AmbiguousAliasError as err:
+            return ModelSwitchResult(
+                success=False,
+                target_provider=target_provider,
+                is_global=is_global,
+                error_message=_ambiguous_alias_message(err),
+            )
         if alias_result is not None:
             _, new_model, resolved_alias = alias_result
 
@@ -1404,8 +1647,21 @@ def switch_model(
                 alias_result = None
             else:
                 alias_result = resolve_alias(raw_input, current_provider)
+        except AmbiguousAliasError as err:
+            return ModelSwitchResult(
+                success=False,
+                is_global=is_global,
+                error_message=_ambiguous_alias_message(err),
+            )
         except Exception:
-            alias_result = resolve_alias(raw_input, current_provider)
+            try:
+                alias_result = resolve_alias(raw_input, current_provider)
+            except AmbiguousAliasError as err:
+                return ModelSwitchResult(
+                    success=False,
+                    is_global=is_global,
+                    error_message=_ambiguous_alias_message(err),
+                )
 
         # --- Step a: Try alias resolution on current provider ---
 
@@ -1426,7 +1682,14 @@ def switch_model(
                     user_providers=user_providers,
                     custom_providers=custom_providers,
                 )
-                fallback_result = _resolve_alias_fallback(raw_input, authed)
+                try:
+                    fallback_result = _resolve_alias_fallback(raw_input, authed)
+                except AmbiguousAliasError as err:
+                    return ModelSwitchResult(
+                        success=False,
+                        is_global=is_global,
+                        error_message=_ambiguous_alias_message(err),
+                    )
                 if fallback_result is not None:
                     target_provider, new_model, resolved_alias = fallback_result
                     logger.debug(
@@ -1450,7 +1713,13 @@ def switch_model(
                 # is already in vendor/model format and the colon is a variant
                 # tag (:free, :extended, :fast) that must be preserved.
                 colon_pos = raw_input.find(":")
-                if colon_pos > 0 and "/" not in raw_input and is_aggregator(current_provider):
+                if (
+                    colon_pos > 0
+                    and "/" not in raw_input
+                    and is_aggregator(current_provider)
+                    and not str(current_provider).strip().lower().startswith("custom")
+                    and str(current_provider).strip().lower() != "ollama"
+                ):
                     left = raw_input[:colon_pos].strip().lower()
                     right = raw_input[colon_pos + 1:].strip()
                     if left and right:
@@ -1543,7 +1812,7 @@ def switch_model(
         is_custom = (
             current_provider in {"custom", "local"}
             or current_provider.startswith("custom:")
-            or ("localhost" in _base or "127.0.0.1" in _base)
+            or base_url_hostname(_base) in ("localhost", "127.0.0.1")
         )
 
         if (
@@ -1578,9 +1847,11 @@ def switch_model(
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
+    ollama_headers: dict[str, str] = {}
+    validation_headers: dict[str, str] = {}
+    suppress_ollama_headers = False
 
     if provider_changed or explicit_provider:
-        import os
         # User-config providers (providers.<name> in config.yaml) carry their
         # own base_url + transport + key reference. resolve_runtime_provider()
         # resolves by provider NAME and doesn't know user-config slugs (e.g. a
@@ -1597,11 +1868,19 @@ def switch_model(
                 or (user_providers or {}).get(target_provider) or {}
             _ukey = str(_ucfg.get("api_key", "") or "").strip()
             if _ukey.startswith("${") and _ukey.endswith("}"):
-                _ukey = os.environ.get(_ukey[2:-1], "").strip()
+                # Same class as the picker reads below: a raw os.environ read
+                # here hands this profile whatever key the process env holds —
+                # another profile's, under the multiplexed gateway. Route
+                # through the per-profile secret scope (identical to
+                # os.getenv when multiplexing is off, fail-closed otherwise).
+                _ukey = _scoped_key_env(_ukey[2:-1])
             if not _ukey:
-                _kenv = str(_ucfg.get("key_env", "") or "").strip()
+                _kenv = str(
+                    _ucfg.get("key_env") or _ucfg.get("api_key_env") or ""
+                ).strip()
                 if _kenv:
-                    _ukey = os.environ.get(_kenv, "").strip()
+                    _ukey = _scoped_key_env(_kenv)
+            validation_headers = _extra_headers_from_config(_ucfg)
             try:
                 runtime = resolve_runtime_provider(
                     requested=target_provider,
@@ -1612,6 +1891,7 @@ def switch_model(
                 api_key = runtime.get("api_key", "") or _ukey
                 base_url = runtime.get("base_url", "") or _user_pdef.base_url
                 api_mode = runtime.get("api_mode", "")
+                validation_headers = runtime.get("extra_headers") or validation_headers
             except Exception:
                 api_key = _ukey
                 base_url = _user_pdef.base_url
@@ -1629,6 +1909,7 @@ def switch_model(
                 api_key = runtime.get("api_key", "")
                 base_url = runtime.get("base_url", "")
                 api_mode = runtime.get("api_mode", "")
+                validation_headers = runtime.get("extra_headers") or validation_headers
             except Exception as e:
                 return ModelSwitchResult(
                     success=False,
@@ -1641,20 +1922,56 @@ def switch_model(
                     ),
                 )
     else:
-        try:
-            runtime = resolve_runtime_provider(
-                requested=current_provider,
-                target_model=new_model,
-            )
-            # If resolution fell through to "custom" (e.g. named custom provider like
-            # "ollama-launch" that resolve_runtime_provider doesn't know), keep existing
-            # credentials. Otherwise use the resolved values (picks up credential rotation,
-            # base_url adjustments for OpenCode, etc.).
-            api_key = runtime.get("api_key", "")
-            base_url = runtime.get("base_url", "")
-            api_mode = runtime.get("api_mode", "")
-        except Exception:
-            pass
+        keep_current_ollama_endpoint = False
+        if current_provider == "custom" and current_base_url:
+            try:
+                from hermes_cli.models import should_use_ollama_native_catalog
+                ollama_headers = _get_ollama_request_headers()
+                ollama_config = _get_provider_config_dict("ollama")
+                configured_ollama_base = str(
+                    ollama_config.get("base_url")
+                    or ollama_config.get("api")
+                    or ollama_config.get("url")
+                    or ""
+                ).strip()
+                if configured_ollama_base and not _same_ollama_native_root(
+                    current_base_url, configured_ollama_base
+                ):
+                    ollama_headers = {}
+                    suppress_ollama_headers = True
+                elif not configured_ollama_base:
+                    # Without an explicit configured root there is no safe
+                    # origin to associate provider-level Ollama headers with.
+                    ollama_headers = {}
+                    suppress_ollama_headers = True
+                keep_current_ollama_endpoint = should_use_ollama_native_catalog(
+                    current_provider,
+                    current_base_url,
+                    headers=ollama_headers,
+                )
+            except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+                keep_current_ollama_endpoint = False
+        if keep_current_ollama_endpoint:
+            # Mid-session `/model <name>` on a local Ollama-compatible endpoint
+            # must keep the endpoint the session is already using. Re-resolving
+            # bare `custom` from config can fall through to an unrelated default
+            # provider, causing validation to probe the wrong model-list URL.
+            api_key = current_api_key or "no-key-required"
+            base_url = current_base_url
+            api_mode = determine_api_mode(current_provider, base_url)
+            validation_headers = ollama_headers
+        else:
+            try:
+                runtime = resolve_runtime_provider(
+                    requested=current_provider,
+                    target_model=new_model,
+                )
+                api_key = runtime.get("api_key", "")
+                base_url = runtime.get("base_url", "")
+                api_mode = runtime.get("api_mode", "")
+                validation_headers = runtime.get("extra_headers") or validation_headers
+            except Exception:
+                pass
 
     # --- Direct alias override: use exact base_url from the alias if set ---
     if resolved_alias:
@@ -1663,6 +1980,44 @@ def switch_model(
         if _da is not None and _da.base_url:
             base_url = _da.base_url
             api_mode = ""  # clear so determine_api_mode re-detects from URL
+            if target_provider.strip().lower() == "ollama":
+                _ollama_cfg = _get_provider_config_dict("ollama")
+                _ollama_cfg_base = str(
+                    _ollama_cfg.get("base_url")
+                    or _ollama_cfg.get("api")
+                    or _ollama_cfg.get("url")
+                    or ""
+                ).strip()
+                if _ollama_cfg_base and _same_ollama_native_root(
+                    base_url, _ollama_cfg_base
+                ):
+                    configured_key = str(_ollama_cfg.get("api_key") or "").strip()
+                    if configured_key.startswith("${") and configured_key.endswith("}"):
+                        configured_key = os.environ.get(configured_key[2:-1], "").strip()
+                    if not configured_key:
+                        key_env = str(
+                            _ollama_cfg.get("key_env")
+                            or _ollama_cfg.get("api_key_env")
+                            or ""
+                        ).strip()
+                        if key_env:
+                            configured_key = os.environ.get(key_env, "").strip()
+                    if configured_key:
+                        api_key = configured_key
+                if _ollama_cfg_base and not _same_ollama_native_root(
+                    base_url, _ollama_cfg_base
+                ):
+                    # Do not carry providers.ollama credentials to an alias
+                    # endpoint with a different origin.
+                    validation_headers = {}
+                    suppress_ollama_headers = True
+                    api_key = "no-key-required"
+                elif not _ollama_cfg_base:
+                    # Without an explicit configured root there is no safe
+                    # origin to associate the provider-level headers with.
+                    validation_headers = {}
+                    suppress_ollama_headers = True
+                    api_key = "no-key-required"
             if not api_key:
                 api_key = "no-key-required"
 
@@ -1695,6 +2050,22 @@ def switch_model(
             api_key=api_key,
             base_url=base_url,
             api_mode=api_mode or None,
+            headers=(
+                (
+                    {}
+                    if suppress_ollama_headers
+                    else (validation_headers or _get_ollama_request_headers())
+                )
+                if target_provider.strip().lower() == "ollama"
+                else (
+                    validation_headers
+                    or (
+                        _extra_headers_from_config(user_providers.get(target_provider))
+                        if user_providers and target_provider in user_providers
+                        else None
+                    )
+                )
+            ),
         )
     except Exception as e:
         validation = {
@@ -1798,10 +2169,10 @@ def switch_model(
         base_url = normalize_opencode_base_url(target_provider, api_mode, base_url)
 
     # --- Get capabilities (legacy) ---
-    capabilities = get_model_capabilities(target_provider, new_model)
+    capabilities = get_model_capabilities(target_provider, new_model, allow_network=True)
 
     # --- Get full model info from models.dev ---
-    model_info = get_model_info(target_provider, new_model)
+    model_info = get_model_info(target_provider, new_model, allow_network=True)
 
     # --- Collect warnings ---
     warnings: list[str] = []
@@ -1916,6 +2287,286 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
     return t
 
 
+def _scoped_key_env(name: str) -> str:
+    """Read a provider key env var through the per-profile secret scope.
+
+    The multiplexed gateway installs a secret scope per turn; a raw
+    ``os.environ`` read hands the current profile whatever key happens to be
+    in the process environment — another profile's, in a multiplexer. That is
+    the class swept in 854007d1c for the fallback/aux key reads; the picker's
+    ``key_env`` reads were not covered.
+
+    Identical to ``os.getenv`` when multiplexing is off. A fail-closed
+    ``UnscopedSecretError`` (multiplexing on, no scope installed) means "no
+    credential visible for this profile here", which is exactly how the picker
+    already treats a missing key.
+    """
+    if not name:
+        return ""
+    try:
+        from agent.secret_scope import get_secret
+
+        return (get_secret(name, "") or "").strip()
+    except Exception:
+        return ""
+
+
+# --- Parallel prefetch for provider model catalogs -----------------------
+#
+# When the 1h disk cache lapses (or on first cold open), list_authenticated_providers()
+# calls cached_provider_model_ids() serially for each authed provider.  Each call
+# that misses the cache blocks on a live /v1/models HTTP round-trip (1-8s per
+# provider depending on endpoint latency).  With 10+ authed providers the
+# cumulative serial blocking time is 15-30+ seconds.
+#
+# This prefetch function runs those same cached_provider_model_ids() calls in
+# parallel via ThreadPoolExecutor before the main picker build loop starts.
+# The main loop then hits warm cache entries instead of blocking on live
+# fetches.  Providers whose cache was already fresh (SWR or within TTL) are
+# skipped entirely — no wasted network calls.
+#
+# Net effect on a 13-provider setup with an expired cache:
+#   Before: ~20s serial blocking (sum of all provider latencies)
+#   After:  ~8s parallel (max single provider latency), rest served from cache
+
+_PARALLEL_PREFETCH_WORKERS = 8
+
+
+def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
+    """Fetch model catalogs for multiple providers in parallel.
+
+    Only providers whose cache entry is stale or missing are fetched; fresh
+    entries are skipped to avoid unnecessary network calls.  Each worker uses
+    :func:`update_provider_cache_entry` (thread-safe) to persist its result,
+    so concurrent writes to ``provider_models_cache.json`` don't clobber each
+    other.
+
+    :param provider_slugs: Hermes provider IDs to prefetch (e.g. ``["openrouter",
+        "anthropic", "deepseek"]``).  Unknown providers are silently skipped.
+    """
+    from hermes_cli.models import cached_provider_model_ids
+
+    # Quick-stale-check: skip providers whose cache is already fresh so we
+    # don't waste network calls on a warm cache.  We check staleness the same
+    # way cached_provider_model_ids does internally: load the cache, compare
+    # age to TTL.  This is a read-only check — if the cache file changes
+    # between this check and the actual fetch, cached_provider_model_ids will
+    # still do the right thing (it re-reads the cache internally).
+    from hermes_cli.models import (
+        _load_provider_models_cache,
+        _credential_fingerprint,
+        _PROVIDER_MODELS_CACHE_TTL,
+        normalize_provider,
+    )
+
+    now = time.time()
+    stale_slugs: list[str] = []
+    cache = _load_provider_models_cache()
+    for slug in provider_slugs:
+        normalized = normalize_provider(slug) or (slug or "")
+        if not normalized:
+            continue
+        entry = cache.get(normalized)
+        fp = _credential_fingerprint(normalized)
+        if (
+            isinstance(entry, dict)
+            and entry.get("fp") == fp
+            and isinstance(entry.get("models"), list)
+            and entry["models"]
+        ):
+            age = now - float(entry.get("at", 0))
+            if age < _PROVIDER_MODELS_CACHE_TTL:
+                continue  # fresh, skip
+        stale_slugs.append(normalized)
+
+    if not stale_slugs:
+        return
+
+    import concurrent.futures
+
+    def _fetch_one(slug: str) -> None:
+        try:
+            models = cached_provider_model_ids(slug, force_refresh=True)
+            # cached_provider_model_ids already persists the result, but in a
+            # non-locked read-modify-write.  Re-persist via the thread-safe
+            # path to guarantee no lost writes under concurrency.
+            if models:
+                from hermes_cli.models import update_provider_cache_entry
+                update_provider_cache_entry(slug, models)
+        except Exception:
+            pass  # best-effort; picker falls back to curated list
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(_PARALLEL_PREFETCH_WORKERS, len(stale_slugs)),
+        thread_name_prefix="model-cache-prefetch",
+    ) as executor:
+        list(executor.map(_fetch_one, stale_slugs))
+
+
+def _collect_authed_provider_slugs(
+    models_dev_data: dict,
+    curated: dict[str, list[str]],
+    excluded: list[str],
+) -> list[str]:
+    """Quick-scan which providers have credentials, without fetching model lists.
+
+    Mirrors the credential-check logic from sections 1, 2, and 2b of
+    :func:`list_authenticated_providers` but **only** collects the provider
+    slugs — it never calls ``cached_provider_model_ids``.  The returned list
+    is consumed by :func:`_prefetch_provider_models_parallel` to warm the disk
+    cache in parallel before the serial picker build loop starts.
+
+    :param models_dev_data: The models.dev registry dict (from ``fetch_models_dev()``).
+    :param curated: The curated model-lists dict (``_PROVIDER_MODELS`` + extras).
+    :param excluded: Provider slugs to exclude (from ``model_catalog.excluded_providers``).
+    :returns: List of normalized provider slugs that have credentials.
+    """
+    import os
+    from agent.models_dev import PROVIDER_TO_MODELS_DEV
+    from hermes_cli.auth import PROVIDER_REGISTRY, _load_auth_store
+    from hermes_cli.providers import HERMES_OVERLAYS, ALIASES as _PROVIDER_ALIAS_TABLE
+    from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS, CANONICAL_PROVIDERS
+
+    _excluded_set = {str(p).strip().lower() for p in excluded if p}
+    slugs: list[str] = []
+    seen: set[str] = set()
+
+    # --- Section 1: Hermes-mapped providers (PROVIDER_TO_MODELS_DEV) ---
+    for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
+        _alias_target = _PROVIDER_ALIAS_TABLE.get(hermes_id)
+        if (
+            _alias_target
+            and _alias_target != hermes_id
+            and _alias_target in _AGG_PROVIDERS
+        ):
+            continue
+        _canonical = hermes_id
+        try:
+            from providers import get_provider_profile as _gpp
+            _prof = _gpp(hermes_id)
+            if _prof is not None:
+                _canonical = _prof.name
+        except Exception:
+            pass
+        if _canonical != hermes_id:
+            continue
+        if hermes_id.lower() in seen:
+            continue
+        if hermes_id.lower() in _excluded_set or mdev_id.lower() in _excluded_set:
+            continue
+        pdata = models_dev_data.get(mdev_id)
+        if not isinstance(pdata, dict):
+            continue
+        pconfig = PROVIDER_REGISTRY.get(hermes_id)
+        if pconfig and pconfig.auth_type != "api_key":
+            continue
+        from hermes_cli.auth import is_runtime_provider_routable
+        if not is_runtime_provider_routable(hermes_id):
+            continue
+        if pconfig and pconfig.api_key_env_vars:
+            env_vars = list(pconfig.api_key_env_vars)
+        else:
+            env_vars = pdata.get("env", [])
+            if not isinstance(env_vars, list):
+                continue
+        has_creds = any(_scoped_key_env(ev) for ev in env_vars)
+        if not has_creds:
+            try:
+                store = _load_auth_store()
+                raw_pool_present = bool(
+                    store and store.get("credential_pool", {}).get(hermes_id)
+                )
+                if raw_pool_present:
+                    has_creds = _credential_pool_is_usable(
+                        hermes_id, raw_pool_present=True
+                    )
+            except Exception:
+                pass
+        if has_creds:
+            slugs.append(hermes_id)
+            seen.add(hermes_id.lower())
+
+    # --- Section 2: Hermes-only providers (HERMES_OVERLAYS) ---
+    _mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
+    for pid, overlay in HERMES_OVERLAYS.items():
+        if pid.lower() in seen:
+            continue
+        hermes_slug = _mdev_to_hermes.get(pid, pid)
+        if hermes_slug.lower() in seen:
+            continue
+        if pid.lower() in _excluded_set or hermes_slug.lower() in _excluded_set:
+            continue
+        has_creds = False
+        if overlay.auth_type == "aws_sdk":
+            # Skip AWS SDK providers in prefetch — credential detection is heavier
+            continue
+        elif overlay.auth_type == "vertex":
+            try:
+                from agent.vertex_adapter import has_vertex_credentials
+                has_creds = has_vertex_credentials()
+            except Exception:
+                pass
+        elif overlay.extra_env_vars:
+            has_creds = any(_scoped_key_env(ev) for ev in overlay.extra_env_vars)
+        if not has_creds and overlay.auth_type == "api_key":
+            for _key in (pid, hermes_slug):
+                pcfg = PROVIDER_REGISTRY.get(_key)
+                if pcfg and pcfg.api_key_env_vars:
+                    if any(_scoped_key_env(ev) for ev in pcfg.api_key_env_vars):
+                        has_creds = True
+                        break
+        if not has_creds:
+            try:
+                store = _load_auth_store()
+                providers_store = store.get("providers", {}) if store else {}
+                if pid in providers_store or hermes_slug in providers_store:
+                    has_creds = True
+            except Exception:
+                pass
+        if not has_creds:
+            try:
+                if _credential_pool_is_usable(hermes_slug):
+                    has_creds = True
+            except Exception:
+                pass
+        if has_creds:
+            slugs.append(hermes_slug)
+            seen.add(pid.lower())
+            seen.add(hermes_slug.lower())
+
+    # --- Section 2b: Canonical providers cross-check ---
+    for _cp in CANONICAL_PROVIDERS:
+        if _cp.slug.lower() in seen:
+            continue
+        if _cp.slug.lower() in _excluded_set:
+            continue
+        _cp_config = PROVIDER_REGISTRY.get(_cp.slug)
+        _cp_has_creds = False
+        if _cp_config and _cp_config.api_key_env_vars:
+            _cp_has_creds = any(_scoped_key_env(ev) for ev in _cp_config.api_key_env_vars)
+        if not _cp_has_creds:
+            try:
+                _cp_store = _load_auth_store()
+                _cp_providers_store = _cp_store.get("providers", {}) if _cp_store else {}
+                if _cp.slug in _cp_providers_store:
+                    _cp_has_creds = True
+            except Exception:
+                pass
+        if not _cp_has_creds:
+            try:
+                if _credential_pool_is_usable(_cp.slug):
+                    _cp_has_creds = True
+            except Exception:
+                pass
+        if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
+            continue  # skip AWS SDK in prefetch
+        if _cp_has_creds:
+            slugs.append(_cp.slug)
+            seen.add(_cp.slug.lower())
+
+    return slugs
+
+
 def list_authenticated_providers(
     current_provider: str = "",
     current_base_url: str = "",
@@ -1990,7 +2641,6 @@ def list_authenticated_providers(
             clear_provider_models_cache()
         except Exception:
             pass
-
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
@@ -2119,6 +2769,29 @@ def list_authenticated_providers(
         if not live and is_current_lmstudio and current_model:
             live = [current_model]
         curated["lmstudio"] = live
+
+    # --- Parallel cache prefetch ---------------------------------------------
+    # The serial loops below (sections 1, 2, 2b) each call
+    # cached_provider_model_ids(slug) which blocks on a live /v1/models HTTP
+    # round-trip when the disk cache is stale or missing.  With many authed
+    # providers those serial round-trips stack to 15-30s on a cold/expired
+    # cache.  Pre-scanning which providers have credentials (without fetching
+    # their model lists) and warming their cache entries in parallel makes
+    # the subsequent serial calls hit fresh cache entries instead.
+    #
+    # Skipped entirely when refresh=True (the serial path already force-refreshes)
+    # and when there are 3 or fewer authed providers (serial is fast enough;
+    # avoids thread-pool overhead for the common 1-2 provider case).
+    _prefetch_slugs: list[str] = []
+    if not refresh:
+        _prefetch_slugs = _collect_authed_provider_slugs(
+            data, curated, excluded_providers or []
+        )
+    if len(_prefetch_slugs) > 3:
+        try:
+            _prefetch_provider_models_parallel(_prefetch_slugs)
+        except Exception:
+            pass  # best-effort; serial path still works as fallback
 
     # --- 1. Check Hermes-mapped providers ---
     from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
@@ -2555,13 +3228,15 @@ def list_authenticated_providers(
                 or ep_cfg.get("url", "")
                 or ""
             )
-            key_env = str(ep_cfg.get("key_env", "") or "").strip()
+            key_env = str(
+                ep_cfg.get("key_env") or ep_cfg.get("api_key_env") or ""
+            ).strip()
             inline_api_key = str(ep_cfg.get("api_key", "") or "").strip()
             api_mode = str(
                 ep_cfg.get("api_mode")
                 or ep_cfg.get("transport")
                 or ""
-            ).strip().lower()
+            ).strip().lower() or None
             credential_identity = (
                 inline_api_key
                 if inline_api_key
@@ -2624,6 +3299,12 @@ def list_authenticated_providers(
                     "models": [],
                     "has_explicit_models": False,
                     "ep_cfg": ep_cfg,  # used below for discover_models / api_key
+                    # Part of group_key, so it is constant across the group.
+                    # The render loop below needs it to key the model cache:
+                    # api_mode changes the wire protocol (``x-api-key`` vs
+                    # ``Authorization: Bearer``), so two rows that differ only
+                    # by it must not share a cached catalog.
+                    "api_mode": api_mode,
                     "raw_names": [],
                     "aliases": set(),
                 }
@@ -2631,12 +3312,15 @@ def list_authenticated_providers(
             for _m in entry_models:
                 if _m and _m not in ep_groups[group_key]["models"]:
                     ep_groups[group_key]["models"].append(_m)
-            # Track explicit ``models:`` declarations separately from the
-            # merged list: a singular ``default_model``/``model`` is only the
-            # active selection and must not be mistaken for the user narrowing
-            # the endpoint to a curated subset (mirrors section 4's
-            # declaration-tracking; see #40542 / PR #61928).
-            if entry_declared_models:
+            # Track allowlist-shaped ``models:`` separately from the merged
+            # list: a singular ``default_model``/``model`` is only the active
+            # selection and must not suppress discovery (see #40542 / PR
+            # #61928). Dict-shaped ``models:`` is context_length metadata from
+            # ``hermes model``, not an allowlist — see
+            # ``_models_config_is_allowlist``.
+            if _models_config_is_allowlist(
+                ep_cfg.get("models"), _entry_models_discovered(ep_cfg)
+            ):
                 ep_groups[group_key]["has_explicit_models"] = True
             ep_groups[group_key]["raw_names"].append(display_name)
             ep_groups[group_key]["aliases"].update(
@@ -2654,7 +3338,7 @@ def list_authenticated_providers(
             # explicit models: dict — avoid a misleading zero count in /model.
             if not models_list:
                 url_lower = str(api_url).strip().lower()
-                if "api.openai.com" in url_lower:
+                if base_url_host_matches(url_lower, "api.openai.com"):
                     fb = curated.get("openai") or []
                     if fb:
                         models_list = list(fb)
@@ -2663,18 +3347,22 @@ def list_authenticated_providers(
             # unless the provider explicitly opts out via discover_models: false.
             # Policy mirrors Section 4's should_probe logic:
             # - With an api_key: always probe (user opted into the endpoint).
-            # - Without an api_key but with an explicit ``models:`` list:
-            #   skip — the user is narrowing a public endpoint to a specific
-            #   subset. A singular ``default_model``/``model`` does NOT count
-            #   as narrowing (it's just the active selection) and must not
-            #   suppress discovery — mirrors section 4 / #40542.
-            # - Without an api_key AND no explicit models: probe anyway so
-            #   bare-endpoint providers (local llama.cpp / Ollama servers)
-            #   still show their full model catalog.
+            # - Without an api_key but with an allowlist-shaped ``models:``
+            #   (list/string): skip — the user narrowed a public endpoint.
+            #   A singular ``default_model``/``model`` does NOT count as
+            #   narrowing (mirrors section 4 / #40542).
+            # - A dict-shaped ``models:`` is per-model metadata
+            #   (context_length), not an allowlist — still probe so local
+            #   Ollama/llama.cpp match ``hermes model``. Pin with
+            #   ``discover_models: false`` instead.
+            # - Without an api_key AND no allowlist: probe anyway so bare
+            #   local endpoints still show their full model catalog.
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
-                key_env = str(ep_cfg.get("key_env", "") or "").strip()
-                api_key = os.environ.get(key_env, "").strip() if key_env else ""
+                key_env = str(
+                    ep_cfg.get("key_env") or ep_cfg.get("api_key_env") or ""
+                ).strip()
+                api_key = _scoped_key_env(key_env) if key_env else ""
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
@@ -2693,20 +3381,65 @@ def list_authenticated_providers(
                     and _ep_url_norm == _current_base_url_norm
                 )
             )
-            should_probe = _can_probe_custom_provider(row_is_current=_ep_is_current) and bool(api_url) and discover and (
-                bool(api_key) or not has_explicit_models
+            # See section 4: when live probing is suppressed for latency, a
+            # warm same-fingerprint cache entry still serves the full catalog
+            # with no network round-trip.
+            #
+            # ``has_explicit_models`` gates the *probe*, not the cache read:
+            # it exists so a keyless endpoint with a declared catalog is not
+            # hammered over the network (5f00f36ba, 1039e90b5). Reading a
+            # catalog an earlier probe already paid for costs nothing, and
+            # applying the probe gate to it re-pins the endpoint — see
+            # ``_discovery_allowed`` in section 4 for the full rationale.
+            _discovery_allowed = bool(api_url) and discover
+            _probe_live = (
+                _discovery_allowed
+                and (bool(api_key) or not has_explicit_models)
+                and _can_probe_custom_provider(row_is_current=_ep_is_current)
             )
-            if should_probe:
+            native_catalog_empty = False
+            if _probe_live:
                 try:
-                    from hermes_cli.models import fetch_api_models
-                    live_models = fetch_api_models(
+                    native_catalog_provider = (
+                        ep_name
+                        if str(ep_name).strip().lower()
+                        in {"ollama", "custom:ollama"}
+                        else "custom"
+                    )
+                    live_models = _fetch_picker_live_models(
                         api_key,
                         api_url,
+                        native_catalog_provider,
+                        has_explicit_models,
                         headers=_extra_headers_from_config(ep_cfg) or None,
+                        timeout=(1.5 if for_picker else 5.0),
+                        api_mode=ep_cfg.get("api_mode"),
                     )
-                    if live_models:
+                    if isinstance(live_models, _NativePickerModelList):
+                        native_catalog_empty = not live_models
+                    if live_models is not None and (
+                        live_models
+                        or not has_explicit_models
+                        or isinstance(live_models, _NativePickerModelList)
+                    ):
                         models_list = live_models
                 except Exception:
+                    pass
+            elif _discovery_allowed:
+                try:
+                    from hermes_cli.models import cached_fetch_api_models
+
+                    cached_models = cached_fetch_api_models(
+                        api_key,
+                        api_url,
+                        cache_only=True,
+                        timeout=(1.5 if for_picker else 5.0),
+                        headers=_extra_headers_from_config(ep_cfg) or None,
+                        api_mode=ep_cfg.get("api_mode"),
+                    )
+                    if cached_models:
+                        models_list = cached_models
+                except _MODEL_DISCOVERY_ERRORS:
                     pass
 
             results.append({
@@ -2718,6 +3451,7 @@ def list_authenticated_providers(
                 "total_models": len(models_list) if models_list else 0,
                 "source": "user-config",
                 "api_url": api_url,
+                "native_catalog_empty": native_catalog_empty,
             })
             seen_slugs.add(ep_name.lower())
             seen_slugs.update(_ep_aliases)
@@ -2765,15 +3499,35 @@ def list_authenticated_providers(
         )
     ):
         _models = [current_model] if current_model else []
-        if refresh or probe_current_custom_provider:
-            try:
-                from hermes_cli.models import fetch_api_models
+        # With live probing suppressed, use the shared stale/cache path;
+        # otherwise probe through the native-aware picker helper.
+        native_catalog_empty = False
+        _probe_live = bool(refresh or probe_current_custom_provider)
+        try:
+            if _probe_live:
+                _live_models = _fetch_picker_live_models(
+                    "",
+                    str(current_base_url).strip().rstrip("/"),
+                    "custom",
+                    False,
+                    timeout=(1.5 if for_picker else 5.0),
+                )
+            else:
+                from hermes_cli.models import cached_fetch_api_models
 
-                _live_models = fetch_api_models("", str(current_base_url).strip().rstrip("/"))
-                if _live_models:
-                    _models = _live_models
-            except Exception:
-                pass
+                _live_models = cached_fetch_api_models(
+                    "",
+                    str(current_base_url).strip().rstrip("/"),
+                    cache_only=True,
+                    timeout=(1.5 if for_picker else 5.0),
+                )
+            if _live_models is not None:
+                native_catalog_empty = isinstance(
+                    _live_models, _NativePickerModelList
+                ) and not _live_models
+                _models = _live_models
+        except Exception:
+            pass
         results.append({
             "slug": "custom",
             "name": "Custom endpoint",
@@ -2783,6 +3537,7 @@ def list_authenticated_providers(
             "total_models": len(_models),
             "source": "model-config",
             "api_url": str(current_base_url).strip().rstrip("/"),
+            "native_catalog_empty": native_catalog_empty,
         })
         seen_slugs.add("custom")
 
@@ -2825,14 +3580,12 @@ def list_authenticated_providers(
                 continue
             inline_api_key = (entry.get("api_key") or "").strip()
             key_env = (entry.get("key_env") or "").strip()
-            api_key = inline_api_key or (
-                os.environ.get(key_env, "").strip() if key_env else ""
-            )
+            api_key = inline_api_key or _scoped_key_env(key_env)
             api_mode = str(
                 entry.get("api_mode")
                 or entry.get("transport")
                 or ""
-            ).strip().lower()
+            ).strip().lower() or None
             credential_identity = (
                 inline_api_key
                 if inline_api_key
@@ -2878,7 +3631,13 @@ def list_authenticated_providers(
                     "models": [],
                     "has_explicit_models": False,
                     "discover_models": discover,
+                    "api_mode": api_mode,
                     "extra_headers": entry_extra_headers,
+                    # Part of group_key, so constant across the group. Needed
+                    # in the render loop to key the model cache — api_mode
+                    # selects the wire protocol, so rows differing only by it
+                    # must not share a cached catalog.
+                    "api_mode": api_mode,
                     "aliases": set(),
                 }
             else:
@@ -2906,8 +3665,14 @@ def list_authenticated_providers(
             if default_model and default_model not in groups[group_key]["models"]:
                 groups[group_key]["models"].append(default_model)
 
-            declared_models = _declared_model_ids(entry.get("models", {}))
-            if declared_models:
+            models_field = entry.get("models", {})
+            declared_models = _declared_model_ids(models_field)
+            # Dict-shaped models: is context_length metadata from
+            # ``_save_custom_provider``, not an allowlist — see
+            # ``_models_config_is_allowlist``.
+            if _models_config_is_allowlist(
+                models_field, _entry_models_discovered(entry)
+            ):
                 groups[group_key]["has_explicit_models"] = True
             for model_id in declared_models:
                 if model_id not in groups[group_key]["models"]:
@@ -2969,24 +3734,20 @@ def list_authenticated_providers(
             # Live-discovery policy:
             # - With an api_key, the user has explicitly opted into the
             #   endpoint and live /models is the source of truth — replace
-            #   the (possibly partial) ``models:`` subset configured for
-            #   context-length overrides with the full live catalog.
-            #   This is the Bifrost / aggregator-gateway case.
-            # - Without an api_key but with an explicit ``models:`` list,
-            #   the user is narrowing a public endpoint to a specific subset
-            #   (e.g. ollama.com /v1/models returns 35 models but the user
-            #   only wants 4). Preserve the explicit list and skip live
-            #   discovery. The singular ``model:`` field is only the current
-            #   active selection and must not suppress discovery on local
-            #   no-key endpoints.
-            # - Without an api_key AND no explicit models, fall through to
-            #   live discovery so bare-endpoint custom providers (local
-            #   llama.cpp / Ollama servers) still appear populated.
+            #   the (possibly partial) ``models:`` subset with the full
+            #   live catalog (Bifrost / aggregator-gateway case).
+            # - Without an api_key but with an allowlist-shaped ``models:``
+            #   (list/string), the user narrowed a public endpoint (e.g.
+            #   ollama.com). Preserve that list and skip live discovery.
+            # - A dict-shaped ``models:`` is per-model metadata written by
+            #   ``_save_custom_provider`` for context_length — not an
+            #   allowlist. Still probe so Desktop/Telegram match
+            #   ``hermes model``. Pin a dict catalog with
+            #   ``discover_models: false``.
+            # - The singular ``model:`` field is only the current active
+            #   selection and must not suppress discovery.
             # - When discover_models: false is set, skip live discovery and
-            #   keep the explicit ``models:`` list regardless of whether an
-            #   api_key is present. This supports endpoints that expose a
-            #   full aggregator catalog via /models but only serve a subset
-            #   (parity with section 3's user ``providers:`` behaviour).
+            #   keep the configured ``models:`` list regardless of api_key.
             _grp_is_current = (
                 slug.lower() == _current_provider_norm
                 or _current_provider_norm in {
@@ -2999,31 +3760,83 @@ def list_authenticated_providers(
                 and _grp_url_norm == _current_base_url_norm
                 and _current_base_url_group_count == 1
             )
-            should_probe = (
-                _can_probe_custom_provider(row_is_current=_grp_is_current)
-                and bool(api_url)
+            # Discovery is what the user's config asks for; probing is how we
+            # get it. When the caller suppresses live probing for latency, the
+            # already-discovered catalog on disk still answers the question
+            # without a round-trip — skipping it too is what collapsed a
+            # multi-model endpoint to its config-declared subset.
+            #
+            # ``has_explicit_models`` belongs on the probe side of that line.
+            # It is a network-cost gate: don't hammer a keyless endpoint that
+            # already declares its catalog (5f00f36ba, 1039e90b5). It is not a
+            # user pin — ``discover_models: false`` is the documented way to
+            # pin, and it is honored above.
+            #
+            # Keeping it on the discovery side re-pins the endpoint it was
+            # meant to spare, because a successful probe calls
+            # ``_save_discovered_models_to_config()``, which writes a plain
+            # list — the exact shape ``_models_config_is_allowlist()`` reads
+            # back as an explicit allowlist. A keyless local server therefore
+            # self-pins on its first probe and can never widen again. f66319097
+            # already carved the dict shape out of that trap for the same
+            # reason; the list shape is the other door into it.
+            _discovery_allowed = bool(api_url) and grp.get("discover_models", True)
+            _probe_live = (
+                _discovery_allowed
                 and (bool(api_key) or not grp.get("has_explicit_models"))
-                and grp.get("discover_models", True)
+                and _can_probe_custom_provider(row_is_current=_grp_is_current)
             )
-            if should_probe:
+            native_catalog_empty = False
+            if _probe_live:
                 try:
-                    from hermes_cli.models import fetch_api_models
-
-                    live_models = fetch_api_models(
+                    native_catalog_provider = (
+                        "ollama"
+                        if str(slug).strip().lower() == "ollama"
+                        or str(grp.get("name") or "").strip().lower() == "ollama"
+                        else "custom"
+                    )
+                    live_models = _fetch_picker_live_models(
                         api_key,
                         api_url,
+                        native_catalog_provider,
+                        bool(grp.get("has_explicit_models")),
                         headers=grp.get("extra_headers") or None,
+                        timeout=(1.5 if for_picker else 5.0),
+                        api_mode=grp.get("api_mode"),
                     )
-                    if live_models:
+                    if live_models is not None and (
+                        live_models
+                        or not bool(grp.get("has_explicit_models"))
+                        or isinstance(live_models, _NativePickerModelList)
+                    ):
+                        if isinstance(live_models, _NativePickerModelList):
+                            native_catalog_empty = not live_models
                         grp["models"] = live_models
                         grp["total_models"] = len(live_models)
-                        # Auto-save discovered models back to config so
-                        # ``discover_models: false`` has a populated cache
-                        # on the next read.  A failed save is non-fatal.
                         _save_discovered_models_to_config(
-                            api_url, live_models
+                            api_url,
+                            live_models,
+                            api_mode=grp.get("api_mode"),
+                            headers=grp.get("extra_headers") or None,
                         )
                 except Exception:
+                    pass
+            elif _discovery_allowed:
+                try:
+                    from hermes_cli.models import cached_fetch_api_models
+
+                    cached_models = cached_fetch_api_models(
+                        api_key,
+                        api_url,
+                        cache_only=True,
+                        timeout=(1.5 if for_picker else 5.0),
+                        headers=grp.get("extra_headers") or None,
+                        api_mode=grp.get("api_mode"),
+                    )
+                    if cached_models:
+                        grp["models"] = cached_models
+                        grp["total_models"] = len(cached_models)
+                except _MODEL_DISCOVERY_ERRORS:
                     pass
             results.append({
                 "slug": slug,
@@ -3034,6 +3847,7 @@ def list_authenticated_providers(
                 "total_models": len(grp["models"]),
                 "source": "user-config",
                 "api_url": grp["api_url"],
+                "native_catalog_empty": native_catalog_empty,
             })
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
@@ -3070,7 +3884,7 @@ def list_authenticated_providers(
     # which branch emitted the row.
     if current_model:
         for _row in results:
-            if not _row.get("is_current"):
+            if not _row.get("is_current") or _row.get("native_catalog_empty"):
                 continue
             _models = _row.get("models") or []
             if current_model not in _models:

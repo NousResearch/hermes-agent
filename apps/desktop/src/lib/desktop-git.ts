@@ -2,6 +2,7 @@ import type {
   HermesGitBaseBranch,
   HermesGitBranch,
   HermesGitWorktree,
+  HermesRepoPullRequests,
   HermesRepoStatus,
   HermesReviewList,
   HermesReviewShipInfo
@@ -91,6 +92,13 @@ const remoteGit: GitBridge = {
     push: repoPath => gitPost('review/push', { path: repoPath }),
 
     shipInfo: repoPath => gitGet<HermesReviewShipInfo>('review/ship-info', { path: repoPath }),
+
+    prList: (repoPath, branches, numbers) =>
+      gitPost<HermesRepoPullRequests>('review/pr-list', { branches, numbers: numbers ?? [], path: repoPath }),
+
+    // Remote gateways have no PR-comment route yet; resolve to null so the
+    // paste degrades to a plain URL instead of throwing mid-paste.
+    fetchPrComment: async () => null,
 
     createPr: repoPath => gitPost('review/create-pr', { path: repoPath })
   },

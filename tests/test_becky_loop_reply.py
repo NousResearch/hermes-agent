@@ -154,6 +154,22 @@ def test_generator_caps_a_long_deadline_at_thirty_seconds() -> None:
     assert 29 < provider.calls[0]["timeout"] <= 30
 
 
+def test_generator_accepts_a_five_thousand_character_comment() -> None:
+    provider = _FakeReplyProvider({"answer": "I will review the journal update."})
+
+    answer = asyncio.run(
+        LoopReplyGenerator(provider).generate(
+            row={},
+            transcript=[],
+            comment="x" * 5_000,
+            deadline=time.monotonic() + 30,
+        )
+    )
+
+    assert answer == "I will review the journal update."
+    assert len(provider.calls[0]["messages"][1]["content"]) > 5_000
+
+
 def test_generator_limits_provider_context_to_the_most_recent_safe_chunk() -> None:
     """Reply context remains within the summarizer's 48 KiB provider boundary."""
     provider = _FakeReplyProvider({"answer": "I will use the latest context."})

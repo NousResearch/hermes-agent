@@ -18,6 +18,7 @@ from gateway.becky_loop_summarizer import (
 
 
 _REPLY_MAX_TOKENS = 512
+_REPLY_COMMENT_MAX_CHARS = 5_000
 _REPLY_MAX_CHARS = 2_000
 _REPLY_TIMEOUT_SECONDS = 30.0
 _REPLY_MAX_PACKET_BYTES = 48 * 1024
@@ -133,7 +134,7 @@ class LoopReplyGenerator:
             messages = extract_visible_messages(transcript, hidden_values)
             chunk_visible_messages(messages)
             safe_comment = _safe_public_text(comment, hidden_values)
-            if not safe_comment or len(safe_comment) > _REPLY_MAX_CHARS:
+            if not safe_comment or len(safe_comment) > _REPLY_COMMENT_MAX_CHARS:
                 raise ReplyUnavailable()
             messages = _latest_packet_messages(messages, safe_comment)
             raw = await self._provider.complete(

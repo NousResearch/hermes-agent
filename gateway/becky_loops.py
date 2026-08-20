@@ -86,6 +86,7 @@ _REPLY_DEADLINE_SECONDS = 30.0
 _REPLY_ATTEMPT_TTL_SECONDS = 15 * 60.0
 _MAX_REPLY_ATTEMPTS = 256
 _MAX_REPLY_TEXT_CHARS = 2_000
+_MAX_REPLY_COMMENT_CHARS = 5_000
 _SESSION_PAGE_SIZE = 200
 _MAX_SESSION_SCAN = 10_000
 _TELEGRAM_ID_RE = re.compile(r"^-?\d+$")
@@ -165,14 +166,27 @@ class TelegramTopicSender:
         except Exception:
             raise _TopicSendFailure() from None
         raw_response = getattr(result, "raw_response", None)
+        message_id = str(getattr(result, "message_id", "") or "").strip()
+        if isinstance(raw_response, dict):
+            raw_message_ids = raw_response.get("message_ids")
+            if isinstance(raw_message_ids, list):
+                message_ids = [
+                    item.strip()
+                    for item in raw_message_ids
+                    if isinstance(item, str) and item.strip()
+                ]
+                if message_ids:
+                    # Telegram splits long comments into multiple messages;
+                    # anchor Becky’s answer to the final chunk.
+                    message_id = message_ids[-1]
         if (
             not bool(getattr(result, "success", False))
-            or not str(getattr(result, "message_id", "") or "").strip()
+            or not message_id
             or isinstance(raw_response, dict)
             and bool(raw_response.get("thread_fallback"))
         ):
             raise _TopicSendFailure()
-        return TopicSendReceipt(message_id=str(result.message_id))
+        return TopicSendReceipt(message_id=message_id)
 
 
 @dataclass
@@ -988,7 +1002,7 @@ class BeckyLoopsBridgeServer:
             and isinstance(params.get("expected_revision"), str)
             and _REVISION_RE.fullmatch(params["expected_revision"]) is not None
             and isinstance(text, str)
-            and 1 <= len(text.strip()) <= _MAX_REPLY_TEXT_CHARS
+            and 1 <= len(text.strip()) <= _MAX_REPLY_COMMENT_CHARS
             and isinstance(params.get("idempotency_key"), str)
             and _UUID_RE.fullmatch(params["idempotency_key"]) is not None
         )

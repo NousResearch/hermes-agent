@@ -677,7 +677,7 @@ async def test_bridge_keeps_reply_unavailable_when_sender_is_missing() -> None:
         {**reply_params(), "expected_revision": "SHA256:" + "a" * 64},
         {**reply_params(), "text": ""},
         {**reply_params(), "text": " "},
-        {**reply_params(), "text": "x" * 2_001},
+        {**reply_params(), "text": "x" * 5_001},
         {**reply_params(), "idempotency_key": "not-a-uuid"},
     ],
 )
@@ -700,6 +700,25 @@ async def test_bridge_reply_requires_exact_bounded_params(
     assert response["error"] == {"code": -32600, "message": "protocol"}
     assert sender.calls == []
     assert generator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_bridge_accepts_a_five_thousand_character_comment() -> None:
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator()
+    server = reply_server(sender=sender, generator=generator)
+
+    response = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.reply",
+            "params": reply_params(text="x" * 5_000),
+        })
+    )
+
+    assert response["result"]["answer_state"] == "answered"
+    assert generator.calls[0]["comment"] == "x" * 5_000
 
 
 @pytest.mark.asyncio
@@ -948,6 +967,28 @@ async def test_telegram_topic_sender_adds_labels_and_exact_private_topic_metadat
             },
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_telegram_topic_sender_anchors_to_the_last_long_message_chunk() -> None:
+    outcome = SimpleNamespace(
+        success=True,
+        message_id="901",
+        raw_response={
+            "thread_fallback": False,
+            "message_ids": ["901", "902"],
+        },
+    )
+    sender = becky_loops.TelegramTopicSender(FakeTelegramAdapter([outcome]))
+
+    receipt = await sender.send_topic(
+        chat_id="123456789",
+        thread_id="20197",
+        text="x" * 5_000,
+        reply_to_message_id=None,
+    )
+
+    assert receipt.message_id == "902"
 
 
 @pytest.mark.asyncio

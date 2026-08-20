@@ -300,8 +300,8 @@ class TestRequestShape:
         assert payload["tools"][0]["type"] == "image_generation"
         assert payload["instructions"]
 
-    def test_http_error_body_is_truncated_but_preserved(self, monkeypatch):
-        """A large error body is capped at 500 chars and still surfaced."""
+    def test_http_error_stream_is_bounded_and_preserved(self, monkeypatch):
+        """A streamed error is not fully drained and its message is surfaced."""
         import httpx
 
         body = json.dumps({
@@ -311,8 +311,22 @@ class TestRequestShape:
             },
         })
 
+        class _Body(httpx.SyncByteStream):
+            total_chunks = 128
+
+            def __init__(self):
+                self.yielded = 0
+
+            def __iter__(self):
+                yield body.encode()
+                for _ in range(self.total_chunks):
+                    self.yielded += 1
+                    yield b" " * 4096
+
+        stream = _Body()
+
         def _handler(request):
-            return httpx.Response(400, text=body, request=request)
+            return httpx.Response(400, stream=stream, request=request)
 
         real_client = httpx.Client
         monkeypatch.setattr(
@@ -337,6 +351,7 @@ class TestRequestShape:
         # Body is capped, but the actionable wire message still reaches the user.
         assert "tools' parameter" in message
         assert len(message) < len(body)
+        assert stream.yielded < stream.total_chunks
 
 
 # ── Plugin entry point ──────────────────────────────────────────────────────

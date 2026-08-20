@@ -414,6 +414,7 @@ def _collect_image_b64(
     """Stream a Codex Responses image_generation call and return the b64 image."""
     import httpx
     from agent.auxiliary_client import _codex_cloudflare_headers
+    from agent.bounded_response import read_streaming_error_body
 
     headers = _codex_cloudflare_headers(token)
     headers.update({
@@ -435,10 +436,10 @@ def _collect_image_b64(
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                exc.response.read()
+                body = read_streaming_error_body(exc.response)
                 raise RuntimeError(
                     f"Codex Responses API returned HTTP {exc.response.status_code}: "
-                    f"{_summarize_error_body(exc.response.text)}"
+                    f"{_summarize_error_body(body)}"
                 ) from exc
             for event in _iter_sse_json(response):
                 found = _extract_image_b64(event)

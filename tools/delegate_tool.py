@@ -3019,8 +3019,18 @@ def _run_single_child(
         # it instead of silently accepting zero-content "success".
         _empty_sentinel = summary.strip() == "(empty)"
 
+        # The child loop returns ``failed=True`` (with ``completed=False``)
+        # when it gave up on a structured failure — e.g. "API call failed
+        # after N retries: HTTP 524".  In that case ``final_response`` is an
+        # error message, not usable output, so a non-empty summary must NOT
+        # be read as success.  Deriving status from summary alone reported
+        # these children as "completed" with a ✓ in the batch report.
+        _child_failed = bool(result.get("failed"))
+
         if interrupted:
             status = "interrupted"
+        elif _child_failed:
+            status = "failed"
         elif summary and not _empty_sentinel:
             # A summary means the subagent produced usable output.
             # exit_reason ("completed" vs "max_iterations") already
@@ -3072,6 +3082,10 @@ def _run_single_child(
             exit_reason = "interrupted"
         elif completed:
             exit_reason = "completed"
+        elif _child_failed:
+            # A structured child failure is not budget truncation — reporting
+            # it as "max_iterations" would also set truncated=True below.
+            exit_reason = "error"
         else:
             exit_reason = "max_iterations"
 
@@ -3135,6 +3149,12 @@ def _run_single_child(
         )
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
+            # Classified reason from the child loop (e.g. "rate_limit",
+            # "billing", "server_error") — lets the parent distinguish a
+            # quota wall from a real task error without parsing prose.
+            _failure_reason = result.get("failure_reason")
+            if isinstance(_failure_reason, str) and _failure_reason:
+                entry["failure_reason"] = _failure_reason
 
         # T1-24: schema-validation outcome — emitted ONLY when a schema was
         # requested, so legacy (schema-less) payloads keep their exact shape.

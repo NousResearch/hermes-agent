@@ -228,6 +228,18 @@ class PlatformEntry:
     # targets when the gateway is not co-resident with the cron process.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
 
+    # Optional live authorization hooks for config-backed plugin policies.
+    # Appended to preserve the positional constructor ABI for existing plugins.
+    # The resolver receives the transport-owning profile name (None means the
+    # default profile) and returns optional ``allowed_users`` / ``allow_all_users``
+    # keys. The normalizer maps platform identities to their canonical form.
+    authorization_config_fn: Optional[
+        Callable[[Optional[str]], Optional[dict]]
+    ] = None
+    authorization_user_normalizer: Optional[
+        Callable[[str], Optional[str]]
+    ] = None
+
 
 class PlatformRegistry:
     """Central registry of platform adapters.

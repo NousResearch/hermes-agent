@@ -14,6 +14,7 @@ this suite locks the complementary primary-path fixes:
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -105,6 +106,46 @@ class TestLoadGatewayConfigForRunner:
         assert api.extra.get("key") == "profile-scoped-key-0123456789abcdef"
         assert api.extra.get("host") == "0.0.0.0"
         assert api.extra.get("port") == 8642
+
+
+class TestPrimaryAdapterRuntimeScope:
+    @pytest.mark.asyncio
+    async def test_background_task_inherits_default_profile_policy_scope(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import secret_scope as ss
+        from gateway import run as run_mod
+        from plugins.platforms.buzz import settings
+
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".env").write_text(
+            "BUZZ_ALLOW_ALL_USERS=true\n"
+            "BUZZ_REQUIRE_MENTION=false\n"
+            "BUZZ_THREAD_REQUIRE_MENTION=false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(run_mod, "get_hermes_home", lambda: home)
+        ss.set_multiplex_active(True)
+        release = asyncio.Event()
+
+        async def background_policy():
+            await release.wait()
+            return settings.effective_runtime_policy()
+
+        with run_mod._primary_adapter_runtime_scope(
+            SimpleNamespace(multiplex_profiles=True)
+        ):
+            task = asyncio.create_task(background_policy())
+
+        # The connect scope has exited, but create_task copied its context just
+        # as Buzz poll/WebSocket tasks do during adapter.connect().
+        release.set()
+        policy = await task
+        assert policy["allow_all_users"] is True
+        assert policy["require_mention"] is False
+        assert policy["thread_require_mention"] is False
 
 
 

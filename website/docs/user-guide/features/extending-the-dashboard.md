@@ -398,6 +398,7 @@ Write the JS bundle (a plain IIFE — no build step needed):
   "use strict";
 
   const SDK = window.__HERMES_PLUGIN_SDK__;
+  const registry = window.__HERMES_PLUGINS__;
   const { React } = SDK;
   const { Card, CardHeader, CardTitle, CardContent } = SDK.components;
 
@@ -414,7 +415,7 @@ Write the JS bundle (a plain IIFE — no build step needed):
     );
   }
 
-  window.__HERMES_PLUGINS__.register("my-plugin", MyPage);
+  registry.register("my-plugin", MyPage);
 })();
 ```
 
@@ -538,6 +539,31 @@ SDK.utils.isoTimeAgo         // "5m ago" from ISO string
 // Hooks
 SDK.useI18n                  // i18n hook for multi-language plugins
 ```
+
+#### Deferred registration
+
+Ordinary synchronous calls to `window.__HERMES_PLUGINS__.register(...)` and
+`registerSlot(...)` remain supported. SDK 1.1 bundles that first look up the
+global inside a Promise or timer callback remain compatible on their initial
+load. For replacement-safe registration from any Promise, timer, or
+dynamic-import callback, capture the registry once while the plugin bundle is
+executing and use that captured value in the callback:
+
+```javascript
+const registry = window.__HERMES_PLUGINS__;
+
+import("./feature.js").then(({ MyPage, MySidebar }) => {
+  registry.register("my-plugin", MyPage);
+  registry.registerSlot("my-plugin", "sidebar", MySidebar);
+});
+```
+
+The captured registry is scoped to that loaded manifest asset. It remains
+usable asynchronously while the asset is current, but registrations from an
+older asset are ignored after plugin removal, replacement, or Dashboard
+unmount. After a removal or replacement, unattributed deferred global lookups
+are ignored because the host cannot safely distinguish old code from the
+current generation. Code that registers synchronously does not need to change.
 
 #### Calling your plugin's backend
 

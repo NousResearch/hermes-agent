@@ -1,0 +1,207 @@
+.buzz-policy-section {
+  display: grid;
+  gap: 1.15rem;
+  margin-bottom: 1.5rem;
+  padding: 1.4rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius, 0.65rem);
+  background: var(--color-card);
+  color: var(--color-card-foreground);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
+}
+
+.buzz-policy-hero {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.buzz-policy-logo {
+  display: inline-block;
+  width: 2.75rem;
+  height: 2.75rem;
+  flex: 0 0 auto;
+  background-color: currentColor;
+  -webkit-mask: url("../assets/BuzzLogo24px.svg") center / contain no-repeat;
+  mask: url("../assets/BuzzLogo24px.svg") center / contain no-repeat;
+}
+
+.buzz-policy-kicker,
+.buzz-policy-subtitle,
+.buzz-policy-help,
+.buzz-policy-status,
+.buzz-policy-override {
+  margin: 0;
+  color: var(--color-muted-foreground);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.buzz-policy-kicker {
+  margin-bottom: 0.15rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.buzz-policy-hero h2 {
+  margin: 0 0 0.2rem;
+  font-size: 1.45rem;
+  line-height: 1.15;
+  font-weight: 700;
+}
+
+.buzz-policy-live,
+.buzz-policy-warning,
+.buzz-policy-success,
+.buzz-policy-error,
+.buzz-policy-lock {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.buzz-policy-live {
+  padding: 0.7rem 0.85rem;
+  border-left: 3px solid var(--color-primary);
+  border-radius: 0.25rem;
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+  font-weight: 600;
+}
+
+.buzz-policy-lock {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--color-warning, #d97706);
+  border-radius: 0.4rem;
+}
+
+.buzz-policy-warning,
+.buzz-policy-override {
+  color: var(--color-warning, #d97706);
+}
+
+.buzz-policy-success {
+  color: var(--color-success, #15803d);
+}
+
+.buzz-policy-error {
+  color: var(--color-destructive);
+}
+
+.buzz-policy-section form,
+.buzz-policy-field,
+.buzz-policy-switch-copy {
+  display: grid;
+}
+
+.buzz-policy-section form {
+  gap: 1rem;
+}
+
+.buzz-policy-field {
+  gap: 0.42rem;
+}
+
+.buzz-policy-field > label,
+.buzz-policy-switch-copy strong {
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+
+.buzz-policy-field textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 8rem;
+  resize: vertical;
+  border: 1px solid var(--color-input, var(--color-border));
+  border-radius: calc(var(--radius, 0.5rem) - 0.125rem);
+  background: transparent;
+  color: inherit;
+  padding: 0.75rem 0.85rem;
+  font: 0.8rem/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.buzz-policy-field textarea[aria-invalid="true"] {
+  border-color: var(--color-destructive);
+}
+
+.buzz-policy-field textarea:disabled,
+.buzz-policy-switch input:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.buzz-policy-field textarea:focus-visible,
+.buzz-policy-switch input:focus-visible,
+.buzz-policy-save:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+.buzz-policy-switches {
+  display: grid;
+}
+
+.buzz-policy-switch {
+  display: grid;
+  grid-template-columns: 1.4rem minmax(0, 1fr);
+  gap: 0.8rem;
+  align-items: start;
+  padding: 0.9rem 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.buzz-policy-switch input {
+  width: 1.15rem;
+  height: 1.15rem;
+  margin: 0.18rem 0 0;
+  accent-color: var(--color-primary);
+}
+
+.buzz-policy-switch-copy {
+  gap: 0.2rem;
+}
+
+.buzz-policy-override {
+  display: block;
+  font-weight: 600;
+}
+
+.buzz-policy-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+}
+
+.buzz-policy-save {
+  border: 1px solid var(--color-primary);
+  border-radius: calc(var(--radius, 0.5rem) - 0.125rem);
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+  padding: 0.58rem 0.95rem;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.buzz-policy-save:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+@media (max-width: 640px) {
+  .buzz-policy-section {
+    gap: 0.95rem;
+    padding: 1rem;
+  }
+
+  .buzz-policy-logo {
+    width: 2.35rem;
+    height: 2.35rem;
+  }
+}

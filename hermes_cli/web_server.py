@@ -17936,6 +17936,7 @@ def _discover_dashboard_plugins() -> list:
     search_dirs += [
         (bundled_root / "memory", "bundled"),
         (bundled_root, "bundled"),
+        (bundled_root / "platforms", "bundled"),
     ]
     # GHSA-5qr3-c538-wm9j (#29156): the previous ``os.environ.get(...)``
     # check treated *any* non-empty string as truthy, so ``=0``, ``=false``,

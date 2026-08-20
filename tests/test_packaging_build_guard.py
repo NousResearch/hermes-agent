@@ -11,6 +11,16 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+BUZZ_DASHBOARD_FILES = {
+    "plugins/platforms/buzz/dashboard/assets/BuzzLogo24px.svg",
+    "plugins/platforms/buzz/dashboard/build.py",
+    "plugins/platforms/buzz/dashboard/dist/index.js",
+    "plugins/platforms/buzz/dashboard/dist/style.css",
+    "plugins/platforms/buzz/dashboard/manifest.json",
+    "plugins/platforms/buzz/dashboard/plugin_api.py",
+    "plugins/platforms/buzz/dashboard/src/index.js",
+    "plugins/platforms/buzz/dashboard/src/style.css",
+}
 
 
 def _build_artifact(kind: str, tmp_path, *, nix_build: bool) -> subprocess.CompletedProcess[str]:
@@ -83,14 +93,32 @@ def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_
 
     if kind == "wheel":
         with zipfile.ZipFile(artifacts[0]) as wheel:
-            shipped = set(wheel.namelist())
+            shipped = {name for name in wheel.namelist() if not name.endswith("/")}
+            artifact_bytes = {name: wheel.read(name) for name in BUZZ_DASHBOARD_FILES}
     else:
         with tarfile.open(artifacts[0]) as sdist:
-            shipped = {
-                name.split("/", 1)[1]
-                for name in sdist.getnames()
-                if "/" in name
+            members = {
+                member.name.split("/", 1)[1]: member
+                for member in sdist.getmembers()
+                if "/" in member.name and member.isfile()
             }
+            shipped = set(members)
+            artifact_bytes = {}
+            for name in BUZZ_DASHBOARD_FILES:
+                extracted = sdist.extractfile(members[name])
+                assert extracted is not None
+                artifact_bytes[name] = extracted.read()
 
     missing = sorted(expected - shipped)
     assert not missing, f"{kind} omits bundled plugin manifests: {missing}"
+
+    shipped_buzz_dashboard = {
+        name for name in shipped if name.startswith("plugins/platforms/buzz/dashboard/")
+    }
+    assert shipped_buzz_dashboard == BUZZ_DASHBOARD_FILES
+    assert artifact_bytes["plugins/platforms/buzz/dashboard/src/index.js"] == artifact_bytes[
+        "plugins/platforms/buzz/dashboard/dist/index.js"
+    ]
+    assert artifact_bytes["plugins/platforms/buzz/dashboard/src/style.css"] == artifact_bytes[
+        "plugins/platforms/buzz/dashboard/dist/style.css"
+    ]

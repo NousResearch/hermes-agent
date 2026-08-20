@@ -45,6 +45,8 @@ _ENV_VARS = (
     "BUZZ_POLL_INTERVAL",
     "BUZZ_CLI_PATH",
     "BUZZ_CREDENTIALS_FILE",
+    "BUZZ_REQUIRE_MENTION",
+    "BUZZ_THREAD_REQUIRE_MENTION",
 )
 
 
@@ -245,10 +247,140 @@ class TestMentionGating:
 
 
     @pytest.mark.asyncio
-    async def test_allowlist_blocks_unauthorized(self, adapter):
+    async def test_shared_channel_mention_policy_reloads_and_key_deletion_defaults_true(
+        self, adapter, monkeypatch, tmp_path
+    ):
+        from plugins.platforms.buzz import settings
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        config_path = home / "config.yaml"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(_buzz_mod, "_load_settings", lambda: settings)
+
+        def save(extra):
+            replacement = config_path.with_suffix(".yaml.next")
+            replacement.write_text(
+                "gateway:\n  platforms:\n    buzz:\n      extra:\n"
+                + "".join(f"        {key}: {str(value).lower()}\n" for key, value in extra.items()),
+                encoding="utf-8",
+            )
+            replacement.replace(config_path)
+
+        save({"require_mention": True})
+        await self._poll_with(adapter, _event("e1", content="first", created_at=10))
+        assert adapter._dispatched == []
+
+        save({"require_mention": False})
+        await self._poll_with(adapter, _event("e2", content="second", created_at=11))
+        assert [event["message_id"] for event in adapter._dispatched] == ["e2"]
+
+        save({})
+        await self._poll_with(adapter, _event("e3", content="third", created_at=12))
+        assert [event["message_id"] for event in adapter._dispatched] == ["e2"]
+
+
+    @pytest.mark.asyncio
+    async def test_thread_mention_policy_is_live_strict_and_independent(
+        self, adapter, monkeypatch, tmp_path
+    ):
+        from plugins.platforms.buzz import settings
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        config_path = home / "config.yaml"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(_buzz_mod, "_load_settings", lambda: settings)
+
+        def save(*, include_thread, thread_value=False):
+            thread_line = (
+                f"        thread_require_mention: {str(thread_value).lower()}\n"
+                if include_thread
+                else ""
+            )
+            replacement = config_path.with_suffix(".yaml.next")
+            replacement.write_text(
+                "gateway:\n  platforms:\n    buzz:\n      extra:\n"
+                "        require_mention: false\n"
+                + thread_line,
+                encoding="utf-8",
+            )
+            replacement.replace(config_path)
+
+        def reply(event_id, created_at):
+            event = _event(event_id, content="follow-up", created_at=created_at)
+            event["tags"].extend(
+                [["e", "root-event", "", "root"], ["e", "parent-event", "", "reply"]]
+            )
+            return event
+
+        save(include_thread=False)
+        await self._poll_with(adapter, reply("e1", 10))
+        assert adapter._dispatched == []
+
+        save(include_thread=True, thread_value=False)
+        await self._poll_with(adapter, reply("e2", 11))
+        assert [event["message_id"] for event in adapter._dispatched] == ["e2"]
+
+        save(include_thread=False)
+        await self._poll_with(adapter, reply("e3", 12))
+        await self._poll_with(adapter, _event("e4", content="top level", created_at=13))
+        assert [event["message_id"] for event in adapter._dispatched] == ["e2", "e4"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("tags", "dispatches"),
+        [
+            (["e", "root-event", "", "root"], False),
+            (
+                [
+                    ["e", "root-event", "", "root"],
+                    ["e", "parent-event", "", "reply"],
+                ],
+                False,
+            ),
+            (["e", "parent-event", "", "reply"], False),
+            (["e", "legacy-root"], False),
+            ([["e", "legacy-root"], ["e", "legacy-parent"]], False),
+            (["e", ""], True),
+            (["p", SELF_PUBKEY], True),
+        ],
+        ids=(
+            "marked-root",
+            "marked-root-and-reply",
+            "direct-reply-only",
+            "legacy-one-e-tag",
+            "legacy-first-of-multiple-e-tags",
+            "malformed-empty-e-tag",
+            "top-level",
+        ),
+    )
+    async def test_structural_thread_root_selects_thread_mention_policy(
+        self, adapter, monkeypatch, tags, dispatches
+    ):
+        monkeypatch.setattr(
+            _buzz_mod,
+            "_effective_runtime_policy",
+            lambda: {
+                "allowed_users": [],
+                "allow_all_users": False,
+                "require_mention": False,
+                "thread_require_mention": True,
+            },
+        )
+        event = _event("event", content="unmentioned", created_at=10)
+        event["tags"] = tags if tags and isinstance(tags[0], list) else [tags]
+
+        await self._poll_with(adapter, event)
+
+        assert bool(adapter._dispatched) is dispatches
+
+
+    @pytest.mark.asyncio
+    async def test_construction_time_allowlist_does_not_gate_dispatch(self, adapter):
         adapter._allowed_pubkeys = {"b" * 64}
         await self._poll_with(adapter, _event("e1", content="@Chip hello", created_at=10))
-        assert adapter._dispatched == []
+        assert [event["message_id"] for event in adapter._dispatched] == ["e1"]
 
 
 # ── DM classification via p-tags (issue #68871) ──────────────────────────

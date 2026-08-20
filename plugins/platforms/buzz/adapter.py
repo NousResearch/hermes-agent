@@ -5,10 +5,10 @@ A plugin-based gateway adapter that connects to a Buzz community relay
 (Block's open-source human+agent collaboration platform, built on the
 Nostr protocol) and relays messages to/from the Hermes agent.
 
-The adapter does not speak Nostr itself — it shells out to the ``buzz``
-CLI binary ("JSON in, JSON out") via ``asyncio.create_subprocess_exec``.
-Inbound delivery uses a poll loop (the CLI is request/response); see the
-"Known limitations" note in the platform docs.
+Outbound delivery shells out to the ``buzz`` CLI binary ("JSON in, JSON
+out") via ``asyncio.create_subprocess_exec``. Inbound delivery uses a native
+authenticated Nostr WebSocket subscription by default, with CLI polling as
+the configured or startup fallback.
 
 Configuration in config.yaml::
 
@@ -24,12 +24,15 @@ Configuration in config.yaml::
             poll_interval: 4           # seconds between poll sweeps
             cli_path: ""               # path to the buzz binary (default: PATH, then ~/bin/buzz)
             credentials_file: ""       # JSON file holding the nsec (fallback for BUZZ_PRIVATE_KEY)
-            allowed_users: []          # empty = allow all; entries are hex pubkeys or npubs
+            allowed_users: []          # empty = deny unless allow_all_users is true
+            allow_all_users: false
+            require_mention: true
+            thread_require_mention: true
 
 Or via environment variables (overrides config.yaml):
     BUZZ_RELAY_URL, BUZZ_CHANNELS, BUZZ_HOME_CHANNEL, BUZZ_POLL_INTERVAL,
     BUZZ_CLI_PATH, BUZZ_CREDENTIALS_FILE, BUZZ_ALLOWED_USERS,
-    BUZZ_ALLOW_ALL_USERS
+    BUZZ_ALLOW_ALL_USERS, BUZZ_REQUIRE_MENTION, BUZZ_THREAD_REQUIRE_MENTION
 
 The only secret is BUZZ_PRIVATE_KEY (nsec or hex) — it belongs in
 ``~/.hermes/.env``.  It is passed to the CLI via the subprocess
@@ -132,6 +135,41 @@ def _load_nostr_auth():
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
+
+
+def _load_settings():
+    """Import the sibling live-policy module under either plugin loader."""
+    try:
+        from . import settings
+
+        return settings
+    except ImportError:
+        import importlib.util
+
+        path = Path(__file__).with_name("settings.py")
+        spec = importlib.util.spec_from_file_location(
+            "plugin_adapter_buzz_settings", path
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+
+def _effective_runtime_policy() -> dict:
+    """Resolve current policy for each event, failing closed if unavailable."""
+    try:
+        policy = _load_settings().effective_runtime_policy()
+    except Exception:
+        policy = None
+    if not isinstance(policy, dict):
+        return {
+            "allowed_users": [],
+            "allow_all_users": False,
+            "require_mention": True,
+            "thread_require_mention": True,
+        }
+    return policy
 
 
 # ---------------------------------------------------------------------------
@@ -381,17 +419,6 @@ class BuzzAdapter(BasePlatformAdapter):
             interval = _DEFAULT_POLL_INTERVAL
         self.poll_interval = max(_MIN_POLL_INTERVAL, interval)
 
-        # Whether channel messages must @mention the agent to get a response.
-        # Defaults to True (respond only when addressed). Set False to make the
-        # agent respond to every message in a watched channel. DMs always
-        # dispatch regardless. Env (BUZZ_REQUIRE_MENTION) overrides config.yaml.
-        _rm_raw = os.getenv("BUZZ_REQUIRE_MENTION")
-        if _rm_raw is None:
-            _rm_cfg = extra.get("require_mention", True)
-        else:
-            _rm_cfg = _rm_raw
-        self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
-
         # Inbound transport: "auto" (WebSocket with poll fallback, default),
         # "websocket" (require WS; fail connect when it can't authenticate),
         # or "poll" (CLI polling only). Env (BUZZ_TRANSPORT) overrides
@@ -400,16 +427,6 @@ class BuzzAdapter(BasePlatformAdapter):
             os.getenv("BUZZ_TRANSPORT") or str(extra.get("transport", "auto") or "auto")
         ).strip().lower()
         self.transport = _transport if _transport in ("auto", "websocket", "poll") else "auto"
-
-        # Auth: entries may be hex pubkeys or npubs; normalized to hex
-        raw_allowed = os.getenv("BUZZ_ALLOWED_USERS") or extra.get("allowed_users", [])
-        if isinstance(raw_allowed, str):
-            raw_allowed = raw_allowed.split(",")
-        self._allowed_pubkeys: set = {
-            normalized
-            for entry in raw_allowed
-            if isinstance(entry, str) and (normalized := _normalize_user_ref(entry))
-        }
 
         # Secret — resolved lazily (never at import/registration time and
         # never logged).  connect() re-resolves it to fail fast with a clear
@@ -1033,14 +1050,15 @@ class BuzzAdapter(BasePlatformAdapter):
         # In shared channels, respond only when addressed — unless
         # require_mention is disabled, in which case respond to every message.
         # DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_mentioned(content):
-            return
-
-        # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
-        # BUZZ_ALLOW_ALL_USERS centrally as well; empty list = no filter here).
-        if self._allowed_pubkeys and pubkey not in self._allowed_pubkeys:
-            logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
-            return
+        policy = _effective_runtime_policy()
+        if not is_dm and not self._is_mentioned(content):
+            mention_required = (
+                policy.get("thread_require_mention") is not False
+                if buzz_event_thread_root(event) is not None
+                else policy.get("require_mention") is not False
+            )
+            if mention_required:
+                return
 
         # Strip a leading @mention so slash commands (@Chip /whoami ->
         # /whoami) and clean prompts are recognized. DM messages often still
@@ -1274,7 +1292,7 @@ def is_connected(config) -> bool:
 
 
 def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
-    """Translate ``config.yaml`` ``buzz.extra`` keys into ``BUZZ_*`` env vars.
+    """Bridge construction-time Buzz transport config into ``BUZZ_*`` env vars.
 
     Implements the ``apply_yaml_config_fn`` contract.  ``check_requirements``
     and the adapter's connect path read configuration from the environment, so
@@ -1307,15 +1325,6 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
         if isinstance(channels, (list, tuple)):
             channels = ",".join(str(c) for c in channels)
         os.environ["BUZZ_CHANNELS"] = str(channels)
-    allowed = extra.get("allowed_users")
-    if allowed is not None and not os.getenv("BUZZ_ALLOWED_USERS"):
-        if isinstance(allowed, (list, tuple)):
-            allowed = ",".join(str(a) for a in allowed)
-        os.environ["BUZZ_ALLOWED_USERS"] = str(allowed)
-    if "allow_all_users" in extra and not os.getenv("BUZZ_ALLOW_ALL_USERS"):
-        os.environ["BUZZ_ALLOW_ALL_USERS"] = str(extra["allow_all_users"]).lower()
-    if "require_mention" in extra and not os.getenv("BUZZ_REQUIRE_MENTION"):
-        os.environ["BUZZ_REQUIRE_MENTION"] = str(extra["require_mention"]).lower()
     return None
 
 
@@ -1486,6 +1495,7 @@ def interactive_setup() -> None:
 
 def register(ctx):
     """Plugin entry point: called by the Hermes plugin system."""
+    settings = _load_settings()
     ctx.register_platform(
         name="buzz",
         label="Buzz",
@@ -1513,6 +1523,8 @@ def register(ctx):
         # Auth env vars for _is_user_authorized() integration
         allowed_users_env="BUZZ_ALLOWED_USERS",
         allow_all_env="BUZZ_ALLOW_ALL_USERS",
+        authorization_config_fn=settings.effective_authorization_policy,
+        authorization_user_normalizer=settings.normalize_user_ref,
         # Display
         emoji="🐝",
         # Buzz identities are pubkeys, not phone numbers

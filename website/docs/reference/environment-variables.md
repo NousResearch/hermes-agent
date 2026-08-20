@@ -704,6 +704,8 @@ Connect Hermes to [Photon](https://photon.codes/) / Spectrum (iMessage and other
 | `BUZZ_HOME_CHANNEL` | Channel UUID for cron / notification delivery (defaults to the first watched channel) |
 | `BUZZ_ALLOWED_USERS` | Comma-separated npubs or hex pubkeys allowed to talk to the agent |
 | `BUZZ_ALLOW_ALL_USERS` | Allow any community member to talk to the agent (`true`/`false`) |
+| `BUZZ_REQUIRE_MENTION` | Require an explicit mention in top-level shared-channel messages (`true`/`false`) |
+| `BUZZ_THREAD_REQUIRE_MENTION` | Require an explicit mention independently in structurally threaded replies (`true`/`false`) |
 | `BUZZ_TRANSPORT` | Inbound transport: `auto` (WebSocket w/ poll fallback, default), `websocket`, or `poll` |
 | `BUZZ_POLL_INTERVAL` | Seconds between inbound poll sweeps (default: `4`) |
 | `BUZZ_AUTH_TAG` | Optional NIP-OA owner-attestation auth tag JSON for NIP-42 WebSocket auth |

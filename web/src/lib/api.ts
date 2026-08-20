@@ -335,6 +335,7 @@ function appendSessionFilters(url: string, options: SessionQueryOptions): string
 }
 
 export const api = {
+  getManagementProfile,
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   /**

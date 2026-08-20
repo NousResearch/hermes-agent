@@ -1,0 +1,17 @@
+{
+  "name": "buzz-platform",
+  "label": "Buzz",
+  "description": "Manage profile-scoped Buzz access and mention policy.",
+  "icon": "MessageSquare",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/buzz",
+    "hidden": true
+  },
+  "slots": [
+    "config:top"
+  ],
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

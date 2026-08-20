@@ -43,8 +43,8 @@ def _plugin_frontend_bundles() -> list[Path]:
     """Every plugin-shipped JS bundle the dashboard loads into the browser."""
     if not _PLUGINS_DIR.is_dir():
         return []
-    # Plugin dashboards live at plugins/<name>/dashboard/dist/*.js
-    return sorted(_PLUGINS_DIR.glob("*/dashboard/dist/*.js"))
+    # Platform plugins can be nested (plugins/platforms/<name>/...).
+    return sorted(_PLUGINS_DIR.rglob("dashboard/dist/*.js"))
 
 
 def test_there_are_plugin_bundles_to_check() -> None:
@@ -56,6 +56,9 @@ def test_there_are_plugin_bundles_to_check() -> None:
     # found so the guard can't pass vacuously.
     assert bundles, "no plugin dashboard bundles found — glob/layout drift?"
     assert names, "could not resolve plugin names from bundle paths"
+    assert (
+        _PLUGINS_DIR / "platforms" / "buzz" / "dashboard" / "dist" / "index.js"
+    ) in bundles, "nested platform dashboard bundle is outside the auth-contract scan"
 
 
 @pytest.mark.parametrize(

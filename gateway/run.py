@@ -2162,6 +2162,17 @@ def _profile_runtime_scope(profile_home: "Path"):
         reset_hermes_home_override(home_token)
 
 
+@_contextmanager
+def _primary_adapter_runtime_scope(config: object):
+    """Give primary multiplex adapter tasks the default profile's secrets."""
+
+    if not getattr(config, "multiplex_profiles", False):
+        yield
+        return
+    with _profile_runtime_scope(Path(get_hermes_home())):
+        yield
+
+
 def load_gateway_config_for_runner() -> "GatewayConfig":
     """Load gateway config for the process-level GatewayRunner.
 
@@ -12755,7 +12766,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 p.value, platform_state="connecting", error_code=None, error_message=None,
             )
             try:
-                ok = await self._connect_initial_adapter_with_timeout(adp, p)
+                with _primary_adapter_runtime_scope(self.config):
+                    ok = await self._connect_initial_adapter_with_timeout(adp, p)
             except Exception as _exc:  # noqa: BLE001 - surfaced below as a retryable error
                 return (p, adp, p_cfg, "exception", _exc)
             return (p, adp, p_cfg, "ok" if ok else "failed", None)
@@ -14212,9 +14224,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Reconnect after an outage: preserve the platform's
                     # server-side update queue so messages sent while the bot
                     # was offline are delivered rather than dropped (#46621).
-                    success = await self._connect_adapter_with_timeout(
-                        adapter, platform, is_reconnect=True
-                    )
+                    with _primary_adapter_runtime_scope(self.config):
+                        success = await self._connect_adapter_with_timeout(
+                            adapter, platform, is_reconnect=True
+                        )
                     if success:
                         self.adapters[platform] = adapter
                         self._sync_voice_mode_state_to_adapter(adapter)

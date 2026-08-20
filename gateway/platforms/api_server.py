@@ -77,6 +77,49 @@ def _approval_event_choices(*, smart_denied: bool, allow_permanent: bool) -> lis
     return ["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"]
 
 
+def _companyintel_target_url_from_message(message: Any) -> Optional[str]:
+    """Extract the backend's explicit target_url without trusting free-form prose."""
+    if not isinstance(message, str):
+        return None
+    match = re.search(r"(?im)^target_url:\s*(https?://[^\s]+)", message)
+    return match.group(1).rstrip(".,)") if match else None
+
+
+def _companyintel_initialize_graph(run_id: str, message: Any) -> Optional[str]:
+    """Create the authoritative graph before the first model/tool call."""
+    target_url = _companyintel_target_url_from_message(message)
+    if not target_url:
+        return "companyintel run is missing explicit target_url"
+    try:
+        from tools.companyintel_graph_tool import companyintel_graph
+        result = json.loads(companyintel_graph({"action": "init_run", "run_id": run_id, "target_url": target_url}))
+        if not result.get("ok"):
+            return result.get("error", "graph initialization failed")
+    except Exception as exc:
+        return f"graph initialization failed: {exc}"
+    return None
+
+
+def _companyintel_pre_report_gate(run_id: str, profile: Optional[str]) -> Optional[str]:
+    """Reject a successful report unless durable graph state exists."""
+    if profile != "companyintel":
+        return None
+    try:
+        from tools.companyintel_graph_tool import companyintel_graph
+        result = json.loads(companyintel_graph({"action": "summary", "run_id": run_id}))
+    except Exception as exc:
+        return f"companyintel pre-report gate unavailable: {exc}"
+    if not result.get("ok"):
+        return result.get("error", "companyintel graph summary failed")
+    if result.get("nodes", 0) < 1 or result.get("evidence", 0) < 1:
+        return (
+            "companyintel pre-report gate blocked completion: durable graph requires "
+            f"at least one node and evidence (nodes={result.get('nodes', 0)}, "
+            f"evidence={result.get('evidence', 0)})"
+        )
+    return None
+
+
 try:
     from aiohttp import web
     AIOHTTP_AVAILABLE = True
@@ -185,25 +228,13 @@ class ThreadSafeAsyncQueue(asyncio.Queue):
         self._loop_ref = asyncio.get_running_loop()
 
 
-def _sse_frame(data: Any, *, event: str = None, ensure_ascii: bool = True) -> bytes:
-    """Encode one SSE frame: optional ``event:`` line, then ``data: <json>\n\n``.
-
-    The single source of truth for SSE frame serialization across every
-    streaming writer in this module — ``_write_sse_chat_completion`` (the
-    five call sites it was first extracted from), ``_write_sse_responses``'s
-    inner ``_write_event`` closure, and the ``/v1/runs`` event stream.  All
-    three used the identical ``json.dumps(data)`` / ``json.dumps(...,
-    ensure_ascii=False)`` + ``"\\ndata: ...\\n\\n"`` shape; routing them all
-    through here keeps the on-the-wire format in exactly one place.
-
-    ``ensure_ascii`` defaults to ``True``, byte-identical to a bare
-    ``json.dumps(data)``.  Callers that must preserve raw non-ASCII bytes on
-    the wire (the Responses-API writer historically used
-    ``ensure_ascii=False``) pass ``ensure_ascii=False`` explicitly — the
-    option exists so every writer shares one helper without changing any
-    existing byte stream.
-    """
-    prefix = f"event: {event}\n" if event else ""
+def _sse_frame(data: Any, *, event: str = None, event_id: Any = None, ensure_ascii: bool = True) -> bytes:
+    """Encode one SSE frame with optional event name and replayable id."""
+    prefix = ""
+    if event_id is not None:
+        prefix += f"id: {event_id}\n"
+    if event:
+        prefix += f"event: {event}\n"
     return f"{prefix}data: {json.dumps(data, ensure_ascii=ensure_ascii)}\n\n".encode()
 
 
@@ -6562,6 +6593,88 @@ class APIServerAdapter(BasePlatformAdapter):
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
 
+    def _durable_run_status_db(self):
+        from hermes_constants import get_hermes_home
+        path = get_hermes_home() / "run-status.db"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path, timeout=10)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE IF NOT EXISTS run_status (run_id TEXT PRIMARY KEY, status_json TEXT NOT NULL, updated_at REAL NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS run_events (run_id TEXT NOT NULL, event_id INTEGER NOT NULL, event_json TEXT NOT NULL, created_at REAL NOT NULL, PRIMARY KEY(run_id, event_id))")
+        conn.execute("CREATE INDEX IF NOT EXISTS run_events_lookup_idx ON run_events(run_id, event_id)")
+        return conn
+
+    def _persist_run_status(self, status: Dict[str, Any]) -> None:
+        try:
+            conn = self._durable_run_status_db()
+            conn.execute(
+                "INSERT INTO run_status(run_id,status_json,updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(run_id) DO UPDATE SET status_json=excluded.status_json, updated_at=excluded.updated_at",
+                (status["run_id"], json.dumps(status, ensure_ascii=False), status["updated_at"]),
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            logger.exception("Failed to persist durable run status for %s", status.get("run_id"))
+
+    def _load_durable_run_status(self, run_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            conn = self._durable_run_status_db()
+            row = conn.execute("SELECT status_json FROM run_status WHERE run_id=?", (run_id,)).fetchone()
+            conn.close()
+            return json.loads(row[0]) if row else None
+        except Exception:
+            logger.exception("Failed to load durable run status for %s", run_id)
+            return None
+
+    def _persist_run_event(self, run_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Append one event atomically and assign its per-run SSE sequence id."""
+        conn = self._durable_run_status_db()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT COALESCE(MAX(event_id), 0) + 1 FROM run_events WHERE run_id=?", (run_id,)).fetchone()
+            event_id = int(row[0])
+            stamped = dict(event)
+            stamped["id"] = str(event_id)
+            conn.execute(
+                "INSERT INTO run_events(run_id,event_id,event_json,created_at) VALUES(?,?,?,?)",
+                (run_id, event_id, json.dumps(stamped, ensure_ascii=False), time.time()),
+            )
+            conn.commit()
+            return stamped
+        finally:
+            conn.close()
+
+    def _load_run_events(self, run_id: str, after_event_id: int = 0) -> List[Dict[str, Any]]:
+        conn = self._durable_run_status_db()
+        try:
+            rows = conn.execute(
+                "SELECT event_json FROM run_events WHERE run_id=? AND event_id>? ORDER BY event_id ASC",
+                (run_id, max(0, int(after_event_id))),
+            ).fetchall()
+            return [json.loads(row[0]) for row in rows]
+        finally:
+            conn.close()
+
+    def _publish_run_event(self, run_id: str, event: Dict[str, Any], *, loop=None, queue=None) -> Optional[Dict[str, Any]]:
+        """Persist then deliver an event; delivery failure never loses the durable record."""
+        try:
+            stamped = self._persist_run_event(run_id, event)
+        except Exception:
+            logger.exception("Failed to persist run event for %s", run_id)
+            return None
+        target = queue if queue is not None else self._run_streams.get(run_id)
+        if target is None:
+            return stamped
+        try:
+            if loop is not None:
+                loop.call_soon_threadsafe(target.put_nowait, stamped)
+            else:
+                target.put_nowait(stamped)
+        except Exception:
+            logger.debug("Live SSE delivery failed for %s", run_id, exc_info=True)
+        return stamped
+
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
         now = time.time()
@@ -6575,6 +6688,7 @@ class APIServerAdapter(BasePlatformAdapter):
         current.setdefault("created_at", fields.pop("created_at", now))
         current.update(fields)
         self._run_statuses[run_id] = current
+        self._persist_run_status(current)
         return current
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
@@ -6585,13 +6699,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_statuses.get(run_id, {}).get("status", "running"),
                 last_event=event.get("event"),
             )
-            q = self._run_streams.get(run_id)
-            if q is None:
-                return
-            try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
-            except Exception:
-                pass
+            self._publish_run_event(run_id, event, loop=loop)
 
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
@@ -6778,7 +6886,10 @@ class APIServerAdapter(BasePlatformAdapter):
         def _put_event_if_active(event: Optional[Dict]) -> None:
             """Enqueue only while this run still owns live transport state."""
             if self._run_streams.get(run_id) is q:
-                q.put_nowait(event)
+                if event is None:
+                    q.put_nowait(None)
+                else:
+                    self._publish_run_event(run_id, event, queue=q)
 
         # Also wire stream_delta_callback so message.delta events flow through.
         def _text_cb(delta: Optional[str]) -> None:
@@ -6898,6 +7009,20 @@ class APIServerAdapter(BasePlatformAdapter):
                                 session_id=session_id or "",
                             )
                             register_gateway_notify(approval_session_key, _approval_notify)
+                            if request_profile == "companyintel":
+                                graph_error = _companyintel_initialize_graph(run_id, user_message)
+                                if graph_error:
+                                    raise RuntimeError(graph_error)
+                                from tools.companyintel_graph_tool import companyintel_graph
+                                automatic_result = json.loads(companyintel_graph({
+                                    "action": "run_frontier",
+                                    "run_id": run_id,
+                                    "worker_id": f"api-preflight-{run_id}",
+                                    "max_tasks": 2,
+                                    "lease_seconds": 300,
+                                }))
+                                if not automatic_result.get("ok"):
+                                    raise RuntimeError(automatic_result.get("error", "companyintel automatic pivot execution failed"))
                             # /v1/runs runs its own agent lifecycle (no
                             # TurnRunner, no _run_agent) — record turn process
                             # ownership so stop/cancel can reap only the
@@ -6965,6 +7090,22 @@ class APIServerAdapter(BasePlatformAdapter):
                         last_event="run.failed",
                     )
                 else:
+                    gate_error = _companyintel_pre_report_gate(run_id, request_profile)
+                    if gate_error:
+                        error_msg = _redact_api_error_text(gate_error)
+                        _put_event_if_active({
+                            "event": "run.failed",
+                            "run_id": run_id,
+                            "timestamp": time.time(),
+                            "error": error_msg,
+                        })
+                        self._set_run_status(
+                            run_id,
+                            "failed",
+                            error=error_msg,
+                            last_event="run.failed",
+                        )
+                        return
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
                     # Undelivered steer text (accepted after the final response;
                     # see turn_finalizer) rides on the terminal event/status so
@@ -7095,6 +7236,8 @@ class APIServerAdapter(BasePlatformAdapter):
         run_id = request.match_info["run_id"]
         status = self._run_statuses.get(run_id)
         if status is None:
+            status = self._load_durable_run_status(run_id)
+        if status is None:
             return web.json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
@@ -7102,24 +7245,31 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response(status)
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
-        """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
+        """GET /v1/runs/{run_id}/events — replayable SSE lifecycle stream."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
 
         run_id = request.match_info["run_id"]
+        raw_last_id = request.headers.get("Last-Event-ID", request.query.get("last_event_id", "0"))
+        try:
+            last_event_id = max(0, int(raw_last_id or 0))
+        except (TypeError, ValueError):
+            return web.json_response(_openai_error("Last-Event-ID must be an integer", code="invalid_last_event_id"), status=400)
 
-        # Allow subscribing slightly before the run is registered (race condition window)
+        # Allow subscribing slightly before the run is registered, while also
+        # allowing a completed run to be replayed after its live queue vanished.
+        q = None
         for _ in range(20):
-            if run_id in self._run_streams:
+            q = self._run_streams.get(run_id)
+            if q is not None or self._load_durable_run_status(run_id) is not None:
                 break
             await asyncio.sleep(0.05)
         else:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
 
-        q = self._run_streams[run_id]
+        replay = self._load_run_events(run_id, last_event_id)
         self._run_stream_subscribers.add(run_id)
-
         response = web.StreamResponse(
             status=200,
             headers={
@@ -7129,8 +7279,38 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         )
         await response.prepare(request)
-
+        last_sent = last_event_id
         try:
+            for event in replay:
+                event_id = int(event.get("id", 0))
+                await response.write(_sse_frame(event, event=event.get("event"), event_id=event_id))
+                last_sent = max(last_sent, event_id)
+
+            if q is None:
+                await response.write(b": replay complete\n\n")
+                return response
+
+            # Events were queued while the replay snapshot was read. Discard
+            # only queue entries already covered by replay; retain newer ones.
+            pending = []
+            while True:
+                try:
+                    queued = q.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if queued is None:
+                    pending.append(None)
+                    break
+                if int(queued.get("id", 0)) > last_sent:
+                    pending.append(queued)
+            for queued in pending:
+                if queued is None:
+                    await response.write(b": stream closed\n\n")
+                    return response
+                event_id = int(queued.get("id", 0))
+                await response.write(_sse_frame(queued, event=queued.get("event"), event_id=event_id))
+                last_sent = max(last_sent, event_id)
+
             while True:
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=30.0)
@@ -7138,17 +7318,20 @@ class APIServerAdapter(BasePlatformAdapter):
                     await response.write(b": keepalive\n\n")
                     continue
                 if event is None:
-                    # Run finished — send final SSE comment and close
                     await response.write(b": stream closed\n\n")
                     break
-                payload = _sse_frame(event)
-                await response.write(payload)
+                event_id = int(event.get("id", 0))
+                if event_id <= last_sent:
+                    continue
+                await response.write(_sse_frame(event, event=event.get("event"), event_id=event_id))
+                last_sent = event_id
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
         finally:
             self._run_stream_subscribers.discard(run_id)
-            self._run_streams.pop(run_id, None)
-            self._run_streams_created.pop(run_id, None)
+            if q is not None and self._run_streams.get(run_id) is q:
+                self._run_streams.pop(run_id, None)
+                self._run_streams_created.pop(run_id, None)
 
         return response
 

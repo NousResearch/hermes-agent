@@ -335,6 +335,31 @@ class TestRunEvents:
 
 
     @pytest.mark.asyncio
+    async def test_last_event_id_replays_only_events_after_cursor(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_replay_contract"
+        adapter._set_run_status(run_id, "completed")
+        first = adapter._persist_run_event(run_id, {"event": "run.started", "run_id": run_id, "timestamp": time.time()})
+        second = adapter._persist_run_event(run_id, {"event": "run.completed", "run_id": run_id, "timestamp": time.time()})
+
+        async with TestClient(TestServer(app)) as cli:
+            full = await cli.get(f"/v1/runs/{run_id}/events", headers={"Last-Event-ID": "0"})
+            assert full.status == 200
+            full_body = await full.text()
+            assert f"id: {first['id']}" in full_body
+            assert f"id: {second['id']}" in full_body
+
+            replay = await cli.get(
+                f"/v1/runs/{run_id}/events",
+                headers={"Last-Event-ID": first["id"]},
+            )
+            assert replay.status == 200
+            replay_body = await replay.text()
+            assert f"id: {second['id']}" in replay_body
+            assert f"id: {first['id']}" not in replay_body
+            assert "run.completed" in replay_body
+
+    @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
         """Same client session_id must not let one run approve another run's queue."""
         app = _create_runs_app(auth_adapter)

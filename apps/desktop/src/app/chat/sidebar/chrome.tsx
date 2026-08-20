@@ -29,7 +29,11 @@ const rowPadX = 'pl-2 pr-1'
 const rowGap = 'gap-1.5'
 const rowLead = 'grid size-3.5 shrink-0 place-items-center'
 const rowInset = cn(rowPadX, rowGap, 'flex h-full min-w-0 items-center self-stretch py-0.5')
-const rowLabel = 'min-w-0 truncate text-[0.8125rem] leading-none text-(--ui-text-secondary)'
+// leading-normal, not leading-none: truncate's overflow:hidden clips the line
+// box, and at line-height 1 a descender (g/j/y) hangs below it and gets shaved
+// (#54634). The shell owns row height, so a taller label box just centers —
+// row layout is unchanged.
+const rowLabel = 'min-w-0 truncate text-[0.8125rem] leading-normal text-(--ui-text-secondary)'
 
 /** Inbox-style card (workspace + age, title + preview, model + size). */
 export const SIDEBAR_ROW_CARD_MIN_H = 'min-h-[3.375rem]' as const

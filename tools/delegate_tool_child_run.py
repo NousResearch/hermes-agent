@@ -411,6 +411,10 @@ def _validate_child_output_schema(
 ) -> _SchemaOutcome:
     """Validate the final answer against the attached output_schema with ONE bounded retry. Schema-less children (no
     dict on ``child._delegate_output_schema``) take no branch here so their result entry stays byte-identical."""
+    # Select once before validation and result assembly, even without a schema.
+    delivery = _extract_reply_deliverable(child)
+    if delivery is not None:
+        result["final_response"] = delivery
     _output_schema = getattr(child, "_delegate_output_schema", None)
     if not isinstance(_output_schema, dict):
         return _SchemaOutcome(_output_schema, None, [], 0)
@@ -423,6 +427,8 @@ def _validate_child_output_schema(
     # Exactly one retry turn, carrying the validation errors verbatim (no
     # schema re-paste — the child already holds the contract in its context).
     _retry_result = None
+    # A retry replaces the rejected attempt, never concatenates it with the correction.
+    child._delegate_reply_chunks = []
     try:
         _retry_result = child.run_conversation(
             user_message=build_retry_message(_schema_errors), task_id=child_task_id, stream_callback=relay_child_text,
@@ -430,7 +436,8 @@ def _validate_child_output_schema(
     except Exception as _retry_exc:
         logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc)
     if isinstance(_retry_result, dict):
-        _retry_text = _retry_result.get("final_response") or ""
+        delivery = _extract_reply_deliverable(child)
+        _retry_text = delivery if delivery is not None else _retry_result.get("final_response") or ""
         if _retry_text.strip():
             result["final_response"] = _retry_text
         try:
@@ -480,7 +487,7 @@ def _extract_reply_deliverable(child) -> Optional[str]:
     chunks = getattr(child, "_delegate_reply_chunks", None)
     if not isinstance(chunks, list):
         return None
-    return "\n\n".join(chunks)
+    return "\n\n".join(chunks) if chunks else None
 
 
 def _build_result_entry(
@@ -489,8 +496,7 @@ def _build_result_entry(
     """Parent-visible result entry (status, exit_reason, tool trace, tokens, cost).
     ``status``/``exit_reason``/``truncated`` follow the ``_run_single_child`` contract; a structured failure always
     wins over the summary-presence heuristic (a fallback for legacy/mock results only)."""
-    delivery = _extract_reply_deliverable(child)
-    summary = delivery if delivery is not None else result.get("final_response") or ""
+    summary = result.get("final_response") or ""
     # "(empty)" is run_agent's give-up sentinel after repeated empty LLM
     # responses (usually a transport bug) — a failure, not a success.
     usable_summary = bool(summary) and summary.strip() != "(empty)"

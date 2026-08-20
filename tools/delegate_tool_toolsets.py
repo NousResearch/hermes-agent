@@ -104,6 +104,8 @@ def _resolve_child_toolsets(
     inherited_disabled = (
         [str(name) for name in raw_parent_disabled] if isinstance(raw_parent_disabled, (list, tuple, set)) else []
     )
+    # Child-owned delivery is granted by construction, not inherited configuration.
+    inherited_disabled = [name for name in inherited_disabled if name != "delegation_reply"]
     if effective_role == "orchestrator":
         inherited_disabled = [name for name in inherited_disabled if name != "delegation"]
         if "delegation" not in child_toolsets:

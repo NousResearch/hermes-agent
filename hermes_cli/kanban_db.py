@@ -3554,6 +3554,22 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                if initial_status == "blocked":
+                    # Creation-time blocked tasks are explicit operator holds,
+                    # not dependency waits. Record the same durable signal used
+                    # by block_task() so recompute_ready() cannot release the
+                    # task when its final parent completes. Only unblock_task()
+                    # may clear this sticky state.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": "created with initial_status=blocked",
+                            "kind": "needs_input",
+                            "source_status": "blocked",
+                        },
+                    )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:

@@ -76,6 +76,37 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             assert kb.get_task(conn, tid).status == "blocked"
 
 
+def test_initial_blocked_child_requires_explicit_unblock_after_parent_done(
+    kanban_home: Path,
+) -> None:
+    """Creation-time approval holds must survive dependency completion.
+
+    ``initial_status="blocked"`` is used to create human/ops approval gates.
+    Completing the final parent must not turn that hold into executable work;
+    only an explicit unblock may release it.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="prepare exact handoff")
+        child = kb.create_task(
+            conn,
+            title="owner approval gate",
+            parents=[parent],
+            initial_status="blocked",
+        )
+
+        assert kb.get_task(conn, child).status == "blocked"
+
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent, result="handoff ready")
+
+        for _ in range(3):
+            assert kb.recompute_ready(conn) == 0
+            assert kb.get_task(conn, child).status == "blocked"
+
+        assert kb.unblock_task(conn, child)
+        assert kb.get_task(conn, child).status == "ready"
+
+
 
 
 # ---------------------------------------------------------------------------

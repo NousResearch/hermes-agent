@@ -153,7 +153,13 @@ def enrich_model_switch_warnings_for_gateway(
     custom_providers: list | None = None,
     load_gateway_config: Callable[[], dict] | None = None,
 ) -> None:
-    """Gateway helper: cached agent + session DB messages."""
+    """Gateway helper: cached agent + session DB messages.
+
+    Gateway callers run this helper through ``asyncio.to_thread`` because
+    context-length resolution can block.  Use the synchronous handle while
+    already off-loop; calling the ``AsyncSessionDB`` facade here would only
+    create an un-awaited coroutine.
+    """
     lock = getattr(runner, "_agent_cache_lock", None)
     cache = getattr(runner, "_agent_cache", None)
     agent = None
@@ -187,7 +193,8 @@ def enrich_model_switch_warnings_for_gateway(
     if db is not None and store is not None:
         try:
             entry = store.get_or_create_session(source)
-            messages = db.get_messages_as_conversation(entry.session_id)
+            sync_db = getattr(db, "_db", db)
+            messages = sync_db.get_messages_as_conversation(entry.session_id)
         except Exception:
             pass
 

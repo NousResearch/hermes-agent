@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -545,3 +546,55 @@ def test_bump_marker_attempts_handles_missing_and_corrupt_bodies(tmp_path):
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Stale-lock retry (#86527)
+# ---------------------------------------------------------------------------
+
+def test_claim_recovery_lock_retries_after_removing_stale_lock(tmp_path):
+    """A stale lock (> 1h) is removed AND re-acquired in the same call, so
+    the repair runs now instead of being deferred to the next launch."""
+    lock_path = tmp_path / ".update-incomplete.lock"
+    lock_path.write_text("99999999\n", encoding="utf-8")
+    stale = time.time() - 7200
+    os.utime(lock_path, (stale, stale))
+
+    assert er._claim_recovery_lock(tmp_path) is True
+    # We own the lock now — our pid, not the stale one.
+    assert lock_path.read_text(encoding="utf-8").splitlines()[0] == str(os.getpid())
+
+    er._release_recovery_lock(tmp_path)
+    assert not lock_path.exists()
+
+
+def test_claim_recovery_lock_fresh_lock_still_refused(tmp_path):
+    """A lock younger than the staleness horizon belongs to a live repair —
+    the claim must still fail."""
+    lock_path = tmp_path / ".update-incomplete.lock"
+    lock_path.write_text("99999999\n", encoding="utf-8")
+
+    assert er._claim_recovery_lock(tmp_path) is False
+    assert lock_path.read_text(encoding="utf-8").splitlines()[0] == "99999999"
+
+
+def test_claim_recovery_lock_stale_retry_lost_race_returns_false(tmp_path, monkeypatch):
+    """If another process wins the re-acquire race after we unlink the stale
+    lock, the claim fails closed instead of proceeding unlocked."""
+    lock_path = tmp_path / ".update-incomplete.lock"
+    lock_path.write_text("99999999\n", encoding="utf-8")
+    stale = time.time() - 7200
+    os.utime(lock_path, (stale, stale))
+
+    real_open = os.open
+
+    def losing_open(path, flags, *args, **kwargs):
+        if Path(path) == lock_path and flags & os.O_EXCL and not lock_path.exists():
+            raise FileExistsError(str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(er.os, "open", losing_open)
+
+    assert er._claim_recovery_lock(tmp_path) is False
+    # The stale lock was still removed — the winner (simulated) owns the path.
+    assert not lock_path.exists()

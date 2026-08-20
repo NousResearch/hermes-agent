@@ -250,17 +250,39 @@ class UpdateLock:
             return False
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(
-                f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8"
-            )
+            # Create the marker atomically with O_EXCL (same pattern as
+            # _early_recovery.py) instead of check-then-write write_text,
+            # closing the TOCTOU window where two updaters both read "no
+            # live lock" and both write; the loser of the race re-reads the
+            # holder and fails closed (#86528).
+            for _attempt in range(2):
+                try:
+                    fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.write(f"{os.getpid()}\n{int(time.time())}\n")
+                except FileExistsError:
+                    existing = read_live_update(path=self.path)
+                    if existing is None:
+                        if _attempt == 0:
+                            # Stale/malformed marker was cleaned up by the
+                            # re-read — one retry now that the path is clear.
+                            continue
+                        # Never read back as a live update — fail closed with
+                        # a placeholder so callers can still describe it.
+                        self.holder = UpdateHolder(pid=-1, age_seconds=0)
+                        return False
+                    if existing.pid == _handoff_pid() or _is_ancestor_pid(existing.pid):
+                        return True
+                    self.holder = existing
+                    return False
+                self.acquired = True
+                return True
         except OSError as exc:
             # Best-effort, exactly like the Rust guard: an unwritable marker
             # must not block the update itself (that would be a worse failure
             # than the race it prevents). Degrade to the pre-lock behavior.
             logger.debug("Could not write update marker %s: %s", self.path, exc)
             return True
-        self.acquired = True
-        return True
 
     def release(self) -> None:
         """Drop the marker if this process still owns it. Never raises."""

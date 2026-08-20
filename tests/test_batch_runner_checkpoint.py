@@ -239,3 +239,64 @@ class TestFinalCheckpointNoDuplicates:
             buggy.extend(br.get("completed_prompts", []))
         # Every index appears twice
         assert len(buggy) == 2 * len(set(buggy))
+
+
+class TestResumeDuplicatePrompts:
+    """--resume matches completed prompts by content with occurrence counts,
+    so duplicate prompts in the dataset are not silently dropped (#86523)."""
+
+    def _runner(self, tmp_path, dataset):
+        r = BatchRunner.__new__(BatchRunner)
+        r.output_dir = tmp_path
+        r.dataset = dataset
+        return r
+
+    def _write_completed(self, tmp_path, prompt, count=1, failed=False):
+        batch_file = tmp_path / "batch_1.jsonl"
+        with batch_file.open("a", encoding="utf-8") as f:
+            for _ in range(count):
+                entry = {
+                    "conversations": [{"from": "human", "value": prompt}],
+                }
+                if failed:
+                    entry["failed"] = True
+                f.write(json.dumps(entry) + "\n")
+
+    def test_only_completed_copies_are_skipped(self, tmp_path):
+        # One copy of the duplicate prompt completed before the interruption.
+        self._write_completed(tmp_path, "dup prompt", count=1)
+        runner = self._runner(tmp_path, [
+            {"prompt": "dup prompt"},
+            {"prompt": "dup prompt"},
+        ])
+
+        completed = runner._scan_completed_prompts_by_content()
+        filtered, skipped = runner._filter_dataset_by_completed(completed)
+
+        # The second copy must still be processed on resume.
+        assert skipped == [0]
+        assert [idx for idx, _ in filtered] == [1]
+
+    def test_all_copies_completed_skips_all(self, tmp_path):
+        self._write_completed(tmp_path, "dup prompt", count=2)
+        runner = self._runner(tmp_path, [
+            {"prompt": "dup prompt"},
+            {"prompt": "dup prompt"},
+        ])
+
+        completed = runner._scan_completed_prompts_by_content()
+        filtered, skipped = runner._filter_dataset_by_completed(completed)
+
+        assert skipped == [0, 1]
+        assert filtered == []
+
+    def test_failed_entries_do_not_count_as_completed(self, tmp_path):
+        self._write_completed(tmp_path, "dup prompt", count=1, failed=True)
+        runner = self._runner(tmp_path, [{"prompt": "dup prompt"}])
+
+        completed = runner._scan_completed_prompts_by_content()
+        filtered, skipped = runner._filter_dataset_by_completed(completed)
+
+        # Failed trajectories are retried, not skipped.
+        assert skipped == []
+        assert [idx for idx, _ in filtered] == [0]

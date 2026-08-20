@@ -8,11 +8,23 @@ Covers:
      input() call) and the stash is applied automatically
 """
 
+import shutil
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from hermes_cli.main import cmd_update
+
+_REAL_WHICH = shutil.which
+
+
+def _which_without_path_except_git(name, *args, **kwargs):
+    """Blanket "nothing on PATH" stand-in that still finds git — these tests
+    hide uv/npm from the update flow, but the git preflight (#86529) needs
+    git to remain discoverable."""
+    if name == "git":
+        return _REAL_WHICH(name, *args, **kwargs)
+    return None
 
 
 def _make_run_side_effect(
@@ -55,7 +67,7 @@ class TestUpdateYesConfigMigration:
     @patch("hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 2))
     @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
     @patch("hermes_cli.config.get_missing_env_vars", return_value=["NEW_KEY"])
-    @patch("shutil.which", return_value=None)
+    @patch("shutil.which", side_effect=_which_without_path_except_git)
     @patch("subprocess.run")
     def test_yes_auto_migrates_without_input(
         self,
@@ -96,7 +108,7 @@ class TestUpdateYesConfigMigration:
     @patch("hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 2))
     @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
     @patch("hermes_cli.config.get_missing_env_vars", return_value=["NEW_KEY"])
-    @patch("shutil.which", return_value=None)
+    @patch("shutil.which", side_effect=_which_without_path_except_git)
     @patch("subprocess.run")
     def test_no_yes_flag_still_prompts_in_tty(
         self,
@@ -156,7 +168,7 @@ class TestUnicodeDecodeErrorInUpdatePrompts:
     @patch("hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 2))
     @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
     @patch("hermes_cli.config.get_missing_env_vars", return_value=["NEW_KEY"])
-    @patch("shutil.which", return_value=None)
+    @patch("shutil.which", side_effect=_which_without_path_except_git)
     @patch("subprocess.run")
     def test_unicode_decode_error_in_tty_skips_and_prints_hint(
         self,

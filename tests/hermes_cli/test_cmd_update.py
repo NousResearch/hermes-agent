@@ -1,6 +1,7 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
 import hashlib
+import shutil
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import ANY, patch
@@ -8,6 +9,20 @@ from unittest.mock import ANY, patch
 import pytest
 
 from hermes_cli.main import cmd_update, PROJECT_ROOT
+
+_REAL_WHICH = shutil.which
+
+
+def _which_without_path_except_git(name, *args, **kwargs):
+    """Blanket "nothing on PATH" stand-in that still finds git.
+
+    Many tests here patch ``shutil.which`` away entirely to keep uv/npm off
+    the stage; the update flow's git preflight (#86529) legitimately needs
+    git to remain discoverable.
+    """
+    if name == "git":
+        return _REAL_WHICH(name, *args, **kwargs)
+    return None
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -222,7 +237,7 @@ class TestCmdUpdateBranchFallback:
 
 
 
-    @patch("shutil.which", return_value=None)
+    @patch("shutil.which", side_effect=_which_without_path_except_git)
     @patch("subprocess.run")
     def test_update_on_fork_checks_upstream_when_origin_up_to_date(
         self, mock_run, _mock_which, mock_args, capsys
@@ -254,7 +269,7 @@ class TestCmdUpdateBranchFallback:
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""
-        with patch("shutil.which", return_value=None), patch(
+        with patch("shutil.which", side_effect=_which_without_path_except_git), patch(
             "subprocess.run"
         ) as mock_run, patch("builtins.input") as mock_input, patch(
             "hermes_cli.config.get_missing_env_vars", return_value=["MISSING_KEY"]
@@ -298,7 +313,7 @@ class TestCmdUpdateMigrationPrompt:
         self, mock_args, capsys
     ):
         """Only the version moved → apply non-interactively, never prompt."""
-        with patch("shutil.which", return_value=None), patch(
+        with patch("shutil.which", side_effect=_which_without_path_except_git), patch(
             "subprocess.run"
         ) as mock_run, patch("builtins.input") as mock_input, patch(
             "hermes_cli.config.get_missing_env_vars", return_value=[]
@@ -379,7 +394,7 @@ class TestCmdUpdateMigrationPrompt:
         cfg_items = [
             {"key": "display.new_widget", "description": "New config option: display.new_widget"},
         ]
-        with patch("shutil.which", return_value=None), patch(
+        with patch("shutil.which", side_effect=_which_without_path_except_git), patch(
             "subprocess.run"
         ) as mock_run, patch("builtins.input", return_value="n"), patch(
             "hermes_cli.config.get_missing_env_vars", return_value=env_items
@@ -446,7 +461,7 @@ class TestCmdUpdateProfileSkillSync:
     from the seed_profile_skills loop, leaving it on stale skill content.
     """
 
-    @patch("shutil.which", return_value=None)
+    @patch("shutil.which", side_effect=_which_without_path_except_git)
     @patch("subprocess.run")
     def test_active_profile_included_in_skill_sync(
         self, mock_run, _mock_which, mock_args, capsys
@@ -484,7 +499,7 @@ class TestCmdUpdateProfileSkillSync:
             f"All profiles must be synced; got: {synced_paths}"
         )
 
-    @patch("shutil.which", return_value=None)
+    @patch("shutil.which", side_effect=_which_without_path_except_git)
     @patch("subprocess.run")
     def test_single_profile_default_is_synced(
         self, mock_run, _mock_which, mock_args, capsys
@@ -556,7 +571,7 @@ class TestCmdUpdateBranchFlag:
 
         return side_effect
 
-    @patch("shutil.which", return_value=None)
+    @patch("shutil.which", side_effect=_which_without_path_except_git)
     @patch("subprocess.run")
     def test_branch_flag_pulls_against_named_branch(self, mock_run, _mock_which, capsys):
         """--branch bb/gui makes rev-list and pull target origin/bb/gui."""
@@ -579,7 +594,7 @@ class TestCmdUpdateBranchFlag:
         assert any("origin/bb/gui" in c and "origin/main" not in c for c in merge_cmds), merge_cmds
 
 
-    @patch("shutil.which", return_value=None)
+    @patch("shutil.which", side_effect=_which_without_path_except_git)
     @patch("subprocess.run")
     def test_branch_flag_fails_when_branch_missing_everywhere(self, mock_run, _mock_which, capsys):
         """If branch doesn't exist locally OR on origin, exit non-zero with clear error."""
@@ -1236,3 +1251,58 @@ class TestUpdateNodeDependencies:
         assert cwd_calls, "expected at least one npm call"
         for cwd in cwd_calls:
             assert cwd == tmp_path, f"npm must run from PROJECT_ROOT; got cwd={cwd}"
+
+
+class TestMissingGitBinary:
+    """A .git checkout without git on PATH must fail with a readable message,
+    not a bare FileNotFoundError traceback (#86529)."""
+
+    def _stub_prelude(self, hm, update_cmd, monkeypatch, tmp_path):
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(hm, "_is_windows", lambda: False)
+        monkeypatch.setattr(hm, "_capture_active_lazy_features", lambda: [])
+        monkeypatch.setattr(hm, "_capture_active_tool_dependencies", lambda: [])
+        monkeypatch.setattr(hm, "_run_pre_update_backup", lambda _args: None)
+        monkeypatch.setattr(hm, "_pause_windows_gateways_for_update", lambda: None)
+        monkeypatch.setattr(update_cmd, "_desktop_app_present", lambda _dir: False)
+
+    def test_missing_git_exits_with_friendly_error(self, tmp_path, monkeypatch, capsys):
+        from hermes_cli import main as hm
+        import hermes_cli.update_cmd as update_cmd
+
+        self._stub_prelude(hm, update_cmd, monkeypatch, tmp_path)
+        monkeypatch.setattr(update_cmd.shutil, "which", lambda _name: None)
+
+        with pytest.raises(SystemExit) as exc_info:
+            update_cmd._cmd_update_impl(
+                SimpleNamespace(yes=True, force=True, force_venv=True, branch=None),
+                gateway_mode=False,
+            )
+
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "git is required" in out
+
+    def test_present_git_passes_the_guard(self, tmp_path, monkeypatch):
+        """Control: with git on PATH the guard does not fire and the update
+        proceeds to the fetch."""
+        from hermes_cli import main as hm
+        import hermes_cli.update_cmd as update_cmd
+
+        self._stub_prelude(hm, update_cmd, monkeypatch, tmp_path)
+        monkeypatch.setattr(update_cmd.shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *_a: None)
+        monkeypatch.setattr(update_cmd, "_normalize_managed_eol", lambda *_a: None)
+        monkeypatch.setattr(hm, "_get_origin_url", lambda *_a: "")
+
+        def sentinel_run(cmd, **_kwargs):
+            raise RuntimeError(f"reached subprocess: {cmd[:2]}")
+
+        monkeypatch.setattr(update_cmd.subprocess, "run", sentinel_run)
+
+        with pytest.raises(RuntimeError, match="reached subprocess"):
+            update_cmd._cmd_update_impl(
+                SimpleNamespace(yes=True, force=True, force_venv=True, branch=None),
+                gateway_mode=False,
+            )

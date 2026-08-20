@@ -190,6 +190,16 @@ def run_oneshot(
 
     Returns the exit code.  The caller owns process termination.
     """
+    # Auto-approve any shell / tool approvals.  Non-interactive by
+    # definition — a prompt would hang forever.  Set these BEFORE anything
+    # that can trigger plugin discovery (_validate_explicit_toolsets below
+    # joins the background discovery thread): tools.approval freezes
+    # HERMES_YOLO_MODE once at module import, so a plugin import chain
+    # touching it first would latch the freeze to False and silently disable
+    # oneshot's auto-bypass (#86526).
+    os.environ["HERMES_YOLO_MODE"] = "1"
+    os.environ["HERMES_ACCEPT_HOOKS"] = "1"
+
     # Silence every stdlib logger for the duration.  AIAgent, tools, and
     # provider adapters all log to stderr through the root logger; file
     # handlers added by setup_logging() keep working (they're attached to
@@ -215,11 +225,6 @@ def run_oneshot(
         sys.stderr.write(toolsets_error)
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
-
-    # Auto-approve any shell / tool approvals.  Non-interactive by
-    # definition — a prompt would hang forever.
-    os.environ["HERMES_YOLO_MODE"] = "1"
-    os.environ["HERMES_ACCEPT_HOOKS"] = "1"
 
     # One-shot prints a single final response and exits: there is no later turn
     # for a detached subagent's completion to re-enter, and nothing here drains

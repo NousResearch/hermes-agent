@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import time
+from collections import Counter
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -731,7 +732,7 @@ class BatchRunner:
         else:
             atomic_json_write(self.checkpoint_file, checkpoint_data)
     
-    def _scan_completed_prompts_by_content(self) -> set:
+    def _scan_completed_prompts_by_content(self) -> Counter:
         """
         Scan all batch files and extract completed prompts by their actual content.
         
@@ -739,9 +740,11 @@ class BatchRunner:
         rather than indices, allowing recovery even if indices don't match.
         
         Returns:
-            set: Set of prompt texts that have been successfully processed
+            Counter: prompt text -> number of successfully processed occurrences.
+            Occurrences are counted (not deduplicated into a set) so duplicate
+            prompts in the dataset are not silently dropped on --resume (#86523).
         """
-        completed_prompts = set()
+        completed_prompts = Counter()
         batch_files = sorted(self.output_dir.glob("batch_*.jsonl"))
         
         if not batch_files:
@@ -766,7 +769,7 @@ class BatchRunner:
                                 if msg.get("from") == "human":
                                     prompt_text = msg.get("value", "").strip()
                                     if prompt_text:
-                                        completed_prompts.add(prompt_text)
+                                        completed_prompts[prompt_text] += 1
                                     break  # Only need the first human message
                         except json.JSONDecodeError:
                             continue
@@ -775,12 +778,12 @@ class BatchRunner:
         
         return completed_prompts
     
-    def _filter_dataset_by_completed(self, completed_prompts: set) -> Tuple[List[Dict], List[int]]:
+    def _filter_dataset_by_completed(self, completed_prompts: Counter) -> Tuple[List[Dict], List[int]]:
         """
         Filter the dataset to exclude prompts that have already been completed.
         
         Args:
-            completed_prompts: Set of prompt texts that have been completed
+            completed_prompts: Counter of prompt text -> completed occurrences
             
         Returns:
             Tuple of (filtered_dataset, skipped_indices)
@@ -801,7 +804,11 @@ class BatchRunner:
                         prompt_text = (msg.get("content") or msg.get("value", "")).strip()
                         break
             
-            if prompt_text in completed_prompts:
+            # Skip only as many rows per prompt text as were actually
+            # completed (decrementing), so duplicate prompts beyond the
+            # completed count are still processed on resume (#86523).
+            if completed_prompts.get(prompt_text, 0) > 0:
+                completed_prompts[prompt_text] -= 1
                 skipped_indices.append(idx)
             else:
                 # Keep original index for tracking

@@ -423,12 +423,22 @@ def recover_if_needed(
             os.write(fd, f"{os.getpid()}\n".encode())
             os.close(fd)
         except FileExistsError:
+            # After removing a stale lock, retry the atomic O_EXCL acquire
+            # and continue into the repair instead of returning — otherwise
+            # a crashed prior repair leaves the lock deleted but the repair
+            # deferred to the next launch, and this launch still crashes on
+            # "import main" (#86527).
             try:
                 if time.time() - lock_path.stat().st_mtime > 3600:
                     lock_path.unlink()
+                    fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    os.write(fd, f"{os.getpid()}\n".encode())
+                    os.close(fd)
+                else:
+                    return
             except OSError:
-                pass
-            return
+                # FileExistsError included: another process won the race.
+                return
         except OSError:
             pass  # read-only fs / perms — proceed unlocked, install surfaces it
 
@@ -482,7 +492,16 @@ def _claim_recovery_lock(root: Path) -> bool:
         try:
             if time.time() - lock_path.stat().st_mtime > 3600:
                 lock_path.unlink()
+                # Retry the atomic acquire after clearing the stale lock —
+                # deleting it and returning False would defer the repair to
+                # the next launch even though nothing else holds the lock
+                # (#86527).
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, f"{os.getpid()}\n".encode())
+                os.close(fd)
+                return True
         except OSError:
+            # FileExistsError included: another process won the race.
             pass
         return False
     except OSError:

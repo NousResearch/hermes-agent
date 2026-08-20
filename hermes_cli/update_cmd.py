@@ -4811,6 +4811,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             sys.exit(1)
 
+    # Verify the git executable exists up front — a .git directory without
+    # git on PATH (slim containers, broken PATH) would otherwise die with a
+    # bare FileNotFoundError traceback, which the outer handler (it catches
+    # only CalledProcessError) does not turn into a readable message.
+    # Skipped on the Windows ZIP-update path, which needs no git (#86529).
+    if not use_zip_update and shutil.which("git") is None:
+        print("✗ git is required to update Hermes but was not found on PATH.")
+        print("  Install git (or fix your PATH) and retry.")
+        sys.exit(1)
+
     # On Windows, git can fail with "unable to write loose object file: Invalid argument"
     # due to filesystem atomicity issues. Set the recommended workaround.
     if sys.platform == "win32" and git_dir.exists():

@@ -262,3 +262,89 @@ class TestAncestryHandoff:
         assert lock.acquire() is False
         assert lock.holder is not None
         assert lock.holder.pid == DEAD_PID
+
+
+# ---------------------------------------------------------------------------
+# Atomic acquire (O_EXCL) — the check-then-write TOCTOU window (#86528)
+# ---------------------------------------------------------------------------
+
+def test_marker_appearing_between_check_and_write_fails_closed(marker, monkeypatch):
+    """The race this fixes: our pre-check read 'no live lock', but another
+    updater wrote its marker before our write landed. The old write_text
+    would have overwritten it; O_EXCL must refuse and name the holder."""
+    import hermes_cli.update_lock as ul
+
+    winner = UpdateLock(path=marker)
+    assert winner.acquire() is True
+
+    real_read = ul.read_live_update
+    calls = {"n": 0}
+
+    def blind_first_read(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None  # the TOCTOU window: marker not yet visible to us
+        return real_read(*args, **kwargs)
+
+    monkeypatch.setattr(ul, "read_live_update", blind_first_read)
+
+    loser = UpdateLock(path=marker)
+    assert loser.acquire() is False
+    assert loser.acquired is False
+    assert loser.holder is not None
+    assert loser.holder.pid == os.getpid()
+    # The winner's marker is intact — never overwritten by the loser.
+    assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
+    # And the loser must not delete it on release.
+    loser.release()
+    assert marker.exists()
+
+
+def test_malformed_marker_appearing_mid_race_is_cleaned_and_retried(marker, monkeypatch):
+    """A concurrent non-atomic writer (Rust/Electron) can leave a partial
+    marker that the re-read treats as malformed and clears; one retry then
+    claims the now-free path."""
+    import hermes_cli.update_lock as ul
+
+    marker.write_text("", encoding="utf-8")  # partial write from another updater
+    # Blind only the pre-check (the TOCTOU window); the re-read after
+    # FileExistsError uses the real reader, which clears the malformed
+    # marker so the retry can claim the path.
+    real_read = ul.read_live_update
+    calls = {"n": 0}
+
+    def blind_first_read(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return real_read(*args, **kwargs)
+
+    monkeypatch.setattr(ul, "read_live_update", blind_first_read)
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True
+    assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
+
+
+def test_marker_that_never_reads_back_live_fails_closed(marker, monkeypatch):
+    """If the marker still can't be read back as a live update after the
+    cleanup retry, fail closed with a placeholder holder rather than
+    looping or proceeding unlocked."""
+    import hermes_cli.update_lock as ul
+
+    monkeypatch.setattr(ul, "read_live_update", lambda *a, **k: None)
+
+    real_open = os.open
+
+    def always_taken(path, flags, *args, **kwargs):
+        if os.fspath(path) == os.fspath(marker) and flags & os.O_EXCL:
+            raise FileExistsError(os.fspath(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(ul.os, "open", always_taken)
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is False
+    assert lock.acquired is False
+    assert lock.holder is not None
+    assert describe_holder(lock.holder)  # placeholder must still describe

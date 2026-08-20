@@ -22,6 +22,7 @@ import {
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  resolvePollVoterId,
 } from './bridge_helpers.js';
 
 // -- inbound read receipts ------------------------------------------------
@@ -409,6 +410,61 @@ import {
   assert.equal(event.body, 'see attached\n[document could not be downloaded]');
   assert.equal(event.mediaUrls.length, 0);
   console.log('  ✓ captioned failed download keeps caption and appends note');
+}
+
+// -- poll voter attribution ----------------------------------------------
+{
+  // A poll update carries the poll *creation* key (authored by the bot, for any
+  // clarify() poll) and the *vote* key (authored by the human who voted). If
+  // the creation key wins, the gateway sees the bot's own id as the sender and
+  // rejects the vote as an unauthorized user, so the poll never appears to be
+  // answered. The vote-side key must therefore take precedence.
+  const botLid = '100000000000001@lid';
+  const voterJid = '15550001111@s.whatsapp.net';
+  const groupJid = '120363000000000001@g.us';
+
+  assert.equal(
+    resolvePollVoterId({
+      voteMessageKey: { participant: voterJid },
+      pollCreationKey: { participant: botLid },
+      chatId: groupJid,
+    }),
+    voterJid,
+    'vote message key must win over the poll creation key',
+  );
+
+  assert.equal(
+    resolvePollVoterId({
+      pollUpdateKey: { participant: voterJid },
+      pollCreationKey: { participant: botLid },
+    }),
+    voterJid,
+    'poll update key must win over the poll creation key',
+  );
+
+  assert.equal(
+    resolvePollVoterId({
+      voterId: voterJid,
+      pollCreationKey: { participant: botLid },
+    }),
+    voterJid,
+    'an explicit voterId wins outright',
+  );
+
+  // The creation key is a last resort, and the chat id last of all.
+  assert.equal(
+    resolvePollVoterId({ pollCreationKey: { participant: botLid } }),
+    botLid,
+    'creation key is still used when no vote-side id exists',
+  );
+  assert.equal(
+    resolvePollVoterId({ chatId: groupJid }),
+    groupJid,
+    'chat id is the final fallback',
+  );
+  assert.equal(resolvePollVoterId({}), '', 'an unknowable voter yields an empty string');
+
+  console.log('  ✓ poll votes are attributed to the voter, not the poll author');
 }
 
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

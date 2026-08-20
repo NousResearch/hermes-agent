@@ -506,6 +506,38 @@ export function inboundReadReceiptKeys({ key, enabled }) {
   return [key];
 }
 
+/**
+ * Resolve who cast a vote on a poll.
+ *
+ * A poll update carries two distinct keys and they have different authors:
+ *   - the poll *creation* key (`pollCreationKey`) — authored by whoever created
+ *     the poll, which is the bot itself for any `clarify()` poll Hermes sends;
+ *   - the poll *update* key (`pollUpdateKey`) / vote message key
+ *     (`voteMessageKey`) — authored by the person who actually voted.
+ *
+ * Preferring the creation key attributes every vote to the poll's author. For a
+ * bot-authored poll that means the bot's own JID/LID is reported as the sender,
+ * so the gateway's authorization check rejects it ("Unauthorized user") and the
+ * vote is discarded before it reaches the agent — the poll simply never appears
+ * to be answered.
+ *
+ * @returns {string} the voter's raw identifier, or '' when unknowable.
+ */
+export function resolvePollVoterId({ voterId, pollUpdateKey, voteMessageKey, pollCreationKey, chatId } = {}) {
+  const candidates = [
+    voterId,
+    voteMessageKey?.participant,
+    pollUpdateKey?.participant,
+    // Only fall back to the poll author / chat when no vote-side id exists.
+    pollCreationKey?.participant,
+    chatId,
+  ];
+  for (const candidate of candidates) {
+    if (candidate) return candidate;
+  }
+  return '';
+}
+
 export function mediaPayloadForFile({ buffer, filePath, mediaType, caption, fileName }) {
   const ext = filePath.toLowerCase().split('.').pop();
   const type = mediaType || inferMediaType(ext);

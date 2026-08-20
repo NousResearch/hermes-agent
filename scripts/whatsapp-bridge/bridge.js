@@ -46,6 +46,7 @@ import {
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  resolvePollVoterId,
 } from './bridge_helpers.js';
 
 // Parse CLI args
@@ -321,13 +322,18 @@ function logPollUpdateDiagnostic({ sourcePath, pollId, pollCreation, pollUpdates
   } catch {}
 }
 
-function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
+function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation, voterId }) {
   const chatId = normalizeWhatsAppId(key?.remoteJid || update?.pollUpdates?.[0]?.pollUpdateMessageKey?.remoteJid || '');
-  const senderId = normalizeWhatsAppId(
-    key?.participant
-    || update?.pollUpdates?.[0]?.pollUpdateMessageKey?.participant
-    || chatId
-  );
+  // Attribute the event to the VOTER, not the poll's author. `key` is the poll
+  // creation key, whose participant is the bot for any clarify() poll — using it
+  // makes the gateway reject the vote as an unauthorized sender. See
+  // resolvePollVoterId in bridge_helpers.js.
+  const senderId = normalizeWhatsAppId(resolvePollVoterId({
+    voterId,
+    pollUpdateKey: update?.pollUpdates?.[0]?.pollUpdateMessageKey,
+    pollCreationKey: key,
+    chatId,
+  }));
   const pollId = key?.id
     || update?.pollUpdates?.[0]?.pollCreationMessageKey?.id
     || update?.pollUpdates?.[0]?.pollUpdateMessageKey?.id
@@ -715,6 +721,9 @@ async function startSocket() {
           update: { pollUpdates },
           selectedOptions,
           aggregation,
+          // `msg` is the vote message, so its participant/sender is the voter;
+          // `pollKey` above is the poll creation key (authored by the bot).
+          voterId: normalizeWhatsAppId(msg.key?.participant || senderId || ''),
         });
         continue;
       }

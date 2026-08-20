@@ -31,6 +31,7 @@ class FakeBridge:
         self.written = bytearray()
         self.closed = False
         self.resized = None
+        self._dead = False
 
     def read(self, timeout):
         if not self._chunks:
@@ -45,6 +46,12 @@ class FakeBridge:
 
     def close(self):
         self.closed = True
+
+    def is_alive(self):
+        return not self._dead
+
+    def kill(self):
+        self._dead = True
 
 
 class FakeWS:
@@ -179,3 +186,51 @@ async def test_reaper_loop_invokes_reap(monkeypatch):
     except asyncio.CancelledError:
         pass
     assert calls["n"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_reap_reaps_dead_process_even_when_attached():
+    # Child killed externally (OOM killer / cgroup SIGKILL) before the drain
+    # task observed EOF: the session must still be reaped, otherwise its
+    # bridge (fds) and registry slot leak forever (#76759).
+    reg = make_registry(ttl=3600.0)
+    b = FakeBridge([b"", b"", b""])
+    s, _ = await reg.attach_or_spawn("tok", spawn=lambda: b)
+    await s.attach(FakeWS())                 # attached → old TTL rule keeps it
+    b.kill()                                 # process died without EOF
+    await reg.reap_idle(now=time.monotonic() + 7200)
+    assert "tok" not in reg._sessions
+    assert b.closed is True
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_reap_keeps_live_attached_session():
+    # A session with a live child must never be reaped, even past the TTL,
+    # because it may be mid-use (or reattach-ready).
+    reg = make_registry(ttl=1.0)
+    b = FakeBridge([b"", b""])
+    s, _ = await reg.attach_or_spawn("tok", spawn=lambda: b)
+    await s.attach(FakeWS())
+    await reg.reap_idle(now=time.monotonic() + 10)
+    assert "tok" in reg._sessions
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_reap_keeps_bridge_without_is_alive():
+    # Duck-typed bridges that don't implement is_alive() are treated as
+    # alive — the EOF path (alive=False) remains the reaper for those.
+    class BareBridge:
+        def read(self, timeout):
+            return b""
+
+        def close(self):
+            pass
+
+    reg = make_registry(ttl=1.0)
+    s, _ = await reg.attach_or_spawn("tok", spawn=lambda: BareBridge())
+    await s.attach(FakeWS())
+    await reg.reap_idle(now=time.monotonic() + 10)
+    assert "tok" in reg._sessions
+    await reg.close_all()

@@ -136,6 +136,22 @@ class RegistryFull(Exception):
     pass
 
 
+def _bridge_alive(s: "PtySession") -> bool:
+    """True when the session's child process is still running.
+
+    Duck-typed: fake bridges used in tests may not implement ``is_alive``;
+    when the bridge doesn't expose it we conservatively treat the session as
+    alive and rely on the EOF path (``alive = False``) instead.
+    """
+    is_alive = getattr(s.bridge, "is_alive", None)
+    if is_alive is None:
+        return True
+    try:
+        return bool(is_alive())
+    except Exception:
+        return False
+
+
 async def run_reaper(registry: "PtySessionRegistry", *, interval: float = 60.0) -> None:
     """Periodically reap idle/dead keep-alive sessions. Cancelled on shutdown."""
     while True:
@@ -187,6 +203,14 @@ class PtySessionRegistry:
             if (not s.alive)
             or (not s.attached and s.last_detached_at is not None
                 and (now - s.last_detached_at) > self._ttl)
+            # The drain task sets ``alive = False`` only when it observes
+            # EOF on the PTY master.  If the child was killed externally
+            # (OOM killer, cgroup SIGKILL, manual kill) or the drain task
+            # itself died, the session would otherwise pin its bridge (fds)
+            # and registry slot forever — and every leaked TUI subprocess
+            # costs ~150-250 MB RSS in the dashboard's cgroup (#76759).
+            # Ask the bridge directly; the check is a cheap WNOHANG waitpid.
+            or (not _bridge_alive(s))
         ]
         for key in doomed:
             await self._sessions.pop(key).close()

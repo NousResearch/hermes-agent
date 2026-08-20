@@ -414,7 +414,8 @@ async def _lifespan(app: "FastAPI"):
         )
         cron_thread.start()
 
-    # Reap idle/dead keep-alive PTY sessions in the background (30-min TTL).
+    # Reap idle/dead keep-alive PTY sessions in the background (bounded TTL,
+    # see PTY_REGISTRY above) so detached TUI subprocesses can't pile up.
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
 
     # Periodic authenticated self-test (feeds the ``dashboard`` component on
@@ -15724,10 +15725,41 @@ _PTY_IDLE_BACKOFF = 0.05
 # Keep-alive PTY sessions: a terminal connecting with ``?attach=<token>`` is
 # bound to a process that survives disconnect/refresh and is reattachable.
 from hermes_cli.pty_session import PtySessionRegistry, RegistryFull, run_reaper  # noqa: E402
+#
+# The TTL and session cap bound how many TUI subprocesses (``node
+# ui-tui/dist/entry.js``, ~150-250 MB RSS each, plus their Python gateway
+# children) may linger in this process's cgroup after a chat tab detaches —
+# unbounded accumulation here is what OOM-kills the dashboard on long-lived
+# hosts (#76759).  Ops can tighten further via env without a code change.
+def _pty_registry_ttl() -> float:
+    """Keep-alive TTL in seconds: idle detached PTY sessions (and their TUI
+    subprocesses) are reaped after this.  Default 5 min — long enough to
+    survive a browser refresh, short enough to bound idle memory."""
+    raw = os.environ.get("HERMES_PTY_TTL_SECONDS")
+    if raw:
+        try:
+            return max(30.0, float(raw))
+        except ValueError:
+            pass
+    return 5 * 60
+
+
+def _pty_registry_max_sessions() -> int:
+    """Hard cap on concurrent keep-alive PTY sessions (one TUI subprocess
+    each).  When the cap is reached and nothing is reapable, new chat tabs
+    get a clean ``Chat unavailable`` instead of piling up subprocesses."""
+    raw = os.environ.get("HERMES_PTY_MAX_SESSIONS")
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return 8
+
 
 PTY_REGISTRY = PtySessionRegistry(
-    ttl=30 * 60,
-    max_sessions=16,
+    ttl=_pty_registry_ttl(),
+    max_sessions=_pty_registry_max_sessions(),
     buffer_cap=1 * 1024 * 1024,
     read_timeout=_PTY_READ_CHUNK_TIMEOUT,
 )

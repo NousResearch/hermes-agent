@@ -296,6 +296,13 @@ export function useSessionActions({
   const copy = t.desktop
   const resumeRequestRef = useRef(0)
 
+  const closeRuntimeForSessionBoundary = useCallback(
+    async (runtimeId: string) => {
+      await requestGateway('session.close', { session_id: runtimeId })
+    },
+    [requestGateway]
+  )
+
   // Follow auto-compression's stored-id rotation only while the exact runtime,
   // selection, and route intent still belong to the rotating conversation.
   // The previous implementation carried only the next stored id and navigated
@@ -448,15 +455,17 @@ export function useSessionActions({
       // button feel stuck; requestGateway preserves outbound RPC ordering if
       // the user immediately sends the first prompt in the new draft.
       if (closeActiveRuntime && closingRuntimeId) {
-        void requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
+        void closeRuntimeForSessionBoundary(closingRuntimeId).catch(error => {
+          console.warn('Failed to finalize the previous desktop session boundary', error)
+        })
       }
     },
     [
       activeSessionIdRef,
       busyRef,
+      closeRuntimeForSessionBoundary,
       navigate,
       onFreshDraftRouteIntent,
-      requestGateway,
       resetViewSync,
       selectedStoredSessionIdRef
     ]
@@ -1755,7 +1764,7 @@ export function useSessionActions({
         removedFromMain ?? $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
 
       const wasSelected = selectedStoredSessionId === storedSessionId
-      const closingRuntimeId = wasSelected ? activeSessionId : null
+      const closingRuntimeId = wasSelected ? activeSessionIdRef.current : null
       const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
       const runtimeIdsToClose = new Set([closingRuntimeId, tiledRuntimeId].filter((id): id is string => Boolean(id)))
       const previousMessages = $messages.get()
@@ -1858,7 +1867,6 @@ export function useSessionActions({
       }
     },
     [
-      activeSessionId,
       activeSessionIdRef,
       closeRuntimeForSessionBoundary,
       copy,
@@ -1877,7 +1885,7 @@ export function useSessionActions({
 
       const archived = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
       const wasSelected = selectedStoredSessionId === storedSessionId
-      const closingRuntimeId = wasSelected ? activeSessionId : null
+      const closingRuntimeId = wasSelected ? activeSessionIdRef.current : null
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
@@ -1900,11 +1908,7 @@ export function useSessionActions({
         const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
         const runtimeIds = new Set([closingRuntimeId, tiledRuntimeId].filter((id): id is string => Boolean(id)))
 
-        await Promise.all(
-          [...runtimeIds].map(runtimeId =>
-            requestGateway('session.close', { session_id: runtimeId }).catch(() => undefined)
-          )
-        )
+        await Promise.all([...runtimeIds].map(runtimeId => closeRuntimeForSessionBoundary(runtimeId)))
         await setSessionArchived(storedSessionId, true, archived?.profile)
         // Archived rows never reach the sidebar, so their persisted unread can
         // only rot. Dropped after the RPC so a failed archive keeps it.
@@ -1926,15 +1930,25 @@ export function useSessionActions({
 
         untombstoneSessions(archivedIds)
         $pinnedSessionIds.set(previousPinned)
+
+        // Closing the runtime is irreversible, but the durable transcript is
+        // still authoritative. If the archive write fails after a successful
+        // close, restore the selected row by resuming it instead of leaving the
+        // user on an unrelated empty draft.
+        if (wasSelected) {
+          await resumeSession(storedSessionId, true)
+        }
+
         notifyError(err, copy.archiveFailed)
       } finally {
         endSessionMutation(archivedIds)
       }
     },
     [
-      activeSessionId,
+      activeSessionIdRef,
+      closeRuntimeForSessionBoundary,
       copy,
-      requestGateway,
+      resumeSession,
       runtimeIdByStoredSessionIdRef,
       selectedStoredSessionId,
       sessionStateByRuntimeIdRef,

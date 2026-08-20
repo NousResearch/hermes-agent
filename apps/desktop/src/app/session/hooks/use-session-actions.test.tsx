@@ -12,7 +12,8 @@ import {
   getLatestSessionMessages,
   getSession,
   type SessionInfo,
-  type SessionResumeResponse
+  type SessionResumeResponse,
+  setSessionArchived
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
@@ -30,6 +31,7 @@ import {
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
+  $sessions,
   $turnStartedAt,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
@@ -110,12 +112,14 @@ function Harness({
   navigate = vi.fn(),
   onReady,
   requestGateway,
+  runtimeIdByStoredSessionId = new Map<string, string>(),
   selectedStoredSessionId = null
 }: {
   activeSessionId?: string | null
   navigate?: ReturnType<typeof vi.fn>
   onReady: (handle: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  runtimeIdByStoredSessionId?: Map<string, string>
   selectedStoredSessionId?: string | null
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
@@ -131,7 +135,7 @@ function Harness({
     navigate: navigate as never,
     requestGateway,
     resetViewSync: vi.fn(),
-    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+    runtimeIdByStoredSessionIdRef: ref(runtimeIdByStoredSessionId),
     selectedStoredSessionId,
     selectedStoredSessionIdRef: ref<string | null>(selectedStoredSessionId),
     sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),

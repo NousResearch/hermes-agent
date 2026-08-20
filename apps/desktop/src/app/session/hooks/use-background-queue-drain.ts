@@ -15,6 +15,7 @@ import {
 import { notify } from '@/store/notifications'
 import { $sessions, idsShareLineage } from '@/store/session'
 import { $workingSessionIds } from '@/store/session-states'
+import { isWatchWindow } from '@/store/windows'
 
 import type { SubmitTextOptions } from './use-prompt-actions/utils'
 
@@ -151,7 +152,10 @@ export function useBackgroundQueueDrain({
   )
 
   useEffect(() => {
-    if (!enabled) {
+    // Watch windows are spectators for a child session driven elsewhere. They
+    // share the renderer's persisted composer queues, but must never become a
+    // second sender for those queues.
+    if (!enabled || isWatchWindow()) {
       return
     }
 

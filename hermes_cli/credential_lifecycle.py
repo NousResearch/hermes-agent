@@ -141,11 +141,18 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
 
     touched: List[str] = []
 
-    def _fix(section: Any, key_path: str) -> None:
+    def _fix(
+        section: Any,
+        key_path: str,
+        fields: tuple[str, ...] = ("api_key", "api"),
+    ) -> None:
         if not isinstance(section, dict):
             return
         # "api" is the legacy alias for model.api_key kept by older configs.
-        for field in ("api_key", "api"):
+        # NOTE: in the keyed ``providers`` schema ``api`` means the base_url,
+        # not a credential (see ``get_compatible_custom_providers``), so that
+        # section passes ``fields=("api_key",)`` to avoid touching a base_url.
+        for field in fields:
             current = section.get(field)
             if isinstance(current, str) and current == old_value:
                 if new_value:
@@ -168,6 +175,18 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
     elif isinstance(custom, dict):
         for name, entry in custom.items():
             _fix(entry, f"custom_providers.{name}")
+
+    # The keyed ``providers`` schema (v12+) is where the dashboard/desktop
+    # write custom-endpoint credentials — ``providers.<id>.api_key``. It is a
+    # real inline secret and higher-precedence than the env var, so a stale
+    # copy left here shadows a rotation (persistent 401 with a key the UI no
+    # longer shows, #62269) and survives a removal that promised to clear the
+    # credential from EVERY store. Scrub only ``api_key``; ``api`` here is the
+    # base_url alias, not a credential.
+    keyed_providers = user_config.get("providers")
+    if isinstance(keyed_providers, dict):
+        for provider_id, entry in keyed_providers.items():
+            _fix(entry, f"providers.{provider_id}", fields=("api_key",))
 
     if touched:
         require_readable_config_before_write(config_path)

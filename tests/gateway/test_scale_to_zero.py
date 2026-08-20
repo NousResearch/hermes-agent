@@ -71,7 +71,7 @@ def test_arm_blocked_without_wake_url():
 
 def _idle_kwargs(**over):
     base = dict(
-        running_agent_count=0,
+        active_work_count=0,
         seconds_since_last_inbound=600.0,
         idle_timeout_seconds=300.0,
         has_live_background_work=False,
@@ -81,7 +81,7 @@ def _idle_kwargs(**over):
 
 
 def test_not_idle_with_running_agent():
-    assert is_idle(**_idle_kwargs(running_agent_count=1)) is False
+    assert is_idle(**_idle_kwargs(active_work_count=1)) is False
 
 
 def test_idle_exactly_at_threshold():

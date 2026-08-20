@@ -337,17 +337,34 @@ def _prune(now: Optional[float] = None) -> None:
             ).fetchone()[0]
             excess = max(0, total - _MAX_ROWS)
             if excess:
+                # Only settled rows are deletable. An obligation that is
+                # still pending/attempting/failed is output nobody has
+                # received yet: dropping it to honour a row cap would lose
+                # exactly what the ledger exists to protect. The cap may be
+                # exceeded instead (backpressure warning below).
                 conn.execute(
                     """DELETE FROM delivery_obligations WHERE obligation_id IN (
                          SELECT obligation_id FROM delivery_obligations
+                         WHERE state IN ('delivered', 'abandoned')
                          ORDER BY CASE state
                                     WHEN 'delivered' THEN 0
-                                    WHEN 'abandoned' THEN 1
-                                    ELSE 2
+                                    ELSE 1
                                   END, updated_at ASC
                          LIMIT ?)""",
                     (excess,),
                 )
+            open_rows = conn.execute(
+                """SELECT COUNT(*) FROM delivery_obligations
+                   WHERE state IN ('pending', 'attempting', 'failed')"""
+            ).fetchone()[0]
+        if open_rows > _MAX_ROWS:
+            logger.warning(
+                "delivery ledger backpressure: %d undelivered obligations exceed "
+                "the row cap of %d; rows are retained — investigate stalled "
+                "delivery instead of expecting retention to clear them",
+                open_rows,
+                _MAX_ROWS,
+            )
     except Exception:
         logger.debug("delivery ledger prune failed", exc_info=True)
 

@@ -801,6 +801,225 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_key"], "local-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
 
+    def test_moa_direct_endpoint_without_real_provider_fails_fast(self):
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "moa"
+        parent.base_url = "moa://local"
+        parent.api_key = "moa-virtual-provider"
+
+        with self.assertRaises(ValueError) as ctx:
+            _resolve_delegation_credentials(
+                {"model": "glm-5.2", "base_url": "https://example.invalid/v1"},
+                parent,
+            )
+
+        self.assertIn("cannot inherit the virtual-provider credential", str(ctx.exception))
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_cross_provider_direct_endpoint_resolves_target_key(self, mock_resolve):
+        """Named delegation.provider must not inherit a foreign parent key.
+
+        OpenRouter/Nous/etc. parent credentials must not be disclosed to a
+        different configured direct endpoint when delegation.api_key is empty.
+        """
+        mock_resolve.return_value = {
+            "provider": "zai",
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "api_key": "real-zai-key",
+            "api_mode": "chat_completions",
+            "source": "env/config",
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "openrouter"
+        parent.api_key = "openrouter-parent-secret"
+        cfg = {
+            "model": "glm-5.2",
+            "provider": "zai",
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "api_key": "",
+        }
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["api_key"], "real-zai-key")
+        self.assertNotEqual(creds["api_key"], parent.api_key)
+        self.assertEqual(creds["base_url"], cfg["base_url"])
+        mock_resolve.assert_called_once_with(
+            requested="zai",
+            explicit_base_url=cfg["base_url"],
+            target_model="glm-5.2",
+        )
+
+    def test_same_provider_direct_endpoint_inherits_parent_key(self):
+        """Same effective provider may still inherit when api_key is omitted."""
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "zai"
+        parent.api_key = "parent-zai-key"
+        cfg = {
+            "model": "glm-5.2",
+            "provider": "zai",
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "api_key": "",
+        }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider"
+        ) as mock_resolve:
+            creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertIsNone(creds["api_key"])  # inherit via _build_child_agent
+        mock_resolve.assert_not_called()
+
+    def test_provider_alias_direct_endpoint_inherits_parent_key(self):
+        """zhipu/glm aliases must count as the same effective provider as zai."""
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "zai"
+        parent.api_key = "parent-zai-key"
+        parent.base_url = "https://api.z.ai/api/coding/paas/v4"
+        cfg = {
+            "model": "glm-5.2",
+            "provider": "zhipu",
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "api_key": "",
+        }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider"
+        ) as mock_resolve:
+            creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertIsNone(creds["api_key"])
+        mock_resolve.assert_not_called()
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_custom_direct_endpoint_different_base_url_resolves_target_key(
+        self, mock_resolve
+    ):
+        """Bare custom==custom must not inherit across different base_urls."""
+        mock_resolve.return_value = {
+            "provider": "custom",
+            "base_url": "https://provider-b.example/v1",
+            "api_key": "secret-b",
+            "api_mode": "chat_completions",
+            "source": "env/config",
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "custom"
+        parent.base_url = "https://provider-a.example/v1"
+        parent.api_key = "secret-a"
+        cfg = {
+            "model": "local-model",
+            "provider": "custom",
+            "base_url": "https://provider-b.example/v1",
+            "api_key": "",
+        }
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["api_key"], "secret-b")
+        self.assertNotEqual(creds["api_key"], parent.api_key)
+        mock_resolve.assert_called_once_with(
+            requested="custom",
+            explicit_base_url=cfg["base_url"],
+            target_model="local-model",
+        )
+
+    def test_custom_direct_endpoint_same_base_url_inherits_parent_key(self):
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "custom"
+        parent.base_url = "https://provider-a.example/v1"
+        parent.api_key = "secret-a"
+        cfg = {
+            "model": "local-model",
+            "provider": "custom",
+            "base_url": "https://provider-a.example/v1/",
+            "api_key": "",
+        }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider"
+        ) as mock_resolve:
+            creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertIsNone(creds["api_key"])
+        mock_resolve.assert_not_called()
+
+    def test_custom_parent_named_provider_same_base_url_inherits_parent_key(self):
+        """Direct-endpoint parents are stamped provider=custom; same URL may inherit.
+
+        Bug hunter BUG-1: mixed custom/named labels with matching base_url must
+        still count as the same endpoint so a live parent key is inherited when
+        delegation.api_key is empty (instead of fail-closed via resolve).
+        """
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "custom"
+        parent.base_url = "https://api.z.ai/api/coding/paas/v4"
+        parent.api_key = "live-parent-key"
+        cfg = {
+            "model": "glm-5.2",
+            "provider": "zai",
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "api_key": "",
+        }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider"
+        ) as mock_resolve:
+            creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertIsNone(creds["api_key"])
+        mock_resolve.assert_not_called()
+
+    def test_named_parent_custom_provider_same_base_url_inherits_parent_key(self):
+        """Inverse mixed labels: named parent + delegation.provider=custom, same URL."""
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "zai"
+        parent.base_url = "https://api.z.ai/api/coding/paas/v4"
+        parent.api_key = "parent-zai-key"
+        cfg = {
+            "model": "glm-5.2",
+            "provider": "custom",
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "api_key": "",
+        }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider"
+        ) as mock_resolve:
+            creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertIsNone(creds["api_key"])
+        mock_resolve.assert_not_called()
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_custom_parent_named_provider_different_base_url_resolves_target_key(
+        self, mock_resolve
+    ):
+        """Mixed custom/named must not inherit across different endpoints."""
+        mock_resolve.return_value = {
+            "provider": "zai",
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "api_key": "env-zai-key",
+            "api_mode": "chat_completions",
+            "source": "env/config",
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "custom"
+        parent.base_url = "https://provider-a.example/v1"
+        parent.api_key = "secret-a"
+        cfg = {
+            "model": "glm-5.2",
+            "provider": "zai",
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "api_key": "",
+        }
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["api_key"], "env-zai-key")
+        self.assertNotEqual(creds["api_key"], parent.api_key)
+        mock_resolve.assert_called_once()
+
     def test_direct_endpoint_auto_detects_anthropic_messages_suffix(self):
         # Issue #10213: Azure AI Foundry exposes Anthropic-compatible models at
         # a /anthropic URL suffix. Subagents must pick anthropic_messages
@@ -908,6 +1127,110 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
             self.assertEqual(kwargs["api_key"], "sk-or-delegation-key")
             self.assertEqual(kwargs["api_mode"], "chat_completions")
+
+    def test_moa_parent_resolves_real_key_for_direct_delegation_endpoint(self):
+        cfg = {
+            "max_iterations": 45,
+            "model": "glm-5.2",
+            "provider": "zai",
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "api_key": "",
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "moa"
+        parent.base_url = "moa://local"
+        parent.api_key = "moa-virtual-provider"
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value={
+                    "provider": "zai",
+                    "base_url": "https://api.z.ai/api/coding/paas/v4",
+                    "api_key": "real-zai-key",
+                    "api_mode": "chat_completions",
+                    "source": "env/config",
+                },
+            ) as mock_resolve,
+            patch("tools.delegate_tool._resolve_child_credential_pool", return_value=None),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "PROBE-OK",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Reply PROBE-OK", parent_agent=parent)
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["provider"], "custom")
+        self.assertEqual(kwargs["base_url"], cfg["base_url"])
+        self.assertEqual(kwargs["api_key"], "real-zai-key")
+        self.assertNotEqual(kwargs["api_key"], parent.api_key)
+        mock_resolve.assert_called_once_with(
+            requested="zai",
+            explicit_base_url=cfg["base_url"],
+            target_model="glm-5.2",
+        )
+
+    def test_cross_provider_parent_resolves_real_key_for_direct_endpoint(self):
+        """Non-MoA cross-provider parents must not leak their API key.
+
+        Reproduces the review finding: parent=openrouter with a secret key,
+        delegation.provider=zai + base_url + empty api_key must resolve the
+        Z.ai credential instead of inheriting the OpenRouter parent key.
+        """
+        cfg = {
+            "max_iterations": 45,
+            "model": "glm-5.2",
+            "provider": "zai",
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "api_key": "",
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "openrouter"
+        parent.base_url = "https://openrouter.ai/api/v1"
+        parent.api_key = "openrouter-parent-secret"
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value={
+                    "provider": "zai",
+                    "base_url": "https://api.z.ai/api/coding/paas/v4",
+                    "api_key": "real-zai-key",
+                    "api_mode": "chat_completions",
+                    "source": "env/config",
+                },
+            ) as mock_resolve,
+            patch("tools.delegate_tool._resolve_child_credential_pool", return_value=None),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "PROBE-OK",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Reply PROBE-OK", parent_agent=parent)
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["provider"], "custom")
+        self.assertEqual(kwargs["base_url"], cfg["base_url"])
+        self.assertEqual(kwargs["api_key"], "real-zai-key")
+        self.assertNotEqual(kwargs["api_key"], "openrouter-parent-secret")
+        mock_resolve.assert_called_once_with(
+            requested="zai",
+            explicit_base_url=cfg["base_url"],
+            target_model="glm-5.2",
+        )
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

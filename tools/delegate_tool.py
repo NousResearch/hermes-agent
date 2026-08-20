@@ -4414,16 +4414,160 @@ def _resolve_child_credential_pool(
     return None
 
 
+def _canonicalize_delegation_provider(provider: str) -> str:
+    """Map provider aliases to a canonical id for credential-boundary checks."""
+    value = (provider or "").strip().lower()
+    if not value:
+        return ""
+    if value == "moa":
+        return "moa"
+    # Nous aliases are not all in hermes_cli.models.normalize_provider.
+    if value in {"nous", "nous-portal", "nousresearch"}:
+        return "nous"
+    try:
+        from hermes_cli.models import normalize_provider
+
+        return normalize_provider(value)
+    except Exception:
+        return value
+
+
+def _same_custom_delegation_endpoint(
+    parent_base_url: Optional[str],
+    configured_base_url: Optional[str],
+) -> bool:
+    """True only when two custom runtimes share the same endpoint identity."""
+    parent_url = str(parent_base_url or "").strip().rstrip("/")
+    configured_url = str(configured_base_url or "").strip().rstrip("/")
+    if not parent_url or not configured_url:
+        return False
+    try:
+        from agent.credential_pool import get_custom_provider_pool_key
+
+        parent_key = get_custom_provider_pool_key(parent_url)
+        child_key = get_custom_provider_pool_key(configured_url)
+        if parent_key is not None and child_key is not None:
+            return parent_key == child_key
+    except Exception:
+        pass
+    return parent_url == configured_url
+
+
+def _same_effective_delegation_provider(
+    parent_provider: str,
+    configured_provider: str,
+    *,
+    parent_base_url: Optional[str] = None,
+    configured_base_url: Optional[str] = None,
+) -> bool:
+    """Return True when parent and configured providers share credentials safely.
+
+    MoA is never the same as a real endpoint provider — its credential is only
+    a virtual-provider sentinel. Provider aliases (zhipu/glm→zai, etc.) collapse
+    via ``normalize_provider``. When either side is ``custom`` (direct-endpoint
+    runtimes collapse to that label), compare endpoint identity via base_url /
+    custom pool key so the same URL can inherit across mixed ``custom``/named
+    labels, while different custom targets never share keys.
+    """
+    parent = _canonicalize_delegation_provider(parent_provider)
+    configured = _canonicalize_delegation_provider(configured_provider)
+    if not parent or not configured:
+        return False
+    if parent == "moa" or configured == "moa":
+        return False
+    # Direct-endpoint runtimes collapse to "custom". Bare string equality would
+    # treat unrelated base_urls as interchangeable; requiring *both* labels to
+    # be the string "custom" would also reject mixed custom/named pairs that
+    # share the same endpoint (e.g. parent stamped custom + delegation.provider
+    # =zai against the same URL) and fail closed instead of inheriting.
+    if parent == "custom" or configured == "custom":
+        return _same_custom_delegation_endpoint(parent_base_url, configured_base_url)
+    return parent == configured
+
+
+def _resolve_direct_endpoint_api_key(
+    *,
+    configured_api_key: Optional[str],
+    configured_provider: Optional[str],
+    configured_base_url: str,
+    configured_model: Optional[str],
+    parent_agent,
+) -> Optional[str]:
+    """Resolve the API key for a direct ``delegation.base_url`` child.
+
+    When ``delegation.api_key`` is set, use it. Otherwise inherit the parent key
+    only when no explicit ``delegation.provider`` is named, or when that provider
+    is demonstrably the same effective provider as the parent. Cross-provider
+    (and MoA) parents must resolve a real credential for the named target so a
+    foreign parent key is never sent to a different endpoint.
+    """
+    if configured_api_key:
+        return configured_api_key
+
+    parent_provider = str(getattr(parent_agent, "provider", "") or "").strip().lower()
+    provider_lower = (configured_provider or "").strip().lower()
+
+    if parent_provider == "moa" and (not configured_provider or provider_lower == "moa"):
+        raise ValueError(
+            "Delegation from a MoA session cannot inherit the virtual-provider "
+            "credential. Set delegation.provider to the real endpoint provider "
+            "or set delegation.api_key."
+        )
+
+    # No named target provider → keep historical inherit-from-parent behavior
+    # (e.g. same-provider local proxies that reuse the parent's key).
+    if not configured_provider:
+        return None
+
+    if _same_effective_delegation_provider(
+        parent_provider,
+        provider_lower,
+        parent_base_url=getattr(parent_agent, "base_url", None),
+        configured_base_url=configured_base_url,
+    ):
+        return None
+
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        credential_runtime = resolve_runtime_provider(
+            requested=configured_provider,
+            explicit_base_url=configured_base_url,
+            target_model=configured_model,
+        )
+    except Exception as exc:
+        raise ValueError(
+            f"Cannot resolve delegation provider '{configured_provider}' "
+            f"credentials for direct-endpoint delegation: {exc}. Set "
+            "delegation.api_key explicitly or configure the provider credential."
+        ) from exc
+
+    if (
+        credential_runtime.get("provider") == "moa"
+        or credential_runtime.get("source") == "moa-virtual-provider"
+    ):
+        api_key = None
+    else:
+        api_key = credential_runtime.get("api_key")
+    if not api_key:
+        raise ValueError(
+            f"Delegation provider '{configured_provider}' resolved but has no "
+            "real API key for direct-endpoint delegation. Set delegation.api_key "
+            "or configure the provider credential."
+        )
+    return api_key
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
     If ``delegation.base_url`` is configured, subagents use that direct
     OpenAI-compatible endpoint. ``delegation.api_key`` overrides the key; when
-    omitted, ``api_key`` is returned as ``None`` so ``_build_child_agent``
-    inherits the parent agent's key (``effective_api_key = override_api_key or
-    parent_api_key``). This lets providers that store their key outside
-    ``OPENAI_API_KEY`` (e.g. ``MINIMAX_API_KEY``, ``DASHSCOPE_API_KEY``) work
-    without a duplicate config entry.
+    omitted, the parent key is inherited only for same-provider (or unnamed
+    provider) targets. When ``delegation.provider`` names a different provider
+    than the parent — including MoA parents whose key is only a virtual
+    sentinel — resolve that provider's real credential instead of leaking the
+    parent's key to a foreign endpoint.
 
     Otherwise, if ``delegation.provider`` is configured, the full credential
     bundle (base_url, api_key, api_mode, provider) is resolved via the runtime
@@ -4452,13 +4596,18 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     _is_native_sdk_provider = _provider_lower in _NATIVE_SDK_PROVIDERS
 
     if configured_base_url and not _is_native_sdk_provider:
-        # When delegation.api_key is not set, return None so _build_child_agent
-        # falls back to the parent agent's API key via the credential inheritance
-        # path (effective_api_key = override_api_key or parent_api_key). This
-        # lets providers that store their key in a non-OPENAI_API_KEY env var
-        # (e.g. MINIMAX_API_KEY, DASHSCOPE_API_KEY) work without requiring
-        # callers to duplicate the key under delegation.api_key.
-        api_key = configured_api_key  # None → inherited from parent in _build_child_agent
+        # When delegation.api_key is not set and the target provider matches the
+        # parent (or is unnamed), return None so _build_child_agent inherits the
+        # parent key. Cross-provider targets resolve a real credential instead —
+        # otherwise an OpenRouter/Nous/etc. parent key would be disclosed to a
+        # foreign endpoint (and MoA's virtual sentinel would 401 everywhere).
+        api_key = _resolve_direct_endpoint_api_key(
+            configured_api_key=configured_api_key,
+            configured_provider=configured_provider,
+            configured_base_url=configured_base_url,
+            configured_model=configured_model,
+            parent_agent=parent_agent,
+        )
 
         # Use the shared URL-based api_mode detector (same path the main agent's
         # runtime resolver uses) so Anthropic-compatible direct endpoints with a

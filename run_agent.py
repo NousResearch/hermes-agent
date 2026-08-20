@@ -3598,6 +3598,22 @@ class AIAgent:
         if not targets:
             return
         landed = file_mutation_result_landed(tool_name, result)
+        # A direct config.yaml write is intentionally refused by file_tools:
+        # security-sensitive configuration must go through ``hermes config``.
+        # This is a policy redirect, not an ambiguous failed edit; tracking it
+        # as a mutation failure produces a stale footer even when the same turn
+        # subsequently succeeds through the official CLI path.
+        preview = _extract_error_preview(result) if is_error and not landed else ""
+        # Use the full tool result for policy classification: ``preview`` is
+        # deliberately truncated and may cut off the prescribed CLI command.
+        policy_text = str(result) if result is not None else ""
+        policy_redirect = (
+            tool_name in {"patch", "write_file"}
+            and "Refusing to write to Hermes config file:" in policy_text
+            and "hermes config" in policy_text
+        )
+        if policy_redirect:
+            return
         if landed:
             landed_paths = _extract_landed_file_mutation_paths(tool_name, args, result)
             changed = getattr(self, "_turn_file_mutation_paths", None)

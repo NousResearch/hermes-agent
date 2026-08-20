@@ -111,6 +111,49 @@ def _pending_dir(subsystem: str) -> Path:
     return get_hermes_home() / "pending" / subsystem
 
 
+def _collect_session_context() -> Dict[str, str]:
+    """Return the identity of the requester for the current agent turn.
+
+    Reads the five gateway session ContextVars that ``gateway/session_context``
+    populates per-task before spawning the agent thread.  For CLI, cron, and
+    any other non-gateway caller these vars are never set (or set to ""), so
+    this function returns an empty dict — the pending record is still written
+    but carries no identity, which is the right behaviour for background /
+    single-user local sessions.
+
+    Identity is read via ``get_session_var`` (ContextVar-only) rather than
+    ``get_session_env``. The latter falls back to ``os.environ`` when a
+    ContextVar is unset, which would let stale legacy ``HERMES_SESSION_*``
+    environment values from an unbound CLI/cron process be recorded as the
+    requester of this write. For audit metadata that is exactly the wrong
+    behaviour, so we deliberately ignore the environment here.
+
+    The result is intentionally a plain ``Dict[str, str]`` so that
+    ``json.dumps`` can serialise it without any custom encoder.
+    """
+    try:
+        from gateway.session_context import get_session_var
+    except ImportError:
+        return {}
+
+    ctx: Dict[str, str] = {
+        "user_id":    get_session_var("HERMES_SESSION_USER_ID",   ""),
+        "user_name":  get_session_var("HERMES_SESSION_USER_NAME", ""),
+        "platform":   get_session_var("HERMES_SESSION_PLATFORM",  ""),
+        "chat_id":    get_session_var("HERMES_SESSION_CHAT_ID",   ""),
+        # session_key is a non-secret routing identifier constructed from
+        # platform + user/chat IDs (e.g. "agent:main:telegram:dm:12345").
+        # It is NOT a credential and cannot be used for authentication or
+        # session takeover.
+        "session_key": get_session_var("HERMES_SESSION_KEY",      ""),
+    }
+    # Drop empty-string fields so the record stays compact for CLI sessions
+    # where all values are "" — an empty dict is more self-evident than a
+    # dict full of empty strings.
+    return {k: v for k, v in ctx.items() if v}
+
+
+
 def stage_write(subsystem: str, payload: Dict[str, Any],
                 *, summary: str, origin: str) -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
@@ -130,7 +173,7 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
     safe failure for an approval gate — nothing is silently committed).
     """
     pid = uuid.uuid4().hex[:8]
-    record = {
+    record: Dict[str, Any] = {
         "id": pid,
         "subsystem": subsystem,
         "action": payload.get("action", ""),
@@ -138,6 +181,7 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
         "origin": origin or "foreground",
         "created_at": time.time(),
         "payload": payload,
+        "session_context": _collect_session_context(),
     }
     try:
         d = _pending_dir(subsystem)

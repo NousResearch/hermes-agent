@@ -38,13 +38,25 @@ def _fmt_pending_list(subsystem: str) -> str:
     for r in records:
         origin = r.get("origin", "foreground")
         tag = " [auto]" if origin == "background_review" else ""
-        lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
+        # Show who requested the write when session context is available.
+        ctx = r.get("session_context") or {}
+        who = ctx.get("user_name") or ctx.get("user_id") or ""
+        platform = ctx.get("platform") or ""
+        identity = ""
+        if who and platform:
+            identity = f" [{who} via {platform}]"
+        elif who:
+            identity = f" [{who}]"
+        elif platform:
+            identity = f" [via {platform}]"
+        lines.append(f"  {r['id']}{tag}{identity}  {r.get('summary', '')}")
     where = "/{s} approve <id>".format(s=subsystem)
     lines.append("")
     lines.append(f"Apply: {where}   Reject: /{subsystem} reject <id>")
     if subsystem == wa.SKILLS:
         lines.append("Review full diff: /skills diff <id>")
     return "\n".join(lines)
+
 
 
 # ---------------------------------------------------------------------------

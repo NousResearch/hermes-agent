@@ -82,6 +82,21 @@ class TestCreateOpenAIClientCallable:
         )
         assert client is not None
 
+    def test_client_log_context_uses_requested_custom_provider_identity(self):
+        """Logs should identify a named custom provider, not its wire class."""
+        from run_agent import AIAgent
+
+        agent = AIAgent.__new__(AIAgent)
+        agent.provider = "custom"
+        agent.requested_provider = "cockpit-local"
+        agent.model = "gpt-5.6-luna"
+        agent.base_url = "http://localhost:58730/v1"
+
+        context = agent._client_log_context()
+
+        assert "provider=cockpit-local" in context
+        assert "provider=custom" not in context
+
 
 # ---------------------------------------------------------------------------
 # Auxiliary runtime preserves the callable

@@ -119,3 +119,18 @@ def test_identity_resolves_back_through_named_lookup(monkeypatch):
     assert entry is not None
     assert entry["base_url"] == "https://api.mimo.example/v1"
     assert entry["api_key"] == "sk-entry"
+
+
+def test_user_facing_identity_uses_named_provider_for_runtime_custom(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "canonical_custom_identity",
+        lambda **_kwargs: "custom:cockpit-local",
+    )
+
+    assert rp.user_facing_provider_identity(
+        provider="custom",
+        requested_provider="cockpit-local",
+        base_url="http://localhost:58730/v1",
+        model="gpt-5.6-luna",
+    ) == "cockpit-local"

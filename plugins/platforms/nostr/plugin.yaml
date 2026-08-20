@@ -1,0 +1,23 @@
+name: nostr-platform
+label: Nostr
+kind: platform
+version: 1.0.0
+description: >
+  Nostr gateway adapter for Hermes Agent.
+  Connects to Nostr relays and relays encrypted direct messages (NIP-04)
+  between a Nostr keypair and the Hermes agent.
+author: BigBossRabbit
+requires_env:
+  - name: NOSTR_NSEC
+    description: "Nostr private key in nsec format"
+    prompt: "Nostr nsec private key"
+    password: true
+optional_env:
+  - name: NOSTR_RELAYS
+    description: "Comma-separated relay URLs (default: damus.io, primal.net, snort.social)"
+    prompt: "Nostr relay URLs (comma-separated)"
+    password: false
+  - name: NOSTR_HOME_CHANNEL
+    description: "Channel for cron / notification delivery (pubkey hex)"
+    prompt: "Home channel pubkey (or empty)"
+    password: false

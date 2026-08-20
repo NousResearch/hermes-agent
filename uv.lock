@@ -1723,6 +1723,9 @@ mistral = [
 modal = [
     { name = "modal" },
 ]
+nostr = [
+    { name = "nostr-sdk" },
+]
 otlp = [
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
@@ -1887,6 +1890,7 @@ requires-dist = [
     { name = "mistralai", marker = "extra == 'mistral'", specifier = "==2.4.8" },
     { name = "modal", marker = "extra == 'modal'", specifier = "==1.3.4" },
     { name = "nemo-relay", marker = "(platform_machine == 'aarch64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'x86_64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'ARM64' and sys_platform == 'win32')", specifier = ">=0.7.1,<0.8" },
+    { name = "nostr-sdk", marker = "extra == 'nostr'", specifier = ">=0.44,<0.45" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
     { name = "numpy", marker = "extra == 'wake'", specifier = "==2.4.3" },
     { name = "onnxruntime", marker = "extra == 'wake'", specifier = "==1.27.0" },
@@ -1946,7 +1950,7 @@ requires-dist = [
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "nostr", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
@@ -2769,6 +2773,26 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/83/f8/51569ac65d696c8ecbee95938f89d4abf00f47d58d48f6fbabfe8f0baefe/nest_asyncio-1.6.0.tar.gz", hash = "sha256:6f172d5449aca15afd6c646851f4e31e02c598d553a667e38cafa997cfec55fe", size = 7418, upload-time = "2024-01-21T14:25:19.227Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/c4/c2971a3ba4c6103a3d10c4b0f24f461ddc027f0f09763220cf35ca1401b3/nest_asyncio-1.6.0-py3-none-any.whl", hash = "sha256:87af6efd6b5e897c81050477ef65c62e2b2f35d51703cae01aff2905b1852e1c", size = 5195, upload-time = "2024-01-21T14:25:17.223Z" },
+]
+
+[[package]]
+name = "nostr-sdk"
+version = "0.44.6"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/61/c3/1fbcb47aff23b368b817e5f6e90f3284b4b299e9bcf08e9a4cd414b80020/nostr_sdk-0.44.6-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:41dabb2539513db0b354c4fd2a3391307e50eb913a60c9325b1565e80e98530f", size = 3365132, upload-time = "2026-07-26T09:02:22.234Z" },
+    { url = "https://files.pythonhosted.org/packages/43/08/16525328d477e1fb427d47c0ccc14ce5b25f120871947374457a3267ae99/nostr_sdk-0.44.6-cp39-abi3-macosx_11_0_x86_64.whl", hash = "sha256:326526e6fd736c4dd6ad73b5cf7653d1a0ae46a3fb8d8ed4b4cb221ee64f7feb", size = 3482251, upload-time = "2026-07-26T09:02:23.623Z" },
+    { url = "https://files.pythonhosted.org/packages/65/a4/0f210f8490faf4c24dbc4bfbdc1943afc632d907c6fae48f88f0f3b55605/nostr_sdk-0.44.6-cp39-abi3-manylinux_2_17_aarch64.whl", hash = "sha256:811637b021cfa338a38e37dda8df5dbeebe447458d567ad9b700a65199f6874c", size = 3611794, upload-time = "2026-07-26T09:02:24.758Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/73/ce525eed5f93969c62984f9397c80acf99883eab52bc055259e189eb1375/nostr_sdk-0.44.6-cp39-abi3-manylinux_2_17_armv7l.whl", hash = "sha256:44cbec5c99a8a8c8e8beeb80ae7427a3ff20b943ca459bd0ba556e41c20dd246", size = 3359056, upload-time = "2026-07-26T09:02:26.101Z" },
+    { url = "https://files.pythonhosted.org/packages/c9/ad/f700ddbbfcf2d0ff2285dec9b87b8b290d1f4359add21cb09b568bf52c0f/nostr_sdk-0.44.6-cp39-abi3-manylinux_2_17_i686.whl", hash = "sha256:64e0304313bbbaa05226d9cac98618f94ab20e8e3f5e3a297179454e657d3446", size = 3607461, upload-time = "2026-07-26T09:02:27.393Z" },
+    { url = "https://files.pythonhosted.org/packages/c9/ec/947f9fd4161a69da12bdbb8502a377c5ada2ab8e640ce5515c4a001cf81f/nostr_sdk-0.44.6-cp39-abi3-manylinux_2_17_x86_64.whl", hash = "sha256:0234eae16b0fc11e3d72eb08c4c14b0c333a992e700d8fb88f191a42ef017a07", size = 3726683, upload-time = "2026-07-26T09:02:28.925Z" },
+    { url = "https://files.pythonhosted.org/packages/01/fe/448443ef9e23433f202c0362c2eb9e1b98dc0efffb5c3f9cae6f6252a5a8/nostr_sdk-0.44.6-cp39-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:d16adc26a42cab37ae4ae8e3a8bed03dcedbe88c7862133c48cf9d99cb9e0cf3", size = 3605361, upload-time = "2026-07-26T09:02:30.308Z" },
+    { url = "https://files.pythonhosted.org/packages/df/02/b0e83f3f5066e525e5c1fd44c81f6711479cc6942aee298ebcd545fb3e59/nostr_sdk-0.44.6-cp39-abi3-musllinux_1_2_armv7l.whl", hash = "sha256:dccebbc33500718ace5cf8e7ac6ed7fa41ec07f65f157896b392ac5f0b9ab2ed", size = 3360640, upload-time = "2026-07-26T09:02:31.615Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/01/7104eacda8609d52a148171354bca1095227a651860022984bf518ead1f2/nostr_sdk-0.44.6-cp39-abi3-musllinux_1_2_i686.whl", hash = "sha256:e73a55e1f52dd4cb006f502725e65ab12b68609cb1b18d96b2ba74a3b245d264", size = 3493797, upload-time = "2026-07-26T09:02:32.973Z" },
+    { url = "https://files.pythonhosted.org/packages/00/80/e8de31cf0f1cf4c65ca5691a6c8baabbed19daccdccb427d73968e0335b9/nostr_sdk-0.44.6-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:512229272a68cc651bbe96b1d0ec78d12b899708d871ef92b49ce96eb33ba1fd", size = 3724890, upload-time = "2026-07-26T09:02:34.219Z" },
+    { url = "https://files.pythonhosted.org/packages/83/0f/6d4c364bd4f1ad1c76030aeddc43c5f6edd63d79cec289229de6afa5a72d/nostr_sdk-0.44.6-cp39-abi3-win32.whl", hash = "sha256:5eee3919224b653007e71a8e8a43465ee36156132839dfd15c120ee9b54d075c", size = 3164542, upload-time = "2026-07-26T09:02:35.291Z" },
+    { url = "https://files.pythonhosted.org/packages/90/f5/11141f5612f8fb361d39dbb95d6ec916059213a8d5625f8f98b58a7cfc70/nostr_sdk-0.44.6-cp39-abi3-win_amd64.whl", hash = "sha256:f89a13a4cec623283cd66218b8efedc8ec618b1b3e33a0e398240469f7b317e6", size = 3383380, upload-time = "2026-07-26T09:02:36.804Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/3e/552318b5c8307ab2f725de59b9bedbd06df3f031c252d11b15dcea302511/nostr_sdk-0.44.6-cp39-abi3-win_arm64.whl", hash = "sha256:c36845d218118dc0330f554fdea5c6e0c4a73bc54cb74dcf628750bf9260e01f", size = 3236001, upload-time = "2026-07-26T09:02:37.906Z" },
 ]
 
 [[package]]
@@ -4050,7 +4074,7 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version < '3.12'" },
+    { name = "numpy" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -4105,7 +4129,7 @@ resolution-markers = [
     "python_full_version == '3.12.*'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version >= '3.12'" },
+    { name = "numpy" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a7/25/c2700dfaf6442b4effaa91af24ebce5dc9d31bb4a69706313aae70d72cd0/scipy-1.18.0.tar.gz", hash = "sha256:67b2ad2ad54c72ca6d04975a9b2df8c3638c34ddd5b28738e94fc2b57929d378", size = 30774447, upload-time = "2026-06-19T15:01:43.456Z" }
 wheels = [
@@ -4744,11 +4768,11 @@ name = "vercel-workers"
 version = "0.0.25"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio", marker = "python_full_version >= '3.12'" },
-    { name = "httpx", marker = "python_full_version >= '3.12'" },
-    { name = "pydantic", marker = "python_full_version >= '3.12'" },
-    { name = "python-dotenv", marker = "python_full_version >= '3.12'" },
-    { name = "vercel", marker = "python_full_version >= '3.12'" },
+    { name = "anyio" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "vercel" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/30/df/04d37021ad7ca53b7599c313e411d91623c7a005c741f491d1eefb7a9f0c/vercel_workers-0.0.25.tar.gz", hash = "sha256:212ded01400b524be51d251df49f801caf115ad7d48cca7eb168cbeceda3def3", size = 64149, upload-time = "2026-06-20T19:26:27.177Z" }
 wheels = [

@@ -264,6 +264,30 @@ class TestJsonParsing:
         assert parsed == {"language": "French"}
         assert ct == "json"
 
+    def test_schema_validation_warns_when_jsonschema_missing(self):
+        """When jsonschema is absent, validation is skipped and a warning is logged."""
+        import unittest.mock as mock
+
+        schema = {
+            "type": "object",
+            "properties": {"language": {"type": "string"}},
+            "required": ["language"],
+        }
+        # Simulate jsonschema not being installed
+        with mock.patch.dict("sys.modules", {"jsonschema": None}):
+            with mock.patch("agent.plugin_llm.logger") as mock_logger:
+                parsed, ct = _parse_structured_text(
+                    text='{"unrelated": "field"}',
+                    json_mode=False,
+                    json_schema=schema,
+                )
+        # The non-conforming data is returned without error
+        assert parsed == {"unrelated": "field"}
+        assert ct == "json"
+        # A warning was logged (not just debug)
+        mock_logger.warning.assert_called_once()
+        assert "jsonschema" in mock_logger.warning.call_args[0][0]
+
 
 # ---------------------------------------------------------------------------
 # End-to-end facade

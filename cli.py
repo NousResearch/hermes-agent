@@ -12970,7 +12970,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         self.agent, "context_compressor", None
                     ),
                 )
-                if summary.get("aborted") or summary.get("fallback_used"):
+                if (
+                    summary.get("aborted")
+                    or summary.get("fallback_used")
+                    or summary.get("refused_would_grow")
+                ):
                     icon = "⚠️"
                 else:
                     icon = "🗜️" if summary["noop"] else "✅"

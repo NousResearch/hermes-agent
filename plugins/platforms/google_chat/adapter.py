@@ -3643,8 +3643,14 @@ async def _standalone_send(
         return {"error": "Google Chat standalone send: refreshed credentials have no token"}
 
     body: Dict[str, Any] = {"text": message}
+    params: Dict[str, str] = {}
     if thread_id:
         body["thread"] = {"name": thread_id}
+        # Without this query param the Chat REST API silently ignores
+        # thread.name and opens a new top-level thread every time.
+        # The live adapter (_create_message / _send_file) already sets
+        # this — the standalone path was the only missing call site.
+        params["messageReplyOption"] = "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
 
     url = f"https://chat.googleapis.com/v1/{chat_id}/messages"
     try:
@@ -3657,6 +3663,7 @@ async def _standalone_send(
             async with session.post(
                 url,
                 json=body,
+                params=params or None,
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Content-Type": "application/json",

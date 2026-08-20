@@ -416,6 +416,24 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_goal_mode_without_body_is_rejected(worker_env):
+    from tools import kanban_tools as kt
+
+    result = json.loads(
+        kt._handle_create(
+            {
+                "title": "Open-ended audit",
+                "assignee": "peer",
+                "goal_mode": True,
+            }
+        )
+    )
+
+    assert result["error"] == (
+        "kanban_create: body is required when goal_mode is enabled"
+    )
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()

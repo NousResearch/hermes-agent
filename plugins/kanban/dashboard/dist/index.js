@@ -3181,11 +3181,14 @@
     // (which blocks the card for review). goalMaxTurns is optional; blank
     // = backend default.
     const [goalMode, setGoalMode] = useState(false);
+    const [goalBody, setGoalBody] = useState("");
     const [goalMaxTurns, setGoalMaxTurns] = useState("");
 
     const submit = function () {
       const trimmed = title.trim();
       if (!trimmed) return;
+      const goalContract = goalBody.trim();
+      if (goalMode && !goalContract) return;
       const body = {
         title: trimmed,
         assignee: assignee.trim() || null,
@@ -3212,13 +3215,14 @@
       // shape stays small and old dispatchers ignore it cleanly.
       if (goalMode) {
         body.goal_mode = true;
+        body.body = goalContract;
         const gmt = parseInt(goalMaxTurns, 10);
         if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
       }
       props.onSubmit(body);
       setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
       setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
-      setGoalMode(false); setGoalMaxTurns("");
+      setGoalMode(false); setGoalBody(""); setGoalMaxTurns("");
     };
 
     const showPathInput = workspaceKind !== "scratch";
@@ -3373,6 +3377,19 @@
               min: 1,
             }) : null,
           ),
+          goalMode ? h("div", { className: "flex flex-col gap-1" },
+            fieldLabel(tx(t, "goalAcceptanceLabel", "Acceptance criteria"),
+              tx(t, "goalAcceptanceHint", "(required for goal mode)")),
+            h("textarea", {
+              value: goalBody,
+              onChange: function (e) { setGoalBody(e.target.value); },
+              placeholder: tx(t, "goalAcceptancePlaceholder",
+                "Observable completion criteria, required evidence, and stop conditions…"),
+              className: "text-sm min-h-[5rem] max-h-48 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
+              rows: 4,
+              required: true,
+            }),
+          ) : null,
         ),
         h("div", { className: "hermes-kanban-dialog-actions" },
           h(Button, {
@@ -3383,7 +3400,7 @@
           h(Button, {
             type: "submit",
             size: "sm",
-            disabled: !title.trim(),
+            disabled: !title.trim() || (goalMode && !goalBody.trim()),
           }, tx(t, "create", "Create")),
         ),
       ),

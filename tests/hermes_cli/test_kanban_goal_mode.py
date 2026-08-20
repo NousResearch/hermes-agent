@@ -12,6 +12,7 @@ Covers three layers:
 
 from __future__ import annotations
 
+import argparse
 import sqlite3
 from pathlib import Path
 
@@ -19,6 +20,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import goals
+from hermes_cli import kanban as kanban_cli
 
 
 @pytest.fixture
@@ -34,6 +36,121 @@ def kanban_home(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # DB layer
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("body", [None, "", "  \n\t"])
+def test_goal_mode_requires_nonblank_body(kanban_home, body):
+    with kb.connect_closing() as conn:
+        with pytest.raises(
+            ValueError, match="body is required when goal_mode is enabled"
+        ):
+            kb.create_task(
+                conn,
+                title="Open-ended audit",
+                body=body,
+                assignee="researcher",
+                goal_mode=True,
+            )
+
+
+def test_plain_task_still_allows_empty_body(kanban_home):
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="Quick lookup",
+            body=None,
+            assignee="researcher",
+            goal_mode=False,
+        )
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None
+    assert task.body is None
+    assert task.goal_mode is False
+
+
+def test_goal_mode_accepts_explicit_contract(kanban_home):
+    body = "Acceptance: cite the inspected sources and attach the final report."
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="Audit the workflow",
+            body=body,
+            assignee="researcher",
+            goal_mode=True,
+            goal_max_turns=6,
+        )
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None
+    assert task.body == body
+    assert task.goal_mode is True
+    assert task.goal_max_turns == 6
+
+
+def test_dashboard_rejects_goal_mode_without_body(kanban_home):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from plugins.kanban.dashboard.plugin_api import router
+
+    app = FastAPI()
+    app.include_router(router)
+    response = TestClient(app).post(
+        "/tasks",
+        json={"title": "Open-ended audit", "goal_mode": True},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "body is required when goal_mode is enabled"
+
+    with kb.connect_closing() as conn:
+        assert kb.list_tasks(conn) == []
+
+
+def test_dashboard_bundle_collects_required_goal_contract():
+    bundle = (
+        Path(__file__).parents[2]
+        / "plugins"
+        / "kanban"
+        / "dashboard"
+        / "dist"
+        / "index.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'const [goalBody, setGoalBody] = useState("");' in bundle
+    assert "if (goalMode && !goalContract) return;" in bundle
+    assert "body.body = goalContract;" in bundle
+    assert "goalMode && !goalBody.trim()" in bundle
+    assert '"Acceptance criteria"' in bundle
+
+
+def _run_cli(*argv: str) -> int:
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    kanban_cli.build_parser(subparsers)
+    args = parser.parse_args(["kanban", *argv])
+    return kanban_cli.kanban_command(args)
+
+
+def test_cli_rejects_goal_mode_without_body(kanban_home, capsys):
+    rc = _run_cli("create", "Open-ended audit", "--assignee", "researcher", "--goal")
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert captured.out == ""
+    assert captured.err.strip() == "kanban: body is required when goal_mode is enabled"
+    with kb.connect_closing() as conn:
+        assert kb.list_tasks(conn) == []
+
+
+def test_slash_create_rejects_goal_mode_without_body(kanban_home):
+    output = kanban_cli.run_slash(
+        'create "Open-ended audit" --assignee researcher --goal'
+    )
+
+    assert output == "kanban: body is required when goal_mode is enabled"
+    with kb.connect_closing() as conn:
+        assert kb.list_tasks(conn) == []
 
 
 

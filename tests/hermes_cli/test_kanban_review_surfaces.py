@@ -297,6 +297,7 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
         tool_task = kb.create_task(
             conn,
             title="Goal-mode tool task",
+            body="Acceptance: review handoff includes verified evidence.",
             assignee="builder",
             goal_mode=True,
         )
@@ -332,6 +333,7 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
         cli_task = kb.create_task(
             conn,
             title="Goal-mode CLI task",
+            body="Acceptance: review handoff includes verified evidence.",
             assignee="builder",
             goal_mode=True,
         )

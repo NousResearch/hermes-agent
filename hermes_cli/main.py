@@ -3114,22 +3114,50 @@ def cmd_chat(args):
         except Exception:
             pass
 
-    # Sync bundled skills on every CLI launch. Runs in a background daemon
-    # thread: the sync is idempotent, hash-gated (unchanged skills are
+    # Sync bundled skills on every CLI launch. Normally runs in a background
+    # daemon thread: the sync is idempotent, hash-gated (unchanged skills are
     # skipped), and nothing on the banner path depends on it, yet the scan
     # alone costs ~120-170ms of rglob/hashing on the startup path. Skill
     # loading happens at agent init (first message), by which point the
-    # sync has long finished; a same-instant race would only matter in the
-    # rare launch right after `hermes update` changed a bundled skill.
+    # sync has long finished.
+    #
+    # FIRST RUN is the exception: with an empty ~/.hermes/skills the banner
+    # prefetch races the background sync, caches an empty skills index, and
+    # the very first launch greets the user with "No skills installed ·
+    # 0 skills" while 69 bundled skills land milliseconds later (full-surface
+    # CLI QA sweep, Aug 2026). Run the sync in the foreground exactly once —
+    # only when the skills dir has no SKILL.md yet — so the first impression
+    # matches reality; every later launch keeps the background path.
+    def _skills_dir_is_unseeded() -> bool:
+        try:
+            from hermes_cli.config import get_hermes_home
+            skills_dir = Path(get_hermes_home()) / "skills"
+            if not skills_dir.is_dir():
+                return True
+            return next(skills_dir.rglob("SKILL.md"), None) is None
+        except Exception:
+            return False
+
     def _skills_sync_bg() -> None:
         try:
             _sync_bundled_skills_for_startup()
         except Exception:
             pass
 
-    threading.Thread(
-        target=_skills_sync_bg, name="bundled-skills-sync", daemon=True
-    ).start()
+    if _skills_dir_is_unseeded():
+        _skills_sync_bg()
+        # The banner prefetch thread (started above) may have scanned the
+        # still-empty dir and cached an empty skills index — drop it so the
+        # banner recomputes against the freshly seeded tree.
+        try:
+            import hermes_cli.banner as _banner_mod
+            _banner_mod._available_skills_cache = None
+        except Exception:
+            pass
+    else:
+        threading.Thread(
+            target=_skills_sync_bg, name="bundled-skills-sync", daemon=True
+        ).start()
 
     # --yolo: bypass all dangerous command approvals.
     # Also set in main() before _prepare_agent_startup() — that is the

@@ -191,6 +191,21 @@ MEMORY_GUIDANCE = (
     "workflows belong in skills, not memory."
 )
 
+USER_PROFILE_GUIDANCE = (
+    "You have a persistent user profile across sessions. Save durable facts about "
+    "the user with the memory tool (target='user'): name, role, preferences, "
+    "corrections, and communication style. The profile is injected into every turn, "
+    "so keep it compact and focused on facts that will still matter later.\n"
+    "The built-in memory notes store is disabled — write only to the user profile "
+    "(target='user'), never target='memory'.\n"
+    "Prioritize what reduces future user steering — the most valuable entry is one "
+    "that prevents the user from having to correct or remind you again.\n"
+    "Write entries as declarative facts, not instructions to yourself. "
+    "'User prefers concise responses' ✓ — 'Always respond concisely' ✗. "
+    "Imperative phrasing gets re-read as a directive in later sessions and can "
+    "cause repeated work or override the user's current request."
+)
+
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
     "relevant cross-session context exists, use session_search to recall it before "

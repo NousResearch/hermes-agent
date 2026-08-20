@@ -38,6 +38,7 @@ from agent.prompt_builder import (
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
+    USER_PROFILE_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE,
     PLATFORM_HINTS,
@@ -420,11 +421,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # so the guidance would steer the model at a tool whose every call returns
     # "Memory is not available". Defaults to True for the rare code paths that
     # build an agent view without going through agent_init.
-    builtin_memory_active = getattr(agent, "_memory_enabled", True) or getattr(
-        agent, "_user_profile_enabled", True
-    )
-    if "memory" in agent.valid_tool_names and builtin_memory_active:
-        tool_guidance.append(MEMORY_GUIDANCE)
+    # When only the user profile store is enabled, the narrower
+    # USER_PROFILE_GUIDANCE is injected instead — the full block instructs the
+    # model to write notes to a MEMORY.md store that does not exist.
+    _mem_enabled = getattr(agent, "_memory_enabled", True)
+    _profile_enabled = getattr(agent, "_user_profile_enabled", True)
+    if "memory" in agent.valid_tool_names:
+        if _mem_enabled:
+            tool_guidance.append(MEMORY_GUIDANCE)
+        elif _profile_enabled:
+            tool_guidance.append(USER_PROFILE_GUIDANCE)
     if "session_search" in agent.valid_tool_names:
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in agent.valid_tool_names:

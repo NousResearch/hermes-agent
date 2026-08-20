@@ -249,6 +249,11 @@ when you want a third-party memory backend *instead of* the built-in files.
 Listing `memory` under `agent.disabled_toolsets` is the heavier switch: it hides
 external provider tools too.
 
+With only `memory_enabled: false` (user profile still on), the tool stays —
+it backs the profile store — but the system prompt swaps the full memory
+guidance for a narrower profile-only block, so the model is only instructed to
+save user-profile facts and never steered at the disabled notes store.
+
 ## Controlling memory writes (`write_approval`)
 
 By default the agent saves memory freely — including from the background

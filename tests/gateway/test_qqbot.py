@@ -1115,6 +1115,171 @@ class TestProcessAttachmentsPathExposure:
 
 
 # ---------------------------------------------------------------------------
+# Inbound document classification (DOCUMENT routing in gateway/run.py)
+# ---------------------------------------------------------------------------
+
+class TestInboundDocumentClassification:
+    """File attachments must be surfaced as real media classified DOCUMENT.
+
+    The inbound-document routing in gateway/run.py only fires when
+    event.media_urls is non-empty AND event.message_type == DOCUMENT; it then
+    translates the host cache path to the agent-visible path and emits the
+    "[The user sent a document …]" note. Previously QQ files were emitted only
+    as an inline "[file: name (host_path)]" text marker holding an
+    un-translated host path, so the agent could not open the file under a
+    sandboxed backend.
+    """
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    def test_detect_message_type_document_for_pdf(self):
+        from gateway.platforms.base import MessageType
+        from gateway.platforms.qqbot import QQAdapter
+        assert (
+            QQAdapter._detect_message_type(["doc.pdf"], ["application/pdf"])
+            == MessageType.DOCUMENT
+        )
+
+    def test_detect_message_type_document_for_text(self):
+        from gateway.platforms.base import MessageType
+        from gateway.platforms.qqbot import QQAdapter
+        assert (
+            QQAdapter._detect_message_type(["notes.txt"], ["text/plain"])
+            == MessageType.DOCUMENT
+        )
+
+    def test_leading_image_still_classifies_photo(self):
+        # A document appended after an image must not downgrade the image-led
+        # event away from PHOTO (image stays first in the media list).
+        from gateway.platforms.base import MessageType
+        from gateway.platforms.qqbot import QQAdapter
+        assert (
+            QQAdapter._detect_message_type(
+                ["pic.jpg", "doc.pdf"], ["image/jpeg", "application/pdf"]
+            )
+            == MessageType.PHOTO
+        )
+
+    @pytest.mark.asyncio
+    async def test_file_attachment_enters_media_urls(self):
+        adapter = self._make_adapter()
+
+        async def fake_download(url, ct, original_name=""):
+            return "/cache/doc_abc123_report.pdf"
+
+        adapter._download_and_cache = fake_download  # type: ignore[assignment]
+
+        result = await adapter._process_attachments([
+            {
+                "content_type": "application/pdf",
+                "url": "https://multimedia.example.com/download/file456",
+                "filename": "report.pdf",
+            }
+        ])
+
+        # Routable media so run.py's DOCUMENT path-translation fires …
+        assert result["media_urls"] == ["/cache/doc_abc123_report.pdf"]
+        assert result["media_types"] == ["application/pdf"]
+        # … while the human-readable marker is preserved.
+        assert "[file:" in result["attachment_info"]
+        assert "report.pdf" in result["attachment_info"]
+
+    @pytest.mark.asyncio
+    async def test_video_stays_text_only_not_media(self):
+        # run.py's DOCUMENT routing only handles application/* and text/*;
+        # videos must not be promoted into media_urls.
+        adapter = self._make_adapter()
+
+        async def fake_download(url, ct, original_name=""):
+            return "/cache/video_xyz.mp4"
+
+        adapter._download_and_cache = fake_download  # type: ignore[assignment]
+
+        result = await adapter._process_attachments([
+            {
+                "content_type": "video/mp4",
+                "url": "https://cdn.example.com/vid",
+                "filename": "clip.mp4",
+            }
+        ])
+
+        assert result["media_urls"] == []
+        assert result["media_types"] == []
+        assert "[video:" in result["attachment_info"]
+
+    @pytest.mark.asyncio
+    async def test_handler_emits_document_event_with_media(self):
+        adapter = self._make_adapter()
+        captured = []
+
+        async def capture(event):
+            captured.append(event)
+
+        adapter.handle_message = capture  # type: ignore[assignment]
+
+        async def fake_download(url, ct, original_name=""):
+            return "/cache/doc_abc123_report.pdf"
+
+        adapter._download_and_cache = fake_download  # type: ignore[assignment]
+
+        await adapter._handle_c2c_message(
+            {
+                "author": {"user_openid": "user1"},
+                "attachments": [
+                    {
+                        "content_type": "application/pdf",
+                        "url": "https://multimedia.example.com/download/file456",
+                        "filename": "report.pdf",
+                    }
+                ],
+            },
+            "in-1",
+            "",
+            {"user_openid": "user1"},
+            "2026-01-01T00:00:00+00:00",
+        )
+
+        from gateway.platforms.base import MessageType
+        assert len(captured) == 1
+        event = captured[0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert "/cache/doc_abc123_report.pdf" in event.media_urls
+        assert "application/pdf" in event.media_types
+
+    @pytest.mark.asyncio
+    async def test_no_attachment_message_emits_empty_media_lists(self):
+        # The handler reads att_result["media_urls"]/["media_types"]; the
+        # no-attachment early return of _process_attachments must supply those
+        # keys or the text-only path KeyErrors before any event is emitted.
+        adapter = self._make_adapter()
+        captured = []
+
+        async def capture(event):
+            captured.append(event)
+
+        adapter.handle_message = capture  # type: ignore[assignment]
+
+        # No "attachments" key → d.get("attachments") is None → the
+        # _process_attachments early-return branch runs.
+        await adapter._handle_c2c_message(
+            {"author": {"user_openid": "user1"}},
+            "in-1",
+            "hello",
+            {"user_openid": "user1"},
+            "2026-01-01T00:00:00+00:00",
+        )
+
+        from gateway.platforms.base import MessageType
+        assert len(captured) == 1
+        event = captured[0]
+        assert event.message_type == MessageType.TEXT
+        assert event.media_urls == []
+        assert event.media_types == []
+
+
+# ---------------------------------------------------------------------------
 # WebSocket op 7 (Server Reconnect) and op 9 (Invalid Session)
 # ---------------------------------------------------------------------------
 
@@ -1222,3 +1387,265 @@ class TestReadEventsClosedWsGuard:
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
 
+
+# ---------------------------------------------------------------------------
+# Guild direct-message (DIRECT_MESSAGE_CREATE) outbound routing
+# ---------------------------------------------------------------------------
+
+class TestGuildDirectMessageRouting:
+    """A guild DM must be routable on the send path, not just inbound.
+
+    _handle_dm_message stamps _chat_type_map[guild_id] = "dm", but the send
+    branches only knew c2c/group/guild, so replies hit the
+    'Unknown chat type' else and media POSTed the guild_id to the group
+    endpoint. These verify the /dms/{guild_id}/messages routing.
+    """
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    @pytest.mark.asyncio
+    async def test_inbound_dm_then_text_reply_routes_to_dms_endpoint(self):
+        adapter = self._make_adapter()
+        adapter._mark_connected()
+        # QQAdapter.is_connected also requires a live (non-closed) socket.
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter.handle_message = mock.AsyncMock()
+
+        calls = []
+
+        async def fake_api_request(method, path, body, **kwargs):
+            calls.append((method, path, body))
+            return {"id": "dm-msg-1"}
+
+        adapter._api_request = fake_api_request  # type: ignore[assignment]
+
+        # Inbound guild DM populates the routing map with "dm".
+        await adapter._handle_dm_message(
+            {"guild_id": "guild123", "attachments": []},
+            "in-1",
+            "hi",
+            {"id": "user1"},
+            "2026-01-01T00:00:00+00:00",
+        )
+        assert adapter._chat_type_map["guild123"] == "dm"
+
+        result = await adapter.send("guild123", "pong")
+
+        assert result.success is True
+        assert len(calls) == 1
+        method, path, _body = calls[0]
+        assert method == "POST"
+        assert path == "/dms/guild123/messages"
+
+    @pytest.mark.asyncio
+    async def test_dm_media_does_not_hit_group_endpoint(self):
+        adapter = self._make_adapter()
+        adapter._mark_connected()
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._chat_type_map["guild123"] = "dm"
+
+        # Should short-circuit before any upload/API request rather than
+        # POSTing the guild_id to /v2/groups/{id}/messages.
+        adapter._api_request = mock.AsyncMock(
+            side_effect=AssertionError("media must not call the group endpoint")
+        )
+
+        result = await adapter._send_media(
+            "guild123", "https://example.com/x.png", 1, "image"
+        )
+
+        assert result.success is False
+        adapter._api_request.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _api_request: status-before-decode on non-JSON error bodies
+# ---------------------------------------------------------------------------
+
+class TestApiRequestNonJsonError:
+    """A non-JSON 4xx/5xx body must raise the structured RuntimeError, not a
+    raw JSONDecodeError that bypasses daily-limit / permanent-error detection.
+    """
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    @pytest.mark.asyncio
+    async def test_non_json_error_body_raises_runtimeerror_with_status(self):
+        import json as _json
+
+        adapter = self._make_adapter()
+        adapter._ensure_token = mock.AsyncMock(return_value="tok")
+
+        resp = mock.Mock()
+        resp.status_code = 502
+        resp.text = "<html>502 Bad Gateway</html>"
+        resp.json = mock.Mock(
+            side_effect=_json.JSONDecodeError("Expecting value", "", 0)
+        )
+
+        adapter._http_client = mock.AsyncMock()
+        adapter._http_client.request = mock.AsyncMock(return_value=resp)
+
+        with pytest.raises(RuntimeError) as ei:
+            await adapter._api_request("POST", "/v2/users/u/messages", {})
+
+        msg = str(ei.value)
+        assert "[502]" in msg
+        assert "502 Bad Gateway" in msg
+        assert "QQ Bot API error" in msg
+
+    @pytest.mark.asyncio
+    async def test_daily_limit_biz_code_survives_non_dict_message(self):
+        # The daily-limit detection in chunked_upload matches the biz code in
+        # the RuntimeError text; a JSON error body must still surface it.
+        adapter = self._make_adapter()
+        adapter._ensure_token = mock.AsyncMock(return_value="tok")
+
+        resp = mock.Mock()
+        resp.status_code = 400
+        resp.json = mock.Mock(return_value={"code": 40093002, "message": "上传超限"})
+
+        adapter._http_client = mock.AsyncMock()
+        adapter._http_client.request = mock.AsyncMock(return_value=resp)
+
+        with pytest.raises(RuntimeError) as ei:
+            await adapter._api_request("POST", "/v2/groups/g/files", {})
+        assert "上传超限" in str(ei.value)
+        assert "[400]" in str(ei.value)
+
+
+# ---------------------------------------------------------------------------
+# Status-based send classification (QQ returns Chinese error messages)
+# ---------------------------------------------------------------------------
+
+class TestSendErrorClassification:
+    """Permanent 4xx (Chinese message) must not be retried and must be
+    reported retryable=False; the break decision and final flag must agree.
+    """
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    @pytest.mark.asyncio
+    async def test_chinese_403_is_permanent_and_not_retried(self):
+        adapter = self._make_adapter()
+        adapter._mark_connected()
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._chat_type_map["u1"] = "c2c"
+
+        attempts = {"n": 0}
+
+        async def fail_403(*args, **kwargs):
+            attempts["n"] += 1
+            # Mirrors _api_request's format with a Chinese message.
+            raise RuntimeError("QQ Bot API error [403] /v2/users/u1/messages: 无权限")
+
+        adapter._send_c2c_text = fail_403  # type: ignore[assignment]
+
+        result = await adapter.send("u1", "hi")
+
+        assert result.success is False
+        assert result.retryable is False
+        assert attempts["n"] == 1  # no retries on a permanent error
+
+    @pytest.mark.asyncio
+    async def test_429_is_transient_and_retried(self):
+        adapter = self._make_adapter()
+        adapter._mark_connected()
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._chat_type_map["u1"] = "c2c"
+
+        attempts = {"n": 0}
+
+        async def fail_429(*args, **kwargs):
+            attempts["n"] += 1
+            raise RuntimeError("QQ Bot API error [429] /v2/users/u1/messages: 频率限制")
+
+        adapter._send_c2c_text = fail_429  # type: ignore[assignment]
+
+        with mock.patch("asyncio.sleep", new=mock.AsyncMock()):
+            result = await adapter.send("u1", "hi")
+
+        assert result.success is False
+        assert result.retryable is True
+        assert attempts["n"] == 3  # retried up to the cap
+
+
+# ---------------------------------------------------------------------------
+# connect() fatal classification for permanent failures
+# ---------------------------------------------------------------------------
+
+class TestConnectFatalClassification:
+    """Missing dependency and bad-credential 401/403 are permanent and must
+    be marked retryable=False so the reconnect watcher stops hammering.
+    """
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    def test_missing_aiohttp_is_non_retryable(self):
+        from gateway.platforms.qqbot import adapter as qq_adapter
+
+        a = self._make_adapter()
+        with mock.patch.object(qq_adapter, "AIOHTTP_AVAILABLE", False):
+            connected = asyncio.run(a.connect())
+
+        assert connected is False
+        assert a._fatal_error_code == "qq_missing_dependency"
+        assert a._fatal_error_retryable is False
+
+    def test_auth_401_escalates_to_non_retryable(self):
+        from gateway.platforms.qqbot import adapter as qq_adapter
+
+        a = self._make_adapter()
+
+        # Simulate _ensure_token raising the same wrapped error the real path
+        # produces: RuntimeError(...) from httpx.HTTPStatusError(401).
+        request = httpx_request()
+        response = qq_adapter.httpx.Response(401, request=request)
+        status_err = qq_adapter.httpx.HTTPStatusError(
+            "Unauthorized", request=request, response=response
+        )
+
+        async def boom():
+            raise RuntimeError("Failed to get QQ Bot access token") from status_err
+
+        with mock.patch.object(
+            qq_adapter.httpx, "AsyncClient", return_value=mock.AsyncMock()
+        ):
+            a._ensure_token = boom  # type: ignore[assignment]
+            connected = asyncio.run(a.connect())
+
+        assert connected is False
+        assert a._fatal_error_code == "qq_auth_failed"
+        assert a._fatal_error_retryable is False
+
+    def test_network_error_stays_retryable(self):
+        from gateway.platforms.qqbot import adapter as qq_adapter
+
+        a = self._make_adapter()
+
+        async def boom():
+            raise RuntimeError("Failed to get QQ Bot gateway URL: connection reset")
+
+        with mock.patch.object(
+            qq_adapter.httpx, "AsyncClient", return_value=mock.AsyncMock()
+        ):
+            a._ensure_token = boom  # type: ignore[assignment]
+            connected = asyncio.run(a.connect())
+
+        assert connected is False
+        assert a._fatal_error_code == "qq_connect_error"
+        assert a._fatal_error_retryable is True
+
+
+def httpx_request():
+    """Build a minimal httpx.Request for HTTPStatusError construction."""
+    from gateway.platforms.qqbot import adapter as qq_adapter
+    return qq_adapter.httpx.Request("POST", "https://example.com/token")

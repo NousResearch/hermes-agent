@@ -165,6 +165,23 @@ class TestEstimateMessagesTokensRough:
 
 
 class TestEstimateRequestTokensRough:
+    def test_fullwidth_tool_schema_counts_more_than_ascii(self):
+        import agent.model_metadata as mm
+
+        def make_tools(description):
+            return [{"function": {"name": "lookup", "description": description,
+                                   "parameters": {"description": description}}}]
+
+        mm._TOOLS_TOKENS_CACHE.clear()
+        ascii_tools = make_tools("ABC123")
+        fullwidth_tools = make_tools("\uff21\uff22\uff23\uff11\uff12\uff13")
+        ascii_estimate = estimate_request_tokens_rough([], tools=ascii_tools)
+        fullwidth_estimate = estimate_request_tokens_rough(
+            [], tools=fullwidth_tools
+        )
+
+        assert (ascii_estimate, fullwidth_estimate) == (9, 18)
+
     def test_caches_tools_estimate(self):
         messages = [{"role": "user", "content": "hello"}]
         tools = [

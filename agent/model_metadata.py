@@ -3237,6 +3237,14 @@ _CJK_DENSE_RE = re.compile(
 )
 
 
+def _estimate_token_chars(text: str) -> int:
+    """Weight token-dense CJK chars as four ASCII estimate chars."""
+    if text.isascii():
+        return len(text)
+    dense = len(text) - len(_CJK_DENSE_RE.sub("", text))
+    return len(text) + (3 * dense)
+
+
 def estimate_tokens_rough(text: str) -> int:
     """Rough token estimate for pre-flight checks.
 
@@ -3551,14 +3559,16 @@ def _estimate_tools_tokens_rough(tools: List[Dict[str, Any]]) -> int:
             params = tool.get("parameters") or {}
 
         if isinstance(name, str):
-            total_chars += len(name)
+            total_chars += _estimate_token_chars(name)
         if isinstance(desc, str):
-            total_chars += len(desc)
+            total_chars += _estimate_token_chars(desc)
         # Parameters can be nested; JSON is closer to over-the-wire size than repr().
         try:
-            total_chars += len(json.dumps(params, ensure_ascii=False, separators=(",", ":")))
+            total_chars += _estimate_token_chars(
+                json.dumps(params, ensure_ascii=False, separators=(",", ":"))
+            )
         except Exception:
-            total_chars += len(str(params))
+            total_chars += _estimate_token_chars(str(params))
 
     tokens = (total_chars + 3) // 4
     # Bound the cache: drop the oldest entry when the cap is exceeded so a

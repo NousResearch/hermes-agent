@@ -131,3 +131,72 @@ class TestInboundReplayDedupe:
         for i in range(600):
             loop.run_until_complete(adapter._on_inbound(self._event(f"ts.{i}")))
         assert len(adapter._seen_inbound) <= adapter._SEEN_INBOUND_MAX
+
+
+class TestWireLevelReplayDedupe:
+    """The full production inbound path: a connector wire frame decoded by
+    _event_from_wire, then dispatched through RelayAdapter._on_inbound.
+
+    This is the layer the hand-built-event tests above cannot vouch for: the
+    dedupe key must work on the exact object shape the wire decoder emits.
+    The original dedupe commit shipped green on hand-built events while being
+    a no-op on decoded ones — this class exists so that can't recur.
+    """
+
+    WIRE = {
+        "text": "hi",
+        "message_type": "text",
+        "message_id": "1700.100",
+        "source": {
+            "platform": "slack",
+            "chat_id": "C1",
+            "chat_type": "channel",
+            "user_id": "U1",
+            "message_id": "1700.100",
+        },
+    }
+
+    def _tap(self, adapter, handled):
+        adapter.handle_message = lambda e: _record(handled, e)
+        adapter._consume_prompt_response = lambda e: _false_coro()
+        adapter._localize_inbound_media = lambda e: _none_coro()
+
+    def _decode(self, **overrides):
+        from gateway.relay.ws_transport import _event_from_wire
+
+        raw = {**self.WIRE, **overrides}
+        if "source" in overrides:
+            raw["source"] = {**self.WIRE["source"], **overrides["source"]}
+        return _event_from_wire(raw)
+
+    def test_decoded_event_yields_a_dedupe_key(self):
+        adapter, _ = _connected_adapter()
+        key = adapter._inbound_dedupe_key(self._decode())
+        assert key is not None, (
+            "the wire decoder's event shape must produce a dedupe key — "
+            "None here means the dedupe is fail-open for ALL production "
+            "traffic (the original ship-broken state)"
+        )
+
+    def test_replayed_wire_frame_dropped(self, loop):
+        adapter, _ = _connected_adapter()
+        handled = []
+        self._tap(adapter, handled)
+        loop.run_until_complete(adapter._on_inbound(self._decode()))
+        # The connector re-delivers the SAME frame on re-handshake; the
+        # decoder builds a fresh object each time, so identity must come
+        # from the key, not object identity.
+        loop.run_until_complete(adapter._on_inbound(self._decode()))
+        assert len(handled) == 1
+
+    def test_same_ids_on_different_platforms_not_conflated(self, loop):
+        # Phase 1.5 multiplex: one adapter fronts several platforms. Numeric
+        # chat/message ids can collide across platforms; both must dispatch.
+        adapter, _ = _connected_adapter()
+        handled = []
+        self._tap(adapter, handled)
+        loop.run_until_complete(adapter._on_inbound(self._decode()))
+        loop.run_until_complete(
+            adapter._on_inbound(self._decode(source={"platform": "discord"}))
+        )
+        assert len(handled) == 2

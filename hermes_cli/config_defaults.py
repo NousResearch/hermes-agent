@@ -2158,6 +2158,7 @@ DEFAULT_CONFIG = {
     # Slack platform settings (gateway mode)
     "slack": {
         "require_mention": True,       # Require @mention to respond in channels
+        "resolve_permalinks": False,   # Fetch linked Slack messages and recover same-message file references
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         # Channel IDs where @mention is ALWAYS required, even when

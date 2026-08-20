@@ -253,16 +253,16 @@
        review rows only so the whole diff surface speaks one color language
        without touching app-wide green/red usage (errors, PR badges, …). */
     :root[data-colorblind='true'] .group\/review-row .text-\(--ui-green\) {
-      color: #0a6cd2;
+      color: var(--ui-diff-add-foreground);
     }
     :root[data-colorblind='true'] .group\/review-row .text-\(--ui-red\) {
-      color: #c2570a;
+      color: var(--ui-diff-remove-foreground);
     }
     :root[data-colorblind='true'].dark .group\/review-row .text-\(--ui-green\) {
-      color: #5f9ef8;
+      color: var(--ui-diff-add-foreground);
     }
     :root[data-colorblind='true'].dark .group\/review-row .text-\(--ui-red\) {
-      color: #ff9e64;
+      color: var(--ui-diff-remove-foreground);
     }
 
     /* Overlay ladder. DESIGN.md: app-wide surfaces must not compete through

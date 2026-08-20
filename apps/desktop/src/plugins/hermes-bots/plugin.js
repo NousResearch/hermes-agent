@@ -9419,7 +9419,7 @@ function GroupChatWorkspace({ group, members, onBack }) {
             String(members.length),
             ' bots and clears the shared room log. The bots themselves and their “Group: ',
             group,
-            '” sessions are kept — you can still open those from each bot’s session browser.'
+            '” sessions are kept.'
           ]
         }),
         destructive: true,

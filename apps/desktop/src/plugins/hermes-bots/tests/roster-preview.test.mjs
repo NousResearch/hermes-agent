@@ -191,8 +191,8 @@ test('render: BotRow renders plain previews without a badge', () => {
   const text = textOf(tree)
   assert.match(text, /All hosts are healthy/)
   assert.doesNotMatch(text, /@manager/)
-  // The inline session-history chip is gone — stored history lives in the
-  // Sessions workspace (context menu), so the title no longer renders inline.
+  // The inline session-history chip is gone — the conversation lives in the
+  // bot's one canonical chat, so the title no longer renders inline.
   assert.doesNotMatch(text, /Weekly review/)
 })
 

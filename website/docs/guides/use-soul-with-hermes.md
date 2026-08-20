@@ -181,6 +181,23 @@ What Hermes should not do.
 How Hermes should behave when ambiguity appears.
 ```
 
+## SOUL.md vs USER.md
+
+`SOUL.md` defines who Hermes is. `USER.md` defines who you are.
+
+They serve different purposes:
+
+| File | Purpose | Managed by |
+|------|---------|------------|
+| `SOUL.md` | Agent identity, tone, personality | You edit this file directly |
+| `USER.md` | Your profile, preferences, communication style | Agent via the `memory` tool, or you can edit it |
+
+If you tell Hermes "remember that my name is Chris and I'm the boss", the agent writes that to `USER.md` (stored in `~/.hermes/memories/USER.md`). It gets loaded into the system prompt at the start of every session.
+
+If Hermes forgets something you told it, just say "remember that..." or "save this to memory" -- that triggers the memory tool and writes to USER.md or MEMORY.md.
+
+USER.md and MEMORY.md are covered in detail on the [Persistent Memory](/docs/user-guide/features/memory) page.
+
 ## SOUL.md vs /personality
 
 These are complementary.

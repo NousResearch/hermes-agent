@@ -440,6 +440,42 @@ def _aux_progress_active() -> bool:
     return getattr(_aux_progress, "hook", None) is not None
 
 
+def _anthropic_event_has_content(event: Any) -> bool:
+    event_type = getattr(event, "type", None)
+    if event_type == "content_block_delta":
+        delta = getattr(event, "delta", None)
+        if delta:
+            if getattr(delta, "text", None) or getattr(delta, "thinking", None) or getattr(delta, "partial_json", None):
+                return True
+    return False
+
+
+# Token-bearing Responses/Codex event types consumed by
+# ``agent/codex_runtime.py``. Lifecycle frames (response.created,
+# response.completed, pings) must not reset CompressionCommitFence.
+_CODEX_CONTENT_EVENT_TYPES = frozenset({
+    "response.output_item.added",
+    "response.content_part.added",
+    "response.output_text.delta",
+    "response.reasoning_summary_text.delta",
+    "response.text.delta",
+    "response.audio.delta",
+    "response.function_call_arguments.delta",
+    "response.reasoning_text.delta",
+})
+
+
+def _codex_event_has_content(event: Any) -> bool:
+    event_type = event.get("type") if isinstance(event, dict) else getattr(event, "type", None)
+    if event_type in _CODEX_CONTENT_EVENT_TYPES:
+        return True
+    if isinstance(event, dict):
+        delta = event.get("delta")
+        if delta and (delta.get("text") or delta.get("reasoning")):
+            return True
+    return False
+
+
 @contextlib.contextmanager
 def aux_progress_hook(hook):
     """Install *hook* as the current thread's aux forward-progress callback.
@@ -1780,10 +1816,9 @@ class _CodexCompletionsAdapter:
             def _on_each_event(_event: Any) -> None:
                 # Re-check timeout/cancellation per event, matching the
                 # cadence the old in-line ``_check_cancelled()`` used.
-                # Each SSE event is also forward progress for hosts watching
-                # a progress hook (gateway session hygiene): a reasoning
-                # model streaming a long summary must not look hung.
-                _notify_aux_progress()
+                # Only tick progress when the SSE event carries text/content.
+                if _codex_event_has_content(_event):
+                    _notify_aux_progress()
                 _check_cancelled()
 
             event_stream = self._client.responses.create(**stream_kwargs)
@@ -2142,7 +2177,7 @@ class _AnthropicCompletionsAdapter:
             # slow-but-generating summary model. No-op when no hook is
             # installed (None keeps the fast get_final_message path).
             on_stream_event=(
-                (lambda _event: _notify_aux_progress())
+                (lambda _event: _notify_aux_progress() if _anthropic_event_has_content(_event) else None)
                 if _aux_progress_active() else None
             ),
         )
@@ -8871,9 +8906,9 @@ def _obj_get(obj: Any, key: str, default: Any = None) -> Any:
 #      of a total budget (httpx applies the read timeout per stream read), so
 #      a slow-but-generating summary model is never killed mid-generation
 #      while tokens are moving — only a genuinely silent connection dies.
-#   2. Every arriving chunk ticks the progress hook, letting outer watchdogs
-#      (gateway session hygiene) extend their deadlines on liveness instead
-#      of guessing with a fixed wall clock.
+#   2. Content-bearing chunks tick the progress hook, letting outer watchdogs
+#      (gateway session hygiene) extend their deadlines on real tokens instead
+#      of guessing with a fixed wall clock. Keepalives do not reset the clock.
 # A total ceiling still bounds the pathological 1-token-per-idle-window
 # stream; see _aux_stream_total_ceiling().
 
@@ -9030,7 +9065,9 @@ def _aggregate_chat_stream(
 ) -> Any:
     """Consume a chat.completions chunk stream into a complete response.
 
-    Ticks the thread-local aux progress hook on every chunk. Raises
+    Ticks the thread-local aux progress hook only when a chunk carries
+    content, reasoning, or a tool-call fragment — keepalives, role-only
+    pings, and usage trailers do not count as progress. Raises
     TimeoutError when *total_ceiling* seconds elapse before the stream
     finishes — phrased with "timed out" so existing timeout classification
     (``_is_timeout_error``) treats it exactly like a request timeout.
@@ -9071,7 +9108,7 @@ class _ChatStreamAccumulator:
         self.resp_model = model or ""
 
     def feed(self, chunk: Any) -> None:
-        _notify_aux_progress()
+        _made_progress = False
         if (
             self._total_ceiling is not None
             and (time.monotonic() - self._started) >= self._total_ceiling
@@ -9082,6 +9119,9 @@ class _ChatStreamAccumulator:
             )
         self.resp_id = getattr(chunk, "id", None) or self.resp_id
         self.resp_model = getattr(chunk, "model", None) or self.resp_model
+        # Usage is a billing trailer, not a token delta — do not count it
+        # as forward progress; only real content/reasoning/tool-call deltas
+        # should advance CompressionCommitFence._last_progress.
         chunk_usage = getattr(chunk, "usage", None)
         if chunk_usage:
             self.usage = chunk_usage
@@ -9096,13 +9136,16 @@ class _ChatStreamAccumulator:
         piece = getattr(delta, "content", None)
         if piece:
             self.content_parts.append(piece)
+            _made_progress = True
         reasoning_piece = (
             getattr(delta, "reasoning", None)
             or getattr(delta, "reasoning_content", None)
         )
         if reasoning_piece and isinstance(reasoning_piece, str):
             self.reasoning_parts.append(reasoning_piece)
+            _made_progress = True
         for tc in (getattr(delta, "tool_calls", None) or []):
+            _made_progress = True
             idx = getattr(tc, "index", 0) or 0
             acc = self.tool_calls_acc.setdefault(
                 idx, {"id": "", "name": "", "arguments": []}
@@ -9115,6 +9158,9 @@ class _ChatStreamAccumulator:
                     acc["name"] = fn.name
                 if getattr(fn, "arguments", None):
                     acc["arguments"].append(fn.arguments)
+
+        if _made_progress:
+            _notify_aux_progress()
 
     def finish(self) -> Any:
         tool_calls = None

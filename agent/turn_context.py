@@ -38,6 +38,7 @@ from agent.conversation_compression import (
     conversation_history_after_compression,
     recover_rotated_compression_session,
 )
+from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_engine import automatic_compaction_status_message
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
@@ -49,6 +50,21 @@ from agent.model_metadata import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _should_record_compression_timeout_failure(exc: BaseException) -> bool:
+    """Timeout cooldown is for stalled/failed summary calls, not user /stop."""
+    if isinstance(exc, (AuxiliaryExplicitCancellation, InterruptedError)):
+        return False
+    return True
+
+
+def _record_compression_failure_if_stall(agent: Any, exc: BaseException) -> None:
+    if not _should_record_compression_timeout_failure(exc):
+        return
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is not None and hasattr(compressor, "record_timeout_failure"):
+        compressor.record_timeout_failure(str(exc))
 
 
 def compose_user_api_content(
@@ -836,10 +852,20 @@ def build_turn_context(
                 if _idle_status:
                     agent._emit_status(_idle_status)
                 _idle_input = messages
-                messages, active_system_prompt = agent._compress_context(
-                    messages, system_message, approx_tokens=_idle_tokens,
-                    task_id=effective_task_id,
-                )
+                try:
+                    messages, active_system_prompt = agent._compress_context(
+                        messages, system_message, approx_tokens=_idle_tokens,
+                        task_id=effective_task_id,
+                    )
+                except (Exception, AuxiliaryExplicitCancellation) as _compress_exc:
+                    logger.warning(
+                        "Idle compaction failed or was interrupted: %s. "
+                        "Proceeding without idle compaction.",
+                        _compress_exc,
+                        exc_info=True,
+                    )
+                    _record_compression_failure_if_stall(agent, _compress_exc)
+                    messages = _idle_input
                 # ``_compress_context`` returns the INPUT list object when it
                 # skips (per-session lock held by another path, failure
                 # cooldown, anti-thrash breaker, codex-native routing). Only
@@ -1010,10 +1036,22 @@ def build_turn_context(
                 _orig_len = len(messages)
                 _orig_tokens = _preflight_tokens
                 _preflight_input = messages
-                messages, active_system_prompt = agent._compress_context(
-                    messages, system_message, approx_tokens=_preflight_tokens,
-                    task_id=effective_task_id,
-                )
+                try:
+                    messages, active_system_prompt = agent._compress_context(
+                        messages, system_message, approx_tokens=_preflight_tokens,
+                        task_id=effective_task_id,
+                    )
+                except (Exception, AuxiliaryExplicitCancellation) as _compress_exc:
+                    logger.warning(
+                        "Context compression failed or was interrupted: %s. "
+                        "Proceeding without compression for this turn.",
+                        _compress_exc,
+                        exc_info=True,
+                    )
+                    _record_compression_failure_if_stall(agent, _compress_exc)
+                    _preflight_compression_blocked = True
+                    messages = _preflight_input
+                    break
                 if (
                     messages is _preflight_input
                     and compression_skipped_due_to_lock(agent)
@@ -1143,10 +1181,20 @@ def build_turn_context(
                     f"{getattr(_compressor, 'threshold_tokens', 0):,}",
                 )
                 _engine_input = messages
-                messages, active_system_prompt = agent._compress_context(
-                    messages, system_message, approx_tokens=_preflight_tokens,
-                    task_id=effective_task_id,
-                )
+                try:
+                    messages, active_system_prompt = agent._compress_context(
+                        messages, system_message, approx_tokens=_preflight_tokens,
+                        task_id=effective_task_id,
+                    )
+                except (Exception, AuxiliaryExplicitCancellation) as _compress_exc:
+                    logger.warning(
+                        "Engine-driven preflight compression failed or was interrupted: %s. "
+                        "Proceeding without compression.",
+                        _compress_exc,
+                        exc_info=True,
+                    )
+                    _record_compression_failure_if_stall(agent, _compress_exc)
+                    messages = _engine_input
                 # ``_compress_context`` returns the INPUT list object on every
                 # skip path (per-session lock held elsewhere, cooldown,
                 # anti-thrash breaker, codex-native routing) and an engine may

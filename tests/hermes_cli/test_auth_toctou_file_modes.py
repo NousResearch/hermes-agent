@@ -18,6 +18,7 @@ enforcement does not exist on Windows.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
@@ -67,6 +68,59 @@ def test_save_auth_store_writes_0o600_with_0o700_parent(tmp_path, monkeypatch):
     # Content survived the rewrite
     data = json.loads(auth_path.read_text())
     assert data["providers"]["openai-codex"]["tokens"]["access_token"] == "secret-x"
+
+
+@pytest.mark.parametrize("fsync_errno", [errno.EBADF, errno.EINVAL])
+def test_save_auth_store_tolerates_unsupported_directory_fsync(
+    tmp_path, monkeypatch, fsync_errno
+):
+    """Unsupported directory fsync errors must not fail auth persistence."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from hermes_cli import auth as auth_mod
+
+    real_fsync = os.fsync
+
+    def virtiofs_like_fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(fsync_errno, os.strerror(fsync_errno))
+        real_fsync(fd)
+
+    monkeypatch.setattr(auth_mod.os, "fsync", virtiofs_like_fsync)
+
+    auth_path = auth_mod._save_auth_store(
+        {
+            "version": auth_mod.AUTH_STORE_VERSION,
+            "providers": {"openai-codex": {"tokens": {"access_token": "secret-x"}}},
+        }
+    )
+
+    assert auth_path.exists()
+    data = json.loads(auth_path.read_text())
+    assert data["providers"]["openai-codex"]["tokens"]["access_token"] == "secret-x"
+
+
+def test_save_auth_store_reraises_unexpected_directory_fsync_error(tmp_path, monkeypatch):
+    """Only known unsupported-directory-fsync errors are downgraded."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from hermes_cli import auth as auth_mod
+
+    real_fsync = os.fsync
+
+    def failing_dir_fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "Input/output error")
+        real_fsync(fd)
+
+    monkeypatch.setattr(auth_mod.os, "fsync", failing_dir_fsync)
+
+    with pytest.raises(OSError) as excinfo:
+        auth_mod._save_auth_store(
+            {"version": auth_mod.AUTH_STORE_VERSION, "providers": {}}
+        )
+
+    assert excinfo.value.errno == errno.EIO
 
 
 # ---------------------------------------------------------------------------

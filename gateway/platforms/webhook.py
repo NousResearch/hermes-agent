@@ -40,8 +40,11 @@ import logging
 import re
 import subprocess
 import sys
+import threading
 import time
+import uuid
 from collections import deque
+from enum import Enum
 from typing import Any, Deque, Dict, List, Optional
 
 try:
@@ -131,6 +134,14 @@ DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 _RATE_WINDOW_SECONDS = 60.0
+_IDEMPOTENCY_DEFAULT_MAX_ENTRIES = 4096
+_IDEMPOTENCY_MAX_ENTRIES_LIMIT = 1_000_000
+_RAW_PAYLOAD_DEFAULT_CAP_BYTES = 4_000
+_RAW_PAYLOAD_MIN_CAP_BYTES = 64
+_RAW_PAYLOAD_MAX_CAP_BYTES = 1_000_000
+_PROMPT_TOKEN_RE = re.compile(
+    r"\{(?P<token>__raw__(?::(?P<raw_cap>[^{}]*))?|[a-zA-Z0-9_.]+)\}"
+)
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
 _LOOPBACK_HOSTS = frozenset({
@@ -172,6 +183,26 @@ def _hmac_str_equal(provided: str, expected: str) -> bool:
 def check_webhook_requirements() -> bool:
     """Check if webhook adapter dependencies are available."""
     return AIOHTTP_AVAILABLE
+
+
+class IdempotencyResult(str, Enum):
+    """Outcome of binding a stable provider delivery identity."""
+
+    ACCEPTED = "accepted"
+    DUPLICATE = "duplicate"
+    CONFLICT = "conflict"
+
+
+def _bounded_positive_int(value: Any, *, default: int, maximum: int) -> int:
+    """Parse an integer setting and keep it inside a safe positive range."""
+    if isinstance(value, bool):
+        parsed = default
+    else:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError, OverflowError):
+            parsed = default
+    return min(max(parsed, 1), maximum)
 
 
 class WebhookAdapter(BasePlatformAdapter):
@@ -217,14 +248,24 @@ class WebhookAdapter(BasePlatformAdapter):
         # Reference to gateway runner for cross-platform delivery (set externally)
         self.gateway_runner = None
 
-        # Idempotency: TTL cache of recently processed delivery IDs.
-        # Prevents duplicate agent runs when webhook providers retry.
-        self._seen_deliveries: Dict[str, float] = {}
+        # Idempotency: TTL cache of provider-native retry identities. Scope the
+        # key by every authority boundary that can otherwise alias and retain
+        # the original body hash so conflicting reuse is an explicit 409.
+        self._seen_deliveries: Dict[tuple[str, str, str, str], float] = {}
+        self._seen_delivery_bodies: Dict[tuple[str, str, str, str], str] = {}
         self._idempotency_ttl: int = 3600  # 1 hour
+        self._idempotency_max_entries: int = _bounded_positive_int(
+            config.extra.get(
+                "idempotency_max_entries", _IDEMPOTENCY_DEFAULT_MAX_ENTRIES
+            ),
+            default=_IDEMPOTENCY_DEFAULT_MAX_ENTRIES,
+            maximum=_IDEMPOTENCY_MAX_ENTRIES_LIMIT,
+        )
+        self._idempotency_lock = threading.RLock()
         self._seen_deliveries_next_prune_at: float = 0.0
 
-        # Rate limiting: per-route timestamps in a fixed window.
-        self._rate_counts: Dict[str, Deque[float]] = {}
+        # Rate limiting: profile/route-scoped timestamps in a fixed window.
+        self._rate_counts: Dict[tuple[str, str], Deque[float]] = {}
         self._rate_limit: int = int(config.extra.get("rate_limit", 30))  # per minute
 
         # Body size limit (auth-before-body pattern)
@@ -423,22 +464,65 @@ class WebhookAdapter(BasePlatformAdapter):
             self._delivery_info.pop(key, None)
             self._delivery_info_created.pop(key, None)
 
-    def _prune_seen_deliveries(self, now: float) -> None:
-        """Occasionally prune expired delivery IDs without scanning every POST."""
-        if now < self._seen_deliveries_next_prune_at:
-            return
-        cutoff = now - self._idempotency_ttl
-        stale = [k for k, t in self._seen_deliveries.items() if t < cutoff]
-        for k in stale:
-            self._seen_deliveries.pop(k, None)
-        self._seen_deliveries_next_prune_at = now + min(60.0, max(1.0, self._idempotency_ttl / 10))
+    def _prune_seen_deliveries(
+        self,
+        now: float,
+        *,
+        reserve: int = 0,
+        force: bool = False,
+    ) -> None:
+        """Expire old identities and enforce the configured hard ceiling.
 
-    def _record_rate_limit_hit(self, route_name: str, now: float) -> bool:
-        """Return True if route is still within limit after recording this hit."""
-        window = self._rate_counts.get(route_name)
+        ``reserve`` leaves room for an imminent insertion. This makes the
+        configured ceiling true at the insertion boundary, including values
+        below the historical implicit floor of 128.
+        """
+        target_size = max(0, self._idempotency_max_entries - reserve)
+        with self._idempotency_lock:
+            if (
+                not force
+                and now < self._seen_deliveries_next_prune_at
+                and len(self._seen_deliveries) <= target_size
+            ):
+                return
+
+            cutoff = now - self._idempotency_ttl
+            stale = [
+                key
+                for key, seen_at in self._seen_deliveries.items()
+                if seen_at < cutoff
+            ]
+            for key in stale:
+                self._seen_deliveries.pop(key, None)
+                self._seen_delivery_bodies.pop(key, None)
+
+            overflow = len(self._seen_deliveries) - target_size
+            if overflow > 0:
+                oldest = sorted(
+                    self._seen_deliveries,
+                    key=lambda key: self._seen_deliveries[key],
+                )[:overflow]
+                for key in oldest:
+                    self._seen_deliveries.pop(key, None)
+                    self._seen_delivery_bodies.pop(key, None)
+
+            self._seen_deliveries_next_prune_at = now + min(
+                60.0, max(1.0, self._idempotency_ttl / 10)
+            )
+
+    def _record_rate_limit_hit(
+        self,
+        route_name: str,
+        now: float,
+        *,
+        profile: Optional[str] = None,
+    ) -> bool:
+        """Return True if the profile/route is within limit after this hit."""
+        key = ((profile or "default"), route_name)
+        window = self._rate_counts.get(key)
         if not isinstance(window, deque):
             new_window: Deque[float] = deque(window or ())
-            self._rate_counts[route_name] = new_window
+            self._rate_counts[key] = new_window
             window = new_window
         cutoff = now - _RATE_WINDOW_SECONDS
         while window and window[0] < cutoff:
@@ -448,17 +532,178 @@ class WebhookAdapter(BasePlatformAdapter):
         window.append(now)
         return True
 
-    def _record_delivery_id(self, delivery_id: str, now: float) -> bool:
-        """Return True when this delivery should be processed."""
-        seen_at = self._seen_deliveries.get(delivery_id)
-        if seen_at is not None and now - seen_at < self._idempotency_ttl:
-            return False
-        if seen_at is not None:
-            self._seen_deliveries.pop(delivery_id, None)
-        self._seen_deliveries[delivery_id] = now
-        if len(self._seen_deliveries) > max(self._rate_limit * 2, 128):
-            self._prune_seen_deliveries(now)
-        return True
+    def _record_delivery_id(
+        self,
+        delivery_id: str,
+        now: float,
+        body_hash: str,
+        *,
+        profile: str,
+        route: str,
+        provider: str,
+    ) -> IdempotencyResult:
+        """Bind a stable provider identity to one body and authority scope."""
+        normalized_id = str(delivery_id).strip()
+        normalized_hash = str(body_hash).strip()
+        normalized_scope = tuple(
+            str(value).strip() for value in (profile, route, provider)
+        )
+        if not normalized_id:
+            raise ValueError("delivery_id must be a non-empty stable identity")
+        if not normalized_hash:
+            raise ValueError("body_hash must be non-empty")
+        if not all(normalized_scope):
+            raise ValueError("profile, route, and provider must be non-empty")
+        key = (*normalized_scope, normalized_id)
+
+        with self._idempotency_lock:
+            seen_at = self._seen_deliveries.get(key)
+            if seen_at is not None and now - seen_at < self._idempotency_ttl:
+                previous_hash = self._seen_delivery_bodies.get(key, "")
+                if previous_hash and normalized_hash != previous_hash:
+                    return IdempotencyResult.CONFLICT
+                return IdempotencyResult.DUPLICATE
+
+            if seen_at is not None:
+                self._seen_deliveries.pop(key, None)
+                self._seen_delivery_bodies.pop(key, None)
+
+            self._prune_seen_deliveries(now, reserve=1)
+            self._seen_deliveries[key] = now
+            self._seen_delivery_bodies[key] = normalized_hash
+            return IdempotencyResult.ACCEPTED
+
+    @staticmethod
+    def _nonempty_identity(value: Any) -> Optional[str]:
+        """Normalize a provider identity without collapsing blanks together."""
+        if isinstance(value, bool) or value is None:
+            return None
+        if not isinstance(value, (str, int)):
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @staticmethod
+    def _delivery_provider(
+        request: "web.Request", route_config: dict
+    ) -> tuple[str, bool]:
+        """Return the provider namespace and whether the route declared it."""
+        configured: Optional[str] = None
+        for candidate in (
+            route_config.get("provider"),
+            route_config.get("signature_mode"),
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                configured = candidate.strip().lower()
+                break
+
+        aliases = {
+            "agentmail": "svix",
+            "generic_v1": "generic",
+            "generic_v2": "generic",
+            "github_hmac_sha256": "github",
+            "gitlab_token": "gitlab",
+            "standard_webhooks": "standard_webhooks",
+        }
+        if configured is not None:
+            return aliases.get(configured, configured), True
+
+        headers = request.headers
+        if any(
+            headers.get(name, "").strip()
+            for name in ("svix-id", "svix-signature", "svix-timestamp")
+        ):
+            return "svix", False
+        if any(
+            headers.get(name, "").strip()
+            for name in ("X-Hub-Signature-256", "X-GitHub-Delivery")
+        ):
+            return "github", False
+        if any(
+            headers.get(name, "").strip()
+            for name in (
+                "X-Gitlab-Token",
+                "X-Gitlab-Event-UUID",
+                "X-Gitlab-Webhook-UUID",
+                "X-Gitlab-Idempotency-Key",
+            )
+        ):
+            return "gitlab", False
+        if any(
+            headers.get(name, "").strip()
+            for name in ("webhook-id", "webhook-signature")
+        ):
+            return "standard_webhooks", False
+        if headers.get("X-Chatwoot-Delivery", "").strip():
+            return "chatwoot", False
+        if headers.get("linear-signature", "").strip():
+            return "linear", False
+        if headers.get("X-Hindsight-Signature", "").strip():
+            return "hindsight", False
+        if any(
+            headers.get(name, "").strip()
+            for name in (
+                "X-Webhook-Signature-V2",
+                "X-Webhook-Signature",
+                "X-Request-ID",
+            )
+        ):
+            return "generic", False
+        return "generic", False
+
+    def _resolve_delivery_identity(
+        self,
+        request: "web.Request",
+        route_config: dict,
+        payload: dict,
+    ) -> Optional[tuple[str, str]]:
+        """Resolve one trustworthy provider-native retry identity.
+
+        No timestamp or blank-header fallback is permitted. When this returns
+        ``None`` the caller creates a unique trace/session ID but deliberately
+        skips retry deduplication.
+        """
+        provider, declared = self._delivery_provider(request, route_config)
+        headers = request.headers
+
+        if provider == "github":
+            header_names = ("X-GitHub-Delivery",)
+        elif provider == "svix":
+            header_names = ("svix-id",)
+        elif provider == "gitlab":
+            header_names = (
+                "X-Gitlab-Event-UUID",
+                "X-Gitlab-Webhook-UUID",
+                "X-Gitlab-Idempotency-Key",
+                "Idempotency-Key",
+            )
+        elif provider == "standard_webhooks":
+            header_names = ("webhook-id", "Idempotency-Key")
+        elif provider == "chatwoot":
+            header_names = ("X-Chatwoot-Delivery",)
+        elif provider == "generic":
+            header_names = ("X-Request-ID",)
+        else:
+            header_names = ()
+
+        for header_name in header_names:
+            candidate = self._nonempty_identity(headers.get(header_name))
+            if candidate is not None:
+                return provider, candidate
+
+        if provider == "stripe" and declared:
+            candidate = self._nonempty_identity(payload.get("id"))
+            if candidate is not None:
+                return provider, candidate
+
+        # Chatwoot payload IDs are ambiguous unless the route explicitly says
+        # Chatwoot; never infer that fallback from payload shape alone.
+        if provider == "chatwoot" and declared:
+            candidate = self._nonempty_identity(payload.get("id"))
+            if candidate is not None:
+                return provider, candidate
+
+        return None
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
@@ -669,6 +914,14 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"error": "Payload too large"}, status=413
             )
 
+        content_encoding = request.headers.get(
+            "Content-Encoding", ""
+        ).strip().lower()
+        if content_encoding not in {"", "identity"}:
+            return web.json_response(
+                {"error": "Unsupported Content-Encoding"}, status=415
+            )
+
         # Read body (must be done before any validation)
         try:
             raw_body = await request.read()
@@ -713,26 +966,50 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # ── Rate limiting (after auth) ───────────────────────────
         now = time.time()
-        if not self._record_rate_limit_hit(route_name, now):
+        effective_profile = profile or "default"
+        if not self._record_rate_limit_hit(
+            route_name, now, profile=effective_profile
+        ):
             return web.json_response(
-                {"error": "Rate limit exceeded"}, status=429
+                {"error": "Rate limit exceeded"},
+                status=429,
+                headers={"Retry-After": str(int(_RATE_WINDOW_SECONDS))},
             )
 
-        # Parse payload
-        try:
-            payload = json.loads(raw_body)
-        except json.JSONDecodeError:
-            # Try form-encoded as fallback
+        # Parse only the declared media type. Invalid JSON must never fall
+        # through into form decoding, and webhook envelopes must be objects.
+        media_type = request.headers.get("Content-Type", "").split(
+            ";", 1
+        )[0].strip().lower()
+        if media_type == "application/x-www-form-urlencoded":
             try:
                 import urllib.parse
 
                 payload = dict(
                     urllib.parse.parse_qsl(raw_body.decode("utf-8"))
                 )
-            except Exception:
+            except (UnicodeDecodeError, ValueError):
                 return web.json_response(
-                    {"error": "Cannot parse body"}, status=400
+                    {"error": "Cannot parse form body"}, status=400
                 )
+        elif media_type == "application/json" or media_type.endswith(
+            "+json"
+        ):
+            try:
+                payload = json.loads(raw_body)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return web.json_response(
+                    {"error": "Cannot parse JSON body"}, status=400
+                )
+        else:
+            return web.json_response(
+                {"error": "Unsupported Content-Type"}, status=415
+            )
+
+        if not isinstance(payload, dict):
+            return web.json_response(
+                {"error": "JSON body must be an object"}, status=400
+            )
 
         # Check event type filter
         event_type = (
@@ -770,6 +1047,46 @@ class WebhookAdapter(BasePlatformAdapter):
                 }
             )
 
+        identity = self._resolve_delivery_identity(
+            request, route_config, payload
+        )
+        if identity is None:
+            provider, _declared = self._delivery_provider(
+                request, route_config
+            )
+            delivery_id = f"generated-{uuid.uuid4().hex}"
+            stable_delivery_id = None
+        else:
+            provider, delivery_id = identity
+            stable_delivery_id = delivery_id
+            idem_result = self._record_delivery_id(
+                delivery_id,
+                now,
+                hashlib.sha256(raw_body).hexdigest(),
+                profile=effective_profile,
+                route=route_name,
+                provider=provider,
+            )
+            if idem_result is IdempotencyResult.CONFLICT:
+                return web.json_response(
+                    {
+                        "status": "conflict",
+                        "delivery_id": delivery_id,
+                        "error": (
+                            "Idempotency key reused with a different body"
+                        ),
+                    },
+                    status=409,
+                )
+            if idem_result is IdempotencyResult.DUPLICATE:
+                logger.info(
+                    "[webhook] Skipping duplicate delivery %s", delivery_id
+                )
+                return web.json_response(
+                    {"status": "duplicate", "delivery_id": delivery_id},
+                    status=200,
+                )
+
         if route_config.get("script"):
             # run_route_script shells out (subprocess.run, up to its timeout);
             # run it in a worker thread so it can't block the gateway event loop.
@@ -795,9 +1112,20 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # Format prompt from template
         prompt_template = route_config.get("prompt", "")
-        prompt = self._render_prompt(
-            prompt_template, payload, event_type, route_name
-        )
+        try:
+            prompt = self._render_prompt(
+                prompt_template, payload, event_type, route_name
+            )
+        except ValueError as exc:
+            logger.error(
+                "[webhook] Invalid prompt template for route %s: %s",
+                route_name,
+                exc,
+            )
+            return web.json_response(
+                {"error": "Webhook route has an invalid prompt template"},
+                status=500,
+            )
 
         # Inject skill content if configured.
         # We call build_skill_invocation_message() directly rather than
@@ -827,27 +1155,6 @@ class WebhookAdapter(BasePlatformAdapter):
                         )
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
-
-        # Build a unique delivery ID
-        delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
-            request.headers.get(
-                "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
-            ),
-        )
-
-        # ── Idempotency ─────────────────────────────────────────
-        # Skip duplicate deliveries (webhook retries).
-        now = time.time()
-        if not self._record_delivery_id(delivery_id, now):
-            logger.info(
-                "[webhook] Skipping duplicate delivery %s", delivery_id
-            )
-            return web.json_response(
-                {"status": "duplicate", "delivery_id": delivery_id},
-                status=200,
-            )
 
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we
@@ -967,6 +1274,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 "route": route_name,
                 "event": event_type,
                 "delivery_id": delivery_id,
+                "deduplication": (
+                    "stable" if stable_delivery_id is not None else "skipped"
+                ),
             },
             status=202,
         )
@@ -1251,40 +1561,117 @@ class WebhookAdapter(BasePlatformAdapter):
         event_type: str,
         route_name: str,
     ) -> str:
-        """Render a prompt template with the webhook payload.
+        """Render a prompt template with bounded, parseable raw envelopes.
 
         Supports dot-notation access into nested dicts:
         ``{pull_request.title}`` → ``payload["pull_request"]["title"]``
 
-        Special token ``{__raw__}`` dumps the entire payload as indented
-        JSON (truncated to 4000 chars).  Useful for monitoring alerts or
-        any webhook where the agent needs to see the full payload.
+        ``{__raw__}`` retains the 4,000-byte default. ``{__raw__:N}``
+        selects an explicit complete-envelope byte cap between 64 and
+        1,000,000 bytes. The cap includes metadata and JSON escaping.
         """
         if not template:
-            truncated = json.dumps(payload, indent=2)[:4000]
+            raw_envelope = self._render_raw_payload(
+                payload, _RAW_PAYLOAD_DEFAULT_CAP_BYTES
+            )
             return (
                 f"Webhook event '{event_type}' on route "
-                f"'{route_name}':\n\n```json\n{truncated}\n```"
+                f"'{route_name}':\n\n```json\n{raw_envelope}\n```"
             )
 
         def _resolve(match: re.Match) -> str:
-            key = match.group(1)
-            # Special token: dump the entire payload as JSON
-            if key == "__raw__":
-                return json.dumps(payload, indent=2)[:4000]
-            if key == "event_type":
+            token = match.group("token")
+            if token.startswith("__raw__"):
+                cap_text = match.group("raw_cap")
+                if cap_text is None:
+                    cap = _RAW_PAYLOAD_DEFAULT_CAP_BYTES
+                else:
+                    try:
+                        cap = int(cap_text)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError(
+                            f"invalid raw payload cap: {cap_text!r}"
+                        ) from exc
+                return self._render_raw_payload(payload, cap)
+            if token == "event_type":
                 return event_type
             value: Any = payload
-            for part in key.split("."):
+            for part in token.split("."):
                 if isinstance(value, dict):
-                    value = value.get(part, f"{{{key}}}")
+                    value = value.get(part, f"{{{token}}}")
                 else:
-                    return f"{{{key}}}"
+                    return f"{{{token}}}"
             if isinstance(value, (dict, list)):
                 return json.dumps(value, indent=2)[:2000]
             return str(value)
 
-        return re.sub(r"\{([a-zA-Z0-9_.]+)\}", _resolve, template)
+        # One substitution pass is deliberate: payload text emitted by
+        # ``{__raw__}`` may itself contain brace-shaped strings and must never
+        # be interpreted as a second template layer.
+        return _PROMPT_TOKEN_RE.sub(_resolve, template)
+
+    def _render_raw_payload(
+        self, payload: dict, cap: int = _RAW_PAYLOAD_DEFAULT_CAP_BYTES
+    ) -> str:
+        """Render a valid JSON envelope within the complete UTF-8 byte cap."""
+        try:
+            requested_cap = int(cap)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid raw payload cap: {cap!r}") from exc
+        if not (
+            _RAW_PAYLOAD_MIN_CAP_BYTES
+            <= requested_cap
+            <= _RAW_PAYLOAD_MAX_CAP_BYTES
+        ):
+            raise ValueError(
+                "raw payload cap must be between "
+                f"{_RAW_PAYLOAD_MIN_CAP_BYTES} and "
+                f"{_RAW_PAYLOAD_MAX_CAP_BYTES} bytes"
+            )
+
+        serialized = json.dumps(payload, indent=2, ensure_ascii=False)
+        serialized_bytes = serialized.encode("utf-8")
+        original_bytes = len(serialized_bytes)
+
+        def _envelope(payload_text: str, *, truncated: bool) -> str:
+            return json.dumps(
+                {
+                    "payload": payload_text,
+                    "truncated": truncated,
+                    "original_bytes": original_bytes,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+
+        full = _envelope(serialized, truncated=False)
+        if len(full.encode("utf-8")) <= requested_cap:
+            return full
+
+        smallest = _envelope("", truncated=True)
+        if len(smallest.encode("utf-8")) > requested_cap:
+            raise ValueError(
+                "raw payload cap is too small for the envelope metadata"
+            )
+
+        # JSON-string encoding size is monotonic as the prefix grows, so a
+        # binary search finds the largest code-point-safe payload prefix whose
+        # complete escaped envelope still fits the selected cap.
+        low = 0
+        high = min(original_bytes, requested_cap)
+        best = smallest
+        while low <= high:
+            midpoint = (low + high) // 2
+            bounded = serialized_bytes[:midpoint].decode(
+                "utf-8", errors="ignore"
+            )
+            candidate = _envelope(bounded, truncated=True)
+            if len(candidate.encode("utf-8")) <= requested_cap:
+                best = candidate
+                low = midpoint + 1
+            else:
+                high = midpoint - 1
+        return best
 
     def _render_delivery_extra(
         self, extra: dict, payload: dict

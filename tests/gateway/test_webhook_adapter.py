@@ -791,8 +791,10 @@ class TestRawTemplateToken:
             "Action={action} Raw={__raw__}", payload, "push", "test"
         )
         assert result.startswith("Action=closed Raw=")
-        assert '"action": "closed"' in result
-        assert '"number": 7' in result
+        envelope = json.loads(result.split(" Raw=", 1)[1])
+        assert envelope["truncated"] is False
+        assert '"action": "closed"' in envelope["payload"]
+        assert '"number": 7' in envelope["payload"]
 
 
 # ===================================================================

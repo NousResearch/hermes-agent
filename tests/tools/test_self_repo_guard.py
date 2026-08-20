@@ -126,6 +126,43 @@ class TestBlocksMutationsInSourceRepo:
         hit, _ = _detect("git co main", repo, repo)
         assert hit is True
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "!git reset --hard HEAD~5 && echo bitti \U0001F40D",
+            "!git reset --hard HEAD~5 && echo 清理",
+            "!git reset --hard HEAD~5 && echo güncelleme",
+        ],
+        ids=["emoji", "cjk", "accented"],
+    )
+    def test_configured_git_alias_with_non_ascii_body(self, repo, body):
+        """An alias body is user text, and git hands it back as UTF-8.
+
+        Reading it with the process codepage loses the whole value on a
+        console codepage that cannot map one of its bytes, leaving the guard
+        with no alias to expand — so an ordinary alias carrying an emoji or a
+        CJK word walks a ``git reset --hard`` past a check the terminal tool
+        calls non-bypassable.
+        """
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "alias.wipe", body],
+            check=True,
+        )
+        hit, msg = _detect("git wipe", repo, repo)
+        assert hit is True, "a non-ASCII alias body slipped the self-repo guard"
+        assert "git reset" in (msg or "")
+
+    def test_alias_body_is_read_back_verbatim(self, repo):
+        """Round-trip: what git stores is what the guard expands."""
+        from tools.self_repo_guard import _read_git_alias
+
+        body = "commit -m güncelleme-\U0001F40D"
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "alias.ci", body],
+            check=True,
+        )
+        assert _read_git_alias("git", repo, "ci") == body
+
     def test_mutation_in_command_substitution(self, repo):
         hit, _ = _detect('echo "$(git checkout main)"', repo, repo)
         assert hit is True

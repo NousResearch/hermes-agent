@@ -1038,6 +1038,22 @@ DANGEROUS_PATTERNS = [
     (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
     (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    # git config mutating forms write repo/system identity silently (#72556).
+    # Query-only forms (--list, --get, --get-all, --get-regexp, bare key)
+    # are not matched — only mutations require approval.
+    # --file differs from other scope flags: it consumes a path argument.
+    (r'\bgit\s+config\s+'
+     r'(?:'
+     r'--file\s+\S+\s+'
+     r'|'
+     r'(?:--(?:local|global|system|worktree)\s+)?'
+     r')'
+     r'(?:'
+     r'--(?:add|replace-all|unset-all|unset|remove-section|rename-section)\b'
+     r'|'
+     r'(?![-])\S+\s+\S+'
+     r')',
+     "git config write (modifies identity or repository configuration)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
     # `-D` is shorthand for `-d --force`; the long-flag spellings

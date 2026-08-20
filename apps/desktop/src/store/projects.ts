@@ -443,7 +443,11 @@ interface ProjectTreePayload {
   scoped_session_ids: string[]
 }
 
-const PROJECT_TREE_PREVIEW_LIMIT = 3
+// Sessions per project the overview tree ships. 3 previews meant expanding a
+// project row showed a stub with no way to reach older conversations; the
+// backend's own session window is 2000 (projects.tree session_limit), so
+// request the full window and let the sidebar render it on expand.
+const PROJECT_TREE_PREVIEW_LIMIT = 2000
 // The all-profiles fan-out reads one database per profile, so it is allowed the
 // same headroom as the cross-profile session list rather than the interactive
 // default.

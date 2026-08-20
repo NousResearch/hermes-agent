@@ -16,6 +16,13 @@ export const SIDEBAR_GROUP_PAGE = 5
 // Recent sessions previewed under each project in the overview.
 export const PROJECT_PREVIEW_COUNT = 3
 
+// Sessions rendered when an overview project row is EXPANDED. The tree request
+// ships up to this many sessions per project (aligned with the backend's
+// session window, projects.tree session_limit=2000), so expanding a project
+// shows its full loaded history instead of a 3-row stub with older
+// conversations unreachable from the overview.
+export const PROJECT_EXPANDED_SESSION_LIMIT = 2000
+
 // Max concurrent `git worktree list` probes when a project spans many repos.
 const WORKTREE_PROBE_CONCURRENCY = 4
 

@@ -34,7 +34,6 @@ from agent.display import (
 )
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
-    _is_destructive_command,
     _is_multimodal_tool_result,
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,
@@ -93,6 +92,21 @@ def _ensure_file_checkpoint(
     resolved_path = _resolve_path_for_task(file_path, effective_task_id or "default")
     work_dir = agent._checkpoint_mgr.get_working_dir_for_path(str(resolved_path))
     agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+
+
+def _ensure_terminal_checkpoint(agent, function_args: dict) -> None:
+    """Checkpoint the terminal working dir before every terminal call.
+
+    Correctness must not depend on a command classifier: absolute paths
+    (/bin/rm), find -delete, interpreters, aliases, and functions all mutate
+    the working dir without matching the destructive-command regex, so gating
+    on it left those changes unprotected (#69171). ensure_checkpoint is
+    per-turn idempotent, so this snapshots once per working dir per turn and is
+    a cheap no-op thereafter.
+    """
+    command = function_args.get("command", "")
+    cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+    agent._checkpoint_mgr.ensure_checkpoint(cwd, f"before terminal: {command[:60]}")
 
 
 def _budget_for_agent(agent) -> BudgetConfig:
@@ -1055,14 +1069,7 @@ def _begin_tool_execution(
 
     if function_name == "terminal" and agent._checkpoint_mgr.enabled:
         try:
-            command = function_args.get("command", "")
-            if _is_destructive_command(command):
-                cwd = function_args.get("workdir") or os.getenv(
-                    "TERMINAL_CWD", os.getcwd()
-                )
-                agent._checkpoint_mgr.ensure_checkpoint(
-                    cwd, f"before terminal: {command[:60]}"
-                )
+            _ensure_terminal_checkpoint(agent, function_args)
         except Exception:
             pass
 

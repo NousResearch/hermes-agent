@@ -46,6 +46,23 @@ class KeylessMCPError(RuntimeError):
     """A keyless MCP call failed (transport, rate limit, or tool error)."""
 
 
+_RATE_LIMIT_MARKERS = (
+    "rate limit",
+    "rate-limit",
+    "ratelimit",
+    "too many requests",
+    "429",
+    "quota exceeded",
+    "slow down",
+)
+
+
+def _is_rate_limitish(message: str) -> bool:
+    """Heuristic: does an error message look like free-tier throttling?"""
+    lowered = (message or "").lower()
+    return any(marker in lowered for marker in _RATE_LIMIT_MARKERS)
+
+
 def keyless_enabled() -> bool:
     """Return True when the keyless fallback tier is enabled.
 
@@ -418,3 +435,92 @@ def exa_extract_keyless(urls: List[str]) -> List[Dict[str, Any]]:
             }
         )
     return results
+
+
+# ---------------------------------------------------------------------------
+# Cross-vendor failover (rate-limited free tiers)
+# ---------------------------------------------------------------------------
+
+_KEYLESS_SEARCHERS = {
+    "exa": lambda query, limit: exa_search_keyless(query, limit),
+    "parallel": lambda query, limit: parallel_search_keyless(query, limit),
+}
+
+_KEYLESS_EXTRACTORS = {
+    "exa": lambda urls: exa_extract_keyless(urls),
+    "parallel": lambda urls: parallel_extract_keyless(urls),
+}
+
+
+def _failover_peer(name: str) -> Optional[str]:
+    """Return the OTHER keyless vendor, or None when failover is off.
+
+    Only fires in auto/free tiers: a user who explicitly pinned a paid
+    tier for the peer (``web.provider_tier.<peer>: paid``) has opted the
+    peer's free endpoint out, so we respect that and don't route to it.
+    """
+    peer = {"exa": "parallel", "parallel": "exa"}.get(name)
+    if peer is None or not keyless_enabled():
+        return None
+    if provider_tier(peer) == "paid":
+        return None
+    return peer
+
+
+def search_with_failover(name: str, query: str, limit: int = 5) -> Dict[str, Any]:
+    """Keyless search via *name*, failing over to the peer vendor on throttle.
+
+    When the primary's free tier returns a rate-limit-shaped error, retry
+    once on the other vendor's free endpoint (Exa <-> Parallel). Non-throttle
+    errors are returned as-is (a malformed-query error on vendor A would
+    just fail identically on vendor B). The failover result notes which
+    vendor actually served the request via ``data.served_by``.
+    """
+    primary = _KEYLESS_SEARCHERS[name]
+    result = primary(query, limit)
+    if result.get("success") or not _is_rate_limitish(result.get("error", "")):
+        return result
+
+    peer = _failover_peer(name)
+    if peer is None:
+        return result
+    logger.info("keyless %s search throttled; failing over to %s", name, peer)
+    fallback = _KEYLESS_SEARCHERS[peer](query, limit)
+    if fallback.get("success"):
+        fallback.setdefault("data", {})["served_by"] = peer
+        return fallback
+    # Both throttled: surface the primary's error (it names the pinned
+    # vendor's key), with a note that the peer was tried too.
+    result["error"] = (
+        f"{result.get('error', '')} Failover to {peer} also failed: "
+        f"{fallback.get('error', 'unknown error')}"
+    )
+    return result
+
+
+def extract_with_failover(name: str, urls: List[str]) -> List[Dict[str, Any]]:
+    """Keyless extract via *name*, failing over per-batch on throttle.
+
+    If EVERY url in the primary's result carries a rate-limit-shaped
+    error, retry the whole batch on the peer vendor. Partial failures
+    (some URLs fine, some broken) are returned as-is — those are page
+    problems, not throttling.
+    """
+    primary = _KEYLESS_EXTRACTORS[name]
+    results = primary(list(urls))
+    errors = [r.get("error", "") for r in results]
+    all_throttled = bool(results) and all(
+        e and _is_rate_limitish(e) for e in errors
+    )
+    if not all_throttled:
+        return results
+
+    peer = _failover_peer(name)
+    if peer is None:
+        return results
+    logger.info("keyless %s extract throttled; failing over to %s", name, peer)
+    fallback = _KEYLESS_EXTRACTORS[peer](list(urls))
+    fallback_errors = [r.get("error", "") for r in fallback]
+    if all(e and _is_rate_limitish(e) for e in fallback_errors):
+        return results  # both throttled: keep primary's key guidance
+    return fallback

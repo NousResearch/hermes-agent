@@ -18,7 +18,7 @@ Both are configured through a single backend selection. Providers are chosen via
 
 | Provider | Env Var | Search | Extract | Free tier |
 |----------|---------|--------|---------|-----------|
-| **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ | 500 credits/mo |
+| **Firecrawl** (default) | `FIRECRAWL_API_KEY` (optional — keyless when selected) | ✔ | ✔ | 500 credits/mo · keyless cloud when selected |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | ✔ Free (self-hosted) |
 | **Brave Search (free tier)** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 2 000 queries/mo |
 | **DDGS (DuckDuckGo)** | — (no key) | ✔ | — | ✔ Free |
@@ -32,7 +32,9 @@ Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecr
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
 :::info Works out of the box — keyless free tier
-A fresh install with **no web credentials at all** still gets working `web_search` and `web_extract`: Hermes falls back to Exa's and Parallel's public anonymous endpoints (rate-limited free tiers), splitting unpinned installs 50/50 between the two vendors — the pick is random per process and stable within it. No signup, no key. This tier is strictly last-resort — any configured backend or present API key always wins — and requests carry no user identifiers (only a random per-process session id, rotated on restart). For reliable, unthrottled service, set up a keyed provider. Disable the keyless tier entirely with `web.keyless_fallback: false`.
+A fresh install with **no web credentials at all** still gets working `web_search` and `web_extract`: Hermes falls back to Exa's and Parallel's public anonymous endpoints (rate-limited free tiers), splitting unpinned installs 50/50 between the two vendors — the pick is random per process and stable within it. If one vendor's free tier throttles a request, Hermes automatically retries it once on the other vendor's free tier. No signup, no key. This tier is strictly last-resort — any configured backend or present API key always wins — and requests carry no user identifiers (only a random per-process session id, rotated on restart). For reliable, unthrottled service, set up a keyed provider. Disable the keyless tier entirely with `web.keyless_fallback: false`.
+
+Tavily and Firecrawl also offer keyless access when **explicitly selected** (`web.backend: tavily` / `firecrawl` or via `hermes tools`) — they are not part of the automatic zero-config fallback, but picking them without entering a key now works instead of erroring.
 :::
 
 **Choosing free vs paid explicitly:** in `hermes tools`, Exa and Parallel each appear as two rows — **Free (keyless)** and **Paid (API key)**. Picking Free pins the anonymous endpoint (even if you later add a key); picking Paid pins the keyed SDK path (a missing key then errors instead of silently downgrading to the free tier). The selection is stored as `web.provider_tier.<name>: free|paid`; leave it unset for auto (key present → paid, otherwise free).

@@ -414,3 +414,88 @@ class TestPickerTierRows:
         cfg_auto = {"web": {"backend": "parallel"}}
         assert _web_tier_matches(free_row, cfg_auto) is True
         assert _web_tier_matches(paid_row, cfg_auto) is False
+
+
+# ---------------------------------------------------------------------------
+# Cross-vendor keyless failover
+# ---------------------------------------------------------------------------
+
+
+class TestKeylessFailover:
+    def _ok(self, vendor):
+        return {"success": True, "data": {"web": [{"url": f"https://{vendor}.example"}]}}
+
+    def _throttled(self, vendor):
+        return {"success": False, "error": f"Keyless {vendor} search failed: free MCP rate limit."}
+
+    def test_search_fails_over_on_rate_limit(self, monkeypatch):
+        monkeypatch.setattr(keyless_mcp, "exa_search_keyless", lambda q, l: self._throttled("Exa"))
+        monkeypatch.setattr(keyless_mcp, "parallel_search_keyless", lambda q, l: self._ok("parallel"))
+        out = keyless_mcp.search_with_failover("exa", "q", 3)
+        assert out["success"] is True
+        assert out["data"]["served_by"] == "parallel"
+
+    def test_search_no_failover_on_non_throttle_error(self, monkeypatch):
+        monkeypatch.setattr(
+            keyless_mcp, "exa_search_keyless",
+            lambda q, l: {"success": False, "error": "Unrecognized MCP response shape"},
+        )
+        called = []
+        monkeypatch.setattr(
+            keyless_mcp, "parallel_search_keyless",
+            lambda q, l: called.append(1) or self._ok("parallel"),
+        )
+        out = keyless_mcp.search_with_failover("exa", "q")
+        assert out["success"] is False
+        assert not called  # peer never tried
+
+    def test_search_both_throttled_reports_both(self, monkeypatch):
+        monkeypatch.setattr(keyless_mcp, "exa_search_keyless", lambda q, l: self._throttled("Exa"))
+        monkeypatch.setattr(keyless_mcp, "parallel_search_keyless", lambda q, l: self._throttled("Parallel"))
+        out = keyless_mcp.search_with_failover("exa", "q")
+        assert out["success"] is False
+        assert "Failover to parallel also failed" in out["error"]
+
+    def test_failover_respects_peer_paid_pin(self, monkeypatch):
+        monkeypatch.setattr(keyless_mcp, "parallel_search_keyless", lambda q, l: self._throttled("Parallel"))
+        monkeypatch.setattr(
+            keyless_mcp, "provider_tier",
+            lambda name: "paid" if name == "exa" else "auto",
+        )
+        called = []
+        monkeypatch.setattr(
+            keyless_mcp, "exa_search_keyless",
+            lambda q, l: called.append(1) or self._ok("exa"),
+        )
+        out = keyless_mcp.search_with_failover("parallel", "q")
+        assert out["success"] is False
+        assert not called  # exa pinned paid: its free tier is opted out
+
+    def test_extract_fails_over_when_all_urls_throttled(self, monkeypatch):
+        throttled = [
+            {"url": "https://a", "title": "", "content": "", "error": "rate limit hit"},
+            {"url": "https://b", "title": "", "content": "", "error": "429 too many requests"},
+        ]
+        good = [
+            {"url": "https://a", "title": "A", "content": "x"},
+            {"url": "https://b", "title": "B", "content": "y"},
+        ]
+        monkeypatch.setattr(keyless_mcp, "exa_extract_keyless", lambda urls: throttled)
+        monkeypatch.setattr(keyless_mcp, "parallel_extract_keyless", lambda urls: good)
+        out = keyless_mcp.extract_with_failover("exa", ["https://a", "https://b"])
+        assert out == good
+
+    def test_extract_partial_failure_stays_on_primary(self, monkeypatch):
+        partial = [
+            {"url": "https://a", "title": "A", "content": "x"},
+            {"url": "https://b", "title": "", "content": "", "error": "rate limit"},
+        ]
+        called = []
+        monkeypatch.setattr(keyless_mcp, "exa_extract_keyless", lambda urls: partial)
+        monkeypatch.setattr(
+            keyless_mcp, "parallel_extract_keyless",
+            lambda urls: called.append(1) or [],
+        )
+        out = keyless_mcp.extract_with_failover("exa", ["https://a", "https://b"])
+        assert out == partial
+        assert not called

@@ -2,7 +2,8 @@
 
 Slow summary models must not be punished like hung ones (#see PR): when a
 forward-progress hook is installed (context compression), the primary
-auxiliary call streams and ticks the hook per chunk, so outer watchdogs
+auxiliary call streams and ticks the hook on chunks that carry a real delta,
+so outer watchdogs
 (gateway session hygiene) can extend their deadline on liveness. Without a
 hook, behavior is byte-for-byte the old non-streaming call.
 """
@@ -131,7 +132,7 @@ class TestCreateWithProgress:
         assert result.choices[0].message.reasoning == "thinking..."
         assert result.choices[0].finish_reason == "stop"
         assert result.usage.total_tokens == 7
-        # 1 dispatch tick + 1 per chunk
+        # 1 dispatch tick + 1 per chunk (all three carry a real delta)
         assert len(ticks) >= len(chunks) + 1
 
     def test_streaming_rejected_falls_back_to_plain_call(self):
@@ -193,6 +194,105 @@ class TestAggregateChatStream:
         assert result.choices[0].message.content == "ok"
         assert closed == [True]
 
+
+
+# ---------------------------------------------------------------------------
+# Content-free frames are not forward progress (#78981)
+# ---------------------------------------------------------------------------
+
+def _keepalive_no_choices():
+    """Keepalive / usage-only frame: ``choices`` is empty."""
+    return SimpleNamespace(id=None, model=None, choices=[], usage=None)
+
+
+def _keepalive_empty_delta():
+    """Role-only ping: a choice is present but its delta carries nothing."""
+    return _chunk()
+
+
+class TestContentFreeFramesAreNotProgress:
+    """A chunk arriving is not a token arriving.
+
+    Waiters read the hook as "the summary model produced a token" to tell a
+    slow model from a hung one (``CompressionCommitFence``). Providers keep a
+    stalled stream open with content-free frames, so ticking per chunk makes a
+    hung stream indistinguishable from a live one.
+    """
+
+    @pytest.mark.parametrize(
+        "factory", [_keepalive_no_choices, _keepalive_empty_delta],
+        ids=["no-choices", "empty-delta"],
+    )
+    def test_keepalive_frames_do_not_tick(self, factory):
+        ticks = []
+        with aux_progress_hook(lambda: ticks.append(1)):
+            result = _aggregate_chat_stream(iter([factory() for _ in range(50)]))
+        assert result.choices[0].message.content == ""
+        assert ticks == []
+
+    @pytest.mark.parametrize(
+        "chunk, expected",
+        [
+            (_chunk(content="tok"), "content"),
+            (_chunk(reasoning="thinking"), "reasoning"),
+            (
+                _chunk(tool_calls=[SimpleNamespace(
+                    index=0, id="call_1",
+                    function=SimpleNamespace(name="f", arguments="{}"),
+                )]),
+                "tool_calls",
+            ),
+        ],
+        ids=["content", "reasoning", "tool_calls"],
+    )
+    def test_real_deltas_still_tick(self, chunk, expected):
+        del expected
+        ticks = []
+        with aux_progress_hook(lambda: ticks.append(1)):
+            _aggregate_chat_stream(iter([chunk]))
+        assert len(ticks) == 1
+
+    def test_stalled_stream_lets_the_fence_idle_clock_run(self):
+        """The #78981 mechanism, end to end against the real fence.
+
+        A stream that delivers keepalives and zero tokens must not hold
+        ``seconds_since_progress()`` at zero, or the compression waiter extends
+        its wait to the ceiling instead of falling back.
+        """
+        fence = CompressionCommitFence()
+
+        def _stalled():
+            for _ in range(10):
+                time.sleep(0.01)
+                yield _keepalive_no_choices()
+
+        with aux_progress_hook(fence.touch_progress):
+            _aggregate_chat_stream(_stalled())
+        assert fence.seconds_since_progress() >= 0.1
+
+    @pytest.mark.asyncio
+    async def test_async_mirror_also_ignores_keepalives(self):
+        class _AsyncStream:
+            def __init__(self, items):
+                self._items = list(items)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not self._items:
+                    raise StopAsyncIteration
+                return self._items.pop(0)
+
+        stream = _AsyncStream(
+            [_keepalive_no_choices(), _keepalive_empty_delta(),
+             _chunk(content="ok", finish_reason="stop")]
+        )
+        ticks = []
+        with aux_progress_hook(lambda: ticks.append(1)):
+            result = await _aggregate_chat_stream_async(stream)
+        assert result.choices[0].message.content == "ok"
+        assert len(ticks) == 1
 
 
 # ---------------------------------------------------------------------------

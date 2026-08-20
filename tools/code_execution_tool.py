@@ -2120,6 +2120,26 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
             "so project deps (pandas, etc.) and relative paths work like in terminal()."
         )
 
+    # Discourage wrapping a single command in execute_code purely to dodge
+    # command-level approval. Only name the ``terminal`` tool when it is an
+    # available sandbox tool — otherwise we'd point the model at a tool it
+    # can't call (the cross-tool-reference pitfall; the dynamic rebuild in
+    # model_tools passes the actually-available sandbox set).
+    if "terminal" in enabled_sandbox_tools:
+        no_wrap_note = (
+            "Do not wrap a single terminal command or subprocess in execute_code. "
+            "The wrapper obscures the command's intent and, in gateway/ask sessions, "
+            "adds whole-script approval. hermes_tools.terminal still runs its "
+            "command-level checks, while raw subprocess commands cannot be inspected "
+            "individually. Call terminal directly for one command.\n\n"
+        )
+    else:
+        no_wrap_note = (
+            "Do not wrap a single subprocess call in execute_code purely to avoid "
+            "command-level review. Raw subprocess commands cannot be inspected "
+            "individually, so gateway/ask sessions require whole-script approval.\n\n"
+        )
+
     description = (
         "Run a Python script that calls Hermes tools programmatically. "
         "Use when you need 3+ tool calls with logic between them: "
@@ -2127,6 +2147,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         "conditional branching, or loops (N pages/files, retry on failure). "
         "Use normal tool calls for single calls, results you must reason "
         "over in full, or anything needing user interaction.\n\n"
+        f"{no_wrap_note}"
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
         "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "

@@ -193,13 +193,9 @@ def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> 
     # Note: api.meta.ai is handled by _detect_api_mode_for_url (returns codex_responses), so the suppression guard below does not fire for Meta.
     detected_mode = _detect_api_mode_for_url(base_url)
 
-    if configured_mode == "codex_responses" and detected_mode != "codex_responses":
-        logger.info(
-            "Ignoring persisted custom api_mode=codex_responses for non-OpenAI endpoint %s",
-            base_url or "(unknown)",
-        )
-        configured_mode = None
-
+    # Honor explicitly configured api_mode for custom providers that declare
+    # their own api_mode (e.g. providers: section with api_mode: codex_responses).
+    # Only fall back to detection/default when no explicit mode is set.
     return configured_mode or detected_mode or "chat_completions"
 
 

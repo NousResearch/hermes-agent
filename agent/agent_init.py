@@ -572,6 +572,7 @@ def init_agent(
     chat_type: str = None,
     thread_id: str = None,
     gateway_session_key: str = None,
+    gateway_session_source: Optional[Dict[str, Any]] = None,
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
@@ -659,6 +660,11 @@ def init_agent(
     agent._chat_type = chat_type
     agent._thread_id = thread_id
     agent._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
+    # Platform-neutral gateway origin metadata for lifecycle plugins. Keep a
+    # private copy so callers cannot mutate hook context through their input
+    # mapping after agent construction. GatewayRunner refreshes this for every
+    # turn when a cached agent is reused.
+    agent._gateway_session_source = dict(gateway_session_source or {})
     # Pluggable print function — CLI replaces this with _cprint so that
     # raw ANSI status lines are routed through prompt_toolkit's renderer
     # instead of going directly to stdout where patch_stdout's StdoutProxy

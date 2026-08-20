@@ -120,6 +120,8 @@ emitted by each built-in hook site.
     interrupted     – bool, True when the user interrupted
     model           – model name
     platform        – platform identifier
+    session_key     – stable gateway routing key (empty outside the gateway)
+    source          – gateway SessionSource metadata dict (empty outside the gateway)
 
 ``subagent_stop`` (emitted from ``tools/delegate_tool.py``)::
 

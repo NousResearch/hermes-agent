@@ -98,6 +98,11 @@ Session hooks describe conversation boundaries and resets:
 Common fields include `session_id`, `completed`, `interrupted`, `reason`,
 `old_session_id`, and `new_session_id` where available.
 
+Gateway `on_session_end` and `on_session_reset` hooks also receive `session_key`,
+the stable routing key for the chat identity, and `source`, the platform-neutral
+`SessionSource` metadata dictionary for the current message. These values are
+empty outside the gateway.
+
 `on_session_end` is turn/run scoped. It is not necessarily the final lifetime
 boundary for a chat identity. Use `on_session_finalize` and `on_session_reset`
 for lifecycle cleanup that must happen once per session identity.

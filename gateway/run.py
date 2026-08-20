@@ -5634,6 +5634,7 @@ class TurnRunner:
                 chat_type=ctx.source.chat_type,
                 thread_id=ctx.source.thread_id,
                 gateway_session_key=ctx.session_key,
+                gateway_session_source=ctx.source.to_dict(),
                 session_db=getattr(self._runner._session_db, "_db", self._runner._session_db),
                 # Reload from disk — do not reuse the startup snapshot (#60955).
                 fallback_model=self._runner._refresh_fallback_model(),
@@ -5657,6 +5658,10 @@ class TurnRunner:
 
         # Per-message state — callbacks and reasoning config change every
         # turn and must not be baked into the cached agent constructor.
+        # Refresh the current source even for cached agents: stable routing
+        # fields remain unchanged, while sender/message metadata may differ
+        # between turns in a shared channel or thread.
+        agent._gateway_session_source = ctx.source.to_dict()
         # Gate on needs_progress_queue (tool_progress OR thinking_progress)
         # rather than tool_progress alone: the progress_callback also relays
         # _thinking assistant scratch text, which is gated on

@@ -337,6 +337,8 @@ class GatewaySlashCommandsMixin:
                 reason="new_session",
                 old_session_id=_old_sid,
                 new_session_id=_new_sid,
+                session_key=session_key,
+                source=source.to_dict(),
             )
         except Exception:
             pass

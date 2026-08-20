@@ -980,7 +980,14 @@ def _check_approval_required_write(paths: list[str],
     except Exception:
         return None
 
-    targets = [p for p in paths if is_write_approval_required(p)]
+    targets = []
+    for path in paths:
+        try:
+            target = str(_resolve_path_for_task(path, task_id))
+        except Exception:
+            target = path
+        if is_write_approval_required(target):
+            targets.append(target)
     if not targets:
         return None
 

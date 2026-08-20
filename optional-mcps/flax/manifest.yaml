@@ -1,0 +1,45 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory means the integration has been reviewed and merged.
+manifest_version: 1
+
+name: flax
+description: Connect Hermes to Flax for safe, reviewable updates to agentic sites.
+source: https://flaxsites.com/docs/agents
+
+# Flax hosts a remote Streamable HTTP MCP server. Hermes discovers tools at
+# connection time and uses native OAuth 2.1 with PKCE; no API key or local
+# installation is needed.
+transport:
+  type: http
+  url: https://agents.flaxsites.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - flax
+    - flaxsites
+  hosts:
+    - flaxsites.com
+
+# Leave the tool selection unset so the install-time checklist can show the
+# current Flax tool surface. New hosted tools are discovered on reconnect; a
+# user with a fixed allowlist can revisit it with `hermes mcp configure flax`.
+
+post_install: |
+  On the first connection, Hermes opens a Connect Flax OAuth flow. Sign in and
+  approve access in your own browser; never paste a password, magic code, or
+  access token into chat.
+
+  For a named website, start at that exact site's /.well-known/mcp.json
+  document and use the site-scoped MCP URL it advertises. Use the account-level
+  endpoint only for Flax administration when no specific site was named.
+
+  Flax agents prepare validated drafts. A site owner must preview and
+  explicitly approve a draft before it is deployed.
+
+  Start a new Hermes session after OAuth so the Flax tools are loaded. You can
+  re-run the tool checklist at any time with:
+    hermes mcp configure flax

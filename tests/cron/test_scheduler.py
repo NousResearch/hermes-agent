@@ -2556,3 +2556,55 @@ class TestSetCronSessionTitle:
         assert out == "Nightly Synthesis #2"
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
 
+
+
+
+class TestFailureStreakNudge:
+    """Poke-inspired repeated-failure review nudge (_failure_streak_nudge)."""
+
+    def _job(self, streak, kind="cron", name="scout"):
+        return {
+            "id": "j1",
+            "name": name,
+            "failure_streak": streak,
+            "schedule": {"kind": kind},
+        }
+
+    def test_nudges_at_threshold(self):
+        from cron.scheduler import _failure_streak_nudge
+        # stored streak 2 + this run = 3 >= default threshold 3
+        with patch("cron.scheduler.load_config", return_value={}):
+            out = _failure_streak_nudge(self._job(2))
+        assert "failed 3 runs in a row" in out
+        assert "hermes cron pause scout" in out
+
+    def test_silent_below_threshold(self):
+        from cron.scheduler import _failure_streak_nudge
+        with patch("cron.scheduler.load_config", return_value={}):
+            assert _failure_streak_nudge(self._job(0)) == ""
+            assert _failure_streak_nudge(self._job(1)) == ""
+
+    def test_oneshot_never_nudges(self):
+        from cron.scheduler import _failure_streak_nudge
+        with patch("cron.scheduler.load_config", return_value={}):
+            assert _failure_streak_nudge(self._job(10, kind="once")) == ""
+
+    def test_config_threshold_and_disable(self):
+        from cron.scheduler import _failure_streak_nudge
+        cfg5 = {"cron": {"failure_nudge_threshold": 5}}
+        with patch("cron.scheduler.load_config", return_value=cfg5):
+            assert _failure_streak_nudge(self._job(3)) == ""
+            assert "failed 5 runs" in _failure_streak_nudge(self._job(4))
+        with patch("cron.scheduler.load_config", return_value={"cron": {"failure_nudge_threshold": 0}}):
+            assert _failure_streak_nudge(self._job(50)) == ""
+
+    def test_missing_streak_field_backcompat(self):
+        from cron.scheduler import _failure_streak_nudge
+        job = {"id": "old", "schedule": {"kind": "interval"}}  # pre-field job
+        with patch("cron.scheduler.load_config", return_value={}):
+            assert _failure_streak_nudge(job) == ""
+
+    def test_config_load_failure_falls_back(self):
+        from cron.scheduler import _failure_streak_nudge
+        with patch("cron.scheduler.load_config", side_effect=RuntimeError("boom")):
+            assert "failed 3 runs" in _failure_streak_nudge(self._job(2))

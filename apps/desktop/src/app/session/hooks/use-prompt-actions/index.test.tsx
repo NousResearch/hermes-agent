@@ -9,6 +9,7 @@ import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
+import { $goalsBySession, setSessionGoal } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
@@ -1201,6 +1202,69 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 
     expect(renderedText).toContain('⊙ Goal set. Starting now.')
     expect(renderedText).not.toContain('/goal: no output')
+  })
+
+  it('clears the goal card when /goal clear returns a typed exec dispatch (#80348)', async () => {
+    // The gateway can answer `/goal clear` with a TYPED `{ type: "exec" }`
+    // dispatch instead of the plain `{ output }` shape. The typed branch used
+    // to render and return without touching the goal store, so the stale
+    // "Goal paused" card kept showing until the chat was reopened.
+    setSessionGoal(RUNTIME_SESSION_ID, {
+      status: 'paused',
+      title: 'ship the release notes',
+      updatedAt: Date.now()
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        return { type: 'exec', output: '✓ Goal cleared.' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/goal clear')
+
+    expect($goalsBySession.get()[RUNTIME_SESSION_ID]).toBeUndefined()
+
+    $goalsBySession.set({})
+  })
+
+  it('updates the goal card live when /goal resume returns a typed exec dispatch', async () => {
+    // Sibling of the clear path: a typed exec `▶ Goal resumed: …` must flip
+    // the paused card back to active without a chat reopen.
+    setSessionGoal(RUNTIME_SESSION_ID, {
+      status: 'paused',
+      title: 'ship the release notes',
+      updatedAt: Date.now()
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        return { type: 'exec', output: '▶ Goal resumed: ship the release notes' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/goal resume')
+
+    expect($goalsBySession.get()[RUNTIME_SESSION_ID]).toMatchObject({
+      status: 'active',
+      title: 'ship the release notes'
+    })
+
+    $goalsBySession.set({})
   })
 
   it('queues the /goal kickoff instead of dropping it when the session is busy (#63352)', async () => {
@@ -3200,6 +3264,65 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
+  })
+
+  it('resumes the stored session and retries once when reloadFromMessage (regenerate) reports "session not found"', async () => {
+    // reloadFromMessage builds its own prompt.submit call inline instead of
+    // going through the shared send() path submitText/redirectPrompt use, so
+    // it needs the same sleep/wake recovery independently — otherwise
+    // "Regenerate" on a stale session surfaces a raw error instead of
+    // silently resuming, same as the general submit case above.
+    //
+    // reloadFromMessage bails early on $busy — an earlier suite in this file
+    // can leave it true (see the stale-closure describe block's own note),
+    // so reset it defensively rather than relying on run order.
+    $busy.set(false)
+    setMessages([
+      { id: 'u1', parts: [textPart('original prompt')], role: 'user', timestamp: 0 },
+      { id: 'a1', parts: [textPart('reply')], role: 'assistant', timestamp: 1 }
+    ] as never)
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    let submitAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        return {} as never
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    await handle!.reloadFromMessage('u1')
+
+    // First submit (stale id) → session.resume (stored id) → retry submit (fresh id).
+    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
+    expect(calls[2]?.params).toEqual(
+      expect.objectContaining({ session_id: RECOVERED_SESSION_ID, text: 'original prompt' })
+    )
   })
 
   // #67603 (second symptom): a recovery resume must re-register on the session's

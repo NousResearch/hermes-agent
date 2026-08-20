@@ -3387,6 +3387,27 @@ def compress_context(
                 _rough_in = estimate_messages_tokens_rough(messages)
                 _rough_out = estimate_messages_tokens_rough(compressed)
                 if _rough_out > _rough_in:
+                    # Todo refresh and user-turn anchoring happen after the
+                    # compressor's own size check, so they can tip a break-even
+                    # candidate over. Give it one mechanical salvage pass.
+                    from agent.context_compressor import salvage_grown_transcript
+
+                    _salvaged = salvage_grown_transcript(
+                        messages, compressed, budget=_rough_in
+                    )
+                    if _salvaged is not None:
+                        _salv_est = estimate_messages_tokens_rough(_salvaged)
+                        if _salv_est < _rough_in:
+                            logger.info(
+                                "Compression salvage recovered a shrinking "
+                                "transcript (session=%s, ~%s -> ~%s tokens)",
+                                agent.session_id or "none",
+                                f"{_rough_in:,}",
+                                f"{_salv_est:,}",
+                            )
+                            compressed = _salvaged
+                            _rough_out = _salv_est
+                if _rough_out > _rough_in:
                     logger.warning(
                         "Compression refused: compressed transcript would be "
                         "larger than the original (session=%s, ~%s -> ~%s "
@@ -3395,6 +3416,17 @@ def compress_context(
                         f"{_rough_in:,}",
                         f"{_rough_out:,}",
                     )
+                    # Flag the refusal on the compressor state so manual
+                    # /compress feedback can report it honestly. Without this,
+                    # the CLI compared the returned list against its pre-call
+                    # snapshot, saw a difference (durable-snapshot adoption can
+                    # legitimately change the count), and printed
+                    # "✅ Compressed: 8 → 14 messages" directly under the
+                    # refusal warning (Aug 2026 full-surface CLI QA sweep).
+                    try:
+                        agent.context_compressor._last_compress_refused_would_grow = True
+                    except Exception:
+                        pass
                     try:
                         agent._emit_warning(
                             "⚠️ Compression refused: the generated summary "
@@ -3414,6 +3446,20 @@ def compress_context(
                         split_status="aborted",
                         failure_class="would_grow",
                     )
+                    # Record the rejected attempt as an ineffective
+                    # compaction strike so the anti-thrash breaker latches
+                    # after the normal threshold. Without this, the unchanged
+                    # transcript stays over the compression threshold and
+                    # automatic compression retries the identical summary
+                    # request on every turn (#88568). Manual /compress keeps
+                    # bypassing the latch (force=True skips the guards).
+                    try:
+                        agent.context_compressor.record_rejected_compaction()
+                    except Exception:
+                        logger.debug(
+                            "could not record rejected-compaction strike",
+                            exc_info=True,
+                        )
                     _release_lock()
                     return messages, _existing_sp
 
@@ -3476,6 +3522,13 @@ def compress_context(
                     # the current-turn user message before preflight runs, so
                     # messages[:idx] is exactly the persisted prefix; only the
                     # current turn's new messages get written.
+                    #
+                    # Bound to old_session_id, hoisted above the flush: the
+                    # ``except`` handler below keys its in-memory rollback off
+                    # this name, so anything that fails from here on rolls the
+                    # transcript back instead of leaving the failed attempt's
+                    # compacted snapshot in place.
+                    old_session_id = agent.session_id
                     current_idx = getattr(agent, "_persist_user_message_idx", None)
                     persisted_history = (
                         messages[:current_idx]
@@ -3483,6 +3536,44 @@ def compress_context(
                         and 0 <= current_idx <= len(messages)
                         else None
                     )
+                    # The #47202 flush below is a DURABLE append to the parent
+                    # and it is NOT undone when the rotation aborts: the
+                    # ``except`` handler restores the in-memory transcript and
+                    # keeps agent.session_id on the parent, but the rows it just
+                    # wrote stay. Survivable for a one-off failure; pathological
+                    # for a STICKY one. A parent row that already carries
+                    # ``ended_at`` fails publish_compression_child on every
+                    # attempt and nothing in this path clears it, so each
+                    # auto-compaction appends another copy of the current turn to
+                    # the transcript it was supposed to shrink — the session grows
+                    # until the provider rejects the request outright (#88197:
+                    # 303 unique messages stored as 2,611 rows after 7 aborted
+                    # attempts, ~1.66M tokens, HTTP 400).
+                    #
+                    # So check that one precondition BEFORE writing. It is a plain
+                    # read of the row the publish is about to read anyway, it
+                    # raises the publish's own message so the log line, telemetry
+                    # and rollback path are all unchanged, and it cannot mask a
+                    # real rotation — a live parent reaches the flush exactly as
+                    # before. Deliberately NOT extended to the compression lease:
+                    # a lease is re-acquirable, so a transient miss here would
+                    # abort a rotation that would otherwise have committed.
+                    _parent_row_reader = getattr(agent._session_db, "get_session", None)
+                    _parent_already_ended = False
+                    if callable(_parent_row_reader):
+                        try:
+                            _parent_row = _parent_row_reader(old_session_id) or {}
+                            _parent_already_ended = (
+                                _parent_row.get("ended_at") is not None
+                            )
+                        except Exception:
+                            # Fail OPEN: an unreadable row must not turn a cheap
+                            # guard into a new way to lose compression.
+                            _parent_already_ended = False
+                    if _parent_already_ended:
+                        raise RuntimeError(
+                            f"Compression parent already ended: {old_session_id}"
+                        )
                     # Foreign-tail ceiling (#75316): the flush below writes OUR
                     # OWN input transcript to the parent — those rows are
                     # already represented in the compacted handoff and must
@@ -3523,7 +3614,6 @@ def compress_context(
                     except Exception:
                         _profile_for_child = None
                     old_title = agent._session_db.get_session_title(agent.session_id)
-                    old_session_id = agent.session_id
                     new_session_id = (
                         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_"
                         f"{uuid.uuid4().hex[:6]}"

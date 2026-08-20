@@ -64,16 +64,22 @@ class OllamaCloudProfile(ProviderProfile):
                 return {}, {}
             if effort == "none":
                 return {}, {"reasoning_effort": "none"}  # explicit off switch
-            if effort in ("xhigh", "max", "ultra"):
-                top_level["reasoning_effort"] = "max"
-            elif effort in ("low", "medium", "high"):
-                top_level["reasoning_effort"] = effort
-            # Any other value (including "minimal", which Ollama Cloud's
-            # /v1/chat/completions rejects with HTTP 400 — its accepted set is
-            # {low, medium, high, max, none}) is omitted so the model applies
-            # its own default rather than triggering a hard 400. Matches the
-            # sibling deepseek / opencode-zen profiles, which target the same
-            # backend and omit unrecognized efforts rather than send garbage.
+            # Accepted set {none, low, medium, high, max} is declared in
+            # agent.reasoning_effort ("minimal" is rejected with HTTP 400 →
+            # clamps to low; xhigh rounds up to max). Bespoke levels outside
+            # the ladder are omitted so the model applies its own default
+            # rather than triggering a hard 400.
+            from agent.reasoning_effort import (
+                OLLAMA_CLOUD_EFFORTS,
+                OLLAMA_CLOUD_OVERRIDES,
+                clamp_effort,
+            )
+
+            clamped = clamp_effort(
+                effort, OLLAMA_CLOUD_EFFORTS, OLLAMA_CLOUD_OVERRIDES
+            )
+            if clamped in OLLAMA_CLOUD_EFFORTS:
+                top_level["reasoning_effort"] = clamped
 
         return {}, top_level
 

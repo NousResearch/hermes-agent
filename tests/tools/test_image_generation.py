@@ -57,17 +57,6 @@ class TestFalCatalog:
             assert not missing, f"{mid} missing required keys: {missing}"
 
 
-    def test_upscale_defaults_are_all_off(self, image_tool):
-        """Upscaling is opt-in only (Aug 2026 policy). The default-on
-        experiment chained the Clarity Upscaler — a creative SD1.5
-        tile-diffusion enhancer — after every sub-2MP generation, which
-        degraded output quality (mangled GPT Image 2 / Ideogram text
-        rendering, CJK, faces). No catalog entry may default upscale on."""
-        for mid, meta in image_tool.FAL_MODELS.items():
-            assert meta["upscale"] is False, \
-                f"{mid} must not default upscale on — opt-in per call only"
-
-
     def test_edit_capable_entries_declare_a_full_edit_contract(self, image_tool):
         """An `edit_endpoint` is useless without the whitelist and the
         reference-image cap that `_build_fal_edit_payload` reads."""

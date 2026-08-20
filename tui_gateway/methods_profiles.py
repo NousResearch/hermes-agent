@@ -60,13 +60,23 @@ def _(rid, params: dict) -> dict:
             return text[:80] + "..."
         return text
 
-    def _latest_profile_session_row(profile_path):
-        """Most recent human-facing session in a profile's state.db, or None.
+    def _preferred_session_row(profile_path, session_id):
+        """Precise summary for ONE caller-pinned session id, or None.
 
-        Mirrors session.list's deny-list (drops ``tool`` sub-agent rows and
-        ``kanban`` dispatcher workers).  Best-effort: any failure (missing
-        state.db, locked db, older schema) degrades to None rather than
-        failing the whole profiles.list call.
+        Complements ``last_session``: that field answers "what is the newest
+        conversation", this answers "what about THIS conversation". Callers
+        that open a specific session on click (e.g. a roster whose rows open
+        a pinned chat) pass their pins via ``preferred_session_ids`` so the
+        preview and the click target describe the same session
+        (hermes-agent#88200).
+
+        Exact-lookup semantics, deliberately different from the listing:
+        hidden rows still resolve (a hidden-from-sidebar session EXISTS),
+        compression lineages resolve to the live tip with the same resolver
+        ``session.resume`` uses, and denied internal sources (tool/kanban)
+        count as absent. The reported ``id`` stays the caller's durable pin
+        while ``resolved_id`` names the live tip. Best-effort: any failure
+        degrades to None rather than failing the whole profiles.list call.
         """
         try:
             from pathlib import Path
@@ -79,10 +89,87 @@ def _(rid, params: dict) -> dict:
             deny = frozenset({"kanban", "tool"})
             db = SessionDB(db_path=db_path)
             try:
+                row = db.get_session(session_id)
+                if not row:
+                    return None
+                if (row.get("source") or "").strip().lower() in deny:
+                    return None
+                if row.get("archived"):
+                    return None
+                try:
+                    tip = db.resolve_resume_session_id(session_id) or session_id
+                except Exception:
+                    tip = session_id
+                tip_row = db.get_session(tip) or row
+                preview = ""
+                try:
+                    preview = _latest_message_preview(db, tip)
+                except Exception:
+                    pass
+                return {
+                    "id": session_id,
+                    "resolved_id": tip,
+                    "root_title": row.get("title") or "",
+                    "title": tip_row.get("title") or "",
+                    "preview": preview,
+                    "started_at": tip_row.get("started_at") or row.get("started_at") or 0,
+                    "last_active": (
+                        tip_row.get("last_activity_at")
+                        or tip_row.get("started_at")
+                        or row.get("started_at")
+                        or 0
+                    ),
+                    "message_count": tip_row.get("message_count") or 0,
+                }
+            finally:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+        except Exception:
+            return None
+
+    def _latest_profile_session_rows(profile_path):
+        """(newest human-facing session, newest worker session) for a profile.
+
+        First element mirrors session.list's deny-list (drops ``tool``
+        sub-agent rows and ``kanban`` dispatcher workers). Second element is
+        the newest DENIED row — the freshest kanban/tool worker — so roster
+        UIs can show that a profile is actively working even though worker
+        sessions never surface in conversation lists (hermes-agent#90268).
+        Workers heartbeat ``last_activity_at`` every ≤60s while running
+        (#72016), so a live worker's ``last_active`` stays fresh and the
+        client can apply its own liveness window. Best-effort: any failure
+        (missing state.db, locked db, older schema) degrades to (None, None)
+        rather than failing the whole profiles.list call.
+        """
+        try:
+            from pathlib import Path
+
+            db_path = Path(profile_path) / "state.db"
+            if not db_path.exists():
+                return None, None
+            from hermes_state import SessionDB
+
+            deny = frozenset({"kanban", "tool"})
+            db = SessionDB(db_path=db_path)
+            try:
+                human = None
+                worker = None
                 for s in db.list_sessions_rich(
                     source=None, limit=20, order_by_last_active=True, compact_rows=True
                 ):
-                    if (s.get("source") or "").strip().lower() in deny:
+                    src = (s.get("source") or "").strip().lower()
+                    if src in deny:
+                        if worker is None:
+                            worker = {
+                                "id": s["id"],
+                                "source": src,
+                                "title": s.get("title") or "",
+                                "last_active": s.get("last_active") or s.get("started_at") or 0,
+                            }
+                        continue
+                    if human is not None:
                         continue
                     row = {
                         "id": s["id"],
@@ -102,20 +189,29 @@ def _(rid, params: dict) -> dict:
                             row["preview"] = latest
                     except Exception:
                         pass
-                    return row
+                    human = row
+                    if worker is not None:
+                        break
+                return human, worker
             finally:
                 try:
                     db.close()
                 except Exception:
                     pass
         except Exception:
-            return None
-        return None
+            return None, None
 
     try:
         from hermes_cli.profiles import list_profiles
 
         include_sessions = is_truthy_value(params.get("include_sessions", True))
+        # Optional precise lookups: {profile_name: session_id} from callers
+        # that open a specific session per row (pinned-chat rosters). Only
+        # resolved when include_sessions is on; each named profile row gains
+        # a ``preferred_session`` summary (None when the id is gone).
+        preferred_ids = params.get("preferred_session_ids")
+        if not isinstance(preferred_ids, dict):
+            preferred_ids = {}
         out = []
         for p in list_profiles():
             row = {
@@ -125,10 +221,19 @@ def _(rid, params: dict) -> dict:
                 "model": p.model,
                 "provider": p.provider,
                 "description": getattr(p, "description", "") or "",
+                "display_name": getattr(p, "display_name", "") or "",
                 "skill_count": getattr(p, "skill_count", 0) or 0,
             }
             if include_sessions:
-                row["last_session"] = _latest_profile_session_row(p.path)
+                last_row, worker_row = _latest_profile_session_rows(p.path)
+                row["last_session"] = last_row
+                # Freshest kanban/tool worker (or None) — lets rosters count
+                # a profile as active while its worker runs (#90268). Older
+                # clients ignore the extra field.
+                row["worker_session"] = worker_row
+                pin = preferred_ids.get(p.name)
+                if isinstance(pin, str) and pin.strip():
+                    row["preferred_session"] = _preferred_session_row(p.path, pin.strip())
 
             # Client-agnostic UI metadata (avatars, accent colors, pinned
             # order, …) — stored server-side in profile.yaml so every
@@ -159,7 +264,12 @@ def _(rid, params: dict) -> dict:
             except Exception:
                 row["has_avatar"] = False
             out.append(row)
-        return _ok(rid, {"profiles": out})
+        # Capability flag: this backend's prompt builder injects the Bot Mode
+        # teammate-messaging protocol (tools/bot_mode_probe.py) into every
+        # session of Bot-Mode-managed installs. Clients that would otherwise
+        # append the protocol to SOUL.md (the desktop's hermes-bots plugin)
+        # must skip their SOUL writes when this is present.
+        return _ok(rid, {"profiles": out, "bot_mode_protocol": True})
     except Exception as e:
         return _err(rid, 5061, str(e))
 

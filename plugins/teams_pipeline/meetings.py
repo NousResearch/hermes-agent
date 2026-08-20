@@ -2,13 +2,33 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from plugins.teams_pipeline.models import MeetingArtifact, TeamsMeetingRef
 from tools.microsoft_graph_client import MicrosoftGraphAPIError, MicrosoftGraphClient
+
+_USERS_MEETING_RE = re.compile(
+    r"(?i)(?:^|/)users/([^/]+)/onlineMeetings(?:\('([^']+)'\)|/([^/'?]+))"
+)
+_COMM_MEETING_RE = re.compile(
+    r"(?i)(?:^|/)communications/onlineMeetings(?:\('([^']+)'\)|/([^/'?]+))"
+)
+_TRANSCRIPT_RE = re.compile(r"(?i)/transcripts(?:\('([^']+)'\)|/([^/'?]+))")
+_RECORDING_RE = re.compile(r"(?i)/recordings(?:\('([^']+)'\)|/([^/'?]+))")
+_RESOURCE_SENTINELS = frozenset(
+    {
+        "getalltranscripts",
+        "getallrecordings",
+        "transcripts",
+        "recordings",
+    }
+)
 
 
 class TeamsMeetingError(RuntimeError):
@@ -27,9 +47,90 @@ class TeamsMeetingPermissionError(TeamsMeetingError):
     """Raised when Graph access is denied for the requested resource."""
 
 
+def parse_graph_meeting_resource(resource: str) -> dict[str, str | None]:
+    """Parse organizer, meeting, and artifact ids from a Graph resource or @odata.id."""
+
+    text = str(resource or "").strip()
+    organizer_user_id: str | None = None
+    meeting_id: str | None = None
+    transcript_id: str | None = None
+    recording_id: str | None = None
+
+    users_match = _USERS_MEETING_RE.search(text)
+    if users_match:
+        organizer_user_id = unquote(users_match.group(1) or "").strip() or None
+        meeting_id = unquote(users_match.group(2) or users_match.group(3) or "").strip() or None
+
+    if not meeting_id:
+        comm_match = _COMM_MEETING_RE.search(text)
+        if comm_match:
+            meeting_id = unquote(comm_match.group(1) or comm_match.group(2) or "").strip() or None
+
+    if meeting_id and meeting_id.lower() in _RESOURCE_SENTINELS:
+        meeting_id = None
+
+    transcript_match = _TRANSCRIPT_RE.search(text)
+    if transcript_match:
+        transcript_id = unquote(transcript_match.group(1) or transcript_match.group(2) or "").strip() or None
+
+    recording_match = _RECORDING_RE.search(text)
+    if recording_match:
+        recording_id = unquote(recording_match.group(1) or recording_match.group(2) or "").strip() or None
+
+    return {
+        "organizer_user_id": organizer_user_id,
+        "meeting_id": meeting_id,
+        "transcript_id": transcript_id,
+        "recording_id": recording_id,
+    }
+
+
+def looks_like_transcript_id(value: str, *, odata_type: str | None = None) -> bool:
+    """True when a Graph id is a callTranscript artifact rather than an onlineMeeting."""
+
+    if "calltranscript" in str(odata_type or "").lower():
+        return True
+    text = str(value or "")
+    if "transcript" in text.lower():
+        return True
+    return "transcript" in _decoded_id_hint(text)
+
+
+def _decoded_id_hint(value: str) -> str:
+    """Best-effort base64 decode of a Graph id for artifact-marker sniffing.
+
+    Graph transcript ids are base64url blobs whose *decoded* payload carries a
+    ``...-TranscriptV2`` suffix while the encoded form contains no readable
+    marker (this is exactly the id shape from getAllTranscripts
+    ``resourceData.id``). Returns lowercase decoded text, or "" when the value
+    does not decode.
+    """
+
+    stripped = value.strip()
+    if len(stripped) < 16:
+        return ""
+    padded = stripped + "=" * (-len(stripped) % 4)
+    for decoder in (base64.urlsafe_b64decode, base64.b64decode):
+        try:
+            return decoder(padded).decode("utf-8", "ignore").lower()
+        except (binascii.Error, ValueError):
+            continue
+    return ""
+
+
 def _meeting_path(meeting_ref: TeamsMeetingRef | str) -> str:
-    meeting_id = meeting_ref.meeting_id if isinstance(meeting_ref, TeamsMeetingRef) else str(meeting_ref)
-    return f"/communications/onlineMeetings/{quote(meeting_id, safe='')}"
+    if isinstance(meeting_ref, TeamsMeetingRef):
+        meeting_id = meeting_ref.meeting_id
+        organizer_user_id = meeting_ref.organizer_user_id
+    else:
+        meeting_id = str(meeting_ref)
+        organizer_user_id = None
+    encoded_meeting_id = quote(meeting_id, safe="")
+    if organizer_user_id:
+        return (
+            f"/users/{quote(organizer_user_id, safe='')}/onlineMeetings/{encoded_meeting_id}"
+        )
+    return f"/communications/onlineMeetings/{encoded_meeting_id}"
 
 
 def _wrap_graph_error(exc: MicrosoftGraphAPIError, *, missing_message: str) -> TeamsMeetingError:
@@ -62,7 +163,12 @@ def _parse_thread_id(payload: dict[str, Any]) -> str | None:
     return payload.get("threadId")
 
 
-def _normalize_meeting_ref(payload: dict[str, Any], *, tenant_id: str | None = None) -> TeamsMeetingRef:
+def _normalize_meeting_ref(
+    payload: dict[str, Any],
+    *,
+    tenant_id: str | None = None,
+    organizer_user_id: str | None = None,
+) -> TeamsMeetingRef:
     metadata = {
         key: payload.get(key)
         for key in ("subject", "startDateTime", "endDateTime", "createdDateTime")
@@ -73,7 +179,7 @@ def _normalize_meeting_ref(payload: dict[str, Any], *, tenant_id: str | None = N
         metadata["participants"] = participants
     return TeamsMeetingRef(
         meeting_id=str(payload.get("id") or "").strip(),
-        organizer_user_id=_parse_organizer_user_id(payload),
+        organizer_user_id=organizer_user_id or _parse_organizer_user_id(payload),
         join_web_url=payload.get("joinWebUrl"),
         calendar_event_id=payload.get("calendarEventId"),
         thread_id=_parse_thread_id(payload),
@@ -140,21 +246,42 @@ async def resolve_meeting_reference(
     meeting_id: str | None = None,
     join_web_url: str | None = None,
     tenant_id: str | None = None,
+    organizer_user_id: str | None = None,
 ) -> TeamsMeetingRef:
+    if meeting_id and looks_like_transcript_id(meeting_id):
+        if join_web_url:
+            meeting_id = None
+        else:
+            raise TeamsMeetingError(
+                "Refusing to GET /communications/onlineMeetings/{id} with a transcript id. "
+                "Graph v1.0 does not support that id format; use the organizer-scoped meeting "
+                "id from the notification @odata.id, or a join URL."
+            )
     if meeting_id:
         try:
-            payload = await client.get_json(_meeting_path(meeting_id))
+            payload = await client.get_json(
+                _meeting_path(
+                    TeamsMeetingRef(meeting_id=meeting_id, organizer_user_id=organizer_user_id)
+                )
+            )
         except MicrosoftGraphAPIError as exc:
             raise _wrap_graph_error(exc, missing_message=f"Teams meeting not found: {meeting_id}") from exc
         if not isinstance(payload, dict) or not payload.get("id"):
             raise TeamsMeetingNotFoundError(f"Teams meeting not found: {meeting_id}")
-        return _normalize_meeting_ref(payload, tenant_id=tenant_id)
+        return _normalize_meeting_ref(
+            payload,
+            tenant_id=tenant_id,
+            organizer_user_id=organizer_user_id,
+        )
 
     if join_web_url:
         escaped_join_url = join_web_url.replace("'", "''")
+        lookup_path = "/communications/onlineMeetings"
+        if organizer_user_id:
+            lookup_path = f"/users/{quote(organizer_user_id, safe='')}/onlineMeetings"
         try:
             payload = await client.get_json(
-                "/communications/onlineMeetings",
+                lookup_path,
                 params={"$filter": f"JoinWebUrl eq '{escaped_join_url}'"},
             )
         except MicrosoftGraphAPIError as exc:
@@ -165,7 +292,11 @@ async def resolve_meeting_reference(
         candidates = payload.get("value") if isinstance(payload, dict) else None
         if not isinstance(candidates, list) or not candidates:
             raise TeamsMeetingNotFoundError(f"Teams meeting not found for join URL: {join_web_url}")
-        return _normalize_meeting_ref(candidates[0], tenant_id=tenant_id)
+        return _normalize_meeting_ref(
+            candidates[0],
+            tenant_id=tenant_id,
+            organizer_user_id=organizer_user_id,
+        )
 
     raise ValueError("Either meeting_id or join_web_url is required.")
 

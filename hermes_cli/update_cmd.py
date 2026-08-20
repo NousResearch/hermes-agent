@@ -828,27 +828,266 @@ def _commit_staged_replacements(staged) -> None:
                 pass
 
 
+def _branch_head_label(git_cmd=None, cwd=None) -> str | None:
+    """``"<branch> @ <short-sha>"`` for the checkout, or None when unknown.
+
+    Appended to the update summary lines so branch drift is visible at a
+    glance (live incident 2026-08-17: a checkout parked on a stale feature
+    branch got "✓ Update complete!" with nothing on the line saying WHERE
+    the checkout actually sat). Never raises — summary decoration must not
+    break an update.
+    """
+    try:
+        cmd = list(git_cmd) if git_cmd else ["git"]
+        root = cwd if cwd is not None else _m().PROJECT_ROOT
+        branch = subprocess.run(
+            cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=root, capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        sha = subprocess.run(
+            cmd + ["rev-parse", "--short", "HEAD"],
+            cwd=root, capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        branch_name = branch.stdout.strip()
+        sha_text = sha.stdout.strip()
+        if branch.returncode != 0 or sha.returncode != 0 or not sha_text:
+            return None
+        if not branch_name:
+            return None
+        label = "detached" if branch_name == "HEAD" else branch_name
+        return f"{label} @ {sha_text}"
+    except Exception:
+        return None
+
+
+def _branch_head_suffix(git_cmd=None, cwd=None) -> str:
+    """`` [<branch> @ <sha>]`` suffix for summary lines ("" when unknown)."""
+    label = _branch_head_label(git_cmd, cwd)
+    return f" [{label}]" if label else ""
+
+
+def _assess_parked_branch_switch(
+    git_cmd: list[str], cwd: Path, current_branch: str, target_branch: str
+) -> tuple[bool, str]:
+    """Decide whether it is safe to auto-switch a parked feature branch back
+    to the update target.
+
+    Live incident (2026-08-17, Teknium's box): the source checkout sat on a
+    stale feature branch left behind by earlier tooling; ``hermes update``
+    autostashed, ran its post-update steps and printed "✓ Code updated!"
+    while the running code stayed days behind main. The guard's contract:
+
+    - safe (True, "") only when the working tree + index are clean AND every
+      commit on the parked branch is already contained in
+      ``origin/<target_branch>`` (``git cherry`` reports no ``+`` lines).
+    - anything else — dirty tree, unmerged commits, git errors, or the
+      ``updates.auto_switch_parked_branch: false`` config opt-out — returns
+      (False, <reason>) and the caller must NOT touch the branch.
+
+    Reasons: "disabled", "dirty", "unmerged:<count>", "unverifiable".
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        _update_cfg = (load_config() or {}).get("updates", {})
+        if isinstance(_update_cfg, dict) and not bool(
+            _update_cfg.get("auto_switch_parked_branch", True)
+        ):
+            return False, "disabled"
+    except Exception as exc:
+        # A config read failure must not disable the guard's safety checks —
+        # fall through to them with the default (auto-switch allowed).
+        logger.debug("Could not read updates.auto_switch_parked_branch: %s", exc)
+
+    status = subprocess.run(
+        git_cmd + ["status", "--porcelain"],
+        cwd=cwd, capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    if status.returncode != 0:
+        return False, "unverifiable"
+    if status.stdout.strip():
+        return False, "dirty"
+
+    cherry = subprocess.run(
+        git_cmd + ["cherry", f"origin/{target_branch}"],
+        cwd=cwd, capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    if cherry.returncode != 0:
+        return False, "unverifiable"
+    unmerged = [
+        line for line in cherry.stdout.splitlines() if line.startswith("+")
+    ]
+    if unmerged:
+        return False, f"unmerged:{len(unmerged)}"
+    return True, ""
+
+
+def _print_parked_branch_skip_warning(
+    git_cmd: list[str],
+    cwd: Path,
+    current_branch: str,
+    target_branch: str,
+    reason: str,
+) -> None:
+    """LOUD block explaining why the code update was skipped on a parked
+    branch, with the behind-count and the exact commands to resolve."""
+    behind = None
+    try:
+        behind_result = subprocess.run(
+            git_cmd + ["rev-list", f"HEAD..origin/{target_branch}", "--count"],
+            cwd=cwd, capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if behind_result.returncode == 0 and behind_result.stdout.strip():
+            behind = int(behind_result.stdout.strip())
+    except Exception:
+        behind = None
+
+    if reason == "dirty":
+        why = "the working tree has uncommitted changes"
+    elif reason.startswith("unmerged:"):
+        count = reason.split(":", 1)[1]
+        why = (
+            f"the branch has {count} commit(s) not merged into "
+            f"origin/{target_branch}"
+        )
+    elif reason == "disabled":
+        why = "updates.auto_switch_parked_branch is set to false in config.yaml"
+    else:
+        why = (
+            f"the branch state could not be verified against "
+            f"origin/{target_branch}"
+        )
+
+    bar = "=" * 68
+    print()
+    print(bar)
+    print(f"⚠ CODE UPDATE SKIPPED — checkout is parked on '{current_branch}'")
+    print(f"  Not auto-switching to {target_branch}: {why}.")
+    if behind is not None and behind > 0:
+        print(
+            f"  This checkout is {behind} commit(s) BEHIND "
+            f"origin/{target_branch} — the code you are running is stale."
+        )
+    print()
+    print("  To resolve, inspect the branch and switch back yourself:")
+    print(f"    git -C {cwd} status")
+    print(f"    git -C {cwd} checkout {target_branch} && hermes update")
+    print(
+        "  (commit or stash your work on the branch first if you want to "
+        "keep it)"
+    )
+    print(bar)
+
+
 def _print_update_completion(message: str) -> None:
     """Print an update outcome plus, when the dashboard launched this run
     with an action id, a terminal receipt line the Desktop can match after
-    the dashboard restarts (see #47359 / #58764)."""
-    print(message)
+    the dashboard restarts (see #47359 / #58764).
+
+    The outcome line carries the checkout's actual branch + HEAD short-sha
+    so branch drift is visible at a glance (2026-08-17 parked-branch
+    incident)."""
+    print(f"{message}{_branch_head_suffix()}")
     action_id = os.environ.get("HERMES_ACTION_ID", "")
     if len(action_id) == 32 and all(char in "0123456789abcdef" for char in action_id):
         print(f"=== hermes-update completed {action_id} ===")
 
 
-def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
+def _read_project_version() -> str | None:
+    """Read the ``version`` field from the checkout's pyproject.toml.
+
+    Reads the on-disk file (not importlib.metadata) because after a git
+    pull the installed distribution metadata still describes the OLD
+    version; the file is the only source that reflects what was just
+    pulled. Returns None on any failure — version reporting is cosmetic
+    and must never break an update.
+    """
+    try:
+        import tomllib
+
+        with open(_m().PROJECT_ROOT / "pyproject.toml", "rb") as fh:  # windows-footgun: ok — binary mode, tomllib requires bytes
+            version = tomllib.load(fh).get("project", {}).get("version")
+        return str(version) if version else None
+    except Exception:
+        return None
+
+
+def _update_complete_message(pre_version: str | None) -> str:
+    """Completion line with the version transition when it is known.
+
+    Ported from PrimeIntellect-ai/prime-agent#630: after a successful
+    self-update, show both versions (``v0.19.4 → v0.20.0``) so the user
+    can see what they actually got. Falls back to the plain message when
+    either side is unknown or the version did not change (e.g. several
+    commits landed within one release).
+    """
+    post_version = _read_project_version()
+    if pre_version and post_version and pre_version != post_version:
+        return f"✓ Update complete! (v{pre_version} → v{post_version})"
+    if post_version:
+        return f"✓ Update complete! (v{post_version})"
+    return "✓ Update complete!"
+
+
+def _print_update_summary(
+    *,
+    node_failures: list,
+    desktop_build_ok: bool,
+    pre_update_version: str | None,
+) -> None:
+    """Final update banner. A failed Desktop rebuild is non-fatal for the
+    Python side, but must not print ``✓ Update complete!`` (#88251)."""
+    print()
+    if node_failures or not desktop_build_ok:
+        parts = []
+        if node_failures:
+            parts.append(
+                f"Node.js dependencies for {', '.join(node_failures)} did not refresh"
+            )
+        if not desktop_build_ok:
+            parts.append(
+                "the desktop app was not rebuilt and is still on the previous build"
+            )
+        print("⚠ Update partially complete — " + "; ".join(parts) + ".")
+        if node_failures:
+            print("  Code and Python deps are updated, but the dashboard/TUI may")
+            print("  be in a mixed state until the Node deps are rebuilt.")
+        if not desktop_build_ok:
+            print("  Run `hermes desktop` to retry the desktop rebuild.")
+    else:
+        _print_update_completion(_update_complete_message(pre_update_version))
+
+
+def _write_gateway_update_exit_code(ok: bool) -> None:
+    path = get_hermes_home() / ".update_exit_code"
+    try:
+        path.write_text("0" if ok else "1", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
     """Update Hermes Agent by downloading a ZIP archive.
 
     Used on Windows when git file I/O is broken (antivirus, NTFS filter
     drivers causing 'Invalid argument' errors on file creation).
+
+    Returns ``False`` when a Desktop rebuild ran and failed; ``True`` otherwise.
     """
     active_tool_dependencies = _m()._capture_active_tool_dependencies()
 
     import tempfile
     import zipfile
     from urllib.request import urlretrieve
+
+    # Snapshot the pre-update version before files are replaced so the
+    # completion line can report the transition (prime-agent#630 port).
+    pre_update_version = _read_project_version()
 
     # The ZIP fallback exists for Windows git-file-I/O breakage. It pulls a
     # static archive from GitHub, which is fine for the default "main"
@@ -1091,7 +1330,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
 
     node_failures = _update_node_dependencies()
     _m()._build_web_ui(_m().PROJECT_ROOT / "web")
-    _rebuild_desktop_after_update(
+    desktop_build_ok = _rebuild_desktop_after_update(
         _m().PROJECT_ROOT / "apps" / "desktop",
         had_desktop_app_before_update=had_desktop_app_before_update,
     )
@@ -1196,16 +1435,11 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
             "Post-update state.db integrity check (zip path) failed: %s", exc
         )
 
-    print()
-    if node_failures:
-        print(
-            "⚠ Update partially complete — Node.js dependencies for "
-            f"{', '.join(node_failures)} did not refresh."
-        )
-        print("  Code and Python deps are updated, but the dashboard/TUI may")
-        print("  be in a mixed state until the Node deps are rebuilt.")
-    else:
-        _print_update_completion("✓ Update complete!")
+    _print_update_summary(
+        node_failures=node_failures,
+        desktop_build_ok=desktop_build_ok,
+        pre_update_version=pre_update_version,
+    )
     try:
         _print_curator_first_run_notice()
     except Exception as e:
@@ -1217,6 +1451,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
     # Don't stop a working dashboard when the Node refresh failed — see the
     # git-update path for rationale (#30271).
     _finish_dashboard_update_cleanup(node_failures)
+    return desktop_build_ok
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
     status = subprocess.run(
@@ -2479,6 +2714,49 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
     _log_only_write(result.stdout or "")
     return result
 
+def _classify_fetch_failure(stderr: str) -> str:
+    """Map git-fetch stderr to a one-line, user-facing diagnosis.
+
+    Order matters: curl surfaces HTTP failures as
+    ``fatal: unable to access '<url>': The requested URL returned error: 429``,
+    so the rate-limit/outage checks must run BEFORE the generic
+    "unable to access" network check or a GitHub 429/5xx gets misreported as a
+    local network problem. The caller always prints the first raw stderr line
+    alongside this diagnosis — the friendly message adds guidance, it never
+    replaces the wire error.
+    """
+
+    def _has_http_code(*codes: str) -> bool:
+        return any(
+            f"HTTP {code}" in stderr or f"returned error: {code}" in stderr
+            for code in codes
+        )
+
+    if _has_http_code("429") or "rate limit" in stderr.lower():
+        return (
+            "✗ GitHub is rate limiting requests or having an outage (HTTP 429)"
+            " — try again in 5 minutes."
+        )
+    if _has_http_code("500", "502", "503", "504"):
+        return (
+            "✗ GitHub appears to be having an outage — try again in a few"
+            " minutes (https://www.githubstatus.com)."
+        )
+    if "Could not resolve host" in stderr or "unable to access" in stderr:
+        return "✗ Network error — cannot reach the remote repository."
+    if "Authentication failed" in stderr or "could not read Username" in stderr:
+        return "✗ Authentication failed — check your git credentials or SSH key."
+    return "✗ Failed to fetch updates from origin."
+
+
+def _print_fetch_failure(stderr: str) -> None:
+    """Print the classified diagnosis plus the first raw stderr line."""
+    stderr = (stderr or "").strip()
+    print(_classify_fetch_failure(stderr))
+    if stderr:
+        print(f"  {stderr.splitlines()[0]}")
+
+
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     """Implement ``hermes update --check``: fetch and report without installing.
 
@@ -2490,7 +2768,11 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     Installs that can't honor non-default branches (e.g. Docker) surface a
     one-line notice instead of silently dropping the flag.
     """
-    from hermes_cli.config import detect_install_method, recommended_update_command_for_method
+    from hermes_cli.config import (
+        detect_install_method,
+        is_nix_install_method,
+        recommended_update_command_for_method,
+    )
     method = detect_install_method(_m().PROJECT_ROOT)
     if method == "docker":
         # Docker can't ``git fetch`` from within the container.  Surface the
@@ -2501,7 +2783,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         print(format_docker_update_message())
         sys.exit(1)
 
-    if method in {"nix", "nixos"}:
+    if is_nix_install_method(method) or method == "apt":
         print(recommended_update_command_for_method(method))
         sys.exit(1)
 
@@ -2596,15 +2878,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         compare_branch = f"origin/{branch}"
 
     if fetch_result.returncode != 0:
-        stderr = fetch_result.stderr.strip()
-        if "Could not resolve host" in stderr or "unable to access" in stderr:
-            print("✗ Network error — cannot reach the remote repository.")
-        elif "Authentication failed" in stderr or "could not read Username" in stderr:
-            print("✗ Authentication failed — check your git credentials or SSH key.")
-        else:
-            print("✗ Failed to fetch.")
-            if stderr:
-                print(f"  {stderr.splitlines()[0]}")
+        _print_fetch_failure(fetch_result.stderr)
         sys.exit(1)
 
     # Verify the compare ref actually exists before asking rev-list about it.
@@ -4331,8 +4605,15 @@ def _desktop_app_present(desktop_dir: Path) -> bool:
 
 def _rebuild_desktop_after_update(
     desktop_dir: Path, *, had_desktop_app_before_update: bool
-) -> None:
-    """Rebuild an installed Desktop app when its source or artifact changed."""
+) -> bool:
+    """Rebuild an installed Desktop app when its source or artifact changed.
+
+    Returns ``False`` only when a rebuild was attempted and failed, so the
+    caller can withhold ``✓ Update complete!`` and (in gateway mode) write
+    a failing ``.update_exit_code`` (#88251). Every other outcome — nothing
+    to rebuild, up to date, build succeeded, Desktop never installed —
+    returns ``True``.
+    """
     # The release tree is ignored by git and can disappear during an update.
     # Its pre-update presence is enough to restore it; do not make people who
     # have never used Desktop pay for an Electron build.
@@ -4342,7 +4623,7 @@ def _rebuild_desktop_after_update(
         and _m()._resolve_node_runtime_npm()
         and has_desktop_app
     ):
-        return
+        return True
 
     print("→ Checking if desktop app needs rebuilding...")
     # Consult the content-hash stamp IN-PROCESS first. The spawned
@@ -4361,7 +4642,7 @@ def _rebuild_desktop_after_update(
         skip_desktop_build = False
     if skip_desktop_build:
         print("  ✓ Desktop app up to date")
-        return
+        return True
 
     desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
     # Capture the (very loud) Electron/vite build output into update.log
@@ -4386,15 +4667,16 @@ def _rebuild_desktop_after_update(
             desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=build_env
         )
     if build_result.returncode != 0:
-        print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+        print("  ⚠ Desktop build failed (run `hermes desktop` to retry)")
         tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
         if tail:
             print(tail)
         from hermes_constants import display_hermes_home as _dhh
 
         print(f"  Full build log: {_dhh()}/logs/update.log")
-    else:
-        print("  ✓ Desktop app up to date")
+        return False
+    print("  ✓ Desktop app up to date")
+    return True
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
@@ -4406,6 +4688,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
     active_lazy_features = _m()._capture_active_lazy_features()
     active_tool_dependencies = _m()._capture_active_tool_dependencies()
 
+    # Snapshot the pre-update version before any code is pulled so the
+    # completion line can report the transition (prime-agent#630 port).
+    pre_update_version = _read_project_version()
     # In gateway mode, use file-based IPC for prompts instead of stdin
     gw_input_fn = (
         (lambda prompt, default="": _gateway_prompt(prompt, default))
@@ -4608,12 +4893,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
     if use_zip_update:
         # ZIP-based update for Windows when git is broken
         try:
-            _update_via_zip(
+            desktop_build_ok = _update_via_zip(
                 args,
                 had_desktop_app_before_update=had_desktop_app_before_update,
             )
         finally:
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+        if gateway_mode:
+            _write_gateway_update_exit_code(desktop_build_ok)
         return
 
     # Fetch and pull
@@ -4644,20 +4931,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             text=True, encoding="utf-8", errors="replace",
         )
         if fetch_result.returncode != 0:
-            stderr = fetch_result.stderr.strip()
-            if "Could not resolve host" in stderr or "unable to access" in stderr:
-                print("✗ Network error — cannot reach the remote repository.")
-                print(f"  {stderr.splitlines()[0]}" if stderr else "")
-            elif (
-                "Authentication failed" in stderr or "could not read Username" in stderr
-            ):
-                print(
-                    "✗ Authentication failed — check your git credentials or SSH key."
-                )
-            else:
-                print("✗ Failed to fetch updates from origin.")
-                if stderr:
-                    print(f"  {stderr.splitlines()[0]}")
+            _print_fetch_failure(fetch_result.stderr)
             sys.exit(1)
 
         # Get current branch (returns literal "HEAD" when detached)
@@ -4675,13 +4949,47 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # "always update against main" behavior; for any other target it's
         # the same thing — get HEAD onto the requested branch first, then
         # fast-forward.
+        #
+        # Parked-branch guard (2026-08-17 live incident): the checkout can be
+        # left parked on a stale feature branch by earlier tooling. Blindly
+        # stash-switch-pull-switch-back "updates" main while the running code
+        # stays days behind, then prints "✓ Code updated!". Only auto-switch
+        # when the parked branch is clean AND fully merged into the target;
+        # otherwise warn loudly, mark the code update SKIPPED, and stop
+        # before the post-update steps reinforce the stale tree.
+        parked_branch_switched = False
         if current_branch != branch:
-            label = (
-                "detached HEAD"
-                if current_branch == "HEAD"
-                else f"branch '{current_branch}'"
-            )
-            print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
+            if current_branch != "HEAD":
+                switch_safe, switch_block_reason = _m()._assess_parked_branch_switch(
+                    git_cmd, _m().PROJECT_ROOT, current_branch, branch
+                )
+                if not switch_safe:
+                    _m()._print_parked_branch_skip_warning(
+                        git_cmd,
+                        _m().PROJECT_ROOT,
+                        current_branch,
+                        branch,
+                        switch_block_reason,
+                    )
+                    print()
+                    print(
+                        "⚠ Update finished — code update SKIPPED"
+                        f"{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}"
+                    )
+                    _m()._resume_windows_gateways_after_update(
+                        _windows_gateway_resume
+                    )
+                    sys.exit(1)
+                parked_branch_switched = True
+                print(
+                    f"  ⚠ Checkout was parked on '{current_branch}' "
+                    f"(fully merged) — switching back to {branch}..."
+                )
+            else:
+                print(
+                    f"  ⚠ Currently on detached HEAD — switching to {branch} "
+                    "for update..."
+                )
             # Stash before checkout so uncommitted work isn't lost
             auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, _m().PROJECT_ROOT)
             checkout_result = subprocess.run(
@@ -4774,7 +5082,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if is_fork and branch == "main":
                 _m()._sync_with_upstream_if_needed(git_cmd, _m().PROJECT_ROOT)
 
-            # Restore stash and switch back to original branch if we moved
+            # Restore stash and switch back to original branch if we moved.
+            # EXCEPTION: a parked feature branch we verified clean + fully
+            # merged stays on the target — re-parking the checkout on the
+            # stale branch is the 2026-08-17 incident all over again.
             if auto_stash_ref is not None:
                 _m()._restore_stashed_changes(
                     git_cmd,
@@ -4783,7 +5094,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
                 )
-            if current_branch not in {branch, "HEAD"}:
+            if parked_branch_switched:
+                print(
+                    f"  ✓ Checkout was parked on '{current_branch}' (fully "
+                    f"merged) — switched back to {branch}."
+                )
+            elif current_branch not in {branch, "HEAD"}:
                 subprocess.run(
                     git_cmd + ["checkout", current_branch],
                     cwd=_m().PROJECT_ROOT,
@@ -5036,6 +5352,29 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
 
+        # And verify HEAD actually sits on the target branch. The parked-
+        # branch guard above should make this unreachable, but if any path
+        # leaves the checkout attached elsewhere, "✓ Code updated!" would be
+        # a lie — refuse to claim success (2026-08-17 incident class).
+        post_pull_branch = subprocess.run(
+            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=_m().PROJECT_ROOT,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        ).stdout.strip()
+        if post_pull_branch and post_pull_branch not in {branch, "HEAD"}:
+            print()
+            print(
+                f"✗ Update pulled origin/{branch}, but the checkout is on "
+                f"'{post_pull_branch}' — not claiming success."
+            )
+            print(
+                "  Switch to the target branch and retry: "
+                f"git -C {_m().PROJECT_ROOT} checkout {branch} && hermes update"
+            )
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            sys.exit(1)
+
         # Clear stale .pyc bytecode cache — prevents ImportError on gateway
         # restart when updated source references names that didn't exist in
         # the old bytecode (e.g. get_hermes_home added to hermes_constants).
@@ -5196,13 +5535,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         node_failures = _update_node_dependencies()
         _m()._build_web_ui(_m().PROJECT_ROOT / "web")
 
-        _rebuild_desktop_after_update(
+        desktop_build_ok = _rebuild_desktop_after_update(
             desktop_dir,
             had_desktop_app_before_update=had_desktop_app_before_update,
         )
 
         print()
-        print("✓ Code updated!")
+        print(f"✓ Code updated!{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}")
 
         # ── Post-update state.db integrity guard (#68474) ─────────────────
         # Verify that state.db survived the update intact.  If the live file
@@ -5573,16 +5912,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Never let the cron safety net break an otherwise-good update.
             logger.debug("Cron jobs auto-restore check failed: %s", exc)
 
-        print()
-        if node_failures:
-            print(
-                "⚠ Update partially complete — Node.js dependencies for "
-                f"{', '.join(node_failures)} did not refresh."
-            )
-            print("  Code and Python deps are updated, but the dashboard/TUI may")
-            print("  be in a mixed state until the Node deps are rebuilt.")
-        else:
-            _print_update_completion("✓ Update complete!")
+        _print_update_summary(
+            node_failures=node_failures,
+            desktop_build_ok=desktop_build_ok,
+            pre_update_version=pre_update_version,
+        )
 
         # Search-index optimization notice (v23). Existing installs keep their
         # working search index untouched on update; the compact v23 layout —
@@ -5687,13 +6021,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         #
         # Writing the marker here — after git pull + pip install succeed but
         # before we attempt the restart — ensures the new gateway sees it
-        # regardless of how we die.
+        # regardless of how we die. Gated on desktop_build_ok (#88251): a
+        # Desktop rebuild failure must not be reported as "0" — the gateway's
+        # /update watcher (gateway/run.py) polls this file.
         if gateway_mode:
-            _exit_code_path = get_hermes_home() / ".update_exit_code"
-            try:
-                _exit_code_path.write_text("0", encoding="utf-8")
-            except OSError:
-                pass
+            _write_gateway_update_exit_code(desktop_build_ok)
 
         gateway_fleet_restart_incomplete = False
         # Snapshot of gateways running before we touch anything. Stays empty
@@ -6518,10 +6850,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(f"⚠ Git update failed: {e}")
             print("→ Falling back to ZIP download...")
             print()
-            _update_via_zip(
+            desktop_build_ok = _update_via_zip(
                 args,
                 had_desktop_app_before_update=had_desktop_app_before_update,
             )
+            if gateway_mode:
+                _write_gateway_update_exit_code(desktop_build_ok)
         else:
             print(f"✗ Update failed: {e}")
             sys.exit(1)

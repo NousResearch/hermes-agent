@@ -93,6 +93,46 @@ def test_passthrough_kwargs_to_base(monkeypatch):
 
 
 
+def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
+    """Interactive picker should preserve current custom endpoint semantics."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: [])
+
+    result = model_switch.list_picker_providers(
+        current_provider="custom:ollama",
+        current_base_url="http://localhost:11434/v1",
+        current_model="glm-5.1",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Ollama — GLM 5.1",
+                "base_url": "http://localhost:11434/v1",
+                "api_key": "ollama",
+                "model": "glm-5.1",
+                "discover_models": False,
+            },
+            {
+                "name": "Ollama — Qwen3",
+                "base_url": "http://localhost:11434/v1",
+                "api_key": "ollama",
+                "model": "qwen3",
+                "discover_models": False,
+            },
+        ],
+        max_models=50,
+    )
+
+    custom_rows = [p for p in result if p.get("is_user_defined")]
+    assert len(custom_rows) == 1
+    row = custom_rows[0]
+    assert row["slug"] == "custom:ollama"
+    assert row["is_current"] is True
+    assert row["models"] == ["glm-5.1", "qwen3"]
+
+
 
 # ---------------------------------------------------------------------------
 # list_authenticated_providers: alias/canonical de-dup for Kimi (#49439)

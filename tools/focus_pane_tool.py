@@ -5,7 +5,8 @@ Lives in the ``desktop_ui`` toolset (like the other GUI affordances), which the
 GUI gateway enables only for desktop-sourced sessions. Emits ``pane.reveal``
 through the shared ``desktop_ui`` bridge; the renderer runs each pane's own
 reveal path and only acts on the active window (a background turn never moves
-the user's focus). To show a URL/file, use ``open_preview``.
+the user's focus). To show a URL/file, use ``open_preview``; to close it, use
+``close_preview``.
 """
 
 import json
@@ -39,7 +40,8 @@ FOCUS_PANE_SCHEMA = {
         "see it — e.g. \"show me the terminal\", \"open the file browser\", \"show "
         "the diff\". Panes: chat (the conversation), files (project file browser), "
         "terminal (embedded shell), review (git diff), sessions (the session list). "
-        "To show a URL or file in the preview pane, use open_preview instead."
+        "To show a URL or file in the preview pane, use open_preview; to close it, "
+        "use close_preview."
     ),
     "parameters": {
         "type": "object",

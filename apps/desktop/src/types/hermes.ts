@@ -421,6 +421,10 @@ export interface ModelOptionProvider {
 }
 
 export interface ModelCapabilities {
+  /** False when the route rejects a reasoning disable ("mandatory" in the
+   *  provider catalog), so the Thinking toggle must not be offered. Absent
+   *  when the catalog doesn't say. */
+  can_disable_reasoning?: boolean
   fast: boolean
   reasoning: boolean
 }
@@ -528,6 +532,11 @@ export interface SessionInfo {
   profile?: string
   /** True when {@link profile} is the default profile. */
   is_default_profile?: boolean
+  /** Registry connection that owns this row when it came from a CONNECTED
+   *  non-primary gateway (Electron's unified-list splice, #88880). Absent for
+   *  rows served by the primary/local backend. Opens must route through the
+   *  connection-scoped gateway (`ensureGatewayAgent`) when present. */
+  connection_id?: string
 }
 
 export type TimelineDisplayMetadata =
@@ -914,6 +923,8 @@ export interface ProfileCreatePayload {
 }
 
 export interface ProfileInfo {
+  /** Presentation-only label override (profile.yaml display_name). */
+  display_name?: string
   has_env: boolean
   is_default: boolean
   model: null | string

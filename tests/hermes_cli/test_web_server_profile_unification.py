@@ -502,6 +502,80 @@ class TestProfileScopedGateway:
         assert data["gateway_state"] == "running"
         assert data["gateway_platforms"] == {"telegram": {"state": "connected"}}
 
+    def test_status_keeps_fatal_platforms_on_startup_failed(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """startup_failed keeps FATAL per-profile entries — they're the diagnosis.
+
+        A multiplex gateway that dies at startup persists per-profile fatal
+        entries (``alpha:telegram`` etc.). The dead-gateway platform clear must
+        not erase them: exit_reason alone can't say which profile failed how.
+        Non-fatal leftovers (e.g. a platform that connected before the crash)
+        are still dropped — only fatals survive.
+        """
+        import hermes_cli.web_server as web_server
+
+        runtime = {
+            "pid": 4242,
+            "gateway_state": "startup_failed",
+            "platforms": {
+                "telegram": {"state": "fatal", "error_code": "telegram_auth_error"},
+                "alpha:telegram": {"state": "fatal", "error_code": "credential_collision"},
+                "beta:discord": {"state": "connected"},
+            },
+            "exit_reason": "telegram: token rejected",
+            "updated_at": "2026-06-17T00:00:00+00:00",
+        }
+        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(
+            web_server, "get_running_pid_cached", lambda *a, **k: None
+        )
+        monkeypatch.setattr(web_server, "read_runtime_status", lambda *a, **k: runtime)
+        # Bare platform keys are checked against the configured set (fail
+        # closed) — mirror a host that actually has telegram configured.
+        monkeypatch.setattr(
+            web_server, "_load_configured_gateway_platforms", lambda: {"telegram"}
+        )
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
+
+        resp = client.get("/api/status", params={"profile": "worker_beta"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is False
+        assert data["gateway_state"] == "startup_failed"
+        assert data["gateway_exit_reason"] == "telegram: token rejected"
+        # Fatal entries (root and namespaced) survive; the stale non-fatal is dropped.
+        assert set(data["gateway_platforms"]) == {"telegram", "alpha:telegram"}
+        assert data["gateway_platforms"]["alpha:telegram"]["error_code"] == "credential_collision"
+
+    def test_status_clears_platforms_on_clean_stop(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """A cleanly stopped gateway still reports no platforms (stale-noise rule)."""
+        import hermes_cli.web_server as web_server
+
+        runtime = {
+            "pid": 4242,
+            "gateway_state": "stopped",
+            "platforms": {"telegram": {"state": "connected"}},
+            "exit_reason": None,
+            "updated_at": "2026-06-17T00:00:00+00:00",
+        }
+        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(
+            web_server, "get_running_pid_cached", lambda *a, **k: None
+        )
+        monkeypatch.setattr(web_server, "read_runtime_status", lambda *a, **k: runtime)
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
+
+        resp = client.get("/api/status", params={"profile": "worker_beta"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_state"] == "stopped"
+        assert data["gateway_platforms"] == {}
+
 
 class TestProfileScopedTelegramOnboarding:
     def test_apply_writes_target_profile_and_restarts_target(

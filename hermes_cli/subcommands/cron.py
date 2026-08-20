@@ -97,6 +97,32 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
+    cron_create.add_argument(
+        "--model",
+        help=(
+            "Pin this job to a specific inference model (user-owned; the "
+            "agent's cronjob tool cannot set this). Omit to follow "
+            "cron.model / model.default from config.yaml."
+        ),
+    )
+    cron_create.add_argument(
+        "--provider",
+        dest="model_provider",
+        help="Inference provider paired with --model (e.g. 'openrouter', 'nous').",
+    )
+    cron_create.add_argument(
+        "--continuity",
+        dest="continuity",
+        action="store_const",
+        const=True,
+        default=None,
+        help=(
+            "Each run wakes up with the job's own previous output injected "
+            "into its prompt, so it can dedupe against what was already "
+            "reported and continue where the last run left off (scouts, "
+            "monitors, incremental digests). First run is unchanged."
+        ),
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -156,6 +182,27 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         action="store_const",
         const=False,
         help="Disable no-agent mode on this job (reverts to LLM-driven execution).",
+    )
+    cron_edit.add_argument(
+        "--continuity",
+        dest="continuity",
+        action="store_const",
+        const=True,
+        default=None,
+        help=(
+            "Turn on run-to-run continuity: each run sees the job's own "
+            "previous output (dedupe, continue where it left off)."
+        ),
+    )
+    cron_edit.add_argument(
+        "--no-continuity",
+        dest="continuity",
+        action="store_const",
+        const=False,
+        help=(
+            "Turn off run-to-run continuity (other context_from job refs "
+            "are preserved)."
+        ),
     )
     cron_edit.add_argument(
         "--monitor-script",

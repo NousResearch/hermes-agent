@@ -17,8 +17,12 @@ Config keys this provider responds to::
 
 Env vars::
 
-    TAVILY_API_KEY=...           # https://app.tavily.com/home (required)
+    TAVILY_API_KEY=...           # https://app.tavily.com/home (optional)
     TAVILY_BASE_URL=...          # optional override of https://api.tavily.com
+
+Auth is header-based. A key uses ``Authorization: *** without a key
+the request is keyless (``X-Tavily-Access-Mode: keyless``). Both paths
+send ``X-Client-Name: hermes-agent``.
 """
 
 from __future__ import annotations
@@ -28,15 +32,22 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
+
+import httpx
 
 from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
 
-# ── Cooldown state ──────────────────────────────────────────────────────────
-# After 3 consecutive 4xx failures, Tavily is skipped for 24 hours to stop
-# log spam and retry traffic when the API key is rate-limited or expired.
+_CLIENT_NAME = "hermes-agent"
+
+
+# ── Cooldown state (KENSEI CUSTOM) ──────────────────────────────────────────
+# After 3 consecutive 4xx failures on the KEYED path, Tavily is skipped for
+# 24 hours to stop log spam and retry traffic when the API key is
+# rate-limited or expired. Keyless ring dispatch has its own failover, so
+# cooldown applies only to the paid/keyed request path.
 
 _HERMES_HOME = Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")))
 _COOLDOWN_FILE = _HERMES_HOME / "state" / "tavily_cooldown.json"
@@ -112,39 +123,7 @@ def _record_success() -> None:
         logger.debug("Tavily success-counter reset failed: %s", exc)
 
 
-# ── Core request helpers (unchanged) ────────────────────────────────────────
-
-
-def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """POST to the Tavily API and return the parsed JSON response.
-
-    Mirrors :func:`tools.web_tools._tavily_request`. Raises ``ValueError``
-    when ``TAVILY_API_KEY`` is unset; the caller catches and surfaces as
-    a typed error response.
-    """
-    import httpx
-
-    from agent.web_search_provider import get_provider_env
-
-    api_key = get_provider_env("TAVILY_API_KEY")
-    if not api_key:
-        raise ValueError(
-            "TAVILY_API_KEY environment variable not set. "
-            "Get your API key at https://app.tavily.com/home"
-        )
-
-    base_url = get_provider_env("TAVILY_BASE_URL") or "https://api.tavily.com"
-    payload = dict(payload)  # don't mutate caller's dict
-    payload["api_key"] = api_key
-    url = f"{base_url}/{endpoint.lstrip('/')}"
-    logger.info("Tavily %s request to %s", endpoint, url)
-
-    response = httpx.post(url, json=payload, timeout=60)
-    response.raise_for_status()
-    return response.json()
-
-
-def _status_code_from_exception(exc: Exception) -> Optional[int]:
+def _status_code_from_exception(exc: Exception) -> int | None:
     """Return an HTTP status code from an httpx-style exception, if present."""
     response = getattr(exc, "response", None)
     status_code = getattr(response, "status_code", None)
@@ -159,16 +138,41 @@ def _is_4xx(exc: Exception) -> bool:
     return isinstance(code, int) and 400 <= code < 500
 
 
-def _tavily_error_response(operation: str, exc: Exception) -> Dict[str, Any]:
-    """Build a provider error payload that the web dispatcher can fail over."""
-    status_code = _status_code_from_exception(exc)
-    error = f"Tavily {operation} failed: {exc}"
-    payload: Dict[str, Any] = {"success": False, "error": error}
-    if status_code is not None:
-        payload["status_code"] = status_code
-        payload["provider"] = "tavily"
-        payload["fallback_eligible"] = 400 <= status_code < 500
-    return payload
+def _tavily_headers(api_key: str) -> Dict[str, str]:
+    """Build Tavily request headers for keyed or keyless access."""
+    headers = {"X-Client-Name": _CLIENT_NAME}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    else:
+        headers["X-Tavily-Access-Mode"] = "keyless"
+    return headers
+
+
+def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """POST to the Tavily API and return the parsed JSON response.
+
+    Keyed when ``TAVILY_API_KEY`` is set (Bearer auth); otherwise keyless.
+    Non-2xx responses raise ``ValueError`` with the response body so Tavily's
+    keyless rate-limit / upgrade text reaches the model.
+    """
+    from agent.web_search_provider import get_provider_env
+
+    api_key = get_provider_env("TAVILY_API_KEY")
+    base_url = get_provider_env("TAVILY_BASE_URL") or "https://api.tavily.com"
+    url = f"{base_url}/{endpoint.lstrip('/')}"
+    logger.info("Tavily %s request to %s", endpoint, url)
+
+    response = httpx.post(
+        url,
+        json=payload,
+        timeout=60,
+        headers=_tavily_headers(api_key),
+    )
+    if response.status_code >= 400:
+        body = (response.text or "").strip()
+        detail = body or f"HTTP {response.status_code}"
+        raise ValueError(detail)
+    return response.json()
 
 
 def _normalize_tavily_search_results(response: Dict[str, Any]) -> Dict[str, Any]:
@@ -237,9 +241,6 @@ def _normalize_tavily_documents(
     return documents
 
 
-# ── Provider class ──────────────────────────────────────────────────────────
-
-
 class TavilyWebSearchProvider(WebSearchProvider):
     """Tavily search + extract provider."""
 
@@ -257,6 +258,18 @@ class TavilyWebSearchProvider(WebSearchProvider):
 
         return bool(get_provider_env("TAVILY_API_KEY"))
 
+    def is_keyless_available(self) -> bool:
+        """Tavily serves anonymous keyless requests (X-Tavily-Access-Mode).
+
+        Default-on ring member of the keyless free tier: fresh installs
+        rotate across Exa/Parallel/Tavily/Firecrawl/Keenable. False when
+        the user pinned ``web.provider_tier.tavily: paid`` — an explicit
+        paid selection opts the free endpoint out.
+        """
+        from plugins.web.keyless_mcp import keyless_enabled, provider_tier
+
+        return keyless_enabled() and provider_tier("tavily") != "paid"
+
     def supports_search(self) -> bool:
         return True
 
@@ -265,21 +278,33 @@ class TavilyWebSearchProvider(WebSearchProvider):
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         """Execute a Tavily search."""
-        # Short-circuit if we're in cooldown — don't waste an API call.
-        if _check_cooldown():
-            return {
-                "success": False,
-                "error": "Tavily rate-limited (cooldown)",
-                "status_code": 432,
-                "provider": "tavily",
-                "fallback_eligible": True,
-            }
-
         try:
             from tools.interrupt import is_interrupted
 
             if is_interrupted():
                 return {"success": False, "error": "Interrupted"}
+
+            from agent.web_search_provider import get_provider_env
+
+            from plugins.web.keyless_mcp import search_with_failover, use_keyless
+
+            if use_keyless("tavily", get_provider_env("TAVILY_API_KEY")):
+                # Keyless free tier — ring dispatch with next-in-line
+                # failover on rate limits.
+                logger.info(
+                    "Tavily keyless search: '%s' (limit=%d)", query, limit
+                )
+                return search_with_failover("tavily", query, limit)
+
+            # Keyed path — short-circuit if in cooldown (KENSEI CUSTOM).
+            if _check_cooldown():
+                return {
+                    "success": False,
+                    "error": "Tavily rate-limited (cooldown)",
+                    "status_code": 432,
+                    "provider": "tavily",
+                    "fallback_eligible": True,
+                }
 
             logger.info("Tavily search: '%s' (limit=%d)", query, limit)
             raw = _tavily_request(
@@ -299,7 +324,7 @@ class TavilyWebSearchProvider(WebSearchProvider):
             logger.warning("Tavily search error: %s", exc)
             if _is_4xx(exc):
                 _record_failure()
-            return _tavily_error_response("search", exc)
+            return {"success": False, "error": f"Tavily search failed: {exc}"}
 
     def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
         """Extract content from one or more URLs via Tavily.
@@ -307,27 +332,37 @@ class TavilyWebSearchProvider(WebSearchProvider):
         Sync — the underlying call is httpx.post(...). Returns the legacy
         list-of-results shape; per-URL failures become items with ``error``.
         """
-        # Short-circuit if we're in cooldown.
-        if _check_cooldown():
-            return [
-                {
-                    "url": u,
-                    "title": "",
-                    "content": "",
-                    "error": "Tavily rate-limited (cooldown)",
-                    "status_code": 432,
-                    "provider": "tavily",
-                    "fallback_eligible": True,
-                }
-                for u in urls
-            ]
-
         try:
             from tools.interrupt import is_interrupted
 
             if is_interrupted():
                 return [
                     {"url": u, "error": "Interrupted", "title": ""} for u in urls
+                ]
+
+            from agent.web_search_provider import get_provider_env
+
+            from plugins.web.keyless_mcp import extract_with_failover, use_keyless
+
+            if use_keyless("tavily", get_provider_env("TAVILY_API_KEY")):
+                # Keyless free tier — ring dispatch with next-in-line
+                # failover on rate limits.
+                logger.info("Tavily keyless extract: %d URL(s)", len(urls))
+                return extract_with_failover("tavily", list(urls))
+
+            # Keyed path — short-circuit if in cooldown (KENSEI CUSTOM).
+            if _check_cooldown():
+                return [
+                    {
+                        "url": u,
+                        "title": "",
+                        "content": "",
+                        "error": "Tavily rate-limited (cooldown)",
+                        "status_code": 432,
+                        "provider": "tavily",
+                        "fallback_eligible": True,
+                    }
+                    for u in urls
                 ]
 
             logger.info("Tavily extract: %d URL(s)", len(urls))
@@ -348,29 +383,20 @@ class TavilyWebSearchProvider(WebSearchProvider):
             logger.warning("Tavily extract error: %s", exc)
             if _is_4xx(exc):
                 _record_failure()
-            error = _tavily_error_response("extract", exc)
             return [
-                {
-                    "url": u,
-                    "title": "",
-                    "content": "",
-                    "error": error["error"],
-                    "status_code": error.get("status_code"),
-                    "provider": "tavily",
-                    "fallback_eligible": error.get("fallback_eligible", False),
-                }
+                {"url": u, "title": "", "content": "", "error": f"Tavily extract failed: {exc}"}
                 for u in urls
             ]
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "Tavily",
-            "badge": "paid",
-            "tag": "Search + extract in one provider.",
+            "badge": "free · key optional",
+            "tag": "Search + extract. Works keyless; set TAVILY_API_KEY for higher limits.",
             "env_vars": [
                 {
                     "key": "TAVILY_API_KEY",
-                    "prompt": "Tavily API key",
+                    "prompt": "Tavily API key (optional — keyless works without it)",
                     "url": "https://app.tavily.com/home",
                 },
             ],

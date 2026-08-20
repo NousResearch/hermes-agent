@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type IconComponent } from '@/lib/icons'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type { EnvVarInfo } from '@/types/hermes'
 
@@ -40,8 +41,10 @@ export function SettingsCategoryHeading({ count, icon: Icon, title }: CategoryHe
 
 // Owns the env-var fetch + the edit/reveal/save/delete lifecycle so multiple
 // credential pages (Providers, Keys) share one source of truth and one set of
-// mutation handlers instead of duplicating the plumbing.
-export function useEnvCredentials(): UseEnvCredentials {
+// mutation handlers instead of duplicating the plumbing. An optional `profile`
+// targets another profile's env store (the shared settings "Applies to"
+// scope); undefined/null keeps the app-wide active profile.
+export function useEnvCredentials(profile: null | string = null): UseEnvCredentials {
   const { t } = useI18n()
   const credentials = t.settings.credentials
   const toolsets = t.settings.toolsets
@@ -63,9 +66,11 @@ export function useEnvCredentials(): UseEnvCredentials {
   useEffect(() => {
     let cancelled = false
 
+    setVars(null)
+
     void (async () => {
       try {
-        const next = await getEnvVars()
+        const next = await getEnvVars(profile)
 
         if (!cancelled) {
           setVars(next)
@@ -76,8 +81,8 @@ export function useEnvCredentials(): UseEnvCredentials {
     })()
 
     return () => void (cancelled = true)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- load once on mount; copy is stable
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload per target profile; copy is stable
+  }, [profile])
 
   function patchVar(key: string, patch: Partial<Pick<EnvVarInfo, 'is_set' | 'redacted_value'>>) {
     setVars(c => (c ? { ...c, [key]: { ...c[key], ...patch } } : c))
@@ -98,7 +103,7 @@ export function useEnvCredentials(): UseEnvCredentials {
     setSaving(key)
 
     try {
-      await setEnvVar(key, value)
+      await setEnvVar(key, value, profile)
       patchVar(key, { is_set: true, redacted_value: redactedValue(value) })
       clearLocalState(key)
       notify({ kind: 'success', title: toolsets.savedTitle, message: toolsets.savedMessage(key) })
@@ -122,7 +127,7 @@ export function useEnvCredentials(): UseEnvCredentials {
     setSaving(key)
 
     try {
-      await setEnvVar(key, trimmed)
+      await setEnvVar(key, trimmed, profile)
       patchVar(key, { is_set: true, redacted_value: redactedValue(trimmed) })
       clearLocalState(key)
       notify({ kind: 'success', message: toolsets.savedMessage(key), title: toolsets.savedTitle })
@@ -138,14 +143,14 @@ export function useEnvCredentials(): UseEnvCredentials {
   }
 
   async function handleClear(key: string) {
-    if (!window.confirm(toolsets.removeConfirm(key))) {
+    if (!(await confirm({ destructive: true, title: toolsets.removeConfirm(key) }))) {
       return
     }
 
     setSaving(key)
 
     try {
-      await deleteEnvVar(key)
+      await deleteEnvVar(key, profile)
       patchVar(key, { is_set: false, redacted_value: null })
       clearLocalState(key)
       notify({ kind: 'success', title: toolsets.removedTitle, message: toolsets.removedMessage(key) })
@@ -164,7 +169,7 @@ export function useEnvCredentials(): UseEnvCredentials {
     }
 
     try {
-      const result = await revealEnvVar(key)
+      const result = await revealEnvVar(key, profile)
       setRevealed(c => ({ ...c, [key]: result.value }))
     } catch (err) {
       notifyError(err, toolsets.failedReveal(key))

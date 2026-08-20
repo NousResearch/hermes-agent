@@ -56,6 +56,30 @@ test('redactSecrets handles null/undefined and non-secret text untouched', () =>
   assert.equal(redactSecrets('uname -s -m'), 'uname -s -m')
 })
 
+test('redactSecrets masks a credential glued into an ssh target string', () => {
+  // Real incident: password typed into the host field surfaced verbatim in
+  // desktop.log and a public debug share.
+  const line = 'connecting (no-mux) to root@100.84.204.123:Luisclawy2026:22'
+  const out = redactSecrets(line)
+  assert.ok(!out.includes('Luisclawy2026'), 'credential must be masked')
+  assert.match(out, /root@100\.84\.204\.123:<redacted>:22/)
+
+  // Comma-mangled IP variant from the same incident.
+  const mangled = redactSecrets('connecting (no-mux) to root@100,84,204,123:Luisclawy2026:22')
+  assert.ok(!mangled.includes('Luisclawy2026'))
+})
+
+test('redactSecrets leaves legitimate ssh target logging untouched', () => {
+  assert.equal(
+    redactSecrets('connecting (no-mux) to root@100.84.204.123:22'),
+    'connecting (no-mux) to root@100.84.204.123:22'
+  )
+  assert.equal(
+    redactSecrets('opening control master to alice@box.example.com:2222'),
+    'opening control master to alice@box.example.com:2222'
+  )
+})
+
 test('controlSocketPath is stable, short, and host-distinct', () => {
   const a = controlSocketPath('me', 'box1', 22, '/tmp/d')
   const a2 = controlSocketPath('me', 'box1', 22, '/tmp/d')
@@ -651,6 +675,44 @@ test('validateSshTarget rejects ports outside 1-65535', () => {
   assert.throws(() => validateSshTarget('box', '', 65536), /port/i)
   assert.throws(() => validateSshTarget('box', '', -1), /port/i)
   assert.throws(() => validateSshTarget('box', '', NaN), /port/i)
+})
+
+test('validateSshTarget rejects commas in host (mistyped IP)', () => {
+  assert.throws(() => validateSshTarget('100,84,204,123', 'root', 22), /commas/i)
+})
+
+test('validateSshTarget rejects whitespace in host (pasted ssh command)', () => {
+  assert.throws(() => validateSshTarget('ssh root@box', '', 22), /whitespace/i)
+  assert.throws(() => validateSshTarget('box extra', '', 22), /whitespace/i)
+})
+
+test('validateSshTarget rejects a password glued into the host field', () => {
+  // Real incident shape: user typed host:PASSWORD (port parsed off upstream).
+  assert.throws(() => validateSshTarget('100.84.204.123:hunter2', 'root', 22), /password|":" segment/i)
+
+  // The thrown message must not echo the credential verbatim.
+  try {
+    validateSshTarget('100.84.204.123:hunter2', 'root', 22)
+    assert.fail('expected throw')
+  } catch (err) {
+    assert.ok(!String(err.message).includes('hunter2'), 'error message must not leak the credential')
+  }
+})
+
+test('validateSshTarget rejects garbage hostnames', () => {
+  assert.throws(() => validateSshTarget('host!bad', '', 22), /not a valid hostname/i)
+  assert.throws(() => validateSshTarget('host/path', '', 22), /not a valid hostname/i)
+})
+
+test('validateSshTarget rejects @ or whitespace in user', () => {
+  assert.throws(() => validateSshTarget('box', 'root@extra', 22), /user/i)
+  assert.throws(() => validateSshTarget('box', 'ro ot', 22), /user/i)
+})
+
+test('validateSshTarget still accepts bare IPv6 hosts', () => {
+  assert.doesNotThrow(() => validateSshTarget('::1', 'root', 22))
+  assert.doesNotThrow(() => validateSshTarget('fe80::1%eth0', '', 22))
+  assert.doesNotThrow(() => validateSshTarget('2001:db8::42', '', 22))
 })
 
 test('validateSshTarget accepts valid targets', () => {

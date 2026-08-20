@@ -29,6 +29,7 @@ import sqlite3
 import sys
 import threading
 import time
+import weakref
 from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
@@ -3173,6 +3174,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     _IMPORT_MAX_TOTAL_MESSAGES = 50_000
     _IMPORT_MAX_SESSION_BYTES = 5 * 1024 * 1024
     _IMPORT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
+    # Demand-started accounting workers retire after an idle window so their
+    # bound targets do not keep abandoned SessionDB instances (and SQLite
+    # descriptors) alive forever. A later enqueue starts a fresh worker.
+    _TOKEN_WRITER_IDLE_SECONDS = 30.0
 
     @staticmethod
     def _store_system_prompt(conn, system_prompt: Optional[str]) -> Optional[str]:
@@ -3311,6 +3316,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._token_writer_thread: Optional[threading.Thread] = None
         self._token_writer_stop = False
         self._token_writer_busy = False
+        self._token_atexit_hook: Optional[Callable[[], None]] = None
         initialization_complete = False
         try:
             if read_only:
@@ -4341,6 +4347,43 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         except Exception as exc:
             logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
 
+    def __enter__(self) -> "SessionDB":
+        """Enter a scope that closes this handle on the way out.
+
+        Ownership of a SessionDB should be released explicitly.
+        Historically an instance with a started token writer pinned ITSELF
+        (bound-method writer target plus a strong ``atexit`` drain hook), so
+        ``__del__`` never ran for exactly the instances that leaked
+        descriptors (#88033).  The writer now retires after an idle window
+        and the atexit hook holds only a weak reference, so abandoned
+        handles are eventually collectible — but "eventually, after the
+        idle window and a GC cycle" is not a release policy.  Call sites
+        owning a handle are still expected to close it deterministically
+        (see the ownership comments in ``run_agent.py`` and
+        ``tui_gateway/methods_session.py``).
+
+        This makes the correct usage the easy one, so an owning scope can be
+        exception-safe by construction rather than by remembering a
+        ``try/finally``:
+
+            with SessionDB(path) as db:
+                db.append_message(...)
+
+        Purely additive: it changes nothing for callers that already call
+        ``close()`` directly, and ``close()`` stays idempotent, so a scope
+        that closes early still exits cleanly.
+        """
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        """Close the handle, then let any exception propagate.
+
+        Returns False (never suppressing), so ``with`` here only manages the
+        descriptor lifetime and never swallows a caller's error.
+        """
+        self.close()
+        return False
+
     def close(self):
         """Close the database connection.
 
@@ -4352,12 +4395,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         #45383). Read-only connections never request a checkpoint.
         """
         self._stop_token_writer()
-        # The atexit hook holds a strong reference to this instance (bound
-        # method); without unregistering, every closed SessionDB stays
-        # reachable until interpreter exit. Bound methods compare equal by
-        # (instance, function), so this removes exactly our registration;
-        # no-op when the writer never started.
-        atexit.unregister(self._drain_token_queue_at_exit)
+        hook, self._token_atexit_hook = self._token_atexit_hook, None
+        if hook is not None:
+            atexit.unregister(hook)
         # Drain the read-only connection pool.  Setting the closed flag
         # under the lock first means a reader still in flight closes its own
         # connection on release instead of re-populating a pool that has
@@ -4393,17 +4433,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def __del__(self) -> None:
         """Safety net: close the connection if the caller forgot.
 
-        ``atexit.register`` in ``__init__`` pins this instance alive until
-        interpreter exit, which prevents GC from collecting orphaned
-        ``SessionDB`` instances on exception paths.  When callers forget
-        ``.close()``, the sqlite FDs leak until the process exits (EMFILE).
-
-        A ``__del__`` finalizer is the last-resort guard: it fires when the
-        GC collects the object, which *can* happen once ``atexit`` is
-        unregistered (via ``close()``) **or** when the atexit-held
-        reference is the only remaining root and the interpreter is
-        shutting down.  During normal interpreter teardown the order of
-        module cleanup is undefined, so we guard every attribute access.
+        The async accounting worker retires when idle and its atexit hook
+        holds only a weak reference, so neither can pin an otherwise orphaned
+        instance. During interpreter teardown the order of module cleanup is
+        undefined, so every attribute access remains guarded.
 
         Delegates to ``close()`` so the read pool, token writer, and atexit
         hook are all cleaned up — not just the writer connection.
@@ -7232,7 +7265,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     )
                     self._token_writer_thread = thread
                     thread.start()
-                    atexit.register(self._drain_token_queue_at_exit)
+                    if self._token_atexit_hook is None:
+                        self_ref = weakref.ref(self)
+
+                        def _drain_at_exit() -> None:
+                            db = self_ref()
+                            if db is not None:
+                                db._drain_token_queue_at_exit()
+
+                        self._token_atexit_hook = _drain_at_exit
+                        atexit.register(_drain_at_exit)
                 self._token_queue_cond.notify_all()
         if writer_stopped:
             # Writer permanently stopped (close() ran; a stop-flagged but
@@ -7298,9 +7340,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def _token_writer_loop(self) -> None:
         while True:
             with self._token_queue_cond:
+                idle_deadline = time.monotonic() + self._TOKEN_WRITER_IDLE_SECONDS
                 while not self._token_queue and not self._token_writer_stop:
-                    self._token_queue_cond.wait()
+                    remaining = idle_deadline - time.monotonic()
+                    if remaining <= 0:
+                        # Publish retirement under the same lock used by
+                        # queue_token_counts() to decide whether to spawn. An
+                        # enqueue cannot strand a delta behind an exiting worker.
+                        self._token_writer_thread = None
+                        return
+                    self._token_queue_cond.wait(remaining)
                 if not self._token_queue:
+                    self._token_writer_thread = None
                     return  # stop requested and fully drained
                 # busy is set BEFORE the queue is cleared: the lock-free
                 # fast path in flush_token_counts() reads queue-then-busy,
@@ -11652,6 +11703,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         max_cost: Optional[float] = None,
         min_tool_calls: Optional[int] = None,
         max_tool_calls: Optional[int] = None,
+        include_pinned: bool = False,
     ) -> Tuple[str, list]:
         """Build the shared WHERE clause for bulk prune/archive selection.
 
@@ -11764,6 +11816,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             clauses.append("s.archived = 1")
         elif archived is False:
             clauses.append("s.archived = 0")
+        # Pinned sessions are a durable "keep" flag (exempt from the stale
+        # auto-archive sweep). Bulk prune/delete/archive must honor that too:
+        # exclude pinned rows unless the caller explicitly opts in. Without
+        # this, `sessions prune`/`delete`/`archive` with a filter silently
+        # destroyed pinned conversations (round-3 QA SES-01, data loss).
+        if not include_pinned:
+            clauses.append("COALESCE(s.pinned, 0) = 0")
         return " AND ".join(clauses), params
 
     @staticmethod
@@ -11813,6 +11872,26 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 params,
             )
             return [dict(row) for row in cursor.fetchall()]
+
+    def count_prune_matches(
+        self,
+        older_than_days: Optional[float] = None,
+        source: str = None,
+        **filters,
+    ) -> int:
+        """Count sessions a matching prune/archive would touch.
+
+        Same filter surface as :meth:`list_prune_candidates` (including the
+        ``include_pinned`` tri-state), but returns only a count. Used by the
+        CLI to report how many pinned sessions are being spared.
+        """
+        self._apply_prune_age_filter(older_than_days, filters)
+        where, params = self._prune_filter_where(source=source, **filters)
+        with self._lock:
+            cursor = self._conn.execute(
+                f"SELECT COUNT(*) FROM sessions s WHERE {where}", params
+            )
+            return int(cursor.fetchone()[0])
 
     def count_open_prune_matches(
         self,

@@ -303,6 +303,7 @@ from plugins.platforms.telegram.telegram_ids import (
     normalize_telegram_chat_id,
 )
 from plugins.platforms.telegram.telegram_network import (
+    SEED_FALLBACK_IPS,
     TelegramFallbackTransport,
     discover_fallback_ips,
     parse_fallback_ip_env,
@@ -416,7 +417,7 @@ def check_telegram_requirements() -> bool:
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
-    global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
+    global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest, TypeHandler
     if TELEGRAM_AVAILABLE:
         return True
     try:
@@ -436,6 +437,7 @@ def check_telegram_requirements() -> bool:
             CallbackQueryHandler as _CQH,
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
+            TypeHandler as _TH,
         )
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
         from telegram.request import HTTPXRequest as _HR
@@ -456,6 +458,7 @@ def check_telegram_requirements() -> bool:
     ParseMode = _PM
     ChatType = _CtT
     HTTPXRequest = _HR
+    TypeHandler = _TH
     TELEGRAM_AVAILABLE = True
     return True
 
@@ -2514,6 +2517,19 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if generation != self._polling_generation:
             return
+        if not self._polling_progress_event.is_set():
+            # The first confirmed getUpdates round-trip of this generation
+            # resolves the "health pending getUpdates progress" line both
+            # reconnect paths end on. Without it the log stream for
+            # "reconnected and healthy" is byte-identical to "reconnected
+            # and hung" — a wedged long-poll is invisible until a user
+            # notices silence (#90504).
+            logger.info(
+                "[%s] Telegram polling confirmed healthy: getUpdates progressing "
+                "(generation %d)",
+                self.name,
+                generation,
+            )
         self._polling_progress_event.set()
         self._polling_network_error_count = 0
         if generation == self._polling_conflict_recovery_generation:
@@ -4398,12 +4414,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     logger.warning(
                         "[%s] Telegram fallback-IP discovery failed after %.0fs; "
-                        "continuing with the plain api.telegram.org path: %s",
+                        "using seed IPv4 Telegram API IPs so a blackholed IPv6 "
+                        "hostname path cannot hang initialize() (#87015): %s",
                         self.name,
                         discovery_timeout,
                         _redact_telegram_error_text(exc),
                     )
-                    fallback_ips = []
+                    fallback_ips = list(SEED_FALLBACK_IPS)
                 else:
                     logger.info(
                         "[%s] Auto-discovered Telegram fallback IPs: %s",
@@ -9622,7 +9639,7 @@ class TelegramAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=event.source.profile,
+            profile=self._session_key_profile(event.source),
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -9727,6 +9744,7 @@ class TelegramAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=self._session_key_profile(event.source),
         )
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:

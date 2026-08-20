@@ -210,7 +210,9 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
         if password:
             value = masked_secret_prompt(color(display, Colors.YELLOW))
         else:
-            value = input(color(display, Colors.YELLOW))
+            from hermes_cli.cli_output import line_input
+
+            value = line_input(color(display, Colors.YELLOW))
 
         cleaned = _sanitize_pasted_input(value)
         return cleaned.strip() or default or ""

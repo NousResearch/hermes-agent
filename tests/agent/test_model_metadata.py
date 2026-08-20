@@ -520,9 +520,11 @@ class TestCodexOAuthContextLength:
             "gpt-5.4",
         ],
     )
-    def test_stale_272k_advertisement_bumped_to_live_verified_350k(self, slug):
-        """Codex advertises 272K for these slugs but the backend accepts ~372K
-        (verified live Aug 2026); the resolver lifts exactly-272K to 350K."""
+    def test_stale_272k_advertisement_bumped_to_live_verified_900k(self, slug):
+        """Codex advertises 272K for these slugs but the backend accepts ~911K
+        (verified live Aug 2026, after OpenAI enabled the large-context window
+        for ChatGPT-subscription accounts); the resolver lifts exactly-272K
+        to 900K."""
         from agent.model_metadata import get_model_context_length
 
         fake_response = MagicMock()
@@ -539,7 +541,7 @@ class TestCodexOAuthContextLength:
                 api_key="fake-token",
                 provider="openai-codex",
             )
-        assert ctx == 350_000
+        assert ctx == 900_000
 
     def test_non_272k_advertisement_is_trusted_verbatim(self):
         """Any advertised value other than the known-stale 272,000 — higher or
@@ -567,7 +569,7 @@ class TestCodexOAuthContextLength:
 
     @pytest.mark.parametrize("slug", ["gpt-5.5", "gpt-5.4-mini"])
     def test_slugs_that_enforce_272k_keep_advertised_value(self, slug):
-        """gpt-5.5 and gpt-5.4-mini both rejected 360K in the live probe —
+        """gpt-5.5 and gpt-5.4-mini both rejected large inputs in the live probe (360K and 500K respectively) —
         their 272K advertisement is real enforcement, so no bump applies
         (gpt-5.4 is an exact-match entry precisely to exclude -mini)."""
         from agent.model_metadata import get_model_context_length
@@ -605,7 +607,7 @@ class TestCodexOAuthContextLength:
                 api_key="expired-token",
                 provider="openai-codex",
             )
-        assert ctx == 350_000
+        assert ctx == 900_000
 
 
 

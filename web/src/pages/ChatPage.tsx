@@ -36,6 +36,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { latchChatActivation } from "@/lib/chat-activation";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
@@ -60,6 +61,7 @@ import {
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
+import { computeKeyboardInset, shouldPinScroll } from "@/lib/keyboard-inset";
 import {
   resolvePtyKeyboardShortcut,
   sendPtyShortcutSequence,
@@ -173,6 +175,7 @@ function terminalLineHeightForWidth(layoutWidthPx: number): number {
 
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const termWrapRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -181,6 +184,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // the moment `isActive` flips back to true (display:none → display:flex
   // collapses the host's box, so ResizeObserver never fires on return).
   const syncMetricsRef = useRef<(() => void) | null>(null);
+  // NS-434 follow-up: the keyboard-inset sync + reset closures from the main
+  // PTY effect, exposed to the visibility-gated listener effect below.
+  // ChatPage stays mounted (hidden) on every dashboard route, so the
+  // visualViewport listeners must only be attached while /chat is the active
+  // tab — otherwise the scroll pin fires when a soft keyboard opens on
+  // Settings etc. and fights iOS's own focus-scroll behavior there.
+  const keyboardInsetSyncRef = useRef<(() => void) | null>(null);
+  const keyboardInsetResetRef = useRef<(() => void) | null>(null);
   // Sticky activation latch: the PTY-connect effect below must not open
   // `/api/pty` until the chat tab has actually been active at least once.
   // The dashboard mounts ChatPage persistently (hidden) on every route, so
@@ -503,6 +514,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     const host = hostRef.current;
     if (!host) return;
+    // Captured once so the effect cleanup doesn't re-read the ref (which
+    // may point elsewhere by then — react-hooks/exhaustive-deps).
+    const termWrap = termWrapRef.current;
 
     const token = window.__HERMES_SESSION_TOKEN__;
     const gated = !!window.__HERMES_AUTH_REQUIRED__;
@@ -582,11 +596,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         const binary = atob(payload);
         const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
         const text = new TextDecoder("utf-8").decode(bytes);
-        navigator.clipboard.writeText(text).catch((err) => {
-          // Most common reason: the Clipboard API requires a user gesture.
-          // This can fail when the OSC 52 response arrives outside the
-          // original keydown event's activation. Log to aid debugging.
-          console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
+        // copyTextToClipboard falls back to a selection-based copy when the
+        // Clipboard API is unavailable (plain-HTTP deployments) or when the
+        // write is rejected — e.g. the OSC 52 response arriving outside the
+        // original keydown event's activation ("user gesture" requirement).
+        void copyTextToClipboard(text).then((copied) => {
+          if (!copied) {
+            console.warn("[dashboard clipboard] OSC 52 write failed");
+          }
         });
       } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
@@ -691,11 +708,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           (copyModifier && ev.shiftKey && ev.key.toLowerCase() === "c")) &&
         terminalSelection
       ) {
-        // Direct writeText inside the keydown handler preserves the user
+        // Direct copy inside the keydown handler preserves the user
         // gesture — async round-trips through OSC 52 can lose activation
-        // and fail with "Document is not focused".
-        navigator.clipboard.writeText(terminalSelection).catch((err) => {
-          console.warn("[dashboard clipboard] direct copy failed:", err.message);
+        // and fail with "Document is not focused". copyTextToClipboard
+        // additionally covers insecure (plain-HTTP) contexts where the
+        // Clipboard API is unavailable.
+        void copyTextToClipboard(terminalSelection).then((copied) => {
+          if (!copied) {
+            console.warn("[dashboard clipboard] direct copy failed");
+          }
         });
         // Clear xterm.js's highlight after copy (matches gnome-terminal).
         term.clearSelection();
@@ -956,8 +977,67 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const ro = new ResizeObserver(() => scheduleHostSync());
     ro.observe(host);
 
+    // NS-434: soft-keyboard inset. On mobile the keyboard overlays the
+    // layout viewport instead of resizing it (iOS always; Android Chrome
+    // under the default `resizes-visual` — we ask for `resizes-content`
+    // in the viewport meta, but can't rely on it). The host's bounding
+    // box therefore doesn't change when the keyboard opens, fit() computes
+    // identical (cols, rows), and Ink keeps drawing the input line under
+    // the keyboard. Measure the obscured region via visualViewport and
+    // apply it as bottom padding on the terminal wrapper — that *does*
+    // shrink the host, so the ResizeObserver refit path kicks in and the
+    // PTY re-lays-out above the keyboard.
+    let appliedKeyboardInset = 0;
+    const syncKeyboardInset = () => {
+      const wrap = termWrap;
+      if (!wrap) return;
+      const vv = window.visualViewport;
+      const inset = computeKeyboardInset(
+        vv ? { height: vv.height, offsetTop: vv.offsetTop } : null,
+        window.innerHeight,
+      );
+      if (shouldPinScroll(inset)) {
+        // iOS auto-scrolls the page to reveal xterm's hidden textarea when
+        // the keyboard opens. The shell is a fixed h-dvh column that must
+        // never scroll — pin it back so the terminal chrome stays put.
+        window.scrollTo(0, 0);
+        const scroller = document.scrollingElement;
+        if (scroller && scroller.scrollTop !== 0) scroller.scrollTop = 0;
+      }
+      if (inset === appliedKeyboardInset) return;
+      appliedKeyboardInset = inset;
+      if (inset > 0) {
+        wrap.style.paddingBottom = `${inset}px`;
+        // Keep the freshly-resized input line in view.
+        try {
+          term.scrollToBottom();
+        } catch {
+          /* ignore */
+        }
+      } else {
+        wrap.style.paddingBottom = "";
+      }
+      // The wrapper padding change resizes the host; the ResizeObserver
+      // will refit, but schedule one explicitly in case the observer
+      // coalesces with an in-flight frame.
+      scheduleHostSync();
+    };
+    const onViewportChange = () => {
+      syncKeyboardInset();
+      scheduleSyncTerminalMetrics();
+    };
+
     window.addEventListener("resize", scheduleSyncTerminalMetrics);
-    window.visualViewport?.addEventListener("resize", scheduleSyncTerminalMetrics);
+    // The visualViewport listeners that drive `onViewportChange` are NOT
+    // attached here: ChatPage is persistently mounted (hidden) on every
+    // dashboard route, so they are attached/detached by the isActive-gated
+    // effect below via these refs. Attaching them unconditionally made the
+    // scroll pin fire when a soft keyboard opened on any page.
+    keyboardInsetSyncRef.current = onViewportChange;
+    keyboardInsetResetRef.current = () => {
+      appliedKeyboardInset = 0;
+      if (termWrap) termWrap.style.paddingBottom = "";
+    };
     scheduleHostSync();
     requestAnimationFrame(() => scheduleHostSync());
 
@@ -1400,10 +1480,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       host.removeEventListener("drop", handleBrowserDrop, true);
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
-      window.visualViewport?.removeEventListener(
-        "resize",
-        scheduleSyncTerminalMetrics,
-      );
+      keyboardInsetSyncRef.current = null;
+      keyboardInsetResetRef.current = null;
+      const wrap = termWrap;
+      if (wrap) wrap.style.paddingBottom = "";
       ro.disconnect();
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
@@ -1441,6 +1521,35 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     scopedProfile,
     reconnectNonce,
   ]);
+
+  // NS-434 follow-up: attach the visualViewport keyboard-inset listeners
+  // ONLY while the chat tab is actually visible. ChatPage stays mounted
+  // (display:none) on every other dashboard route, so unconditional
+  // listeners made the scroll pin (`window.scrollTo(0, 0)`) fire whenever a
+  // soft keyboard opened on Settings/Sessions/etc., fighting iOS Safari's
+  // own scroll-into-view for the focused input there. The handlers read
+  // through refs populated by the main PTY effect, so attach/detach here is
+  // independent of that effect's lifecycle (and a no-op before the terminal
+  // exists). On deactivation we also clear any applied inset padding so a
+  // keyboard left open during navigation can't leave the hidden terminal
+  // wrapper padded with a stale value.
+  useEffect(() => {
+    if (!isActive || typeof window === "undefined") return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onViewportChange = () => keyboardInsetSyncRef.current?.();
+    vv.addEventListener("resize", onViewportChange);
+    // offsetTop changes (keyboard-driven visual scroll on iOS) arrive as
+    // vv `scroll` events, not `resize`.
+    vv.addEventListener("scroll", onViewportChange);
+    // Catch up on any geometry change that happened while hidden.
+    onViewportChange();
+    return () => {
+      vv.removeEventListener("resize", onViewportChange);
+      vv.removeEventListener("scroll", onViewportChange);
+      keyboardInsetResetRef.current?.();
+    };
+  }, [isActive]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -1673,6 +1782,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
         <div
+          ref={termWrapRef}
           className={cn(
             "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
             "p-2 sm:p-3",

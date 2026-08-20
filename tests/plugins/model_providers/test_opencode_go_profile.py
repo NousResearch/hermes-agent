@@ -35,14 +35,16 @@ class TestOpenCodeGoKimiReasoning:
         assert extra_body == {"thinking": {"type": "disabled"}}
         assert top_level == {}
 
-    def test_minimal_effort_enables_thinking_without_effort(self, opencode_go_profile):
-        # "minimal" is not a Moonshot-supported value — drop it, keep thinking on.
+    def test_minimal_effort_clamps_to_low(self, opencode_go_profile):
+        # "minimal" is below Moonshot's floor — the shared clamp degrades it
+        # to "low" (nearest supported) instead of dropping the ask and
+        # leaving the server default (which was MORE thinking than asked).
         extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "minimal"},
             model="kimi-k2.6",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
-        assert top_level == {}
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": "low"}
 
     @pytest.mark.parametrize(
         "effort",

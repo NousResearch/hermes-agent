@@ -20,6 +20,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import time
 import uuid
 from types import SimpleNamespace
@@ -57,6 +58,31 @@ def bare_gemini_model_id(model: str) -> str:
         if lowered.startswith(prefix):
             return name[len(prefix):].strip() or name
     return name
+
+
+def _gemini_major_version(model: str) -> Optional[int]:
+    """Extract the major version from a Gemini model id (``gemini-3.6-flash`` → 3)."""
+    name = bare_gemini_model_id(model).lower()
+    match = re.match(r"gemini-(\d+)", name)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def gemini_requires_tool_call_ids(model: str) -> bool:
+    """Whether functionCall/functionResponse parts must carry explicit ids.
+
+    Gemini 3+ models require explicit tool call IDs in replayed history —
+    without them, multi-tool turns can be rejected or mismatched. Older
+    Gemini models (2.x) reject unexpected ``id`` fields, so this is gated on
+    the major version. Mirrors earendil-works/pi#7494 (their fix for the same
+    class of bug in the google-shared converter).
+    """
+    version = _gemini_major_version(model)
+    return version is not None and version >= 3
 
 
 def is_native_gemini_base_url(base_url: str) -> bool:
@@ -299,7 +325,10 @@ _INTERRUPTED_RESPONSE_PLACEHOLDER = (
 )
 
 
-def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
+def _translate_tool_call_to_gemini(
+    tool_call: Dict[str, Any],
+    include_ids: bool = False,
+) -> Dict[str, Any]:
     fn = tool_call.get("function") or {}
     args_raw = fn.get("arguments", "")
     try:
@@ -315,6 +344,12 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
             "args": args,
         }
     }
+    if include_ids:
+        # Gemini 3+ requires explicit tool call IDs so replayed parallel tool
+        # calls pair with their functionResponses (earendil-works/pi#7494).
+        tool_call_id = str(tool_call.get("id") or tool_call.get("call_id") or "")
+        if tool_call_id:
+            part["functionCall"]["id"] = tool_call_id
     thought_signature = _tool_call_extra_signature(tool_call)
     # Fallback sentinel for cross-provider tool_calls (e.g. fallback from
     # xAI/Anthropic to Gemini, where the original tool_call carries no
@@ -328,6 +363,7 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
 def _translate_tool_result_to_gemini(
     message: Dict[str, Any],
     tool_name_by_call_id: Optional[Dict[str, str]] = None,
+    include_ids: bool = False,
 ) -> Dict[str, Any]:
     tool_name_by_call_id = tool_name_by_call_id or {}
     tool_call_id = str(message.get("tool_call_id") or "")
@@ -347,15 +383,19 @@ def _translate_tool_result_to_gemini(
     except json.JSONDecodeError:
         parsed = None
     response = parsed if isinstance(parsed, dict) else {"output": content}
-    return {
-        "functionResponse": {
-            "name": name,
-            "response": response,
-        }
+    function_response: Dict[str, Any] = {
+        "name": name,
+        "response": response,
     }
+    if include_ids and tool_call_id:
+        function_response["id"] = tool_call_id
+    return {"functionResponse": function_response}
 
 
-def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+def _build_gemini_contents(
+    messages: List[Dict[str, Any]],
+    include_tool_call_ids: bool = False,
+) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     system_text_parts: List[str] = []
     contents: List[Dict[str, Any]] = []
     tool_name_by_call_id: Dict[str, str] = {}
@@ -377,6 +417,7 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
                         _translate_tool_result_to_gemini(
                             msg,
                             tool_name_by_call_id=tool_name_by_call_id,
+                            include_ids=include_tool_call_ids,
                         )
                     ],
                 }
@@ -397,7 +438,11 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
                     tool_name = str(((tool_call.get("function") or {}).get("name") or ""))
                     if tool_call_id and tool_name:
                         tool_name_by_call_id[tool_call_id] = tool_name
-                    parts.append(_translate_tool_call_to_gemini(tool_call))
+                    parts.append(
+                        _translate_tool_call_to_gemini(
+                            tool_call, include_ids=include_tool_call_ids
+                        )
+                    )
 
         if parts:
             contents.append({"role": gemini_role, "parts": parts})
@@ -568,8 +613,12 @@ def build_gemini_request(
     top_p: Optional[float] = None,
     stop: Any = None,
     thinking_config: Any = None,
+    model: str = "",
 ) -> Dict[str, Any]:
-    contents, system_instruction = _build_gemini_contents(messages)
+    contents, system_instruction = _build_gemini_contents(
+        messages,
+        include_tool_call_ids=gemini_requires_tool_call_ids(model),
+    )
     request: Dict[str, Any] = {"contents": contents}
     if system_instruction:
         request["systemInstruction"] = system_instruction
@@ -674,7 +723,11 @@ def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespa
             except (TypeError, ValueError):
                 args_str = "{}"
             tool_call = SimpleNamespace(
-                id=f"call_{uuid.uuid4().hex[:12]}",
+                id=(
+                    str(fc["id"])
+                    if isinstance(fc.get("id"), str) and fc.get("id")
+                    else f"call_{uuid.uuid4().hex[:12]}"
+                ),
                 type="function",
                 index=index,
                 function=SimpleNamespace(name=str(fc["name"]), arguments=args_str),
@@ -825,7 +878,11 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
             if slot is None:
                 slot = {
                     "index": len(tool_call_indices),
-                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                    "id": (
+                        str(fc["id"])
+                        if isinstance(fc.get("id"), str) and fc.get("id")
+                        else f"call_{uuid.uuid4().hex[:12]}"
+                    ),
                     "last_arguments": "",
                 }
                 tool_call_indices[call_key] = slot
@@ -1080,6 +1137,7 @@ class GeminiNativeClient:
             top_p=top_p,
             stop=stop,
             thinking_config=thinking_config,
+            model=model,
         )
 
         model = bare_gemini_model_id(model)

@@ -761,6 +761,142 @@ class TestLifecycleGuardModule:
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("daily ops", str(script))
 
+    def test_cloud_backed_symlink_fails_closed_without_opening_target(
+        self, tmp_path, monkeypatch
+    ):
+        """A FileProvider placeholder must not block terminal preflight.
+
+        ``O_NONBLOCK`` has no effect on regular files.  On macOS, opening an
+        iCloud placeholder can therefore wait indefinitely for hydration,
+        before the terminal command's own timeout has even started.  Detect
+        the resolved FileProvider path from local metadata and fail closed
+        without opening it.
+        """
+        import cron.lifecycle_guard as lifecycle_guard
+
+        cloud_dir = (
+            tmp_path
+            / "Library"
+            / "Mobile Documents"
+            / "com~apple~CloudDocs"
+            / "scripts"
+        )
+        cloud_dir.mkdir(parents=True)
+        target = cloud_dir / "helper"
+        target.write_text("#!/bin/sh\necho safe\n", encoding="utf-8")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        launcher = bin_dir / "helper"
+        launcher.symlink_to(target)
+
+        real_open = lifecycle_guard.os.open
+
+        def reject_cloud_open(path, flags, *args, **kwargs):
+            if str(path) == str(launcher):
+                pytest.fail("lifecycle guard opened a cloud-backed symlink")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(lifecycle_guard.os, "open", reject_cloud_open)
+
+        assert lifecycle_guard.contains_gateway_lifecycle_command_or_referenced_script(
+            str(launcher)
+        ) is True
+
+    def test_third_party_cloudstorage_path_fails_closed_without_opening(
+        self, tmp_path, monkeypatch
+    ):
+        """~/Library/CloudStorage (Dropbox/OneDrive/Google Drive) is the same
+        FileProvider hazard as iCloud's Mobile Documents: an evicted
+        placeholder's open() can hang preflight. The guard must fail closed
+        on the lexical path without opening the file."""
+        import cron.lifecycle_guard as lifecycle_guard
+
+        cloud_dir = (
+            tmp_path
+            / "Library"
+            / "CloudStorage"
+            / "Dropbox-Personal"
+            / "scripts"
+        )
+        cloud_dir.mkdir(parents=True)
+        script = cloud_dir / "helper.sh"
+        script.write_text("#!/bin/sh\necho safe\n", encoding="utf-8")
+
+        real_open = lifecycle_guard.os.open
+
+        def reject_cloud_open(path, flags, *args, **kwargs):
+            if str(path) == str(script):
+                pytest.fail("lifecycle guard opened a CloudStorage path")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(lifecycle_guard.os, "open", reject_cloud_open)
+
+        assert lifecycle_guard.contains_gateway_lifecycle_command_or_referenced_script(
+            str(script)
+        ) is True
+
+    def test_read_referenced_script_choke_point_refuses_cloud_paths(
+        self, tmp_path, monkeypatch
+    ):
+        """The cloud refusal lives in _read_referenced_script itself so EVERY
+        caller (terminal walk AND cron-script scan) is covered — not just the
+        walk-level short-circuit in _contains_unsafe_gateway_action."""
+        import cron.lifecycle_guard as lifecycle_guard
+
+        cloud_dir = tmp_path / "Library" / "CloudStorage" / "OneDrive" / "s"
+        cloud_dir.mkdir(parents=True)
+        script = cloud_dir / "job.sh"
+        script.write_text("#!/bin/sh\necho safe\n", encoding="utf-8")
+
+        def forbid_open(path, flags, *args, **kwargs):  # pragma: no cover
+            pytest.fail("choke point opened a cloud placeholder path")
+
+        monkeypatch.setattr(lifecycle_guard.os, "open", forbid_open)
+
+        text, unsafe = lifecycle_guard._read_referenced_script(script)
+        assert text is None
+        assert unsafe is True
+
+    def test_cron_script_scan_blocks_cloud_script_without_opening(
+        self, tmp_path, monkeypatch
+    ):
+        """The cron-script scan path (_read_script_for_scanning via
+        check_gateway_lifecycle) must also refuse a cloud-resident script
+        without opening it, and the surfaced reason must attribute the
+        refusal to the cloud-synced path — not to a lifecycle command."""
+        import cron.lifecycle_guard as lifecycle_guard
+        from cron.lifecycle_guard import (
+            GatewayLifecycleBlocked,
+            check_gateway_lifecycle,
+        )
+
+        cloud_dir = (
+            tmp_path
+            / "Library"
+            / "Mobile Documents"
+            / "com~apple~CloudDocs"
+            / "scripts"
+        )
+        cloud_dir.mkdir(parents=True)
+        script = cloud_dir / "nightly.sh"
+        script.write_text("#!/bin/sh\necho safe\n", encoding="utf-8")
+
+        real_open = lifecycle_guard.os.open
+
+        def reject_cloud_open(path, flags, *args, **kwargs):
+            if str(path) == str(script):
+                pytest.fail("cron-script scan opened a cloud-resident script")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(lifecycle_guard.os, "open", reject_cloud_open)
+
+        with pytest.raises(GatewayLifecycleBlocked) as excinfo:
+            check_gateway_lifecycle("nightly job", str(script))
+        message = str(excinfo.value)
+        assert "cloud-synced" in message
+        assert "lifecycle command" not in message
+
     # -- Whole-class regression tests (tilllt's T1-T4 on PR #79454) --------
 
     def test_tilde_nul_candidate_does_not_crash_terminal_walk(self):

@@ -370,3 +370,48 @@ async def test_done_supervised_watcher_is_ignored_either_way():
     await t
     r._background_tasks = {t}
     assert r._scale_to_zero_has_live_background_work() is False
+
+
+# ── permanent tasks spawned OUTSIDE _spawn_supervised must also be tagged ──
+#
+# _loop_heartbeat_task and _heartbeat_poll_task are both infinite while-True
+# loops added to _background_tasks via plain asyncio.create_task() + manual
+# add(), NOT through _spawn_supervised — so they were untagged and defeated
+# the fix above: _loop_heartbeat_task starts unconditionally on every
+# gateway boot (start()), which would make the busy check return True
+# forever regardless of the _spawn_supervised fix, on every armed instance.
+
+
+@pytest.mark.asyncio
+async def test_loop_heartbeat_task_does_not_block_idle():
+    r = GatewayRunner.__new__(GatewayRunner)
+    r._running = True
+    r._background_tasks = set()
+    r._loop_heartbeat_task = None
+    r._gateway_started_at = time.time()
+
+    r._start_loop_heartbeat_task()
+    await asyncio.sleep(0)  # let the task start
+    try:
+        assert r._scale_to_zero_has_live_background_work() is False
+    finally:
+        r._loop_heartbeat_task.cancel()
+        await asyncio.gather(r._loop_heartbeat_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_poll_task_does_not_block_idle():
+    r = GatewayRunner.__new__(GatewayRunner)
+    r._running = True
+    r._background_tasks = set()
+    r._heartbeat_poll_task = None
+    r._heartbeat_watch = {}
+    r._running_agents = {}
+
+    r._start_heartbeat_poller()
+    await asyncio.sleep(0)  # let the task start
+    try:
+        assert r._scale_to_zero_has_live_background_work() is False
+    finally:
+        r._heartbeat_poll_task.cancel()
+        await asyncio.gather(r._heartbeat_poll_task, return_exceptions=True)

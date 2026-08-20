@@ -94,7 +94,7 @@ export function rebindSurvivorRowIds(messages: ChatMessage[], survivorRowIds: Su
 
 /**
  * Renderer-synthetic message ids (`${timestamp}-${index}-${role}` from
- * chat-messages.ts, plus older `user-…` / `assistant-…` shapes). Gateway
+ * chat-messages/hydration.ts, plus older `user-…` / `assistant-…` shapes). Gateway
  * history never carries them — only durable `row_id` / platform message_id.
  */
 export function isSyntheticRendererId(messageId: string | undefined): boolean {
@@ -456,7 +456,13 @@ export function applyReloadOptimistic(state: ClientSessionState, plan: ReloadPla
         .map(m => (m.role === 'assistant' ? { ...m, branchGroupId: plan.branchGroupId, hidden: true } : m))
     ],
     pendingBranchGroup: plan.branchGroupId,
-    sawAssistantPayload: false
+    sawAssistantPayload: false,
+    // Arm the turn clock with the optimistic busy. The clock is what bounds
+    // the no-payload settle gate's pre-start hold (#86795): an armed turn
+    // with no clock is settled by the first running=false heartbeat, so a
+    // regenerate racing a heartbeat would lose its spinner mid-flight.
+    turnLive: false,
+    turnStartedAt: Date.now()
   }
 }
 
@@ -585,7 +591,11 @@ export function applyRewindOptimistic(
       ? [...state.messages.slice(0, sourceIndex), editedMessage]
       : state.messages.slice(0, sourceIndex + 1),
     pendingBranchGroup: null,
-    sawAssistantPayload: false
+    sawAssistantPayload: false,
+    // Same as applyReloadOptimistic: seed the clock so the no-payload settle
+    // gate holds through the submit round trip but never latches (#86795).
+    turnLive: false,
+    turnStartedAt: Date.now()
   }
 }
 

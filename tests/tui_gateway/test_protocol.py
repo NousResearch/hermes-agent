@@ -354,6 +354,210 @@ def test_late_prompt_response_is_idempotent(server, method, value_key):
     assert response["result"] == {"status": "expired"}
 
 
+# ── clarify batch (multi-question) bridge ────────────────────────────
+
+
+def _drain_batch_block(server, qids, timeout=5, payload=None):
+    """Run a batch _block on a worker thread and return (thread, result box,
+    emitted request payload). The caller resolves questions via
+    handle_request and then joins."""
+    box = {}
+
+    def run():
+        box["answer"] = server._block(
+            "clarify.request",
+            "s1",
+            dict(payload or {"questions": [{"qid": q, "question": q} for q in qids]}),
+            timeout=timeout,
+            batch_qids=list(qids),
+        )
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    # Wait for the request to be registered so respond calls can find it.
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        with server._prompt_lock:
+            if server._batch_clarify:
+                rid = next(iter(server._batch_clarify))
+                return thread, box, rid
+        time.sleep(0.01)
+    raise AssertionError("batch clarify request never registered")
+
+
+def test_clarify_batch_resolves_when_all_questions_locked(capture):
+    server, buf = capture
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"])
+
+    first = server.handle_request({
+        "id": "a1", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q1", "answer": "beta"},
+    })
+    assert first["result"]["status"] == "ok"
+    assert first["result"]["remaining"] == ["q0"]
+    assert thread.is_alive()  # one question left — still blocking
+
+    second = server.handle_request({
+        "id": "a2", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "alpha"},
+    })
+    assert second["result"]["status"] == "ok"
+    assert second["result"]["remaining"] == []
+
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert json.loads(box["answer"]) == {"answers": {"q0": "alpha", "q1": "beta"}}
+
+
+def test_clarify_batch_answer_update_overwrites_before_completion(server):
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"])
+
+    server.handle_request({
+        "id": "a1", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "first"},
+    })
+    server.handle_request({
+        "id": "a2", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "changed"},
+    })
+    server.handle_request({
+        "id": "a3", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q1", "answer": "done"},
+    })
+
+    thread.join(timeout=5)
+    assert json.loads(box["answer"])["answers"]["q0"] == "changed"
+
+
+def test_clarify_batch_empty_answer_is_a_locked_skip(server):
+    """Skipping one question locks an empty answer — it counts toward
+    completion instead of leaving the batch waiting."""
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"])
+
+    server.handle_request({
+        "id": "a1", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": ""},
+    })
+    server.handle_request({
+        "id": "a2", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q1", "answer": "kept"},
+    })
+
+    thread.join(timeout=5)
+    assert json.loads(box["answer"]) == {"answers": {"q0": "", "q1": "kept"}}
+
+
+def test_clarify_batch_unknown_question_id_rejected(server):
+    thread, box, rid = _drain_batch_block(server, ["q0"])
+
+    response = server.handle_request({
+        "id": "bad", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q9", "answer": "x"},
+    })
+    assert response["error"]["code"] == 4002
+
+    server.handle_request({
+        "id": "ok", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "fine"},
+    })
+    thread.join(timeout=5)
+
+
+def test_clarify_batch_timeout_keeps_locked_answers(capture):
+    """Locked answers survive the deadline: the tool sees the partials plus
+    timed_out instead of an empty string."""
+    server, buf = capture
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"], timeout=1)
+
+    server.handle_request({
+        "id": "a1", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "kept"},
+    })
+
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    result = json.loads(box["answer"])
+    assert result == {"answers": {"q0": "kept"}, "timed_out": True}
+    # The expire notification still fires for the un-finished batch.
+    messages = [json.loads(line) for line in buf.getvalue().splitlines()]
+    assert any(m["params"]["type"] == "clarify.expire" for m in messages)
+
+
+def test_clarify_batch_cancel_all_returns_empty(server):
+    """A respond without question_id cancels the whole batch (Esc path)."""
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"])
+
+    server.handle_request({
+        "id": "cancel", "method": "clarify.respond",
+        "params": {"request_id": rid, "answer": ""},
+    })
+
+    thread.join(timeout=5)
+    assert box["answer"] == ""
+
+
+def test_clarify_batch_late_question_respond_is_idempotent(server):
+    response = server.handle_request({
+        "id": "late", "method": "clarify.respond",
+        "params": {"request_id": "gone", "question_id": "q0", "answer": "x"},
+    })
+    assert response["result"] == {"status": "expired"}
+
+
+def test_clarify_batch_state_cleared_after_resolution(server):
+    thread, box, rid = _drain_batch_block(server, ["q0"])
+    server.handle_request({
+        "id": "a", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "x"},
+    })
+    thread.join(timeout=5)
+    with server._prompt_lock:
+        assert rid not in server._batch_clarify
+        assert rid not in server._pending
+
+
+def test_clarify_block_helper_builds_batch_payload(capture):
+    """_clarify_block forwards only wire fields (qid/question/choices/
+    multi_select) — the tool-side normalized entries carry extra keys the
+    renderer must not see."""
+    server, buf = capture
+    normalized = [
+        {
+            "qid": "q0", "id": "approach", "question": "Which?",
+            "choices": ["a (Recommended)", "b"], "choices_offered": ["a", "b"],
+            "multi_select": False,
+        },
+    ]
+
+    box = {}
+
+    def run():
+        box["answer"] = server._clarify_block("s1", "", None, questions=normalized)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 2
+    rid = None
+    while time.monotonic() < deadline and rid is None:
+        with server._prompt_lock:
+            rid = next(iter(server._batch_clarify), None)
+        time.sleep(0.01)
+    assert rid
+
+    server.handle_request({
+        "id": "a", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "a"},
+    })
+    thread.join(timeout=5)
+
+    messages = [json.loads(line) for line in buf.getvalue().splitlines()]
+    request = messages[0]["params"]
+    assert request["type"] == "clarify.request"
+    sent = request["payload"]["questions"][0]
+    assert set(sent) == {"qid", "question", "choices", "multi_select"}
+    assert "id" not in sent and "choices_offered" not in sent
+
+
 def test_approval_pending_replays_unresolved_requests(server, monkeypatch):
     from tools import approval
 
@@ -780,6 +984,59 @@ def test_slash_exec_rejects_skill_commands(server):
         })
 
     # Should return an error so the TUI's .catch() fires command.dispatch
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+    assert "skill command" in resp["error"]["message"]
+
+
+def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
+    """slash.exec must resolve get_skill_commands() against the session's own
+    profile_home rather than the gateway process's ambient HERMES_HOME
+    (#88023). A Desktop session that switches profiles mid-session shares
+    the same gateway process, so a skill declared only under the new
+    profile's skills.external_dirs must still be recognized here — else the
+    command falls through to the slash-worker dead path instead of routing
+    to command.dispatch.
+    """
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir = tmp_path / "no-local-skills"
+    empty_local_dir.mkdir()
+
+    profile_b = tmp_path / "profile_b"
+    external_b = tmp_path / "external_b"
+    profile_b.mkdir()
+    skill_dir = external_b / "b-only"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: b-only\ndescription: Only in profile b.\n---\n\n# b-only\n\nDo the thing.\n"
+    )
+    (profile_b / "config.yaml").write_text(
+        f"skills:\n  external_dirs:\n    - {external_b}\n"
+    )
+
+    sid = "test-session-profile-b"
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "profile_home": str(profile_b),
+    }
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_platform", None),
+        patch.object(sc_mod, "_skill_commands_home", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "b-only", "session_id": sid},
+        })
+
+    # The gateway's own HERMES_HOME (the test-isolation tempdir, no
+    # skills.external_dirs) has no "b-only" skill — the only way this
+    # resolves is by scoping the lookup to the session's profile_home.
     assert "error" in resp
     assert resp["error"]["code"] == 4018
     assert "skill command" in resp["error"]["message"]

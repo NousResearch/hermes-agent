@@ -24,6 +24,45 @@ import threading
 from abc import ABC, abstractmethod
 from typing import Any
 
+# Cap for the exponential tick backoff applied while consecutive ticks fail
+# with fd exhaustion (EMFILE/ENFILE, #87644).  Base is the tick interval
+# (60s by default); each consecutive EMFILE failure doubles the wait, capped
+# here so a still-alive-but-exhausted gateway never sleeps longer than this
+# between recovery attempts.
+_EMFILE_BACKOFF_MAX_SECONDS = 15 * 60  # 15 minutes
+
+
+def _backoff_wait_seconds(interval: float, consecutive_failures: int) -> float:
+    """Exponential tick backoff shared by both ticker loops (#87644).
+
+    Returns the plain ``interval`` while healthy; doubles per consecutive
+    fd-exhaustion failure, capped at ``_EMFILE_BACKOFF_MAX_SECONDS``.
+    """
+    if consecutive_failures <= 0:
+        return interval
+    return min(
+        interval * (2 ** (consecutive_failures - 1)),
+        _EMFILE_BACKOFF_MAX_SECONDS,
+    )
+
+
+def _note_tick_failure(exc: BaseException, consecutive_failures: int) -> int:
+    """Classify one failed tick and return the updated failure counter.
+
+    Shared by both ticker loops (#87644): on fd exhaustion, attempt
+    reclamation (gc.collect + raise the soft nofile limit) so the NEXT tick
+    can succeed, and bump the counter so ``_backoff_wait_seconds`` backs off
+    exponentially while the process has no chance of making progress.  Any
+    other failure resets the counter — backoff is reserved for the
+    self-inflicted EMFILE storm, not transient errors.
+    """
+    from cron.scheduler import _is_fd_exhaustion, _reclaim_fds_best_effort
+
+    if _is_fd_exhaustion(exc):
+        _reclaim_fds_best_effort()
+        return consecutive_failures + 1
+    return 0
+
 
 class CronScheduler(ABC):
     """Axis-B trigger provider. Decides WHEN a due cron job fires.
@@ -260,6 +299,133 @@ def provider_supports_fire_cancel(provider: Any) -> bool:
     )
 
 
+DEFAULT_MISFIRE_GRACE_MINUTES = 10
+
+
+def _misfire_grace_minutes() -> float:
+    """Resolve the misfire catch-up grace window from config.
+
+    ``cron.misfire_grace_minutes`` (number, default
+    ``DEFAULT_MISFIRE_GRACE_MINUTES``). A non-positive value disables the
+    catch-up sweep entirely.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        return float(
+            cfg_get(
+                load_config(),
+                "cron",
+                "misfire_grace_minutes",
+                default=DEFAULT_MISFIRE_GRACE_MINUTES,
+            )
+        )
+    except Exception:
+        return float(DEFAULT_MISFIRE_GRACE_MINUTES)
+
+
+def fire_overdue_jobs(
+    provider: "CronScheduler",
+    *,
+    adapters: Any = None,
+    loop: Any = None,
+    now: Any = None,
+) -> int:
+    """Fire jobs whose scheduled time passed without an external fire arriving.
+
+    The misfire catch-up half of the hosted fire path. External providers
+    (Chronos) deliver scheduled fires over HTTP to this process's api_server
+    adapter; when that hop is down at fire time (gateway restart window,
+    api_server not bound, scheduler retry budget exhausted), the job's
+    ``next_run_at`` stays parked in the past and — because external providers
+    have no local tick loop — nothing ever runs it. The day is silently lost
+    even though the gateway may be healthy again minutes later.
+
+    Called from the gateway housekeeping loop. Deliberately:
+
+    - **No-op for the built-in provider.** Its tick loop already picks up
+      past-due jobs via ``get_due_jobs`` — local scheduling self-heals.
+    - **Routes through the provider's own two-phase fire path** — a
+      synchronous ``claim_fire`` (store CAS, so a late external retry
+      landing concurrently is de-duplicated) and then ``fire_claimed`` in
+      a daemon thread, mirroring the webhook admission pattern. The
+      housekeeping loop that calls this must never block for the length
+      of an agent run. Provider-specific re-arm logic (Chronos NAS
+      one-shots) runs exactly as for a normal fire.
+    - **Waits out a grace window** (``cron.misfire_grace_minutes``, default
+      10, non-positive disables) so the external scheduler's own retry
+      backoff gets first right to deliver — catch-up is the backstop, not
+      a race.
+    - **Operates on the process-global cron store only** — same profile
+      scoping as the external provider's reconcile.
+
+    Returns the number of jobs this sweep claimed and dispatched.
+    """
+    import logging
+    import threading
+    from datetime import datetime
+
+    logger = logging.getLogger("cron.scheduler_provider")
+
+    if isinstance(provider, InProcessCronScheduler):
+        return 0
+
+    grace_minutes = _misfire_grace_minutes()
+    if grace_minutes <= 0:
+        return 0
+
+    from cron.jobs import _ensure_aware, _hermes_now, is_job_runnable, load_jobs
+
+    if now is None:
+        now = _hermes_now()
+
+    fired = 0
+    for job in load_jobs():
+        if not is_job_runnable(job):
+            continue
+        next_run_at = job.get("next_run_at")
+        if not next_run_at:
+            continue
+        try:
+            due_dt = _ensure_aware(datetime.fromisoformat(next_run_at))
+        except (ValueError, TypeError):
+            continue
+        overdue_seconds = (now - due_dt).total_seconds()
+        if overdue_seconds < grace_minutes * 60:
+            continue
+        job_id = str(job.get("id") or "")
+        logger.warning(
+            "Misfire catch-up: job %s (%s) was due %s (%.0f min overdue) and "
+            "no external fire arrived — firing locally.",
+            job_id,
+            job.get("name") or "unnamed",
+            next_run_at,
+            overdue_seconds / 60,
+        )
+        try:
+            # Two-phase, webhook-style: claim synchronously (fast store
+            # CAS — losing means an external retry beat us, which is
+            # fine), then run the job off-thread so the caller's loop is
+            # never blocked for the length of an agent run.
+            claimed = provider.claim_fire(job_id)
+            if claimed is None:
+                continue
+            threading.Thread(
+                target=provider.fire_claimed,
+                args=(claimed,),
+                kwargs={"adapters": adapters, "loop": loop},
+                daemon=True,
+                name=f"cron-misfire-{job_id[:12]}",
+            ).start()
+            fired += 1
+        except Exception as exc:
+            logger.warning(
+                "Misfire catch-up failed for job %s: %s: %s",
+                job_id, type(exc).__name__, exc,
+            )
+    return fired
+
+
 def resolve_cron_scheduler() -> "CronScheduler":
     """Return the active cron scheduler provider.
 
@@ -385,6 +551,12 @@ class InProcessCronScheduler(CronScheduler):
         # Heartbeat once before the first sleep so `hermes cron status` sees a
         # live ticker immediately after startup, not only after the first tick.
         record_ticker_heartbeat()
+        # Exponential backoff for consecutive tick failures — most importantly
+        # fd exhaustion (EMFILE/ENFILE, #87644).  While FDs stay exhausted the
+        # ticker must NOT hammer the store every 60s; once they free (leak
+        # fixed, reclamation ran) the next tick succeeds and the backoff
+        # resets, so the scheduler self-heals without a gateway restart.
+        consecutive_failures = 0
         while not stop_event.is_set():
             ok = False
             try:
@@ -415,13 +587,18 @@ class InProcessCronScheduler(CronScheduler):
                 # uid went unnoticed for ~14h with the reason buried in the
                 # gateway log (#68483).
                 record_ticker_error(f"{type(e).__name__}: {e}")
+                # EMFILE: reclaim fds + back off exponentially so the
+                # exhausted process stops hammering the store while it has no
+                # chance of making progress (#87644).
+                consecutive_failures = _note_tick_failure(e, consecutive_failures)
             # Record liveness every iteration; bump the success marker only on a
             # clean tick, so status can tell "alive but failing every tick" from
             # "actually firing jobs" (#32612, #32895).
             record_ticker_heartbeat(success=ok)
             if ok:
                 clear_ticker_error()
-            stop_event.wait(interval)
+                consecutive_failures = 0
+            stop_event.wait(_backoff_wait_seconds(interval, consecutive_failures))
 
     def _start_multiplex(
         self,
@@ -475,8 +652,10 @@ class InProcessCronScheduler(CronScheduler):
             finally:
                 reset_hermes_home_override(home_token)
 
+        consecutive_failures = 0
         while not stop_event.is_set():
             ok = False
+            _tick_error = None
             try:
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
@@ -499,6 +678,8 @@ class InProcessCronScheduler(CronScheduler):
             except BaseException as e:
                 logger.error("Cron tick error: %s", e, exc_info=True)
                 _tick_error = f"{type(e).__name__}: {e}"
+                # EMFILE: reclaim fds + exponential backoff (#87644).
+                consecutive_failures = _note_tick_failure(e, consecutive_failures)
             else:
                 _tick_error = None
             # Record per-profile heartbeat after each tick cycle.
@@ -517,4 +698,6 @@ class InProcessCronScheduler(CronScheduler):
                             record_ticker_error(_tick_error)
                 finally:
                     reset_hermes_home_override(home_token)
-            stop_event.wait(interval)
+            if ok:
+                consecutive_failures = 0
+            stop_event.wait(_backoff_wait_seconds(interval, consecutive_failures))

@@ -519,6 +519,25 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _normalize_run_budget_seconds(value) -> Optional[float]:
+    """Normalize a wall-clock run budget value to a positive float or None.
+
+    None / absent / non-numeric / non-positive all resolve to ``None``
+    (feature off) so a malformed config value can never activate the
+    deadline machinery, only leave it dormant. ``bool`` is rejected because
+    YAML ``true`` would otherwise become a 1-second budget.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if seconds != seconds or seconds <= 0:  # NaN or non-positive
+        return None
+    return seconds
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -564,6 +583,7 @@ def init_agent(
     read_preview_callback: callable = None,
     read_window_below_callback: callable = None,
     setup_mcp_callback: callable = None,
+    tour_callback: callable = None,
     step_callback: callable = None,
     stream_delta_callback: callable = None,
     interim_assistant_callback: callable = None,
@@ -594,6 +614,7 @@ def init_agent(
     session_db=None,
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
+    run_budget_seconds: Optional[float] = None,
     fallback_model: Dict[str, Any] = None,
     credential_pool=None,
     checkpoints_enabled: bool = False,
@@ -745,7 +766,26 @@ def init_agent(
 
         agent.api_mode = nous_api_mode(agent.model)
     else:
-        agent.api_mode = "chat_completions"
+        # Host-mandated wire check — LAST, so the elif chain's provider-slug
+        # rewrites (e.g. api.anthropic.com → provider="anthropic", #63425)
+        # always run first. Covers api.meta.ai → codex_responses for prompt
+        # caching (0% on chat vs 93-99% on responses) and future mandates.
+        # Note: provider="meta" without an api.meta.ai base_url (or with a non-api.meta.ai
+        # base_url) intentionally falls through to chat_completions here. The wire
+        # protocol for Meta is URL-driven BY DESIGN, not provider-name-driven, because
+        # user config `providers.meta` may point at any OpenAI-compatible endpoint, and
+        # forcing `codex_responses` on the provider name alone would break custom endpoints
+        # named "meta" that do not host the Responses API.
+        try:
+            from hermes_cli.providers import host_mandated_api_mode as _host_mandated_api_mode
+
+            _mandated = _host_mandated_api_mode(base_url or "")
+        except Exception:
+            _mandated = None
+        if _mandated is not None:
+            agent.api_mode = _mandated
+        else:
+            agent.api_mode = "chat_completions"
 
     # Credential-pool validation runs AFTER provider auto-detection so
     # a pool scoped to e.g. "anthropic" is not rejected when the agent
@@ -844,6 +884,7 @@ def init_agent(
     agent.read_preview_callback = read_preview_callback
     agent.read_window_below_callback = read_window_below_callback
     agent.setup_mcp_callback = setup_mcp_callback
+    agent.tour_callback = tour_callback
     agent.step_callback = step_callback
     agent.stream_delta_callback = stream_delta_callback
     agent.interim_assistant_callback = interim_assistant_callback
@@ -931,6 +972,10 @@ def init_agent(
     # Model response configuration
     agent.max_tokens = max_tokens  # None = use model default
     agent.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
+    # Per-provider reasoning_content echo opt-in (see _reasoning_echo_opt_in).
+    # Read once at init; switch_model / try_activate_fallback / restore
+    # keep it in sync with the active provider.
+    agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
     agent.service_tier = service_tier
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
@@ -985,6 +1030,17 @@ def init_agent(
     # models to "give up" prematurely on complex tasks (#7915).
     agent._budget_exhausted_injected = False
     agent._budget_grace_call = False
+
+    # Optional wall-clock run budget (seconds per run_conversation turn).
+    # Explicit constructor arg wins; else resolved from config.yaml
+    # (agent.run_budget_seconds) further below. None = feature fully off:
+    # no clock reads, no injection, no stale-timeout capping.
+    agent.run_budget_seconds = _normalize_run_budget_seconds(run_budget_seconds)
+    # Wall-clock start of the CURRENT run_conversation turn. Set by
+    # turn_context.prepare_turn when a run budget is active; None otherwise.
+    agent._run_budget_started_at = None
+    # One-shot latch for the 80% wrap-up notice (reset each turn).
+    agent._run_budget_wrapup_injected = False
 
     # Activity tracking — updated on each API call, tool execution, and
     # stream chunk.  Used by the gateway timeout handler to report what the
@@ -1948,11 +2004,40 @@ def init_agent(
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+    # Execution-discipline guidance gate: "auto" (default — matches
+    # EXECUTION_GUIDANCE_MODELS), true (always), false (never), or list of
+    # model-name substrings.  Independent of tool_use_enforcement — see
+    # agent/system_prompt.py for the injection gate.
+    agent._execution_guidance = _agent_section.get("execution_guidance", "auto")
+
+    # Wall-clock run budget from config (agent.run_budget_seconds) — only
+    # consulted when the constructor arg was not given. Absent/None/invalid
+    # keeps the feature fully off (zero behavior change in the default path).
+    if agent.run_budget_seconds is None:
+        agent.run_budget_seconds = _normalize_run_budget_seconds(
+            _agent_section.get("run_budget_seconds")
+        )
+
+    # Empty-response retry guard config (NS-503): additive
+    # ``agent.empty_response_guard`` subsection. Resolution is tolerant —
+    # a malformed section falls back to the schema defaults (guard on,
+    # $0.25 threshold), matching the guard's overall fail-open posture.
+    from agent.empty_response_guard import resolve_guard_settings
+    (
+        agent._empty_guard_enabled,
+        agent._empty_guard_cost_threshold_usd,
+    ) = resolve_guard_settings(_agent_section.get("empty_response_guard"))
+
     # Intent-ack continuation config: "auto" (default — codex_responses only,
     # the historical gate), true (all api_modes), false (never), or a list of
     # model-name substrings.  Resolved against the active api_mode/model in the
     # conversation loop's intent-ack block.
     agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
+
+    # Runtime anti-stall guards (identical-call loop-breaker notice on tool
+    # results + continue-intent extension of the empty-response recovery).
+    # Single boolean gate, default True. Notice-only — never blocks a call.
+    agent._stall_guards = bool(_agent_section.get("stall_guards", True))
 
     # Universal task-completion guidance toggle.  Default True.  Surfaced
     # as a separate flag from tool_use_enforcement because the guidance
@@ -1982,6 +2067,14 @@ def init_agent(
             warm_environment_probe_async()
         except Exception:
             pass
+
+    # Bot Mode teammate protocol section (tools/bot_mode_probe.py) — pure
+    # filesystem reads, no warm needed. Silent on non-Bot-Mode installs.
+    agent._bot_mode_protocol = bool(_agent_section.get("bot_mode_protocol", True))
+    # Session-title hint for the "Bot Chat" gate: hosts that defer the DB
+    # title write past the first prompt build (tui_gateway pending_title)
+    # set this so the gate doesn't depend on write ordering.
+    agent._session_title_hint = None
 
     # Per-platform prompt-hint overrides (config.yaml → platform_hints).
     # Lets an enterprise admin append to or replace Hermes' built-in
@@ -2989,6 +3082,7 @@ def init_agent(
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
+        "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
         # Context engine state that _try_activate_fallback() overwrites.
         # Use getattr for model/base_url/api_key/provider since plugin
         # engines may not have these (they're ContextCompressor-specific).

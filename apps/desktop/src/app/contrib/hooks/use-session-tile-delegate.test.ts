@@ -33,7 +33,14 @@ const row = (over: Partial<SessionInfo>): SessionInfo =>
     ...over
   }) as SessionInfo
 
-function renderTile(requestGateway: ReturnType<typeof vi.fn>) {
+function renderTile(
+  requestGateway: ReturnType<typeof vi.fn>,
+  refs?: {
+    runtimeIdByStoredSessionIdRef?: { current: Map<string, string> }
+    sessionStateByRuntimeIdRef?: { current: Map<string, unknown> }
+    updateSessionState?: ReturnType<typeof vi.fn>
+  }
+) {
   renderHook(() =>
     useSessionTileDelegate({
       archiveSession: vi.fn(async () => undefined),
@@ -41,9 +48,9 @@ function renderTile(requestGateway: ReturnType<typeof vi.fn>) {
       executeSlashCommand: vi.fn(async () => undefined) as never,
       removeSession: vi.fn(async () => undefined),
       requestGateway: requestGateway as never,
-      runtimeIdByStoredSessionIdRef: { current: new Map() },
-      sessionStateByRuntimeIdRef: { current: new Map() },
-      updateSessionState: vi.fn()
+      runtimeIdByStoredSessionIdRef: (refs?.runtimeIdByStoredSessionIdRef ?? { current: new Map() }) as never,
+      sessionStateByRuntimeIdRef: (refs?.sessionStateByRuntimeIdRef ?? { current: new Map() }) as never,
+      updateSessionState: (refs?.updateSessionState ?? vi.fn()) as never
     })
   )
 }
@@ -98,6 +105,67 @@ describe('useSessionTileDelegate resumeTile', () => {
       profile: 'default',
       omit_messages: true
     })
+  })
+
+  it('reuses a warm binding that still carries a transcript', async () => {
+    const stateA = { busy: false, messages: [{ id: 'm1' }], storedSessionId: 'stored-a' }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-a', 'runtime-a']]) }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-a', stateA]]) }
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-a')
+
+    expect(runtimeId).toBe('runtime-a')
+    expect(requestGateway).not.toHaveBeenCalled()
+  })
+
+  it('falls through to a real resume when the warm binding has no transcript (post-wake empty tile)', async () => {
+    // Sleep/wake regression: a released/stale cached state (messages: []) must
+    // NOT satisfy the warm path — reusing it re-bound the tile to a dead
+    // runtime id and painted the pane permanently empty.
+    setSessions([row({ id: 'stored-b', profile: 'default' })])
+
+    const staleState = { busy: false, messages: [], storedSessionId: 'stored-b' }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-b', 'runtime-dead']]) }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', staleState]]) }
+
+    const requestGateway = vi.fn(async (method: string) =>
+      method === 'session.resume' ? ({ session_id: 'runtime-fresh' } as never) : ({} as never)
+    )
+
+    renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-b')
+
+    expect(runtimeId).toBe('runtime-fresh')
+    expect(requestGateway).toHaveBeenCalledWith('session.resume', {
+      session_id: 'stored-b',
+      cols: 96,
+      profile: 'default',
+      omit_messages: true
+    })
+  })
+
+  it('invalidateRuntimeBindings clears the stored→runtime map so tiles re-resume after reconnect', async () => {
+    setSessions([row({ id: 'stored-c', profile: 'default' })])
+
+    const liveState = { busy: false, messages: [{ id: 'm1' }], storedSessionId: 'stored-c' }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-c', 'runtime-dead']]) }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', liveState]]) }
+
+    const requestGateway = vi.fn(async (method: string) =>
+      method === 'session.resume' ? ({ session_id: 'runtime-fresh' } as never) : ({} as never)
+    )
+
+    renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+
+    // Gateway reconnect (what resetTileRuntimeBindings calls on wake):
+    sessionTileDelegate()!.invalidateRuntimeBindings!()
+    expect(runtimeIdByStoredSessionIdRef.current.size).toBe(0)
+
+    // The next resume goes cold instead of reusing the dead binding.
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-c')
+    expect(runtimeId).toBe('runtime-fresh')
   })
 })
 

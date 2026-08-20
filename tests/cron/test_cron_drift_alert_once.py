@@ -92,9 +92,11 @@ class TestDriftAlertOnce:
         blob = deliveries[0].lower()
         assert "drift" in blob
         assert "pin" in blob
-        # The single alert must carry the complete remediation command —
-        # the generic summarizer's 180-char truncation must not eat it.
-        assert "cronjob action=update" in deliveries[0]
+        assert "host running hermes" in blob
+        # The single alert must carry the complete supported remediation
+        # command — the generic summarizer's 180-char truncation must not eat it.
+        assert "hermes cron edit drift-once-test" in deliveries[0]
+        assert "cronjob action=update" not in deliveries[0]
         assert "[drift_skip" not in deliveries[0]
 
     def test_healed_drift_clears_bit_and_redrift_realerts(self, tmp_path):

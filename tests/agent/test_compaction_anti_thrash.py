@@ -203,3 +203,47 @@ class TestMinimumMessagesBranch:
         assert len(out) == len(msgs), "nothing should have been compressed"
         assert cc._last_compression_made_progress is False
         assert cc._ineffective_compression_count == before + 1
+
+
+class TestRejectedCompactionStrike:
+    """#88568 — a would-grow refusal must count as an ineffective strike.
+
+    The anti-growth guard correctly keeps the original transcript, but the
+    rejection used to leave ``_ineffective_compression_count`` untouched, so
+    the breaker never latched and automatic compression retried the SAME
+    unchanged transcript on every turn.
+    """
+
+    def test_rejected_compaction_increments_strike(self):
+        cc = _compressor(threshold_tokens=1)
+        assert cc._ineffective_compression_count == 0
+
+        cc.record_rejected_compaction()
+
+        assert cc._ineffective_compression_count == 1
+
+    def test_two_rejections_stop_further_automatic_compression(self):
+        cc = _compressor(threshold_tokens=1)
+        cc.record_rejected_compaction()
+        cc.record_rejected_compaction()
+
+        # The latch consumers key on the counter itself (>= 2 blocks);
+        # pin the counter and the recovery-clock arming side effect.
+        assert cc._ineffective_compression_count >= 2
+
+    def test_rejection_does_not_arm_real_usage_verification(self):
+        """Nothing was committed, so the next response must not be scored
+        against the pre-rejection transcript (that verdict belongs to
+        committed compactions only)."""
+        cc = _compressor(threshold_tokens=1)
+        cc.record_rejected_compaction()
+
+        assert cc._verify_compaction_cleared_threshold is False
+
+    def test_rejection_leaves_fallback_streak_untouched(self):
+        cc = _compressor(threshold_tokens=1)
+        cc._fallback_compression_streak = 1
+
+        cc.record_rejected_compaction()
+
+        assert cc._fallback_compression_streak == 1

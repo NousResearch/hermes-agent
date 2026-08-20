@@ -98,6 +98,139 @@ class TestStreamingAccumulator:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_sparse_delta_allows_missing_optional_fields(self, mock_close, mock_create):
+        """Managed stream deltas may omit both content and tool_calls."""
+        from run_agent import AIAgent
+
+        sparse_delta = SimpleNamespace(reasoning_content=None, reasoning=None)
+        chunks = [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        index=0,
+                        delta=sparse_delta,
+                        finish_reason=None,
+                    )
+                ],
+                model="test-model",
+                usage=None,
+            ),
+            _make_stream_chunk(
+                content="done", finish_reason="stop", model="test-model"
+            ),
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "done"
+        assert response.choices[0].message.tool_calls is None
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_sparse_tool_delta_allows_missing_nested_fields(
+        self, mock_close, mock_create
+    ):
+        """A partial tool delta may contain arguments before its other fields."""
+        from run_agent import AIAgent
+
+        sparse_tool_delta = SimpleNamespace(
+            index=0,
+            function=SimpleNamespace(arguments='{"city":"Paris"}'),
+        )
+        chunks = [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        index=0,
+                        delta=SimpleNamespace(tool_calls=[sparse_tool_delta]),
+                    )
+                ],
+                model="test-model",
+                usage=None,
+            ),
+            _make_stream_chunk(finish_reason="tool_calls", model="test-model"),
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tool_call = response.choices[0].message.tool_calls[0]
+        assert tool_call.function.name == ""
+        assert tool_call.function.arguments == '{"city":"Paris"}'
+        assert response.choices[0].finish_reason == "tool_calls"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_chat_stream_closes_original_provider_resource(
+        self,
+        mock_close,
+        mock_create,
+    ):
+        from run_agent import AIAgent
+
+        class ProviderStream:
+            def __init__(self):
+                self.closed = False
+
+            def __iter__(self):
+                return iter([
+                    _make_stream_chunk(
+                        content="Hello",
+                        finish_reason="stop",
+                        model="test-model",
+                    )
+                ])
+
+            def close(self):
+                self.closed = True
+
+        provider_stream = ProviderStream()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = provider_stream
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "Hello"
+        assert provider_stream.closed is True
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_native_gemini_endpoint_omits_stream_options(self, mock_close, mock_create):
         """Google's native Gemini REST endpoint rejects OpenAI-only stream_options."""
         from run_agent import AIAgent
@@ -263,38 +396,6 @@ class TestStreamingFallback:
 
         # The flag should be set so the main retry loop switches to non-streaming
         assert agent._disable_streaming is True
-
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_upstream_tool_schema_error_keeps_streaming_enabled(
-        self, mock_close, mock_create
-    ):
-        """An unsupported tool schema is not an unsupported response stream."""
-        from run_agent import AIAgent
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = Exception(
-            "Error from provider: Upstream request failed: "
-            "[unsupported_tool_schema] The tool schema is not supported "
-            "(tool_count_limit)."
-        )
-        mock_create.return_value = mock_client
-
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://opencode.ai/zen/go/v1",
-            model="test/model",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
-        setattr(agent, "api_mode", "chat_completions")
-        agent._interrupt_requested = False
-
-        with pytest.raises(Exception, match="unsupported_tool_schema"):
-            agent._interruptible_streaming_api_call({})
-
-        assert getattr(agent, "_disable_streaming", False) is False
 
 
     @patch("run_agent.AIAgent._create_request_openai_client")
@@ -718,6 +819,7 @@ class TestAnthropicStreamCallbacks:
         agent._interruptible_streaming_api_call({})
 
         assert touch_calls.count("receiving stream response") == len(events)
+        mock_stream.close.assert_called_once()
 
     @patch("run_agent.AIAgent._rebuild_anthropic_client")
     @patch("run_agent.AIAgent._replace_primary_openai_client")
@@ -1620,4 +1722,3 @@ class TestBedrockReasoningStaleFloor:
         from agent.chat_completion_helpers import _bedrock_reasoning_stale_floor
 
         assert _bedrock_reasoning_stale_floor(model_id) == expected
-

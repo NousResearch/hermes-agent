@@ -42,6 +42,16 @@ def _install_test_section(manager: PluginManager, content) -> None:
 
 
 def test_real_aiagent_builds_section_once_and_keeps_it_out_of_static_prefix(monkeypatch):
+    # Pin the workspace snapshot: build_coding_workspace_block shells out to
+    # live `git status`/`git log` on every build, and a git call failing or
+    # timing out under xdist contention makes the two builds differ in the
+    # Branch/Recent-commits lines — a flake unrelated to what this test
+    # asserts (plugin sections). Byte-stability of the REAL workspace block
+    # is coding_context's contract, covered by its own tests.
+    monkeypatch.setattr(
+        "agent.coding_context.build_coding_workspace_block",
+        lambda cwd=None: "Workspace (snapshot at session start):\n- Root: /pinned",
+    )
     calls = []
 
     def section(session_info):

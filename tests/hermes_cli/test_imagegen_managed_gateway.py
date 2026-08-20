@@ -1,15 +1,18 @@
-"""Regression tests for image_gen use_gateway persistence (managed FAL clobber).
+"""Regression tests for image_gen provider persistence (managed FAL clobber).
 
-Bug: ``_select_plugin_image_gen_provider`` hardcoded
-``image_gen.use_gateway = False``. When a user picked FAL through the
-Nous-subscription managed flow, ``_write_provider_config`` first set
-``use_gateway = True`` — then the image selector ran and clobbered it back
-to False, silently routing every generation through the user's personal
-FAL_KEY instead of the Nous Tool Gateway (real incident: personal key
-drained to zero while the subscription sat unused).
+Historical bug: ``_select_plugin_image_gen_provider`` hardcoded the direct
+(non-managed) routing. When a user picked FAL through the Nous-subscription
+managed flow, the managed write landed first — then the image selector ran
+and clobbered it back to direct, silently routing every generation through
+the user's personal FAL_KEY instead of the Nous Tool Gateway (real incident:
+personal key drained to zero while the subscription sat unused).
 
-The video twin (``_select_plugin_video_gen_provider``) already accepted a
-``use_gateway`` kwarg; these tests pin the image path to the same contract.
+Current contract (strict provider-string selection): each picker row writes
+exactly ONE provider string per category — ``image_gen.provider: nous`` for
+the managed "Nous Subscription" row, ``image_gen.provider: fal`` for the
+BYOK FAL row — and any legacy ``use_gateway`` key is popped so the
+read-time shim (use_gateway: true ⇒ nous) cannot override the fresh pick.
+The video twin (``_select_plugin_video_gen_provider``) shares the contract.
 """
 
 from hermes_cli.tools_config import (
@@ -28,43 +31,50 @@ def _quiet(monkeypatch):
     monkeypatch.setattr(tc, "_configure_videogen_model_for_plugin", lambda *a, **k: None)
 
 
-def test_image_gen_selector_preserves_managed_gateway_flag(monkeypatch):
-    """Managed pick: use_gateway=True must survive the selector."""
+def test_image_gen_selector_preserves_managed_selection(monkeypatch):
+    """Managed pick: the 'nous' provider string must survive the selector."""
     _quiet(monkeypatch)
     config = {}
 
-    # The managed flow first writes the managed flag...
+    # The managed flow first persists the managed selection...
     _write_provider_config(
         {"image_gen_plugin_name": "fal"}, config, managed_feature="image_gen"
     )
-    assert config["image_gen"]["use_gateway"] is True
+    assert config["image_gen"]["provider"] == "nous"
+    assert "use_gateway" not in config["image_gen"]
 
-    # ...then the selector runs; passing the managed flag must NOT clobber it.
+    # ...then the selector runs; the managed kwarg must NOT clobber it
+    # back onto the vendor name (direct-key routing).
     _select_plugin_image_gen_provider("fal", config, use_gateway=True)
-    assert config["image_gen"]["provider"] == "fal"
-    assert config["image_gen"]["use_gateway"] is True
+    assert config["image_gen"]["provider"] == "nous"
+    assert "use_gateway" not in config["image_gen"]
 
 
-def test_image_gen_selector_direct_key_pick_clears_gateway(monkeypatch):
-    """Non-managed pick keeps the historical default: direct key, no gateway."""
+def test_image_gen_selector_direct_key_pick_writes_vendor(monkeypatch):
+    """Non-managed pick writes the vendor name and pops the legacy flag."""
     _quiet(monkeypatch)
     config = {"image_gen": {"use_gateway": True}}
 
     _select_plugin_image_gen_provider("fal", config)
     assert config["image_gen"]["provider"] == "fal"
-    assert config["image_gen"]["use_gateway"] is False
+    assert "use_gateway" not in config["image_gen"]
 
 
-def test_image_and_video_selectors_share_the_gateway_contract(monkeypatch):
+def test_image_and_video_selectors_share_the_selection_contract(monkeypatch):
     """The two selectors are twins: same kwarg, same persistence behavior."""
     _quiet(monkeypatch)
 
-    for use_gateway in (True, False):
-        config = {}
+    for use_gateway, expected in ((True, "nous"), (False, "fal")):
+        config = {
+            "image_gen": {"use_gateway": not use_gateway},
+            "video_gen": {"use_gateway": not use_gateway},
+        }
         _select_plugin_image_gen_provider("fal", config, use_gateway=use_gateway)
         _select_plugin_video_gen_provider("fal", config, use_gateway=use_gateway)
-        assert config["image_gen"]["use_gateway"] is use_gateway
-        assert config["video_gen"]["use_gateway"] is use_gateway
+        assert config["image_gen"]["provider"] == expected
+        assert config["video_gen"]["provider"] == expected
+        assert "use_gateway" not in config["image_gen"]
+        assert "use_gateway" not in config["video_gen"]
 
 
 def _quiet_reconfigure(monkeypatch):
@@ -82,11 +92,12 @@ def _quiet_reconfigure(monkeypatch):
     monkeypatch.setattr(ns, "ensure_nous_portal_access", lambda **k: True)
 
 
-def test_reconfigure_managed_fal_row_keeps_gateway_flag(monkeypatch):
+def test_reconfigure_managed_fal_row_keeps_managed_selection(monkeypatch):
     """The sibling bug of fe63353cb: the legacy-backend model-pick step in
-    _reconfigure_provider hardcoded use_gateway=False AFTER the managed
-    branch wrote True — a Nous Subscription user re-entering the picker to
-    change models was silently flipped onto their personal FAL_KEY."""
+    _reconfigure_provider hardcoded the direct selection AFTER the managed
+    branch wrote the managed one — a Nous Subscription user re-entering the
+    picker to change models was silently flipped onto their personal
+    FAL_KEY."""
     _quiet_reconfigure(monkeypatch)
     import hermes_cli.tools_config as tc
 
@@ -98,17 +109,17 @@ def test_reconfigure_managed_fal_row_keeps_gateway_flag(monkeypatch):
         "override_env_vars": ["FAL_KEY"],
         "imagegen_backend": "fal",
     }
-    config = {"image_gen": {"model": "fal-ai/gpt-image-2"}}
+    config = {"image_gen": {"model": "fal-ai/gpt-image-2", "use_gateway": True}}
 
     tc._reconfigure_provider(managed_row, config)
 
-    assert config["image_gen"]["provider"] == "fal"
-    assert config["image_gen"]["use_gateway"] is True
+    assert config["image_gen"]["provider"] == "nous"
+    assert "use_gateway" not in config["image_gen"]
 
 
-def test_reconfigure_direct_fal_row_clears_gateway_flag(monkeypatch):
-    """Direct-key FAL reconfig must still clear the flag (historical
-    behavior for genuinely non-managed picks)."""
+def test_reconfigure_direct_fal_row_writes_vendor_selection(monkeypatch):
+    """Direct-key FAL reconfig writes the vendor name and pops any stale
+    legacy use_gateway key so the read-time shim can't resurrect 'nous'."""
     _quiet_reconfigure(monkeypatch)
     import hermes_cli.tools_config as tc
 
@@ -121,4 +132,5 @@ def test_reconfigure_direct_fal_row_clears_gateway_flag(monkeypatch):
 
     tc._reconfigure_provider(direct_row, config)
 
-    assert config["image_gen"]["use_gateway"] is False
+    assert config["image_gen"]["provider"] == "fal"
+    assert "use_gateway" not in config["image_gen"]

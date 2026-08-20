@@ -845,6 +845,37 @@ class TestDetectVenvDir:
 class TestSystemUnitHermesHome:
     """HERMES_HOME in system units must reference the target user, not root."""
 
+    def test_empty_managed_node_dir_uses_only_ambient_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        managed_bin = tmp_path / ".hermes" / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        monkeypatch.setattr(
+            gateway_cli.shutil, "which", lambda name: "/opt/external-node/bin/node"
+        )
+        entries: list[str] = []
+
+        gateway_cli._append_node_dir_for_service(entries, tmp_path / ".hermes")
+
+        assert entries == ["/opt/external-node/bin"]
+
+    def test_non_executable_managed_node_uses_only_ambient_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        managed_bin = tmp_path / ".hermes" / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        node = managed_bin / "node"
+        node.write_text("#!/bin/sh\n")
+        node.chmod(0o644)
+        monkeypatch.setattr(
+            gateway_cli.shutil, "which", lambda name: "/opt/external-node/bin/node"
+        )
+        entries: list[str] = []
+
+        gateway_cli._append_node_dir_for_service(entries, tmp_path / ".hermes")
+
+        assert entries == ["/opt/external-node/bin"]
+
     def test_managed_node_makes_system_unit_independent_of_callers_path(
         self, monkeypatch, tmp_path
     ):
@@ -855,6 +886,9 @@ class TestSystemUnitHermesHome:
         root_hermes = root_home / ".hermes"
         managed_bin = target_hermes / "node" / "bin"
         managed_bin.mkdir(parents=True)
+        node = managed_bin / "node"
+        node.write_text("#!/bin/sh\n")
+        node.chmod(0o755)
         root_hermes.mkdir(parents=True)
 
         monkeypatch.setattr(Path, "home", staticmethod(lambda: root_home))
@@ -883,6 +917,10 @@ class TestSystemUnitHermesHome:
         """External Node installs still work when the managed tree is absent."""
         monkeypatch.setattr(
             "hermes_constants.iter_hermes_node_dirs", lambda root=None: []
+        )
+        monkeypatch.setattr(
+            "hermes_constants.hermes_managed_node_tree_present",
+            lambda root=None: False,
         )
         monkeypatch.setattr(
             gateway_cli.shutil, "which", lambda name: "/opt/external-node/bin/node"

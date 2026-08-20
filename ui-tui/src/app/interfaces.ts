@@ -576,6 +576,7 @@ export interface AppLayoutActions {
   answerAskUserQuestions: (answers: Record<number, string>, requestId: string) => void
   answerClarify: (answer: string) => void
   answerPromptOptimization: (choice: string) => void
+  answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
   clearSelection: () => void
@@ -645,6 +646,7 @@ export interface AppOverlaysProps {
   onAskUserQuestionsAnswer: (answers: Record<number, string>, requestId: string) => void
   onClarifyAnswer: (value: string) => void
   onPromptOptimizationChoice: (choice: string) => void
+  onClarifyQuestionAnswer: (qid: string, value: string) => void
   onActiveSessionSelect: (sessionId: string) => void
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
   onModelSelect: (value: string) => void

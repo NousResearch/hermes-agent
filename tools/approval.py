@@ -2817,12 +2817,81 @@ def load_permanent(patterns: set):
         _permanent_approved.update(patterns)
 
 
-_ALLOWLIST_SHELL_OPERATOR_RE = re.compile(r"(?:\n|&&|\|\||[;&|<>`]|\$\()")
+# Shell control characters that make a command compound when they appear
+# OUTSIDE quotes. Inside quotes they are literal to the outer shell — but
+# they become executable again if an option like `-c`/`-e`/`--eval` (or a
+# git `-c alias.x=!...`) hands the quoted argument to another interpreter,
+# so quoted control chars only disqualify a command when such an option is
+# present. Port of can1357/oh-my-pi#7553.
+_SHELL_CONTROL_CHARS = frozenset("\n\r;&|<>`$()")
+_REINTERPRETED_ARGUMENT_RE = re.compile(
+    r"(?:^|[ \t])(?:-[^-\s]*[ce]|--(?:command|eval))(?:[= \t]|$)"
+)
 
 
 def _has_allowlist_shell_operator(command: str) -> bool:
-    """Return True when a command is too compound for the allowlist shortcut."""
-    return bool(_ALLOWLIST_SHELL_OPERATOR_RE.search(command or ""))
+    """Return True when a command is too compound for the allowlist shortcut.
+
+    Quote-aware: shell metacharacters inside single/double quotes or behind
+    a backslash are literal arguments (``cargo bench -- '^a(b|c)$'``), not
+    shell syntax, so they don't disqualify an otherwise-simple command from
+    matching a ``cargo *`` allowlist glob. Exceptions that still disqualify:
+
+    - ``$`` or backtick inside DOUBLE quotes (expansion stays active there);
+    - any quoted/escaped control character when the command also carries a
+      ``-c``/``-e``/``--command``/``--eval``-style option that would hand
+      the quoted text to another interpreter (``sh -c '...'``,
+      ``git -c alias.x='!...' x``).
+    """
+    command = command or ""
+    quote = None  # None | "'" | '"'
+    has_reinterpretable = False
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            elif ch in _SHELL_CONTROL_CHARS:
+                has_reinterpretable = True
+            i += 1
+            continue
+        if ch == "\\":
+            nxt = command[i + 1] if i + 1 < n else ""
+            if nxt in _SHELL_CONTROL_CHARS:
+                has_reinterpretable = True
+            i += 2
+            continue
+        if quote == '"':
+            if ch == '"':
+                quote = None
+            elif ch in ("`", "$"):
+                # Expansion is active inside double quotes.
+                return True
+            elif ch in _SHELL_CONTROL_CHARS:
+                has_reinterpretable = True
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "$":
+            # Unquoted $ is only compound when it opens a substitution —
+            # matches the historical `\$\(` behavior ("$HOME" stays simple).
+            if i + 1 < n and command[i + 1] == "(":
+                return True
+            i += 1
+            continue
+        if ch in _SHELL_CONTROL_CHARS and ch not in "()":
+            return True
+        i += 1
+        continue
+    # An unterminated quote means we can't reason about the command shape.
+    if quote is not None:
+        return True
+    return has_reinterpretable and bool(_REINTERPRETED_ARGUMENT_RE.search(command))
 
 
 def _command_matches_permanent_allowlist(command: str) -> bool:
@@ -4007,6 +4076,104 @@ def _transport_denied_result(
     }
 
 
+def _await_coalesced_leader(session_key: str, leader, approval_data: dict,
+                            *, surface: str = "gateway"):
+    """Wait on an already-pending identical approval instead of re-prompting.
+
+    Called by ``_await_gateway_decision`` when an identical approval (same
+    command text + same pattern-key set) is already awaiting the user's
+    answer in this session. Blocks until the leader entry resolves, then
+    adopts its decision:
+
+    * ``session`` / ``always`` → adopted approval (same dict shape as a
+      direct resolution; persistence stays the caller's responsibility and
+      is idempotent across the leader and followers).
+    * ``deny`` → adopted denial, carrying the leader's deny reason.
+    * leader timeout (event set by queue teardown, or our own deadline
+      expiring first) → unresolved, identical to a direct timeout.
+    * ``once`` → returns ``None``: single-use consent covers only the
+      leader's execution, so the caller must issue a fresh prompt.
+
+    Fires the pre/post approval hooks with ``coalesced=True`` so observers
+    see the follower's lifecycle without a duplicate user-facing prompt.
+    """
+    command = approval_data.get("command", "")
+    description = approval_data.get("description", "")
+    primary_key = approval_data.get("pattern_key", "")
+    all_keys = approval_data.get("pattern_keys", [primary_key])
+
+    _fire_approval_hook(
+        "pre_approval_request",
+        command=command,
+        description=description,
+        pattern_key=primary_key,
+        pattern_keys=list(all_keys),
+        session_key=session_key,
+        surface=surface,
+        coalesced=True,
+    )
+
+    timeout = _get_approval_timeout()
+    try:
+        from tools.environments.base import touch_activity_if_due
+    except Exception:  # pragma: no cover
+        touch_activity_if_due = None
+
+    _now = time.monotonic()
+    _deadline = _now + max(timeout, 0)
+    _activity_state = {"last_touch": _now, "start": _now}
+    resolved = False
+    with human_wait_window(session_key):
+        while True:
+            if is_interrupted():
+                logger.info(
+                    "Coalesced approval wait interrupted by user signal — "
+                    "returning deny for session %s",
+                    session_key,
+                )
+                # Deny only OUR follower; the leader thread handles its own
+                # interrupt signal.
+                choice = "deny"
+                resolved = True
+                break
+            _remaining = _deadline - time.monotonic()
+            if _remaining <= 0:
+                choice = None
+                break
+            if leader.event.wait(timeout=min(1.0, _remaining)):
+                choice = leader.result
+                resolved = choice is not None
+                break
+            if touch_activity_if_due is not None:
+                touch_activity_if_due(
+                    _activity_state, "waiting for user approval"
+                )
+
+    if choice == "once":
+        # Single-use consent — the caller re-prompts. The post hook fires
+        # for the fresh prompt's own lifecycle, not here.
+        return None
+
+    _outcome = "timeout" if not resolved else (choice if choice else "timeout")
+    _fire_approval_hook(
+        "post_approval_response",
+        command=command,
+        description=description,
+        pattern_key=primary_key,
+        pattern_keys=list(all_keys),
+        session_key=session_key,
+        surface=surface,
+        choice=_outcome,
+        coalesced=True,
+    )
+    return {
+        "resolved": resolved,
+        "choice": choice,
+        "reason": getattr(leader, "reason", None),
+        "coalesced": True,
+    }
+
+
 def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
                             *, surface: str = "gateway") -> dict:
     """Enqueue *approval_data*, notify the user, and block the calling agent
@@ -4026,6 +4193,41 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     description = approval_data.get("description", "")
     primary_key = approval_data.get("pattern_key", "")
     all_keys = approval_data.get("pattern_keys", [primary_key])
+
+    # ── Coalesce identical concurrent approvals (one prompt, one answer) ──
+    # Parallel tool calls (a parallel terminal batch, execute_code RPC
+    # handlers) can hit the same dangerous-command gate at the same time.
+    # Without coalescing, every thread enqueues its own entry and fires its
+    # own notify_cb — the user gets N identical prompts and must /approve N
+    # times while the agent sits wedged. Follow anomalyco/opencode#40869's
+    # shape: followers wait on the leader's decision and re-check after it
+    # lands instead of prompting again.
+    #
+    # Adoption rules keep the consent contract strict:
+    #   session / always → adopt approved (the persistence layer would
+    #     auto-pass an identical re-check anyway once the leader persisted).
+    #   deny / timeout   → adopt the refusal (immediately re-asking the exact
+    #     command the user just declined is prompt spam and an evasion path).
+    #   once             → single-use consent; it covers ONLY the leader's
+    #     execution, so the follower falls through to a fresh prompt.
+    leader = None
+    with _lock:
+        for existing in _gateway_queues.get(session_key, []):
+            data = existing.data
+            if (
+                data.get("command") == approval_data.get("command")
+                and list(data.get("pattern_keys") or [])
+                == list(approval_data.get("pattern_keys") or [])
+            ):
+                leader = existing
+                break
+    if leader is not None:
+        adopted = _await_coalesced_leader(
+            session_key, leader, approval_data, surface=surface
+        )
+        if adopted is not None:
+            return adopted
+        # Leader resolved "once" — fall through to a fresh prompt below.
 
     entry = _ApprovalEntry(approval_data)
     with _lock:
@@ -4823,6 +5025,8 @@ def check_execute_code_guard(code: str, env_type: str,
 
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
+    is_cli = _is_interactive_cli()
+    approval_callback = _resolve_cli_approval_callback()
 
     # Single-query (-q): no user is present to approve arbitrary code. Mirrors
     # the cron branch below so the -q escape-hatch no longer auto-approves.
@@ -4872,8 +5076,13 @@ def check_execute_code_guard(code: str, env_type: str,
     #   * Local non-interactive non-gateway: documented limitation above.
     # Ask-mode (HERMES_EXEC_ASK) still takes this path even when INTERACTIVE
     # is also set — that combination is how gateway/smart tests and messaging
-    # ask-mode drive whole-script approval. Terminal-command CLI leaks are
-    # handled in check_all_command_guards via the CLI callback fall-through.
+    # ask-mode drive whole-script approval. When that combination leaks into
+    # an interactive CLI with no gateway notify callback registered, the
+    # notify_cb-less branch below falls through to the same CLI Dangerous
+    # Command panel check_all_command_guards uses, instead of a silent
+    # pending_approval. Terminal-command (not whole-script) CLI leaks from
+    # the script's own per-call terminal() guards are handled separately in
+    # check_all_command_guards.
     if not is_gateway and not is_ask:
         return {"approved": True, "message": None}
 
@@ -5001,6 +5210,96 @@ def check_execute_code_guard(code: str, env_type: str,
         notify_cb = _gateway_notify_cbs.get(session_key)
 
     if notify_cb is None:
+        # HERMES_EXEC_ASK (and sometimes a session platform marker) can leak
+        # into an interactive CLI process — most commonly via `import
+        # gateway.run`. Without this, that combination silently queued a
+        # pending approval nobody could see instead of showing the CLI panel
+        # the user can actually answer, even though a callback was
+        # registered (same class as check_all_command_guards / #85865-
+        # adjacent leak this fixes for the whole-script gate specifically).
+        if _should_fall_through_to_cli_approval(
+            is_cli=is_cli,
+            approval_callback=approval_callback,
+            notify_cb=notify_cb,
+        ):
+            _fire_approval_hook(
+                "pre_approval_request",
+                command=display_command,
+                description=display_description,
+                pattern_key=pattern_key,
+                pattern_keys=[pattern_key],
+                session_key=session_key,
+                surface="cli",
+            )
+            choice = prompt_dangerous_approval(
+                display_command,
+                display_description,
+                allow_permanent=not smart_denied_for_owner,
+                approval_callback=approval_callback,
+                smart_denied=smart_denied_for_owner,
+            )
+            _fire_approval_hook(
+                "post_approval_response",
+                command=display_command,
+                description=display_description,
+                pattern_key=pattern_key,
+                pattern_keys=[pattern_key],
+                session_key=session_key,
+                surface="cli",
+                choice=choice,
+            )
+
+            if choice == "timeout":
+                breaker_addendum = _denial_breaker_addendum(session_key)
+                return {
+                    "approved": False,
+                    "message": (
+                        "BLOCKED: Action timed out without user response. The "
+                        "user has NOT consented to this action. Do NOT retry "
+                        "it, do NOT rephrase it, and do NOT attempt the same "
+                        "outcome via a different path. Silence is not "
+                        f"consent.{breaker_addendum}"
+                    ),
+                    "pattern_key": pattern_key,
+                    "description": description,
+                    "outcome": "timeout",
+                    "user_consent": False,
+                }
+            if choice == "deny":
+                # No _record_denial() here: the breaker counts consecutive
+                # *guardian LLM* DENY verdicts (see _record_denial), not
+                # deliberate human denials. Both sibling CLI tails
+                # (check_all_command_guards, _run_approval_gate) read the
+                # tally without incrementing it on a human deny; this arm
+                # matches them.
+                breaker_addendum = _denial_breaker_addendum(session_key)
+                return {
+                    "approved": False,
+                    "message": (
+                        "BLOCKED: User denied execute_code script execution "
+                        f"(matched '{description}'). Do NOT retry — the user "
+                        f"has explicitly rejected it.{breaker_addendum}"
+                    ),
+                    "pattern_key": pattern_key,
+                    "description": description,
+                    "outcome": "denied",
+                    "user_consent": False,
+                }
+            if not smart_denied_for_owner:
+                if choice == "session":
+                    approve_session(session_key, pattern_key)
+                elif choice == "always":
+                    approve_session(session_key, pattern_key)
+                    approve_permanent(pattern_key)
+                    save_permanent_allowlist(_permanent_approved)
+            _reset_denials(session_key)
+            return {
+                "approved": True,
+                "message": None,
+                "user_approved": True,
+                "description": description,
+            }
+
         # No gateway callback registered (e.g. ask-mode without a notifier):
         # surface a pending approval for backward compatibility.
         pending_data = {

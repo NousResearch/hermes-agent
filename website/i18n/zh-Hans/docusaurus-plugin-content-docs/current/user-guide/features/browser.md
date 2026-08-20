@@ -172,7 +172,7 @@ CAMOFOX_URL=http://localhost:9377
 
 或通过 `hermes tools` → Browser Automation → Camofox 进行配置。
 
-设置 `CAMOFOX_URL` 后，所有浏览器工具将自动通过 Camofox 路由，而非 Browserbase 或 agent-browser。
+设置 `CAMOFOX_URL` 仅提供服务器地址。要启用 Camofox，请在 `hermes tools` → Browser Automation 中选择 Camofox（写入 `browser.cloud_provider: camofox`）——一旦存在浏览器后端选择，仅设置 `CAMOFOX_URL` 不再自动切换后端（从未配置过的环境仍会自动检测）。
 
 #### 持久化浏览器会话
 

@@ -153,7 +153,7 @@ To point [Hermes Desktop](#connecting-hermes-desktop-to-a-remote-backend) at a d
 
 ### Connecting Hermes Desktop to a remote backend
 
-Hermes Desktop normally launches its own local backend, but it can also attach to a dashboard running on a remote machine (a VM, a homelab box, etc.) via **Settings → Gateway → Remote gateway**. This is the most common source of "Desktop says the backend is ready but chat never works" reports, because Desktop's readiness check verifies less than the live chat connection actually needs.
+Hermes Desktop normally launches its own local backend, but it can also attach to a dashboard running on a remote machine (a VM, a homelab box, etc.) via **Settings → Gateways → Remote gateway**. This is the most common source of "Desktop says the backend is ready but chat never works" reports, because Desktop's readiness check verifies less than the live chat connection actually needs.
 
 :::info Prerequisite: a `hermes dashboard` must be running on the remote host
 The "remote backend" Desktop connects to **is** a `hermes dashboard` process running on the remote machine — the same server this page documents. It has to be up and reachable before any of the steps below matter; Desktop attaches to it, it doesn't start it for you. Keep it running under `systemd`/`tmux`/etc. so it survives logout and reboots. The **gateway** (Telegram/Discord/Slack/etc.) is a *separate* long-running process — start it independently if you rely on messaging channels; it is not the thing the desktop app connects to.
@@ -199,7 +199,7 @@ curl -s http://VM_IP:9119/api/status | jq '.auth_required, .auth_providers'
 - `auth_required: true` but no `"basic"` provider → the username/password env vars aren't loaded. Fix those first.
 :::
 
-If `/api/status` shows the gate is on with the `"basic"` provider and Desktop *still* fails to connect after signing in, the issue is past basic setup — grab a fresh `desktop.log` (Settings → Gateway → Open logs) plus the dashboard's logs from the same retry window and look for the `/api/ws` close code (4403 = chat WS rejected by the request guard, e.g. Host/peer mismatch; 4401 = the WS ticket didn't authenticate).
+If `/api/status` shows the gate is on with the `"basic"` provider and Desktop *still* fails to connect after signing in, the issue is past basic setup — grab a fresh `desktop.log` (Settings → Gateways → Open logs) plus the dashboard's logs from the same retry window and look for the `/api/ws` close code (4403 = chat WS rejected by the request guard, e.g. Host/peer mismatch; 4401 = the WS ticket didn't authenticate).
 
 ### Config
 
@@ -1040,7 +1040,7 @@ The dashboard's React StatusPage shows the same fields under "Web server". A sid
 
 ## Connecting Hermes Desktop to a remote backend
 
-Hermes Desktop can drive a Hermes backend running on another machine (a VPS, a home server, a Mini behind Tailscale). In the app this lives under **Settings → Gateway → Remote gateway**, which asks for a **Remote URL** and a way to **Sign in**. (For the desktop app itself — install, settings, chat — see the [Hermes Desktop](/user-guide/desktop) page.)
+Hermes Desktop can drive a Hermes backend running on another machine (a VPS, a home server, a Mini behind Tailscale). In the app this lives under **Settings → Gateways → Remote gateway**, which asks for a **Remote URL** and a way to **Sign in**. (For the desktop app itself — install, settings, chat — see the [Hermes Desktop](/user-guide/desktop) page.)
 
 You protect the remote dashboard with one of the bundled auth providers, and the desktop app signs in against whichever one the backend advertises. For a backend reachable beyond your own machine — a VPS, a public host, anything internet-facing — the recommended provider is **OAuth (Nous Portal)** (register it with [`hermes dashboard register`](#registering-a-dashboard) and sign in with *Sign in with Nous Research*). The bundled [username/password provider](#usernamepassword-provider-no-oauth-idp) is the quickest option when the backend is on a trusted LAN or reachable only over a VPN, but is **not suitable for direct public-internet exposure**. Binding the dashboard to a non-loopback address engages its auth gate; once signed in, Desktop reuses the session for the chat WebSocket automatically — there is no token to copy or paste.
 
@@ -1073,7 +1073,7 @@ The dashboard reads and writes your `.env` (API keys, secrets) and can run agent
 
 ### In Hermes Desktop
 
-**Settings → Gateway → Remote gateway:**
+**Settings → Gateways → Remote gateway:**
 
 - **Remote URL** — `http://<backend-host>:9119` (path prefixes like `/hermes` are supported if you front it with a reverse proxy)
 - **Sign in** — the app detects the username/password gateway and shows a **Sign in** button; click it and enter the credentials from step 1

@@ -815,19 +815,26 @@ def _resolve_cloud_provider_uncached() -> Optional[CloudBrowserProvider]:
     global _cached_cloud_provider, _cloud_provider_resolved
 
     resolved: Optional[CloudBrowserProvider] = None
+    provider_key = None
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
         browser_cfg = cfg.get("browser", {})
-        provider_key = None
         if isinstance(browser_cfg, dict) and "cloud_provider" in browser_cfg:
             provider_key = normalize_browser_cloud_provider(
                 browser_cfg.get("cloud_provider")
             )
-            if provider_key == "local":
+            if provider_key in ("local", "camofox"):
+                # Camofox runs through the built-in browser tools
+                # (is_camofox_mode() dispatch), not a cloud provider.
                 _cached_cloud_provider = None
                 _cloud_provider_resolved = True
                 return None
+            if provider_key == "nous":
+                # Managed "Nous Subscription" selection is serviced by the
+                # Browser Use provider, whose config resolver routes it
+                # through the managed browser-use gateway.
+                provider_key = "browser-use"
         if provider_key:
             try:
                 if _is_legacy_provider_registry_overridden():
@@ -841,20 +848,20 @@ def _resolve_cloud_provider_uncached() -> Optional[CloudBrowserProvider]:
                     # populated. Idempotent — cheap on subsequent calls.
                     _ensure_browser_plugins_loaded()
                     resolved = _registry_get_browser_provider(provider_key)
-                    if resolved is None:
-                        # Explicit config name unknown to the registry —
-                        # might be a typo, an uninstalled plugin, or a
-                        # registry-population failure. Warn the user
-                        # (legacy code would have surfaced a typed
-                        # credentials error via direct class instantiation;
-                        # post-migration we surface this WARNING instead).
-                        logger.warning(
-                            "browser.cloud_provider=%r is not a registered "
-                            "browser plugin; falling back to auto-detect "
-                            "(install the corresponding plugin or fix the "
-                            "config key spelling).",
-                            provider_key,
-                        )
+                if resolved is None:
+                    # Strict selection: a stored-but-unregistered name is an
+                    # honest error, never a silent reroute to auto-detect.
+                    from tools.tool_backend_helpers import selection_error
+
+                    raise ValueError(selection_error(
+                        "browser",
+                        f"'{provider_key}'",
+                        "no registered browser plugin has that name (install "
+                        "the corresponding plugin or fix the config key "
+                        "spelling)",
+                    ))
+            except ValueError:
+                raise
             except Exception:
                 logger.warning(
                     "Failed to instantiate explicit cloud_provider %r; will retry on next call",
@@ -862,13 +869,16 @@ def _resolve_cloud_provider_uncached() -> Optional[CloudBrowserProvider]:
                     exc_info=True,
                 )
                 return None
+    except ValueError:
+        raise
     except Exception as e:
         # Config file may be temporarily unreadable; still try auto-detect so
         # env-based / managed-gateway credentials can resolve. Don't pin cache.
         logger.debug("Could not read cloud_provider from config: %s", e)
 
-    if resolved is None:
-        # Auto-detect path: Browser Use first (managed Nous gateway or
+    if resolved is None and provider_key is None:
+        # Auto-detect path — permitted ONLY when no cloud_provider selection
+        # was ever written: Browser Use first (managed Nous gateway or
         # direct API key), then Browserbase (direct credentials). Uses
         # the legacy class names imported at the top of this module so
         # tests that ``monkeypatch.setattr(browser_tool, "BrowserUseProvider", ...)``

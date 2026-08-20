@@ -663,6 +663,10 @@ export interface SubmitTextOptions {
    *  body — model-facing scaffolding the UI must never render — so the slash
    *  dispatcher passes the invocation (`/work fix the leak`) here. */
   displayText?: string
+  /** `hidden` types the persisted user row (display_kind) so no bubble
+   *  renders anywhere — the off-screen path for widget intents. The agent
+   *  still receives the text as a normal user turn. */
+  displayKind?: 'hidden'
   fromQueue?: boolean
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground

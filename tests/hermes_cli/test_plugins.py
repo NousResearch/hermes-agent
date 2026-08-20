@@ -25,6 +25,7 @@ from hermes_cli.plugins import (
     resolve_plugin_command_result,
     _portable_skill_namespace,
 )
+from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV
 from hermes_cli.middleware import (
     VALID_MIDDLEWARE,
     apply_llm_request_middleware,
@@ -119,6 +120,43 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
 
 class TestPluginDiscovery:
     """Tests for plugin discovery from directories and entry points."""
+
+    def test_removed_relay_plugin_identity_cannot_be_reloaded(
+        self, monkeypatch, caplog
+    ):
+        from hermes_cli import plugins as plugins_mod
+
+        manifest = PluginManifest(
+            name="nemo_relay",
+            key="observability/nemo_relay",
+            source="user",
+        )
+        manager = PluginManager()
+        monkeypatch.setattr(
+            manager,
+            "_collect_directory_manifests",
+            lambda: [manifest],
+        )
+        monkeypatch.setattr(manager, "_scan_entry_points", lambda: [])
+        monkeypatch.setattr(
+            plugins_mod,
+            "_get_enabled_plugins",
+            lambda: {"observability/nemo_relay"},
+        )
+        monkeypatch.setattr(plugins_mod, "_get_disabled_plugins", lambda: set())
+        loaded: list[PluginManifest] = []
+        monkeypatch.setattr(manager, "_load_plugin", loaded.append)
+
+        with caplog.at_level(logging.WARNING):
+            manager.discover_and_load()
+
+        state = manager._plugins["observability/nemo_relay"]
+        assert loaded == []
+        assert not state.enabled
+        assert state.error is not None
+        assert "Relay lifecycle is owned by Hermes core" in state.error
+        assert RELAY_PLUGINS_CONFIG_ENV in state.error
+        assert "Refusing to load removed Hermes Relay plugin" in caplog.text
 
     def test_enabled_portable_plugin_registers_components(
         self, tmp_path, monkeypatch

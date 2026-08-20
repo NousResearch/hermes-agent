@@ -142,16 +142,47 @@ ACHIEVEMENTS: List[Dict[str, Any]] = [
 ]
 
 
+def _data_dir() -> Path:
+    """Durable data root (``<hermes home>/plugin-data/hermes-achievements/``).
+
+    Was the install tree (``plugins/hermes-achievements/``) before the
+    plugin-data convention existed — state parked there died on
+    ``hermes plugins remove``/``update``. Legacy files migrate on first read.
+    """
+    try:
+        from plugins.plugin_storage import plugin_data_dir
+
+        return plugin_data_dir("hermes-achievements")
+    except Exception:
+        # Standalone dashboard import (no plugins package on sys.path):
+        # keep the plugin working with the same layout, computed locally.
+        root = get_hermes_home() / "plugin-data" / "hermes-achievements"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+
+def _data_file(name: str) -> Path:
+    path = _data_dir() / name
+    if not path.exists():
+        legacy = get_hermes_home() / "plugins" / "hermes-achievements" / name
+        if legacy.exists():
+            try:
+                path.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+            except Exception:
+                pass
+    return path
+
+
 def state_path() -> Path:
-    return get_hermes_home() / "plugins" / "hermes-achievements" / "state.json"
+    return _data_file("state.json")
 
 
 def snapshot_path() -> Path:
-    return get_hermes_home() / "plugins" / "hermes-achievements" / "scan_snapshot.json"
+    return _data_file("scan_snapshot.json")
 
 
 def checkpoint_path() -> Path:
-    return get_hermes_home() / "plugins" / "hermes-achievements" / "scan_checkpoint.json"
+    return _data_file("scan_checkpoint.json")
 
 
 def load_state() -> Dict[str, Any]:

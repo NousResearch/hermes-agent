@@ -64,6 +64,9 @@ type SeenCounts = Record<string, Record<string, number>>
 /** profile key → durable ids flagged by the live busy→idle edge. */
 type Markers = Record<string, string[]>
 
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+
 export const $sessionSeenCounts = persistentAtom<SeenCounts>(
   'hermes.desktop.sessionSeenCounts',
   {},
@@ -75,9 +78,6 @@ export const $unreadFinishedMarkers = persistentAtom<Markers>(
   {},
   Codecs.json(sanitizeMarkers)
 )
-
-const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
-  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 
 // Also the migration: a pre-profile-scoping flat record (durable id → number)
 // has non-object values, so it drops wholesale rather than mis-attributing

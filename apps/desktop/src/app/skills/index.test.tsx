@@ -292,6 +292,42 @@ describe('SkillsView toolset management', () => {
     )
   })
 
+  it('mounts the hub iframe lazily and keeps it (hidden) across tab switches', async () => {
+    // On a non-Skills tab the docs-site iframe must not exist at all — an
+    // eagerly mounted hub is exactly the Capabilities lag bug.
+    await renderSkills() // ?tab=toolsets
+    await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
+    expect(document.querySelector('iframe')).toBeNull()
+    cleanup()
+
+    // Embedded mode drives tabs through local state (the route hooks are
+    // mocked here), starting on Skills: the picker mounts with the tab.
+    const { SkillsView } = await import('./index')
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/skills']}>
+            <SkillsView embedded />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    const iframe = document.querySelector('iframe')
+    expect(iframe).toBeTruthy()
+    expect(iframe!.closest('section')!.classList.contains('hidden')).toBe(false)
+
+    // Switch to Tools → the iframe STAYS mounted (no docs-site reload on the
+    // next visit) but its section is fully hidden, so nothing from the hub
+    // can paint over the toolsets UI.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Tools/ }))
+    })
+    const kept = document.querySelector('iframe')
+    expect(kept).toBeTruthy()
+    expect(kept!.closest('section')!.classList.contains('hidden')).toBe(true)
+  })
+
   it('shows a vision explainer that deep-links to Settings → Models', async () => {
     // Vision has no TOOL_CATEGORIES provider matrix — its model lives in the
     // auxiliary model config, so the detail pane must point there instead of
@@ -318,5 +354,78 @@ describe('SkillsView toolset management', () => {
     // Internal route change into the Models section with the aux slot target —
     // consumed by ModelSettings' deep-link highlight. Never an external URL.
     await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/settings?tab=config:model&aux=vision'))
+  })
+
+  it('fixedConnection pins every read to the target connection', async () => {
+    // Bot Mode's remote-target door: a bot on another registered gateway gets
+    // the live surface pointed at ITS backend — the reads must carry the
+    // (connection, profile) pin, not a bare profile name that would resolve
+    // against the ACTIVE gateway (the wrong-machine bug).
+    const { SkillsView } = await import('./index')
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/skills']}>
+            <SkillsView embedded fixedConnection="homelab" fixedProfile="inbox-bot" />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    await waitFor(() => expect(getSkills).toHaveBeenCalled())
+    expect(getSkills.mock.calls[0][0]).toEqual({ connectionId: 'homelab', profile: 'inbox-bot' })
+    expect(getToolsets.mock.calls[0][0]).toEqual({ connectionId: 'homelab', profile: 'inbox-bot' })
+    // Pinned scope → no roster/profiles fetch, selector hidden.
+    expect(getProfiles).not.toHaveBeenCalled()
+  })
+
+  it('offers (connection, profile) scope rows on multi-connection desktops', async () => {
+    // With a v2 registry holding >1 connection, the scope selector lists the
+    // union agent roster — profile + owning device — instead of the local
+    // profiles list, so a selection identifies WHICH gateway's capabilities
+    // are being configured.
+    const connections = {
+      list: vi.fn().mockResolvedValue({
+        version: 2,
+        primary: 'local',
+        secureTokenStorage: true,
+        connections: [
+          { id: 'local', kind: 'local', label: 'This device', tokenSet: false, tokenPreview: null },
+          { id: 'homelab', kind: 'remote', label: 'Homelab', tokenSet: true, tokenPreview: '…' }
+        ]
+      })
+    }
+
+    const getAgentRoster = vi.fn().mockResolvedValue({
+      agents: [
+        {
+          connectionId: 'local',
+          connectionKind: 'local',
+          connectionLabel: 'This device',
+          profile: 'default',
+          handle: 'default'
+        },
+        {
+          connectionId: 'homelab',
+          connectionKind: 'remote',
+          connectionLabel: 'Homelab',
+          profile: 'inbox-bot',
+          handle: 'inbox-bot-homelab'
+        }
+      ],
+      sources: []
+    })
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = { connections, getAgentRoster }
+
+    try {
+      await renderSkills()
+
+      await waitFor(() => expect(getAgentRoster).toHaveBeenCalled())
+      // The selector paints roster rows labeled profile — device.
+      expect(await screen.findByText('default — This device (current)')).toBeTruthy()
+    } finally {
+      delete (window as { hermesDesktop?: unknown }).hermesDesktop
+    }
   })
 })

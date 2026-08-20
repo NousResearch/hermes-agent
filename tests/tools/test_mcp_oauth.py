@@ -493,7 +493,10 @@ class TestCallbackPortReservation:
         import threading
         import tools.mcp_oauth as mod
 
-        cfg: dict = {}
+        # cimd: false keeps this on the ephemeral branch. A CIMD-eligible
+        # config would take a pinned port instead, and this test would pass
+        # while never exercising _reserve_callback_port at all.
+        cfg: dict = {"cimd": False}
         port = mod._configure_callback_port(cfg)
         monkeypatch.setattr(mod, "_is_interactive", lambda: False)
         # Bypass the non-interactive guard — this test drives the flow directly.
@@ -508,9 +511,11 @@ class TestCallbackPortReservation:
             ).start()
             return await asyncio.wait_for(task, timeout=20)
 
-        code, state = asyncio.run(drive())
-        assert code == "abc123"
-        assert state == "xyz"
+        # mcp 2.0's callback_handler contract returns an
+        # AuthorizationCodeResult, not the legacy (code, state) tuple.
+        result = asyncio.run(drive())
+        assert result.code == "abc123"
+        assert result.state == "xyz"
         # Reservation was consumed by adoption.
         assert port not in mod._reserved_sockets
 
@@ -529,11 +534,14 @@ class TestCallbackPortReservation:
         monkeypatch.setattr(mod, "_is_interactive", lambda: False)
         monkeypatch.setattr(mod, "_raise_if_non_interactive", lambda lead: None)
 
-        cfg_a: dict = {}
+        # cimd: false keeps both flows on ephemeral ports, which is where the
+        # #34260 clobbering happens; the pinned range has its own coverage in
+        # tests/tools/test_mcp_cimd.py.
+        cfg_a: dict = {"cimd": False}
         port_a = mod._configure_callback_port(cfg_a)
         waiter_a = mod._make_callback_waiter(port_a)
         # Flow B configures afterwards — overwrites mod._oauth_port.
-        cfg_b: dict = {}
+        cfg_b: dict = {"cimd": False}
         port_b = mod._configure_callback_port(cfg_b)
         assert mod._oauth_port == port_b != port_a
 
@@ -549,13 +557,13 @@ class TestCallbackPortReservation:
             return await asyncio.wait_for(task, timeout=20)
 
         try:
-            code, state = asyncio.run(drive())
+            result = asyncio.run(drive())
         finally:
             leftover = mod._reserved_sockets.pop(port_b, None)
             if leftover is not None:
                 leftover.close()
-        assert code == "flowA"
-        assert state == "sA"
+        assert result.code == "flowA"
+        assert result.state == "sA"
 
 
 # ---------------------------------------------------------------------------
@@ -858,7 +866,7 @@ _PROXY_REDIRECT = "https://oauth.example.ts.net/callback"
 
 
 @pytest.mark.parametrize("cfg, expected_auth", [
-    ({}, "none"),                                    # public client
+    ({"cimd": False}, "none"),                       # public client
     ({"client_secret": "shh"}, "client_secret_post"),  # confidential client
 ])
 def test_build_client_metadata_token_endpoint_auth(cfg, expected_auth):

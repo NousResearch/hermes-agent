@@ -1659,9 +1659,27 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         # The input itself fits — this is purely an output-cap error, so reduce
         # max_tokens and retry; do NOT compress.
         "range of max_tokens should be" in error_lower
+    ) or (
+        # OpenAI-compatible relays may reject a request whose output cap exceeds
+        # the model's separate completion-token limit, e.g.
+        #   "max_tokens (98304) exceeds model's maximum output tokens (65536)"
+        # This is independent of the input context window.
+        "exceeds model" in error_lower
+        and "maximum output tokens" in error_lower
     )
     if not is_output_cap_error:
         return None
+
+    # Generic model-output-cap form:
+    #   "max_tokens (98304) exceeds model's maximum output tokens (65536)"
+    _m_max_output = re.search(
+        r'exceeds model(?:\'s)? maximum output tokens\s*\(?\s*(\d+)\s*\)?',
+        error_lower,
+    )
+    if _m_max_output:
+        _cap = int(_m_max_output.group(1))
+        if _cap >= 1:
+            return _cap
 
     # DashScope / Alibaba range form: "Range of max_tokens should be [1, 65536]".
     # The upper bound is the available output cap.
@@ -1726,11 +1744,28 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     # Available output = window - input. When the input alone is at or over
     # the window this stays None, so the caller correctly falls through to
     # compression instead of futilely shrinking the output cap.
+    #
+    # Caveat: when max_tokens is the BINDING constraint, vLLM does not report
+    # the real prompt size at all.  It back-computes a lower bound from the
+    # constraint itself -- "at least N input tokens" where
+    # N == window + 1 - requested_output -- so window - N is always exactly
+    # requested_output - 1.  Subtracting the caller's safety margin then walks
+    # the cap down ~65 tokens per retry while the reported input walks up by
+    # the same amount, burning every compression attempt without ever fitting.
+    # Detect that degenerate case and halve the requested cap instead: it
+    # carries the same guarantee (strictly below what was rejected) and
+    # converges in one or two retries.
     _m_vllm_input = re.search(
         r'prompt contains (?:at least )?(\d+)\s*input tokens', error_lower
     )
     if _m_ctx_tok and _m_vllm_input:
         _available = int(_m_ctx_tok.group(1)) - int(_m_vllm_input.group(1))
+        _m_requested_out = re.search(r'requested (\d+)\s*output tokens', error_lower)
+        if 'at least' in error_lower and _m_requested_out:
+            _requested_out = int(_m_requested_out.group(1))
+            if _available >= _requested_out - 1:
+                # The budget is derived from the constraint, not measured.
+                return max(1, _requested_out // 2)
         if _available >= 1:
             return _available
 
@@ -1782,6 +1817,8 @@ def is_output_cap_error(error_msg: str) -> bool:
         or "should be" in error_lower                       # generic "max_tokens should be <= N"
         or "less than or equal" in error_lower
         or "must be" in error_lower
+        or ("exceeds model" in error_lower
+            and "maximum output tokens" in error_lower)
     )
     if not output_cap_signal:
         return False
@@ -2348,12 +2385,17 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
 }
 
 # Codex OAuth advertises 272K via /backend-api/codex/models for these
-# families, but the backend actually ACCEPTS more (verified live Aug 16 2026
-# against chatgpt.com/backend-api/codex/responses: ~371K input tokens
-# completed OK for gpt-5.6-sol/terra/luna and gpt-5.4; ~382K+ rejected with
-# ``context_length_exceeded``; gpt-5.5 rejected 360K, so its 272K
-# advertisement is real and it is NOT listed). 350K keeps ~22K margin under
-# the observed ~372K enforcement.
+# families, but the backend actually ACCEPTS far more. OpenAI enabled the
+# large-context window for ChatGPT-subscription Codex accounts on
+# Aug 16 2026 (announced by @thsottiaux; previously API-key-only).
+# Verified live against chatgpt.com/backend-api/codex/responses the same
+# day: 911,276 input tokens completed OK on gpt-5.6-sol; ~925K+ rejected
+# with ``context_length_exceeded`` (the 1.05M window minus reserved output
+# headroom). gpt-5.6-terra, gpt-5.6-luna, and gpt-5.4 all completed 900,026
+# tokens OK. gpt-5.5 and gpt-5.4-mini still rejected >272K, so their
+# advertisement is real enforcement and they are NOT listed. 900K keeps
+# ≥11K margin under the observed ceiling and matches the compaction point
+# Codex's own client config documents for the 1M window.
 #
 # Applied ONLY when the resolved value (live probe or fallback table) is
 # exactly the known-stale 272,000 advertisement — if OpenAI moves the
@@ -2362,13 +2404,13 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
 # this table is inert. ``gpt-5.6`` is a FAMILY PREFIX (sol/terra/luna and
 # dated snapshots; ``-pro`` slugs are not routable on Codex OAuth — the
 # backend 400s them — so over-matching there is moot). ``gpt-5.4`` is EXACT:
-# gpt-5.4-mini was probed and genuinely enforces 272K (rejected 360K), so
+# gpt-5.4-mini was probed and genuinely enforces 272K (rejected 500K), so
 # prefix-matching the 5.4 family would over-report for mini.
 _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {
-    "gpt-5.6": 350_000,   # sol / terra / luna — all three verified live
+    "gpt-5.6": 900_000,   # sol / terra / luna — all three verified live at 900K
 }
 _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
-    "gpt-5.4": 350_000,   # verified live; gpt-5.4-mini rejected 360K — excluded
+    "gpt-5.4": 900_000,   # verified live at 900K; gpt-5.4-mini rejected 500K — excluded
 }
 
 # The advertised value the verified-above table is allowed to override.

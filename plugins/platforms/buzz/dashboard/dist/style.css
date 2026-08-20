@@ -26,6 +26,13 @@
   mask: url("../assets/BuzzLogo24px.svg") center / contain no-repeat;
 }
 
+.buzz-config-section-icon {
+  display: inline-block;
+  background-color: currentColor;
+  -webkit-mask: url("../assets/BuzzLogo24px.svg") center / contain no-repeat;
+  mask: url("../assets/BuzzLogo24px.svg") center / contain no-repeat;
+}
+
 .buzz-policy-kicker,
 .buzz-policy-subtitle,
 .buzz-policy-help,

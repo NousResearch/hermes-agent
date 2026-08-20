@@ -52,9 +52,16 @@ describe("Config plugin sections", () => {
     apiMocks.getDefaults.mockResolvedValue({ general: { model: "" } });
     apiMocks.getConfigRaw.mockResolvedValue({ path: "/tmp/config.yaml", yaml: "" });
     apiMocks.getStatus.mockResolvedValue({ config_path: "/tmp/config.yaml" });
-    registerSlot("buzz-platform", "config:section:buzz", () => (
-      <div data-testid="buzz-policy-panel">Buzz policy panel</div>
-    ));
+    registerSlot(
+      "buzz-platform",
+      "config:section:buzz",
+      () => <div data-testid="buzz-policy-panel">Buzz policy panel</div>,
+      {
+        icon: ({ className }) => (
+          <span data-testid="buzz-section-icon" className={className} />
+        ),
+      },
+    );
     container = document.createElement("div");
     headerContainer = document.createElement("div");
     document.body.append(container);
@@ -85,6 +92,7 @@ describe("Config plugin sections", () => {
       (button) => button.textContent?.includes("Buzz"),
     );
     expect(buzzSection).toBeDefined();
+    expect(buzzSection?.querySelector('[data-testid="buzz-section-icon"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="buzz-policy-panel"]')).toBeNull();
 
     await act(async () => buzzSection?.click());

@@ -50,7 +50,11 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
-import { PluginSlot, useConfigSectionNames } from "@/plugins";
+import {
+  PluginSlot,
+  useConfigSectionIcons,
+  useConfigSectionNames,
+} from "@/plugins";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -89,11 +93,13 @@ const CATEGORY_ICONS: Record<
 function CategoryIcon({
   category,
   className,
+  pluginIcon,
 }: {
   category: string;
   className?: string;
+  pluginIcon?: React.ComponentType<{ className?: string }>;
 }) {
-  const Icon = CATEGORY_ICONS[category] ?? FileQuestion;
+  const Icon = pluginIcon ?? CATEGORY_ICONS[category] ?? FileQuestion;
   return <Icon className={className ?? "h-4 w-4"} />;
 }
 
@@ -125,6 +131,7 @@ export default function ConfigPage() {
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
   const pluginConfigSections = useConfigSectionNames();
+  const pluginConfigSectionIcons = useConfigSectionIcons();
 
   useLayoutEffect(() => {
     if (!config || !schema) {
@@ -407,6 +414,7 @@ export default function ConfigPage() {
               <CategoryIcon
                 category={cat}
                 className="h-4 w-4 text-muted-foreground"
+                pluginIcon={pluginConfigSectionIcons[cat]}
               />
               <span className="font-mondwest text-display text-xs font-semibold tracking-wider text-muted-foreground">
                 {prettyCategoryName(cat)}
@@ -583,6 +591,7 @@ export default function ConfigPage() {
                         <CategoryIcon
                           category={cat}
                           className="h-3.5 w-3.5 shrink-0"
+                          pluginIcon={pluginConfigSectionIcons[cat]}
                         />
                         <span className="flex-1 truncate">
                           {prettyCategoryName(cat)}

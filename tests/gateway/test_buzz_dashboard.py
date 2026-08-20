@@ -110,7 +110,9 @@ def test_dashboard_bundle_uses_policy_api_profile_and_stale_response_guards():
     assert "const readyPair" in source
     assert "loading || saving || !ready || locked" in source
     assert "useEffect" in source and "[profile]" in source
-    assert 'registry.registerSlot(PLUGIN_NAME, "config:section:buzz", BuzzPolicyPanel)' in source
+    assert '"config:section:buzz"' in source
+    assert "BuzzPolicyPanel" in source
+    assert "{ icon: BuzzSectionIcon }" in source
     assert "registry.register(PLUGIN_NAME" not in source
 
 
@@ -187,6 +189,7 @@ def test_dashboard_styles_present_an_obvious_spacious_config_section():
     css = (DASHBOARD / "dist" / "style.css").read_text(encoding="utf-8")
 
     assert "../assets/BuzzLogo24px.svg" in css
+    assert ".buzz-config-section-icon" in css
     assert ".buzz-policy-section" in css
     assert "padding:" in css
     assert "gap:" in css

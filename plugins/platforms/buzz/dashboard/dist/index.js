@@ -174,6 +174,13 @@
     );
   }
 
+  function BuzzSectionIcon(props) {
+    const className = ["buzz-config-section-icon", props && props.className]
+      .filter(Boolean)
+      .join(" ");
+    return h("span", { className: className, "aria-hidden": "true" });
+  }
+
   function SwitchRow(props) {
     return h("label", { className: "buzz-policy-switch" },
       h("input", {
@@ -440,6 +447,11 @@
     );
   }
 
-  registry.registerSlot(PLUGIN_NAME, "config:section:buzz", BuzzPolicyPanel);
+  registry.registerSlot(
+    PLUGIN_NAME,
+    "config:section:buzz",
+    BuzzPolicyPanel,
+    { icon: BuzzSectionIcon },
+  );
   return helpers;
 });

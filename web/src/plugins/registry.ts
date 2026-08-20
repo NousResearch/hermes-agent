@@ -37,7 +37,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { Separator } from "@nous-research/ui/ui/components/separator";
 import { Tabs, TabsList, TabsTrigger } from "@nous-research/ui/ui/components/tabs";
 import { useI18n } from "@/i18n";
-import { registerSlot, PluginSlot } from "./slots";
+import { registerSlot, PluginSlot, type SlotMetadata } from "./slots";
 import {
   acceptsCurrentScriptRegistration,
   getCurrentPluginAsset,
@@ -81,9 +81,10 @@ function registerPluginSlot(
   plugin: string,
   slot: string,
   component: React.ComponentType,
+  metadata?: SlotMetadata,
 ) {
   const clearedError = _loadErrors.delete(plugin);
-  registerSlot(plugin, slot, component);
+  registerSlot(plugin, slot, component, metadata);
   if (clearedError) _notify();
 }
 
@@ -91,9 +92,9 @@ type PluginRegistryFacade = NonNullable<Window["__HERMES_PLUGINS__"]>;
 
 const sharedRegistryFacade: PluginRegistryFacade = {
   register: registerPluginFromSDK,
-  registerSlot(plugin, slot, component) {
+  registerSlot(plugin, slot, component, metadata) {
     if (!acceptsCurrentScriptRegistration(plugin)) return;
-    registerPluginSlot(plugin, slot, component);
+    registerPluginSlot(plugin, slot, component, metadata);
   },
 };
 
@@ -105,9 +106,9 @@ function assetRegistryFacade(plugin: string, asset: string): PluginRegistryFacad
       if (!accepts(requestedPlugin)) return;
       registerPlugin(requestedPlugin, component);
     },
-    registerSlot(requestedPlugin, slot, component) {
+    registerSlot(requestedPlugin, slot, component, metadata) {
       if (!accepts(requestedPlugin)) return;
-      registerPluginSlot(requestedPlugin, slot, component);
+      registerPluginSlot(requestedPlugin, slot, component, metadata);
     },
   };
 }

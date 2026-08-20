@@ -103,6 +103,11 @@ type SlotListener = () => void;
 interface SlotEntry {
   plugin: string;
   component: React.ComponentType;
+  metadata?: SlotMetadata;
+}
+
+export interface SlotMetadata {
+  icon?: React.ComponentType<{ className?: string }>;
 }
 
 /** Map<slotName, SlotEntry[]>. Entries are appended in registration order. */
@@ -129,10 +134,11 @@ export function registerSlot(
   plugin: string,
   slot: string,
   component: React.ComponentType,
+  metadata?: SlotMetadata,
 ): void {
   const existing = _slotRegistry.get(slot) ?? [];
   const filtered = existing.filter((e) => e.plugin !== plugin);
-  filtered.push({ plugin, component });
+  filtered.push({ plugin, component, metadata });
   _slotRegistry.set(slot, filtered);
   _notifySlots();
 }
@@ -154,6 +160,21 @@ export function getConfigSectionNames(): string[] {
     .sort();
 }
 
+/** Icons contributed by currently registered plugin-owned Config sections. */
+export function getConfigSectionIcons(): Record<
+  string,
+  React.ComponentType<{ className?: string }>
+> {
+  const icons: Record<string, React.ComponentType<{ className?: string }>> = {};
+  for (const [slot, entries] of _slotRegistry.entries()) {
+    if (!slot.startsWith(CONFIG_SECTION_PREFIX)) continue;
+    const section = slot.slice(CONFIG_SECTION_PREFIX.length);
+    const icon = entries.find((entry) => entry.metadata?.icon)?.metadata?.icon;
+    if (section && icon) icons[section] = icon;
+  }
+  return icons;
+}
+
 /** Reactively track plugin-owned Config sections as plugins load/unload. */
 export function useConfigSectionNames(): string[] {
   const [sections, setSections] = useState<string[]>(getConfigSectionNames);
@@ -163,6 +184,20 @@ export function useConfigSectionNames(): string[] {
     return onSlotRegistered(refresh);
   }, []);
   return sections;
+}
+
+/** Reactively track icons for plugin-owned Config sections. */
+export function useConfigSectionIcons(): Record<
+  string,
+  React.ComponentType<{ className?: string }>
+> {
+  const [icons, setIcons] = useState(getConfigSectionIcons);
+  useEffect(() => {
+    const refresh = () => setIcons(getConfigSectionIcons());
+    refresh();
+    return onSlotRegistered(refresh);
+  }, []);
+  return icons;
 }
 
 /** Subscribe to registry changes. Returns an unsubscribe function. */

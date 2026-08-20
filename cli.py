@@ -11638,8 +11638,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             from hermes_state import SessionDB
                             new_title = SessionDB.sanitize_title(raw_title)
                         except ValueError as e:
+                            # sanitize_title rejected the input (e.g. too long).
+                            # Print that one reason and stop — don't fall
+                            # through to the "empty after cleanup" branch and
+                            # print a second, contradictory error (SC-05).
                             _cprint(f"  {e}")
-                            new_title = None
+                            return True
                         if not new_title:
                             _cprint("  Title is empty after cleanup. Please use printable characters.")
                         elif self._session_db.get_session(self.session_id):
@@ -11729,9 +11733,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _undo_n = int(_undo_parts[1])
                 except ValueError:
                     print(f"(._.) Invalid count {_undo_parts[1]!r} — use /undo or /undo N.")
-                    return
+                    return True  # bad arg — command handled, keep the REPL alive
                 if _undo_n < 1:
                     _undo_n = 1
+            # Nothing to undo → say so immediately; don't pop a destructive
+            # confirmation dialog for a guaranteed no-op (SC-06).
+            if not self.conversation_history:
+                print("(._.) No messages to undo.")
+                return True
             _undo_desc = (
                 "This removes the last user/assistant exchange from history."
                 if _undo_n == 1

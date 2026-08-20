@@ -1048,7 +1048,7 @@ class CLICommandsMixin:
         session_meta = self._session_db.get_session(target_id)
         if not session_meta:
             _cprint(f"  Session not found: {target}")
-            _cprint("  Use /history or `hermes sessions list` to see available sessions.")
+            _cprint("  Use /sessions or `hermes sessions list` to see available sessions.")
             return
 
         # If the target is the empty head of a compression chain, redirect to

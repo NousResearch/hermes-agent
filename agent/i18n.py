@@ -26,7 +26,7 @@ Language resolution order:
     4. ``"en"`` (baseline)
 
 Supported languages: en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga,
-pt, ru, hu, ar.  Unknown values fall back to en.
+pt, ru, hu, ar, cs.  Unknown values fall back to en.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES: tuple[str, ...] = (
     "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
-    "af", "ko", "it", "ga", "pt", "ru", "hu", "ar",
+    "af", "ko", "it", "ga", "pt", "ru", "hu", "ar", "cs",
 )
 DEFAULT_LANGUAGE = "en"
 
@@ -81,6 +81,8 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
     # Arabic — bare "arabic"/endonym plus the common regional BCP-47 tags.
     "arabic": "ar", "العربية": "ar",
+    # Czech
+    "czech": "cs", "čeština": "cs", "cestina": "cs", "česky": "cs", "cesky": "cs", "cs-cz": "cs",
     "ar-sa": "ar", "ar-eg": "ar", "ar-ae": "ar", "ar-ma": "ar", "ar-dz": "ar",
 }
 

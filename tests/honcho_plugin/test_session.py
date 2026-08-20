@@ -181,6 +181,28 @@ class TestPeerLookupHelpers:
         # user-stated facts from assistant-derived ones.
         assert "[assistant" in result
 
+    def test_search_context_falls_back_to_peer_search_on_empty_results(self):
+        """An empty workspace search (HTTP 200, no rows) also triggers the
+        peer-authored fallback, not just raised exceptions.
+
+        Regression test: self-hosted Honcho v3 accepts the peer_perspective
+        filter but can return [] (e.g. membership joined_at windows), which
+        previously surfaced as "No relevant context found." every time.
+        """
+        mgr, session = self._make_cached_manager()
+        honcho_client = MagicMock()
+        honcho_client.search.return_value = []
+        peer = MagicMock()
+        peer.search.return_value = [
+            SimpleNamespace(content="I founded neuralancer in 2019", peer_id="robert", session_id="s-old", id="m1"),
+        ]
+        mgr._get_or_create_peer = MagicMock(return_value=peer)
+        with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
+            result = mgr.search_context(session.key, "neuralancer")
+
+        assert "neuralancer in 2019" in result
+        peer.search.assert_called_once()
+
 
     def test_create_conclusion_defaults_to_user_target(self):
         mgr, session = self._make_cached_manager()

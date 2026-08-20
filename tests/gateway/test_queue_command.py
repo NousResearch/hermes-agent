@@ -135,5 +135,38 @@ async def test_queue_preserves_reply_context():
     assert queued.reply_to_author_name == "alice"
 
 
+@pytest.mark.asyncio
+async def test_steer_fallback_preserves_signal_native_reply_anchor():
+    """Queued Signal edits must keep the displayed-message quote target."""
+    from gateway.platforms.base import _reply_anchor_for_event
+    from gateway.run import _AGENT_PENDING_SENTINEL
+
+    runner, adapter = _make_runner(_session_entry())
+    source = SessionSource(
+        platform=Platform.SIGNAL,
+        user_id="+15551230000",
+        chat_id="+15551230000",
+        user_name="tester",
+        chat_type="dm",
+    )
+    runner.adapters[Platform.SIGNAL] = adapter
+    runner._peek_session_state = lambda _key: SimpleNamespace(
+        turn=SimpleNamespace(agent=_AGENT_PENDING_SENTINEL)
+    )
+    event = MessageEvent(
+        text="/steer revised question",
+        source=source,
+        message_id="1712345680000",
+        raw_message={"timestamp_ms": 1712345678000},
+    )
+
+    result = await runner._busy_steer_command(event, "signal-session", source)
+
+    assert result == "Agent still starting — /steer queued for the next turn."
+    queued = adapter._pending_messages["signal-session"]
+    assert queued.message_id == "1712345680000"
+    assert _reply_anchor_for_event(queued) == "1712345678000"
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

@@ -116,6 +116,10 @@ def test_unreadable_status_still_serves_a_running_state(progress):
 # while it ran -- the update child is the only thing that can observe the
 # window's state at the exact moment of the longest wait in the hand-off.
 FAKE_HERMES = """#!/bin/bash
+# The hand-off probes `update --help` for --keep-stash support before the
+# real update call; answer it without consuming a counted call so the
+# exits.N mapping below still refers to actual update attempts.
+case "$*" in *--help*) echo "--keep-stash"; exit 0 ;; esac
 n="$(cat "$HERMES_TEST_CALLS" 2>/dev/null || echo 0)"; n=$((n + 1))
 printf '%s' "$n" > "$HERMES_TEST_CALLS"
 for f in "$TMPDIR"/hermes-update-status.[0-9]*; do

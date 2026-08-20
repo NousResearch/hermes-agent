@@ -217,6 +217,56 @@ class TestContentDiscipline:
         # The diagnostic value survives the redaction — this is the point.
         assert "400 from provider" in msg
 
+    SENTINEL = "the marmalade inventory for Q3 was discontinued in March"
+
+    def test_a_prompt_the_provider_quotes_back_does_not_reach_the_record(
+        self, turn_env, caplog
+    ):
+        """Secret redaction is not prompt omission, and this is the difference.
+
+        A provider that rejects a request routinely quotes it back. The quoted
+        material is the user's own prose: it matches no credential pattern, so
+        ``redact_sensitive_text`` passes it through untouched, and adding the
+        cause to this record would newly persist user content that #86865
+        deliberately kept out of it. The sentinel here is deliberately benign
+        for that reason: nothing about it looks like a secret.
+        """
+        session = _session(agent=_agent_returning({
+            "final_response": "",
+            "error": (
+                "400 Bad Request from provider: messages[0].content was "
+                "rejected: '" + self.SENTINEL + "'"
+            ),
+            "failed": True,
+        }))
+
+        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+            _run(session, "Summarise this: " + self.SENTINEL)
+
+        msg = _finished(caplog)
+        assert self.SENTINEL not in msg
+        assert "marmalade" not in msg
+        assert "<prompt>" in msg, "the removal should be visible, not silent"
+        # The whole point of the cause survives the removal.
+        assert "400 Bad Request from provider" in msg
+
+    def test_a_provider_message_that_shares_nothing_is_untouched(
+        self, turn_env, caplog
+    ):
+        """The echo strip must not eat diagnostics that merely sit near a prompt."""
+        session = _session(agent=_agent_returning({
+            "final_response": "",
+            "error": "429 rate limited; retry after 30s",
+            "failed": True,
+        }))
+
+        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+            _run(session, "Summarise this: " + self.SENTINEL)
+
+        msg = _finished(caplog)
+        assert "429 rate limited; retry after 30s" in msg
+        assert "<prompt>" not in msg
+
     def test_a_huge_provider_body_cannot_flood_the_log(self, turn_env, caplog):
         """An HTML error page or a full request echo is a log-volume problem."""
         session = _session(agent=_agent_returning({
@@ -272,6 +322,11 @@ class TestDetailHelperDirectly:
     def test_an_exception_with_no_message_still_names_its_type(self):
         assert "KeyError" in server._turn_failure_detail(KeyError())
 
+    def test_the_prompt_argument_is_optional(self):
+        """Callers without a prompt in scope still get the secret contract."""
+        out = server._turn_failure_detail("Bearer sk-proj-supersecretvalue1234")
+        assert "supersecretvalue1234" not in out
+
     def test_a_broken_redactor_fails_closed(self, monkeypatch):
         """If redaction cannot run, the raw message must not reach the log.
 
@@ -288,3 +343,43 @@ class TestDetailHelperDirectly:
         out = server._turn_failure_detail("Bearer sk-proj-supersecretvalue")
         assert "supersecretvalue" not in out
         assert "unredactable" in out
+
+
+class TestPromptEchoStripping:
+    """``_strip_prompt_echo`` in isolation: the boundaries of the guarantee."""
+
+    def test_an_overlap_below_the_window_is_not_an_echo(self):
+        """Short shared phrases are coincidence, and eating them costs detail."""
+        out = server._strip_prompt_echo("400: invalid model", "invalid model")
+        assert out == "400: invalid model"
+
+    def test_a_json_escaped_echo_is_stripped_too(self):
+        """A provider handing back its own request body often hands it escaped."""
+        prompt = "please summarise the Q3 marmalade inventory memo for me"
+        message = 'upstream body: {"messages": [{"content": "' + prompt + '"}]}'
+        out = server._strip_prompt_echo(message, prompt)
+        assert "marmalade" not in out
+        assert "<prompt>" in out
+
+    def test_an_echo_is_removed_before_the_length_cap_applies(self):
+        """A quote must not survive by starting inside the kept prefix."""
+        prompt = "the confidential merger memorandum for the northern division"
+        error = ("x" * 200) + " echoed request: " + prompt
+        out = server._turn_failure_detail(error, None, prompt)
+        assert "merger memorandum" not in out
+        assert "confidential" not in out
+
+    def test_a_prompt_shorter_than_the_window_cannot_blank_the_message(self):
+        """A one-word prompt must not turn every message into <prompt>."""
+        out = server._strip_prompt_echo("provider said no", "hi")
+        assert out == "provider said no"
+
+    def test_whitespace_shape_does_not_hide_an_echo(self):
+        """Both sides are collapsed, so a re-wrapped quote still matches."""
+        prompt = "the marmalade inventory for Q3 was discontinued in March"
+        error = (
+            "rejected:    the marmalade inventory\n"
+            " for Q3 was discontinued in March"
+        )
+        out = server._turn_failure_detail(error, None, prompt)
+        assert "marmalade" not in out

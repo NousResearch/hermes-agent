@@ -693,7 +693,48 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             continue
         if is_provider_explicitly_configured(slug):
             kept.append(row)
+            continue
+        if slug == "anthropic" and _has_valid_external_anthropic_credentials():
+            # is_provider_explicitly_configured() deliberately excludes
+            # CLAUDE_CODE_OAUTH_TOKEN / external Claude Code credential files
+            # so aux tasks never silently burn the user's Claude Code
+            # subscription tokens without an explicit Hermes-side choice
+            # (PR #4210). That gate must stay untouched.
+            #
+            # But list_authenticated_providers() (used by BOTH the CLI
+            # `/model` picker and the desktop picker, upstream of this
+            # explicit-only filter) already surfaces anthropic whenever
+            # valid external Claude Code / Hermes-PKCE credentials exist —
+            # that's why `hermes model` already lists it. The desktop's
+            # explicit-only filter was silently dropping that same row,
+            # so the two surfaces disagreed. Keep the row visible here too
+            # (display only — is_provider_explicitly_configured is untouched,
+            # so aux-task gating and credential-pool behavior don't change).
+            kept.append(row)
     return kept
+
+
+def _has_valid_external_anthropic_credentials() -> bool:
+    """True when Claude Code CLI or Hermes-managed OAuth creds are usable.
+
+    Mirrors the has_creds fallback in ``list_authenticated_providers()`` so
+    the desktop's explicit-only picker filter agrees with what the CLI
+    `/model` picker already shows for Anthropic. Display-only check — does
+    NOT affect ``is_provider_explicitly_configured()`` or aux-task gating.
+    """
+    try:
+        from agent.anthropic_adapter import (
+            read_claude_code_credentials,
+            read_hermes_oauth_credentials,
+        )
+        hermes_creds = read_hermes_oauth_credentials()
+        cc_creds = read_claude_code_credentials()
+        return bool(
+            (hermes_creds and hermes_creds.get("accessToken"))
+            or (cc_creds and cc_creds.get("accessToken"))
+        )
+    except Exception:
+        return False
 
 
 def _raw_config_has_enabled_moa_preset() -> bool:

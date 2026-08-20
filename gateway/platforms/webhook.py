@@ -382,23 +382,55 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
-        # Cross-platform delivery — any platform with a gateway adapter.
-        # Check both built-in names and plugin-registered platforms.
-        _is_known_platform = deliver_type in _BUILTIN_DELIVER_PLATFORMS
-        if not _is_known_platform:
-            try:
-                from gateway.platform_registry import platform_registry
-                _is_known_platform = platform_registry.is_registered(deliver_type)
-            except Exception:
-                pass
-        if self.gateway_runner and _is_known_platform:
-            return await self._deliver_cross_platform(
-                deliver_type, content, delivery
+        # Multi-target: parse comma-separated deliver field and fan out.
+        targets = self._parse_deliver_targets(delivery)
+
+        if len(targets) == 1:
+            # Single-target: preserve original single-delivery path.
+            t = targets[0]
+            platform_name = t["deliver"]
+            _is_known_platform = platform_name in _BUILTIN_DELIVER_PLATFORMS
+            if not _is_known_platform:
+                try:
+                    from gateway.platform_registry import platform_registry
+                    _is_known_platform = platform_registry.is_registered(platform_name)
+                except Exception:
+                    pass
+            if self.gateway_runner and _is_known_platform:
+                return await self._deliver_cross_platform(
+                    platform_name, content, t
+                )
+            logger.warning("[webhook] Unknown deliver type: %s", platform_name)
+            return SendResult(
+                success=False, error=f"Unknown deliver type: {platform_name}"
             )
 
-        logger.warning("[webhook] Unknown deliver type: %s", deliver_type)
+        # Multi-target: deliver to each platform independently.
+        results: List[SendResult] = []
+        for t in targets:
+            platform_name = t["deliver"]
+            _is_known_platform = platform_name in _BUILTIN_DELIVER_PLATFORMS
+            if not _is_known_platform:
+                try:
+                    from gateway.platform_registry import platform_registry
+                    _is_known_platform = platform_registry.is_registered(platform_name)
+                except Exception:
+                    pass
+            if not self.gateway_runner or not _is_known_platform:
+                results.append(SendResult(
+                    success=False, error=f"Unknown or unconnected platform: {platform_name}"
+                ))
+                continue
+            result = await self._deliver_cross_platform(
+                platform_name, content, t
+            )
+            results.append(result)
+
+        all_success = any(r.success for r in results)
+        errors = [r.error for r in results if not r.success and r.error]
         return SendResult(
-            success=False, error=f"Unknown deliver type: {deliver_type}"
+            success=all_success,
+            error="; ".join(errors) if errors else None,
         )
 
     def _prune_delivery_info(self, now: float) -> None:
@@ -1112,6 +1144,17 @@ class WebhookAdapter(BasePlatformAdapter):
             ).hexdigest()
             return _hmac_str_equal(gh_sig, expected)
 
+        # Exit1.dev: X-Exit1-Signature = sha256=<hex HMAC-SHA256>
+        # Verifies the HMAC-SHA256 signature sent by Exit1 website monitor
+        # webhooks.  The signature covers the raw request body only (no
+        # timestamp prefix), matching the format documented at:
+        # https://docs.exit1.dev/alerting/webhook-alerts
+        exit1_sig = request.headers.get("X-Exit1-Signature", "")
+        if exit1_sig:
+            raw_sig = exit1_sig.replace("sha256=", "", 1) if exit1_sig.startswith("sha256=") else exit1_sig
+            expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+            return _hmac_str_equal(raw_sig, expected)
+
         # GitLab: X-Gitlab-Token = <plain secret>
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:
@@ -1324,11 +1367,100 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
-        # Fall through to the cross-platform dispatcher, which validates the
-        # target name and routes via the gateway runner.
-        return await self._deliver_cross_platform(
-            deliver_type, content, delivery
+        # Multi-target: parse comma-separated deliver field and fan out.
+        targets = self._parse_deliver_targets(delivery)
+
+        if len(targets) == 1:
+            # Single-target: preserve original single-delivery path.
+            t = targets[0]
+            platform_name = t["deliver"]
+            _is_known_platform = platform_name in _BUILTIN_DELIVER_PLATFORMS
+            if not _is_known_platform:
+                try:
+                    from gateway.platform_registry import platform_registry
+                    _is_known_platform = platform_registry.is_registered(platform_name)
+                except Exception:
+                    pass
+            if self.gateway_runner and _is_known_platform:
+                return await self._deliver_cross_platform(
+                    platform_name, content, t
+                )
+            logger.warning("[webhook] Unknown deliver type: %s", platform_name)
+            return SendResult(
+                success=False, error=f"Unknown deliver type: {platform_name}"
+            )
+
+        # Multi-target: deliver to each platform independently.
+        results: List[SendResult] = []
+        for t in targets:
+            platform_name = t["deliver"]
+            _is_known_platform = platform_name in _BUILTIN_DELIVER_PLATFORMS
+            if not _is_known_platform:
+                try:
+                    from gateway.platform_registry import platform_registry
+                    _is_known_platform = platform_registry.is_registered(platform_name)
+                except Exception:
+                    pass
+            if not self.gateway_runner or not _is_known_platform:
+                results.append(SendResult(
+                    success=False, error=f"Unknown or unconnected platform: {platform_name}"
+                ))
+                continue
+            result = await self._deliver_cross_platform(
+                platform_name, content, t
+            )
+            results.append(result)
+
+        all_success = any(r.success for r in results)
+        errors = [r.error for r in results if not r.success and r.error]
+        return SendResult(
+            success=all_success,
+            error="; ".join(errors) if errors else None,
         )
+
+    def _parse_deliver_targets(self, delivery: dict) -> List[dict]:
+        """Parse the ``deliver`` field into a list of per-target delivery dicts.
+
+        Supports:
+        - Single platform: ``"feishu"``
+        - Multiple platforms: ``"feishu,photon"``
+        - Platform with chat_id: ``"feishu:oc_xxx"``
+        - Platform with chat_id and thread_id: ``"feishu:oc_xxx:thread_123"``
+        - Mixed: ``"feishu:oc_xxx,photon:+8615522280"``
+
+        Each target dict inherits ``deliver_extra`` from the original delivery,
+        with ``chat_id`` and ``thread_id`` overridden when explicitly provided
+        in the target string.  An empty ``chat_id`` signals to
+        ``_deliver_cross_platform`` that it should fall back to the home
+        channel for that platform.
+        """
+        raw = delivery.get("deliver", "log")
+        base_extra = delivery.get("deliver_extra", {})
+        targets: List[dict] = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            platform_name = part
+            chat_id = ""
+            thread_id = ""
+            if ":" in part:
+                segments = part.split(":", 2)
+                platform_name = segments[0].strip()
+                if len(segments) > 1 and segments[1].strip():
+                    chat_id = segments[1].strip()
+                if len(segments) > 2 and segments[2].strip():
+                    thread_id = segments[2].strip()
+            target_delivery: dict = {"deliver": platform_name}
+            if chat_id or thread_id:
+                target_extra = dict(base_extra)
+                if chat_id:
+                    target_extra["chat_id"] = chat_id
+                if thread_id:
+                    target_extra["thread_id"] = thread_id
+                target_delivery["deliver_extra"] = target_extra
+            targets.append(target_delivery)
+        return targets
 
     async def _deliver_github_comment(
         self, content: str, delivery: dict

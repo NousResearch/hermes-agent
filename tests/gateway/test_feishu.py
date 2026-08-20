@@ -186,18 +186,22 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         "FEISHU_APP_ID": "cli_app",
         "FEISHU_APP_SECRET": "secret_app",
     }, clear=True)
-    def test_connect_websocket_sets_channel_ua_tag(self):
-        """Verify that FeishuWSClient receives extra_ua_tags=["channel"].
+    def test_connect_websocket_sets_channel_ua_tag_and_uses_owned_executor(self):
+        """Verify the WebSocket client uses the channel tag and owned executor.
 
         Without this UA tag the Feishu server does not push group @mention
-        events over the WebSocket transport.  See
+        events over the WebSocket transport. The long-lived client must also
+        stay off asyncio's shared default executor. See
         https://github.com/NousResearch/hermes-agent/issues/50656
+        https://github.com/NousResearch/hermes-agent/issues/78318
         """
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         ws_client = SimpleNamespace()
+        owned_executor = object()
+        submitted_executors = []
 
         with (
             patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", True),
@@ -211,6 +215,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             patch("plugins.platforms.feishu.adapter.release_scoped_lock"),
             patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
             patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
+            patch.object(adapter, "_get_sdk_executor", return_value=owned_executor),
         ):
             _mock_event_dispatcher_builder(mock_handler_class)
 
@@ -219,7 +224,8 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             future.set_result(None)
 
             class _Loop:
-                def run_in_executor(self, *_args, **_kwargs):
+                def run_in_executor(self, executor, *_args, **_kwargs):
+                    submitted_executors.append(executor)
                     return future
                 def is_closed(self):
                     return False
@@ -240,6 +246,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                       "FeishuWSClient must receive extra_ua_tags for group @mention delivery")
         self.assertEqual(call_kwargs["extra_ua_tags"], ["channel"],
                          "extra_ua_tags must be ['channel'] to enable group event routing")
+        self.assertEqual(submitted_executors, [owned_executor])
 
 
     @patch.dict(os.environ, {}, clear=True)
@@ -2465,5 +2472,4 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
-
 

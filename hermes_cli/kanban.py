@@ -250,6 +250,29 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     # --- init ---
     sub.add_parser("init", help="Create kanban.db if missing (idempotent)")
 
+    # --- import ---
+    p_import = sub.add_parser(
+        "import",
+        help="Import an external task pool into the native Kanban lifecycle",
+    )
+    p_import.add_argument("--adapter", choices=("markdown",), required=True)
+    p_import.add_argument("--source", required=True,
+                          help="Absolute path to the adapter's task store")
+    p_import.add_argument("--id", dest="import_id", required=True,
+                          help="Stable import identifier used for idempotency and writeback")
+    p_import.add_argument("--assignee-map", default=None,
+                          help="Optional YAML mapping from source assignees to Hermes profiles")
+    p_import.add_argument("--dry-run", action="store_true",
+                          help="Validate and report without changing the board or source")
+    p_import.add_argument("--watch", action="store_true",
+                          help="Keep reconciling native lifecycle changes until interrupted")
+    p_import.add_argument("--interval", type=float, default=5.0,
+                          help="Seconds between watch reconciliations (default: 5)")
+    p_import.add_argument(
+        "--json", action="store_true",
+        help="Emit JSON output (one JSON array per line in watch mode)",
+    )
+
     # --- boards (new in v2: multi-project support) ---
     p_boards = sub.add_parser(
         "boards",
@@ -1107,6 +1130,7 @@ def kanban_command(args: argparse.Namespace) -> int:
 
         handlers = {
             "init":     _cmd_init,
+            "import":   _cmd_import,
             "create":   _cmd_create,
             "swarm":    _cmd_swarm,
             "list":     _cmd_list,
@@ -1182,6 +1206,7 @@ def _profile_author() -> str:
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init",
+    "import",
     "create",
     "swarm",
     "assign",
@@ -1503,6 +1528,91 @@ def _cmd_init(args: argparse.Namespace) -> int:
         "running gateway, tasks stay in 'ready' forever."
     )
     return 0
+
+
+def _cmd_import(args: argparse.Namespace) -> int:
+    from hermes_cli.kanban_import import MarkdownAdapter, sync_import
+
+    source = Path(args.source).expanduser()
+    if not source.is_absolute():
+        print("kanban import: --source must be an absolute path", file=sys.stderr)
+        return 2
+    mapping: dict[str, str] = {}
+    if args.assignee_map:
+        map_path = Path(args.assignee_map).expanduser()
+        if not map_path.is_absolute():
+            print("kanban import: --assignee-map must be an absolute path", file=sys.stderr)
+            return 2
+        try:
+            import yaml
+            parsed = yaml.safe_load(map_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            print(f"kanban import: could not read assignee map: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(parsed, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in parsed.items()
+        ):
+            print("kanban import: assignee map must be a string-to-string object", file=sys.stderr)
+            return 1
+        mapping = parsed
+    try:
+        adapter = MarkdownAdapter(source)
+        if args.watch and args.dry_run:
+            raise ValueError("--watch and --dry-run cannot be combined")
+        if args.interval <= 0:
+            raise ValueError("--interval must be greater than zero")
+        results = []
+        had_failures = False
+        while True:
+            with kb.connect_closing() as conn:
+                results = sync_import(
+                    conn,
+                    adapter=adapter,
+                    import_id=args.import_id,
+                    assignee_map=mapping,
+                    dry_run=bool(args.dry_run),
+                )
+            cycle_failed = any(
+                result.action in {"error", "conflict"} for result in results
+            )
+            had_failures = had_failures or cycle_failed
+            if args.watch:
+                _emit_import_results(
+                    results, json_output=bool(args.json), streaming=True,
+                )
+            if not args.watch:
+                break
+            # A source-wide scan failure cannot recover records this cycle.
+            # Record-level failures must not stop unrelated lifecycle mirrors.
+            if any(result.action == "error" and not result.source_id for result in results):
+                break
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        return 1 if had_failures else 0
+    except (OSError, ValueError) as exc:
+        print(f"kanban import: {exc}", file=sys.stderr)
+        return 1
+    if not args.watch:
+        _emit_import_results(results, json_output=bool(args.json))
+    return 1 if any(result.action in {"error", "conflict"} for result in results) else 0
+
+
+def _emit_import_results(results, *, json_output: bool, streaming: bool = False) -> None:
+    payload = [result.__dict__ for result in results]
+    if json_output:
+        print(json.dumps(
+            payload,
+            indent=None if streaming else 2,
+            ensure_ascii=False,
+            separators=(",", ":") if streaming else None,
+        ))
+    else:
+        for result in results:
+            detail = f" -> {result.task_id}" if result.task_id else ""
+            if result.error:
+                detail += f" ({result.error})"
+            print(f"{result.source_id or '(source)'}: {result.action}{detail}")
 
 
 def _cmd_heartbeat(args: argparse.Namespace) -> int:

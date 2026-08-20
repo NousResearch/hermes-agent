@@ -867,10 +867,15 @@ def _skill_not_found_error(name: str, suffix: str = "") -> str:
     return base
 
 
-def _validate_file_path(file_path: str) -> Optional[str]:
+def _validate_file_path(file_path: str, skill_name: Optional[str] = None) -> Optional[str]:
     """
     Validate a file path for write_file/remove_file.
     Must be under an allowed subdirectory and not escape the skill dir.
+    
+    When ``skill_name`` is provided, custom subdirectories discovered by
+    ``_discover_skill_subdirs`` are also accepted alongside ``ALLOWED_SUBDIRS``
+    so agents that see a ``step/`` file listed in ``skill_view`` can actually
+    write to it.
     """
     from tools.path_security import has_traversal_component
 
@@ -892,10 +897,19 @@ def _validate_file_path(file_path: str) -> Optional[str]:
         if len(normalized.parts) == 1 or len(normalized.parts) == 2:
             return None
 
+    # Build the set of allowed subdirectories: standard 4 + any custom dirs
+    # discovered in the skill directory.
+    allowed = set(ALLOWED_SUBDIRS)
+    if skill_name:
+        existing = _find_skill(skill_name)
+        if existing:
+            found = _discover_skill_subdirs(existing["path"])
+            allowed |= found
+
     # Must be under an allowed subdirectory
-    if not normalized.parts or normalized.parts[0] not in ALLOWED_SUBDIRS:
-        allowed = ", ".join(sorted(ALLOWED_SUBDIRS))
-        return f"File must be under one of: {allowed}. Got: '{file_path}'"
+    if not normalized.parts or normalized.parts[0] not in allowed:
+        allowed_str = ", ".join(sorted(allowed))
+        return f"File must be under one of: {allowed_str}. Got: '{file_path}'"
 
     # Must have a filename (not just a directory)
     if len(normalized.parts) < 2:
@@ -1123,7 +1137,7 @@ def _patch_skill(
 
     if file_path:
         # Patching a supporting file
-        err = _validate_file_path(file_path)
+        err = _validate_file_path(file_path, skill_name=name)
         if err:
             return {"success": False, "error": err}
         target, err = _resolve_skill_target(skill_dir, file_path)
@@ -1322,7 +1336,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
 
 def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     """Add or overwrite a supporting file within any skill directory."""
-    err = _validate_file_path(file_path)
+    err = _validate_file_path(file_path, skill_name=name)
     if err:
         return {"success": False, "error": err}
 
@@ -1392,7 +1406,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
 
 def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     """Remove a supporting file from any skill directory."""
-    err = _validate_file_path(file_path)
+    err = _validate_file_path(file_path, skill_name=name)
     if err:
         return {"success": False, "error": err}
 

@@ -45,6 +45,44 @@ class TestWriteAndRead:
         ]
 
 
+    def test_write_preserves_multiple_items_without_id(self):
+        # Regression for #83389: previously, all items lacking an ``id`` were
+        # collapsed against the same `"?"` key in ``_dedupe_by_id`` and only the
+        # final one survived. Both must be preserved and assigned fallback ids.
+        store = TodoStore()
+        result = store.write([
+            {"content": "Task 1", "status": "pending"},
+            {"content": "Task 2", "status": "pending"},
+        ])
+        assert len(result) == 2
+        assert result[0]["content"] == "Task 1"
+        assert result[1]["content"] == "Task 2"
+        assert all(item["id"] for item in result)
+
+
+    def test_write_preserves_unkeyed_items_with_explicit_id_items(self):
+        # Mixed list: an explicit-id item (appearing twice) and two unkeyed
+        # items. The duplicate explicit-id must dedup to its last occurrence;
+        # the unkeyed items must each survive. ``_dedupe_by_id`` sorts the
+        # surviving positions by their original index, so the result order
+        # reflects the last occurrence of each unique id.
+        store = TodoStore()
+        result = store.write([
+            {"id": "x", "content": "Has id", "status": "pending"},
+            {"content": "No id A", "status": "pending"},
+            {"content": "No id B", "status": "pending"},
+            {"id": "x", "content": "Has id v2", "status": "in_progress"},
+        ])
+        assert len(result) == 3
+        # Order is by sorted position of last occurrence; "x" lives at idx 3
+        # (last occurrence), No id A at idx 1, No id B at idx 2.
+        assert [r["content"] for r in result] == [
+            "No id A", "No id B", "Has id v2",
+        ]
+        assert result[-1]["id"] == "x"
+        assert result[-1]["content"] == "Has id v2"
+
+
 class TestHasItems:
     def test_empty_store(self):
         store = TodoStore()

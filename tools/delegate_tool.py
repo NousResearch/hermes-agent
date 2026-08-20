@@ -42,6 +42,7 @@ from agent.interrupt_compat import request_hard_interrupt
 # Must match hermes_cli.runtime_provider.RUNTIME_PROVIDER_TYPE_CUSTOM.
 _RUNTIME_PROVIDER_CUSTOM = "custom"
 from tools import file_state
+from tools.tool_input_repair import recover_list_from_json_string
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
 
@@ -3510,24 +3511,20 @@ def _run_child_lifecycle(
 def _recover_tasks_from_json_string(
     tasks: Any,
 ) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
-    if not isinstance(tasks, str):
-        return None, None
-    raw = tasks.strip()
-    if not raw:
+    """Recover a ``tasks`` array emitted as a JSON string.
+
+    Thin wrapper over the shared repair helper so delegate_task gets the same
+    stringified-array repair as every other array-taking tool. The empty-string
+    case keeps its tool-specific message (a single-``goal`` fallback is valid).
+    """
+    if isinstance(tasks, str) and not tasks.strip():
         return None, "Provide either 'goal' (single task) or 'tasks' (batch)."
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        return None, (
-            "tasks must be a JSON array of task objects; received a string "
-            f"that could not be parsed as JSON ({exc.msg})."
-        )
-    if not isinstance(parsed, list):
-        return None, (
-            f"tasks must be a JSON array of task objects; parsed "
-            f"{type(parsed).__name__} instead."
-        )
-    return parsed, None
+    recovered, error = recover_list_from_json_string(
+        tasks, param_name="tasks"
+    )
+    if error is not None:
+        return None, error
+    return recovered, None
 
 
 # Placeholder shapes for batch goal validation: bare 'TODO', bare 'task N'

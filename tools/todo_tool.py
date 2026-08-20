@@ -248,12 +248,16 @@ def todo_tool(
         return tool_error("TodoStore not initialized")
 
     if todos is not None:
-        # Guard: LLM sometimes sends todos as a JSON string instead of a list
-        if isinstance(todos, str):
-            try:
-                todos = json.loads(todos)
-            except (json.JSONDecodeError, TypeError):
-                return tool_error("todos must be a list of objects, got unparseable string")
+        # Guard: LLM sometimes sends todos as a JSON string instead of a list.
+        # Use the shared repair so the stringified-array case is converted to a
+        # real list consistently with every other array-taking tool.
+        repaired, repair_err = recover_list_from_json_string(
+            todos, param_name="todos"
+        )
+        if repair_err is not None:
+            return tool_error(repair_err)
+        if repaired is not None:
+            todos = repaired
         if not isinstance(todos, list):
             return tool_error(
                 f"todos must be a list, got {type(todos).__name__}"
@@ -353,6 +357,7 @@ TODO_SCHEMA = {
 
 # --- Registry ---
 from tools.registry import registry, tool_error
+from tools.tool_input_repair import recover_list_from_json_string
 
 registry.register(
     name="todo",

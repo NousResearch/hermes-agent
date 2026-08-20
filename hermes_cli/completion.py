@@ -240,7 +240,13 @@ _hermes() {{
     esac
 }}
 
-compdef _hermes hermes
+_hermes_compdef() {{
+    (( $+functions[compdef] )) && {{
+        compdef _hermes hermes
+        precmd_functions=(${{(@)precmd_functions:#_hermes_compdef}})
+    }}
+}}
+(( $+functions[compdef] )) && compdef _hermes hermes || precmd_functions+=(_hermes_compdef)
 """
 
 

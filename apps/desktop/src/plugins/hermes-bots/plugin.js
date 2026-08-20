@@ -9448,6 +9448,16 @@ function GroupChatWorkspace({ group, members, onBack }) {
  *  disband (or the room view's own Back) can retire the tab it opened. */
 const groupChatMainTabs = new Map()
 
+/** The in-panel room is the FALLBACK surface, not a second copy: it renders
+ *  only while no main-window tab owns the group. On desktops with the door
+ *  the room already lives in a main tab, and painting it here too produced
+ *  two live panes with independent drafts driving one shared engine (#89788).
+ *  The selection atom stays set either way so the roster row still
+ *  highlights. */
+function shouldRenderGroupChatInPane(group) {
+  return Boolean(group && !groupChatMainTabs.has(group))
+}
+
 function closeGroupChatMainTab(group) {
   const close = groupChatMainTabs.get(group)
 
@@ -9737,7 +9747,7 @@ function BotsPane() {
 
   const groupChatMembers = groupChatName ? groupChatMemberBots(groupChatName, roster, allMeta) : []
 
-  if (groupChatName && groupChatMembers.length) {
+  if (shouldRenderGroupChatInPane(groupChatName) && groupChatMembers.length) {
     return jsx(GroupChatWorkspace, { group: groupChatName, members: groupChatMembers })
   }
 

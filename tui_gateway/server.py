@@ -8311,6 +8311,14 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     lower-priority follow-ups this cycle — the user's message wins). Mirrors the
     claim-under-lock pattern used by the goal-continuation re-fire.
     """
+    # Busy prompt.submit returns before the ordinary idle-turn refresh. Refresh
+    # here as the queued sibling becomes runnable so both inline and compute-host
+    # dispatch see cross-process appends. Re-read the queue under the claim lock:
+    # another submit can win the session while the DB read is in flight.
+    with session["history_lock"]:
+        if not session.get("queued_prompt") or session.get("running"):
+            return False
+    _refresh_live_model_history(session)
     with session["history_lock"]:
         if session.get("_closing"):
             return False
@@ -8884,6 +8892,109 @@ def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> 
         except Exception:
             logger.debug("live display projection read failed", exc_info=True)
     return in_memory_fallback
+
+
+def _model_history_reconcile_key(message: dict) -> tuple:
+    """Return the stable, model-relevant identity used for append reconciliation."""
+    if not isinstance(message, dict):
+        return ("", repr(message), "", "", "")
+    tool_calls = message.get("tool_calls")
+    try:
+        tool_calls_key = json.dumps(tool_calls, sort_keys=True, ensure_ascii=False)
+    except (TypeError, ValueError):
+        tool_calls_key = repr(tool_calls)
+    return (
+        message.get("role"),
+        _coerce_message_text(message.get("content")),
+        message.get("tool_call_id"),
+        message.get("tool_name") or message.get("name"),
+        tool_calls_key,
+    )
+
+
+def _reconcile_model_with_live(
+    persisted_history: list[dict], live_history: list[dict]
+) -> list[dict]:
+    """Merge durable and live append-only model-history tails.
+
+    Durable rows are authoritative for cross-process appends, while the live
+    record may be ahead because the current process has not flushed its newest
+    turn or because it carries a runtime-only marker. Preserve the longer side
+    when one is a prefix of the other. If both appended after the same prefix,
+    keep both tails (durable first, then live-only). A fully divergent durable
+    projection is not safe to apply automatically: keep memory rather than
+    replacing a potentially newer runtime after an external rewrite.
+    """
+    if not persisted_history:
+        return list(live_history)
+    if not live_history:
+        return list(persisted_history)
+
+    shared = 0
+    limit = min(len(persisted_history), len(live_history))
+    while shared < limit and _model_history_reconcile_key(
+        persisted_history[shared]
+    ) == _model_history_reconcile_key(live_history[shared]):
+        shared += 1
+
+    if shared == len(live_history):
+        return list(persisted_history)
+    if shared == len(persisted_history):
+        return list(live_history)
+    if shared:
+        return list(persisted_history) + list(live_history[shared:])
+    return list(live_history)
+
+
+def _refresh_live_model_history(session: dict) -> bool:
+    """Refresh a live session from durable rows before its next model turn.
+
+    Another gateway process can append to the same SessionDB while the desktop
+    keeps a warm session record. UI hydration already reads the durable display
+    projection, but model inference uses ``session['history']``; reconcile that
+    model projection here so inline and compute-host turns see the same current
+    segment. DB failures are fail-open and leave the live record untouched.
+    """
+    # Never rewrite the working list underneath an active turn. The caller may
+    # observe an idle record and then lose the claim while this SQLite read is
+    # in flight, so guard both sides of the read.
+    with session["history_lock"]:
+        if session.get("running"):
+            return False
+    session_key = str(session.get("session_key") or "")
+    if not session_key:
+        return False
+    try:
+        with _session_db(session) as db:
+            if db is None:
+                return False
+            persisted = db.get_messages_as_conversation(
+                session_key,
+                repair_alternation=True,
+                include_row_ids=True,
+            )
+        persisted = sanitize_replay_history(persisted)
+    except Exception:
+        logger.debug("live model history refresh failed", exc_info=True)
+        return False
+
+    with session["history_lock"]:
+        if session.get("running"):
+            return False
+        live = list(session.get("history") or [])
+        refreshed = _reconcile_model_with_live(persisted, live)
+        if refreshed == live:
+            return False
+        session["history"] = refreshed
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+    logger.info(
+        "Refreshed live model history for session %s (disk=%d, memory=%d, merged=%d)",
+        session_key,
+        len(persisted),
+        len(live),
+        len(refreshed),
+    )
+    return True
 
 
 def _live_session_payload(

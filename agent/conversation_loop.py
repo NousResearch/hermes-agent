@@ -7644,7 +7644,7 @@ def run_conversation(
                         # Without this, we'd have tool → user which most
                         # APIs reject as an invalid sequence.
                         _nudge_msg = agent._build_assistant_message(assistant_message, finish_reason)
-                        _nudge_msg["content"] = "(empty)"
+                        _nudge_msg["content"] = "continuing..."
                         _nudge_msg["_empty_recovery_synthetic"] = True
                         append_message(messages, _nudge_msg)
                         append_message(messages, {

@@ -576,6 +576,95 @@ def _reply_message_with_rich_blocks(
     )
 
 
+def test_flatten_rich_blocks_preserves_composite_plaintext():
+    blocks = [
+        {"type": "blockquote", "blocks": [{"type": "paragraph", "text": "Block quote"}]},
+        {"type": "quote", "children": [{"type": "text", "text": "Inline quote"}]},
+        {
+            "type": "details",
+            "summary": [{"type": "text", "text": "Details summary"}],
+            "blocks": [{"type": "paragraph", "text": "Details body"}],
+        },
+        {
+            "type": "collage",
+            "items": [
+                {"caption": [{"type": "text", "text": "Collage caption"}]},
+                {"credit": "Collage credit"},
+            ],
+        },
+        {
+            "type": "slideshow",
+            "items": [
+                {"caption": "Slide one"},
+                {"caption": "Slide two", "credit": "Slide credit"},
+            ],
+        },
+        {
+            "type": "table",
+            "rows": [
+                {"cells": [{"text": "Name"}, {"text": "Value"}]},
+                {"cells": [{"text": "Alpha"}, {"text": "42"}]},
+            ],
+            "caption": "Table caption",
+        },
+        {
+            "type": "table",
+            "cells": [[{"text": "Direct A"}, {"text": "Direct B"}]],
+        },
+        {
+            "type": "mathematical_expression",
+            "expression": "x² + y²",
+            "caption": "Equation caption",
+        },
+        {"type": "image", "caption": "Image caption", "credit": "Image credit"},
+    ]
+
+    assert TelegramAdapter._flatten_rich_blocks(blocks) == (
+        "Block quote\nInline quote\nDetails summary\nDetails body\n"
+        "Collage caption\nCollage credit\nSlide one\nSlide two\nSlide credit\n"
+        "Name\nValue\nAlpha\n42\nTable caption\nDirect A\nDirect B\n"
+        "x² + y²\nEquation caption\n"
+        "Image caption\nImage credit"
+    )
+
+
+def test_flatten_rich_blocks_skips_malformed_nodes_without_losing_nested_text():
+    blocks = [
+        None,
+        "not a block",
+        {"type": "list", "items": None},
+        {"type": "details", "summary": 7, "blocks": "not a list"},
+        {
+            "type": "unknown-composite",
+            "content": [
+                {"type": "paragraph", "text": "Still readable"},
+                99,
+                {"wrapper": {"caption": "Nested caption"}},
+            ],
+        },
+        {"type": "table", "rows": [{"cells": None}, {"cells": [{"text": ["Valid ", 5, "text"]}]}]},
+    ]
+
+    assert TelegramAdapter._flatten_rich_blocks(blocks) == (
+        "Still readable\nNested caption\nValid text"
+    )
+
+
+def test_extract_rich_reply_text_preserves_composite_plaintext():
+    replied = SimpleNamespace(
+        api_kwargs={
+            "rich_message": {
+                "blocks": [
+                    {"type": "blockquote", "blocks": [{"type": "paragraph", "text": "Quoted"}]},
+                    {"type": "image", "caption": "Chart", "credit": "Analyst"},
+                ]
+            }
+        }
+    )
+
+    assert TelegramAdapter._extract_rich_reply_text(replied) == "Quoted\nChart\nAnalyst"
+
+
 @pytest.mark.asyncio
 async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     """A reply to a rich-sent message resolves the original text via the index."""

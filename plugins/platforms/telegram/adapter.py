@@ -10328,7 +10328,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
             block_type = block.get("type")
             if block_type == "list":
-                for item in block.get("items", []):
+                items = block.get("items")
+                if not isinstance(items, list):
+                    continue
+                for item in items:
                     if not isinstance(item, dict):
                         continue
                     item_text = cls._flatten_rich_blocks(item.get("blocks"))
@@ -10345,9 +10348,48 @@ class TelegramAdapter(BasePlatformAdapter):
                     lines.extend(item_lines[1:])
                 continue
 
-            text = cls._flatten_rich_inline_text(block.get("text"))
-            if text:
-                lines.extend(text.splitlines())
+            # Rich blocks are compositional: quotes, details, media groups,
+            # tables, and future block types can all contain nested plaintext.
+            # Walk content-bearing fields rather than keying behavior to the
+            # current set of Telegram block type names.
+            remaining = dict(block)
+            remaining.pop("type", None)
+            remaining.pop("label", None)
+            for key in (
+                "summary", "text", "expression", "children", "blocks", "items",
+                "rows", "cells", "content", "caption", "credit",
+            ):
+                if key not in remaining:
+                    continue
+                value = remaining.pop(key)
+                if key in {"summary", "text", "expression", "children", "caption", "credit"}:
+                    text = cls._flatten_rich_inline_text(value)
+                    if text:
+                        lines.extend(text.splitlines())
+                else:
+                    # Tables may encode cells as rows of inline mappings rather
+                    # than rich block mappings.  Flatten each row in stable
+                    # row-major order before falling back to block recursion.
+                    nested = ""
+                    if key == "cells" and isinstance(value, list):
+                        cell_lines = []
+                        for row in value:
+                            if not isinstance(row, list):
+                                continue
+                            for cell in row:
+                                if not isinstance(cell, dict):
+                                    continue
+                                cell_text = cls._flatten_rich_inline_text(cell.get("text"))
+                                if cell_text:
+                                    cell_lines.extend(cell_text.splitlines())
+                        nested = "\n".join(cell_lines)
+                    if not nested:
+                        nested = cls._flatten_rich_blocks(value)
+                    if nested:
+                        lines.extend(nested.splitlines())
+            nested = cls._flatten_rich_blocks(list(remaining.values()))
+            if nested:
+                lines.extend(nested.splitlines())
 
         return "\n".join(line.rstrip() for line in lines if line)
 

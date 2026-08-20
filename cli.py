@@ -4967,6 +4967,54 @@ class _VoiceInputMessage:
         return self.text
 
 
+def _wrap_panel_text(
+    text: str,
+    width: int,
+    subsequent_indent: str = "",
+    *,
+    replace_whitespace: bool = False,
+    drop_whitespace: bool = False,
+    break_long_words: bool = True,
+    break_on_hyphens: bool = True,
+) -> list[str]:
+    # Split on newlines first, then wrap each line individually.
+    # textwrap.wrap treats embedded \n as ordinary whitespace and does not
+    # split on it, collapsing a multi-line command (e.g. a heredoc pending
+    # approval) into a few unreadable long lines that push the panel's
+    # approve/deny choices off-screen (#72580).
+    result: list[str] = []
+    # Normalize every common line ending first.  Splitting only on ``\n``
+    # leaves a literal ``\r`` in CRLF input, which prompt_toolkit can render
+    # as a carriage return inside the panel and overwrite its border.
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    for line in normalized.split("\n"):
+        wrapped = textwrap.wrap(
+            line,
+            width=max(8, width),
+            replace_whitespace=replace_whitespace,
+            drop_whitespace=drop_whitespace,
+            break_long_words=break_long_words,
+            break_on_hyphens=break_on_hyphens,
+            subsequent_indent=subsequent_indent,
+        )
+        result.extend(wrapped or [""])
+    return result or [""]
+
+
+def _wrap_clarify_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
+    # The clarify panel wraps prose (questions/choices), not commands:
+    # keep textwrap's whitespace handling and don't break mid-word.
+    return _wrap_panel_text(
+        text,
+        width,
+        subsequent_indent,
+        replace_whitespace=True,
+        drop_whitespace=True,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+
+
 class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     """
     Interactive CLI for the Hermes Agent.
@@ -10594,16 +10642,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
             return inner + 2
 
-        def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
-            wrapped = textwrap.wrap(
-                text,
-                width=max(8, width),
-                replace_whitespace=False,
-                drop_whitespace=False,
-                subsequent_indent=subsequent_indent,
-            )
-            return wrapped or [""]
-
         def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
             inner_width = max(0, box_width - 2)
             lines.append((border_style, "│ "))
@@ -15815,16 +15853,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
             return inner + 2
 
-        def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
-            wrapped = textwrap.wrap(
-                text,
-                width=max(8, width),
-                replace_whitespace=False,
-                drop_whitespace=False,
-                subsequent_indent=subsequent_indent,
-            )
-            return wrapped or [""]
-
         def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
             inner_width = max(0, box_width - 2)
             lines.append((border_style, "│ "))
@@ -19246,15 +19274,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
             return inner + 2  # account for the single leading/trailing spaces inside borders
 
-        def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
-            wrapped = textwrap.wrap(
-                text,
-                width=max(8, width),
-                break_long_words=False,
-                break_on_hyphens=False,
-                subsequent_indent=subsequent_indent,
-            )
-            return wrapped or [""]
+        # Prose variant for the clarify panel (keeps textwrap's whitespace
+        # handling, never breaks mid-word); shares the newline-split fix.
+        _wrap_panel_text = _wrap_clarify_panel_text
 
         def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
             inner_width = max(0, box_width - 2)
@@ -19578,7 +19600,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     other_num_prefix = '0'
                 else:
                     other_num_prefix = ' '
-                
+
                 if selected == other_idx and not cli_ref._clarify_freetext:
                     other_style = 'class:clarify-selected'
                 elif cli_ref._clarify_freetext:

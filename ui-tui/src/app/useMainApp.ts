@@ -31,7 +31,7 @@ import { useGitBranch } from '../hooks/useGitBranch.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
-import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
+import { DEFAULT_VOICE_RECORD_KEY, isMac, isRemoteShell, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
@@ -265,11 +265,17 @@ export function useMainApp(gw: GatewayClient) {
   // copy-on-select: once a drag creates a stable TUI selection, write it to
   // the system clipboard while keeping the highlight visible.
   //
+  // Remote shells (SSH_CONNECTION set) need the same treatment: the Cmd/Ctrl
+  // copy shortcut belongs to the local terminal client and never reaches the
+  // remote app, and multiplexers/herdr swallow native selection while the TUI
+  // captures the mouse. Copy-on-select is the only path that lands on the
+  // user's local clipboard there (via OSC 52).
+  //
   // Subscribe directly via the ink selection bus (not useSyncExternalStore)
   // so React doesn't re-render MainApp on every drag-move tick. The version
   // ref de-dupes against re-entrant notifications.
   useEffect(() => {
-    if (!isMac) {
+    if (!isMac && !isRemoteShell()) {
       return
     }
 

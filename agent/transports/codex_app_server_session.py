@@ -423,8 +423,7 @@ class CodexAppServerSession:
         except (CodexAppServerError, TimeoutError):
             logger.debug("turn/steer rejected for active Codex turn", exc_info=True)
             return False
-        accepted_turn_id = response.get("turnId") if isinstance(response, dict) else None
-        return accepted_turn_id in {None, turn_id}
+        return isinstance(response, dict) and response.get("turnId") == turn_id
 
     # ---------- diagnostics ----------
 

@@ -385,6 +385,28 @@ class TestRunTurn:
             "expectedTurnId": "turn-live-123",
         }
 
+    @pytest.mark.parametrize(
+        "response",
+        [
+            {},
+            None,
+            [],
+            "invalid",
+            {"turnId": None},
+            {"turnId": ""},
+            {"turnId": "foreign"},
+        ],
+    )
+    def test_steer_rejects_malformed_acknowledgement(self, response):
+        client = FakeClient()
+        session = make_session(client)
+        session.ensure_started()
+        client._request_handler = lambda method, params: response
+        with session._active_turn_lock:
+            session._active_turn_id = "turn-live-123"
+
+        assert session.request_steer("Use Postgres instead") is False
+
 
 
 

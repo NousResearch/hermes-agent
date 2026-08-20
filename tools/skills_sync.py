@@ -293,20 +293,21 @@ def _dir_hash(directory: Path) -> str:
     return hasher.hexdigest()
 
 
-def _tree_has_redirect(directory: Path) -> bool:
-    def _is_redirect(path: Path) -> bool:
-        if path.is_symlink():
-            return True
-        is_junction = getattr(path, "is_junction", None)
-        if is_junction and is_junction():
-            return True
-        attributes = getattr(path.lstat(), "st_file_attributes", 0)
-        return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+def _path_is_redirect(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    if is_junction and is_junction():
+        return True
+    attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
+
+def _tree_has_redirect(directory: Path) -> bool:
     try:
-        if _is_redirect(directory) or not directory.is_dir():
+        if _path_is_redirect(directory) or not directory.is_dir():
             return True
-        return any(_is_redirect(path) for path in directory.rglob("*"))
+        return any(_path_is_redirect(path) for path in directory.rglob("*"))
     except OSError:
         return True
 
@@ -319,6 +320,14 @@ def _safe_rel_install_path(path: Path, base: Path) -> str:
     parts = [part for part in pure.parts if part not in {"", "."}]
     if pure.is_absolute() or not parts or any(part == ".." for part in parts):
         raise ValueError(f"Unsafe optional skill path: {posix}")
+    current = base
+    try:
+        for part in parts:
+            current = current / part
+            if _path_is_redirect(current):
+                raise ValueError(f"Unsafe optional skill path contains redirect: {posix}")
+    except OSError as exc:
+        raise ValueError(f"Unsafe optional skill path: {posix}") from exc
     return "/".join(parts)
 
 

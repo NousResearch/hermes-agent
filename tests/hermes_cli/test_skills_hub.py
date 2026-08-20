@@ -430,8 +430,13 @@ def test_scan_skill_for_audit_rejects_source_change_during_snapshot(
         )
 
 
+@pytest.mark.parametrize(
+    "snapshot_error",
+    [OSError("copy failed"), ValueError("invalid snapshot content")],
+    ids=["os-error", "value-error"],
+)
 def test_do_audit_skips_when_private_snapshot_cannot_be_created(
-    monkeypatch, hub_env
+    monkeypatch, hub_env, snapshot_error
 ):
     import tools.skills_ast_audit as ast_audit
     import tools.skills_guard as guard
@@ -460,7 +465,10 @@ def test_do_audit_skips_when_private_snapshot_cannot_be_created(
     monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([entry]))
     monkeypatch.setattr(guard, "scan_skill", _guard)
     monkeypatch.setattr(ast_audit, "ast_scan_path", _ast)
-    monkeypatch.setattr("hermes_cli.skills_hub.shutil.copytree", lambda *_a, **_k: (_ for _ in ()).throw(OSError("copy failed")))
+    monkeypatch.setattr(
+        "hermes_cli.skills_hub.shutil.copytree",
+        lambda *_a, **_k: (_ for _ in ()).throw(snapshot_error),
+    )
 
     sink = StringIO()
     do_audit(

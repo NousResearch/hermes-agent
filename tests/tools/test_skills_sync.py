@@ -939,6 +939,21 @@ class TestUpdateBackupRecovery:
 
 
 class TestOptionalProvenanceAttestation:
+    def test_safe_relative_path_rejects_intermediate_redirect(self, tmp_path):
+        import tools.skills_sync as ss
+
+        skills_dir = tmp_path / "skills"
+        real_category = skills_dir / "real"
+        (real_category / "demo").mkdir(parents=True)
+        alias = skills_dir / "alias"
+        try:
+            alias.symlink_to(real_category, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory symlinks unavailable: {exc}")
+
+        with pytest.raises(ValueError, match="redirect"):
+            ss._safe_rel_install_path(alias / "demo", skills_dir)
+
     def test_backfill_records_full_install_attestation(self, tmp_path):
         import tools.skills_sync as ss
         from tools.skills_guard import full_content_hash

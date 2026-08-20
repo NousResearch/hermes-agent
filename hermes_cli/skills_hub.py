@@ -1343,7 +1343,7 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
                 scan_skill,
                 ast_scan_path if deep else None,
             )
-        except (OSError, shutil.Error):
+        except (OSError, ValueError, shutil.Error):
             c.print(
                 f"[yellow]Warning:[/] {entry['name']} — private audit snapshot "
                 "could not be created; audit skipped."

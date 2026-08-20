@@ -1613,11 +1613,23 @@ class CLICommandsMixin:
         concept = parts[1].strip() if len(parts) > 1 else ""
 
         if not concept:
-            try:
-                concept = input("(o_o) Describe your pet: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print()
-                return
+            # Bare /hatch is dispatched from the process_loop daemon thread
+            # while prompt_toolkit owns stdin — a raw input() here types into
+            # a prompt that never renders and swallows the next keystrokes
+            # (same class as #23185; found in the Aug 2026 full-surface CLI
+            # QA sweep: bare /hatch left the session eating input until
+            # Ctrl+C). Route through the thread-aware prompt helper, which
+            # uses run_in_terminal on the main thread and cancels cleanly
+            # (None) when prompting isn't safe.
+            prompt_helper = getattr(self, "_prompt_text_input", None)
+            if callable(prompt_helper):
+                concept = (prompt_helper("(o_o) Describe your pet: ") or "").strip()
+            else:
+                try:
+                    concept = input("(o_o) Describe your pet: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    return
 
         if not concept:
             print("(o_o) Usage: /hatch <description>  (e.g. /hatch a tiny cyber fox)")

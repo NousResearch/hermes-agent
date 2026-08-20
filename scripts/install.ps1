@@ -1562,20 +1562,31 @@ function Set-GitBashEnvVar {
     Write-Info "If needed, set HERMES_GIT_BASH_PATH manually to your bash.exe path."
 }
 
-# The dependency tree's real Node floor is >=22.22.0, set by react-router 8.3.0
-# (`engines.node`). Keep this in sync with the root package.json: looser lets an
-# install reach a `npm ci` that dies with EBADENGINE, stricter replaces a working
-# user toolchain for nothing. Returns $true when a `node --version` string
-# clears that floor.
+# The dependency tree supports Node 22.22+, 24, and 26+. nanoid 6 excludes
+# Node 23 and 25 while its >=26 arm accepts later releases, so accepting 23/25
+# only defers the failure to `npm ci` under engine-strict. Keep this in sync
+# with the root package.json.
 function Test-NodeVersionOk {
     param([string]$Version)
+    if ($Version -match '-') { return $false }
     try {
-        $v = [version]($Version -replace '^v', '' -replace '-.*$', '')
+        $v = [version]($Version -replace '^v', '')
     } catch {
         return $false
     }
     if ($v.Major -eq 22) { return ($v.Minor -ge 22) }
-    return ($v.Major -gt 22)
+    return (($v.Major -eq 24) -or ($v.Major -ge 26))
+}
+
+function Test-NpmVersionOk {
+    param([string]$Version)
+    if ($Version -match '-') { return $false }
+    try {
+        $v = [version]($Version -replace '^v', '')
+    } catch {
+        return $false
+    }
+    return -not ($v.Major -eq 11 -and $v.Minor -ge 10 -and $v.Minor -le 16)
 }
 
 function Test-Node {
@@ -1583,13 +1594,21 @@ function Test-Node {
 
     if (Get-Command node -ErrorAction SilentlyContinue) {
         $version = node --version
-        if (Test-NodeVersionOk $version) {
+        $npmCmd = Resolve-NpmCmd
+        $npmVersion = if ($npmCmd) { & $npmCmd --version 2>$null } else { $null }
+        if ((Test-NodeVersionOk $version) -and $npmCmd -and (Test-NpmVersionOk $npmVersion)) {
             Ensure-NodeExeOnPath | Out-Null
             Write-Success "Node.js $version found"
             $script:HasNode = $true
             return $true
         }
-        Write-Warn "Node.js $version is too old (Hermes requires Node >=26)"
+        if (-not (Test-NodeVersionOk $version)) {
+            Write-Warn "Node.js $version is unsupported (Hermes requires Node 22.22+, 24, or 26+)"
+        } elseif (-not $npmCmd) {
+            Write-Warn "Node.js $version has no npm.cmd on PATH"
+        } else {
+            Write-Warn "npm $npmVersion is unsupported (Hermes rejects npm 11.10 through 11.16)"
+        }
     }
 
     # Prefer a Hermes-managed Node from a previous run over a too-old system one.
@@ -3824,8 +3843,8 @@ function Install-Desktop {
 
     # Always re-resolve Node here. Stages run in separate PowerShell processes,
     # so $script:HasNode from Stage-Node isn't visible; more importantly Test-Node
-    # enforces the build floor (Node >=26) and prepends the Hermes-managed
-    # Node to PATH, so the build never runs on a too-old system Node -- the cause
+    # enforces the supported Node lines and prepends the Hermes-managed Node to
+    # PATH, so the build never runs on an unsupported system Node -- the cause
     # of the opaque "Build desktop app ... exit code 1" failure (Vite crashes on
     # old Node).
     Test-Node | Out-Null

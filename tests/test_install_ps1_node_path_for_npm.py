@@ -30,9 +30,20 @@ def test_install_ps1_defines_ensure_node_exe_on_path_helper() -> None:
 def test_test_node_prepends_node_dir_before_success() -> None:
     text = _install_ps1()
     assert re.search(
-        r"if \(Test-NodeVersionOk \$version\) \{[\s\S]{0,200}?Ensure-NodeExeOnPath",
+        r"if \(\(Test-NodeVersionOk \$version\) -and \$npmCmd -and "
+        r"\(Test-NpmVersionOk \$npmVersion\)\) \{[\s\S]{0,200}?Ensure-NodeExeOnPath",
         text,
-    ), "Test-Node must call Ensure-NodeExeOnPath when a system Node passes the version floor"
+    ), "Test-Node must validate Node and npm before prepending the system Node directory"
+
+
+def test_test_node_rejects_the_incompatible_npm_band() -> None:
+    text = _install_ps1()
+    assert re.search(
+        r"return -not \(\$v\.Major -eq 11 -and \$v\.Minor -ge 10 -and "
+        r"\$v\.Minor -le 16\)",
+        text,
+    ), "Test-NpmVersionOk must reject npm 11.10 through 11.16"
+    assert "elseif (-not $npmCmd)" in text
 
 
 def test_install_node_deps_prepends_node_dir_before_npm() -> None:

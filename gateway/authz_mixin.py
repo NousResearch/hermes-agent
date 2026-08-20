@@ -506,7 +506,18 @@ class GatewayAuthorizationMixin:
         }
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)
-            if allow_bots_var and _platform_gate_env(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
+            # Slack events with a user ID can use the same exact sender
+            # allowlist at both the adapter prefetch gate and this final gate.
+            # Keep the broad allow_bots fallback only for Workflow Builder/app
+            # events that carry no matchable user identity. Other platforms
+            # retain their established class-wide bot grant.
+            allow_class_grant = source.platform != Platform.SLACK or not user_id
+            if (
+                allow_class_grant
+                and allow_bots_var
+                and _platform_gate_env(allow_bots_var, "none").lower().strip()
+                in {"mentions", "all"}
+            ):
                 return True
 
         if not user_id:

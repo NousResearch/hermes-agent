@@ -1687,6 +1687,86 @@ class TestIncomingDocumentHandling:
         adapter._app.client.files_info.assert_not_awaited()
         adapter.handle_message.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_bot_identity_is_consistent_at_early_and_final_auth_boundaries(
+        self,
+        adapter,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("SLACK_ALLOW_BOTS", "all")
+        seen_sources = []
+
+        class Runner:
+            def _is_user_authorized(self, source):
+                seen_sources.append(source)
+                return True
+
+            async def handle(self, event):
+                seen_sources.append(event.source)
+
+        runner = Runner()
+        adapter._message_handler = runner.handle
+        adapter.handle_message = AsyncMock()
+
+        await adapter._handle_slack_message(
+            {
+                "type": "message",
+                "subtype": "bot_message",
+                "bot_id": "B_PEER",
+                "channel": "D123",
+                "channel_type": "im",
+                "user": "U_PEER_BOT",
+                "text": "peer request",
+                "ts": "1234567890.000002",
+            }
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        delivered_source = adapter.handle_message.await_args.args[0].source
+        assert len(seen_sources) == 1
+        assert seen_sources[0].user_id == delivered_source.user_id == "U_PEER_BOT"
+        assert seen_sources[0].is_bot is True
+        assert delivered_source.is_bot is True
+
+    @pytest.mark.asyncio
+    async def test_failed_bot_lookup_is_consistent_at_both_auth_boundaries(
+        self,
+        adapter,
+    ):
+        seen_sources = []
+
+        class Runner:
+            def _is_user_authorized(self, source):
+                seen_sources.append(source)
+                return True
+
+            async def handle(self, _event):
+                return None
+
+        adapter._message_handler = Runner().handle
+        adapter.handle_message = AsyncMock()
+        adapter._resolve_user_name = AsyncMock(return_value="Unknown")
+        adapter._app.client.users_info = AsyncMock(
+            side_effect=RuntimeError("lookup failed")
+        )
+
+        await adapter._handle_slack_message(
+            {
+                "type": "message",
+                "channel": "D123",
+                "channel_type": "im",
+                "user": "U_UNKNOWN",
+                "text": "request",
+                "ts": "1234567890.000003",
+            }
+        )
+
+        adapter._app.client.users_info.assert_awaited_once_with(user="U_UNKNOWN")
+        adapter.handle_message.assert_awaited_once()
+        delivered_source = adapter.handle_message.await_args.args[0].source
+        assert len(seen_sources) == 1
+        assert seen_sources[0].is_bot is delivered_source.is_bot is False
+
 
     @pytest.mark.asyncio
     async def test_rich_text_quotes_and_lists_are_extracted(self, adapter):

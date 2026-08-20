@@ -439,10 +439,10 @@ platforms:
       assistant_thread_titles: true
 
       # Accept messages posted by other Slack bots (default: "none").
-      # "none" ignores bots, "mentions" accepts a bot message only when
-      # that message itself @mentions Hermes, and "all" accepts every
-      # other bot. Hermes always ignores its own bot user to prevent
-      # self-echoes.
+      # "none" ignores bots, "mentions" accepts an authorized bot message
+      # only when that message itself @mentions Hermes, and "all" accepts
+      # every authorized bot. Hermes always ignores its own bot user to
+      # prevent self-echoes.
       allow_bots: "none"
 
       # Continuable-cron delivery surface (default: "thread").
@@ -463,7 +463,7 @@ platforms:
 | `platforms.slack.extra.native_task_cards` | `false` | When `true`, renders live tool calls as Slack-native plan/task cards. This is an explicit progress opt-in independent of Slack's default `tool_progress: off`; native API failures fall back to one continuously edited text update. |
 | `platforms.slack.extra.suggested_prompts` | `[]` | Up to four `{title, message}` prompts for Agent/Assistant DM entry points; accepts either a list or `{title, prompts}`. |
 | `platforms.slack.extra.assistant_thread_titles` | `true` | When `true`, names Agent/Assistant DM threads from the first user message. |
-| `platforms.slack.extra.allow_bots` | `"none"` | Controls messages from other Slack bots: `"none"` ignores them, `"mentions"` accepts a bot message only when **that message itself** @mentions Hermes, and `"all"` accepts all of them. Use `"mentions"` for the safest bot-to-bot collaboration mode. See [Accepting messages from other bots](#accepting-messages-from-other-bots-allow_bots). |
+| `platforms.slack.extra.allow_bots` | `"none"` | Controls messages from other Slack bots: `"none"` ignores them, `"mentions"` accepts an authorized bot message only when **that message itself** @mentions Hermes, and `"all"` accepts all authorized bots. Identified bots must also satisfy sender authorization; app events without a user ID use this bot opt-in directly. Use `"mentions"` for the safest bot-to-bot collaboration mode. See [Accepting messages from other bots](#accepting-messages-from-other-bots-allow_bots). |
 | `platforms.slack.extra.cron_continuable_surface` | `"thread"` | Delivery surface for [continuable cron jobs](../features/cron.md#flat-in-channel-continuation-slack). `"thread"` opens a dedicated thread per delivery (default); `"in_channel"` delivers flat into the channel timeline. Pair `in_channel` with `reply_in_thread: false` (and `require_mention: false`) so a plain channel reply continues the job. |
 
 The equivalent environment variable is `SLACK_ALLOW_BOTS=none|mentions|all`.
@@ -677,11 +677,19 @@ platforms:
       # "none" (default) — ignore all bot/app-authored messages
       # "mentions"       — accept a bot message only when THAT message
       #                    @mentions this bot
-      # "all"            — accept every bot message (except the bot's own)
+      # "all"            — accept every allowlisted bot message
+      #                    (except the bot's own)
       allow_bots: mentions
 ```
 
 Env equivalent: `SLACK_ALLOW_BOTS=none|mentions|all` (the config key wins when both are set). Unknown values are treated as `none`.
+
+For bot messages that carry a Slack user ID, `allow_bots` controls whether the
+message is considered, while the existing sender authorization still applies:
+add each peer bot's user ID to `SLACK_ALLOWED_USERS` (or use an explicit
+allow-all sender policy). Workflow Builder and app events without a matchable
+user ID continue to use the `allow_bots` opt-in because they cannot be matched
+against the sender allowlist.
 
 How `mentions` mode gates:
 

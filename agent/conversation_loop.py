@@ -6451,6 +6451,13 @@ def run_conversation(
                             "execute_code with Python's open() for large "
                             "files, or to write in smaller sections."
                         )
+                    # ``api_call_count`` is bumped before the request so attempt
+                    # numbering is available to logs/hooks during retries. Every
+                    # retry failed, so no call succeeded this iteration — drop it
+                    # before the count is reported and persisted (#38445).
+                    if api_call_count > 0:
+                        api_call_count -= 1
+                        agent._api_call_count = api_call_count
                     return {
                         "final_response": _final_response,
                         "messages": messages,

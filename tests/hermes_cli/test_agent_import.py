@@ -22,6 +22,7 @@ from hermes_cli.agent_import import (
     claude_rule_to_command_pattern,
     detect_agents,
     extract_markdown_entries,
+    gemini_rule_to_command_pattern,
     is_secret_key,
     parse_existing_memory_entries,
     sanitize_mcp_env,
@@ -160,6 +161,63 @@ def codex_tree(profile_env):
     return root
 
 
+GEMINI_MD = """# Gemini instructions
+
+- Use conventional commits
+- Run tests before pushing
+"""
+
+
+@pytest.fixture()
+def gemini_tree(profile_env):
+    """Build a fake ~/.gemini tree (Google Gemini CLI)."""
+    root = profile_env / ".gemini"
+    root.mkdir()
+    (root / "GEMINI.md").write_text(GEMINI_MD, encoding="utf-8")
+    (root / "settings.json").write_text(json.dumps({
+        "tools": {
+            "allowed": [
+                "run_shell_command(git status)",
+                "ShellTool(npm test)",
+                "run_shell_command",   # blanket → unmapped
+                "write_file",          # non-shell → unmapped
+            ],
+        },
+        "allowedTools": ["run_shell_command(make lint)"],  # legacy flat key
+        "mcpServers": {
+            "docs": {
+                "command": "uvx",
+                "args": ["docs-mcp"],
+                "env": {
+                    "DOCS_API_KEY": "secret-value",
+                    "DOCS_REGION": "eu",
+                },
+                "trust": True,          # must NOT leak into Hermes config
+            },
+            "streaming": {
+                "httpUrl": "https://mcp.example.com/mcp",
+                "url": "https://mcp.example.com/sse",
+                "headers": {
+                    "Authorization": "Bearer abc123",
+                    "X-Region": "us-east",
+                },
+            },
+        },
+    }), encoding="utf-8")
+    # OAuth credential file that must never be read/imported
+    (root / "oauth_creds.json").write_text(
+        json.dumps({"refresh_token": "SUPERSECRET"}), encoding="utf-8")
+    skill = root / "skills" / "gcp-deploy"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: gcp-deploy\n---\n\nDeploy to GCP.\n", encoding="utf-8")
+    # extensions dir → reported skipped
+    ext = root / "extensions" / "cloud-run"
+    ext.mkdir(parents=True)
+    (ext / "gemini-extension.json").write_text("{}", encoding="utf-8")
+    return root
+
+
 def snapshot_tree(root: Path) -> dict:
     """Map of relative-path -> bytes for every file under root."""
     return {
@@ -186,6 +244,8 @@ class TestDetection:
     def test_detects_claude_and_codex(self, claude_tree, codex_tree):
         assert detect_agents() == ["claude-code", "codex"]
 
+    def test_detects_gemini(self, gemini_tree):
+        assert detect_agents() == ["gemini"]
 
     def test_unsupported_agent_raises(self, hermes_home, tmp_path):
         with pytest.raises(ValueError):
@@ -200,6 +260,18 @@ class TestRuleMapping:
     def test_non_bash_rule_is_none(self):
         assert claude_rule_to_command_pattern("Read(~/.zshrc)") is None
         assert claude_rule_to_command_pattern("WebFetch") is None
+
+    def test_gemini_shell_rules(self):
+        assert gemini_rule_to_command_pattern(
+            "run_shell_command(git status)") == "git status*"
+        assert gemini_rule_to_command_pattern(
+            "ShellTool(npm test)") == "npm test*"
+
+    def test_gemini_blanket_and_non_shell_rules_are_none(self):
+        assert gemini_rule_to_command_pattern("run_shell_command") is None
+        assert gemini_rule_to_command_pattern("ShellTool") is None
+        assert gemini_rule_to_command_pattern("write_file") is None
+        assert gemini_rule_to_command_pattern("WebFetch(example.com)") is None
 
 
 class TestSecretDetection:
@@ -296,6 +368,77 @@ class TestCodexImport:
 
     def test_skill_copied(self, report, hermes_home):
         assert (hermes_home / "skills" / "codex-imports" / "db-migrate" / "SKILL.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# Gemini CLI real run
+# ---------------------------------------------------------------------------
+
+class TestGeminiImport:
+    @pytest.fixture()
+    def report(self, gemini_tree, hermes_home):
+        return run_import("gemini", gemini_tree, hermes_home, execute=True)
+
+    def test_gemini_md_lands_in_memory(self, report, hermes_home):
+        memory = (hermes_home / "memories" / "MEMORY.md").read_text()
+        assert "conventional commits" in memory
+        assert "tests before pushing" in memory
+
+    def test_allowlist_lands_in_config_yaml(self, report, hermes_home):
+        config = yaml.safe_load((hermes_home / "config.yaml").read_text())
+        allow = config["command_allowlist"]
+        assert "git status*" in allow
+        assert "npm test*" in allow
+        assert "make lint*" in allow          # legacy flat allowedTools
+        # blanket and non-shell rules must not leak in
+        assert "run_shell_command" not in allow
+        assert "write_file" not in allow
+
+    def test_unmapped_rules_reported(self, report):
+        item = next(i for i in report["items"]
+                    if i["kind"] == "command-allowlist")
+        assert "run_shell_command" in item.get("unmapped_rules", [])
+        assert "write_file" in item.get("unmapped_rules", [])
+
+    def test_mcp_servers_land_in_config_yaml(self, report, hermes_home):
+        config = yaml.safe_load((hermes_home / "config.yaml").read_text())
+        docs = config["mcp_servers"]["docs"]
+        assert docs["command"] == "uvx"
+        assert docs["args"] == ["docs-mcp"]
+        assert docs["env"] == {"DOCS_REGION": "eu"}
+        # Gemini's trust flag must never reach Hermes config
+        assert "trust" not in docs
+
+    def test_http_url_takes_precedence_over_sse_url(self, report, hermes_home):
+        config = yaml.safe_load((hermes_home / "config.yaml").read_text())
+        streaming = config["mcp_servers"]["streaming"]
+        assert streaming["url"] == "https://mcp.example.com/mcp"
+        # Authorization header stripped, plain header kept
+        assert streaming["headers"] == {"X-Region": "us-east"}
+
+    def test_skill_copied(self, report, hermes_home):
+        assert (hermes_home / "skills" / "gemini-imports" / "gcp-deploy"
+                / "SKILL.md").exists()
+
+    def test_extensions_reported_skipped(self, report):
+        items = {i["kind"]: i for i in report["items"]}
+        assert items["extensions"]["status"] == "skipped"
+
+    def test_no_secret_values_anywhere(self, gemini_tree, hermes_home):
+        run_import("gemini", gemini_tree, hermes_home, execute=True)
+        for p in hermes_home.rglob("*"):
+            if p.is_file():
+                content = p.read_text(errors="replace")
+                assert "secret-value" not in content
+                assert "SUPERSECRET" not in content
+                assert "Bearer abc123" not in content
+
+    def test_dry_run_writes_nothing(self, gemini_tree, hermes_home):
+        before = snapshot_tree(hermes_home)
+        report = run_import("gemini", gemini_tree, hermes_home, execute=False)
+        assert snapshot_tree(hermes_home) == before
+        assert report["dry_run"] is True
+        assert report["summary"]["imported"] > 0
 
 
 # ---------------------------------------------------------------------------

@@ -812,6 +812,16 @@ class WebSocketRelayTransport:
             return await asyncio.wait_for(fut, timeout=self._outbound_timeout_s)
         except asyncio.TimeoutError:
             return {"success": False, "error": "relay outbound timed out"}
+        except Exception as exc:  # noqa: BLE001 - a dead socket is a failed send, not a raise
+            # No `is None` check can close the window where the socket dies
+            # BETWEEN the liveness guard above and the actual write — the
+            # reader's finally hasn't cleared _ws yet, so _send raises
+            # ConnectionClosed straight into callers whose contract is a
+            # result dict (RelayAdapter.send consumes it with no try).
+            # Report it like every other failed send. CancelledError is a
+            # BaseException, so cancellation still propagates.
+            logger.debug("relay %s send failed", frame_type, exc_info=True)
+            return {"success": False, "error": f"relay send failed: {exc}"}
         finally:
             self._pending.pop(request_id, None)
 

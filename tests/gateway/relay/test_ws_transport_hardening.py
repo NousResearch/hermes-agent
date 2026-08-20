@@ -326,3 +326,48 @@ async def test_send_after_drop_with_reconnect_disabled_fails_fast():
     )
     assert result["success"] is False
     assert t._pending == {}
+
+
+@pytest.mark.asyncio
+async def test_send_raising_socket_returns_error_dict():
+    """The socket can die BETWEEN the `_ws is None` liveness guard and the
+    actual write (the reader's finally hasn't cleared the handle yet). The
+    write then raises ConnectionClosed — but send_outbound's contract is a
+    result dict, and RelayAdapter.send consumes it with no try. The raise
+    must be converted to {"success": False, ...}, with no future left in
+    _pending."""
+
+    class _RaisingWS:
+        """Send raises (already dead); the reader hasn't noticed yet."""
+
+        def __init__(self):
+            self.reader_release = asyncio.Event()
+
+        async def send(self, data):
+            raise ConnectionClosedError(None, None)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await self.reader_release.wait()
+            raise ConnectionClosedError(None, None)
+
+        async def close(self):
+            pass
+
+    t = WebSocketRelayTransport("ws://unused", "discord", "bot1", outbound_timeout_s=5.0)
+    fake = _RaisingWS()
+    t._ws = fake
+    t._reader = asyncio.create_task(t._read_loop())
+    await asyncio.sleep(0)
+
+    result = await asyncio.wait_for(
+        t.send_outbound({"op": "send_message", "text": "hi"}), timeout=2.0
+    )
+    assert result["success"] is False
+    assert "relay send failed" in result["error"]
+    assert t._pending == {}
+
+    fake.reader_release.set()
+    await t._reader

@@ -3,8 +3,8 @@
 Parking deregisters a server's tools, so no tool call can reach the
 circuit-breaker half-open probe or ``_signal_reconnect`` — the only
 things that set ``_reconnect_event``. The parked wait must therefore be
-timed: the run task wakes on ``_PARKED_RETRY_INTERVAL`` and attempts one
-revival probe on its own.
+timed: the run task wakes on the configured parked retry interval and
+attempts one revival probe on its own.
 """
 
 import asyncio
@@ -12,6 +12,43 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+
+def test_parked_retry_interval_defaults_to_legacy_cadence():
+    from tools.mcp_tool import MCPServerTask, _PARKED_RETRY_INTERVAL
+
+    server = MCPServerTask("srv")
+
+    assert server._parked_retry_interval() == _PARKED_RETRY_INTERVAL
+
+
+def test_parked_retry_interval_honors_per_server_config():
+    from tools.mcp_tool import MCPServerTask
+
+    server = MCPServerTask("srv")
+    server._config = {"parked_retry_interval": 30}
+
+    assert server._parked_retry_interval() == 30
+
+
+def test_parked_retry_interval_is_clamped_to_safe_floor():
+    from tools.mcp_tool import MCPServerTask, _MIN_PARKED_RETRY_INTERVAL
+
+    server = MCPServerTask("srv")
+    server._config = {"parked_retry_interval": 0}
+
+    assert server._parked_retry_interval() == _MIN_PARKED_RETRY_INTERVAL
+
+
+@pytest.mark.parametrize("configured", ["30s", [], float("inf"), 10**400, True, False])
+def test_parked_retry_interval_invalid_value_uses_default(configured, caplog):
+    from tools.mcp_tool import MCPServerTask, _PARKED_RETRY_INTERVAL
+
+    server = MCPServerTask("srv")
+    server._config = {"parked_retry_interval": configured}
+
+    assert server._parked_retry_interval() == _PARKED_RETRY_INTERVAL
+    assert "parked_retry_interval must be a number of seconds" in caplog.text
 
 
 def test_revival_discovery_registers_tools_while_ready_is_cleared(monkeypatch):
@@ -52,7 +89,7 @@ def test_parked_server_self_probes_and_revives(monkeypatch, tmp_path):
 
     monkeypatch.setattr(mcp_tool, "_MAX_RECONNECT_RETRIES", 1)
     # Keep the self-probe cadence tiny so the test is fast.
-    monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 0.05)
+    monkeypatch.setattr(mcp_tool, "_MIN_PARKED_RETRY_INTERVAL", 0.01)
 
     _real_sleep = asyncio.sleep
 
@@ -101,7 +138,10 @@ def test_parked_server_self_probes_and_revives(monkeypatch, tmp_path):
         task = _Task("srv")
         task._registered_tool_names = ["srv__tool"]
 
-        run_task = asyncio.ensure_future(task.run({"command": "x"}))
+        run_task = asyncio.ensure_future(task.run({
+            "command": "x",
+            "parked_retry_interval": 0.05,
+        }))
 
         # Let it exhaust the budget (1 retry) and park.
         for _ in range(2000):

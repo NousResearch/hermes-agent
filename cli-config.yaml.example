@@ -1270,6 +1270,9 @@ platform_toolsets:
 # Optional per-server settings:
 #   timeout: tool call timeout in seconds (default: 120)
 #   connect_timeout: initial connection timeout (default: 60)
+#   parked_retry_interval: parked self-probe cadence in seconds (default: 300).
+#     Lower it to recover sooner when an MCP service starts after Hermes.
+#     Floored at 5s to prevent a misconfigured busy loop.
 #   keepalive_interval: liveness ping cadence in seconds (default: 180).
 #     Lower it below the server's session TTL for servers that expire idle
 #     sessions quickly (e.g. Unreal Engine editor MCP, ~15s), otherwise idle
@@ -1284,6 +1287,7 @@ platform_toolsets:
 #     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
 #   notion:
 #     url: https://mcp.notion.com/mcp
+#     parked_retry_interval: 30
 #   github:
 #     command: npx
 #     args: ["-y", "@modelcontextprotocol/server-github"]

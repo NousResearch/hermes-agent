@@ -19,6 +19,8 @@ Example config::
         env: {}
         timeout: 120         # per-tool-call timeout in seconds (default: 300)
         connect_timeout: 60  # initial connection timeout (default: 60)
+        parked_retry_interval: 30  # parked self-probe cadence in seconds
+                                   # (default: 300, floored at 5)
         keepalive_interval: 10  # liveness ping cadence in seconds (default:
                                 # 180). Set below the server's session TTL for
                                 # servers that GC idle sessions quickly (e.g.
@@ -560,7 +562,8 @@ _MAX_BACKOFF_SECONDS = 60
 # wakes on this cadence and attempts one revival probe. Without it a parked
 # server is unrevivable: its tools are out of the registry, so no tool call
 # can ever reach the circuit-breaker half-open probe or _signal_reconnect.
-_PARKED_RETRY_INTERVAL = 300     # seconds between parked self-probes
+_PARKED_RETRY_INTERVAL = 300     # default seconds between parked self-probes
+_MIN_PARKED_RETRY_INTERVAL = 5   # prevent misconfigured busy-loop probes
 _RECYCLED_RECONNECT_TIMEOUT = 15.0
 # Jitter applied to reconnect backoff sleeps. Without it, every server that
 # lost the same backend retries in lockstep (thundering herd) and log lines
@@ -2447,6 +2450,27 @@ class MCPServerTask:
         """Check if this server uses HTTP transport."""
         return "url" in self._config
 
+    def _parked_retry_interval(self) -> float:
+        """Return this server's bounded parked self-probe cadence."""
+        configured = self._config.get("parked_retry_interval")
+        if configured is None:
+            return float(_PARKED_RETRY_INTERVAL)
+        try:
+            if isinstance(configured, bool):
+                raise ValueError
+            interval = float(configured)
+            if not math.isfinite(interval):
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            logger.warning(
+                "MCP config parked_retry_interval must be a number of seconds; "
+                "using default %s instead of %r",
+                _PARKED_RETRY_INTERVAL,
+                configured,
+            )
+            return float(_PARKED_RETRY_INTERVAL)
+        return max(_MIN_PARKED_RETRY_INTERVAL, interval)
+
     def _advertises_tools(self) -> bool:
         """Whether the server advertises the ``tools`` capability.
 
@@ -3729,6 +3753,7 @@ class MCPServerTask:
         self._auth_type = (config.get("auth") or "").lower().strip()
         self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")
         self._max_lifetime_seconds = _get_lifecycle_seconds(config, "max_lifetime_seconds")
+        parked_retry_interval = self._parked_retry_interval()
 
         # Bind the lazily-imported SDK before reading feature flags below
         # (_MCP_SAMPLING_TYPES / _MCP_ELICITATION_TYPES are False until the
@@ -3859,16 +3884,16 @@ class MCPServerTask:
                         logger.warning(
                             "MCP server '%s': %d consecutive reconnects "
                             "without a healthy session (rapid-drop budget "
-                            "exhausted), parking; will self-probe every %ds "
+                            "exhausted), parking; will self-probe every %gs "
                             "until it recovers (state: degraded → parked)",
                             self.name, _MAX_RECONNECT_RETRIES,
-                            _PARKED_RETRY_INTERVAL,
+                            parked_retry_interval,
                         )
                         self._was_parked = True
                         self._deregister_tools()
                         self._reconnect_event.clear()
                         parked = await self._wait_for_reconnect_or_shutdown(
-                            timeout=_PARKED_RETRY_INTERVAL
+                            timeout=parked_retry_interval
                         )
                         if parked == "shutdown":
                             break
@@ -3936,7 +3961,7 @@ class MCPServerTask:
                         # very first connect left the server unrevivable for
                         # the life of the process, even after the user
                         # re-authenticated with ``hermes mcp login``. Parking
-                        # keeps the task alive so the 300s self-probe (and an
+                        # keeps the task alive so the periodic self-probe (and an
                         # explicit /mcp refresh) can pick up fresh tokens.
                         if _is_auth_error(root):
                             logger.warning(
@@ -3960,7 +3985,7 @@ class MCPServerTask:
                         self._deregister_tools()
                         self._reconnect_event.clear()
                         parked = await self._wait_for_reconnect_or_shutdown(
-                            timeout=_PARKED_RETRY_INTERVAL
+                            timeout=parked_retry_interval
                         )
                         if parked == "shutdown":
                             return
@@ -3992,7 +4017,7 @@ class MCPServerTask:
                         self._deregister_tools()
                         self._reconnect_event.clear()
                         parked = await self._wait_for_reconnect_or_shutdown(
-                            timeout=_PARKED_RETRY_INTERVAL
+                            timeout=parked_retry_interval
                         )
                         if parked == "shutdown":
                             return
@@ -4041,16 +4066,16 @@ class MCPServerTask:
                     # immediately without burning the retry ladder.
                     logger.warning(
                         "MCP server '%s' hit a permanent error, parking "
-                        "without retries; will self-probe every %ds "
+                        "without retries; will self-probe every %gs "
                         "(state: connected → parked): %s: %s",
-                        self.name, _PARKED_RETRY_INTERVAL,
+                        self.name, parked_retry_interval,
                         type(root).__name__, root,
                     )
                     self._was_parked = True
                     self._deregister_tools()
                     self._reconnect_event.clear()
                     parked = await self._wait_for_reconnect_or_shutdown(
-                        timeout=_PARKED_RETRY_INTERVAL
+                        timeout=parked_retry_interval
                     )
                     if parked == "shutdown":
                         return
@@ -4068,10 +4093,10 @@ class MCPServerTask:
                 if self._reconnect_retries > _MAX_RECONNECT_RETRIES:
                     logger.warning(
                         "MCP server '%s' failed after %d reconnection attempts, "
-                        "parking; will self-probe every %ds until it recovers "
+                        "parking; will self-probe every %gs until it recovers "
                         "(state: degraded → parked): %s: %s",
                         self.name, _MAX_RECONNECT_RETRIES,
-                        _PARKED_RETRY_INTERVAL,
+                        parked_retry_interval,
                         type(root).__name__, root,
                     )
                     # Do NOT return — exiting the task orphans the server:
@@ -4081,7 +4106,7 @@ class MCPServerTask:
                     # tools from the registry and park. Because parking
                     # deregisters the tools, no tool call can reach the
                     # circuit-breaker half-open probe or _signal_reconnect —
-                    # so the park is a TIMED wait: every _PARKED_RETRY_INTERVAL
+                    # so the park is a timed wait at the configured cadence
                     # we wake and attempt one reconnect ourselves (#57129).
                     # An explicit _reconnect_event.set() (OAuth recovery,
                     # manual /mcp refresh) still wakes us immediately.
@@ -4089,7 +4114,7 @@ class MCPServerTask:
                     self._deregister_tools()
                     self._reconnect_event.clear()
                     parked = await self._wait_for_reconnect_or_shutdown(
-                        timeout=_PARKED_RETRY_INTERVAL
+                        timeout=parked_retry_interval
                     )
                     if parked == "shutdown":
                         return
@@ -7268,7 +7293,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         # Cached entries with no live session are parked or mid-reconnect.
         # Their tools are deregistered, so nothing else can reach
         # _signal_reconnect — without this nudge a new session silently
-        # waits up to _PARKED_RETRY_INTERVAL for the next self-probe
+        # waits up to its configured parked retry interval for the next probe
         # (#50170). Wake them now so their tools come back promptly.
         stale_cached = [
             _servers[k]

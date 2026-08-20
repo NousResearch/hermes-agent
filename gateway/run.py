@@ -30635,11 +30635,17 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # `hermes gateway stop` and interactive Ctrl+C are handled above as
     # planned stops and should not trigger service-manager revival.
     if _signal_initiated_shutdown and not runner._restart_requested:
+        if _should_run_nonzero_on_signal_shutdown():
+            logger.info(
+                "Exiting with code 1 (signal-initiated shutdown without restart "
+                "request) so systemd Restart=on-failure can revive the gateway."
+            )
+            return False  # → sys.exit(1) in the caller
         logger.info(
-            "Exiting with code 1 (signal-initiated shutdown without restart "
-            "request) so systemd Restart=on-failure can revive the gateway."
+            "Signal-initiated shutdown without restart request — "
+            "exiting cleanly (non-systemd service manager)."
         )
-        return False  # → sys.exit(1) in the caller
+        return True
 
     # Older restart paths may reach here without ``runner.exit_code`` set.
     # Keep the historical non-zero fallback for service-managed restarts.
@@ -30713,6 +30719,23 @@ def main():
         else:
             exit_code = 1
     _exit_after_graceful_shutdown(exit_code)
+
+
+def _should_run_nonzero_on_signal_shutdown() -> bool:
+    """Return True (→ exit code 1) under systemd, False (→ exit 0) under launchd.
+
+    When an unexpected SIGTERM arrives and the shutdown was not a planned
+    restart, systemd's ``Restart=on-failure`` relies on a non-zero exit to
+    revive the gateway.  Under launchd (no ``INVOCATION_ID``) we exit 0: the
+    plist uses ``KeepAlive=true``, which respawns on *any* exit code, so a
+    non-zero exit would only mislabel the shutdown as a crash in diagnostics
+    (and would be incompatible with a future ``SuccessfulExit`` KeepAlive
+    variant).  The macOS restart loop is not caused by the exit code itself
+    but by the resurrected instance being refused by the duplicate-instance
+    guards / stale ``gateway_state.json`` under ``--replace`` — the other two
+    parts of PR #63535.  Return False so the caller can exit cleanly.
+    """
+    return bool(os.environ.get("INVOCATION_ID"))
 
 
 def _exit_after_graceful_shutdown(exit_code: int) -> None:

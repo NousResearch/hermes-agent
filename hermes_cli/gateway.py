@@ -4475,17 +4475,25 @@ def _launchd_unsupported_marker_exists() -> bool:
     return _launchd_unsupported_marker_path().exists()
 
 
-def _gateway_run_command() -> list[str]:
-    """Build the `python -m hermes_cli.main [--profile X] gateway run --replace` argv.
+def _gateway_run_command(include_replace: bool = True) -> list[str]:
+    """Build the `python -m hermes_cli.main [--profile X] gateway run [--replace]` argv.
 
     Profile-aware: honors the active HERMES_HOME via `_profile_arg()` so the
     detached fallback launches into the same profile as the CLI invocation.
+
+    ``include_replace`` is False for the launchd plist template: launchd
+    manages restarts via KeepAlive=true, and the `--replace` flag makes a new
+    instance refuse to start whenever a stale gateway_state.json claims an
+    instance is already running — producing an infinite restart loop on macOS.
+    See PR #63535.
     """
     cmd = [get_python_path(), "-m", "hermes_cli.main"]
     profile_arg = _profile_arg()
     if profile_arg:
         cmd.extend(profile_arg.split())
-    cmd.extend(["gateway", "run", "--replace"])
+    cmd.extend(["gateway", "run"])
+    if include_replace:
+        cmd.append("--replace")
     return cmd
 
 
@@ -4493,6 +4501,7 @@ def _timestamped_stderr_gateway_command(
     error_log: Path,
     *,
     external_supervisor: bool = False,
+    include_replace: bool = True,
 ) -> list[str]:
     """Wrap gateway run so raw stderr lines are timestamped before file write.
 
@@ -4501,8 +4510,14 @@ def _timestamped_stderr_gateway_command(
     ``hermes update`` sees the flag on the live grandchild argv and hands
     the process back to launchd instead of starting a detached watcher
     (#86893 / #87005). The detached nohup fallback stays unmarked.
+
+    ``include_replace=False`` is also for the launchd plist template only:
+    launchd manages restarts via KeepAlive=true, and `--replace` makes a
+    resurrected instance refuse to start on a stale gateway_state.json
+    (macOS restart loop, PR #63535). The detached fallback keeps
+    ``--replace`` so it can take over from a running instance.
     """
-    inner = _gateway_run_command()
+    inner = _gateway_run_command(include_replace=include_replace)
     if external_supervisor and "--external-supervisor" not in inner:
         inner = [*inner, "--external-supervisor"]
     return [
@@ -4611,7 +4626,7 @@ def generate_launchd_plist() -> str:
     prog_args = [
         f"<string>{part}</string>"
         for part in _timestamped_stderr_gateway_command(
-            err_path, external_supervisor=True
+            err_path, external_supervisor=True, include_replace=False
         )
     ]
     prog_args_xml = "\n        ".join(prog_args)
@@ -4661,6 +4676,8 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
+        <key>HERMES_LAUNCHD_SUPERVISED</key>
+        <string>1</string>
     </dict>
 
     <key>LimitLoadToSessionType</key>

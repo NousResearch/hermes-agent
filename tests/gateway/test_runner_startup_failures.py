@@ -413,3 +413,51 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
     assert exc_info.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
 
 
+class TestSignalShutdownExitCode:
+    """_should_run_nonzero_on_signal_shutdown — INVOCATION_ID branching.
+
+    systemd (INVOCATION_ID set) must exit non-zero so Restart=on-failure
+    revives the gateway; launchd / plain terminal must exit 0 (PR #63535).
+    """
+
+    def test_under_systemd_returns_true(self, monkeypatch):
+        monkeypatch.setenv("INVOCATION_ID", "test-systemd-id")
+        from gateway.run import _should_run_nonzero_on_signal_shutdown
+
+        assert _should_run_nonzero_on_signal_shutdown() is True
+
+    def test_under_launchd_returns_false(self, monkeypatch):
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        from gateway.run import _should_run_nonzero_on_signal_shutdown
+
+        assert _should_run_nonzero_on_signal_shutdown() is False
+
+
+class TestSupervisorMarkerEnv:
+    """is_gateway_supervisor_process — HERMES_LAUNCHD_SUPERVISED marker.
+
+    On modern macOS the launchd plist injects HERMES_LAUNCHD_SUPERVISED=1 so
+    the guard can recognize a launchd-spawned gateway even when macOS hands
+    the process the XPC_SERVICE_NAME="0" sentinel (PR #63535 part 3).
+    """
+
+    def test_recognizes_marker_even_with_xpc_sentinel(self, monkeypatch):
+        from gateway.restart import is_gateway_supervisor_process
+
+        env = {"XPC_SERVICE_NAME": "0", "HERMES_LAUNCHD_SUPERVISED": "1"}
+        assert is_gateway_supervisor_process(env) is True
+
+    def test_plain_shell_without_marker_returns_false(self, monkeypatch):
+        from gateway.restart import is_gateway_supervisor_process
+
+        env = {"XPC_SERVICE_NAME": "0"}
+        assert is_gateway_supervisor_process(env) is False
+
+    def test_xpc_job_label_still_recognized_without_marker(self, monkeypatch):
+        from gateway.restart import is_gateway_supervisor_process
+
+        env = {"XPC_SERVICE_NAME": "ai.hermes.gateway"}
+        assert is_gateway_supervisor_process(env) is True
+
+
+

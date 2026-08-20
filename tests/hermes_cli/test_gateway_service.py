@@ -1318,8 +1318,13 @@ class TestProfileArg:
         monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
 
         plist = gateway_cli.generate_launchd_plist()
-        program_args = plistlib.loads(plist.encode("utf-8"))["ProgramArguments"]
+        plist_data = plistlib.loads(plist.encode("utf-8"))
+        program_args = plist_data["ProgramArguments"]
 
+        # launchd manages restarts via KeepAlive=true, so --replace must NOT be
+        # present: it makes a new instance refuse to start whenever a stale
+        # gateway_state.json claims an instance is running (macOS restart loop,
+        # PR #63535). --external-supervisor stays (hermes update handoff).
         assert program_args == [
             "/usr/bin/python3",
             "-m",
@@ -1334,9 +1339,12 @@ class TestProfileArg:
             "mybot",
             "gateway",
             "run",
-            "--replace",
             "--external-supervisor",
         ]
+        assert "--replace" not in program_args
+        # Explicit marker lets the supervisor guard recognize a launchd-spawned
+        # gateway even when macOS hands it XPC_SERVICE_NAME="0" (PR #63535).
+        assert plist_data["EnvironmentVariables"]["HERMES_LAUNCHD_SUPERVISED"] == "1"
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"

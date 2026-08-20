@@ -20,6 +20,16 @@ GATEWAY_FATAL_CONFIG_EXIT_CODE = 78
 # intentionally replace the child environment (for example ``sudo env -i``).
 EXTERNAL_GATEWAY_SUPERVISOR_ENV = "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"
 
+# Injected into the launchd plist EnvironmentVariables by
+# ``generate_launchd_plist``.  launchd's own marker, XPC_SERVICE_NAME, is
+# unreliable on modern macOS: launchd sets it to the job label for GUI/daemon
+# contexts but to the sentinel "0" for LaunchAgents spawned into the user's
+# Aqua session, so the supervisor-detection guard cannot distinguish a
+# launchd-spawned gateway from a duplicate shell launch (macOS restart loop,
+# PR #63535).  An explicit variable in the plist is deterministic: it is
+# present exactly when launchd started us.
+LAUNCHD_SUPERVISED_ENV = "HERMES_LAUNCHD_SUPERVISED"
+
 DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT = float(
     DEFAULT_CONFIG["agent"]["restart_drain_timeout"]
 )
@@ -63,6 +73,13 @@ def is_gateway_supervisor_process(
         return True
     xpc_service = env.get("XPC_SERVICE_NAME", "")
     if xpc_service and xpc_service != "0":
+        return True
+    if env.get(LAUNCHD_SUPERVISED_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
         return True
     return str(env.get(EXTERNAL_GATEWAY_SUPERVISOR_ENV, "")).strip().lower() in {
         "1",

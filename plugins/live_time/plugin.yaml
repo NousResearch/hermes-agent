@@ -1,0 +1,6 @@
+name: live-time
+version: 1.0.0
+description: "Inject live current time into every LLM call via the pre_llm_call hook — fixes stale session-start timestamps in long/cross-day conversations."
+author: "chenfeijiang95-ui"
+provides_hooks:
+  - pre_llm_call

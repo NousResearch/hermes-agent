@@ -413,6 +413,7 @@ def _chat_messages_to_responses_input(
     is_xai_responses: bool = False,
     is_github_responses: bool = False,
     replay_encrypted_reasoning: bool = True,
+    replay_plaintext_reasoning: bool = False,
     current_issuer_kind: Optional[str] = None,
     native_compaction_eligible: bool = False,
 ) -> List[Dict[str, Any]]:
@@ -436,6 +437,13 @@ def _chat_messages_to_responses_input(
     ``AIAgent._disable_codex_reasoning_replay`` which both strips cached
     items from the conversation history and threads ``replay_enabled=False``
     through this converter so subsequent turns send no reasoning items.
+
+    ``replay_plaintext_reasoning`` is an explicit compatibility capability
+    for Responses relays such as Actual Computer. Those relays expose model
+    thinking as plaintext ``reasoning.content`` instead of OpenAI's opaque
+    ``encrypted_content`` continuation blob. Hermes stores that text on the
+    assistant message as ``reasoning`` / ``reasoning_content``; when enabled,
+    replay it immediately before the assistant output item it belongs to.
 
     ``is_github_responses`` drops the ``id`` field from replayed
     ``codex_message_items`` regardless of length. The Copilot backend
@@ -512,6 +520,7 @@ def _chat_messages_to_responses_input(
                     else None
                 )
                 has_codex_reasoning = False
+                has_plaintext_reasoning = False
                 if isinstance(codex_reasoning, list):
                     for ri in codex_reasoning:
                         if isinstance(ri, dict) and ri.get("encrypted_content"):
@@ -571,6 +580,32 @@ def _chat_messages_to_responses_input(
                                 seen_item_ids.add(item_id)
                             has_codex_reasoning = True
 
+                # Some Responses relays cannot mint OpenAI's opaque encrypted
+                # continuation blob. They instead accept the plaintext
+                # reasoning item returned on the prior turn. Prefer encrypted
+                # reasoning when present so the same thought is not replayed
+                # twice.
+                if replay_plaintext_reasoning and not has_codex_reasoning:
+                    plaintext_reasoning = msg.get("reasoning_content")
+                    if not (
+                        isinstance(plaintext_reasoning, str)
+                        and plaintext_reasoning.strip()
+                    ):
+                        plaintext_reasoning = msg.get("reasoning")
+                    if (
+                        isinstance(plaintext_reasoning, str)
+                        and plaintext_reasoning.strip()
+                    ):
+                        items.append({
+                            "type": "reasoning",
+                            "content": [{
+                                "type": "reasoning_text",
+                                "text": plaintext_reasoning,
+                            }],
+                            "summary": [],
+                        })
+                        has_plaintext_reasoning = True
+
                 # Replay exact assistant message items (with id/phase) from
                 # previous turns so the API can maintain prefix-cache hits.
                 # OpenAI docs: "preserve and resend phase on all assistant
@@ -625,21 +660,36 @@ def _chat_messages_to_responses_input(
                         items.append(replay_item)
                         replayed_message_items += 1
 
+                tool_calls = msg.get("tool_calls")
+                has_replayable_tool_call = (
+                    isinstance(tool_calls, list)
+                    and any(
+                        isinstance(tc, dict)
+                        and isinstance(tc.get("function"), dict)
+                        and isinstance(tc["function"].get("name"), str)
+                        and bool(tc["function"]["name"].strip())
+                        for tc in tool_calls
+                    )
+                )
+
                 if replayed_message_items > 0:
                     pass
                 elif content_parts:
                     items.append({"role": "assistant", "content": content_parts})
                 elif content_text.strip():
                     items.append({"role": "assistant", "content": content_text})
-                elif has_codex_reasoning:
+                elif has_codex_reasoning or (
+                    has_plaintext_reasoning and not has_replayable_tool_call
+                ):
                     # The Responses API requires a following item after each
                     # reasoning item (otherwise: missing_following_item error).
                     # When the assistant produced only reasoning with no visible
-                    # content, emit an empty assistant message as the required
-                    # following item.
+                    # content or function call, emit an empty assistant message
+                    # as the required following item. Plaintext reasoning must
+                    # remain directly adjacent to its function_call so a relay
+                    # attaches the thought to that assistant action turn.
                     items.append({"role": "assistant", "content": ""})
 
-                tool_calls = msg.get("tool_calls")
                 if isinstance(tool_calls, list):
                     for tc in tool_calls:
                         if not isinstance(tc, dict):
@@ -751,6 +801,7 @@ def _preflight_codex_input_items(
     *,
     is_github_responses: bool = False,
     sanitize_harmony_tokens: bool = False,
+    allow_plaintext_reasoning: bool = False,
 ) -> List[Dict[str, Any]]:
     if not isinstance(raw_items, list):
         raise ValueError("Codex Responses input must be a list of input items.")
@@ -869,6 +920,27 @@ def _preflight_codex_input_items(
                 else:
                     reasoning_item["summary"] = []
                 normalized.append(reasoning_item)
+            elif allow_plaintext_reasoning:
+                content = item.get("content")
+                plaintext_parts: List[Dict[str, str]] = []
+                if isinstance(content, list):
+                    for part in content:
+                        if not isinstance(part, dict):
+                            continue
+                        if part.get("type") not in {"reasoning_text", "text"}:
+                            continue
+                        text = part.get("text")
+                        if isinstance(text, str) and text.strip():
+                            plaintext_parts.append({
+                                "type": "reasoning_text",
+                                "text": sanitize_text(text),
+                            })
+                if plaintext_parts:
+                    normalized.append({
+                        "type": "reasoning",
+                        "content": plaintext_parts,
+                        "summary": [],
+                    })
             continue
 
         if item_type == "compaction":
@@ -996,6 +1068,7 @@ def _preflight_codex_api_kwargs(
     allow_stream: bool = False,
     is_github_responses: bool = False,
     sanitize_harmony_tokens: bool = False,
+    allow_plaintext_reasoning: bool = False,
 ) -> Dict[str, Any]:
     if not isinstance(api_kwargs, dict):
         raise ValueError("Codex Responses request must be a dict.")
@@ -1023,6 +1096,7 @@ def _preflight_codex_api_kwargs(
         api_kwargs.get("input"),
         is_github_responses=is_github_responses,
         sanitize_harmony_tokens=sanitize_harmony_tokens,
+        allow_plaintext_reasoning=allow_plaintext_reasoning,
     )
 
     tools = api_kwargs.get("tools")
@@ -1235,16 +1309,25 @@ def _extract_responses_message_text(item: Any) -> str:
 
 def _extract_responses_reasoning_text(item: Any) -> str:
     """Extract a compact reasoning text from a Responses reasoning item."""
-    summary = getattr(item, "summary", None)
-    if isinstance(summary, list):
+    def field(obj: Any, name: str) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(name)
+        return getattr(obj, name, None)
+
+    # Plaintext relays return full reasoning in ``content``; OpenAI returns a
+    # human-readable summary alongside encrypted_content.
+    for part_field in ("content", "summary"):
+        parts = field(item, part_field)
+        if not isinstance(parts, list):
+            continue
         chunks: List[str] = []
-        for part in summary:
-            text = getattr(part, "text", None)
+        for part in parts:
+            text = field(part, "text")
             if isinstance(text, str) and text:
                 chunks.append(text)
         if chunks:
             return "\n".join(chunks).strip()
-    text = getattr(item, "text", None)
+    text = field(item, "text")
     if isinstance(text, str) and text:
         return text.strip()
     return ""

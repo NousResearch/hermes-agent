@@ -335,6 +335,118 @@ def test_chat_messages_to_responses_input_keeps_short_call_id():
 
 
 
+def test_actual_plaintext_reasoning_replays_adjacent_to_function_call():
+    """Actual must receive Kimi's thought on the same assistant action turn."""
+    messages = [
+        {"role": "user", "content": "Inspect the repository"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "I should inspect the repository before answering.",
+            "reasoning_content": "I should inspect the repository before answering.",
+            "tool_calls": [
+                {
+                    "id": "call_status",
+                    "type": "function",
+                    "function": {
+                        "name": "terminal",
+                        "arguments": '{"command":"git status"}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_status", "content": "clean"},
+    ]
+
+    items = _chat_messages_to_responses_input(
+        messages,
+        replay_plaintext_reasoning=True,
+        current_issuer_kind="other:https://api.actual.inc/v1",
+    )
+
+    reasoning_index = next(
+        i for i, item in enumerate(items) if item.get("type") == "reasoning"
+    )
+    call_index = next(
+        i for i, item in enumerate(items) if item.get("type") == "function_call"
+    )
+    output_index = next(
+        i for i, item in enumerate(items)
+        if item.get("type") == "function_call_output"
+    )
+    assert call_index == reasoning_index + 1
+    assert output_index == call_index + 1
+    assert items[reasoning_index] == {
+        "type": "reasoning",
+        "content": [{
+            "type": "reasoning_text",
+            "text": "I should inspect the repository before answering.",
+        }],
+        "summary": [],
+    }
+
+
+def test_plaintext_reasoning_replay_is_opt_in():
+    messages = [{
+        "role": "assistant",
+        "content": "done",
+        "reasoning_content": "private provider thought",
+    }]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    assert not any(item.get("type") == "reasoning" for item in items)
+
+
+def test_preflight_plaintext_reasoning_is_capability_gated():
+    raw = [{
+        "type": "reasoning",
+        "content": [{"type": "reasoning_text", "text": "replay me"}],
+        "summary": [],
+    }]
+
+    assert _preflight_codex_input_items(raw) == []
+    assert _preflight_codex_input_items(
+        raw, allow_plaintext_reasoning=True
+    ) == raw
+
+
+def test_normalize_actual_reasoning_content_extracts_plaintext():
+    response = SimpleNamespace(
+        status="completed",
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_actual_1",
+                status="completed",
+                encrypted_content=None,
+                content=[SimpleNamespace(
+                    type="reasoning_text",
+                    text="I need a repository inspection first.",
+                )],
+                summary=[],
+            ),
+            SimpleNamespace(
+                type="function_call",
+                id="fc_actual_1",
+                call_id="call_actual_1",
+                status="completed",
+                name="terminal",
+                arguments='{"command":"git status"}',
+            ),
+        ],
+    )
+
+    assistant, finish_reason = _normalize_codex_response(
+        response,
+        issuer_kind="other:https://api.actual.inc/v1",
+    )
+
+    assert finish_reason == "tool_calls"
+    assert assistant.reasoning == "I need a repository inspection first."
+    assert assistant.codex_reasoning_items is None
+
+
 def test_preflight_codex_input_items_drops_short_id_for_github_responses():
     items = _preflight_codex_input_items(
         [

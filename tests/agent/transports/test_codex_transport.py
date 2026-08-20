@@ -305,6 +305,112 @@ class TestCodexBuildKwargs:
         assert "function_call_output" in item_types
         assert kw.get("include") == ["reasoning.encrypted_content"]
 
+    @staticmethod
+    def _actual_plaintext_post_tool_messages():
+        return [
+            {"role": "user", "content": "Inspect the repository"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "I should inspect the repository before answering.",
+                "reasoning_content": "I should inspect the repository before answering.",
+                "tool_calls": [
+                    {
+                        "id": "call_status",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command":"git status"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_status", "content": "clean"},
+        ]
+
+    @pytest.mark.parametrize(
+        "route",
+        [
+            {"provider": "actual", "base_url": "https://relay.example/v1"},
+            {"base_url": "https://api.actual.inc/v1"},
+        ],
+    )
+    def test_actual_replays_plaintext_reasoning_through_double_preflight(
+        self, transport, route
+    ):
+        """Pin the full Hermes wire path, including its two preflight passes."""
+        kwargs = transport.build_kwargs(
+            model="moonshotai/Kimi-K3",
+            messages=self._actual_plaintext_post_tool_messages(),
+            tools=[],
+            **route,
+        )
+
+        first = transport.preflight_kwargs(kwargs)
+        wire = transport.preflight_kwargs(first)
+        relevant = [
+            item for item in wire["input"]
+            if item.get("type") in {
+                "reasoning", "function_call", "function_call_output"
+            }
+        ]
+
+        assert [item["type"] for item in relevant] == [
+            "reasoning", "function_call", "function_call_output"
+        ]
+        assert relevant[0]["content"] == [{
+            "type": "reasoning_text",
+            "text": "I should inspect the repository before answering.",
+        }]
+
+    @pytest.mark.parametrize(
+        "route",
+        [
+            {"provider": "openai", "base_url": "https://api.openai.com/v1"},
+            {"provider": "custom", "base_url": "https://relay.example/api.actual.inc/v1"},
+            {"provider": "custom", "base_url": "https://api.actual.inc.evil.example/v1"},
+        ],
+    )
+    def test_non_actual_routes_never_receive_plaintext_reasoning(
+        self, transport, route
+    ):
+        kwargs = transport.build_kwargs(
+            model="moonshotai/Kimi-K3",
+            messages=self._actual_plaintext_post_tool_messages(),
+            tools=[],
+            **route,
+        )
+        wire = transport.preflight_kwargs(kwargs)
+
+        assert not any(item.get("type") == "reasoning" for item in wire["input"])
+
+    def test_actual_plaintext_capability_does_not_stick_after_provider_switch(
+        self, transport
+    ):
+        actual_kwargs = transport.build_kwargs(
+            model="moonshotai/Kimi-K3",
+            messages=self._actual_plaintext_post_tool_messages(),
+            tools=[],
+            provider="actual",
+            base_url="https://api.actual.inc/v1",
+        )
+        assert any(
+            item.get("type") == "reasoning"
+            for item in transport.preflight_kwargs(actual_kwargs)["input"]
+        )
+
+        openai_kwargs = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=self._actual_plaintext_post_tool_messages(),
+            tools=[],
+            provider="openai",
+            base_url="https://api.openai.com/v1",
+        )
+        assert not any(
+            item.get("type") == "reasoning"
+            for item in transport.preflight_kwargs(openai_kwargs)["input"]
+        )
+
     def test_azure_foundry_post_tool_replay_suppresses_reasoning_items(self, transport):
         """The rejected payload shape drops reasoning, keeps tool continuity."""
         kw = transport.build_kwargs(

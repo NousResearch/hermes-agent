@@ -65,6 +65,18 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashUnavailableMessage('/personality')).toBeNull()
   })
 
+  it('routes /learn to the backend via exec (open-ended prompt rewrite)', () => {
+    for (const cmd of ['/learn']) {
+      const spec = resolveDesktopCommand(cmd)
+      expect(spec).not.toBeNull()
+      expect(spec?.surface).toEqual({ kind: 'exec' })
+      expect(isDesktopSlashSuggestion(cmd)).toBe(true)
+      expect(isDesktopSlashCommand(cmd)).toBe(true)
+      expect(desktopSlashUnavailableMessage(cmd)).toBeNull()
+      expect(desktopSlashCommandArgumentMode(cmd)).toBe('text')
+    }
+  })
+
   it('routes /pet through the desktop action handler and drops /pets', () => {
     expect(resolveDesktopCommand('/pet')?.surface).toEqual({ kind: 'action', action: 'pet' })
     expect(desktopSlashCommandArgumentMode('/pet')).toBe('options')

@@ -1,0 +1,64 @@
+# ============================================================
+# Hermes Approval Guard — Recommended Configuration
+#
+# Quick start:
+#   1. Copy this section to config.yaml's plugins and plugin_guard sections
+#   2. Change plugin_guard.enabled to true
+#   3. Add the plugin name to plugins.enabled
+#   4. Restart Hermes
+#
+# Architecture:
+#   The plugin handles approval for ALL tools (write_file/patch/delegate_task/
+#   execute_code/terminal/cronjob/send_message etc.).
+#   Set approvals.mode to off — the plugin takes full responsibility.
+#   System HARDLINE (rm -rf /, mkfs, dd, shutdown) remains active
+#   — the plugin cannot disable system hard protection.
+#
+# Failure fallback:
+#   Plugin LLM unavailable -> return None -> follows fail_open policy
+#   To revert manually, temporarily set approvals.mode to smart/manual
+#   (system DANGEROUS check resumes, but covers terminal only)
+#
+# Disable:
+#   plugin_guard.enabled: false
+# ============================================================
+
+# ── Plugin enable ─────────────────────────────────────────
+plugins:
+  enabled:
+    - hermes-approval-guard
+
+# ── Approval guard config ─────────────────────────────────
+plugin_guard:
+  enabled: false                    # <- change to true to enable
+
+  # ── Approval LLM (Stage 1) ─────────────────────────────────
+  # Optional. When omitted, defaults to the main Agent LLM (same as
+  # call_llm auto-detection). To use a different LLM, set the provider
+  # and model — same format as auxiliary.<task>.provider/model.
+  # The provider must already be registered in Hermes (run `hermes setup`
+  # or check ~/.hermes/config.yaml under `providers`).
+  # provider: your_provider_name     # optional, defaults to main LLM
+  # model: your_model_name           # optional, defaults to main LLM
+  fail_open: true                   # LLM unavailable -> allow (fail-safe)
+
+  stage1:
+    timeout: 5                      # LLM classification timeout (seconds)
+    # Stage 1 only outputs ALLOW/ESCALATE, never DENY
+    # DENY authority is in Stage 2 ACP
+
+  stage2:
+    enabled: false                  # ACP Agent deep review (optional, test first)
+    profile: approval               # hermes --profile name
+    timeout: 15                     # Agent review timeout (seconds)
+
+  memory:
+    backend: hindsight              # hindsight | honcho | none
+    bank: approval                  # Hindsight bank name or Honcho user_id
+    hindsight_url: "http://localhost:8888"  # explicit config (no implicit config.json lookup)
+
+# ── System approvals ──────────────────────────────────────
+# When plugin is enabled, disable system DANGEROUS check (avoid double approval)
+# Note: system HARDLINE is NOT affected by this setting, always active
+approvals:
+  mode: off

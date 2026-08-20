@@ -1,6 +1,8 @@
 .DS_Store
 /venv/
 /venv.old/
+/venv_old/
+/venv_backup/
 /venv.stale.runtime-*/
 /.hermes-runtime/
 /_pycache/

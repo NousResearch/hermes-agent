@@ -32,12 +32,16 @@ from hermes_cli import kanban_swarm as ks
 # Small formatting helpers
 # ---------------------------------------------------------------------------
 
+# One icon per kb.VALID_STATUSES member, so _fmt_task_line never falls back
+# to "?" for a status the board can legitimately surface.
 _STATUS_ICONS = {
+    "triage":   "◇",
     "todo":     "◻",
+    "scheduled":"⏱",
     "ready":    "▶",
     "running":  "●",
-    "scheduled":"⏱",
     "blocked":  "⊘",
+    "review":   "◎",
     "done":     "✓",
     "archived": "—",
 }

@@ -2195,7 +2195,47 @@ class TestBuildSchemaFromConfig:
         assert "python3.13" in runtime_entry["options"]
         assert len(runtime_entry["options"]) >= 3
 
+    def test_web_backend_fields_render_as_selects(self):
+        """web.backend / search_backend / extract_backend must be dropdowns.
 
+        Previously they rendered as bare text inputs, so a user had to know the
+        exact backend string (e.g. ``brave-free``, not ``brave``) with no hint
+        of valid values (#71929). Each is a leaf key in DEFAULT_CONFIG, so the
+        _SCHEMA_OVERRIDES entry attaches.
+        """
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        for key in ("web.backend", "web.search_backend", "web.extract_backend"):
+            entry = CONFIG_SCHEMA[key]
+            assert entry["type"] == "select", key
+            # Leading "" = shared-backend / auto-detect fallback stays selectable.
+            assert entry["options"][0] == "", key
+
+    def test_web_backend_options_match_runtime_backends(self):
+        """Search-backend options must equal the runtime's built-in web set.
+
+        Guards against the schema drifting from ``tools/web_tools.py`` — a stale
+        option would silently offer a backend the runtime rejects.
+        """
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        from tools.web_tools import _LEGACY_WEB_BACKENDS
+
+        for key in ("web.backend", "web.search_backend"):
+            offered = {o for o in CONFIG_SCHEMA[key]["options"] if o}
+            assert offered == set(_LEGACY_WEB_BACKENDS), key
+
+    def test_web_extract_backend_omits_search_only(self):
+        """Extract options are the extract-capable subset only.
+
+        Search-only providers (searxng, brave-free, ddgs, xai) cannot extract —
+        the runtime rejects them with a "search-only backend" error — so they
+        must not be offered for web.extract_backend.
+        """
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        offered = {o for o in CONFIG_SCHEMA["web.extract_backend"]["options"] if o}
+        assert offered == {"firecrawl", "tavily", "exa", "parallel"}
+        assert offered.isdisjoint({"searxng", "brave-free", "ddgs", "xai"})
 
     def test_timezone_field_is_searchable_select(self):
         """timezone must ship as a searchable, clearable select of IANA ids.
@@ -2247,6 +2287,157 @@ class TestBuildSchemaFromConfig:
 
 
 
+
+    def test_dynamic_merge_preserves_configured_web_backend(self, monkeypatch):
+        """A plugin/custom web backend outside the built-in list stays selectable.
+
+        Web backends are plugin-extensible and the dashboard renders a select as
+        a closed gate, so a configured value the built-in list doesn't contain
+        must be appended — otherwise it silently vanishes and the next save
+        clobbers it.
+        """
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {"web": {"backend": "my_plugin_backend", "extract_backend": "custom_extract"}},
+        )
+
+        fields = web_server._schema_with_dynamic_provider_options()
+
+        assert "my_plugin_backend" in fields["web.backend"]["options"]
+        assert "custom_extract" in fields["web.extract_backend"]["options"]
+        # The module-level schema is copied, not mutated in place.
+        assert web_server.CONFIG_SCHEMA["web.backend"] is not fields["web.backend"]
+        assert web_server.CONFIG_SCHEMA["web.backend"]["type"] == "select"
+
+    def test_dynamic_merge_no_overlay_for_builtin_web_backend(self, monkeypatch):
+        """A built-in (or blank) web backend with nothing new registered needs no
+        overlay — options unchanged.
+
+        The merge fires only when a configured value falls outside the list OR
+        the registry surfaces a provider the base list doesn't already contain.
+        Here the configured value is a built-in and the registry adds nothing, so
+        the common case returns the frozen import-time entry untouched. The
+        registry enumeration is stubbed empty to isolate that invariant from
+        whatever providers happen to be registered in the test process.
+        """
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(
+            web_server, "load_config", lambda: {"web": {"backend": "searxng", "search_backend": ""}}
+        )
+        monkeypatch.setattr(web_server, "_registry_web_backend_names", lambda capability: [])
+
+        fields = web_server._schema_with_dynamic_provider_options()
+
+        # No web override was added → identity with the module-level schema.
+        assert fields["web.backend"] is web_server.CONFIG_SCHEMA["web.backend"]
+        assert fields["web.search_backend"] is web_server.CONFIG_SCHEMA["web.search_backend"]
+
+    def test_dynamic_merge_enumerates_registry_web_backends_by_capability(self, monkeypatch):
+        """An INSTALLED-but-unconfigured registry provider becomes selectable in
+        the capability-appropriate web-backend dropdowns.
+
+        This tests the relation to the provider capability flags rather than
+        freezing a provider list: a search-only provider must reach the shared
+        ``web.backend`` and ``web.search_backend`` selects but be kept out of
+        ``web.extract_backend``; an extract-capable provider must reach
+        ``web.extract_backend``. A closed select can't choose a provider that
+        isn't in its options, so enumeration is what makes an installed plugin
+        backend pickable at all.
+        """
+        from agent.web_search_provider import WebSearchProvider
+        from hermes_cli import web_server
+
+        class _SearchOnly(WebSearchProvider):
+            @property
+            def name(self) -> str:
+                return "fake_search_only"
+
+            def is_available(self) -> bool:
+                return True
+
+            def supports_search(self) -> bool:
+                return True
+
+            def supports_extract(self) -> bool:
+                return False
+
+        class _ExtractCapable(WebSearchProvider):
+            @property
+            def name(self) -> str:
+                return "fake_extract_only"
+
+            def is_available(self) -> bool:
+                return True
+
+            def supports_search(self) -> bool:
+                return False
+
+            def supports_extract(self) -> bool:
+                return True
+
+        registered = [_SearchOnly(), _ExtractCapable()]
+        monkeypatch.setattr(web_server, "load_config", lambda: {"web": {}})
+        # Drive enumeration off the two fakes, independent of ambient registry state.
+        monkeypatch.setattr(
+            web_server,
+            "_registry_web_backend_names",
+            lambda capability: [p.name for p in registered
+                                if (capability == "search" and p.supports_search())
+                                or (capability == "extract" and p.supports_extract())
+                                or (capability == "any" and (p.supports_search() or p.supports_extract()))],
+        )
+
+        fields = web_server._schema_with_dynamic_provider_options()
+        backend = fields["web.backend"]["options"]
+        search = fields["web.search_backend"]["options"]
+        extract = fields["web.extract_backend"]["options"]
+
+        # Search-only reaches the shared + search selects, never the extract one.
+        assert "fake_search_only" in backend
+        assert "fake_search_only" in search
+        assert "fake_search_only" not in extract
+        # Extract-capable reaches the shared + extract selects.
+        assert "fake_extract_only" in backend
+        assert "fake_extract_only" in extract
+
+    def test_registry_web_backend_names_filters_by_capability(self):
+        """``_registry_web_backend_names`` returns provider names filtered by the
+        requested capability, mirroring the registry's own capability flags.
+
+        Exercises the real registry helper against a temporarily-registered
+        provider so the enumeration is validated end-to-end (not stubbed).
+        """
+        import agent.web_search_registry as registry
+        from agent.web_search_provider import WebSearchProvider
+        from hermes_cli import web_server
+
+        class _SearchOnly(WebSearchProvider):
+            @property
+            def name(self) -> str:
+                return "capflag_search_only"
+
+            def is_available(self) -> bool:
+                return True
+
+            def supports_search(self) -> bool:
+                return True
+
+            def supports_extract(self) -> bool:
+                return False
+
+        saved = dict(registry._providers)
+        try:
+            registry.register_provider(_SearchOnly())
+            assert "capflag_search_only" in web_server._registry_web_backend_names("search")
+            assert "capflag_search_only" in web_server._registry_web_backend_names("any")
+            assert "capflag_search_only" not in web_server._registry_web_backend_names("extract")
+        finally:
+            registry._providers.clear()
+            registry._providers.update(saved)
 
 
     def test_no_single_field_categories(self):

@@ -990,6 +990,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             "on_session_start",
             session_id=agent.session_id,
             model=agent.model,
+            provider=agent.provider,
             platform=getattr(agent, "platform", None) or "",
         )
     except Exception as exc:
@@ -2804,6 +2805,7 @@ def run_conversation(
         api_kwargs = None  # Guard against UnboundLocalError in except handler
         api_request_id = f"{turn_id}:api:{api_call_count}"
         agent._current_api_request_id = api_request_id
+        agent._last_api_cost_usd = None
 
         while retry_count < max_retries:
             # ── Nous Portal rate limit guard ──────────────────────
@@ -4242,6 +4244,7 @@ def run_conversation(
                                     _cost_delta = (_cost_delta or 0.0) + float(_moa_ref_cost)
                                 except (TypeError, ValueError):  # pragma: no cover
                                     pass
+                            agent._last_api_cost_usd = _cost_delta
                             # Enqueued, not written: the background writer
                             # applies the delta off the turn thread (a cold
                             # state.db UPDATE here stalled the tool loop for
@@ -4272,7 +4275,12 @@ def run_conversation(
                                 "Token persistence failed (session=%s, tokens=%d): %s",
                                 agent.session_id, total_tokens, e,
                             )
-                    
+                    # The lifecycle receipt is independent of session DB
+                    # persistence. Providers without a pricing entry still
+                    # get an explicit zero cost rather than a missing field.
+                    if agent._last_api_cost_usd is None:
+                        agent._last_api_cost_usd = 0.0
+
                     if agent.verbose_logging:
                         logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
                     
@@ -6660,6 +6668,7 @@ def run_conversation(
                         base_url=agent.base_url,
                         api_mode=agent.api_mode,
                         api_call_count=api_call_count,
+                        retry_count=retry_count,
                         api_duration=api_duration,
                         started_at=api_start_time,
                         ended_at=_api_ended_at,
@@ -6672,6 +6681,7 @@ def run_conversation(
                             finish_reason=finish_reason,
                         ),
                         usage=agent._usage_summary_for_api_request_hook(response),
+                        cost_usd=getattr(agent, "_last_api_cost_usd", None),
                         assistant_message=assistant_message,
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),

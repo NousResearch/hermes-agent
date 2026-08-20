@@ -1408,3 +1408,104 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         conn.close()
 
 
+
+
+# ---------------------------------------------------------------------------
+# Idempotency-key uniqueness (create race)
+# ---------------------------------------------------------------------------
+
+class TestIdempotencyKeyRace:
+    def test_index_is_partial_unique(self, kanban_home):
+        conn = kb.connect()
+        try:
+            sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name='idx_tasks_idempotency'"
+            ).fetchone()[0]
+            assert "UNIQUE" in sql
+            assert "status != 'archived'" in sql
+        finally:
+            conn.close()
+
+    def test_lost_race_returns_the_winner(self, kanban_home):
+        """When the pre-check misses (another creator inserted between the
+        SELECT and our INSERT), the unique index rejects the duplicate and
+        create_task returns the winner instead of raising."""
+        conn = kb.connect()
+        try:
+            winner = kb.create_task(conn, title="A", assignee="x",
+                                    idempotency_key="K-race")
+
+            class RaceConn:
+                """First idempotency pre-check sees nothing (simulated race)."""
+                def __init__(self, real):
+                    self._real = real
+                    self._first = True
+
+                def __getattr__(self, name):
+                    return getattr(self._real, name)
+
+                def execute(self, sql, *args):
+                    if ("SELECT id FROM tasks WHERE idempotency_key" in sql
+                            and self._first):
+                        self._first = False
+                        class _Empty:
+                            def fetchone(self):
+                                return None
+                        return _Empty()
+                    return self._real.execute(sql, *args)
+
+            got = kb.create_task(RaceConn(conn), title="A", assignee="x",
+                                 idempotency_key="K-race")
+            assert got == winner
+        finally:
+            conn.close()
+
+    def test_archived_key_can_be_reused(self, kanban_home):
+        conn = kb.connect()
+        try:
+            first = kb.create_task(conn, title="B", assignee="x",
+                                   idempotency_key="K-arch")
+            conn.execute("UPDATE tasks SET status='archived' WHERE id=?",
+                         (first,))
+            conn.commit()
+            second = kb.create_task(conn, title="B2", assignee="x",
+                                    idempotency_key="K-arch")
+            assert second != first
+        finally:
+            conn.close()
+
+    def test_legacy_duplicates_keep_plain_index(self, kanban_home):
+        """A board that already contains duplicate live keys (a lost race from
+        before the unique index) must still initialize — with the plain index
+        and the old best-effort behaviour, not a crash."""
+        conn = kb.connect()
+        try:
+            conn.execute("DROP INDEX idx_tasks_idempotency")
+            conn.execute(
+                "CREATE INDEX idx_tasks_idempotency ON tasks(idempotency_key)"
+            )
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, created_at, idempotency_key) "
+                "VALUES ('t_dup_a', 'a', 'ready', 1, 'DUP')"
+            )
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, created_at, idempotency_key) "
+                "VALUES ('t_dup_b', 'b', 'ready', 2, 'DUP')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        kb._INITIALIZED_PATHS.clear()
+        conn = kb.connect()
+        try:
+            sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name='idx_tasks_idempotency'"
+            ).fetchone()[0]
+            assert "UNIQUE" not in sql
+            count = conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE idempotency_key='DUP'"
+            ).fetchone()[0]
+            assert count == 2
+        finally:
+            conn.close()

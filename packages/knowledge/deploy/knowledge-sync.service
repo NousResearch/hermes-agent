@@ -1,0 +1,43 @@
+[Unit]
+Description=Hermes Knowledge Sync Worker (Obsidian vault -> RAG index)
+Documentation=file:///home/ubuntu/.hermes/hermes-agent/packages/knowledge/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/.hermes/hermes-agent
+Environment=HERMES_HOME=/home/ubuntu/.hermes
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/.hermes/hermes-agent/venv/bin/python -m packages.knowledge \
+    /opt/secondbrain \
+    --source obsidian \
+    --debounce 2 \
+    --reconcile-interval 900 \
+    --health-port 8787 \
+    --log-level INFO
+
+# Health check surface: curl -fsS http://127.0.0.1:8787/health
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+# Logs go to the journal: journalctl -u knowledge-sync -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=knowledge-sync
+
+# Hardening — the worker only needs to read the vault and write ~/.hermes.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/.hermes
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

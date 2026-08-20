@@ -2190,7 +2190,10 @@ class HermesACPAgent(acp.Agent):
 
         while True:
             with state.runtime_lock:
-                if not state.queued_prompts:
+                if (
+                    state.cancel_event
+                    and state.cancel_event.is_set()
+                ) or not state.queued_prompts:
                     break
                 next_prompt = state.queued_prompts.pop(0)
             if conn:

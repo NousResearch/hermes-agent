@@ -1016,6 +1016,24 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     return missing
 
 
+# Matches a trailing ``[N]`` list index on a single dotted path segment, e.g.
+# the ``[1]`` in ``pre_llm_call[1]``.  Applied repeatedly so ``a[0][1]`` also
+# normalizes.  Only non-negative integer indices are recognized.
+_BRACKET_INDEX_RE = re.compile(r"\[(\d+)\]")
+
+
+def _normalize_indexed_key(dotted_key: str) -> str:
+    """Rewrite bracket-style list indices to dot-indexed segments.
+
+    ``hooks.pre_llm_call[1].command`` → ``hooks.pre_llm_call.1.command`` so the
+    shared ``.``-split navigation in :func:`_set_nested` / :func:`_get_nested` /
+    :func:`_unset_nested` resolves the index against the real list instead of
+    creating a literal ``pre_llm_call[1]`` dict key (#87689).  Keys without a
+    bracket index pass through unchanged.
+    """
+    return _BRACKET_INDEX_RE.sub(r".\1", dotted_key)
+
+
 def _set_nested(config, dotted_key: str, value):
     """Set a value at an arbitrarily nested dotted key path.
 
@@ -1037,8 +1055,12 @@ def _set_nested(config, dotted_key: str, value):
     replaced any non-dict value (including lists) with ``{}``, silently
     destroying list-typed config like ``custom_providers`` whenever a
     caller used an indexed path.
+
+    Bracket-style indices (``name[N]``) are normalized to dot-indices so
+    ``hooks.pre_llm_call[1].command`` navigates the list instead of writing a
+    literal ``pre_llm_call[1]`` key (#87689).
     """
-    parts = dotted_key.split(".")
+    parts = _normalize_indexed_key(dotted_key).split(".")
     current = config
     for part in parts[:-1]:
         if isinstance(current, list):
@@ -1100,7 +1122,7 @@ _MISSING = object()
 def _get_nested(config, dotted_key: str):
     """Return a dotted-path value from nested dict/list config data."""
     current = config
-    for part in dotted_key.split("."):
+    for part in _normalize_indexed_key(dotted_key).split("."):
         if isinstance(current, list):
             try:
                 current = current[int(part)]
@@ -1117,7 +1139,7 @@ def _get_nested(config, dotted_key: str):
 
 def _unset_nested(config, dotted_key: str) -> bool:
     """Remove a dotted-path value from nested dict/list config data."""
-    parts = dotted_key.split(".")
+    parts = _normalize_indexed_key(dotted_key).split(".")
     if not parts:
         return False
 
@@ -5472,7 +5494,22 @@ def set_config_value(key: str, value: str, force: bool = False):
                     file=sys.stderr,
                 )
                 sys.exit(1)
-    _set_nested(user_config, key, value)
+    try:
+        _set_nested(user_config, key, value)
+    except (TypeError, IndexError, ValueError) as exc:
+        # A list index that points past the end (or a non-numeric segment into
+        # a list) used to fall through to a silently-inert literal key like
+        # ``pre_llm_call[1]`` (#87689). Surface a clear error instead — this CLI
+        # navigates existing structure and does not grow lists.
+        print(
+            f"✗ Cannot set '{key}': {exc}\n"
+            f"  List indices address existing entries only "
+            f"(e.g. hooks.pre_llm_call[0].command or hooks.pre_llm_call.0.command);\n"
+            f"  this CLI does not append to lists. Use 'hermes config edit' to add "
+            f"a new entry.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
     # so a fresh `hermes config set model.api_base ...` lands on the canonical
     # key the runtime resolver actually reads, instead of being silently

@@ -10,7 +10,9 @@ import pytest
 from hermes_cli.config import (
     config_command,
     cron_model_drift_guard_enabled,
+    get_config_value,
     set_config_value,
+    unset_config_value,
 )
 
 
@@ -284,6 +286,90 @@ class TestListNavigation:
         assert isinstance(allowlist, list)
         assert allowlist[0] == {"name": "alice", "role": "admin"}
         assert allowlist[1] == {"name": "bob", "role": "admin"}
+
+
+class TestBracketIndexNavigation:
+    """hermes config set/get/unset must resolve bracket-style list indices
+    (``hooks.pre_llm_call[0].command``) against the real list instead of
+    silently creating an inert literal ``pre_llm_call[0]`` key (#87689).
+    """
+
+    def _write_config(self, tmp_path, body):
+        (tmp_path / "config.yaml").write_text(body)
+
+    def _hooks_body(self):
+        return (
+            "hooks:\n"
+            "  pre_llm_call:\n"
+            "  - command: existing.py\n"
+            "    timeout: 3\n"
+        )
+
+    def test_bracket_index_updates_existing_entry(self, _isolated_hermes_home):
+        """``[0]`` addresses the existing list entry, not a new dict key."""
+        self._write_config(_isolated_hermes_home, self._hooks_body())
+
+        set_config_value("hooks.pre_llm_call[0].command", "/path/new.py")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        # No literal junk key was created.
+        assert "pre_llm_call[0]" not in reloaded["hooks"]
+        entry = reloaded["hooks"]["pre_llm_call"]
+        assert isinstance(entry, list)
+        assert len(entry) == 1
+        assert entry[0]["command"] == "/path/new.py"
+        # Sibling field is preserved.
+        assert entry[0]["timeout"] == 3
+
+    def test_bracket_and_dot_index_are_equivalent(self, _isolated_hermes_home):
+        """``[0]`` and ``.0`` write to the same place."""
+        self._write_config(_isolated_hermes_home, self._hooks_body())
+        set_config_value("hooks.pre_llm_call[0].timeout", "9")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["hooks"]["pre_llm_call"][0]["timeout"] == 9
+        assert "pre_llm_call[0]" not in reloaded["hooks"]
+
+    def test_out_of_range_bracket_index_errors_without_junk(
+        self, _isolated_hermes_home, capsys
+    ):
+        """The issue's repro (``[1]`` on a 1-element list) must fail cleanly,
+        not report success while writing an inert literal key.
+        """
+        self._write_config(_isolated_hermes_home, self._hooks_body())
+
+        with pytest.raises(SystemExit) as exc_info:
+            set_config_value("hooks.pre_llm_call[1].command", "/path/new.py")
+        assert exc_info.value.code == 1
+
+        err = capsys.readouterr().err
+        assert "Cannot set" in err
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        # No literal junk key, and the original entry is untouched.
+        assert "pre_llm_call[1]" not in reloaded["hooks"]
+        assert reloaded["hooks"]["pre_llm_call"] == [
+            {"command": "existing.py", "timeout": 3}
+        ]
+
+    def test_get_resolves_bracket_index(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, self._hooks_body())
+        get_config_value("hooks.pre_llm_call[0].command")
+        out = capsys.readouterr().out
+        assert "existing.py" in out
+
+    def test_unset_resolves_bracket_index(self, _isolated_hermes_home):
+        self._write_config(_isolated_hermes_home, self._hooks_body())
+        unset_config_value("hooks.pre_llm_call[0].timeout")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        entry = reloaded["hooks"]["pre_llm_call"][0]
+        assert "timeout" not in entry
+        assert entry["command"] == "existing.py"
 
 
 # ---------------------------------------------------------------------------

@@ -1520,6 +1520,7 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
 # succeeded — merged config always carries terminal.backend) or the import
 # failed and retrying every call would be wasted work.
 _terminal_config_bridge_attempted = False
+_terminal_config_bridge_lock = threading.Lock()
 
 
 def _ensure_terminal_env_bridged() -> None:
@@ -1542,9 +1543,10 @@ def _ensure_terminal_env_bridged() -> None:
     keep working unchanged.
     """
     global _terminal_config_bridge_attempted
-    if _terminal_config_bridge_attempted:
-        return
-    _terminal_config_bridge_attempted = True
+    with _terminal_config_bridge_lock:
+        if _terminal_config_bridge_attempted:
+            return
+        _terminal_config_bridge_attempted = True
     try:
         from hermes_cli.config import apply_terminal_config_to_env, read_raw_config
 

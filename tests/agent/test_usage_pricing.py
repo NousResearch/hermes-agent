@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from agent.usage_pricing import (
     CanonicalUsage,
+    _OFFICIAL_DOCS_PRICING,
     format_cost_label,
     estimate_usage_cost,
     get_pricing_entry,
@@ -187,6 +188,59 @@ def test_bedrock_current_gen_claude_rows_resolve():
             assert entry is not None, mid
             assert entry.input_cost_per_million == ref.input_cost_per_million, mid
             assert entry.output_cost_per_million == ref.output_cost_per_million, mid
+
+
+
+
+def test_bedrock_vendor_prefixed_models_fall_back_to_vendor_pricing():
+    """Bedrock ids without a ("bedrock", ...) row price via the vendor table.
+
+    Bedrock on-demand mirrors the vendor's list price (every existing
+    ("bedrock", "anthropic.claude-*") row equals its ("anthropic", ...)
+    sibling), so ``anthropic.claude-fable-5`` should resolve through the
+    ("anthropic", "claude-fable-5") row without a duplicate bedrock row —
+    including from ``us.``/``global.`` cross-region inference profiles.
+    """
+    url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+    for vendor_model, bedrock_id in (
+        ("claude-fable-5", "anthropic.claude-fable-5"),
+        ("claude-opus-5", "anthropic.claude-opus-5"),
+    ):
+        vendor_ref = _OFFICIAL_DOCS_PRICING[("anthropic", vendor_model)]
+        for mid in (bedrock_id, f"us.{bedrock_id}", f"global.{bedrock_id}"):
+            entry = get_pricing_entry(mid, provider="bedrock", base_url=url)
+            assert entry is not None, mid
+            assert entry.input_cost_per_million == vendor_ref.input_cost_per_million, mid
+            assert entry.output_cost_per_million == vendor_ref.output_cost_per_million, mid
+            assert entry.cache_read_cost_per_million == vendor_ref.cache_read_cost_per_million, mid
+            assert entry.cache_write_cost_per_million == vendor_ref.cache_write_cost_per_million, mid
+    # Vendor fallback must NOT shadow an explicit ("bedrock", ...) row: the
+    # direct lookup wins first, so rows that intentionally diverge from the
+    # vendor table (if any appear) keep taking precedence.
+    explicit = get_pricing_entry("anthropic.claude-opus-4-8", provider="bedrock", base_url=url)
+    assert explicit is _OFFICIAL_DOCS_PRICING[("bedrock", "anthropic.claude-opus-4-8")]
+
+
+def test_anthropic_fable_5_and_opus_5_rows():
+    """Fable 5 (Mythos tier) is exactly 2x the Opus 5 list price.
+
+    Pin the rates and the cache multiplier structure (read = 0.1x input,
+    write = 1.25x input) so a future edit that breaks one row fails loudly.
+    """
+    fable = get_pricing_entry("claude-fable-5", provider="anthropic")
+    opus = get_pricing_entry("claude-opus-5", provider="anthropic")
+    assert fable is not None
+    assert opus is not None
+    assert fable.input_cost_per_million == Decimal("10.00")
+    assert fable.output_cost_per_million == Decimal("50.00")
+    assert opus.input_cost_per_million == Decimal("5.00")
+    assert opus.output_cost_per_million == Decimal("25.00")
+    for entry in (fable, opus):
+        assert entry.input_cost_per_million is not None
+        assert entry.cache_read_cost_per_million == entry.input_cost_per_million * Decimal("0.1")
+        assert entry.cache_write_cost_per_million == entry.input_cost_per_million * Decimal("1.25")
+    assert fable.input_cost_per_million == opus.input_cost_per_million * 2
+    assert fable.output_cost_per_million == opus.output_cost_per_million * 2
 
 
 

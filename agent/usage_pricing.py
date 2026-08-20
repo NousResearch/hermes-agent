@@ -222,6 +222,38 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openrouter.ai/anthropic/claude-opus-4.8-fast",
         pricing_version="anthropic-pricing-2026-05",
     ),
+    # ── Anthropic Claude 5 (Opus 5 / Fable 5) ────────────────────────────
+    # Opus 5 keeps the $5/$25 Opus list price. Fable 5 (Mythos tier) lists
+    # at $10/$50 — exactly 2x the Opus line — with the same 0.1x-read /
+    # 1.25x-write cache multiplier structure. Both also ship on Bedrock as
+    # cross-region inference profiles (global./us. + vendor prefix), priced
+    # identically; the bedrock vendor-table fallback in
+    # _lookup_official_docs_pricing resolves those onto these rows.
+    # Source: https://platform.claude.com/docs/en/about-claude/pricing
+    (
+        "anthropic",
+        "claude-opus-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-07",
+    ),
+    (
+        "anthropic",
+        "claude-fable-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("50.00"),
+        cache_read_cost_per_million=Decimal("1.00"),
+        cache_write_cost_per_million=Decimal("12.50"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-07",
+    ),
     # ── Anthropic Claude Sonnet 5 ────────────────────────────────────────
     # Launched 2026-06-30. Introductory pricing ($2/$10 per MTok) runs
     # through 2026-08-31, after which it reverts to $3/$15 (matching
@@ -1180,6 +1212,18 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
         normalized = _normalize_bedrock_model_name(model)
         if normalized != model:
             entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
+            if entry:
+                return entry
+        # Bedrock serves third-party foundation models under vendor-prefixed
+        # ids (``anthropic.claude-*``, ``openai.gpt-*``, ...) and its
+        # on-demand rates mirror the vendor's list price (every existing
+        # ("bedrock", "anthropic.claude-*") row is identical to its
+        # ("anthropic", ...) sibling). Fall back to the vendor's own table so
+        # a model priced for its first-party API prices on Bedrock without a
+        # duplicate row per model per region-profile.
+        vendor, _, bare_model = normalized.partition(".")
+        if vendor and bare_model:
+            entry = _OFFICIAL_DOCS_PRICING.get((vendor, bare_model))
             if entry:
                 return entry
     return None

@@ -772,6 +772,7 @@ def _discover(
             query=query,
             role_filter=role_list,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+            exclude_live_lineage_root=current_lineage_root,
             limit=_DISCOVER_SCAN_LIMIT,  # widen so dedup-by-lineage can find
             # distinct sessions AND so interactive matches buried under a wall
             # of cron rows are still in hand for the demotion pass below.

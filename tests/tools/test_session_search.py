@@ -293,6 +293,46 @@ class TestDiscoveryShape:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
 
+    def test_active_lineage_is_excluded_before_newest_fetch_window(self, db):
+        """Live parent/child rows must not consume the discovery scan window."""
+        _seed_modpack_sessions(db)
+        now = int(time.time())
+        db.create_session("s_parent", source="cli")
+        db.create_session("s_current", source="cli", parent_session_id="s_parent")
+
+        # More than the 300-row discovery scan limit, split across both active
+        # lineage members. Post-hoc filtering is too late: it would return no
+        # historical sessions because all fetched rows are later discarded.
+        for idx in range(151):
+            db.append_message(
+                "s_parent",
+                role="user",
+                content=f"modpack parent live context {idx}",
+                timestamp=now + idx,
+            )
+            db.append_message(
+                "s_current",
+                role="user",
+                content=f"modpack child live context {idx}",
+                timestamp=now + 1000 + idx,
+            )
+        db._conn.commit()
+
+        result = json.loads(
+            session_search(
+                query="modpack",
+                limit=2,
+                sort="newest",
+                db=db,
+                current_session_id="s_current",
+            )
+        )
+
+        assert result["count"] == 2
+        assert [entry["session_id"] for entry in result["results"]] == [
+            "s_newest", "s_middle"
+        ]
+
 
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db):

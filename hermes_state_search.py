@@ -1333,6 +1333,48 @@ class SessionSearchMixin:
         ]
         return bool(tokens) and all(len(t) >= 3 for t in tokens)
 
+    def _active_lineage_session_ids(self, lineage_root: Optional[str]) -> List[str]:
+        """Return live session ids in a root's parent-linked tree.
+
+        Compression-ended segments stay searchable because their transcript is
+        no longer in the current live context. Other linked segments are live
+        context, so their active rows cannot consume recall's scan window.
+        """
+        if not lineage_root:
+            return []
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                """WITH RECURSIVE lineage(id) AS (
+                       SELECT id FROM sessions WHERE id = ?
+                       UNION
+                       SELECT child.id
+                       FROM sessions AS child
+                       JOIN lineage AS parent ON child.parent_session_id = parent.id
+                   )
+                   SELECT session.id
+                   FROM sessions AS session
+                   JOIN lineage ON lineage.id = session.id
+                   WHERE COALESCE(session.end_reason, '') != 'compression'
+                """,
+                (lineage_root,),
+            ).fetchall()
+        return [row["id"] for row in rows]
+
+    @staticmethod
+    def _exclude_live_lineage_rows(
+        where: List[str], params: List[Any], session_ids: Collection[str]
+    ) -> None:
+        """Exclude active rows from the live lineage.
+
+        With default visibility, the caller's active/compacted predicate still
+        admits only compaction archives among inactive rows.
+        """
+        if not session_ids:
+            return
+        placeholders = ",".join("?" for _ in session_ids)
+        where.append(f"(m.active = 0 OR m.session_id NOT IN ({placeholders}))")
+        params.extend(session_ids)
+
     def _run_trigram_search(
         self,
         raw_query: str,
@@ -1342,6 +1384,7 @@ class SessionSearchMixin:
         include_inactive: bool,
         source_filter: List[str] = None,
         exclude_sources: List[str] = None,
+        exclude_live_session_ids: Collection[str] = (),
         role_filter: List[str] = None,
         limit: int = 20,
         offset: int = 0,
@@ -1375,6 +1418,9 @@ class SessionSearchMixin:
         tri_params: list = [trigram_query]
         if not include_inactive:
             tri_where.append("(m.active = 1 OR m.compacted = 1)")
+        self._exclude_live_lineage_rows(
+            tri_where, tri_params, exclude_live_session_ids
+        )
         if source_filter is not None:
             tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
             tri_params.extend(source_filter)
@@ -1422,6 +1468,7 @@ class SessionSearchMixin:
         sort: str = None,
         include_inactive: bool = False,
         fields: Optional[Collection[str]] = None,
+        exclude_live_lineage_root: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Instrumented wrapper around :meth:`_search_messages_impl`.
 
@@ -1438,6 +1485,7 @@ class SessionSearchMixin:
                 query,
                 source_filter=source_filter,
                 exclude_sources=exclude_sources,
+                exclude_live_lineage_root=exclude_live_lineage_root,
                 role_filter=role_filter,
                 limit=limit,
                 offset=offset,
@@ -1548,6 +1596,7 @@ class SessionSearchMixin:
         *,
         source_filter: Optional[List[str]],
         exclude_sources: Optional[List[str]],
+        exclude_live_session_ids: Collection[str],
         role_filter: Optional[List[str]],
         limit: int,
         offset: int,
@@ -1562,6 +1611,7 @@ class SessionSearchMixin:
         where = [f"({predicate})"]
         if not include_inactive:
             where.append("(m.active = 1 OR m.compacted = 1)")
+        self._exclude_live_lineage_rows(where, params, exclude_live_session_ids)
         if source_filter is not None:
             where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
             params.extend(source_filter)
@@ -1710,6 +1760,7 @@ class SessionSearchMixin:
         query: str,
         source_filter: List[str] = None,
         exclude_sources: List[str] = None,
+        exclude_live_lineage_root: Optional[str] = None,
         role_filter: List[str] = None,
         limit: int = 20,
         offset: int = 0,
@@ -1757,12 +1808,16 @@ class SessionSearchMixin:
         if not query:
             return []
 
+        exclude_live_session_ids = self._active_lineage_session_ids(
+            exclude_live_lineage_root
+        )
         self._refresh_fts_stale_state()
         if self._fts_stale:
             matches = self._search_messages_like_fallback(
                 query,
                 source_filter=source_filter,
                 exclude_sources=exclude_sources,
+                exclude_live_session_ids=exclude_live_session_ids,
                 role_filter=role_filter,
                 limit=limit,
                 offset=offset,
@@ -1802,6 +1857,9 @@ class SessionSearchMixin:
             # are discoverable; only rewind/undo rows (active=0, compacted=0)
             # are hidden. See archive_and_compact() / #38763.
             where_clauses.append("(m.active = 1 OR m.compacted = 1)")
+        self._exclude_live_lineage_rows(
+            where_clauses, params, exclude_live_session_ids
+        )
 
         if source_filter is not None:
             source_placeholders = ",".join("?" for _ in source_filter)
@@ -1901,6 +1959,9 @@ class SessionSearchMixin:
                 cjk_params: list = [cjk_query]
                 if not include_inactive:
                     cjk_where.append("(m.active = 1 OR m.compacted = 1)")
+                self._exclude_live_lineage_rows(
+                    cjk_where, cjk_params, exclude_live_session_ids
+                )
                 if source_filter is not None:
                     cjk_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     cjk_params.extend(source_filter)
@@ -1989,6 +2050,9 @@ class SessionSearchMixin:
                 tri_params: list = [trigram_query]
                 if not include_inactive:
                     tri_where.append("(m.active = 1 OR m.compacted = 1)")
+                self._exclude_live_lineage_rows(
+                    tri_where, tri_params, exclude_live_session_ids
+                )
                 if source_filter is not None:
                     tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     tri_params.extend(source_filter)
@@ -2082,6 +2146,9 @@ class SessionSearchMixin:
                     # compaction-archived rows are discoverable; rewind/undo
                     # rows (active=0, compacted=0) are hidden (#38763).
                     like_where.append("(m.active = 1 OR m.compacted = 1)")
+                self._exclude_live_lineage_rows(
+                    like_where, like_params, exclude_live_session_ids
+                )
                 if source_filter is not None:
                     like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     like_params.extend(source_filter)
@@ -2149,6 +2216,7 @@ class SessionSearchMixin:
                     include_inactive=include_inactive,
                     source_filter=source_filter,
                     exclude_sources=exclude_sources,
+                    exclude_live_session_ids=exclude_live_session_ids,
                     role_filter=role_filter,
                 )
                 seen_ids = {m["id"] for m in matches}
@@ -2187,6 +2255,7 @@ class SessionSearchMixin:
                     include_inactive=include_inactive,
                     source_filter=source_filter,
                     exclude_sources=exclude_sources,
+                    exclude_live_session_ids=exclude_live_session_ids,
                     role_filter=role_filter,
                     limit=limit,
                     offset=offset,
@@ -2204,6 +2273,7 @@ class SessionSearchMixin:
                     include_inactive=include_inactive,
                     source_filter=source_filter,
                     exclude_sources=exclude_sources,
+                    exclude_live_session_ids=exclude_live_session_ids,
                     role_filter=role_filter,
                     limit=limit,
                     offset=offset,
@@ -2221,6 +2291,7 @@ class SessionSearchMixin:
         include_inactive: bool = False,
         source_filter: Optional[List[str]] = None,
         exclude_sources: Optional[List[str]] = None,
+        exclude_live_session_ids: Collection[str] = (),
         role_filter: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """LIKE-scan the rows the deferred rebuild hasn't indexed yet.
@@ -2258,6 +2329,7 @@ class SessionSearchMixin:
             params += [f"%{esc}%"] * 3
         if not include_inactive:
             where.append("(m.active = 1 OR m.compacted = 1)")
+        self._exclude_live_lineage_rows(where, params, exclude_live_session_ids)
         if source_filter is not None:
             where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
             params.extend(source_filter)

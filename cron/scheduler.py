@@ -4769,6 +4769,41 @@ class _BoundedCronSessionDB:
         return _bounded
 
 
+def _resolve_cron_image_task_id(job: dict) -> Optional[str]:
+    """Per-job Docker sandbox image isolation.
+
+    If the job pins ``docker_image``, register a per-task image override and
+    return a dedicated ``cronimg-<job_id>`` task id so this job's terminal /
+    execute_code run in their OWN container built from that image (with its
+    own home / workspace) instead of the shared ``default`` sandbox. Mounts
+    and env still come from the global terminal config (image-only isolation).
+
+    Returns the dedicated task id, or ``None`` when the job pins no image (the
+    run then collapses to the shared ``default`` sandbox — unchanged).
+    """
+    try:
+        image = (job.get("docker_image") or "").strip() or None
+    except Exception:
+        image = None
+    if not image:
+        return None
+    job_id = job.get("id")
+    try:
+        from tools.terminal_tool import register_task_env_overrides
+        task_id = f"cronimg-{job_id}"
+        register_task_env_overrides(task_id, {"docker_image": image})
+        logger.info(
+            "Job '%s': per-job docker image isolation -> %s (task_id=%s)",
+            job_id, image, task_id,
+        )
+        return task_id
+    except Exception:
+        logger.warning(
+            "Job '%s': per-job docker image override failed", job_id, exc_info=True
+        )
+        return None
+
+
 def run_job(
     job: dict,
     *,
@@ -5837,7 +5872,13 @@ def run_job(
         # Tag this fire and time the run_conversation call for the usage_audit.jsonl entry.
         _audit_fire_id = uuid.uuid4().hex
         _audit_t_start = time.monotonic()
-        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+        _cron_task_id = _resolve_cron_image_task_id(job)
+        # Only thread task_id when the job pins an image — otherwise keep the
+        # original call shape so nothing downstream sees a new kwarg.
+        if _cron_task_id:
+            _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt, task_id=_cron_task_id)
+        else:
+            _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:

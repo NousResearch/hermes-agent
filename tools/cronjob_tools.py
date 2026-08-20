@@ -669,6 +669,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("docker_image"):
+        result["docker_image"] = job["docker_image"]
     stored_refs = job.get("context_from") or []
     if isinstance(stored_refs, str):
         stored_refs = [stored_refs]
@@ -1207,6 +1209,7 @@ def cronjob(
     continuity: Optional[bool] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
+    docker_image: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
@@ -1307,6 +1310,7 @@ def cronjob(
                     context_from=context_from,
                     enabled_toolsets=enabled_toolsets or None,
                     workdir=_normalize_optional_job_value(workdir),
+                    docker_image=_normalize_optional_job_value(docker_image),
                     no_agent=_no_agent,
                     attach_to_session=attach_to_session,
                     monitor_script=_normalize_optional_job_value(monitor_script),
@@ -1491,6 +1495,8 @@ def cronjob(
                 updates["model"] = _normalize_optional_job_value(model)
             if provider is not None:
                 updates["provider"] = _normalize_optional_job_value(provider)
+            if docker_image is not None:
+                updates["docker_image"] = _normalize_optional_job_value(docker_image)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
             # Re-validate the EFFECTIVE provider/base_url on EVERY update, not

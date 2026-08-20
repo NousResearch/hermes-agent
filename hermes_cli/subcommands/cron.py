@@ -106,6 +106,17 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Inference provider paired with --model (e.g. 'openrouter', 'nous').",
     )
     cron_create.add_argument(
+        "--docker-image",
+        help=(
+            "Pin this job's terminal/execute_code sandbox to a specific "
+            "Docker image, isolating it in its own container instead of the "
+            "shared default sandbox (user-owned; the agent's cronjob tool "
+            "cannot set this). Mounts/env still come from the global terminal "
+            "config. Only applies with terminal.backend: docker. Omit for the "
+            "shared sandbox."
+        ),
+    )
+    cron_create.add_argument(
         "--continuity",
         dest="continuity",
         action="store_const",
@@ -230,6 +241,14 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--provider",
         dest="model_provider",
         help="Inference provider paired with --model. Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--docker-image",
+        help=(
+            "Pin this job's sandbox to a specific Docker image (own "
+            "container; user-owned, agent cannot set). Pass empty string to "
+            "clear and return to the shared default sandbox."
+        ),
     )
 
     # lifecycle actions

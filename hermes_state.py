@@ -3098,6 +3098,34 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     single writer via WAL mode). Each method opens its own cursor.
     """
 
+    # Shared WHERE-clause fragment for compression-continuation chains. Used
+    # by ``get_compression_tip()``, ``list_sessions_rich()``, and now
+    # ``delete_session()``'s lineage CTE so all three answer the same
+    # question: "is this child a *real* continuation of a compression-ended
+    # parent, or an explicit branch / delegate / tool sub-session that
+    # happened to be born under the same parent_id?"
+    #
+    # The predicate intentionally excludes ``child.started_at >= parent.ended_at``
+    # — the timestamp ordering upstream explicitly abandoned in
+    # ``get_compression_tip()``'s docstring because gateway + compression
+    # races can insert the real continuation row *before* the parent's
+    # ``ended_at`` is written, while a stale websocket later creates a
+    # sibling that *does* satisfy the timestamp test. The continuation
+    # must be defined by structure (end_reason='compression' on the parent,
+    # no branch/delegate/tool markers on the child), not by timing.
+    #
+    # Caller must ensure the join is on the form:
+    #     JOIN sessions parent ON parent.id = child.parent_session_id
+    # so that ``parent`` is the parent row and ``child`` is the candidate
+    # continuation. Both ``ancestors`` and ``descendants`` arms of the
+    # CTE in ``delete_session`` satisfy this.
+    _COMPRESSION_CONTINUATION_PREDICATE = (
+        "parent.end_reason = 'compression' "
+        "AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL "
+        "AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL "
+        "AND COALESCE(child.source, '') != 'tool'"
+    )
+
     # ── Write-contention tuning ──
     # With multiple hermes processes (gateway + CLI sessions + worktree agents)
     # all sharing one state.db, WAL write-lock contention causes visible TUI
@@ -11396,7 +11424,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         Delegate subagent children (``model_config._delegate_from``) are
         cascade-deleted with the parent so they never resurface in session
-        pickers as orphaned rows. Branch / compression children are orphaned
+        pickers as orphaned rows. The full compression-continuation lineage
+        (ancestors + descendants) is also deleted — deleting any node in a
+        compression chain removes the entire logical conversation, not just
+        the visible tip. Explicit branch / tool-source children are orphaned
         (``parent_session_id → NULL``) so they remain accessible independently.
         When *sessions_dir* is provided, also removes on-disk transcript
         files (``.json`` / ``.jsonl`` / ``request_dump_*``) for every deleted
@@ -11409,6 +11440,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         deleted.
         """
         removed_delegate_ids: List[str] = []
+        removed_lineage_ids: List[str] = []
         expected_ids = (
             set(expected_delete_ids) if expected_delete_ids is not None else None
         )
@@ -11427,14 +11459,69 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 if actual_ids != expected_ids:
                     return False
             removed_delegate_ids.extend(_delete_delegate_children(conn, [session_id]))
-            # Orphan remaining child sessions (branches, etc.) so FK is satisfied.
+
+            # Walk the full compression lineage (ancestors + descendants) so
+            # the entire logical conversation is deleted — not just the
+            # visible tip.  The CTE must use the SAME continuation policy as
+            # ``get_compression_tip()`` and ``list_sessions_rich()``: exclude
+            # explicit branch / delegate / tool children. Otherwise a real
+            # branch created after a compression-ended parent would be
+            # silently deleted, and conversely a sibling-orphan tricking the
+            # timestamp predicate would survive.  The brittle
+            # ``child.started_at >= parent.ended_at`` ordering was abandoned
+            # upstream precisely because of the timestamp-race +
+            # explicit-branch cases; the shared
+            # ``_COMPRESSION_CONTINUATION_PREDICATE`` keeps the WHERE in sync
+            # with the projection.
+            lineage_ids = [r[0] for r in conn.execute(
+                f"""
+                WITH RECURSIVE
+                  ancestors(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT parent.id
+                    FROM ancestors a
+                    JOIN sessions child ON child.id = a.id
+                    JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE {self._COMPRESSION_CONTINUATION_PREDICATE}
+                  ),
+                  descendants(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT child.id
+                    FROM descendants d
+                    JOIN sessions parent ON parent.id = d.id
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE {self._COMPRESSION_CONTINUATION_PREDICATE}
+                  ),
+                  lineage(id) AS (
+                    SELECT id FROM ancestors
+                    UNION
+                    SELECT id FROM descendants
+                  )
+                SELECT id FROM lineage
+                """,
+                (session_id, session_id),
+            )]
+            lineage_ids = list(dict.fromkeys(lineage_ids))
+            removed_lineage_ids.extend(lineage_ids)
+
+            # Orphan remaining child sessions (branches, tool children, etc.)
+            # whose parent is in the kill set so FK is satisfied.
+            lineage_placeholders = ",".join("?" * len(lineage_ids))
             conn.execute(
-                "UPDATE sessions SET parent_session_id = NULL "
-                "WHERE parent_session_id = ?",
-                (session_id,),
+                f"UPDATE sessions SET parent_session_id = NULL "
+                f"WHERE parent_session_id IN ({lineage_placeholders})",
+                lineage_ids,
             )
-            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            conn.execute(
+                f"DELETE FROM messages WHERE session_id IN ({lineage_placeholders})",
+                lineage_ids,
+            )
+            conn.execute(
+                f"DELETE FROM sessions WHERE id IN ({lineage_placeholders})",
+                lineage_ids,
+            )
             self._delete_unreferenced_system_prompts(conn)
             return True
 
@@ -11442,7 +11529,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if deleted:
             for delegate_id in removed_delegate_ids:
                 self._remove_session_files(sessions_dir, delegate_id)
-            self._remove_session_files(sessions_dir, session_id)
+            for lineage_id in removed_lineage_ids:
+                self._remove_session_files(sessions_dir, lineage_id)
         return bool(deleted)
 
     def delete_session_if_empty(
@@ -11503,6 +11591,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         * Unknown IDs are silently skipped (no 404) — selection state
           in the UI can race against another tab's delete, and we'd
           rather succeed-on-the-rest than fail-the-whole-batch.
+        * For every selected session, walk the compression-continuation
+          lineage (ancestors + descendants) and delete the full chain.
+          Uses the same predicate as :meth:`get_compression_tip` /
+          :meth:`delete_session` so the bulk path is consistent with
+          the single-session path.
         * Delegate subagent children (``model_config._delegate_from``) are
           cascade-deleted with their parent; branch children are orphaned
           (``parent_session_id → NULL``) so they stay accessible.
@@ -11516,7 +11609,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         Returns the count of sessions that actually existed and were
         deleted (may be less than ``len(session_ids)`` if some IDs were
-        already gone).
+        already gone). The expansion to the full lineage is *not*
+        reflected in the returned count — the count is the number of
+        selected IDs that existed; the actual deletion set may be
+        larger.
         """
         if not session_ids:
             return 0
@@ -11542,8 +11638,48 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if not existing:
                 return 0
 
-            existing_placeholders = ",".join("?" * len(existing))
-            removed_delegate_ids.extend(_delete_delegate_children(conn, existing))
+            existing_placeholders = ", ".join("?" * len(existing))
+
+            # Expand every selected session to its full compression-continuation
+            # lineage (ancestors + descendants) so the bulk path matches the
+            # single-session delete behavior. The CTE uses the same
+            # continuation predicate as ``delete_session`` /
+            # ``get_compression_tip`` so explicit branches, delegates, and
+            # tool children are excluded.
+            lineage_rows = conn.execute(
+                f"""
+                WITH RECURSIVE
+                  ancestors(id) AS (
+                    SELECT id FROM sessions WHERE id IN ({existing_placeholders})
+                    UNION
+                    SELECT parent.id
+                    FROM ancestors a
+                    JOIN sessions child ON child.id = a.id
+                    JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE {self._COMPRESSION_CONTINUATION_PREDICATE}
+                  ),
+                  descendants(id) AS (
+                    SELECT id FROM sessions WHERE id IN ({existing_placeholders})
+                    UNION
+                    SELECT child.id
+                    FROM descendants d
+                    JOIN sessions parent ON parent.id = d.id
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE {self._COMPRESSION_CONTINUATION_PREDICATE}
+                  ),
+                  lineage(id) AS (
+                    SELECT id FROM ancestors
+                    UNION
+                    SELECT id FROM descendants
+                  )
+                SELECT id FROM lineage
+                """,
+                (*existing, *existing),
+            ).fetchall()
+            to_delete = list({row["id"] for row in lineage_rows})
+            to_delete_placeholders = ", ".join("?" * len(to_delete))
+
+            removed_delegate_ids.extend(_delete_delegate_children(conn, to_delete))
             # Orphan remaining children whose parent is in the kill list so the
             # FK constraint stays satisfied. Pin children whose parent
             # is itself in the kill list rather than NULL-ing parents
@@ -11551,19 +11687,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # exactly this.
             conn.execute(
                 f"UPDATE sessions SET parent_session_id = NULL "
-                f"WHERE parent_session_id IN ({existing_placeholders})",
-                existing,
+                f"WHERE parent_session_id IN ({to_delete_placeholders})",
+                to_delete,
             )
             conn.execute(
-                f"DELETE FROM messages WHERE session_id IN ({existing_placeholders})",
-                existing,
+                f"DELETE FROM messages WHERE session_id IN ({to_delete_placeholders})",
+                to_delete,
             )
             conn.execute(
-                f"DELETE FROM sessions WHERE id IN ({existing_placeholders})",
-                existing,
+                f"DELETE FROM sessions WHERE id IN ({to_delete_placeholders})",
+                to_delete,
             )
             self._delete_unreferenced_system_prompts(conn)
-            removed_ids.extend(existing)
+            removed_ids.extend(to_delete)
             return len(existing)
 
         count = self._execute_write(_do)

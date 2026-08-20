@@ -717,6 +717,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       const row = cState.completions[cState.compIdx]
 
       if (row?.text) {
+        // Accepting a path row closes the popup so Tab (like Enter) does not
+        // re-open into the just-selected folder — keep multi-file picking easy.
+        if (cState.completionKind === 'path') {
+          cActions.suppressNextCompletion()
+        }
+
         cActions.setInput(applyCompletion(cState.input, row.text, cState.compReplace))
       }
 

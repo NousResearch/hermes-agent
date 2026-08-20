@@ -96,3 +96,31 @@ export const completionToApplyOnSubmit = (
 
   return next !== value && next.trimEnd() !== value.trimEnd() ? next : null
 }
+
+/**
+ * Decide what Enter does when a completion is highlighted, honouring the
+ * completion kind. Returns the value to set (accept the completion) or `null`
+ * to fall through to submit.
+ *
+ * Path completions (`@file:`/`@folder:`) are how you pick working files to
+ * attach, often several before sending. Enter on a path row ALWAYS selects it
+ * (never submits), so hammering Enter to pick files can't accidentally fire
+ * the prompt — the popup is closed by the caller and sending only happens on a
+ * later bare Enter once the popup is dismissed.
+ *
+ * Slash completions keep the original behaviour: Enter accepts when it changes
+ * the command/argument token, and falls through to submit for whitespace-only
+ * deltas so `/exit` doesn't need three presses.
+ */
+export const completionToApplyOnEnter = (
+  value: string,
+  rowText: string | undefined,
+  compReplace: number,
+  kind: 'path' | 'slash' | null
+): string | null => {
+  if (kind === 'path') {
+    return rowText ? applyCompletion(value, rowText, compReplace) : null
+  }
+
+  return completionToApplyOnSubmit(value, rowText, compReplace)
+}

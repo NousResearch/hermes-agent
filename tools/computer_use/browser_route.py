@@ -549,7 +549,11 @@ class CuaTypedBrowserRoute:
         )
         if refusal is not None:
             return refusal
-        assert selected_tab is not None and self.state.target_id is not None
+        if selected_tab is None or self.state.target_id is None:
+            return _refusal(
+                "browser_state_inconsistent",
+                "Internal error: mutation pre-checks passed but tab or target_id is missing.",
+            )
 
         ref = call_args.get("ref")
         supports_trust_choice = tool in {"browser_click", "browser_pointer"}

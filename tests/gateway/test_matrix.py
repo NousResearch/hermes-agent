@@ -1853,6 +1853,92 @@ class TestMatrixReactions:
 
 
     @pytest.mark.asyncio
+    async def test_on_processing_start_skips_unauthorized_sender(self):
+        """An explicit gateway auth denial must not emit a misleading marker."""
+        from gateway.platforms.base import MessageEvent, MessageType
+
+        self.adapter._reactions_enabled = True
+        self.adapter.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: False
+        )
+        self.adapter._send_reaction = AsyncMock(return_value="$reaction_event_123")
+
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        source.chat_type = "group"
+        source.user_id = "@intruder:ex"
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$msg1",
+        )
+        await self.adapter.on_processing_start(event)
+
+        self.adapter._send_reaction.assert_not_called()
+        assert self.adapter._pending_reactions == {}
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_skips_unauthorized_sender(self):
+        """An auth-denied event must not receive a terminal check/cross."""
+        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+
+        self.adapter._reactions_enabled = True
+        self.adapter.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: False
+        )
+        self.adapter._send_reaction = AsyncMock(return_value="$check_reaction_456")
+        self.adapter._redact_reaction = AsyncMock()
+
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        source.chat_type = "group"
+        source.user_id = "@intruder:ex"
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$msg1",
+        )
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        self.adapter._send_reaction.assert_not_called()
+        self.adapter._redact_reaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_on_processing_start_allows_authorized_sender(self):
+        """An explicit gateway auth allow still emits the normal marker."""
+        from gateway.platforms.base import MessageEvent, MessageType
+
+        self.adapter._reactions_enabled = True
+        self.adapter.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: True
+        )
+        self.adapter._send_reaction = AsyncMock(return_value="$reaction_event_123")
+
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        source.chat_type = "group"
+        source.user_id = "@allowed:ex"
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$msg1",
+        )
+        await self.adapter.on_processing_start(event)
+
+        self.adapter._send_reaction.assert_called_once_with(
+            "!room:ex", "$msg1", "\U0001f440"
+        )
+        assert self.adapter._pending_reactions == {
+            ("!room:ex", "$msg1"): "$reaction_event_123"
+        }
+
+    @pytest.mark.asyncio
     async def test_on_processing_complete_sends_check(self):
         from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 

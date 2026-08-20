@@ -1,0 +1,43 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: taisly
+description: Publish short-form videos to TikTok, Instagram Reels, YouTube Shorts, X, and Facebook from Hermes Agent.
+source: https://github.com/taisly/agent
+
+# Taisly ships a hosted remote MCP server with native OAuth over HTTP.
+# Hermes handles discovery, browser OAuth, token exchange, and refresh.
+transport:
+  type: http
+  url: https://app.taisly.com/mcp
+
+auth:
+  type: oauth
+
+# Keep the core social publishing workflow enabled by default. The create tools
+# still require explicit user confirmation through the Taisly MCP contract.
+tools:
+  default_enabled:
+    - taisly_auth_status
+    - taisly_platforms_list
+    - taisly_platform_schema
+    - taisly_platform_connect_start
+    - taisly_platform_connect_check
+    - taisly_posts_validate
+    - taisly_posts_create
+    - taisly_posts_status
+    - taisly_posts_list
+    - taisly_reposts_list
+    - taisly_reposts_create
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with Taisly.
+  After auth, restart your Hermes session so the Taisly tools are loaded.
+
+  Remote MCP publishes videos from public videoUrl values. If Hermes needs to
+  read local video files from the machine where it runs, use the local MCP
+  server or CLI from https://github.com/taisly/agent instead.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure taisly

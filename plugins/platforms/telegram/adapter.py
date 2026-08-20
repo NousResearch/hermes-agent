@@ -307,6 +307,7 @@ from plugins.platforms.telegram.telegram_network import (
     TelegramFallbackTransport,
     discover_fallback_ips,
     parse_fallback_ip_env,
+    tcp_keepalive_socket_options,
 )
 from utils import atomic_replace, env_float, env_int
 
@@ -619,6 +620,12 @@ _POLLING_ERROR_TASK_STUCK_TIMEOUT = 300.0
 # A generation is not healthy until the dedicated getUpdates request returns
 # successfully. This exceeds a normal long-poll cycle for healthy idle bots.
 _POLLING_PROGRESS_TIMEOUT = 60.0
+# Steady-state getUpdates liveness (#87057). A healthy long-poll round-trip
+# finishes within the HTTP read timeout (~20s) plus Telegram's ~10s poll
+# window. If the instrumented getUpdates request records no completion for
+# this long, the consumer is wedged on a stale socket — even when get_me()
+# on the general pool still succeeds and pending_update_count is 0.
+_POLLING_STALE_IO_TIMEOUT = 90.0
 # Telegram transcodes an uploaded video before it answers sendVideo, so the
 # wait for the response is unrelated to how fast the bytes went out and can
 # outlast the 20s read timeout the rest of the Bot API is tuned for. Only
@@ -812,6 +819,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_teardown_started: bool = False
         self._polling_error_callback_ref = None
         self._polling_heartbeat_task: Optional[asyncio.Task] = None
+        # Monotonic timestamp of the last getUpdates request completion
+        # (success or error) for the current polling generation. None until
+        # the first generation starts. The heartbeat uses this as a
+        # getUpdates-pool liveness probe that does not depend on get_me()
+        # or pending_update_count (#87057).
+        self._polling_last_io_at: Optional[float] = None
         # Live @username, refreshed whenever Telegram tells us what it is.
         # PTB caches getMe() in Bot._bot_user at initialize() and only rewrites
         # it inside get_me(), so a BotFather rename leaves self._bot.username
@@ -2468,17 +2481,32 @@ class TelegramAdapter(BasePlatformAdapter):
             polling_req = self._app.bot._request[0]  # noqa: SLF001
         except Exception:
             return
+        shutdown_ok = False
         try:
             # Bounded: a wedged CLOSE-WAIT socket can make this close hang
-            # forever and freeze the reconnect ladder (#66377).
-            await asyncio.wait_for(polling_req.shutdown(), timeout=_DRAIN_TIMEOUT)
+            # forever and freeze the reconnect ladder (#66377). Use the
+            # thread-deadline helper so a cancellation-shielded aclose()
+            # cannot pin the ladder the way asyncio.wait_for would.
+            await _await_with_thread_deadline(
+                polling_req.shutdown(), timeout=_DRAIN_TIMEOUT
+            )
+            shutdown_ok = True
         except Exception:
             logger.debug(
                 "[%s] Polling request shutdown failed/timed out (non-fatal)",
                 self.name, exc_info=True,
             )
+        if not shutdown_ok:
+            # HTTPXRequest.initialize() rebuilds the client only when
+            # ``client.is_closed``. An abandoned aclose() leaves that flag
+            # false, so initialize() is a no-op and start_polling reuses the
+            # CLOSE-WAIT getUpdates socket — the gateway stays alive but
+            # deaf (#87057). Swap in a fresh client before initialize().
+            self._orphan_and_rebuild_polling_client(polling_req)
         try:
-            await asyncio.wait_for(polling_req.initialize(), timeout=_DRAIN_TIMEOUT)
+            await _await_with_thread_deadline(
+                polling_req.initialize(), timeout=_DRAIN_TIMEOUT
+            )
             logger.debug(
                 "[%s] Polling request pool drained before reconnect", self.name
             )
@@ -2487,6 +2515,74 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Polling request re-initialize failed/timed out (non-fatal)",
                 self.name, exc_info=True,
             )
+            self._orphan_and_rebuild_polling_client(polling_req)
+
+    def _orphan_and_rebuild_polling_client(self, polling_req) -> None:
+        """Replace a wedged HTTPXRequest client after a hung aclose().
+
+        PTB's ``HTTPXRequest.initialize()`` only calls ``_build_client()``
+        when the current client reports ``is_closed``. If ``shutdown()`` was
+        abandoned on a CLOSE-WAIT socket, that flag stays false and the next
+        ``start_polling()`` reuses the dead getUpdates connection (#87057).
+        Swap in a fresh client and detach the old ``aclose()`` so it cannot
+        block the reconnect ladder.
+        """
+        old = getattr(polling_req, "_client", None)
+        build = getattr(polling_req, "_build_client", None)
+        if old is None or not callable(build):
+            return
+        if getattr(old, "is_closed", True):
+            return
+        try:
+            polling_req._client = build()
+        except Exception:
+            logger.debug(
+                "[%s] Failed to rebuild polling HTTP client after hung drain",
+                self.name, exc_info=True,
+            )
+            return
+        logger.warning(
+            "[%s] Replaced wedged getUpdates HTTP client after drain timeout "
+            "(likely CLOSE-WAIT socket)",
+            self.name,
+        )
+
+        async def _orphan_aclose() -> None:
+            try:
+                aclose = getattr(old, "aclose", None)
+                if not callable(aclose):
+                    return
+                result = aclose()
+                if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                    await result
+            except Exception:
+                logger.debug(
+                    "[%s] Orphan polling client aclose failed (non-fatal)",
+                    self.name, exc_info=True,
+                )
+
+        try:
+            task = asyncio.ensure_future(_orphan_aclose())
+            task.add_done_callback(_consume_abandoned_task)
+        except Exception:
+            pass
+
+    def _note_polling_io(self, generation: Optional[int] = None) -> None:
+        """Stamp getUpdates request completion for the current generation."""
+        if getattr(self, "_polling_teardown_started", False):
+            return
+        if generation is not None and generation != self._polling_generation:
+            return
+        self._polling_last_io_at = time.monotonic()
+
+    def _get_updates_io_is_stale(self) -> bool:
+        """True when the getUpdates consumer has recorded no I/O recently."""
+        if getattr(self, "_webhook_mode", False):
+            return False
+        last = getattr(self, "_polling_last_io_at", None)
+        if last is None:
+            return False
+        return (time.monotonic() - last) >= _POLLING_STALE_IO_TIMEOUT
 
     def _begin_polling_generation(self) -> tuple[int, asyncio.Event]:
         """Start accepting progress for a new getUpdates polling generation."""
@@ -2507,6 +2603,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_progress_event = asyncio.Event()
         self._polling_progress_accepting = True
         self._send_path_degraded = True
+        self._polling_last_io_at = time.monotonic()
         return self._polling_generation, self._polling_progress_event
 
     def _record_polling_progress(self, generation: int) -> None:
@@ -2589,8 +2686,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
             async def do_request(self, *args, **kwargs):
                 generation = _POLLING_GENERATION_CONTEXT.get()
-                result = await super().do_request(*args, **kwargs)
+                try:
+                    result = await super().do_request(*args, **kwargs)
+                except BaseException:
+                    adapter._note_polling_io(generation)
+                    raise
                 adapter._observe_polling_request_result(self, generation, result)
+                adapter._note_polling_io(generation)
                 return result
 
         request.__class__ = _InstrumentedPollingRequest
@@ -3123,6 +3225,34 @@ class TelegramAdapter(BasePlatformAdapter):
                         return
                 else:
                     stuck_task_ref = None
+
+                # getUpdates-pool liveness (#87057): get_me() uses the general
+                # request path, so it stays healthy while the long-poll socket
+                # is wedged in CLOSE-WAIT. pending_update_count is also blind
+                # when no DMs are queued. If the instrumented getUpdates
+                # request has not completed a round-trip recently, recover
+                # without waiting on get_me() — that probe can hang the same
+                # way on Windows overlapped I/O.
+                if (
+                    self._get_updates_io_is_stale()
+                    and not (
+                        self._polling_error_task
+                        and not self._polling_error_task.done()
+                    )
+                ):
+                    logger.warning(
+                        "[%s] getUpdates I/O stalled for >= %.0fs; "
+                        "triggering polling restart",
+                        self.name, _POLLING_STALE_IO_TIMEOUT,
+                    )
+                    self._schedule_polling_recovery(
+                        RuntimeError(
+                            "getUpdates I/O stalled: no round-trip within "
+                            "liveness watchdog"
+                        ),
+                        reason="getUpdates liveness watchdog",
+                    )
+                    continue
 
                 bot = self._app.bot if self._app else None
                 if bot is None:
@@ -4448,6 +4578,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 _transport_kwargs: dict = {}
                 if _pool_limits is not None:
                     _transport_kwargs["limits"] = _pool_limits
+                _transport_kwargs["socket_options"] = tcp_keepalive_socket_options()
                 request = HTTPXRequest(
                     **request_kwargs,
                     httpx_kwargs={

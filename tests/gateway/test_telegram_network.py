@@ -18,6 +18,7 @@ and "stick" to whichever path works.
 
 import httpx
 import pytest
+import socket
 
 import plugins.platforms.telegram.telegram_network as tnet
 
@@ -353,6 +354,13 @@ class TestFallbackTransportInit:
             assert "limits" in kw
             # Caller-supplied limits must win over the setdefault default.
             assert kw["limits"] is custom_limits
+            assert "socket_options" in kw
+            assert any(
+                opt[0] == socket.SOL_SOCKET
+                and opt[1] == socket.SO_KEEPALIVE
+                and opt[2] == 1
+                for opt in kw["socket_options"]
+            )
 
 
 class TestFallbackTransportClose:
@@ -566,4 +574,15 @@ class TestDiscoverFallbackIps:
 
         assert ips == ["149.154.167.220"]
         assert elapsed < 1.4, f"discovery gated on hung system DNS ({elapsed:.2f}s)"
+
+
+def test_tcp_keepalive_socket_options_enables_so_keepalive():
+    """Windows long-polls need SO_KEEPALIVE or a dead peer hangs forever (#87057)."""
+    options = tnet.tcp_keepalive_socket_options()
+    assert any(
+        level == socket.SOL_SOCKET
+        and opt == socket.SO_KEEPALIVE
+        and value == 1
+        for level, opt, value in options
+    )
 

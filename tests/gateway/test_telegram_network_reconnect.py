@@ -686,3 +686,96 @@ async def test_disconnect_advances_past_cancellation_swallowing_lifecycle(monkey
 
     release.set()
     await asyncio.wait({wedged}, timeout=0.2)
+
+
+@pytest.mark.asyncio
+async def test_drain_rebuilds_http_client_when_shutdown_hangs(monkeypatch):
+    """Hung aclose() must not leave initialize() as a no-op (#87057).
+
+    PTB's HTTPXRequest.initialize() only rebuilds when client.is_closed.
+    If shutdown() is abandoned on a CLOSE-WAIT socket, that flag stays
+    false and start_polling would reuse the dead getUpdates connection.
+    Drain must swap in a fresh client so the reconnect ladder is live.
+    """
+    adapter = _make_adapter()
+
+    class _FakeClient:
+        def __init__(self):
+            self.is_closed = False
+
+        async def aclose(self):
+            await asyncio.Event().wait()
+
+    class _FakePollingReq:
+        def __init__(self):
+            self._client = _FakeClient()
+            self.built = []
+
+        def _build_client(self):
+            client = _FakeClient()
+            self.built.append(client)
+            return client
+
+        async def shutdown(self):
+            await asyncio.Event().wait()
+
+        async def initialize(self):
+            if self._client.is_closed:
+                self._client = self._build_client()
+
+    polling_req = _FakePollingReq()
+    original = polling_req._client
+    mock_app = MagicMock()
+    mock_app.bot._request = (polling_req, MagicMock())
+    adapter._app = mock_app
+
+    monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 0.05)
+    await asyncio.wait_for(adapter._drain_polling_connections(), timeout=2.0)
+
+    assert polling_req.built, "drain must rebuild the HTTP client after hung aclose"
+    assert polling_req._client is not original
+    assert polling_req._client is polling_req.built[-1]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_recovers_stale_getupdates_io_without_get_me(monkeypatch):
+    """A wedged getUpdates socket must recover even when get_me() would hang.
+
+    get_me() uses the general request path, so it cannot see CLOSE-WAIT on
+    the getUpdates pool (#87057). The heartbeat must trip on stalled
+    instrumented I/O first and must not wait on get_me().
+    """
+    adapter = _make_adapter()
+    adapter._webhook_mode = False
+    adapter._polling_last_io_at = 1.0
+    adapter._handle_polling_network_error = AsyncMock()
+
+    async def _hanging_get_me():
+        raise AssertionError(
+            "get_me must not run when getUpdates I/O is already stale"
+        )
+
+    mock_app = MagicMock()
+    mock_app.bot.get_me = _hanging_get_me
+    adapter._app = mock_app
+
+    clock = [1000.0]
+    sleep_calls = 0
+
+    async def _fake_sleep(_seconds):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls >= 2:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(tg_adapter.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(tg_adapter, "_POLLING_STALE_IO_TIMEOUT", 90.0)
+
+    with patch("asyncio.sleep", new=AsyncMock(side_effect=_fake_sleep)):
+        await adapter._polling_heartbeat_loop()
+    await asyncio.sleep(0)
+
+    pending = adapter._polling_error_task
+    assert pending is not None, "stale getUpdates I/O must schedule recovery"
+    await asyncio.wait_for(pending, timeout=1.0)
+    adapter._handle_polling_network_error.assert_called()

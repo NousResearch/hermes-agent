@@ -341,6 +341,67 @@ class TestRemoveFile:
 
 
 class TestSkillManageDispatcher:
+    # --- empty / malformed name validation through the dispatcher ---
+
+    @pytest.mark.parametrize("action", [
+        "create", "edit", "patch", "delete", "write_file", "remove_file",
+    ])
+    def test_empty_name_rejected_for_all_actions(self, tmp_path, action):
+        """Empty name must be rejected before the action dispatcher runs."""
+        with _skill_dir(tmp_path):
+            raw = skill_manage(action=action, name="")
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "name" in result["error"].lower()
+        # Must NOT reach action-specific error (which would be "Skill '' not found"
+        # or "content is required")
+        assert "not found" not in result["error"]
+
+    @pytest.mark.parametrize("name,expected_substr", [
+        ("", "required"),
+        ("   ", "Invalid skill name"),
+        ("MySkill", "Invalid skill name"),
+        ("skill/name", "Invalid skill name"),
+        ("skill name", "Invalid skill name"),
+        ("-invalid", "Invalid skill name"),
+    ])
+    def test_malformed_name_rejected_by_dispatcher(self, tmp_path, name, expected_substr):
+        """The dispatcher validates names before any action-specific logic."""
+        with _skill_dir(tmp_path):
+            raw = skill_manage(action="create", name=name, content=VALID_SKILL_CONTENT)
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert expected_substr in result["error"]
+
+    def test_empty_name_rejected_before_preflight_and_write_gate(self, tmp_path):
+        """An empty name must never reach the background-review preflight or the
+        write gate — both must be skipped for invalid names.
+
+        Uses an action ('edit') that _background_review_preflight is active
+        for, so a future reordering that validates after preflight fails here.
+        """
+        with (
+            _skill_dir(tmp_path),
+            patch("tools.skill_manager_tool._background_review_preflight", return_value=None) as mock_preflight,
+            patch("tools.skill_manager_tool._apply_skill_write_gate", return_value=None) as mock_gate,
+        ):
+            raw = skill_manage(action="edit", name="")
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "name" in result["error"].lower()
+        mock_preflight.assert_not_called()
+        mock_gate.assert_not_called()
+
+    def test_none_name_rejected(self, tmp_path):
+        """name=None must be handled gracefully, not crash."""
+        with _skill_dir(tmp_path):
+            raw = skill_manage(action="create", name=None, content=VALID_SKILL_CONTENT)
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "name" in result["error"].lower()
+
+    # --- end name validation tests ---
+
     def test_full_create_via_dispatcher(self, tmp_path):
         """Foreground create does NOT mark the skill as agent-created.
 

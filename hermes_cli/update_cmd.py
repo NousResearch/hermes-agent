@@ -258,6 +258,45 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
     except (subprocess.CalledProcessError, OSError):
         return None
 
+_ORPHAN_RESCUE_REFS_TO_KEEP = 10
+
+def _prune_orphan_rescue_refs(git_cmd, cwd, branch, keep=_ORPHAN_RESCUE_REFS_TO_KEEP) -> None:
+    """Delete all but the ``keep`` most-recent orphan rescue refs for ``branch``.
+
+    Each orphan-history divergence (#87694) parks the pre-reset HEAD under
+    ``refs/hermes-update-backups/orphan-<branch>-<ts>-<sha>``. Left alone,
+    every one of those refs pins its objects against ``git gc`` forever, so
+    a repeatedly corrupted install grows the repo without bound. Ref names
+    sort chronologically (timestamp prefix), so lexicographic order from
+    ``for-each-ref`` is also creation order. Best-effort: any failure here
+    must not block the update itself.
+    """
+    try:
+        list_result = subprocess.run(
+            git_cmd + [
+                "for-each-ref",
+                "--format=%(refname)",
+                "--sort=refname",
+                f"refs/hermes-update-backups/orphan-{branch}-*",
+            ],
+            cwd=cwd,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if list_result.returncode != 0:
+            return
+        refs = [line.strip() for line in list_result.stdout.splitlines() if line.strip()]
+        stale_refs = refs[:-keep] if keep > 0 else refs
+        for ref in stale_refs:
+            subprocess.run(
+                git_cmd + ["update-ref", "-d", ref],
+                cwd=cwd,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            )
+    except OSError:
+        pass
+
 def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
     """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
 
@@ -5525,6 +5564,59 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # ff-only failed — local and remote have diverged (e.g. upstream
                 # force-pushed or rebase).  Since local changes are already
                 # stashed, reset to match the remote exactly.
+                #
+                # Divergence comes in two shapes: ordinary (a common ancestor
+                # still exists — the reset below is a normal, safe rebase-onto-
+                # remote) and orphan (no common ancestor at all, e.g. a corrupted
+                # local HEAD or a repo re-init — see #87694). In the orphan case
+                # `reset --hard` would silently discard the entire local commit
+                # graph with no way back, so park pre_pull_sha behind a rescue
+                # ref first.
+                merge_base_result = subprocess.run(
+                    git_cmd + ["merge-base", "HEAD", f"origin/{branch}"],
+                    cwd=_m().PROJECT_ROOT,
+                    capture_output=True,
+                    text=True, encoding="utf-8", errors="replace",
+                )
+                has_common_ancestor = bool(
+                    merge_base_result.returncode == 0 and merge_base_result.stdout.strip()
+                )
+                if not has_common_ancestor and pre_pull_sha:
+                    from datetime import timezone
+
+                    # Suffix with the pre-pull SHA (not just a second-resolution
+                    # timestamp) so two updates racing within the same second
+                    # (e.g. a retried update) get distinct refs instead of the
+                    # second `update-ref` silently overwriting the first backup.
+                    rescue_ref = (
+                        f"refs/hermes-update-backups/orphan-{branch}-"
+                        f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+                        f"-{pre_pull_sha[:12]}"
+                    )
+                    update_ref_result = subprocess.run(
+                        git_cmd + ["update-ref", rescue_ref, pre_pull_sha],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    if update_ref_result.returncode == 0:
+                        print(
+                            "  ⚠ Local history shares no common ancestor with "
+                            f"origin/{branch} (orphan divergence) — backed up "
+                            f"current HEAD to {rescue_ref} before resetting."
+                        )
+                    else:
+                        # update-ref's return code is intentionally not fatal
+                        # (disk full, permissions) — but don't tell the user a
+                        # backup exists when the write actually failed.
+                        print(
+                            "  ⚠ Local history shares no common ancestor with "
+                            f"origin/{branch} (orphan divergence) — attempted "
+                            f"to back up current HEAD to {rescue_ref} before "
+                            "resetting, but the backup write failed "
+                            f"(pre-reset SHA was {pre_pull_sha})."
+                        )
+                    _prune_orphan_rescue_refs(git_cmd, _m().PROJECT_ROOT, branch)
                 print(
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )

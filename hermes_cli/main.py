@@ -5601,6 +5601,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_workflows(args):
+    """Import and inspect visual workflow blueprints (Hermes Studio compatible)."""
+    from hermes_cli.workflows_cmd import workflows_command
+
+    return workflows_command(args)
+
+
 def cmd_project(args):
     """Manage projects (named, multi-folder workspaces)."""
     from hermes_cli.projects_cmd import projects_command
@@ -12742,6 +12749,14 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    # =========================================================================
+    # workflows command — import visual workflows from Hermes Studio
+    # =========================================================================
+    from hermes_cli.workflows_cmd import build_parser as _build_workflows_parser
+
+    workflows_parser = _build_workflows_parser(subparsers)
+    workflows_parser.set_defaults(func=cmd_workflows)
 
     # =========================================================================
     # project command — named, multi-folder workspaces

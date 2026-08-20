@@ -1,0 +1,22 @@
+{
+  "project_name": "Galactic Yield Quest",
+  "sources": [
+    "https://galactic-yield-quest.example",
+    "https://x.com/galacticyieldq",
+    "https://t.me/galacticyieldquest"
+  ],
+  "team": "Anonymous core team, no names or profiles listed",
+  "team_public": false,
+  "documentation": "",
+  "demo": "",
+  "github": "",
+  "audit": "",
+  "roadmap": "Phase 1: presale. Phase 2: launch. Phase 3: more details soon.",
+  "tokenomics": "unclear — supply not disclosed",
+  "community": "Telegram group with mostly giveaway and price chatter",
+  "description": "A play-to-earn galaxy adventure where every player earns rewards.",
+  "marketing_text": "Join thousands of happy investors! Guaranteed returns up to 1000x. Limited time only presale — don't miss out. Refer a friend and earn an affiliate bonus. Officially partnered with major studios.",
+  "reviewer_flags": [
+    "broken_links"
+  ]
+}

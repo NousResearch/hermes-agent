@@ -1558,6 +1558,14 @@ def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool
     live only in the cron job's own session, never the target chat's history)
     byte-for-byte for everyone who does not opt in.
 
+    CARVE-OUT: the ``in_channel`` continuable surface seeds its target
+    session independently of this knob (see ``_deliver_result`` /
+    ``_seed_cron_channel_session``). in_channel is itself opt-in
+    (``cron_continuable_surface: in_channel`` + the adapter capability bit),
+    and the seed IS the feature — a continuable flat brief without its seed
+    is a brief the next reply can't see. This knob keeps governing the
+    SEPARATE default/thread-surface transcript mirror only.
+
     Precedence (first decisive value wins):
       1. Per-job ``attach_to_session`` (bool) — set via the ``cronjob`` tool,
          lets one briefing job opt in without flipping global behaviour.

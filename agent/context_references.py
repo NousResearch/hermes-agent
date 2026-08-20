@@ -79,7 +79,7 @@ def get_context_reference_providers() -> dict[str, ContextReferenceProvider]:
 
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
 REFERENCE_PATTERN = re.compile(
-    rf"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url):(?P<value>{_QUOTED_REFERENCE_VALUE}(?::\d+(?:-\d+)?)?|\S+))"
+    rf"(?<![\w/])@(?:(?P<simple>diff|staged|status)\b|(?P<kind>file|folder|git|url):(?P<value>{_QUOTED_REFERENCE_VALUE}(?::\d+(?:-\d+)?)?|\S+))"
 )
 # Plugin fallback pattern – catches any @<word>:<value> not handled by the
 # built-in regex so that plugin-registered prefixes can be resolved.
@@ -341,6 +341,8 @@ async def _expand_reference(
             return _expand_git_reference(ref, cwd, ["diff"], "git diff")
         if ref.kind == "staged":
             return _expand_git_reference(ref, cwd, ["diff", "--staged"], "git diff --staged")
+        if ref.kind == "status":
+            return _expand_git_reference(ref, cwd, ["status"], "git status")
         if ref.kind == "git":
             count = max(1, min(int(ref.target or "1"), 10))
             return _expand_git_reference(ref, cwd, ["log", f"-{count}", "-p"], f"git log -{count} -p")

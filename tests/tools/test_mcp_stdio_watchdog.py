@@ -38,3 +38,16 @@ def test_wrap_command_uses_stable_parent_pid_and_preserves_command_tail():
         *command_args,
     ]
     assert "--create-time" not in wrapped_args
+
+@pytest.mark.skipif(os.name != "posix", reason="watchdog wrapping is POSIX-only")
+def test_wrap_command_tolerates_null_args():
+    command = "/opt/hermes/bin/mcp-server"
+
+    wrapped_command, wrapped_args = mcp_tool._wrap_command_with_watchdog(
+        command,
+        None,
+    )
+
+    assert wrapped_command == sys.executable
+    assert wrapped_args[-2:] == ["--", command]
+    assert "--create-time" not in wrapped_args

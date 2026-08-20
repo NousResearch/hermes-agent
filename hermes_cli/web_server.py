@@ -1772,6 +1772,10 @@ def _apply_main_model_assignment(
         clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
     if new_provider != prev_provider:
         clear_model_endpoint_credentials(model_cfg, clear_api_key=False)
+        # ``key_env`` names the previous endpoint's credential. It has the
+        # same provider-bound lifecycle as base_url: retain it for a
+        # same-provider re-pick, but do not let it reach a different provider.
+        model_cfg.pop("key_env", None)
     model_cfg.pop("context_length", None)
     return model_cfg
 

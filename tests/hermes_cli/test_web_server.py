@@ -235,6 +235,42 @@ class TestSessionTokenInjection:
 
 
 # ---------------------------------------------------------------------------
+# Main model assignment tests
+# ---------------------------------------------------------------------------
+
+
+class TestMainModelAssignment:
+    def test_switching_provider_clears_stale_key_env(self):
+        """A custom endpoint's credential reference cannot route a new provider."""
+        from hermes_cli.web_server import _apply_main_model_assignment
+
+        model_cfg = {
+            "provider": "custom",
+            "default": "custom-model",
+            "base_url": "https://custom.example.test/v1",
+            "key_env": "CUSTOM_ENDPOINT_API_KEY",
+        }
+
+        _apply_main_model_assignment(model_cfg, "openai", "gpt-5.6")
+
+        assert "key_env" not in model_cfg
+
+    def test_reselecting_same_provider_preserves_key_env(self):
+        """Changing a model under the same endpoint keeps its credential reference."""
+        from hermes_cli.web_server import _apply_main_model_assignment
+
+        model_cfg = {
+            "provider": "custom",
+            "default": "custom-model",
+            "key_env": "CUSTOM_ENDPOINT_API_KEY",
+        }
+
+        _apply_main_model_assignment(model_cfg, "custom", "other-custom-model")
+
+        assert model_cfg["key_env"] == "CUSTOM_ENDPOINT_API_KEY"
+
+
+# ---------------------------------------------------------------------------
 # web_server tests (FastAPI endpoints)
 # ---------------------------------------------------------------------------
 
@@ -1571,6 +1607,28 @@ class TestWebServerEndpoints:
         assert _parse_model_ids(FakeResp({"data": []}, ok=False)) == []
         assert _parse_model_ids(FakeResp({"nope": 1})) == []
         assert _parse_model_ids(FakeResp(ValueError("bad json"))) == []
+
+
+    def test_set_model_main_provider_switch_clears_stale_key_env(self):
+        """A dashboard switch away from an endpoint drops its key reference."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {
+            "provider": "custom",
+            "default": "custom-model",
+            "base_url": "https://custom.example.test/v1",
+            "key_env": "CUSTOM_ENDPOINT_API_KEY",
+        }
+        save_config(cfg)
+
+        response = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "openai", "model": "gpt-5.6"},
+        )
+
+        assert response.status_code == 200
+        assert "key_env" not in load_config()["model"]
 
 
     def test_set_model_main_custom_persists_api_key_and_registers_provider(self):

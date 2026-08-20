@@ -17,7 +17,8 @@ const RELEVANT_ENV = [
   'HERMES_TUI_BACKGROUND',
   'COLORFGBG',
   'COLORTERM',
-  'TERM_PROGRAM'
+  'TERM_PROGRAM',
+  'ZED_TERM'
 ] as const
 
 async function importThemeWithEnv(env: Partial<Record<(typeof RELEVANT_ENV)[number], string>> = {}) {
@@ -113,6 +114,20 @@ describe('detectLightMode', () => {
     expect(detectLightMode({ COLORFGBG: '0;7' })).toBe(true)
     expect(detectLightMode({ COLORFGBG: '15;0' })).toBe(false)
     expect(detectLightMode({ COLORFGBG: '7;default;0' })).toBe(false)
+  })
+
+  it('ignores inherited COLORFGBG inside Zed terminals', async () => {
+    const { detectLightMode } = await importThemeWithCleanEnv()
+
+    expect(detectLightMode({ TERM_PROGRAM: 'zed', COLORFGBG: '0;15' })).toBe(false)
+    expect(detectLightMode({ ZED_TERM: 'true', COLORFGBG: '0;15' })).toBe(false)
+  })
+
+  it('still lets explicit overrides win inside Zed terminals', async () => {
+    const { detectLightMode } = await importThemeWithCleanEnv()
+
+    expect(detectLightMode({ TERM_PROGRAM: 'zed', COLORFGBG: '0;15', HERMES_TUI_THEME: 'light' })).toBe(true)
+    expect(detectLightMode({ TERM_PROGRAM: 'zed', COLORFGBG: '0;15', HERMES_TUI_BACKGROUND: '#ffffff' })).toBe(true)
   })
 
   it('falls through on malformed COLORFGBG with empty/non-numeric trailing field', async () => {

@@ -4282,7 +4282,10 @@ class HeartbeatManager:
         """Cancel all reply heartbeat tasks."""
         for task in list(self._reply_heartbeat_tasks.values()):
             if not task.done():
-                task.cancel()
+                try:
+                    task.cancel()
+                except RuntimeError:
+                    pass
         self._reply_heartbeat_tasks.clear()
         self._reply_hb_last_active.clear()
 
@@ -4326,13 +4329,19 @@ class SlowResponseNotifier:
         """Cancel the pending slow-response notifier for *chat_id*, if any."""
         task = self._tasks.pop(chat_id, None)
         if task and not task.done():
-            task.cancel()
+            try:
+                task.cancel()
+            except RuntimeError:
+                pass
 
     async def close(self) -> None:
         """Cancel all slow-response tasks."""
         for task in list(self._tasks.values()):
             if not task.done():
-                task.cancel()
+                try:
+                    task.cancel()
+                except RuntimeError:
+                    pass
         self._tasks.clear()
 
 

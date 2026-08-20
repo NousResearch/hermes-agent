@@ -1162,6 +1162,9 @@ def cmd_sessions(args, sessions_parser=None):
         # the 'd' delete-with-confirmation action.
         try:
             selected_id = _session_browse_picker(sessions, session_db=db)
+        except KeyboardInterrupt:
+            print("\nCancelled.")
+            return
         finally:
             db.close()
         if not selected_id:

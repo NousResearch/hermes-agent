@@ -4622,7 +4622,7 @@ class GatewaySlashCommandsMixin:
     async def _handle_save_command(self, event: MessageEvent) -> str:
         """Handle /save — export the current session and send it as a document.
 
-        Usage: ``/save [json|md|html] [filename] [redact]``
+        Usage: ``/save [json|md|html] [filename] [noredact]``
         """
         from hermes_cli.session_export import (
             SAVE_USAGE,
@@ -4634,9 +4634,22 @@ class GatewaySlashCommandsMixin:
         parts = event.get_command_args().split()
         if not parts:
             return SAVE_USAGE
-        redact = False
-        if parts[-1].lower() in ("redact", "--redact"):
-            redact = True
+        # Redaction is ON by default here — unlike the CLI's local-only
+        # /save, this path always leaves the machine (the export is sent as
+        # a document into the chat that invoked it, which may be a group
+        # chat visible to other participants and retained on the platform's
+        # own servers). Same "leaves the machine -> redact by default"
+        # policy as `hermes sessions export --format trace`. `noredact`
+        # opts out for a user who has reviewed the session and wants the
+        # raw export; the old `redact`/`--redact` opt-in token is still
+        # accepted as a harmless no-op for anyone already typing it.
+        redact = True
+        if parts[-1].lower() in ("noredact", "--no-redact"):
+            redact = False
+            parts = parts[:-1]
+            if not parts:
+                return SAVE_USAGE
+        elif parts[-1].lower() in ("redact", "--redact"):
             parts = parts[:-1]
             if not parts:
                 return SAVE_USAGE
@@ -4677,7 +4690,7 @@ class GatewaySlashCommandsMixin:
             with open(temp_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
-            adapter = self.get_adapter(source.platform)
+            adapter = self.adapters.get(source.platform)
             if adapter:
                 await adapter.send_document(
                     chat_id=source.chat_id,

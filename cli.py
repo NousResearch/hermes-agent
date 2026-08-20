@@ -9780,14 +9780,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def save_conversation(self, cmd: str = "/save"):
         """Handle /save — export the current session to json, md, or html.
 
-        Usage: ``/save [json|md|html] [filename] [redact]``
+        Usage: ``/save [json|md|html] [filename] [noredact]``
 
         The snapshot is a convenience export for sharing or off-line
         inspection; every message is already persisted incrementally to the
         SQLite session DB, so the live session remains resumable via
         ``hermes --resume <id>`` regardless of whether the user ever runs
-        ``/save``. ``redact`` runs the export through the force-mode secret
-        redaction pass before writing.
+        ``/save``. The export runs through the force-mode secret redaction
+        pass by default, same as `hermes sessions export --format trace` —
+        ``noredact`` opts out for a user who has reviewed the session and
+        wants the raw export.
         """
         from hermes_cli.session_export import (
             SAVE_USAGE,
@@ -9799,9 +9801,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not parts:
             print(SAVE_USAGE)
             return
-        redact = False
-        if parts[-1].lower() in ("redact", "--redact"):
-            redact = True
+        redact = True
+        if parts[-1].lower() in ("noredact", "--no-redact"):
+            redact = False
+            parts = parts[:-1]
+            if not parts:
+                print(SAVE_USAGE)
+                return
+        elif parts[-1].lower() in ("redact", "--redact"):
             parts = parts[:-1]
             if not parts:
                 print(SAVE_USAGE)

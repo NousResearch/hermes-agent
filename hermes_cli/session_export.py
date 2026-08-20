@@ -324,7 +324,7 @@ def _finish_markdown(lines: List[str]) -> str:
 SAVE_FORMATS = ("json", "md", "html")
 
 SAVE_USAGE = """/save — export the current session to a file
-Usage: /save <format> [filename] [redact]
+Usage: /save <format> [filename] [noredact]
 
 Formats:
   json    full session snapshot (canonical export shape)
@@ -334,13 +334,16 @@ Formats:
 Options:
   filename   optional output name/path (default: auto-named;
              CLI saves under ~/.hermes/sessions/saved/)
-  redact     scrub API keys, tokens, and credentials before writing
+  noredact   skip scrubbing API keys, tokens, and credentials
+             (redaction runs by default — the export leaves the machine
+             when saved via a chat platform, and may be shared even when
+             saved locally)
 
 Examples:
   /save json
   /save html
   /save md notes.md
-  /save html session.html redact"""
+  /save html session.html noredact"""
 
 
 

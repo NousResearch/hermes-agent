@@ -368,9 +368,9 @@ optional_env:
 - **WhatsApp** 在 24 小时不活跃后将会话标记为非活跃，此后只接受模板消息。
 - **SMS** 没有正在输入指示器或渐进式更新的概念 — 长响应看起来就像 bot 离线了。
 
-这些是 `BasePlatformAdapter` 无法预判的真实约束。Plugin 接口有意为适配器在基础输入循环之上叠加平台专属 UX 留出空间，而无需扩展 kwarg 列表。
+这些是 `BasePlatformAdapter` 无法预判的真实约束。Plugin 接口有意为适配器在基础的“正在输入”循环之上叠加平台专属 UX 留出空间，而无需扩展 kwarg 列表。
 
-### 模式：子类化 `_keep_typing` 以叠加飞行中 UX
+### 模式：子类化 `_keep_typing` 以叠加生成中的 UX
 
 `BasePlatformAdapter._keep_typing` 是正在输入指示器的心跳 — 它在 LLM 生成时作为后台任务运行，响应投递后被取消。要在某个阈值时叠加平台专属行为（例如在 45 秒时发送"仍在思考"气泡），在你的适配器中覆盖 `_keep_typing`，在 `super()._keep_typing()` 旁边调度你自己的任务，并在 `finally` 中清理：
 
@@ -405,7 +405,7 @@ class LineAdapter(BasePlatformAdapter):
 
 关键点：
 
-- **始终 `await super()._keep_typing(...)`。** 输入心跳本身有独立价值 — 不要替换它，而是在其上叠加。
+- **始终 `await super()._keep_typing(...)`。** 正在输入指示器的心跳本身有独立价值 — 不要替换它，而是在其上叠加。
 - **在 `finally` 中清理副任务。** 当 LLM 完成（或 `/stop` 取消运行）时，gateway 会取消输入任务。你的副任务也必须响应该取消，否则它会残留并可能在响应已投递后触发。
 - **配合 `interrupt_session_activity`** 在用户发出 `/stop` 时解决任何孤立 UX 状态。对于 LINE，这意味着将 postback 缓存条目从 `PENDING` 转换为 `ERROR`，使持久的"获取答案"按钮投递"运行已中断"消息而非循环。
 
@@ -435,7 +435,7 @@ async def send(self, chat_id: str, content: str, **kw) -> SendResult:
 在以下情况使用输入循环覆盖方式：
 
 - 平台的出站 API 存在硬性时间窗口约束（单次使用回复 token、过期的粘性会话等），**且**
-- 在该平台上*可见的飞行中气泡*是可接受的 UX。
+- 在该平台上*可见的生成中气泡*是可接受的 UX。
 
 在以下情况使用更简单的 `slow_response_threshold = 0` 始终 Push 路径：
 

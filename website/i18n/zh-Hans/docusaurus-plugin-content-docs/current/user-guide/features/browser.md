@@ -9,7 +9,7 @@ sidebar_position: 5
 
 Hermes Agent 内置完整的浏览器自动化工具集，支持多种后端选项：
 
-- **Browserbase 云端模式** — 通过 [Browserbase](https://browserbase.com) 使用托管云端浏览器及反机器人工具
+- **Browserbase 云端模式** — 通过 [Browserbase](https://browserbase.com) 使用托管云端浏览器及反 Bot 检测能力
 - **Browser Use 云端模式** — 通过 [Browser Use](https://browser-use.com) 作为备选云端浏览器提供商
 - **Firecrawl 云端模式** — 通过 [Firecrawl](https://firecrawl.dev) 使用内置抓取功能的云端浏览器
 - **Camofox 本地模式** — 通过 [Camofox](https://github.com/jo-inc/camofox-browser) 实现本地反检测浏览（基于 Firefox 的指纹伪装）
@@ -467,7 +467,7 @@ What does the chart on this page show?
 
 ### `browser_console`
 
-获取当前页面的浏览器控制台输出（log/warn/error 消息）及未捕获的 JavaScript 异常。对于检测无障碍树中不可见的静默 JS 错误至关重要。
+获取当前页面的浏览器控制台输出（log/warn/error 消息）及未捕获的 JavaScript 异常。这对排查无障碍树中看不到的静默 JS 错误很有用。
 
 ```
 Check the browser console for any JavaScript errors

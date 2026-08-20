@@ -285,6 +285,8 @@ def _serialise_value(value: Any) -> Optional[dict]:
 
 def recover_pending_to_db(
     session_db=None,
+    *,
+    session_resolver=None,
 ) -> int:
     """Recover flushed pending messages into state.db via SessionDB.
 
@@ -298,6 +300,13 @@ def recover_pending_to_db(
     session_db:
         An existing ``SessionDB`` instance.  If ``None``, a new one is
         opened on the default ``state.db`` path.
+    session_resolver:
+        Optional callable mapping ``session_key -> session_id`` (e.g.
+        ``SessionStore.peek_session_id``).  Real flush files carry no
+        ``session_id`` — adapter ``MessageEvent`` objects have no such
+        attribute — so without a resolver every recovery lands in the
+        "no session_id" skip branch and the message is silently never
+        re-ingested.
 
     Returns
     -------
@@ -375,11 +384,13 @@ def recover_pending_to_db(
             # session_key in the source column.
             session_id = data.get("session_id", "")
 
+            if not session_id and session_resolver is not None:
+                try:
+                    session_id = session_resolver(session_key) or ""
+                except Exception:
+                    session_id = ""
+
             if not session_id:
-                # Try to extract from the session_key itself — gateway
-                # session keys contain the session_id as the last segment
-                # in some formats, but that's not guaranteed.  Log and
-                # skip if we can't resolve it.
                 logger.warning(
                     "Cannot recover pending message for %s: no session_id "
                     "in flush file and session_key-to-id resolution is not "

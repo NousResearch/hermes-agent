@@ -2136,6 +2136,34 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
 
 
+def test_dump_api_request_debug_fully_redacts_authorization(monkeypatch, tmp_path):
+    """Request dump에는 API 키의 앞뒤 조각도 남기지 않는다."""
+    import json
+
+    _patch_agent_bootstrap(monkeypatch)
+    fake_secret = "sk-proj-abcdefghijklmno-qrstuvwxyz-12345678"
+    agent = run_agent.AIAgent(
+        model="gpt-5-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key=fake_secret,
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_request_debug(
+        _codex_request_kwargs(), reason="preflight"
+    )
+
+    dumped = dump_file.read_text(encoding="utf-8")
+    payload = json.loads(dumped)
+    assert payload["request"]["headers"]["Authorization"] == "Bearer [REDACTED]"
+    assert fake_secret[:8] not in dumped
+    assert fake_secret[-4:] not in dumped
+
+
 
 
 # --- Reasoning-only response tests (fix for empty content retry loop) ---

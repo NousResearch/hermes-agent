@@ -1883,12 +1883,6 @@ def dump_api_request_debug(
         body.pop("timeout", None)
         body = {k: v for k, v in body.items() if v is not None}
 
-        api_key = None
-        try:
-            api_key = getattr(agent.client, "api_key", None)
-        except Exception as e:
-            _ra().logger.debug("Could not extract API key for debug dump: %s", e)
-
         dump_payload: Dict[str, Any] = {
             "timestamp": datetime.now().isoformat(),
             "session_id": agent.session_id,
@@ -1897,7 +1891,7 @@ def dump_api_request_debug(
                 "method": "POST",
                 "url": f"{agent.base_url.rstrip('/')}{'/responses' if agent.api_mode == 'codex_responses' else '/chat/completions'}",
                 "headers": {
-                    "Authorization": f"Bearer {agent._mask_api_key_for_logs(api_key)}",
+                    "Authorization": "Bearer [REDACTED]",
                     "Content-Type": "application/json",
                 },
                 "body": body,

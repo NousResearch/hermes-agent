@@ -196,10 +196,13 @@ def _save_bearer_auth_token(name: str, token: str) -> Dict[str, str]:
     return _bearer_auth_headers(name)
 
 
-def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
-    """Parse ``KEY=VALUE`` strings from CLI args into an env dict."""
+def _parse_env_assignments(raw_env: Optional[List[Any]]) -> Dict[str, str]:
+    """Parse and flatten grouped ``KEY=VALUE`` CLI args into an env dict."""
     parsed: Dict[str, str] = {}
     for item in raw_env or []:
+        if isinstance(item, (list, tuple)):
+            parsed.update(_parse_env_assignments(list(item)))
+            continue
         text = str(item or "").strip()
         if not text:
             continue

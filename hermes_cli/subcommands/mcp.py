@@ -67,9 +67,14 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     )
     mcp_add_p.add_argument(
         "--env",
-        nargs="*",
+        action="append",
+        nargs="+",
         default=[],
-        help="Environment variables for stdio servers (KEY=VALUE)",
+        metavar="KEY=VALUE",
+        help=(
+            "Environment variables for stdio servers; accepts multiple values "
+            "and may be repeated"
+        ),
     )
 
     mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")

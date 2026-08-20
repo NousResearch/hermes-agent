@@ -243,6 +243,38 @@ class TestMcpAdd:
             "DEBUG": "true",
         }
 
+    def test_add_stdio_server_flattens_repeated_env_groups(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Every assignment from repeated grouped --env flags is persisted."""
+        expected_env = {
+            "FIRST": "1",
+            "SECOND": "two",
+            "THIRD": "3",
+        }
+
+        def mock_probe(name, config, **kw):
+            assert config["env"] == expected_env
+            return [("search", "Search repos")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="grouped-env",
+            mcp_command="demo-mcp",
+            env=[["FIRST=1", "SECOND=two"], ["THIRD=3"]],
+        ))
+
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        assert config["mcp_servers"]["grouped-env"]["env"] == expected_env
+
 
     def test_add_preset_fills_transport(self, tmp_path, capsys, monkeypatch):
         """A preset fills in command/args when no explicit transport given."""

@@ -114,7 +114,8 @@ def parse_secret_output(stdout: str, wanted_key: str) -> Optional[str]:
     ]
     for line in dotenv_lines:
         m = _ENV_LINE.match(line)
-        assert m is not None  # filtered above
+        if m is None:
+            continue  # pragma: no cover — filtered above, defensive guard
         if m.group(1) == wanted_key:
             value = unquote_dotenv_value(m.group(2))
             # Whitespace-only (e.g. a quoted `K="  "` placeholder) is "no

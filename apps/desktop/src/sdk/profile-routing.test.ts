@@ -40,6 +40,7 @@ vi.mock('@/store/session-states', async () => {
 
   return {
     $focusedRuntimeId: atom(null),
+    $focusedSessionProfile: atom('default'),
     $focusedSessionState: atom(null),
     $focusedStoredSessionId: atom(null),
     $sessionStates: atom({})

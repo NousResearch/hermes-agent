@@ -43,6 +43,7 @@ import {
   clearReadBaseline,
   lineageAliases,
   markSessionRead,
+  rememberedSessionProfile,
   sessionMatchesStoredId,
   setActiveSessionStoredIdRotation,
   setSessions
@@ -1038,6 +1039,23 @@ export const $focusedStoredSessionId = computed(
 
     return active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
   }
+)
+
+/**
+ * Owner profile of the FOCUSED chat. `$activeGatewayProfile` answers "which
+ * backend is the live socket homed on" — but tab/tile focus moves without
+ * swapping the socket, and a cold start can restore a route into a session
+ * the booting gateway doesn't own. Any per-bot readout (the roster highlight,
+ * the profile-grouped sidebar, the plugin SDK's `focusedSessionProfile`) must
+ * follow the chat the user is LOOKING AT, so this resolves the focused stored
+ * session to the owner stamped on its session row (the cross-profile
+ * aggregator tags every row) and only falls back to the gateway profile for a
+ * draft or an uncached id — the same ladder the remembered-navigation key and
+ * the HUD use.
+ */
+export const $focusedSessionProfile = computed(
+  [$focusedStoredSessionId, $sessions, $activeGatewayProfile],
+  (focused, sessions, activeProfile) => normalizeProfileKey(rememberedSessionProfile(sessions, focused, activeProfile))
 )
 
 /** Every session currently OPEN as a surface: the primary's selection plus

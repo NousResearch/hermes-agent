@@ -26,7 +26,6 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
-import { resolveProfileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
@@ -68,6 +67,7 @@ import {
   setSidebarSessionOrderManual,
   setSidebarWorkspaceOrderIds,
   setSidebarWorkspaceParentOrderIds,
+  setWorkspaceNodeOpen,
   SIDEBAR_SESSIONS_PAGE_SIZE,
   toggleSidebarMessagingOpen,
   unpinSession
@@ -127,7 +127,7 @@ import {
 } from '@/store/session'
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
-import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
+import { $focusedSessionProfile, $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
@@ -148,6 +148,7 @@ import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
+import { buildProfileGroups } from './profile-groups'
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
@@ -389,6 +390,7 @@ export function ChatSidebar({
   const unreadCount = useStore($unreadFinishedSessionIds).length
   const profiles = useStore($profiles)
   const profileColors = useStore($profileColors)
+  const focusedSessionProfile = useStore($focusedSessionProfile)
   const profileScope = useStore($profileScope)
   const activeConnectionId = useStore($activeConnectionId)
 
@@ -1243,40 +1245,25 @@ export function ChatSidebar({
   }, [visibleMessagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession, messagingProfile])
 
   // Grouping by profile: one collapsible group per profile, color on the header
-  // (not on every row). Default profile floats to the top, the rest alpha.
-  // Only reachable while the sidebar is showing every profile — scoped to one,
-  // it would draw a single group around the whole list.
+  // (not on every row). The focused chat's profile heads the list, then
+  // default, then the rest alpha (see buildProfileGroups). Only reachable
+  // while the sidebar is showing every profile — scoped to one, it would draw
+  // a single group around the whole list.
   const profileGrouped = showAllProfiles && grouping === 'profile'
 
-  const profileGroups = useMemo<SidebarSessionGroup[] | undefined>(() => {
-    if (!profileGrouped) {
-      return undefined
+  const profileGroups = useMemo<SidebarSessionGroup[] | undefined>(
+    () => (profileGrouped ? buildProfileGroups(agentSessions, profileColors, focusedSessionProfile) : undefined),
+    [profileGrouped, agentSessions, profileColors, focusedSessionProfile]
+  )
+
+  // Follow the focused bot: whichever chat holds focus, its group is revealed —
+  // re-opened even if it was collapsed earlier — so switching bots always
+  // shows that bot's sessions without hunting for its section (#89347).
+  useEffect(() => {
+    if (profileGrouped && focusedSessionProfile) {
+      setWorkspaceNodeOpen(focusedSessionProfile, true)
     }
-
-    const groups = new Map<string, SidebarSessionGroup>()
-
-    for (const session of agentSessions) {
-      const key = normalizeProfileKey(session.profile)
-
-      const group = groups.get(key) ?? {
-        color: resolveProfileColor(key, profileColors),
-        id: key,
-        label: key,
-        mode: 'profile',
-        path: null,
-        sessions: []
-      }
-
-      group.sessions.push(session)
-
-      groups.set(key, group)
-    }
-
-    // default (root) first, then the rest alphabetically.
-    return [...groups.values()].sort((a, b) =>
-      a.id === 'default' ? -1 : b.id === 'default' ? 1 : a.label.localeCompare(b.label)
-    )
-  }, [profileGrouped, agentSessions, profileColors])
+  }, [profileGrouped, focusedSessionProfile])
 
   // The flat Sessions list always shows ALL recent sessions; Projects is a
   // parallel grouped view, not a filter on this one — nothing is hidden here.

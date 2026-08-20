@@ -274,13 +274,21 @@ def _gap_map(counts: list[int], texts: list[str], empty: list[int]) -> str:
     before it (usually a section divider/header page), so the agent can
     decide WHICH gaps it actually needs to read instead of OCRing all of
     them."""
-    ranges = _group_ranges(empty)
+    # Sparse-page eligibility and gap boundaries are different decisions:
+    # a SHORT but nonblank divider (e.g. "Exhibit A", fewer than
+    # PDF_EMPTY_PAGE_CHARS chars) still counts toward the sparse threshold,
+    # but it must stay OUTSIDE the following blank range so it can act as
+    # that range's label. Only truly-blank pages group into ranges; any
+    # nonblank page splits them.
+    ranges = _group_ranges([p for p in empty if counts[p - 1] == 0])
     lines: list[str] = []
     for a, b in ranges[:PDF_GAP_MAP_MAX_ENTRIES]:
         label = ""
-        # Walk back to the nearest preceding page with text.
+        # Walk back to the nearest preceding page with ANY text (blank pages
+        # are already grouped into ranges, so this stops at a divider or a
+        # >= PDF_EMPTY_PAGE_CHARS text page — either labels the gap).
         for prev in range(a - 2, -1, -1):
-            if counts[prev] >= PDF_EMPTY_PAGE_CHARS:
+            if counts[prev] > 0:
                 snippet = " ".join(texts[prev].split())[:_GAP_CONTEXT_CHARS]
                 label = f' — after "{snippet}" (p{prev + 1})'
                 break

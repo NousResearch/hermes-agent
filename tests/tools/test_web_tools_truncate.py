@@ -54,6 +54,21 @@ class TestTruncation:
         assert "UNIQUE_MIDDLE_MARKER" in full
         assert "row 2500" in full  # the omitted-middle row is in the stored file
 
+    def test_truncation_footer_translates_path_for_docker_backend(self, tmp_path, monkeypatch):
+        """Inside docker/modal backends the footer must show the container-mapped
+        cache path (readable by read_file), not the host path (which dangles)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        body = "\n".join(f"row {i}" for i in range(5000))
+        out, truncated = wt._truncate_with_footer(body, "https://example.com/doc", 3000)
+        assert truncated is True
+        path_line = next(ln for ln in out.splitlines() if "Full text saved to:" in ln)
+        shown = path_line.split("Full text saved to:", 1)[1].strip()
+        assert shown.startswith("/root/.hermes/"), shown
+        assert str(tmp_path) not in shown
+        hint_line = next(ln for ln in out.splitlines() if 'read_file path=' in ln)
+        assert f'read_file path="{shown}"' in hint_line
+
 
 class TestCharLimitConfig:
     def test_default_when_unset(self):

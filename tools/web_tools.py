@@ -610,6 +610,9 @@ def _truncate_with_footer(
         f"of {total:,} total clean characters.",
     ]
     if stored_path:
+        from tools.credential_files import to_agent_visible_cache_path
+
+        stored_path = to_agent_visible_cache_path(stored_path)
         # The omitted middle begins right after the head we're showing. Give
         # the model a concrete starting line (head line count + 1) so its first
         # read_file lands in the gap instead of guessing <line>. read_file is

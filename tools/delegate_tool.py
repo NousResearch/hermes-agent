@@ -2309,6 +2309,9 @@ def _trim_summary_with_footer(
         f"of {original_len:,} total — trimmed to protect the parent's context window.",
     ]
     if spill_path:
+        from tools.credential_files import to_agent_visible_cache_path
+
+        spill_path = to_agent_visible_cache_path(spill_path)
         # read_file is 1-indexed; +2 moves past the last head line shown.
         middle_start_line = head.count("\n") + 2
         footer_lines.append(f"Full subagent output saved to: {spill_path}")
@@ -3797,6 +3800,13 @@ def delegate_task(
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
         task_list, context, model=creds.get("model"), provider=creds.get("provider")
     )
+    if live_paths:
+        # Paths returned to the agent (result footer / live_transcripts field)
+        # must be readable from inside the terminal backend, not the host.
+        # The writers keep their own host paths for the actual file I/O.
+        from tools.credential_files import to_agent_visible_cache_path
+
+        live_paths = [to_agent_visible_cache_path(p) for p in live_paths]
 
     # Capture the ORIGINATING session's wake target BEFORE any child agent is
     # constructed: _build_child_agent() -> AIAgent() -> agent_init calls

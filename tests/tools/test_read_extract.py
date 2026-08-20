@@ -739,11 +739,30 @@ class TestPdfCoverageNote(unittest.TestCase):
         note = self._note_with_counts([900, 800, 700, 0, 0, 3, 0, 0, 0])
         self.assertIn("EXTRACTION COVERAGE WARNING", note)
         self.assertIn("6 of 9 pages", note)
-        self.assertIn("pages 4-9", note)        # contiguous empty gap
-        self.assertIn("(6 pages)", note)        # gap size stated
+        self.assertIn("pages 4-5", note)        # blank gap before the divider
+        self.assertIn("pages 7-9", note)        # blank gap after the divider
         self.assertIn("vision_analyze", note)   # recovery path is named
         self.assertIn("ocr-and-documents", note)
         self.assertIn("do NOT OCR or render everything", note)
+
+    def test_short_divider_page_splits_and_labels_gap(self):
+        """A short nonblank divider (e.g. "Exhibit A", under
+        PDF_EMPTY_PAGE_CHARS chars) is sparse for the warning threshold
+        but must stay OUTSIDE the following blank range so it can label
+        that range — it must not be folded into the unreadable span."""
+        from tools import read_extract
+        texts = [
+            "Long unrelated body on the first page with plenty of text",
+            "Exhibit A",
+            "",
+            "",
+        ]
+        with mock.patch.object(read_extract, "_pdf_page_texts",
+                               return_value=texts):
+            note = read_extract._pdf_coverage_note("/x/doc.pdf")
+        # The divider is a separate range boundary, not part of the gap.
+        self.assertIn('pages 3-4 (2 pages) — after "Exhibit A" (p2)', note)
+        self.assertNotIn("pages 2-4", note)
 
     def test_gap_labels_carry_preceding_section_text(self):
         """Each gap is labeled with the last text page before it (usually

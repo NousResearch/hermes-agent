@@ -10,7 +10,7 @@ Some Hermes providers — **Spotify** and **remote MCP servers** (Linear, Sentry
 
 This works perfectly when Hermes and your browser are on the same machine. It breaks the moment they aren't: your laptop's browser tries to reach `127.0.0.1` on **your laptop**, but the listener is bound to `127.0.0.1` on **the remote server**.
 
-The fix is a one-line SSH local-forward. For MCP servers on an interactive terminal, you can often paste the redirect URL back instead (no tunnel).
+The fix is a one-line SSH local-forward. For Spotify and MCP servers on an interactive terminal, you can often paste the redirect URL back instead (no tunnel).
 
 **xAI Grok OAuth (`xai-oauth`) uses OAuth device code**, not a loopback callback — open the printed verification URL in any browser and Hermes polls until approval. No SSH tunnel is required. See [xAI Grok OAuth](./xai-grok-oauth.md).
 
@@ -33,7 +33,7 @@ Hermes prints the exact port it bound to on the `Waiting for callback on ...` li
 
 | Provider | Loopback port | Tunnel needed? |
 |----------|---------------|----------------|
-| Spotify | `43827` (default) | Yes, when Hermes is remote |
+| Spotify | `43827` (default) | Yes, when Hermes is remote (or paste redirect URL with `--manual-paste`) |
 | MCP servers (`auth: oauth`) | auto-picked per server | Yes, when Hermes is remote (or paste redirect URL) |
 | `xai-oauth` (Grok SuperGrok) | n/a | No — device code flow |
 | `anthropic` (Claude Pro/Max) | n/a | No — paste-the-code flow |
@@ -41,6 +41,28 @@ Hermes prints the exact port it bound to on the `Waiting for callback on ...` li
 | `minimax`, `nous-portal` | n/a | No — device code flow |
 
 If your provider isn't in the table, you don't need a tunnel.
+
+## Spotify
+
+You have two ways to complete Spotify login from a remote host:
+
+**Option 1 — paste the callback URL back (no tunnel).** Run `hermes auth spotify --manual-paste`. Hermes prints the authorize URL and skips the SSH-tunnel hint. Open the URL in a browser on your laptop and approve. The browser then tries to load `http://127.0.0.1:43827/spotify/callback`, which fails — that's expected, since the listener is on the remote host, not your laptop. Copy the **full URL from the browser's address bar** of that failed page and paste it at the `Callback URL:` prompt:
+
+```
+─── Manual callback paste ─────────────────────────────────────
+After approving in your browser, your browser will try to load
+  http://127.0.0.1:43827/spotify/callback
+which fails (the loopback listener is on this remote machine,
+not on your laptop) — that is expected. Copy the FULL URL
+from your browser's address bar of that failed page and paste
+it below. A bare '?code=...&state=...' fragment also works.
+───────────────────────────────────────────────────────────────
+Callback URL: http://127.0.0.1:43827/spotify/callback?code=abc&state=xyz
+```
+
+A bare `?code=...&state=...` fragment, or even a bare code value with no state at all, is also accepted.
+
+**Option 2 — SSH port forward.** Use the tunnel steps under [Step-by-step: single SSH hop](#step-by-step-single-ssh-hop) below (no `--manual-paste` flag needed).
 
 ## MCP Servers
 

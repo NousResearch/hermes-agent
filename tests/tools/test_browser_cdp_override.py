@@ -1,4 +1,4 @@
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 
 HOST = "example-host"
@@ -191,6 +191,144 @@ class TestCreateCdpSession:
 
         logged_args = " ".join(str(a) for a in mock_info.call_args.args)
         assert "localhost:9222" in logged_args
+
+
+class TestPersistentCdpCommandSession:
+    def test_connects_once_then_runs_command_in_named_session(self, tmp_path):
+        """CDP commands must keep a daemon-bound target instead of reattaching.
+
+        Passing ``--cdp`` on every command makes each invocation select the
+        browser's currently active target.  A named ``connect`` session keeps
+        the original target stable when another desktop app activates a tab.
+        """
+        import tools.browser_tool as browser_tool
+
+        captured_commands = []
+        mock_proc = MagicMock()
+        mock_proc.wait.return_value = None
+        mock_proc.returncode = 0
+
+        def capture_popen(command, **_kwargs):
+            captured_commands.append(command)
+            return mock_proc
+
+        session_info = {
+            "session_name": "cdp_test_session",
+            "cdp_url": WS_URL,
+        }
+        success_json = '{"success": true, "data": {"snapshot": "ok"}}'
+
+        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser"), \
+                patch("tools.browser_tool._chromium_installed", return_value=True), \
+                patch("tools.browser_tool._get_session_info", return_value=session_info), \
+                patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+                patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+                patch("tools.browser_tool._write_owner_pid"), \
+                patch("tools.interrupt.is_interrupted", return_value=False), \
+                patch("subprocess.Popen", side_effect=capture_popen), \
+                patch("os.open", return_value=99), \
+                patch("os.close"), \
+                patch("os.unlink"), \
+                patch("builtins.open", MagicMock(return_value=MagicMock(
+                    __enter__=MagicMock(return_value=MagicMock(
+                        read=MagicMock(return_value=success_json))),
+                    __exit__=MagicMock(return_value=False),
+                ))):
+            result = browser_tool._run_browser_command(
+                "task-cdp", "snapshot", ["-c"]
+            )
+
+        assert result["success"] is True
+        assert captured_commands == [
+            [
+                "/usr/bin/agent-browser",
+                "--session",
+                "cdp_test_session",
+                "--json",
+                "connect",
+                WS_URL,
+            ],
+            [
+                "/usr/bin/agent-browser",
+                "--session",
+                "cdp_test_session",
+                "--json",
+                "tab",
+                "new",
+                "--label",
+                "cdp_test_session",
+                "about:blank",
+            ],
+            [
+                "/usr/bin/agent-browser",
+                "--session",
+                "cdp_test_session",
+                "--json",
+                "snapshot",
+                "-c",
+            ],
+        ]
+
+    def test_reuses_live_named_connection_without_reconnecting(self, tmp_path):
+        import tools.browser_tool as browser_tool
+
+        captured_commands = []
+        mock_proc = MagicMock()
+        mock_proc.wait.return_value = None
+        mock_proc.returncode = 0
+
+        def capture_popen(command, **_kwargs):
+            captured_commands.append(command)
+            return mock_proc
+
+        session_info = {
+            "session_name": "cdp_live_session",
+            "cdp_url": WS_URL,
+            "_dedicated_tab_label": "cdp_live_session",
+            "_dedicated_tab_ready": True,
+        }
+        success_json = '{"success": true, "data": {"snapshot": "ok"}}'
+
+        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser"), \
+                patch("tools.browser_tool._chromium_installed", return_value=True), \
+                patch("tools.browser_tool._get_session_info", return_value=session_info), \
+                patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+                patch("tools.browser_tool._agent_browser_daemon_is_live", return_value=True), \
+                patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+                patch("tools.browser_tool._write_owner_pid"), \
+                patch("tools.interrupt.is_interrupted", return_value=False), \
+                patch("subprocess.Popen", side_effect=capture_popen), \
+                patch("os.open", return_value=99), \
+                patch("os.close"), \
+                patch("os.unlink"), \
+                patch("builtins.open", MagicMock(return_value=MagicMock(
+                    __enter__=MagicMock(return_value=MagicMock(
+                        read=MagicMock(return_value=success_json))),
+                    __exit__=MagicMock(return_value=False),
+                ))):
+            result = browser_tool._run_browser_command(
+                "task-cdp", "snapshot", ["-c"]
+            )
+
+        assert result["success"] is True
+        assert captured_commands == [
+            [
+                "/usr/bin/agent-browser",
+                "--session",
+                "cdp_live_session",
+                "--json",
+                "tab",
+                "cdp_live_session",
+            ],
+            [
+                "/usr/bin/agent-browser",
+                "--session",
+                "cdp_live_session",
+                "--json",
+                "snapshot",
+                "-c",
+            ],
+        ]
 
 
 class TestCDPSupervisorTimeoutRedaction:

@@ -2775,6 +2775,120 @@ def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
     return None
 
 
+def _agent_browser_daemon_is_live(socket_dir: str, session_name: str) -> bool:
+    """Return whether a named agent-browser daemon is still running."""
+    pid_path = os.path.join(socket_dir, f"{session_name}.pid")
+    try:
+        daemon_pid = int(Path(pid_path).read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+
+    try:
+        from gateway.status import _pid_exists
+        return _pid_exists(daemon_pid)
+    except Exception:
+        return False
+
+
+def _run_agent_browser_session_command(
+    cmd_prefix: List[str],
+    session_name: str,
+    command: str,
+    args: List[str],
+    task_socket_dir: str,
+    browser_env: Dict[str, str],
+    timeout: int,
+) -> Dict[str, Any]:
+    """Run an auxiliary command in one named agent-browser session."""
+    command_parts = cmd_prefix + [
+        "--session",
+        session_name,
+        "--json",
+        command,
+    ] + args
+    output_key = re.sub(r"[^a-zA-Z0-9_-]", "_", command)
+    stdout_path = os.path.join(task_socket_dir, f"_stdout_{output_key}")
+    stderr_path = os.path.join(task_socket_dir, f"_stderr_{output_key}")
+    stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        popen_extra: dict = {}
+        if os.name == "nt":
+            popen_extra["creationflags"] = windows_hide_flags()
+            popen_extra["close_fds"] = True
+            startup_info = subprocess.STARTUPINFO()
+            startup_info.dwFlags |= subprocess.STARTF_USESTDHANDLES
+            popen_extra["startupinfo"] = startup_info
+        proc = subprocess.Popen(
+            command_parts,
+            stdout=stdout_fd,
+            stderr=stderr_fd,
+            stdin=subprocess.DEVNULL,
+            env=browser_env,
+            **popen_extra,
+        )
+    finally:
+        os.close(stdout_fd)
+        os.close(stderr_fd)
+
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
+        _unlink_command_output_files(stdout_path, stderr_path)
+        error = _format_browser_timeout_error(command, timeout, stdout, stderr)
+        return {"success": False, "error": _redact_browser_output(error)}
+
+    stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
+    _unlink_command_output_files(stdout_path, stderr_path)
+    if proc.returncode != 0:
+        error = (stderr or stdout or f"Browser command '{command}' failed").strip()
+        return {"success": False, "error": _redact_browser_output(error)}
+
+    if stdout.strip():
+        try:
+            parsed = json.loads(stdout)
+        except json.JSONDecodeError:
+            return {
+                "success": False,
+                "error": f"agent-browser returned invalid output for '{command}'",
+            }
+        if not parsed.get("success", False):
+            error = parsed.get("error") or f"Browser command '{command}' failed"
+            return {"success": False, "error": _redact_browser_output(error)}
+
+    return {"success": True}
+
+
+def _connect_agent_browser_cdp_session(
+    cmd_prefix: List[str],
+    session_name: str,
+    cdp_url: str,
+    task_socket_dir: str,
+    browser_env: Dict[str, str],
+    timeout: int,
+) -> Dict[str, Any]:
+    """Connect one named agent-browser daemon to a CDP endpoint.
+
+    ``agent-browser --cdp ...`` is a one-shot attachment: a later command can
+    select whichever Chrome target is active at that moment.  The supported
+    ``connect`` workflow keeps a daemon alive between commands; Hermes also
+    binds a dedicated labeled tab below because agent-browser 0.26 can still
+    follow the externally-active Chrome target after a long idle period.
+    """
+    return _run_agent_browser_session_command(
+        cmd_prefix,
+        session_name,
+        "connect",
+        [cdp_url],
+        task_socket_dir,
+        browser_env,
+        timeout,
+    )
+
+
 def _run_browser_command(
     task_id: str,
     command: str,
@@ -2850,14 +2964,14 @@ def _run_browser_command(
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
 
     # Build the command with the appropriate backend flag.
-    # Cloud mode: --cdp <websocket_url> connects to Browserbase.
-    # Local mode: --session <name> launches a local headless Chromium.
+    # CDP mode uses a named daemon that is connected once below. Local mode
+    # uses the same named-session mechanism to launch a Chromium instance.
     # The rest of the command (--json, command, args) is identical.
     if session_info.get("cdp_url"):
-        # Cloud mode — connect to remote Browserbase browser via CDP
-        # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
-        # --session creates a local browser instance and silently ignores --cdp.
-        backend_args = ["--cdp", session_info["cdp_url"]]
+        # Do not combine --session with --cdp: agent-browser interprets that as
+        # a local browser. Instead, run `--session NAME connect URL` once, then
+        # address that daemon by name for every command.
+        backend_args = ["--session", session_info["session_name"]]
     else:
         # Local mode — launch Chromium (headless by default, headed when configured)
         backend_args = ["--session", session_info["session_name"]]
@@ -2919,6 +3033,67 @@ def _run_browser_command(
         if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
             idle_ms = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
             browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = idle_ms
+
+        if session_info.get("cdp_url") and not _agent_browser_daemon_is_live(
+            task_socket_dir, session_info["session_name"]
+        ):
+            connect_result = _connect_agent_browser_cdp_session(
+                cmd_prefix,
+                session_info["session_name"],
+                session_info["cdp_url"],
+                task_socket_dir,
+                browser_env,
+                timeout,
+            )
+            if not connect_result.get("success"):
+                return connect_result
+
+        if session_info.get("cdp_url"):
+            tab_label = session_info.setdefault(
+                "_dedicated_tab_label", session_info["session_name"]
+            )
+            tab_ready = bool(session_info.get("_dedicated_tab_ready"))
+
+            if command == "close":
+                if tab_ready:
+                    _run_agent_browser_session_command(
+                        cmd_prefix,
+                        session_info["session_name"],
+                        "tab",
+                        ["close", tab_label],
+                        task_socket_dir,
+                        browser_env,
+                        timeout,
+                    )
+                    session_info["_dedicated_tab_ready"] = False
+            else:
+                if tab_ready:
+                    select_result = _run_agent_browser_session_command(
+                        cmd_prefix,
+                        session_info["session_name"],
+                        "tab",
+                        [tab_label],
+                        task_socket_dir,
+                        browser_env,
+                        timeout,
+                    )
+                    if not select_result.get("success"):
+                        tab_ready = False
+                        session_info["_dedicated_tab_ready"] = False
+
+                if not tab_ready:
+                    create_result = _run_agent_browser_session_command(
+                        cmd_prefix,
+                        session_info["session_name"],
+                        "tab",
+                        ["new", "--label", tab_label, "about:blank"],
+                        task_socket_dir,
+                        browser_env,
+                        timeout,
+                    )
+                    if not create_result.get("success"):
+                        return create_result
+                    session_info["_dedicated_tab_ready"] = True
 
         # Inject --no-sandbox when needed (issue #15765):
         # - Running as root: Chromium always refuses to start without it

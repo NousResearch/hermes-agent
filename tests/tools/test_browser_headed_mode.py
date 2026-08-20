@@ -168,6 +168,15 @@ class TestHeadedFlagInjection:
         }
 
         captured = self._run_and_capture(bt)
-        assert len(captured) == 1
-        assert "--headed" not in captured[0]
-        assert "--cdp" in captured[0]
+        assert len(captured) == 3
+        assert all("--headed" not in command for command in captured)
+        assert captured[0][1:5] == [
+            "--session", "test-sess", "--json", "connect",
+        ]
+        assert captured[1][1:5] == [
+            "--session", "test-sess", "--json", "tab",
+        ]
+        assert captured[2][1:5] == [
+            "--session", "test-sess", "--json", "snapshot",
+        ]
+        assert all("--cdp" not in command for command in captured)

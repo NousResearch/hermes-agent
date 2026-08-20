@@ -61,6 +61,20 @@ from typing import Tuple
 __all__ = ["StreamingThinkScrubber"]
 
 
+# Canonical reasoning/thinking tag names — the single source of truth shared by
+# this streaming scrubber, ``run_agent``'s ``strip_think_blocks``, and the TTS
+# cleaners (``tools/tts_text_normalize.py``).  Adding a variant here must be all
+# it takes; a second hand-maintained copy would let a new tag be scrubbed for
+# display yet still spoken aloud.
+REASONING_TAG_NAMES: Tuple[str, ...] = (
+    "think",
+    "thinking",
+    "reasoning",
+    "thought",
+    "REASONING_SCRATCHPAD",
+)
+
+
 class StreamingThinkScrubber:
     """Stateful scrubber for streaming reasoning/thinking blocks.
 
@@ -76,13 +90,7 @@ class StreamingThinkScrubber:
         block boundary.
     """
 
-    _OPEN_TAG_NAMES: Tuple[str, ...] = (
-        "think",
-        "thinking",
-        "reasoning",
-        "thought",
-        "REASONING_SCRATCHPAD",
-    )
+    _OPEN_TAG_NAMES: Tuple[str, ...] = REASONING_TAG_NAMES
 
     # Materialise literal tag strings so the hot path does string
     # operations, not regex compilation per feed().

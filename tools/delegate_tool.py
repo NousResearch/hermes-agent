@@ -884,6 +884,59 @@ def _get_max_concurrent_children() -> int:
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
 
 
+def _get_prefix_stagger_seconds() -> float:
+    """Read delegation.prefix_stagger_seconds from config (float, default 0).
+
+    Inspired by Claude Code v2.1.229's workflow fan-out prefix stagger
+    (``CLAUDE_CODE_WORKFLOW_PREFIX_STAGGER_MS``): sibling children in one
+    batch share a near-identical prompt prefix (system prompt, tools,
+    skills). When they all issue their first API call simultaneously, every
+    request misses the provider prompt cache and re-pays the full prefix.
+    Delaying each first-wave sibling by a few seconds lets the first child's
+    request write the cache so the others read it.
+
+    0 (default) disables the stagger. Invalid/negative values fail open to 0.
+    """
+    cfg = _load_config()
+    val = cfg.get("prefix_stagger_seconds")
+    if val is None:
+        return 0.0
+    try:
+        return max(0.0, float(val))
+    except (TypeError, ValueError):
+        logger.warning(
+            "delegation.prefix_stagger_seconds=%r is not a valid number; "
+            "disabling the launch stagger",
+            val,
+        )
+        return 0.0
+
+
+def _stagger_delay_for(task_index: int, max_workers: int, stagger_seconds: float) -> float:
+    """Launch delay (seconds) for a batch child.
+
+    Only the first concurrent wave (the first ``max_workers`` submitted
+    children) is staggered: child 0 starts immediately, child 1 after one
+    stagger interval, and so on. Children beyond the first wave start when a
+    pool slot frees up — by then the shared prefix is already cached — so
+    they get no artificial delay.
+    """
+    if stagger_seconds <= 0 or task_index <= 0:
+        return 0.0
+    if task_index >= max_workers:
+        return 0.0
+    return task_index * stagger_seconds
+
+
+def _sleep_interruptible(delay: float, parent_agent) -> None:
+    """Sleep up to *delay* seconds, waking early if the parent is interrupted."""
+    deadline = time.monotonic() + delay
+    while time.monotonic() < deadline:
+        if getattr(parent_agent, "_interrupt_requested", False) is True:
+            return
+        time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+
+
 def _get_worktree_isolation() -> bool:
     """Read delegation.worktree_isolation from config (bool, default False).
 
@@ -3921,11 +3974,25 @@ def delegate_task(
             from tools.daemon_pool import DaemonThreadPoolExecutor
             with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
-                for i, t, child in children:
+                # Optional prompt-cache-friendly launch stagger for the first
+                # concurrent wave (delegation.prefix_stagger_seconds). The
+                # delay runs INSIDE the worker thread so submission never
+                # blocks the parent, and it wakes early on parent interrupt.
+                _stagger_s = _get_prefix_stagger_seconds()
+
+                def _run_child_staggered(*, _stagger_delay: float = 0.0, **kw):
+                    if _stagger_delay > 0:
+                        _sleep_interruptible(_stagger_delay, kw.get("parent_agent"))
+                    return _run_single_child(**kw)
+
+                for wave_pos, (i, t, child) in enumerate(children):
                     child_context = contextvars.copy_context()
                     future = executor.submit(
                         child_context.run,
-                        _run_single_child,
+                        _run_child_staggered,
+                        _stagger_delay=_stagger_delay_for(
+                            wave_pos, max_children, _stagger_s
+                        ),
                         task_index=i,
                         goal=t["goal"],
                         child=child,

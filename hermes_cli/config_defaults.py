@@ -1921,6 +1921,18 @@ DEFAULT_CONFIG = {
                                        # delegation units. New async dispatches beyond the cap
                                        # fall back to synchronous execution. Floor of 1, no ceiling.
                                        # (Replaces the deprecated max_async_children.)
+        # Stagger the launch of same-batch sibling subagents (seconds between
+        # each child in the first concurrent wave). Batch children share a
+        # near-identical prompt prefix (system prompt, tools, skills); when
+        # they all fire simultaneously, every child's first API call misses
+        # the provider prompt cache and re-pays the full prefix. A small
+        # stagger lets the first child's request write the cache so siblings
+        # read it. 0 (default) = launch simultaneously. Only the first wave
+        # (up to max_concurrent_children) is staggered — later children start
+        # after a sibling finishes, when the prefix is already cached.
+        # Inspired by Claude Code v2.1.229's workflow fan-out prefix stagger
+        # (CLAUDE_CODE_WORKFLOW_PREFIX_STAGGER_MS).
+        "prefix_stagger_seconds": 0.0,
         # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
         # and _get_orchestrator_enabled).  Floored at 1, no upper ceiling —
         # raise deliberately, each level multiplies API cost.

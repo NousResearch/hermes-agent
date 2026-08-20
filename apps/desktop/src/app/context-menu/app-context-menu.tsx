@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router'
 
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { Codicon } from '@/components/ui/codicon'
+import { HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
 import { writeClipboardText } from '@/components/ui/copy-button'
 import {
   DropdownMenu,
@@ -609,7 +610,13 @@ export function AppContextMenu() {
       const element = event.target instanceof Element ? event.target : null
 
       // Surfaces with their own Radix context menu keep the whole gesture.
-      if (element?.closest('[data-slot="context-menu-trigger"]')) {
+      // Guard the dedicated marker first: Radix `asChild` Slot merges
+      // `mergeProps(slotProps, childProps)` so the child's `data-slot` wins
+      // (status bar footer is `data-slot="statusbar"`). The marker is stamped
+      // after `{...props}` on ContextMenuTrigger and is not overwritten.
+      if (
+        element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)
+      ) {
         return
       }
 

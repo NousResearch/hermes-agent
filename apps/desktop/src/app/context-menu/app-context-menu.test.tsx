@@ -3,6 +3,11 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
+import {
+  ContextMenu,
+  ContextMenuTrigger,
+  HERMES_CONTEXT_MENU_TRIGGER_ATTR
+} from '@/components/ui/context-menu'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 import { $connection } from '@/store/session'
@@ -354,6 +359,22 @@ describe('AppContextMenu', () => {
     expect($contextMenu.get()).toBeNull()
   })
 
+  it('leaves asChild radix triggers alone when the child overwrites data-slot', () => {
+    installBridge()
+    mountMenu()
+    // Status bar: ContextMenuTrigger asChild over a footer whose data-slot
+    // is "statusbar". The coordinator must still recognize the dedicated
+    // marker — otherwise the window-verbs fallback eats the gesture.
+    const host = attach(
+      '<footer data-slot="statusbar" data-hermes-context-menu-trigger=""><span>meter</span></footer>'
+    )
+
+    fireEvent.contextMenu(host.querySelector('span')!)
+
+    expect($contextMenu.get()).toBeNull()
+    expect(screen.queryByText('Settings')).toBeNull()
+  })
+
   it('shows the terminal menu through a registered handle', async () => {
     installBridge()
     mountMenu()
@@ -565,5 +586,22 @@ describe('AppContextMenu guest (in-app browser)', () => {
 
     expect(guest.replaceMisspelling).toHaveBeenCalledWith('the')
     expect(screen.queryByText('Add to dictionary')).toBeNull()
+  })
+})
+
+describe('ContextMenuTrigger asChild', () => {
+  it('keeps the coordinator marker when the child overwrites data-slot', () => {
+    render(
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <footer data-slot="statusbar">bar</footer>
+        </ContextMenuTrigger>
+      </ContextMenu>
+    )
+
+    const footer = screen.getByText('bar')
+
+    expect(footer.getAttribute('data-slot')).toBe('statusbar')
+    expect(footer.hasAttribute(HERMES_CONTEXT_MENU_TRIGGER_ATTR)).toBe(true)
   })
 })

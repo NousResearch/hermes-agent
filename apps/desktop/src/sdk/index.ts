@@ -1089,8 +1089,14 @@ export {
   oklchToSrgb255,
   readableOn
 } from '@/themes/color'
-/** The painted theme, its name, and the appearance it resolved to. */
+/** The painted theme, its name, and the appearance it resolved to — plus
+ *  `setTheme` / `setMode` to change it from a component. */
 export { useTheme } from '@/themes/context'
+/** Switch the theme from outside React (a gateway event, a connection coming
+ *  up, any callback with no component around it). Returns false and leaves the
+ *  appearance alone when the name doesn't resolve, so it doubles as the "is
+ *  this theme installed?" check. */
+export { requestTheme } from '@/themes/request'
 export { retintTheme, themeHue } from '@/themes/retint'
 export type { DesktopTheme, DesktopThemeColors } from '@/themes/types'
 export { THEMES_AREA } from '@/themes/user-themes'

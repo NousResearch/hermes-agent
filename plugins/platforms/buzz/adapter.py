@@ -99,6 +99,32 @@ _SEEN_CAP = 500
 # N poll sweeps to pick up conversations opened mid-run.
 _DM_DISCOVERY_EVERY = 5
 
+def buzz_event_thread_root(event: dict) -> Optional[str]:
+    """Return the NIP-10 root, falling back to the direct reply target."""
+    tags = event.get("tags")
+    if not isinstance(tags, list):
+        return None
+    root = None
+    reply = None
+    unmarked = []
+    for tag in tags:
+        if not isinstance(tag, list) or len(tag) < 2 or tag[0] != "e":
+            continue
+        target = str(tag[1] or "").strip()
+        if not target:
+            continue
+        marker = str(tag[3] or "") if len(tag) > 3 else ""
+        if marker == "root":
+            root = target
+        elif marker == "reply":
+            reply = target
+        elif marker == "":
+            unmarked.append(target)
+    # Legacy positional NIP-10: first unmarked e tag is the stable root and,
+    # when two or more exist, the last is the direct reply target.
+    return root or (unmarked[0] if unmarked else None) or reply
+
+
 _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
 _CLI_TIMEOUT = 30.0

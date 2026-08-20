@@ -784,6 +784,15 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         # Snap the head boundary so the compressible region never *starts* on an
         # orphaned <tool_response> whose <tool_call> lives in the protected head.
         compress_start = self._snap_boundary(trajectory, compress_start, compress_start, compress_end)
+        if not self._is_boundary_clean(trajectory, compress_start):
+            # Every boundary in the region is a tool turn (a <tool_response>
+            # whose <tool_call> lives inside it): compressing would slice
+            # between a tool call and its response and corrupt the trajectory.
+            # Nothing can be safely compressed.
+            metrics.compressed_tokens = total_tokens
+            metrics.compressed_turns = len(trajectory)
+            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
+            return trajectory, metrics
 
         # Check if there's anything to compress
         if compress_start >= compress_end:
@@ -919,6 +928,15 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         # Snap the head boundary so the compressible region never *starts* on an
         # orphaned <tool_response> whose <tool_call> lives in the protected head.
         compress_start = self._snap_boundary(trajectory, compress_start, compress_start, compress_end)
+        if not self._is_boundary_clean(trajectory, compress_start):
+            # Every boundary in the region is a tool turn (a <tool_response>
+            # whose <tool_call> lives inside it): compressing would slice
+            # between a tool call and its response and corrupt the trajectory.
+            # Nothing can be safely compressed.
+            metrics.compressed_tokens = total_tokens
+            metrics.compressed_turns = len(trajectory)
+            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
+            return trajectory, metrics
 
         # Check if there's anything to compress
         if compress_start >= compress_end:

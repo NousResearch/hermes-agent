@@ -5,7 +5,7 @@ import pytest
 from acp.schema import TextContentBlock
 
 from acp_adapter.server import HermesACPAgent
-from acp_adapter.session import SessionManager
+from acp_adapter.session import SessionManager, _expand_acp_enabled_toolsets
 
 
 class FakeAgent:
@@ -73,51 +73,100 @@ def make_agent_and_state():
     return acp_agent, state, fake, conn
 
 
-def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
-    """ACP sessions persist to SessionDB; recall must receive the same DB handle."""
+def _capture_real_agent_kwargs(monkeypatch, config):
     captured = {}
-    sentinel_db = NoopDb()
 
     class CapturingAgent(FakeAgent):
         def __init__(self, **kwargs):
             super().__init__()
             captured.update(kwargs)
 
-    def mod(name, **attrs):
-        module = ModuleType(name)
-        for key, value in attrs.items():
-            setattr(module, key, value)
-        return module
+    module = ModuleType("run_agent")
+    setattr(module, "AIAgent", CapturingAgent)
+    monkeypatch.setitem(sys.modules, "run_agent", module)
 
-    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=CapturingAgent))
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.config",
-        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m", "provider": "p"}}),
+    import hermes_cli.config
+    import hermes_cli.runtime_provider
+
+    monkeypatch.setattr(hermes_cli.config, "load_config", lambda: config)
+    monkeypatch.setattr(
+        hermes_cli.runtime_provider,
+        "resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "p",
+            "api_mode": "chat_completions",
+            "base_url": "u",
+            "api_key": "k",
+            "command": None,
+            "args": [],
+        },
     )
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.runtime_provider",
-        mod(
-            "hermes_cli.runtime_provider",
-            resolve_runtime_provider=lambda **_kwargs: {
-                "provider": "p",
-                "api_mode": "chat_completions",
-                "base_url": "u",
-                "api_key": "k",
-                "command": None,
-                "args": [],
-            },
-        ),
+    return captured, CapturingAgent
+
+
+def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
+    """ACP sessions persist to SessionDB; recall must receive the same DB handle."""
+    sentinel_db = NoopDb()
+    captured, agent_type = _capture_real_agent_kwargs(
+        monkeypatch,
+        {"model": {"default": "m", "provider": "p"}},
     )
 
     manager = SessionManager(db=sentinel_db)
     agent = manager._make_agent(session_id="acp-session", cwd=".")
 
-    assert isinstance(agent, CapturingAgent)
+    assert isinstance(agent, agent_type)
     assert captured["session_db"] is sentinel_db
     assert captured["platform"] == "acp"
     assert captured["session_id"] == "acp-session"
+
+
+def test_acp_real_agent_honors_explicit_platform_toolsets(monkeypatch):
+    captured, _ = _capture_real_agent_kwargs(
+        monkeypatch,
+        {
+            "model": {"default": "m", "provider": "p"},
+            "platform_toolsets": {"acp": ["web", "scoped"]},
+            "mcp_servers": {"scoped": {"command": "example"}},
+        },
+    )
+
+    SessionManager(db=NoopDb())._make_agent(session_id="acp-session", cwd=".")
+
+    assert set(captured["enabled_toolsets"]) == {"web", "mcp-scoped"}
+
+
+def test_acp_real_agent_preserves_default_toolsets_when_platform_config_absent(monkeypatch):
+    captured, _ = _capture_real_agent_kwargs(
+        monkeypatch,
+        {
+            "model": {"default": "m", "provider": "p"},
+            "mcp_servers": {"global": {"command": "example"}},
+        },
+    )
+
+    SessionManager(db=NoopDb())._make_agent(session_id="acp-session", cwd=".")
+
+    assert captured["enabled_toolsets"] == ["hermes-acp", "mcp-global"]
+
+
+def test_acp_real_agent_honors_disabled_toolsets(monkeypatch):
+    captured, _ = _capture_real_agent_kwargs(
+        monkeypatch,
+        {
+            "model": {"default": "m", "provider": "p"},
+            "agent": {"disabled_toolsets": ["terminal", "memory"]},
+        },
+    )
+
+    SessionManager(db=NoopDb())._make_agent(session_id="acp-session", cwd=".")
+
+    assert captured["enabled_toolsets"] == ["hermes-acp"]
+    assert captured["disabled_toolsets"] == ["terminal", "memory"]
+
+
+def test_acp_expansion_preserves_explicit_empty_toolsets():
+    assert _expand_acp_enabled_toolsets([], ["scoped"]) == ["mcp-scoped"]
 
 
 @pytest.mark.asyncio

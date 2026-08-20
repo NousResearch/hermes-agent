@@ -23,7 +23,8 @@ conversation transport.
 
 ## What Hermes exposes in ACP mode
 
-Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. It includes:
+By default, Hermes runs with the curated `hermes-acp` toolset designed for
+editor workflows. It includes:
 
 - file tools: `read_file`, `write_file`, `patch`, `search_files`
 - terminal tools: `terminal`, `process`
@@ -34,6 +35,30 @@ Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. I
 - vision
 
 It intentionally excludes things that do not fit typical editor UX, such as messaging delivery and cronjob management.
+
+You can narrow ACP sessions with the same profile configuration used by other
+platforms. Once `platform_toolsets.acp` is present, that list replaces the
+default `hermes-acp` selection; `agent.disabled_toolsets` is also honored as a
+final deny list. For example, this profile exposes only one configured MCP
+server and no generic terminal or file-mutation tools:
+
+```yaml
+platform_toolsets:
+  acp:
+    - scoped
+
+agent:
+  disabled_toolsets:
+    - terminal
+    - file
+```
+
+Here `scoped` is the server name under `mcp_servers`; Hermes maps it to
+the internal `mcp-scoped` toolset. An explicit empty ACP list starts with
+no profile-configured tools, but MCP servers supplied by the ACP client for
+that session are still added. If
+`platform_toolsets.acp` is absent, ACP retains its existing default behavior:
+the `hermes-acp` toolset plus globally enabled MCP servers.
 
 ## Installation
 
@@ -268,12 +293,10 @@ therefore runs shell commands on the host without prompting. I asked one to run
 Selecting `Anyone` hands that same shell access to every author who can reach
 the channel. Buzz does not warn when you pick it.
 
-Neither of the obvious mitigations works today:
-
-- `approvals.mode: manual` does make Hermes raise the permission request, but
-  Buzz auto-approves it and the command still runs.
-- `platform_toolsets.acp` does not narrow the ACP toolset, so it cannot be used
-  to drop `terminal`.
+For unattended or shared ACP hosts, use `platform_toolsets.acp` to expose only
+the capabilities the host needs, and keep `agent.disabled_toolsets` as a final
+deny list. This is especially important when the host answers permission
+requests automatically.
 
 `!shutdown` from the owner stops the agent in any mode, and Buzz ignores that
 command from everyone else.

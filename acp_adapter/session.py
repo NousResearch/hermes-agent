@@ -143,7 +143,8 @@ def _expand_acp_enabled_toolsets(
 ) -> List[str]:
     """Return ACP toolsets plus explicit MCP server toolsets for this session."""
     expanded: List[str] = []
-    for name in list(toolsets or ["hermes-acp"]):
+    source_toolsets = ["hermes-acp"] if toolsets is None else toolsets
+    for name in source_toolsets:
         if name and name not in expanded:
             expanded.append(name)
 
@@ -631,13 +632,37 @@ class SessionManager:
             for name, cfg in (config.get("mcp_servers") or {}).items()
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
+        platform_toolsets = config.get("platform_toolsets") or {}
+        if isinstance(platform_toolsets.get("acp"), list):
+            configured_acp_toolsets = platform_toolsets["acp"]
+            if configured_acp_toolsets:
+                from hermes_cli.tools_config import _get_platform_tools
+
+                enabled_toolsets = [
+                    f"mcp-{name}" if name in configured_mcp_servers else name
+                    for name in sorted(_get_platform_tools(config, "acp"))
+                ]
+            else:
+                # An explicit empty ACP list starts with no profile-configured tools.
+                # Session-provided MCP servers may still be added after session/new.
+                enabled_toolsets = []
+        else:
+            # Backward compatibility: ACP historically used its curated
+            # composite plus every configured MCP server.
+            enabled_toolsets = _expand_acp_enabled_toolsets(
+                ["hermes-acp"],
+                mcp_server_names=configured_mcp_servers,
+            )
+
+        agent_cfg = config.get("agent") or {}
+        disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
+        if not isinstance(disabled_toolsets, list):
+            disabled_toolsets = []
 
         kwargs = {
             "platform": "acp",
-            "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
-                mcp_server_names=configured_mcp_servers,
-            ),
+            "enabled_toolsets": enabled_toolsets,
+            "disabled_toolsets": [str(name) for name in disabled_toolsets],
             "quiet_mode": True,
             "session_id": session_id,
             "session_db": self._get_db(),

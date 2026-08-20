@@ -1164,8 +1164,9 @@ class HermesACPAgent(acp.Agent):
             from model_tools import get_tool_definitions
             from agent.memory_manager import inject_memory_provider_tools
 
+            current_toolsets = getattr(state.agent, "enabled_toolsets", None)
             enabled_toolsets = _expand_acp_enabled_toolsets(
-                getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
+                current_toolsets,
                 mcp_server_names=[server.name for server in mcp_servers],
             )
             state.agent.enabled_toolsets = enabled_toolsets
@@ -2349,10 +2350,14 @@ class HermesACPAgent(acp.Agent):
             from types import SimpleNamespace
             from agent.memory_manager import inject_memory_provider_tools
 
-            toolsets = _expand_acp_enabled_toolsets(
-                getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"]
+            current_toolsets = getattr(state.agent, "enabled_toolsets", None)
+            toolsets = _expand_acp_enabled_toolsets(current_toolsets)
+            disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
+            tools = get_tool_definitions(
+                enabled_toolsets=toolsets,
+                disabled_toolsets=disabled_toolsets,
+                quiet_mode=True,
             )
-            tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
             tool_view = SimpleNamespace(
                 tools=list(tools or []),
                 valid_tool_names={

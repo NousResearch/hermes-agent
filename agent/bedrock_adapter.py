@@ -1425,6 +1425,9 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     "anthropic.claude-fable-5":      1_000_000,
     "anthropic.claude-fable":        1_000_000,
     "anthropic.claude-sonnet-5":     1_000_000,
+    # Opus 5 is 1M by default on Bedrock per its model card:
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-5.html
+    "anthropic.claude-opus-5":       1_000_000,
     "anthropic.claude-opus-4-8":     1_000_000,
     "anthropic.claude-opus-4-7":     1_000_000,
     "anthropic.claude-opus-4-6":     1_000_000,

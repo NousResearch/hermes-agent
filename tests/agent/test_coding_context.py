@@ -156,6 +156,27 @@ class TestProjectFacts:
         assert facts.verify_commands == ["pnpm run test"]  # dev excluded
         assert facts.context_files == []
 
+    @pytest.mark.parametrize(
+        "filename,content",
+        [
+            ("pytest.ini", "[pytest]\naddopts = -q\n"),
+            ("pyproject.toml", "[tool.pytest.ini_options]\naddopts = -q\n"),
+            ("setup.cfg", "[tool:pytest]\naddopts = -q\n"),
+            ("tox.ini", "[pytest]\naddopts = -q\n"),
+        ],
+    )
+    def test_detect_project_facts_pytest_config(self, tmp_path, filename, content):
+        """Any standard pytest config location surfaces `pytest` as a verify command."""
+        (tmp_path / filename).write_text(content)
+        facts = cc.detect_project_facts(tmp_path)
+        assert "pytest" in facts.verify_commands
+
+    def test_detect_project_facts_no_pytest_without_config(self, tmp_path):
+        """A Python-ish project with no pytest config does not claim a pytest verify command."""
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+        facts = cc.detect_project_facts(tmp_path)
+        assert "pytest" not in facts.verify_commands
+
     def test_project_facts_for_matches_prompt_block(self, tmp_path):
         # Invariant: the structured facts the UI consumes must not drift from the
         # commands the prompt snapshot renders — one detector feeds both.

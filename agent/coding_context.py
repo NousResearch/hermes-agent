@@ -150,6 +150,19 @@ _VERIFY_TARGETS = ("test", "tests", "lint", "typecheck", "check", "build", "fmt"
 _MAX_VERIFY_COMMANDS = 8
 _MAX_FACT_FILE_BYTES = 256 * 1024
 
+# Project files that configure pytest, each paired with its pytest section
+# header. Presence of any of these means `pytest` is the project's test runner,
+# even when there is no manifest/script to prove it. `pyproject.toml` owns the
+# `[tool.pytest.ini_options]` block and is matched by its `[tool.pytest` prefix;
+# `setup.cfg` still uses the classic `[tool:pytest]` section. `_read_small`
+# returns "" for missing files, so absent files are simply skipped.
+_PYTEST_CONFIG_SECTIONS = (
+    ("pytest.ini", "[pytest]"),
+    ("pyproject.toml", "[tool.pytest"),
+    ("setup.cfg", "[tool:pytest]"),
+    ("tox.ini", "[pytest]"),
+)
+
 _GIT_TIMEOUT = 2.5
 
 
@@ -777,6 +790,22 @@ class ProjectFacts:
     context_files: list[str]
 
 
+def _has_pytest_config(root: Path) -> bool:
+    """Return True when ``root`` declares pytest in any standard config file.
+
+    Checks every conventional pytest configuration location — ``pytest.ini``,
+    ``pyproject.toml``, ``setup.cfg``, ``tox.ini`` — for its section header, so
+    a project that configures pytest in any of them gets `pytest` surfaced as a
+    verify command instead of falling back to ad-hoc verification scripting.
+    ``_read_small`` never raises and returns ``""`` for absent files, so missing
+    config is simply not matched.
+    """
+    return any(
+        section in _read_small(root / filename)
+        for filename, section in _PYTEST_CONFIG_SECTIONS
+    )
+
+
 def detect_project_facts(root: Path) -> ProjectFacts:
     """Detect manifests, package manager(s), verify commands, and context files.
 
@@ -799,7 +828,7 @@ def detect_project_facts(root: Path) -> ProjectFacts:
             scripts = {}
         js_pm = next((pm for lock, pm in _JS_LOCKFILES if (root / lock).is_file()), "npm")
         verify.extend(f"{js_pm} run {name}" for name in _VERIFY_TARGETS if name in scripts)
-    if (root / "pytest.ini").is_file() or "[tool.pytest" in _read_small(root / "pyproject.toml"):
+    if _has_pytest_config(root):
         verify.append("pytest")
     makefile = _read_small(root / "Makefile")
     if makefile:

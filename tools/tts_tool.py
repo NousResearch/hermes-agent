@@ -1439,6 +1439,11 @@ def _ffmpeg_transcode_to_opus(input_path: str, ogg_path: str) -> Optional[str]:
     in_place = os.path.abspath(input_path) == os.path.abspath(ogg_path)
     work_path = ogg_path + ".tmp.ogg" if in_place else ogg_path
     try:
+        # Sibling of the TTS/STT command scrub (#56332 / #70342) and the
+        # voice-mode playback scrub: ffmpeg is an OS media helper and has no
+        # business seeing provider API keys or gateway tokens.
+        from tools.environments.local import hermes_subprocess_env
+
         result = subprocess.run(
             ["ffmpeg", "-i", input_path, "-acodec", "libopus",
              "-ac", "1", "-b:a", "48k", "-vbr", "on",
@@ -1446,6 +1451,7 @@ def _ffmpeg_transcode_to_opus(input_path: str, ogg_path: str) -> Optional[str]:
              work_path, "-y"],
             capture_output=True, timeout=30,
             stdin=subprocess.DEVNULL,
+            env=hermes_subprocess_env(inherit_credentials=False),
             creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:

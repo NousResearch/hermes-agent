@@ -384,6 +384,66 @@ class TestMatrixDmDetection:
         self.adapter._dm_rooms = {}
         assert self.adapter._dm_rooms.get("!unknown:ex.org") is None
 
+    @pytest.mark.asyncio
+    async def test_refresh_dm_cache_with_m_direct(self):
+        """_refresh_dm_cache should populate _dm_rooms from m.direct data."""
+        self.adapter._joined_rooms = {"!room_a:ex.org", "!room_b:ex.org", "!room_c:ex.org"}
+
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.content = {
+            "@alice:ex.org": ["!room_a:ex.org"],
+            "@bob:ex.org": ["!room_b:ex.org"],
+        }
+        mock_client.get_account_data = AsyncMock(return_value=mock_resp)
+        self.adapter._client = mock_client
+
+        await self.adapter._refresh_dm_cache()
+
+        assert self.adapter._dm_rooms["!room_a:ex.org"] is True
+        assert self.adapter._dm_rooms["!room_b:ex.org"] is True
+        assert self.adapter._dm_rooms["!room_c:ex.org"] is False
+
+    @pytest.mark.asyncio
+    async def test_m_direct_room_is_dm(self):
+        """m.direct account data is the authoritative DM signal."""
+        self.adapter._joined_rooms = {"!dm_room:ex.org"}
+        self.adapter._dm_rooms = {"!dm_room:ex.org": True}
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_state_event = AsyncMock(side_effect=Exception("no state"))
+        self.adapter._client.state_store = MagicMock()
+        self.adapter._client.state_store.get_members = AsyncMock(return_value=["@bot:ex.org", "@alice:ex.org"])
+
+        assert await self.adapter._is_dm_room("!dm_room:ex.org") is True
+
+    @pytest.mark.asyncio
+    async def test_two_member_room_not_in_m_direct_is_room(self):
+        """A two-member room NOT in m.direct is a room, not a DM.
+
+        Member count never promotes a room to a DM: matrix-js-sdk and Element
+        classify purely from m.direct (their DMRoomMap is built from it), so a
+        small room the user never marked direct stays a room.
+        """
+        self.adapter._joined_rooms = {"!project:ex.org"}
+        self.adapter._dm_rooms = {}
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_state_event = AsyncMock(
+            side_effect=lambda room_id, event_type: {"name": "Project Room"}
+            if event_type == "m.room.name"
+            else (_ for _ in ()).throw(Exception("no alias"))
+        )
+        self.adapter._client.state_store = MagicMock()
+        self.adapter._client.state_store.get_members = AsyncMock(
+            return_value=["@bot:ex.org", "@alice:ex.org"]
+        )
+
+        identity = await self.adapter._resolve_room_identity("!project:ex.org")
+
+        assert identity.chat_type == "room"
+        assert identity.conflict is False
+        assert identity.display_name == "Project Room"
+        assert identity.joined_member_count == 2
+        assert await self.adapter._is_dm_room("!project:ex.org") is False
 
     @pytest.mark.asyncio
     async def test_named_two_member_dm_is_dm(self):
@@ -411,6 +471,150 @@ class TestMatrixDmDetection:
         assert identity.conflict is False
         assert identity.joined_member_count == 2
         assert await self.adapter._is_dm_room("!named_dm:ex.org") is True
+
+    @pytest.mark.asyncio
+    async def test_m_direct_room_grown_past_two_stays_dm_flags_conflict(self):
+        """m.direct stays authoritative even once a DM grows past two members.
+
+        Element keeps a room mapped as a DM until m.direct itself is updated,
+        so we do too. The grown-past-two case is surfaced via `conflict` for
+        diagnostics rather than silently reclassified.
+        """
+        self.adapter._joined_rooms = {"!grown:ex.org"}
+        self.adapter._dm_rooms = {"!grown:ex.org": True}
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_state_event = AsyncMock(
+            side_effect=lambda room_id, event_type: {"content": {"name": "Ops Room"}}
+            if event_type == "m.room.name"
+            else (_ for _ in ()).throw(Exception("no alias"))
+        )
+        self.adapter._client.state_store = MagicMock()
+        self.adapter._client.state_store.get_members = AsyncMock(
+            return_value=["@bot:ex.org", "@alice:ex.org", "@bob:ex.org"]
+        )
+
+        identity = await self.adapter._resolve_room_identity("!grown:ex.org")
+
+        assert identity.chat_type == "dm"
+        assert identity.conflict is True
+        assert identity.joined_member_count == 3
+        assert await self.adapter._is_dm_room("!grown:ex.org") is True
+
+    @pytest.mark.asyncio
+    async def test_canonical_alias_used_when_name_missing(self):
+        self.adapter._joined_rooms = {"!alias:ex.org"}
+        self.adapter._dm_rooms = {}
+        self.adapter._client = MagicMock()
+
+        async def get_state_event(room_id, event_type):
+            if event_type == "m.room.name":
+                raise Exception("no name")
+            if event_type == "m.room.canonical_alias":
+                return {"content": {"alias": "#hermes:ex.org"}}
+            raise Exception("unknown")
+
+        self.adapter._client.get_state_event = AsyncMock(side_effect=get_state_event)
+        self.adapter._client.state_store = MagicMock()
+        self.adapter._client.state_store.get_members = AsyncMock(return_value=None)
+
+        identity = await self.adapter._resolve_room_identity("!alias:ex.org")
+
+        assert identity.display_name == "#hermes:ex.org"
+        assert identity.chat_type == "room"
+
+    @pytest.mark.asyncio
+    async def test_non_string_m_direct_entries_ignored(self):
+        self.adapter._joined_rooms = {"!room_a:ex.org", "!room_b:ex.org"}
+
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.content = {
+            "@alice:ex.org": ["!room_a:ex.org", 42, None],
+        }
+        mock_client.get_account_data = AsyncMock(return_value=mock_resp)
+        self.adapter._client = mock_client
+
+        await self.adapter._refresh_dm_cache()
+
+        assert self.adapter._dm_rooms == {
+            "!room_a:ex.org": True,
+            "!room_b:ex.org": False,
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("initial_dm", "new_m_direct", "expected_dm"),
+        [
+            pytest.param(
+                False,
+                {"@alice:ex.org": ["!chat:ex.org"]},
+                True,
+                id="marked-as-dm",
+            ),
+            pytest.param(
+                True,
+                {},
+                False,
+                id="unmarked-as-dm",
+            ),
+        ],
+    )
+    async def test_live_m_direct_update_reclassifies_without_reconnect(
+        self, initial_dm, new_m_direct, expected_dm
+    ):
+        """An m.direct account-data event delivered in a sync response takes
+        effect immediately, without a reconnect or an account-data fetch."""
+        self.adapter._joined_rooms = {"!chat:ex.org"}
+        self.adapter._dm_rooms = {"!chat:ex.org": initial_dm}
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_account_data = AsyncMock()
+        self.adapter._client.get_state_event = AsyncMock(side_effect=Exception("no state"))
+        self.adapter._client.state_store = MagicMock()
+        self.adapter._client.state_store.get_members = AsyncMock(
+            return_value=["@bot:ex.org", "@alice:ex.org"]
+        )
+
+        assert await self.adapter._is_dm_room("!chat:ex.org") is initial_dm
+
+        self.adapter._update_dm_rooms_from_sync(
+            {
+                "account_data": {
+                    "events": [{"type": "m.direct", "content": new_m_direct}]
+                },
+                "next_batch": "s2",
+            }
+        )
+
+        assert await self.adapter._is_dm_room("!chat:ex.org") is expected_dm
+        self.adapter._client.get_account_data.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "sync_data",
+        [
+            pytest.param({}, id="no-account-data"),
+            pytest.param({"account_data": None}, id="account-data-not-dict"),
+            pytest.param({"account_data": {"events": None}}, id="events-not-list"),
+            pytest.param(
+                {
+                    "account_data": {
+                        "events": [
+                            "bogus",
+                            {"type": "m.push_rules", "content": {}},
+                            {"type": "m.direct", "content": None},
+                        ]
+                    }
+                },
+                id="irrelevant-or-malformed-events",
+            ),
+        ],
+    )
+    def test_update_dm_rooms_from_sync_ignores_irrelevant_payloads(self, sync_data):
+        self.adapter._joined_rooms = {"!dm:ex.org"}
+        self.adapter._dm_rooms = {"!dm:ex.org": True}
+
+        self.adapter._update_dm_rooms_from_sync(sync_data)
+
+        assert self.adapter._dm_rooms == {"!dm:ex.org": True}
 
 
 # ---------------------------------------------------------------------------
@@ -1341,8 +1545,8 @@ class TestMatrixSyncLoop:
         assert captured[0].source.chat_type == "dm"
 
     @pytest.mark.asyncio
-    async def test_connect_receives_dm_from_initial_sync_dispatch(self):
-        """A DM delivered by initial sync should reach the message handler after connect."""
+    async def test_connect_applies_m_direct_before_initial_sync_dispatch(self):
+        """Initial sync account data classifies messages in the same response."""
         from plugins.platforms.matrix.adapter import MatrixAdapter
 
         adapter = MatrixAdapter(
@@ -1380,11 +1584,17 @@ class TestMatrixSyncLoop:
         mock_client.whoami = AsyncMock(return_value=MagicMock(user_id="@bot:example.org", device_id="DEV123"))
         mock_client.sync = AsyncMock(return_value={
             "rooms": {"join": {"!dm:example.org": {}}},
+            "account_data": {
+                "events": [
+                    {
+                        "type": "m.direct",
+                        "content": {"@alice:example.org": ["!dm:example.org"]},
+                    }
+                ]
+            },
             "next_batch": "s1",
         })
-        mock_client.get_account_data = AsyncMock(
-            return_value=MagicMock(content={"@alice:example.org": ["!dm:example.org"]})
-        )
+        mock_client.get_account_data = AsyncMock(side_effect=Exception("unavailable"))
         mock_client.get_state_event = AsyncMock(side_effect=Exception("no state"))
         mock_client.state_store = MagicMock()
         mock_client.state_store.get_members = AsyncMock(return_value=["@bot:example.org", "@alice:example.org"])
@@ -1421,6 +1631,179 @@ class TestMatrixSyncLoop:
         assert captured[0].source.chat_type == "dm"
 
         await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_applies_live_m_direct_reclassification(self):
+        """An Element-side DM reclassification arriving via sync account_data
+        takes effect without a reconnect or an account-data fetch."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        adapter._joined_rooms = {"!chat:example.org"}
+        adapter._dm_rooms = {"!chat:example.org": False}
+
+        async def _sync_once(**kwargs):
+            adapter._closing = True
+            return {
+                "account_data": {
+                    "events": [
+                        {
+                            "type": "m.direct",
+                            "content": {"@alice:example.org": ["!chat:example.org"]},
+                        }
+                    ]
+                },
+                "rooms": {"join": {"!chat:example.org": {}}},
+                "next_batch": "s2",
+            }
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_once)
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
+        fake_client.get_account_data = AsyncMock()
+        fake_client.get_state_event = AsyncMock(side_effect=Exception("no state"))
+        fake_client.state_store = MagicMock()
+        fake_client.state_store.get_members = AsyncMock(
+            return_value=["@bot:example.org", "@alice:example.org"]
+        )
+        adapter._client = fake_client
+
+        assert await adapter._is_dm_room("!chat:example.org") is False
+
+        await adapter._sync_loop()
+
+        assert await adapter._is_dm_room("!chat:example.org") is True
+        fake_client.get_account_data.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_room_message_after_invite_join_is_received(self):
+        """After invite reconciliation joins a room, later room messages dispatch."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        adapter._user_id = "@bot:example.org"
+        adapter._startup_ts = time.time() - 10
+        adapter._require_mention = True
+        adapter._text_batch_delay_seconds = 0
+        adapter._background_read_receipt = MagicMock()
+        adapter._allowed_user_ids = {"@alice:example.org"}
+
+        captured = []
+
+        async def capture(event):
+            captured.append(event)
+
+        adapter.handle_message = capture
+
+        sync_count = 0
+
+        async def _sync(**kwargs):
+            nonlocal sync_count
+            sync_count += 1
+            if sync_count == 1:
+                return {
+                    "rooms": {
+                        "invite": {
+                            "!room:example.org": {
+                                "invite_state": {
+                                    "events": [
+                                        {
+                                            "type": "m.room.member",
+                                            "state_key": "@bot:example.org",
+                                            "sender": "@alice:example.org",
+                                            "content": {"membership": "invite"},
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "next_batch": "s1",
+                }
+            adapter._closing = True
+            return {
+                "rooms": {"join": {"!room:example.org": {}}},
+                "next_batch": "s2",
+            }
+
+        event = types.SimpleNamespace(
+            sender="@alice:example.org",
+            event_id="$room1",
+            room_id="!room:example.org",
+            timestamp=int(time.time() * 1000),
+            content={
+                "msgtype": "m.text",
+                "body": "@bot:example.org hello room",
+                "m.mentions": {"user_ids": ["@bot:example.org"]},
+            },
+        )
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync)
+        fake_client.join_room = AsyncMock()
+        fake_client.sync_store = mock_sync_store
+        fake_client.get_account_data = AsyncMock(return_value=MagicMock(content={}))
+        fake_client.get_state_event = AsyncMock(side_effect=Exception("no state"))
+        fake_client.state_store = MagicMock()
+        fake_client.state_store.get_members = AsyncMock(return_value=["@bot:example.org", "@alice:example.org"])
+        fake_client.state_store.get_member = AsyncMock(return_value=None)
+
+        def handle_sync(sync_data):
+            if sync_data["next_batch"] == "s2":
+                return [asyncio.create_task(adapter._on_room_message(event))]
+            return []
+
+        fake_client.handle_sync = MagicMock(side_effect=handle_sync)
+        adapter._client = fake_client
+
+        await adapter._sync_loop()
+
+        fake_client.join_room.assert_awaited_once()
+        assert "!room:example.org" in adapter._joined_rooms
+        assert len(captured) == 1
+        # The invite carries no is_direct flag and the room is not in m.direct,
+        # so it is a group; the @mention is what gets the message dispatched.
+        assert captured[0].source.chat_type == "group"
+
+    @pytest.mark.asyncio
+    async def test_seconds_timestamp_is_not_treated_as_milliseconds(self):
+        adapter = _make_adapter()
+        adapter._user_id = "@bot:example.org"
+        adapter._startup_ts = time.time() - 10
+        adapter._dm_rooms = {"!dm:example.org": True}
+        adapter._text_batch_delay_seconds = 0
+        adapter._background_read_receipt = MagicMock()
+        adapter._client = MagicMock()
+        adapter._client.get_state_event = AsyncMock(side_effect=Exception("no state"))
+        adapter._client.state_store = MagicMock()
+        adapter._client.state_store.get_members = AsyncMock(return_value=["@bot:example.org", "@alice:example.org"])
+        adapter._client.state_store.get_member = AsyncMock(return_value=None)
+
+        captured = []
+
+        async def capture(event):
+            captured.append(event)
+
+        adapter.handle_message = capture
+
+        event = types.SimpleNamespace(
+            sender="@alice:example.org",
+            event_id="$seconds",
+            room_id="!dm:example.org",
+            timestamp=time.time(),
+            content={"msgtype": "m.text", "body": "seconds ts"},
+        )
+
+        await adapter._on_room_message(event)
+
+        assert len(captured) == 1
 
 
 class TestMatrixUploadAndSend:

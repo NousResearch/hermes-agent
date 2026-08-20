@@ -2114,8 +2114,12 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix: initial sync complete, joined %d rooms",
                     len(self._joined_rooms),
                 )
-                # Build DM room cache from m.direct account data.
-                await self._refresh_dm_cache()
+                # Build the DM room cache before dispatching messages from the
+                # same sync response. Older homeservers may omit account data
+                # here, so retain the separate account-data request as a
+                # fallback.
+                if not self._update_dm_rooms_from_sync(sync_data):
+                    await self._refresh_dm_cache()
 
                 # Dispatch events from the initial sync so the OlmMachine
                 # receives to-device key shares queued while we were offline.
@@ -3058,6 +3062,11 @@ class MatrixAdapter(BasePlatformAdapter):
                         self._room_identities.clear()
                         self._room_identity_cached_at.clear()
 
+                    # Apply live m.direct changes (e.g. Element marking or
+                    # unmarking a DM) before dispatching events, so messages
+                    # in the same sync batch see the new classification.
+                    self._update_dm_rooms_from_sync(sync_data)
+
                     # Advance the sync token so the next request is
                     # incremental instead of a full initial sync.
                     nb = sync_data.get("next_batch")
@@ -3790,14 +3799,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # federated Matrix user could invite the bot into arbitrary rooms,
         # exposing its presence and metadata. Mirrors the allow-list gate
         # used on the message/reaction paths.
-        allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {
-            "true",
-            "1",
-            "yes",
-        }
-        if not allow_all and not (
-            self._allowed_user_ids and inviter in self._allowed_user_ids
-        ):
+        if not self._is_authorized_inviter(inviter):
             logger.warning(
                 "Matrix: rejecting invite to %s from unauthorized user %s",
                 room_id,
@@ -3819,6 +3821,22 @@ class MatrixAdapter(BasePlatformAdapter):
             is_direct=is_direct and bool(inviter),
             inviter=inviter,
         )
+
+    def _is_authorized_inviter(self, inviter: str) -> bool:
+        """Whether an invite from this user may be auto-joined.
+
+        Fails closed: an unknown (empty) inviter or an empty allowlist
+        rejects the invite, unless GATEWAY_ALLOW_ALL_USERS opts out of
+        gating entirely.
+        """
+        allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {
+            "true",
+            "1",
+            "yes",
+        }
+        if allow_all:
+            return True
+        return bool(self._allowed_user_ids and inviter in self._allowed_user_ids)
 
     async def _join_room_by_id(self, room_id: str) -> bool:
         """Join a room by ID and refresh local caches on success."""
@@ -3887,11 +3905,83 @@ class MatrixAdapter(BasePlatformAdapter):
         invites = rooms.get("invite", {})
         if not isinstance(invites, dict):
             return
-        for room_id in invites:
+        for room_id, invited_room in invites.items():
             if room_id in self._joined_rooms:
                 continue
-            logger.info("Matrix: reconciling pending invite for %s", room_id)
-            self._schedule_invite_join(str(room_id))
+            # A pending invite reconciled here (e.g. after a gateway
+            # restart) never fires _on_invite, so the DM signal must be
+            # read from the stripped invite state instead. Without it, a
+            # direct invite joined via reconciliation is never recorded in
+            # m.direct and gets misclassified as a group.
+            is_direct, inviter = self._extract_invite_dm_signal(invited_room)
+            # The inviter allowlist gate from _on_invite applies here too.
+            # Without it, an invite from an arbitrary federated user that
+            # arrives while the gateway is down would be auto-joined on
+            # restart, bypassing the gate. An inviter missing from the
+            # stripped invite state fails closed, like an empty sender in
+            # _on_invite.
+            if not self._is_authorized_inviter(inviter):
+                logger.warning(
+                    "Matrix: rejecting invite to %s from unauthorized user %s",
+                    room_id,
+                    inviter,
+                )
+                continue
+            if is_direct and not inviter:
+                logger.warning(
+                    "Matrix: joining direct invite to %s without recording it "
+                    "in m.direct because the invite state has no inviter",
+                    room_id,
+                )
+            logger.info(
+                "Matrix: reconciling pending invite for %s (is_direct=%s)",
+                room_id,
+                is_direct,
+            )
+            self._schedule_invite_join(
+                str(room_id),
+                is_direct=is_direct and bool(inviter),
+                inviter=inviter,
+            )
+
+    def _extract_invite_dm_signal(self, invited_room: Any) -> tuple[bool, str]:
+        """Read the is_direct flag and inviter from a room's invite_state.
+
+        The stripped ``m.room.member`` event for our own user carries the
+        ``is_direct`` flag from the original invite; its sender is the
+        inviter. Returns ``(False, "")`` when the signal is absent.
+        """
+        if not self._user_id:
+            return False, ""
+
+        if not isinstance(invited_room, dict):
+            return False, ""
+
+        invite_state = invited_room.get("invite_state", {})
+        if not isinstance(invite_state, dict):
+            return False, ""
+
+        events = invite_state.get("events", [])
+        if not isinstance(events, list):
+            return False, ""
+
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") != "m.room.member":
+                continue
+            if self._user_id and event.get("state_key") != self._user_id:
+                continue
+
+            content = event.get("content", {})
+            if not isinstance(content, dict):
+                continue
+            if content.get("membership") != "invite":
+                continue
+
+            return bool(content.get("is_direct")), str(event.get("sender", ""))
+
+        return False, ""
 
     # ------------------------------------------------------------------
     # Reactions (send, receive, processing lifecycle)
@@ -4677,10 +4767,12 @@ class MatrixAdapter(BasePlatformAdapter):
         *,
         force_refresh: bool = False,
     ) -> MatrixRoomIdentity:
-        """Resolve Matrix room identity without member-count DM heuristics.
+        """Resolve Matrix room identity.
 
-        Matrix ``m.direct`` account data is the authoritative DM signal, but
-        explicitly named rooms win over stale/conflicting DM account data.
+        ``m.direct`` account data is the authoritative DM signal, matching how
+        matrix-js-sdk and Element classify (their ``DMRoomMap`` is built from
+        ``m.direct``). An explicit room name does not demote a DM, and member
+        count does not promote a non-DM room.
         """
         cached = self._room_identities.get(room_id)
         cached_at = self._room_identity_cached_at.get(room_id, 0.0)
@@ -4697,23 +4789,18 @@ class MatrixAdapter(BasePlatformAdapter):
         member_count = await self._get_room_member_count(room_id)
         has_explicit_name = bool(room_name)
         is_direct = bool(self._dm_rooms.get(room_id, False))
-        # member_count is the primary DM signal: <=2 members means this is
-        # necessarily a 1:1 conversation (or self-DM), regardless of m.direct
-        # or room name. Most Matrix clients auto-name DM rooms (e.g.
-        # "Alice & Bot"), so the old `not has_explicit_name` check
-        # misclassified virtually all client-created DMs as rooms. Falls back
-        # to the m.direct + name heuristic when the count is unavailable (e.g.
-        # state_store and API query both fail). A room that grew to 3+ members
-        # but is still in stale m.direct is correctly classified as a room.
-        is_likely_dm = (member_count is not None and member_count <= 2) or (
-            is_direct and not has_explicit_name
-        )
-        conflict = bool(
-            is_direct
-            and has_explicit_name
-            and (member_count is None or member_count > 2)
-        )
-        chat_type = "dm" if is_likely_dm else "room"
+        # m.direct is the authoritative DM signal, matching matrix-js-sdk and
+        # Element: Element's DMRoomMap is built from m.direct account data, with
+        # the invite `is_direct` flag as the only fallback (both fold into
+        # `_dm_rooms`). Member count never promotes a room to a DM — a joined
+        # room with <=2 members is not a DM unless m.direct says so — and an
+        # explicit room name never demotes one, since clients routinely
+        # auto-name DMs (e.g. "Alice & Bot").
+        chat_type = "dm" if is_direct else "room"
+        # A room still in m.direct but grown past two members is most likely a
+        # group left behind by a stale m.direct entry; surface that for
+        # diagnostics without overriding the m.direct classification.
+        conflict = bool(is_direct and member_count is not None and member_count > 2)
         display_name = room_name or canonical_alias or room_id
 
         identity = MatrixRoomIdentity(
@@ -4755,6 +4842,10 @@ class MatrixAdapter(BasePlatformAdapter):
         if dm_data is None:
             return
 
+        self._apply_m_direct_content(dm_data)
+
+    def _apply_m_direct_content(self, dm_data: Dict) -> None:
+        """Rebuild the DM room cache from m.direct content."""
         dm_room_ids: Set[str] = set()
         for user_id, rooms in dm_data.items():
             if isinstance(rooms, list):
@@ -4804,6 +4895,34 @@ class MatrixAdapter(BasePlatformAdapter):
         self._dm_rooms[room_id] = True
         self._room_identities.pop(room_id, None)
         self._room_identity_cached_at.pop(room_id, None)
+
+    def _update_dm_rooms_from_sync(self, sync_data: Dict[str, Any]) -> bool:
+        """Apply live m.direct updates delivered in a sync response.
+
+        Element edits m.direct account data when the user marks or unmarks a
+        room as a DM; the change arrives as a top-level account_data event on
+        the next sync, so the DM cache must not wait for a reconnect.
+        """
+        account_data = sync_data.get("account_data")
+        if not isinstance(account_data, dict):
+            return False
+
+        events = account_data.get("events")
+        if not isinstance(events, list):
+            return False
+
+        for raw_event in events:
+            if not isinstance(raw_event, dict):
+                continue
+            if raw_event.get("type") != "m.direct":
+                continue
+
+            content = raw_event.get("content")
+            if isinstance(content, dict):
+                self._apply_m_direct_content(content)
+                return True
+
+        return False
 
     # ------------------------------------------------------------------
     # Mention detection helpers

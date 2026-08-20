@@ -29,6 +29,7 @@ landed via #28754 / #28781 ahead of this fix.
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -40,12 +41,31 @@ from hermes_cli import kanban_db as kb
 @pytest.fixture
 def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Isolated HERMES_HOME with an empty kanban DB."""
+    inherited_db = os.environ.get("HERMES_KANBAN_DB")
     home = tmp_path / ".hermes"
     home.mkdir()
+    disposable_db = tmp_path / "disposable-kanban.db"
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(disposable_db))
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_WORKSPACES_ROOT", raising=False)
+    if inherited_db:
+        assert Path(inherited_db).expanduser() != disposable_db
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    assert kb.kanban_db_path() == disposable_db
     kb.init_db()
     return home
+
+
+def _event_kinds(conn, task_id: str) -> list[str]:
+    return [
+        row["kind"]
+        for row in conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id ASC",
+            (task_id,),
+        ).fetchall()
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +94,91 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             promoted = kb.recompute_ready(conn)
             assert promoted == 0, "worker-blocked task must not auto-promote"
             assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_create_time_blocked_parent_free_task_is_sticky(kanban_home: Path) -> None:
+    """``initial_status='blocked'`` is an explicit human-ops block.
+
+    Even with no parents, dispatcher recomputation must not silently
+    promote it to ready/claimable. The sticky marker must be durable and
+    ordered after the ``created`` event so notification cursors can inherit
+    both creation facts before they are caught up.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="parked for ops", initial_status="blocked")
+
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert _event_kinds(conn, tid) == ["created", "blocked"]
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.claim_task(conn, tid) is None
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_create_time_blocked_child_with_done_parent_is_sticky(kanban_home: Path) -> None:
+    """A blocked child must not become claimable when its parents are done."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="already reviewed parent")
+        assert kb.complete_task(conn, parent, summary="done")
+        child = kb.create_task(
+            conn,
+            title="child parked for ops",
+            parents=[parent],
+            initial_status="blocked",
+        )
+
+        assert kb.get_task(conn, child).status == "blocked"
+        assert _event_kinds(conn, child)[:2] == ["created", "blocked"]
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.claim_task(conn, child) is None
+        assert kb.get_task(conn, child).status == "blocked"
+
+
+def test_reused_still_blocked_idempotent_task_gets_sticky_marker_only_on_explicit_block_request(
+    kanban_home: Path,
+) -> None:
+    """Legacy idempotent rows may already be blocked without a marker.
+
+    Backfill the marker only when the retried creator again explicitly asks
+    for ``initial_status='blocked'``. Default idempotent reuse keeps the old
+    non-sticky auto-recover behavior.
+    """
+    with kb.connect() as conn:
+        non_explicit = kb.create_task(
+            conn, title="legacy default reuse", idempotency_key="default-reuse"
+        )
+        conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (non_explicit,))
+        conn.commit()
+
+        assert (
+            kb.create_task(
+                conn, title="legacy default reuse", idempotency_key="default-reuse"
+            )
+            == non_explicit
+        )
+        assert _event_kinds(conn, non_explicit) == ["created"]
+        assert kb.recompute_ready(conn) == 1
+        assert kb.get_task(conn, non_explicit).status == "ready"
+
+        explicit = kb.create_task(
+            conn, title="legacy blocked reuse", idempotency_key="blocked-reuse"
+        )
+        conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (explicit,))
+        conn.commit()
+
+        assert (
+            kb.create_task(
+                conn,
+                title="legacy blocked reuse",
+                idempotency_key="blocked-reuse",
+                initial_status="blocked",
+            )
+            == explicit
+        )
+        assert _event_kinds(conn, explicit) == ["created", "blocked"]
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, explicit).status == "blocked"
 
 
 

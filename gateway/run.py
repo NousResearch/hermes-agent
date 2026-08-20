@@ -908,16 +908,27 @@ def _approval_send_outcome(future, timeout: float) -> str:
     and do NOT re-send or fall back — the boundary rule is that only a
     DEFINITIVE failure (error result / non-timeout exception / no future)
     re-asks.
+
+    Definitive failures log their detail here (scheduling exception text or
+    the SendResult error) so callers sharing this classifier keep the
+    diagnostic breadcrumb the old inline code had.
     """
     if future is None:
+        logger.warning("Prompt send failed: no scheduling future (loop unavailable)")
         return "failed"
     try:
         result = future.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
         return "ambiguous"
-    except Exception:
+    except Exception as exc:
+        logger.warning("Prompt send failed: %s", exc)
         return "failed"
-    return "sent" if getattr(result, "success", False) else "failed"
+    if getattr(result, "success", False):
+        return "sent"
+    logger.warning(
+        "Prompt send failed: %s", getattr(result, "error", None) or "unknown error"
+    )
+    return "failed"
 
 
 def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | None":
@@ -948,6 +959,28 @@ def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | N
             "(no teardown; the registration stays armed for a late reply)"
         )
     return None
+
+
+def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod) -> str:
+    """Resolve a clarify prompt: send disposition, then the bounded wait.
+
+    The full caller contract in one testable seam: a definitive send failure
+    returns the undeliverable sentinel (registration torn down); ``sent`` and
+    ``ambiguous`` both proceed to ``wait_for_response`` with the configured
+    timeout — for ambiguous, the registration stays armed so a late reply to
+    the (probably rendered) card still resolves.
+    """
+    abort = _clarify_send_disposition(
+        fut, session_key=session_key, clarify_mod=clarify_mod
+    )
+    if abort is not None:
+        return abort
+    timeout = clarify_mod.get_clarify_timeout()
+    response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
+    if response is None or response == "":
+        # Timeout or session-boundary cancellation
+        return f"[user did not respond within {int(timeout / 60)}m]"
+    return response
 
 
 def _resolve_progress_thread_id(
@@ -5983,20 +6016,12 @@ class TurnRunner:
             # AMBIGUOUS — the card may have posted with a late ack. Only a
             # definitive failure tears down the registration; ambiguous
             # falls through to the bounded wait so a late reply resolves.
-            _abort = _clarify_send_disposition(
+            return _clarify_send_then_wait(
                 fut,
+                clarify_id=clarify_id,
                 session_key=ctx.session_key or "",
                 clarify_mod=_clarify_mod,
             )
-            if _abort is not None:
-                return _abort
-
-            timeout = _clarify_mod.get_clarify_timeout()
-            response = _clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
-            if response is None or response == "":
-                # Timeout or session-boundary cancellation
-                return f"[user did not respond within {int(timeout / 60)}m]"
-            return response
 
         agent.clarify_callback = _clarify_callback_sync
 

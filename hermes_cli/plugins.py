@@ -231,6 +231,12 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Gateway process lifecycle for plugins that own long-lived local services.
+    # ``gateway_ready`` fires after configured adapters are connected and
+    # installed. ``gateway_stopping`` fires once before adapter teardown.
+    # Kwargs: gateway: GatewayRunner, adapters, profile_adapters.
+    "gateway_ready",
+    "gateway_stopping",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,
     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.
@@ -5146,6 +5152,45 @@ class PluginManager:
                 )
         return results
 
+    async def invoke_hook_async(
+        self,
+        hook_name: str,
+        *,
+        callback_timeout: float | None = None,
+        **kwargs: Any,
+    ) -> List[Any]:
+        """Invoke callbacks in registration order, awaiting each result."""
+        kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        results: List[Any] = []
+        for cb in self._hooks.get(hook_name, []):
+            try:
+                callback_is_async = inspect.iscoroutinefunction(
+                    cb
+                ) or inspect.iscoroutinefunction(getattr(cb, "__call__", None))
+                if callback_timeout is not None and not callback_is_async:
+                    logger.error(
+                        "Plugin hook '%s' callback %r must be async when a timeout is enforced",
+                        hook_name,
+                        cb,
+                    )
+                    continue
+                ret = self._invoke_hook_callback(cb, kwargs)
+                if inspect.isawaitable(ret):
+                    if callback_timeout is None:
+                        ret = await ret
+                    else:
+                        ret = await asyncio.wait_for(ret, timeout=callback_timeout)
+                if ret is not None:
+                    results.append(ret)
+            except Exception as exc:
+                logger.warning(
+                    "Hook '%s' callback %s raised: %s",
+                    hook_name,
+                    getattr(cb, "__name__", repr(cb)),
+                    exc,
+                )
+        return results
+
     def _subscribe_event(
         self,
         owner: str,
@@ -5889,6 +5934,20 @@ def render_system_prompt_sections(
 ) -> List[RenderedPluginSystemPromptSection]:
     """Render plugin prompt sections after idempotent plugin discovery."""
     return _ensure_plugins_discovered().render_system_prompt_sections(session_info)
+
+
+async def invoke_hook_async(
+    hook_name: str,
+    *,
+    callback_timeout: float | None = None,
+    **kwargs: Any,
+) -> List[Any]:
+    """Invoke lifecycle callbacks in registration order, awaiting each one."""
+    return await _delivery_manager().invoke_hook_async(
+        hook_name,
+        callback_timeout=callback_timeout,
+        **kwargs,
+    )
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:

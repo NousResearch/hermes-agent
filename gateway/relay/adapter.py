@@ -414,7 +414,14 @@ class RelayAdapter(BasePlatformAdapter):
         chat_id = getattr(source, "chat_id", None)
         if not message_id or not chat_id:
             return None
-        platform = getattr(getattr(source, "platform", None), "value", "")
+        # Normalize the platform component: production wire decoding always
+        # yields a Platform enum (unknowns canonicalize to Platform.RELAY),
+        # but alternate constructors may carry the plain string. Use the
+        # enum's value when present, the string itself otherwise — both
+        # spellings of one platform must produce ONE key, and two different
+        # string platforms must not collapse into the same empty component.
+        raw_platform = getattr(source, "platform", None)
+        platform = getattr(raw_platform, "value", raw_platform) or ""
         return f"{platform}:{chat_id}:{message_id}"
 
     def _relay_slack_extra(self) -> Dict[str, Any]:

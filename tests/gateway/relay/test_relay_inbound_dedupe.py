@@ -200,3 +200,32 @@ class TestWireLevelReplayDedupe:
             adapter._on_inbound(self._decode(source={"platform": "discord"}))
         )
         assert len(handled) == 2
+
+
+class TestDedupeKeyPlatformNormalization:
+    """The platform component of the key must be spelling-invariant: a
+    Platform enum and its plain-string form are ONE platform (one key), and
+    two different string platforms must never collapse into a shared empty
+    component. Production wire decoding always yields the enum; alternate
+    event constructors may carry the string."""
+
+    def _key(self, platform):
+        adapter, _ = _connected_adapter()
+        source = SessionSource(
+            platform=platform, chat_id="C1", chat_type="channel", message_id="m1"
+        )
+        event = MessageEvent(text="hi", source=source, message_id="m1")
+        return adapter._inbound_dedupe_key(event)
+
+    def test_enum_and_string_spellings_produce_one_key(self):
+        assert self._key(Platform.SLACK) == self._key("slack")
+
+    def test_distinct_string_platforms_stay_distinct(self):
+        assert self._key("slack") != self._key("discord")
+
+    def test_missing_platform_still_yields_a_key(self):
+        # Fail-open on identity is reserved for missing message/chat ids;
+        # a missing platform alone must not disable dedupe.
+        key = self._key(None)
+        assert key is not None
+        assert key.startswith(":")

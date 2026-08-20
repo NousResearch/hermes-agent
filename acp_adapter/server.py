@@ -1923,300 +1923,318 @@ class HermesACPAgent(acp.Agent):
                 await self._conn.session_update(session_id, update)
             return PromptResponse(stop_reason="end_turn")
 
-        logger.info("Prompt on session %s: %s", session_id, user_text[:100])
+        # ``state.is_running`` was just set True above. From here to the end
+        # of the post-turn tail, ANY escaping raise must reset it — otherwise
+        # the session is permanently bricked: every later user message lands
+        # in ``queued_prompts`` with no turn ever draining the queue (the
+        # client just sees "Queued for the next turn." forever). The executor
+        # call and the post-turn tail already carry their own reset handlers
+        # (kept — they also shape the response); this outer guard extends the
+        # same protection to the pre-executor SETUP region (callback-factory
+        # construction, requester wiring), which used to be an unprotected
+        # raise window. The inner resets make this except's reset idempotent.
+        try:
+            logger.info("Prompt on session %s: %s", session_id, user_text[:100])
 
-        conn = self._conn
-        loop = asyncio.get_running_loop()
+            conn = self._conn
+            loop = asyncio.get_running_loop()
 
-        if state.cancel_event:
-            state.cancel_event.clear()
+            if state.cancel_event:
+                state.cancel_event.clear()
 
-        tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
-        tool_call_meta: dict[str, dict[str, Any]] = {}
-        previous_approval_cb = None
-        edit_approval_requester = None
+            tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
+            tool_call_meta: dict[str, dict[str, Any]] = {}
+            previous_approval_cb = None
+            edit_approval_requester = None
 
-        streamed_message = False
+            streamed_message = False
 
-        if conn:
-            tool_progress_cb = make_tool_progress_cb(
-                conn,
-                session_id,
-                loop,
-                tool_call_ids,
-                tool_call_meta,
-                edit_approval_policy_getter=lambda: self._edit_approval_policy_for_state(state),
-            )
-            reasoning_cb = make_thinking_cb(conn, session_id, loop)
-            step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
-            message_cb = make_message_cb(conn, session_id, loop)
-
-            def stream_delta_cb(text: str) -> None:
-                nonlocal streamed_message
-                if text:
-                    streamed_message = True
-                message_cb(text)
-
-            approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
-            try:
-                from acp_adapter.edit_approval import make_acp_edit_approval_requester
-
-                edit_approval_requester = make_acp_edit_approval_requester(
-                    conn.request_permission,
-                    loop,
+            if conn:
+                tool_progress_cb = make_tool_progress_cb(
+                    conn,
                     session_id,
-                    auto_approve_getter=lambda: self._edit_approval_policy_for_state(state),
+                    loop,
+                    tool_call_ids,
+                    tool_call_meta,
+                    edit_approval_policy_getter=lambda: self._edit_approval_policy_for_state(state),
                 )
-            except Exception:
-                logger.debug("Could not create ACP edit approval requester", exc_info=True)
-        else:
-            tool_progress_cb = None
-            reasoning_cb = None
-            step_cb = None
-            stream_delta_cb = None
-            approval_cb = None
+                reasoning_cb = make_thinking_cb(conn, session_id, loop)
+                step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
+                message_cb = make_message_cb(conn, session_id, loop)
 
-        agent = state.agent
-        agent.tool_progress_callback = tool_progress_cb
-        # ACP thought panes should not receive Hermes' local kawaii waiting/status
-        # updates. Route provider/model reasoning deltas instead; if the provider
-        # emits no reasoning, Zed should not get a fake "thinking" accordion.
-        agent.thinking_callback = None
-        agent.reasoning_callback = reasoning_cb
-        agent.step_callback = step_cb
-        agent.stream_delta_callback = stream_delta_cb
+                def stream_delta_cb(text: str) -> None:
+                    nonlocal streamed_message
+                    if text:
+                        streamed_message = True
+                    message_cb(text)
 
-        # Approval callback is per-thread (thread-local, GHSA-qg5c-hvr5-hjgr).
-        # Set it INSIDE _run_agent so the TLS write happens in the executor
-        # thread — setting it here would write to the event-loop thread's TLS,
-        # not the executor's. Interactive routing uses a contextvar in
-        # tools.approval (set_hermes_interactive_context) rather than
-        # os.environ["HERMES_INTERACTIVE"], so concurrent executor workers can't
-        # race on a process-global flag — one session's restore can't drop
-        # another onto the non-interactive auto-approve path mid-run
-        # (GHSA-96vc-wcxf-jjff). The contextvar write is isolated by the
-        # contextvars.copy_context() wrapper around the executor call below.
-        # ACP's conn.request_permission maps cleanly to the interactive
-        # callback shape — not the gateway-queue HERMES_EXEC_ASK path,
-        # which requires a notify_cb registered in _gateway_notify_cbs.
-        previous_approval_cb = None
-        interactive_token = None
-        edit_approval_token = None
-        previous_session_id = None
-
-        def _run_agent() -> dict:
-            nonlocal previous_approval_cb, interactive_token, edit_approval_token, previous_session_id
-            # Bind HERMES_SESSION_KEY for this session so per-session caches
-            # (e.g. the interactive sudo password cache in tools.terminal_tool)
-            # scope to the ACP session rather than leaking across sessions
-            # that land on the same reused executor thread. This call runs
-            # inside a contextvars.copy_context() below, so the ContextVar
-            # write is isolated from other concurrent ACP sessions.
-            try:
-                from gateway.session_context import (
-                    clear_session_vars,
-                    set_session_vars,
-                )
-                # ``cwd`` pins the logical working directory for this context,
-                # which is what the system prompt's "Current working directory"
-                # line reports (agent/prompt_builder.py -> resolve_agent_cwd).
-                # Without it the prompt advertises the global Hermes workspace
-                # while the tools are rooted at the client's project, so the
-                # model emits absolute paths under ~/.hermes/workspace and the
-                # edit silently lands outside the editor's workspace.
-                # cron_session="" explicitly marks this as a non-cron context,
-                # masking any leaked process-global HERMES_CRON_SESSION (#37968).
-                session_tokens = set_session_vars(
-                    session_key=session_id, session_id=session_id, cwd=state.cwd,
-                    cron_session="",
-                )
-            except Exception:
-                session_tokens = None
-                clear_session_vars = None  # type: ignore[assignment]
-                logger.debug("Could not set ACP session context", exc_info=True)
-            if approval_cb:
+                approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
                 try:
-                    from tools import terminal_tool as _terminal_tool
-                    previous_approval_cb = _terminal_tool._get_approval_callback()
-                    _terminal_tool.set_approval_callback(approval_cb)
-                except Exception:
-                    logger.debug("Could not set ACP approval callback", exc_info=True)
-            if edit_approval_requester:
-                try:
-                    from acp_adapter.edit_approval import set_edit_approval_requester
+                    from acp_adapter.edit_approval import make_acp_edit_approval_requester
 
-                    edit_approval_token = set_edit_approval_requester(edit_approval_requester)
-                except Exception:
-                    logger.debug("Could not set ACP edit approval requester", exc_info=True)
-            # Signal to tools.approval that we have an interactive callback
-            # and the non-interactive auto-approve path must not fire. Uses a
-            # contextvar (not os.environ) so concurrent executor workers don't
-            # race on the flag (GHSA-96vc-wcxf-jjff).
-            interactive_token = set_hermes_interactive_context(True)
-            # Propagate the originating ACP session id to tools that want to
-            # tag side-effects with it (e.g. ``kanban_create`` stamps it on
-            # the new task so clients can render a per-session board). Save
-            # and restore around the agent call so a re-used executor thread
-            # never leaks one session's id into the next session's tools.
-            previous_session_id = os.environ.get("HERMES_SESSION_ID")
-            os.environ["HERMES_SESSION_ID"] = session_id
-            # Auto-titling fires inside the turn prologue now; give the agent
-            # this session's notifier so a new title reaches the client as a
-            # session-info update instead of waiting for the next one.
-            def _notify_title_update(_title: str, _source: str) -> None:
-                if conn:
-                    loop.call_soon_threadsafe(
-                        asyncio.create_task,
-                        self._send_session_info_update(session_id),
+                    edit_approval_requester = make_acp_edit_approval_requester(
+                        conn.request_permission,
+                        loop,
+                        session_id,
+                        auto_approve_getter=lambda: self._edit_approval_policy_for_state(state),
                     )
+                except Exception:
+                    logger.debug("Could not create ACP edit approval requester", exc_info=True)
+            else:
+                tool_progress_cb = None
+                reasoning_cb = None
+                step_cb = None
+                stream_delta_cb = None
+                approval_cb = None
 
-            agent._on_session_title = _notify_title_update
-            try:
-                result = agent.run_conversation(
-                    user_message=user_content,
-                    conversation_history=state.history,
-                    task_id=session_id,
-                    persist_user_message=user_text or "[Image attachment]",
-                )
-                return result
-            except Exception as e:
-                logger.exception("Agent error in session %s", session_id)
-                return {"final_response": f"Error: {e}", "messages": state.history}
-            finally:
-                # Restore the interactive contextvar for this context.
-                if interactive_token is not None:
-                    reset_hermes_interactive_context(interactive_token)
-                # Restore HERMES_SESSION_ID symmetrically.
-                if previous_session_id is None:
-                    os.environ.pop("HERMES_SESSION_ID", None)
-                else:
-                    os.environ["HERMES_SESSION_ID"] = previous_session_id
+            agent = state.agent
+            agent.tool_progress_callback = tool_progress_cb
+            # ACP thought panes should not receive Hermes' local kawaii waiting/status
+            # updates. Route provider/model reasoning deltas instead; if the provider
+            # emits no reasoning, Zed should not get a fake "thinking" accordion.
+            agent.thinking_callback = None
+            agent.reasoning_callback = reasoning_cb
+            agent.step_callback = step_cb
+            agent.stream_delta_callback = stream_delta_cb
+
+            # Approval callback is per-thread (thread-local, GHSA-qg5c-hvr5-hjgr).
+            # Set it INSIDE _run_agent so the TLS write happens in the executor
+            # thread — setting it here would write to the event-loop thread's TLS,
+            # not the executor's. Interactive routing uses a contextvar in
+            # tools.approval (set_hermes_interactive_context) rather than
+            # os.environ["HERMES_INTERACTIVE"], so concurrent executor workers can't
+            # race on a process-global flag — one session's restore can't drop
+            # another onto the non-interactive auto-approve path mid-run
+            # (GHSA-96vc-wcxf-jjff). The contextvar write is isolated by the
+            # contextvars.copy_context() wrapper around the executor call below.
+            # ACP's conn.request_permission maps cleanly to the interactive
+            # callback shape — not the gateway-queue HERMES_EXEC_ASK path,
+            # which requires a notify_cb registered in _gateway_notify_cbs.
+            previous_approval_cb = None
+            interactive_token = None
+            edit_approval_token = None
+            previous_session_id = None
+
+            def _run_agent() -> dict:
+                nonlocal previous_approval_cb, interactive_token, edit_approval_token, previous_session_id
+                # Bind HERMES_SESSION_KEY for this session so per-session caches
+                # (e.g. the interactive sudo password cache in tools.terminal_tool)
+                # scope to the ACP session rather than leaking across sessions
+                # that land on the same reused executor thread. This call runs
+                # inside a contextvars.copy_context() below, so the ContextVar
+                # write is isolated from other concurrent ACP sessions.
+                try:
+                    from gateway.session_context import (
+                        clear_session_vars,
+                        set_session_vars,
+                    )
+                    # ``cwd`` pins the logical working directory for this context,
+                    # which is what the system prompt's "Current working directory"
+                    # line reports (agent/prompt_builder.py -> resolve_agent_cwd).
+                    # Without it the prompt advertises the global Hermes workspace
+                    # while the tools are rooted at the client's project, so the
+                    # model emits absolute paths under ~/.hermes/workspace and the
+                    # edit silently lands outside the editor's workspace.
+                    # cron_session="" explicitly marks this as a non-cron context,
+                    # masking any leaked process-global HERMES_CRON_SESSION (#37968).
+                    session_tokens = set_session_vars(
+                        session_key=session_id, session_id=session_id, cwd=state.cwd,
+                        cron_session="",
+                    )
+                except Exception:
+                    session_tokens = None
+                    clear_session_vars = None  # type: ignore[assignment]
+                    logger.debug("Could not set ACP session context", exc_info=True)
                 if approval_cb:
                     try:
                         from tools import terminal_tool as _terminal_tool
-                        _terminal_tool.set_approval_callback(previous_approval_cb)
+                        previous_approval_cb = _terminal_tool._get_approval_callback()
+                        _terminal_tool.set_approval_callback(approval_cb)
                     except Exception:
-                        logger.debug("Could not restore approval callback", exc_info=True)
-                if edit_approval_token is not None:
+                        logger.debug("Could not set ACP approval callback", exc_info=True)
+                if edit_approval_requester:
                     try:
-                        from acp_adapter.edit_approval import reset_edit_approval_requester
+                        from acp_adapter.edit_approval import set_edit_approval_requester
 
-                        reset_edit_approval_requester(edit_approval_token)
+                        edit_approval_token = set_edit_approval_requester(edit_approval_requester)
                     except Exception:
-                        logger.debug("Could not restore ACP edit approval requester", exc_info=True)
-                if session_tokens is not None and clear_session_vars is not None:
-                    try:
-                        clear_session_vars(session_tokens)
-                    except Exception:
-                        logger.debug("Could not clear ACP session context", exc_info=True)
+                        logger.debug("Could not set ACP edit approval requester", exc_info=True)
+                # Signal to tools.approval that we have an interactive callback
+                # and the non-interactive auto-approve path must not fire. Uses a
+                # contextvar (not os.environ) so concurrent executor workers don't
+                # race on the flag (GHSA-96vc-wcxf-jjff).
+                interactive_token = set_hermes_interactive_context(True)
+                # Propagate the originating ACP session id to tools that want to
+                # tag side-effects with it (e.g. ``kanban_create`` stamps it on
+                # the new task so clients can render a per-session board). Save
+                # and restore around the agent call so a re-used executor thread
+                # never leaks one session's id into the next session's tools.
+                previous_session_id = os.environ.get("HERMES_SESSION_ID")
+                os.environ["HERMES_SESSION_ID"] = session_id
+                # Auto-titling fires inside the turn prologue now; give the agent
+                # this session's notifier so a new title reaches the client as a
+                # session-info update instead of waiting for the next one.
+                def _notify_title_update(_title: str, _source: str) -> None:
+                    if conn:
+                        loop.call_soon_threadsafe(
+                            asyncio.create_task,
+                            self._send_session_info_update(session_id),
+                        )
 
-        try:
-            # Snapshot the internal Hermes DB session id before the turn so we
-            # can detect a compression-driven session rotation afterwards. The
-            # ACP `session_id` stays the stable client handle; agent.session_id
-            # is the live internal head that compression may rotate.
-            pre_turn_hermes_id = getattr(state.agent, "session_id", None)
-            # Wrap the executor call in a fresh copy of the current context so
-            # concurrent ACP sessions on the shared ThreadPoolExecutor don't
-            # stomp on each other's ContextVar writes (HERMES_SESSION_KEY in
-            # particular — used by the interactive sudo password cache scope).
-            ctx = contextvars.copy_context()
-            result = await loop.run_in_executor(_executor, ctx.run, _run_agent)
-        except Exception:
-            logger.exception("Executor error for session %s", session_id)
+                agent._on_session_title = _notify_title_update
+                try:
+                    result = agent.run_conversation(
+                        user_message=user_content,
+                        conversation_history=state.history,
+                        task_id=session_id,
+                        persist_user_message=user_text or "[Image attachment]",
+                    )
+                    return result
+                except Exception as e:
+                    logger.exception("Agent error in session %s", session_id)
+                    return {"final_response": f"Error: {e}", "messages": state.history}
+                finally:
+                    # Restore the interactive contextvar for this context.
+                    if interactive_token is not None:
+                        reset_hermes_interactive_context(interactive_token)
+                    # Restore HERMES_SESSION_ID symmetrically.
+                    if previous_session_id is None:
+                        os.environ.pop("HERMES_SESSION_ID", None)
+                    else:
+                        os.environ["HERMES_SESSION_ID"] = previous_session_id
+                    if approval_cb:
+                        try:
+                            from tools import terminal_tool as _terminal_tool
+                            _terminal_tool.set_approval_callback(previous_approval_cb)
+                        except Exception:
+                            logger.debug("Could not restore approval callback", exc_info=True)
+                    if edit_approval_token is not None:
+                        try:
+                            from acp_adapter.edit_approval import reset_edit_approval_requester
+
+                            reset_edit_approval_requester(edit_approval_token)
+                        except Exception:
+                            logger.debug("Could not restore ACP edit approval requester", exc_info=True)
+                    if session_tokens is not None and clear_session_vars is not None:
+                        try:
+                            clear_session_vars(session_tokens)
+                        except Exception:
+                            logger.debug("Could not clear ACP session context", exc_info=True)
+
+            try:
+                # Snapshot the internal Hermes DB session id before the turn so we
+                # can detect a compression-driven session rotation afterwards. The
+                # ACP `session_id` stays the stable client handle; agent.session_id
+                # is the live internal head that compression may rotate.
+                pre_turn_hermes_id = getattr(state.agent, "session_id", None)
+                # Wrap the executor call in a fresh copy of the current context so
+                # concurrent ACP sessions on the shared ThreadPoolExecutor don't
+                # stomp on each other's ContextVar writes (HERMES_SESSION_KEY in
+                # particular — used by the interactive sudo password cache scope).
+                ctx = contextvars.copy_context()
+                result = await loop.run_in_executor(_executor, ctx.run, _run_agent)
+            except Exception:
+                logger.exception("Executor error for session %s", session_id)
+                with state.runtime_lock:
+                    state.is_running = False
+                    state.current_prompt_text = ""
+                return PromptResponse(stop_reason="end_turn")
+
+            if result.get("messages"):
+                state.history = result["messages"]
+                # Persist updated history so sessions survive process restarts.
+                self.session_manager.save_session(session_id)
+
+            # Detect a compression-driven internal session rotation. If the agent's
+            # DB head moved during the turn, emit a session_info_update carrying
+            # _meta.hermes.sessionProvenance so ACP clients can render the boundary
+            # and keep old/new ids in lineage. The ACP session_id is unchanged.
+            post_turn_hermes_id = getattr(state.agent, "session_id", None)
+            if (
+                conn
+                and post_turn_hermes_id
+                and pre_turn_hermes_id
+                and post_turn_hermes_id != pre_turn_hermes_id
+            ):
+                try:
+                    await self._send_session_info_update(
+                        session_id,
+                        current_hermes_session_id=post_turn_hermes_id,
+                        previous_hermes_session_id=pre_turn_hermes_id,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not emit ACP provenance update after rotation for %s",
+                        session_id,
+                        exc_info=True,
+                    )
+
+            final_response = result.get("final_response", "")
+            cancelled = bool(state.cancel_event and state.cancel_event.is_set())
+            interrupted = bool(result.get("interrupted")) or cancelled
+            # Hermes' local "waiting for model response" interrupt status is metadata,
+            # not assistant prose — clients get cancellation from stop_reason instead.
+            from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+            suppress_interrupt_response = interrupted and final_response.startswith(
+                INTERRUPT_WAITING_FOR_MODEL_PREFIX
+            )
+            if (
+                final_response
+                and conn
+                and not suppress_interrupt_response
+                and (not streamed_message or result.get("response_transformed"))
+            ):
+                # Deliver the final response when streaming did not already send it,
+                # or when a plugin hook transformed the response after streaming
+                # finished (e.g. transform_llm_output) — otherwise the appended /
+                # rewritten text never reaches the client.
+                update = acp.update_agent_message_text(final_response)
+                await conn.session_update(session_id, update)
+
+            # Mark this turn idle before draining queued work so recursive prompt()
+            # calls can acquire the session. Queued turns are intentionally run as
+            # normal follow-up user prompts, preserving role alternation and history.
             with state.runtime_lock:
                 state.is_running = False
                 state.current_prompt_text = ""
-            return PromptResponse(stop_reason="end_turn")
 
-        if result.get("messages"):
-            state.history = result["messages"]
-            # Persist updated history so sessions survive process restarts.
-            self.session_manager.save_session(session_id)
-
-        # Detect a compression-driven internal session rotation. If the agent's
-        # DB head moved during the turn, emit a session_info_update carrying
-        # _meta.hermes.sessionProvenance so ACP clients can render the boundary
-        # and keep old/new ids in lineage. The ACP session_id is unchanged.
-        post_turn_hermes_id = getattr(state.agent, "session_id", None)
-        if (
-            conn
-            and post_turn_hermes_id
-            and pre_turn_hermes_id
-            and post_turn_hermes_id != pre_turn_hermes_id
-        ):
-            try:
-                await self._send_session_info_update(
-                    session_id,
-                    current_hermes_session_id=post_turn_hermes_id,
-                    previous_hermes_session_id=pre_turn_hermes_id,
-                )
-            except Exception:
-                logger.debug(
-                    "Could not emit ACP provenance update after rotation for %s",
-                    session_id,
-                    exc_info=True,
+            while True:
+                with state.runtime_lock:
+                    if not state.queued_prompts:
+                        break
+                    next_prompt = state.queued_prompts.pop(0)
+                if conn:
+                    await conn.session_update(
+                        session_id,
+                        acp.update_user_message_text(next_prompt),
+                    )
+                await self.prompt(
+                    prompt=[TextContentBlock(type="text", text=next_prompt)],
+                    session_id=session_id,
                 )
 
-        final_response = result.get("final_response", "")
-        cancelled = bool(state.cancel_event and state.cancel_event.is_set())
-        interrupted = bool(result.get("interrupted")) or cancelled
-        # Hermes' local "waiting for model response" interrupt status is metadata,
-        # not assistant prose — clients get cancellation from stop_reason instead.
-        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+            usage = None
+            if any(result.get(key) is not None for key in ("prompt_tokens", "completion_tokens", "total_tokens")):
+                usage = Usage(
+                    input_tokens=result.get("prompt_tokens", 0),
+                    output_tokens=result.get("completion_tokens", 0),
+                    total_tokens=result.get("total_tokens", 0),
+                    thought_tokens=result.get("reasoning_tokens"),
+                    cached_read_tokens=result.get("cache_read_tokens"),
+                )
 
-        suppress_interrupt_response = interrupted and final_response.startswith(
-            INTERRUPT_WAITING_FOR_MODEL_PREFIX
-        )
-        if (
-            final_response
-            and conn
-            and not suppress_interrupt_response
-            and (not streamed_message or result.get("response_transformed"))
-        ):
-            # Deliver the final response when streaming did not already send it,
-            # or when a plugin hook transformed the response after streaming
-            # finished (e.g. transform_llm_output) — otherwise the appended /
-            # rewritten text never reaches the client.
-            update = acp.update_agent_message_text(final_response)
-            await conn.session_update(session_id, update)
+            await self._send_usage_update(state)
 
-        # Mark this turn idle before draining queued work so recursive prompt()
-        # calls can acquire the session. Queued turns are intentionally run as
-        # normal follow-up user prompts, preserving role alternation and history.
-        with state.runtime_lock:
-            state.is_running = False
-            state.current_prompt_text = ""
-
-        while True:
+            stop_reason = "cancelled" if cancelled else "end_turn"
+            return PromptResponse(stop_reason=stop_reason, usage=usage)
+        except BaseException:
+            # Reset is idempotent with the inner handlers: whichever path
+            # raised, the session must come back reusable.
             with state.runtime_lock:
-                if not state.queued_prompts:
-                    break
-                next_prompt = state.queued_prompts.pop(0)
-            if conn:
-                await conn.session_update(
-                    session_id,
-                    acp.update_user_message_text(next_prompt),
-                )
-            await self.prompt(
-                prompt=[TextContentBlock(type="text", text=next_prompt)],
-                session_id=session_id,
-            )
-
-        usage = None
-        if any(result.get(key) is not None for key in ("prompt_tokens", "completion_tokens", "total_tokens")):
-            usage = Usage(
-                input_tokens=result.get("prompt_tokens", 0),
-                output_tokens=result.get("completion_tokens", 0),
-                total_tokens=result.get("total_tokens", 0),
-                thought_tokens=result.get("reasoning_tokens"),
-                cached_read_tokens=result.get("cache_read_tokens"),
-            )
-
-        await self._send_usage_update(state)
-
-        stop_reason = "cancelled" if cancelled else "end_turn"
-        return PromptResponse(stop_reason=stop_reason, usage=usage)
+                state.is_running = False
+                state.current_prompt_text = ""
+            raise
 
     # ---- Slash commands (headless) -------------------------------------------
 

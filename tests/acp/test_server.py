@@ -446,6 +446,58 @@ class TestPrompt:
 
         assert captured.get("child") == resp.session_id
 
+    @pytest.mark.asyncio
+    async def test_prompt_setup_exception_still_releases_session(self, agent, mock_manager):
+        """An exception in the pre-executor SETUP region must release the session.
+
+        Regression: the region after ``is_running = True`` but before the
+        executor's own try/except had no reset handler. A raise there left
+        ``is_running`` True forever, so every later message queued into a
+        session whose queue no turn ever drained — the client only saw
+        "Queued for the next turn." from then on.
+        """
+        new_resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(new_resp.session_id)
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        # A callback factory prompt() calls in the setup region, after
+        # is_running=True but before the protected executor call.
+        with patch(
+            "acp_adapter.server.make_message_cb",
+            side_effect=RuntimeError("callback wiring broke"),
+        ):
+            with pytest.raises(RuntimeError):
+                await agent.prompt(
+                    prompt=[TextContentBlock(type="text", text="hi")],
+                    session_id=new_resp.session_id,
+                )
+
+        assert state.is_running is False, (
+            "setup exception left is_running=True — session bricked"
+        )
+        assert state.current_prompt_text == ""
+
+        # A follow-up prompt must RUN, not queue into a dead session.
+        ran: list[bool] = []
+
+        def _run_ok(*args, **kwargs):
+            ran.append(True)
+            return {"final_response": "done", "messages": []}
+
+        state.agent.run_conversation = _run_ok
+        follow_up = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="follow up")],
+            session_id=new_resp.session_id,
+        )
+        assert follow_up.stop_reason == "end_turn"
+        assert ran, "follow-up prompt was queued instead of running"
+        assert list(state.queued_prompts) == []
+
 
 
 

@@ -285,7 +285,22 @@ tts:
       output_format: wav
 ```
 
-**Supported `output_format` values:** `mp3` (default), `wav`, `ogg`, `flac`, `m4a`, `aac`, `amr`, `opus`. Your command must actually produce that format (e.g. via `ffmpeg`); Hermes only validates the declared value and names the output file accordingly. An unknown value falls back to `mp3`. The chosen format is also exposed to the command as the `{format}` placeholder.
+**Supported `output_format` values** (`mp3` is the default):
+
+| Family | Extensions |
+|--------|------------|
+| MPEG audio | `mp3`, `mp2` |
+| Ogg | `ogg`, `oga`, `opus` |
+| MP4 / 3GPP | `m4a`, `m4b`, `mp4`, `aac`, `3gp` |
+| Matroska | `mka`, `webm` |
+| Uncompressed / PCM | `wav`, `w64`, `aiff`, `aif`, `au`, `caf`, `pcm` |
+| Lossless compressed | `flac`, `wv`, `tta` |
+| Speech / telephony | `amr` |
+| Other lossy | `ac3`, `wma` |
+
+Your command must actually produce that format (e.g. via `ffmpeg`); Hermes only decides how the output file is *named* and what `{format}` expands to — it never encodes on your behalf. Every extension above can be written by a stock `ffmpeg`, though a few need an explicit encoder instead of the default one ffmpeg picks for the extension — `.3gp` defaults to AMR, so pass `-c:a aac`. Formats requiring an external encoder library are deliberately not recognized: Speex, AMR-WB (`.awb`) and GSM are unusable on a stock build. `amr` is the exception — it needs libopencore-amrnb but is kept for compatibility with existing configs.
+
+An unrecognized value falls back to `mp3`. Matching is case-insensitive and a leading dot is ignored, so `.M4A` and `m4a` are equivalent. A recognized suffix on an explicit `output_path` takes precedence over the configured value.
 
 **Subprocess environment:** command providers (TTS and STT) run with Hermes secrets scrubbed from the child environment — gateway bot tokens, LLM provider API keys, and internal relay credentials are removed; `PATH`, `HOME`, locale, and other normal variables are kept. If your command template needs its own API key from the environment (e.g. a `curl` one-liner), list the variable names under `env_passthrough` in the provider config:
 
@@ -332,7 +347,7 @@ Your command template can reference these placeholders. Hermes substitutes them 
 | `{input_path}`   | Path to the temp UTF-8 text file Hermes wrote        |
 | `{text_path}`    | Alias for `{input_path}`                             |
 | `{output_path}`  | Path the command must write audio to                 |
-| `{format}`       | `mp3` / `wav` / `ogg` / `flac`                       |
+| `{format}`       | The resolved `output_format` (see table above)       |
 | `{voice}`        | `tts.providers.<name>.voice`, empty when unset       |
 | `{model}`        | `tts.providers.<name>.model`                         |
 | `{speed}`        | Resolved speed multiplier (provider or global)       |
@@ -344,7 +359,7 @@ Use `{{` and `}}` for literal braces.
 | Key                | Default | Meaning                                                                                                    |
 |--------------------|---------|------------------------------------------------------------------------------------------------------------|
 | `timeout`          | `120`   | Idle seconds; stdout or stderr output resets the deadline. The process tree is killed after inactivity (Unix `killpg`, Windows `taskkill /T`). |
-| `output_format`    | `mp3`   | One of `mp3` / `wav` / `ogg` / `flac`. Auto-inferred from the output extension if Hermes picks a path.      |
+| `output_format`    | `mp3`   | Any extension from the supported formats table above. Auto-inferred from the output extension if Hermes picks a path. |
 | `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble.      |
 | `max_text_length`  | `5000`  | Maximum input characters per command invocation; longer text is split into ordered chunks.                  |
 | `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                           |

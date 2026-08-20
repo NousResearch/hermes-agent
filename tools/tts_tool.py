@@ -793,9 +793,40 @@ BUILTIN_TTS_PROVIDERS = frozenset({
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
 DEFAULT_COMMAND_TTS_OUTPUT_FORMAT = "mp3"
-COMMAND_TTS_OUTPUT_FORMATS = frozenset(
-    {"mp3", "wav", "ogg", "flac", "m4a", "aac", "amr", "opus"}
-)
+# Recognized ``output_format`` values for command-type providers. This set only
+# decides how Hermes *names* the output file (and what ``{format}`` expands to);
+# the provider's own command produces the bytes.
+#
+# Entries are audio extensions a stock ffmpeg build can write. A few need an
+# explicit encoder rather than the default one ffmpeg picks for the extension
+# (``.3gp`` defaults to AMR, so it wants ``-c:a aac``), but none require ffmpeg
+# to be rebuilt. Formats that do need an external encoder library are left out
+# -- Speex (libspeex), AMR-WB (libvo-amrwbenc) and GSM (libgsm) are unusable on
+# a stock build, so allowing the name would just move the failure downstream.
+#
+# ``amr`` is the one exception: it also needs an external library
+# (libopencore-amrnb) but predates this list, so it stays for compatibility
+# with configs that already declare it.
+#
+# An unrecognized value falls back to DEFAULT_COMMAND_TTS_OUTPUT_FORMAT.
+COMMAND_TTS_OUTPUT_FORMATS = frozenset({
+    # MPEG audio
+    "mp3", "mp2",
+    # Ogg family
+    "ogg", "oga", "opus",
+    # MP4 / 3GPP family
+    "m4a", "m4b", "mp4", "aac", "3gp",
+    # Matroska family
+    "mka", "webm",
+    # Uncompressed / PCM containers
+    "wav", "w64", "aiff", "aif", "au", "caf", "pcm",
+    # Lossless compressed
+    "flac", "wv", "tta",
+    # Speech / telephony (external encoder, kept for compatibility)
+    "amr",
+    # Other lossy
+    "ac3", "wma",
+})
 DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH = 5000
 
 # Platforms whose native voice-bubble delivery requires Ogg/Opus audio.
@@ -1019,7 +1050,11 @@ def _get_command_tts_output_format(
     config: Dict[str, Any],
     output_path: Optional[str] = None,
 ) -> str:
-    """Return the validated output format (mp3/wav/ogg/flac)."""
+    """Return the output format, or the default when it is unrecognized.
+
+    A suffix on ``output_path`` wins over the provider's configured value;
+    both are matched against COMMAND_TTS_OUTPUT_FORMATS.
+    """
     if output_path:
         suffix = Path(output_path).suffix.lower().strip().lstrip(".")
         if suffix in COMMAND_TTS_OUTPUT_FORMATS:

@@ -1,5 +1,7 @@
 """Regression tests for loading feedback on slow slash commands."""
 
+import threading
+import time
 from unittest.mock import patch
 
 from cli import HermesCLI
@@ -47,6 +49,7 @@ class TestCLILoadingIndicator:
         def fake_reload():
             seen["running"] = cli_obj._command_running
             seen["status"] = cli_obj._command_status
+            seen["thread_id"] = threading.get_ident()
             print("reload done")
 
         # /reload-mcp now wraps the actual reload in a prompt-cache-invalidation
@@ -66,7 +69,29 @@ class TestCLILoadingIndicator:
         assert seen == {
             "running": True,
             "status": "Reloading MCP servers...",
+            "thread_id": seen["thread_id"],
         }
+        assert seen["thread_id"] != threading.get_ident()
         assert cli_obj._command_running is False
         assert cli_obj._command_status == ""
         assert invalidate_mock.call_count == 2
+
+    def test_reload_mcp_timeout_warns_without_blocking_forever(self, capsys):
+        cli_obj = self._make_cli()
+        stop_event = threading.Event()
+
+        def fake_reload():
+            stop_event.wait(0.1)
+
+        with patch.object(cli_obj, "_reload_mcp", side_effect=fake_reload), \
+             patch.object(cli_obj, "_invalidate"):
+            start = time.monotonic()
+            result = cli_obj._run_reload_mcp_with_timeout(timeout_seconds=0.01)
+            elapsed = time.monotonic() - start
+
+        stop_event.set()
+
+        output = capsys.readouterr().out
+        assert result is False
+        assert elapsed < 0.05
+        assert "MCP reload timed out (0.01s)." in output

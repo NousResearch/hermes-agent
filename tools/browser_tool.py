@@ -2884,6 +2884,16 @@ def _run_browser_command(
     else:
         cmd_prefix = [browser_cmd]
 
+    # Windows .cmd shims truncate multi-line args at the first newline, which
+    # breaks multi-line JS passed to `eval` (SyntaxError: Unexpected end of
+    # input). agent-browser ships an official fix for this: `eval --stdin`
+    # (see `agent-browser eval --help`) reads the whole script from stdin,
+    # which is not subject to cmd.exe's command-line newline truncation at
+    # all. Use it whenever the eval script contains a newline.
+    use_stdin_eval = False
+    if command == "eval" and any("\n" in (a or "") for a in args):
+        use_stdin_eval = True
+
     cmd_parts = cmd_prefix + backend_args + [
         "--json",
         command
@@ -2950,7 +2960,20 @@ def _run_browser_command(
         stderr_path = os.path.join(task_socket_dir, f"_stderr_{command}")
         stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        stdin_data: Optional[bytes] = None
         try:
+            # Multi-line JS eval: pipe the script through agent-browser's
+            # official `eval --stdin` flag. stdin is not subject to cmd.exe's
+            # command-line newline truncation (unlike arguments).
+            if use_stdin_eval:
+                # The eval script is the first (and only) positional arg.
+                script = args[0] if args else ""
+                # Replace the eval invocation with `eval --stdin`; keep
+                # backend_args (--session/--cdp/--headed) as CLI flags.
+                cmd_parts = cmd_prefix + backend_args + ["--json", "eval", "--stdin"]
+                stdin_data = script.encode("utf-8")
+                logger.debug("browser: multi-line eval → eval --stdin (payload=%d bytes)",
+                             len(stdin_data))
             # See matching comment at the other Popen site above — on
             # Windows we put agent-browser in its own process group, force
             # STARTF_USESTDHANDLES so CreateProcess hands the child ONLY our
@@ -2971,10 +2994,13 @@ def _run_browser_command(
                 cmd_parts,
                 stdout=stdout_fd,
                 stderr=stderr_fd,
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
                 env=browser_env,
                 **_popen_extra,
             )
+            if stdin_data is not None:
+                proc.stdin.write(stdin_data)
+                proc.stdin.close()
         finally:
             os.close(stdout_fd)
             os.close(stderr_fd)

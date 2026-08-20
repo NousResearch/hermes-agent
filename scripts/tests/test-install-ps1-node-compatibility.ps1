@@ -1,43 +1,19 @@
 # Behavioral tests for install.ps1 system Node/npm compatibility selection.
 #
-# The installer itself is not executed. The real shipped functions are lifted
-# through the PowerShell AST, then external commands and downloads are replaced
-# with deterministic in-process stubs. This exercises the actual range parser
-# and Test-Node acceptance gate without changing PATH, installing software, or
-# touching the user's Hermes home.
-
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
+# The installer is dot-sourced without running its entry point, then external
+# commands and downloads are replaced with deterministic in-process stubs.
+# This exercises the shipped range parser and Test-Node acceptance gate without
+# changing PATH, installing software, or touching the user's Hermes home.
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 $installScript = Join-Path $repoRoot 'scripts\install.ps1'
-$tokens = $null
-$parseErrors = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseFile(
-    $installScript, [ref]$tokens, [ref]$parseErrors
-)
-if ($parseErrors.Count -gt 0) {
-    throw "install.ps1 has parse errors: $($parseErrors -join '; ')"
-}
+$testRoot = Join-Path $env:TEMP ("hermes-node-compatibility-test-" + [Guid]::NewGuid().ToString('N'))
+$HermesHome = Join-Path $testRoot 'home'
+$InstallDir = Join-Path $testRoot 'missing-checkout'
+. $installScript -HermesHome $HermesHome -InstallDir $InstallDir
 
-foreach ($name in @(
-    'ConvertTo-NpmVersion',
-    'Test-NpmVersionOk',
-    'Test-NodeVersionOk',
-    'Test-SystemNodeReady',
-    'Test-Node'
-)) {
-    $fn = $ast.FindAll(
-        {
-            param($node)
-            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-            $node.Name -eq $name
-        },
-        $true
-    ) | Select-Object -First 1
-    if (-not $fn) { throw "$name not found in install.ps1" }
-    . ([scriptblock]::Create($fn.Extent.Text))
-}
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
 $script:Failures = 0
 function Assert-Equal {
@@ -53,26 +29,25 @@ function Assert-Equal {
 }
 
 Write-Host '-- npm range evaluation --'
-$supportedRange = '<11.10.0 || >=11.17.0'
-Assert-Equal $true (Test-NpmVersionOk '11.9.9' $supportedRange) 'lower alternative is accepted'
-Assert-Equal $false (Test-NpmVersionOk '11.10.0' $supportedRange) 'excluded band starts at 11.10.0'
-Assert-Equal $false (Test-NpmVersionOk '11.16.0' $supportedRange) 'reported npm 11.16.0 is rejected'
-Assert-Equal $true (Test-NpmVersionOk '11.17.0' $supportedRange) 'upper alternative starts at 11.17.0'
-Assert-Equal $false (Test-NpmVersionOk '11.17.0' '>=12.0.0') 'pre-clone npm floor rejects 11.x'
-Assert-Equal $true (Test-NpmVersionOk '12.0.0' '>=12.0.0') 'pre-clone npm floor accepts 12.0.0'
-Assert-Equal $false (Test-NpmVersionOk 'not-a-version' $supportedRange) 'malformed version fails closed'
+$supportedRange = Get-NpmRange
+Assert-Equal '<11.10.0 || >=11.17.0' $supportedRange 'fresh-install fallback matches the supported npm range'
+Assert-Equal $true (Test-NpmVersionOk '10.9.8') 'bundled npm 10.9.8 is accepted before clone'
+Assert-Equal $true (Test-NpmVersionOk '11.9.9') 'lower alternative is accepted'
+Assert-Equal $false (Test-NpmVersionOk '11.10.0') 'excluded band starts at 11.10.0'
+Assert-Equal $false (Test-NpmVersionOk '11.16.0') 'reported npm 11.16.0 is rejected'
+Assert-Equal $true (Test-NpmVersionOk '11.17.0') 'upper alternative starts at 11.17.0'
+Assert-Equal $false (Test-NpmVersionOk 'not-a-version') 'malformed version fails closed'
 Assert-Equal $false (Test-NpmVersionOk '12.0.0' '^12.0.0') 'unsupported range syntax fails closed'
 
-# Controlled command surface used by the lifted Test-Node function.
+# Controlled command surface used by the real Test-Node function.
 $script:FakeNpmAvailable = $true
 $script:FakeNpmVersion = '11.16.0'
-$script:FakeNpmRange = $supportedRange
+$script:FakeNodeVersion = 'v24.18.0'
 $script:DownloadAttempts = 0
 $script:HasNode = $null
-$HermesHome = Join-Path $env:TEMP ("hermes-node-compatibility-test-" + [Guid]::NewGuid().ToString('N'))
 $NodeVersion = '22'
 
-function node { 'v24.18.0' }
+function node { $script:FakeNodeVersion }
 function npm.cmd { $script:FakeNpmVersion }
 function Get-Command {
     [CmdletBinding()]
@@ -93,7 +68,6 @@ function Get-Command {
         default { return $null }
     }
 }
-function Get-NpmRange { $script:FakeNpmRange }
 function Ensure-NodeExeOnPath { $true }
 function Get-WindowsArch { 'x64' }
 function Invoke-WebRequest {
@@ -105,8 +79,13 @@ function Write-Warn { param([string]$Message) }
 function Write-Success { param([string]$Message) }
 
 function Invoke-SystemNodeProbe {
-    param([string]$NpmVersion, [bool]$NpmAvailable = $true)
+    param(
+        [string]$NodeVersion,
+        [string]$NpmVersion,
+        [bool]$NpmAvailable = $true
+    )
 
+    $script:FakeNodeVersion = $NodeVersion
     $script:FakeNpmVersion = $NpmVersion
     $script:FakeNpmAvailable = $NpmAvailable
     $script:DownloadAttempts = 0
@@ -120,17 +99,36 @@ function Invoke-SystemNodeProbe {
 
 Write-Host ''
 Write-Host '-- system Node acceptance --'
-$result = Invoke-SystemNodeProbe '11.17.0'
+$result = Invoke-SystemNodeProbe 'v24.18.0' '11.17.0'
 Assert-Equal $true $result.HasNode 'compatible system Node/npm is accepted'
 Assert-Equal 0 $result.DownloadAttempts 'compatible system npm avoids managed download'
 
-$result = Invoke-SystemNodeProbe '11.16.0'
+$result = Invoke-SystemNodeProbe 'v22.22.0' '10.9.8'
+Assert-Equal $true $result.HasNode 'minimum Node with bundled npm is accepted'
+Assert-Equal 0 $result.DownloadAttempts 'bundled npm avoids managed download'
+
+$result = Invoke-SystemNodeProbe 'v24.18.0' '11.16.0'
 Assert-Equal $false $result.HasNode 'incompatible system npm is not accepted'
 Assert-Equal 1 $result.DownloadAttempts 'incompatible system npm falls through to managed Node'
 
-$result = Invoke-SystemNodeProbe '' $false
+$result = Invoke-SystemNodeProbe 'v24.18.0' '' $false
 Assert-Equal $false $result.HasNode 'missing system npm is not accepted'
 Assert-Equal 1 $result.DownloadAttempts 'missing system npm falls through to managed Node'
+
+Write-Host ''
+Write-Host '-- managed npm reuse --'
+$managedDir = Join-Path $testRoot 'managed-node'
+New-Item -ItemType Directory -Force -Path $managedDir | Out-Null
+$managedNpm = Join-Path $managedDir 'npm.cmd'
+@'
+@echo off
+if "%~1"=="--version" (
+  echo 10.9.8
+  exit /b 0
+)
+exit /b 42
+'@ | Set-Content -LiteralPath $managedNpm -Encoding Ascii
+Assert-Equal $true (Update-ManagedNpm $managedDir) 'compatible managed npm skips the upgrade command'
 
 if ($script:Failures -gt 0) {
     Write-Host ''
@@ -140,3 +138,7 @@ if ($script:Failures -gt 0) {
 
 Write-Host ''
 Write-Host 'all assertions passed'
+
+if (Test-Path $testRoot) {
+    Remove-Item -LiteralPath $testRoot -Recurse -Force
+}

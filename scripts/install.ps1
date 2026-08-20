@@ -395,10 +395,9 @@ $NodeVersion = "22"
 # The npm range the root package.json pins in `engines.npm`.  A constant rather
 # than a manifest read like the POSIX side does: Test-Node runs BEFORE the repo
 # is cloned, so there is usually no package.json on disk yet (and none at all
-# when install.ps1 is piped straight from the web).  Get-NpmRange prefers the
-# manifest whenever it does exist, so a drifted constant self-corrects on any
-# run against an existing checkout.
-$NpmRange = ">=12.0.0"
+# when install.ps1 is piped straight from the web). Keep this fallback in sync
+# with package.json; Get-NpmRange prefers the manifest once a checkout exists.
+$NpmRange = "<11.10.0 || >=11.17.0"
 
 # Stage-protocol version.  Bumped only for genuinely breaking changes to the
 # manifest schema, stage-name set semantics, or stdout JSON shape.  Adding a
@@ -1016,14 +1015,11 @@ function Test-NpmVersionOk {
     return $false
 }
 
-# Upgrade the Hermes-managed Node tree's bundled npm into $NpmRange.
-#
-# The nodejs.org zip ships whatever npm that Node major bundles -- Node 26.5.1
-# bundles npm 11.17.0, one minor below the root package.json's own
-# `engines.npm` floor of >=12.  The repo .npmrc sets `engine-strict=true`, so
-# that is fatal rather than a warning and a brand-new install dies at the first
-# `npm ci` with EBADENGINE.  Provision the right npm here instead of reacting
-# to the failure later.
+# Upgrade the Hermes-managed Node tree's bundled npm into $NpmRange when
+# needed. Managed Node trees survive updates, so their bundled npm can drift
+# outside a newer root package.json engine range. The repo .npmrc sets
+# `engine-strict=true`, making that mismatch fatal at the first `npm ci`.
+# Provision the right npm here instead of reacting to EBADENGINE later.
 #
 # Three details are load-bearing, mirroring _nb_ensure_bundled_npm_range in
 # scripts/lib/node-bootstrap.sh and upgrade_managed_npm in
@@ -1045,17 +1041,11 @@ function Update-ManagedNpm {
     $range = Get-NpmRange
 
     # Skip the network round-trip when the bundled npm already satisfies the
-    # range.  Only the ">=N" shape we actually author is parsed; anything more
-    # exotic falls through to letting npm itself decide.
-    if ($range -match '^>=(\d+)') {
-        $want = [int]$Matches[1]
-        try {
-            $have = (& $npmCmd --version 2>$null)
-            if ($have -match '^(\d+)') {
-                if ([int]$Matches[1] -ge $want) { return $true }
-            }
-        } catch { }
-    }
+    # same range used by the system-Node acceptance gate.
+    try {
+        $have = (& $npmCmd --version 2>$null | Select-Object -First 1)
+        if ($have -and (Test-NpmVersionOk $have $range)) { return $true }
+    } catch { }
 
     # In-app updates run while the desktop app's Node processes are alive.
     # The managed npm lives inside the very tree they execute from, so an
@@ -4003,7 +3993,7 @@ function Install-Desktop {
 
     # Always re-resolve Node here. Stages run in separate PowerShell processes,
     # so $script:HasNode from Stage-Node isn't visible; more importantly Test-Node
-    # enforces the build floor (Node >=26) and prepends the Hermes-managed
+    # enforces the build floor (Node >=22.22.0) and prepends the Hermes-managed
     # Node to PATH, so the build never runs on a too-old system Node -- the cause
     # of the opaque "Build desktop app ... exit code 1" failure (Vite crashes on
     # old Node).
@@ -4917,6 +4907,13 @@ function Main {
 # All branches funnel through one try/catch so errors don't kill an `irm |
 # iex` PowerShell session, and so failures in stage-driver mode produce a
 # structured JSON error frame instead of a bare exception.
+
+# Dot-sourcing loads the installer's real functions for isolated behavioral
+# tests without running an install. Normal script and `irm | iex` entry points
+# are unchanged.
+if ($MyInvocation.InvocationName -eq ".") {
+    return
+}
 
 try {
     if ($Ensure -ne "") {

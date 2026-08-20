@@ -27,7 +27,7 @@ This is a defence-in-depth layer.  ``tools/terminal_tool.py`` blocks direct
 commands and shell scripts they reference when ``_HERMES_GATEWAY=1``. It also
 rejects ``launchctl submit`` in gateway sessions because launchd treats that
 primitive as a persistent KeepAlive job, not a one-shot task. ``hermes gateway
-stop|restart`` separately refuse to self-target from inside the gateway.
+stop|restart|uninstall`` separately refuse to self-target from inside the gateway.
 Blocking cron specs at creation time as well means the agent gets an immediate,
 informative rejection instead of scheduling a job that will only fail
 (silently) when it fires.
@@ -55,11 +55,12 @@ class GatewayLifecycleBlocked(ValueError):
 # actual shell-command-shaped strings, not on prose.
 _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
-    # Branch A: `hermes gateway restart|stop` — the canonical foot-gun.
+    # Branch A: destructive `hermes gateway` operations.
+    # The destructive operations are restart, stop, and uninstall.
     # `start` is intentionally excluded: starting a gateway from inside a
     # gateway is benign (a no-op or "already running" error), and a
     # legitimate cron job might start a sibling profile's gateway.
-    r"(?:hermes\s+gateway\s+(?:restart|stop))"
+    r"(?:hermes\s+gateway\s+(?:restart|stop|uninstall))"
     # Branch B: launchctl ops on a hermes-gateway label. macOS launchd
     # labels look like `ai.hermes.gateway` / `hermes-gateway`. Requiring the
     # gateway identifier prevents blocking unrelated hermes services (e.g.
@@ -72,7 +73,7 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # loop instead (#62891) — same foot-gun, indirect shape. Neutral-label
     # submissions that dodge this text anchor are caught separately by
     # `contains_launchctl_submit_command` (execution-aware, label-independent).
-    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap)\b[^\n]*\bhermes[.\-]?gateway)"
+    r"|(?:launchctl\s+(?:bootout|kickstart|unload|load|stop|restart|submit|bootstrap)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch C: systemctl ops on a hermes-gateway unit.
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill / kill targeting the hermes gateway process. Both

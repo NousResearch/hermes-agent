@@ -28,6 +28,14 @@ interface ConfirmDialogProps {
   destructive?: boolean
   /** Close as soon as onConfirm resolves — for optimistic actions that finish in the background. */
   dismissOnConfirm?: boolean
+  /** A third, non-destructive way out, shown between Cancel and Confirm (e.g.
+   *  "Remove from sidebar" beside "Delete worktree"). Closes on click. */
+  secondaryAction?: ConfirmSecondaryAction
+}
+
+interface ConfirmSecondaryAction {
+  label: string
+  onClick: () => void
 }
 
 // Shared confirmation dialog: opens focused on Confirm, Enter confirms (from
@@ -45,7 +53,8 @@ export function ConfirmDialog({
   doneLabel,
   cancelLabel,
   destructive = false,
-  dismissOnConfirm = false
+  dismissOnConfirm = false,
+  secondaryAction
 }: ConfirmDialogProps) {
   const { t } = useI18n()
   const confirmRef = useRef<HTMLButtonElement>(null)
@@ -131,6 +140,19 @@ export function ConfirmDialog({
           <Button disabled={busy} onClick={onClose} type="button" variant="ghost">
             {resolvedCancelLabel}
           </Button>
+          {secondaryAction && (
+            <Button
+              disabled={busy}
+              onClick={() => {
+                secondaryAction.onClick()
+                onClose()
+              }}
+              type="button"
+              variant="secondary"
+            >
+              {secondaryAction.label}
+            </Button>
+          )}
           <Button
             disabled={busy}
             onClick={() => void run()}

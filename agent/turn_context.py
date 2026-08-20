@@ -743,6 +743,17 @@ def build_turn_context(
     # ── System prompt (cached per session for prefix caching) ──
     if agent._cached_system_prompt is None:
         restore_or_build_system_prompt(agent, system_message, conversation_history)
+    else:
+        try:
+            from agent.system_prompt import system_prompt_date_stale
+            if system_prompt_date_stale(agent):
+                # The UTC date rolled over mid-session: rebuild once so the
+                # "Conversation started:" line stops reporting yesterday.
+                # Date-only granularity keeps the prefix cache intact for the
+                # rest of the day (#86938).
+                agent._cached_system_prompt = agent._build_system_prompt(system_message)
+        except Exception:
+            pass
 
     active_system_prompt = agent._cached_system_prompt
 

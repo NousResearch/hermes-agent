@@ -920,6 +920,13 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     parts = build_system_prompt_parts(agent, system_message=system_message)
     joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
     agent._cached_system_prompt_static = parts["stable"]
+    # Record the date this build stamped so long-lived sessions can refresh
+    # the "Conversation started:" line when UTC rolls over (#86938).
+    try:
+        from hermes_time import now as _hermes_now_for_date
+        agent._system_prompt_date = _hermes_now_for_date().strftime("%Y-%m-%d")
+    except Exception:
+        pass
 
     # Surface context-file truncation warnings through the normal agent status
     # channel so gateway/CLI users see them in chat instead of only in logs.
@@ -927,6 +934,23 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
         agent._emit_status(warning)
 
     return joined
+
+
+def system_prompt_date_stale(agent: Any) -> bool:
+    """True when the cached prompt's date predates the current UTC date.
+
+    Date-only prompts are byte-stable per day by design (prefix-cache KV,
+    #20451) — this lets a long-lived session refresh exactly once when the
+    date rolls over instead of rebuilding per turn (#86938).
+    """
+    cached = getattr(agent, "_system_prompt_date", "")
+    if not cached:
+        return False
+    try:
+        from hermes_time import now as _hermes_now_for_date
+        return _hermes_now_for_date().strftime("%Y-%m-%d") != cached
+    except Exception:
+        return False
 
 
 def invalidate_system_prompt(agent: Any) -> None:

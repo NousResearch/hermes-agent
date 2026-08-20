@@ -7718,6 +7718,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not images:
             return
 
+        _has_spoiler = bool((metadata or {}).get("has_spoiler"))
+
         try:
             from telegram import InputMediaPhoto
         except Exception as exc:  # pragma: no cover - missing SDK
@@ -7772,9 +7774,9 @@ class TelegramAdapter(BasePlatformAdapter):
                             continue
                         fh = open(local_path, "rb")
                         opened_files.append(fh)
-                        media.append(InputMediaPhoto(media=fh, caption=caption))
+                        media.append(InputMediaPhoto(media=fh, caption=caption, has_spoiler=_has_spoiler))
                     else:
-                        media.append(InputMediaPhoto(media=image_url, caption=caption))
+                        media.append(InputMediaPhoto(media=image_url, caption=caption, has_spoiler=_has_spoiler))
 
                 if not media:
                     continue
@@ -7849,6 +7851,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=self._missing_media_path_error("Image", image_path))
 
             _thread = self._metadata_thread_id(metadata)
+            _has_spoiler = bool((metadata or {}).get("has_spoiler"))
             reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
             thread_kwargs = self._thread_kwargs_for_send(
                 chat_id,
@@ -7864,6 +7867,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "chat_id": normalize_telegram_chat_id(chat_id),
                         "photo": image_file,
                         "caption": caption[:1024] if caption else None,
+                        "has_spoiler": _has_spoiler,
                         "reply_to_message_id": reply_to_id,
                         "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                         **thread_kwargs,
@@ -8052,6 +8056,8 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] Blocked unsafe image URL (SSRF protection)", self.name)
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
 
+        _has_spoiler = bool((metadata or {}).get("has_spoiler"))
+
         try:
             # Telegram can send photos directly from URLs (up to ~5MB)
             _photo_thread = self._metadata_thread_id(metadata)
@@ -8069,6 +8075,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "chat_id": normalize_telegram_chat_id(chat_id),
                     "photo": image_url,
                     "caption": caption[:1024] if caption else None,
+                    "has_spoiler": _has_spoiler,
                     "reply_to_message_id": reply_to_id,
                     "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                     **photo_thread_kwargs,
@@ -8112,6 +8119,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "chat_id": normalize_telegram_chat_id(chat_id),
                         "photo": image_data,
                         "caption": caption[:1024] if caption else None,
+                        "has_spoiler": _has_spoiler,
                         "reply_to_message_id": reply_to_id,
                         "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                         **upload_thread_kwargs,

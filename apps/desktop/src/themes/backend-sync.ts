@@ -19,9 +19,13 @@
 import type { HermesSkin } from '@hermes/shared/skin'
 import { atom } from 'nanostores'
 
+import { storedString, storedStringRecord } from '@/lib/storage'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+
 import { BUILTIN_THEMES } from './presets'
 import { skinToDesktopTheme } from './skin'
 import type { DesktopTheme } from './types'
+import { $userThemes, installUserTheme } from './user-themes'
 
 /** Skins pushed by the backend, keyed by name. Merged by `listAllThemes`. */
 export const $backendThemes = atom<Record<string, DesktopTheme>>({})
@@ -42,6 +46,33 @@ export function __resetBackendSkinSync(): void {
   lastSynced = null
   $backendThemes.set({})
   $pendingSkinApply.set(null)
+}
+
+// Skin keys — keep in sync with `themes/context.tsx` (read-only use here,
+// avoiding a circular import: context.tsx imports this module).
+const SKIN_LEGACY_KEY = 'hermes-desktop-theme-v2'
+const PROFILE_SKINS_KEY = 'hermes-desktop-profile-themes-v1'
+
+/**
+ * Whether `name` is what the user persisted for the live profile. Boot paint
+ * runs before the gateway registers backend themes, so a backend-sourced skin
+ * (e.g. one from `display.skin`) that the user picked is stored but NOT
+ * resolvable on the first frame — `normalizeSkin` falls back to the default
+ * and the connect-time seed deliberately never repaints. Seeding an already
+ * persisted skin is not stomping a manual choice; it's finishing it.
+ */
+function isPersistedSkin(name: string): boolean {
+  if (name === 'default') {
+    return false
+  }
+
+  const profile = normalizeProfileKey($activeGatewayProfile.get())
+  const stored =
+    profile === 'default'
+      ? storedString(SKIN_LEGACY_KEY)
+      : (storedStringRecord(PROFILE_SKINS_KEY)[profile] ?? storedString(SKIN_LEGACY_KEY))
+
+  return stored === name
 }
 
 /**
@@ -75,11 +106,32 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
     if (JSON.stringify(current[name]) !== JSON.stringify(theme)) {
       $backendThemes.set({ ...current, [name]: theme })
     }
+
+    // Persist backend skins as user themes so the NEXT boot's first paint can
+    // resolve them synchronously — boot paint runs before the gateway connects
+    // and registers backend themes, so without this a backend-sourced skin
+    // (e.g. one from `display.skin`) paints the default on the connecting
+    // screen and only repaints after `gateway.ready`. Storing the converted
+    // theme in localStorage makes it resolve exactly like a built-in.
+    const installed = $userThemes.get()[name]
+
+    if (JSON.stringify(installed) !== JSON.stringify(theme)) {
+      installUserTheme(theme)
+    }
   }
 
   if (!apply) {
     // Connect-time seed: record without painting. A reconnect re-seed keeps an
     // earlier real apply's flag so repeat events can't override a manual switch.
+    // Exception: the user's persisted skin IS this backend skin — it was picked
+    // last session, so repaint it now that it's finally resolvable.
+    if (isPersistedSkin(name)) {
+      lastSynced = { applied: true, name }
+      $pendingSkinApply.set(name)
+
+      return
+    }
+
     if (lastSynced?.name !== name || !lastSynced.applied) {
       lastSynced = { applied: false, name }
     }

@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { $activeGatewayProfile } from '@/store/profile'
+
 import { $backendThemes, $pendingSkinApply, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
+import { skinToDesktopTheme } from './skin'
+import { $userThemes } from './user-themes'
 
 const skin = (name: string) => ({
   name,
@@ -8,7 +12,12 @@ const skin = (name: string) => ({
 })
 
 describe('ingestBackendSkin', () => {
-  beforeEach(() => __resetBackendSkinSync())
+  beforeEach(() => {
+    __resetBackendSkinSync()
+    window.localStorage.clear()
+    $activeGatewayProfile.set('default')
+    $userThemes.set({})
+  })
 
   it('registers a converted skin without applying when apply=false', () => {
     ingestBackendSkin(skin('neon'), { apply: false })
@@ -84,6 +93,52 @@ describe('ingestBackendSkin', () => {
     ingestBackendSkin(skin('default'), { apply: false })
 
     expect($pendingSkinApply.get()).toBeNull()
+  })
+
+  it('seed applies when the persisted desktop theme IS the backend skin (restart recovery)', () => {
+    // User picked the backend-sourced skin last session; boot paint couldn't
+    // resolve it before the gateway registered it, so it stored the name and
+    // fell back to the default. The connect-time seed must finish that pick.
+    window.localStorage.setItem('hermes-desktop-theme-v2', 'neon')
+    ingestBackendSkin(skin('neon'), { apply: false })
+
+    expect($pendingSkinApply.get()).toBe('neon')
+  })
+
+  it('seed applies a persisted per-profile backend skin', () => {
+    window.localStorage.setItem('hermes-desktop-profile-themes-v1', JSON.stringify({ work: 'neon' }))
+    $activeGatewayProfile.set('work')
+    ingestBackendSkin(skin('neon'), { apply: false })
+
+    expect($pendingSkinApply.get()).toBe('neon')
+  })
+
+  it('seed still does not apply when the persisted skin differs from the backend skin', () => {
+    window.localStorage.setItem('hermes-desktop-theme-v2', 'mono')
+    ingestBackendSkin(skin('neon'), { apply: false })
+
+    expect($pendingSkinApply.get()).toBeNull()
+  })
+
+  it('persists a backend skin as a user theme so the next boot paint can resolve it', () => {
+    ingestBackendSkin(skin('neon'), { apply: false })
+
+    // Boot paint (before the gateway registers backend themes) resolves
+    // built-ins and user themes from localStorage — so storing the converted
+    // theme here makes a backend-sourced skin paint correctly on the very
+    // first frame of the NEXT launch, not just after `gateway.ready`.
+    expect($userThemes.get().neon?.name).toBe('neon')
+    expect(window.localStorage.getItem('hermes-desktop-user-themes-v1')).toContain('"neon"')
+  })
+
+  it('does not rewrite a user theme that is already persisted unchanged', () => {
+    const theme = skinToDesktopTheme(skin('neon'))!
+    $userThemes.set({ neon: theme })
+    window.localStorage.setItem('hermes-desktop-user-themes-v1', JSON.stringify({ neon: theme }))
+
+    ingestBackendSkin(skin('neon'), { apply: false })
+
+    expect($userThemes.get().neon?.name).toBe('neon')
   })
 
   it('applies a runtime switch back to default (repaints the desktop to its own default)', () => {

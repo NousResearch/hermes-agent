@@ -69,6 +69,28 @@ description: Use when deploying multi-region Kubernetes clusters with custom CNI
 Step 1.
 """
 
+SYMLINKED_SKILL_CONTENT = """\
+---
+name: linked-skill
+description: A skill stored behind a directory symlink.
+---
+
+# Linked Skill
+
+Original content.
+"""
+
+SYMLINKED_SKILL_CONTENT_2 = """\
+---
+name: linked-skill
+description: Updated content for a skill stored behind a directory symlink.
+---
+
+# Linked Skill v2
+
+Updated content.
+"""
+
 
 # ---------------------------------------------------------------------------
 # _validate_name
@@ -147,6 +169,30 @@ class TestValidateFilePath:
 # ---------------------------------------------------------------------------
 # CRUD operations
 # ---------------------------------------------------------------------------
+
+
+class TestFindSkill:
+    def test_edit_follows_directory_symlink(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        target_dir = tmp_path / "cc-switch" / "linked-skill"
+        skills_dir.mkdir()
+        target_dir.mkdir(parents=True)
+        (target_dir / "SKILL.md").write_text(SYMLINKED_SKILL_CONTENT, encoding="utf-8")
+
+        link = skills_dir / "linked-skill"
+        try:
+            link.symlink_to(target_dir, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+        with _skill_dir(skills_dir):
+            result = _edit_skill("linked-skill", SYMLINKED_SKILL_CONTENT_2)
+
+        assert result["success"] is True
+        assert (
+            (target_dir / "SKILL.md").read_text(encoding="utf-8")
+            == SYMLINKED_SKILL_CONTENT_2
+        )
 
 
 class TestCreateSkill:

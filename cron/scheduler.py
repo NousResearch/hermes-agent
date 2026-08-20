@@ -4934,7 +4934,7 @@ def run_job(
 
     # Use ContextVars for per-job session/delivery state so parallel jobs
     # don't clobber each other's targets (os.environ is process-global).
-    from gateway.session_context import set_session_vars, clear_session_vars, _VAR_MAP
+    from gateway.session_context import set_session_vars, clear_session_vars, reset_cron_delivery_vars, _VAR_MAP
 
     # Cron execution is an internal scheduler context, not a live inbound
     # gateway message. Do not seed HERMES_SESSION_* contextvars from the
@@ -5908,8 +5908,12 @@ def run_job(
             _cron_session_var.reset(_cron_session_token)
         if _non_dispatcher_token is not None:
             exit_non_dispatcher_owned_context(_non_dispatcher_token)
-        for _var_name in _cron_delivery_vars:
-            _VAR_MAP[_var_name].set("")
+        # Restore the cron-delivery vars to their *never set* (_UNSET) state, not
+        # "" — an empty string suppresses the os.environ fallback in
+        # get_session_env, so setting "" here would leak an empty cron-delivery
+        # value into every later caller in this thread/task (cross-run / cross-
+        # test pollution). reset_cron_delivery_vars() returns them to _UNSET.
+        reset_cron_delivery_vars()
         if _session_db:
             # The agent turn has already returned. Bound every subsequent DB
             # operation so storage failure cannot hold the dispatch guard.

@@ -244,6 +244,11 @@ class ProviderConfig:
     api_key_env_vars: tuple = ()
     # Optional env var for base URL override
     base_url_env_var: str = ""
+    # Non-secret provider settings that belong on the provider credential
+    # surface (for example an AWS profile or a service-account path). These
+    # are explicit owner metadata; callers must never infer them from an env
+    # variable prefix or suffix.
+    setting_env_vars: tuple = ()
 
 
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
@@ -531,6 +536,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
+        setting_env_vars=("AWS_REGION", "AWS_PROFILE"),
     ),
     "vertex": ProviderConfig(
         id="vertex",
@@ -542,6 +548,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="",
         api_key_env_vars=(),  # OAuth2 (service-account JSON / ADC), not a key
         base_url_env_var="",
+        setting_env_vars=("VERTEX_CREDENTIALS_PATH",),
     ),
     "azure-foundry": ProviderConfig(
         id="azure-foundry",

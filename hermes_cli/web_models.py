@@ -42,6 +42,11 @@ class EnvVarReveal(BaseModel):
     profile: Optional[str] = None
 
 
+class ProviderCredentialUpdate(BaseModel):
+    value: str
+    profile: Optional[str] = None
+
+
 class MemoryProviderConfigUpdate(BaseModel):
     values: Dict[str, Any] = {}
 
@@ -738,4 +743,3 @@ class _PluginProvidersPutBody(BaseModel):
 
 class _PluginVisibilityBody(BaseModel):
     hidden: bool
-

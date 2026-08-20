@@ -64,6 +64,7 @@ class ProviderDescriptor:
     tab: str                       # "keys" | "accounts"
     api_key_env_vars: tuple[str, ...]  # credential env vars (may be empty)
     base_url_env_var: str          # base-URL override env var (may be "")
+    setting_env_vars: tuple[str, ...]  # explicit non-secret provider settings
     signup_url: str                # signup / console URL (may be "")
     order: int                     # CANONICAL_PROVIDERS index — mirrors `hermes model`
 
@@ -137,13 +138,16 @@ def provider_catalog() -> list[ProviderDescriptor]:
 
         # Credential env vars: registry first (it already normalizes these),
         # else derive from the profile's env_vars tuple.
-        if cfg and getattr(cfg, "api_key_env_vars", ()):
-            api_key_vars = tuple(cfg.api_key_env_vars)
+        if cfg:
+            api_key_vars = tuple(getattr(cfg, "api_key_env_vars", ()) or ())
             base_url_var = getattr(cfg, "base_url_env_var", "") or ""
+            setting_env_vars = tuple(getattr(cfg, "setting_env_vars", ()) or ())
         elif prof and getattr(prof, "env_vars", ()):
             api_key_vars, base_url_var = _split_env_vars(tuple(prof.env_vars))
+            setting_env_vars = ()
         else:
             api_key_vars, base_url_var = (), ""
+            setting_env_vars = ()
 
         label = (
             (getattr(prof, "display_name", "") if prof else "")
@@ -169,6 +173,7 @@ def provider_catalog() -> list[ProviderDescriptor]:
                 tab=tab_for_auth_type(auth_type),
                 api_key_env_vars=api_key_vars,
                 base_url_env_var=base_url_var,
+                setting_env_vars=setting_env_vars,
                 signup_url=signup_url,
                 order=order,
             )

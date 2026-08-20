@@ -1499,6 +1499,7 @@ from hermes_cli.web_models import (  # noqa: F401
     EnvVarUpdate,
     EnvVarDelete,
     EnvVarReveal,
+    ProviderCredentialUpdate,
     MemoryProviderConfigUpdate,
     MemoryProviderSetupRequest,
     CustomEndpointUpdate,
@@ -7025,12 +7026,32 @@ async def get_model_options(
             # sync picker build (config load, pricing, refresh probes) runs
             # off the event loop under the requested profile.
             with _profile_scope(profile):
-                return build_model_options_payload(
+                payload = build_model_options_payload(
                     load_picker_context(),
                     explicit_only=bool(explicit_only),
                     include_unconfigured=bool(include_unconfigured),
                     refresh=bool(refresh),
                 )
+                from hermes_cli.provider_catalog import provider_catalog_by_slug
+
+                catalog = provider_catalog_by_slug()
+                for row in payload.get("providers", []):
+                    slug = str(row.get("slug") or "")
+                    descriptor = catalog.get(slug)
+                    if slug == "custom":
+                        setup_kind = "custom_endpoint"
+                    elif descriptor is None:
+                        setup_kind = "none"
+                    elif descriptor.tab == "accounts":
+                        setup_kind = "account"
+                    elif descriptor.tab == "keys":
+                        setup_kind = "credential"
+                    else:
+                        setup_kind = "none"
+                    row["setup_kind"] = setup_kind
+                    if descriptor is not None:
+                        row["auth_type"] = descriptor.auth_type
+                return payload
 
         return await run_in_threadpool(_build_payload_scoped)
     except HTTPException:
@@ -7767,7 +7788,7 @@ def _catalog_provider_env_metadata() -> dict:
             continue
         # API-key vars: the first is the primary (password) field; any aliases
         # are kept as additional password fields so users can clear them too.
-        for env_var in d.api_key_env_vars:
+        for field_order, env_var in enumerate(d.api_key_env_vars):
             if env_var in _non_provider_keys:
                 continue  # don't hijack a shared tool/messaging credential
             meta.setdefault(
@@ -7780,6 +7801,11 @@ def _catalog_provider_env_metadata() -> dict:
                     "is_password": True,
                     "advanced": False,
                     "category": "provider",
+                    "provider_order": d.order,
+                    "provider_description": d.description,
+                    "provider_auth_type": d.auth_type,
+                    "field_role": "primary_secret" if field_order == 0 else "secret_alias",
+                    "field_order": field_order,
                 },
             )
         # Base-URL override is an advanced, non-secret field for the same card.
@@ -7794,45 +7820,33 @@ def _catalog_provider_env_metadata() -> dict:
                     "is_password": False,
                     "advanced": True,
                     "category": "provider",
+                    "provider_order": d.order,
+                    "provider_description": d.description,
+                    "provider_auth_type": d.auth_type,
+                    "field_role": "endpoint",
+                    "field_order": len(d.api_key_env_vars),
                 },
             )
 
-        # AWS-SDK providers (Bedrock) authenticate via the AWS credential chain
-        # rather than a pasted API key, so they have no api_key_env_vars. Tag
-        # their AWS_* settings to the provider card so they still appear on the
-        # Keys tab (otherwise Bedrock — a `hermes model` provider — would be
-        # invisible in the desktop app).
-        if d.auth_type == "aws_sdk":
-            for aws_var in ("AWS_REGION", "AWS_PROFILE"):
-                existing = meta.get(aws_var, {})
-                meta[aws_var] = {
+        for setting_order, env_var in enumerate(d.setting_env_vars):
+            info = _OPT.get(env_var) or {}
+            meta.setdefault(
+                env_var,
+                {
                     "provider": d.slug,
                     "provider_label": d.label,
-                    "description": existing.get("description") or f"{d.label} ({aws_var})",
-                    "url": existing.get("url"),
-                    "is_password": False,
-                    "advanced": existing.get("advanced", True),
+                    "description": info.get("description") or f"{d.label} setting",
+                    "url": info.get("url"),
+                    "is_password": bool(info.get("password", False)),
+                    "advanced": bool(info.get("advanced", True)),
                     "category": "provider",
-                }
-
-        # Vertex AI authenticates via OAuth2 (service-account JSON or ADC), not a
-        # pasted API key, so it also has no api_key_env_vars. Tag its credential
-        # env var to the provider card so it appears on the Keys tab (otherwise
-        # Vertex — a `hermes model` provider — would be invisible in the desktop
-        # app). The value is a filesystem path, not a secret string, so it is
-        # not a password field.
-        if d.auth_type == "vertex":
-            existing = meta.get("VERTEX_CREDENTIALS_PATH", {})
-            meta["VERTEX_CREDENTIALS_PATH"] = {
-                "provider": d.slug,
-                "provider_label": d.label,
-                "description": existing.get("description")
-                or f"{d.label} — service account JSON path (or use ADC)",
-                "url": existing.get("url"),
-                "is_password": False,
-                "advanced": existing.get("advanced", True),
-                "category": "provider",
-            }
+                    "provider_order": d.order,
+                    "provider_description": d.description,
+                    "provider_auth_type": d.auth_type,
+                    "field_role": "setting",
+                    "field_order": len(d.api_key_env_vars) + (1 if d.base_url_env_var else 0) + setting_order,
+                },
+            )
     return meta
 
 
@@ -7872,6 +7886,12 @@ def _get_env_vars_sync(profile: Optional[str] = None):
             # CLI `hermes model` picker uses (not desktop-only prefix guesses).
             "provider": cat_meta.get("provider", ""),
             "provider_label": cat_meta.get("provider_label", ""),
+            "provider_order": cat_meta.get("provider_order"),
+            "provider_description": cat_meta.get("provider_description", ""),
+            "provider_auth_type": cat_meta.get("provider_auth_type", ""),
+            "field_role": cat_meta.get("field_role"),
+            "field_order": cat_meta.get("field_order"),
+            "field_label": info.get("prompt") or var_name,
             # True when this key exists in the user's .env but is NOT in any
             # catalog (OPTIONAL_ENV_VARS or the provider catalog) — an
             # arbitrary/custom env var the user added directly. Surfaced so the
@@ -7903,6 +7923,101 @@ def _get_env_vars_sync(profile: Optional[str] = None):
         row["is_password"] = True
         result[var_name] = row
     return result
+
+
+def _provider_credential_catalog(env_on_disk: Dict[str, str]) -> Dict[str, Any]:
+    """Return the exact provider credential surface owned by Hermes.
+
+    The response deliberately excludes unrelated environment variables and
+    carries explicit provider/field identity, role, and order. Product clients
+    therefore never need prefix matching, `advanced` guesses, or a copied
+    provider registry.
+    """
+    from hermes_cli.provider_catalog import provider_catalog
+
+    metadata = _catalog_provider_env_metadata()
+    providers: List[Dict[str, Any]] = []
+    for descriptor in provider_catalog():
+        if descriptor.tab != "keys":
+            continue
+        fields: List[Dict[str, Any]] = []
+        ordered_keys = (
+            *descriptor.api_key_env_vars,
+            *((descriptor.base_url_env_var,) if descriptor.base_url_env_var else ()),
+            *descriptor.setting_env_vars,
+        )
+        for env_var in ordered_keys:
+            info = metadata.get(env_var)
+            if not info or info.get("provider") != descriptor.slug:
+                continue
+            configured = env_on_disk.get(env_var)
+            optional = OPTIONAL_ENV_VARS.get(env_var) or {}
+            fields.append({
+                "key": env_var,
+                "label": optional.get("prompt") or env_var,
+                "description": optional.get("description") or info.get("description") or "",
+                "role": info["field_role"],
+                "order": info["field_order"],
+                "secret": bool(info.get("is_password", False)),
+                "is_set": bool(configured),
+                "redacted_value": redact_key(configured) if configured else None,
+                "docs_url": optional.get("url") or info.get("url"),
+            })
+        if fields:
+            providers.append({
+                "id": descriptor.slug,
+                "label": descriptor.label,
+                "description": descriptor.description,
+                "auth_type": descriptor.auth_type,
+                "order": descriptor.order,
+                "fields": sorted(fields, key=lambda field: (field["order"], field["key"])),
+            })
+    return {"providers": providers}
+
+
+def _require_provider_credential_field(provider_id: str, field_key: str) -> Dict[str, Any]:
+    metadata = _catalog_provider_env_metadata().get(field_key)
+    if not metadata or metadata.get("provider") != provider_id:
+        raise HTTPException(status_code=404, detail="Unknown provider credential field")
+    return metadata
+
+
+@app.get("/api/providers/credentials")
+async def list_provider_credentials(profile: Optional[str] = None):
+    with _profile_scope(profile):
+        return _provider_credential_catalog(load_env())
+
+
+@app.put("/api/providers/credentials/{provider_id}/{field_key}")
+async def set_provider_credential(
+    provider_id: str,
+    field_key: str,
+    body: ProviderCredentialUpdate,
+    profile: Optional[str] = None,
+):
+    _require_provider_credential_field(provider_id, field_key)
+    try:
+        with _profile_scope(body.profile or profile):
+            from hermes_cli.credential_lifecycle import save_provider_env_credential
+
+            save_provider_env_credential(field_key, body.value)
+        return {"ok": True}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/providers/credentials/{provider_id}/{field_key}")
+async def delete_provider_credential(
+    provider_id: str,
+    field_key: str,
+    profile: Optional[str] = None,
+):
+    _require_provider_credential_field(provider_id, field_key)
+    with _profile_scope(profile):
+        from hermes_cli.credential_lifecycle import remove_provider_env_credential
+
+        remove_provider_env_credential(field_key)
+    return {"ok": True}
 
 
 @app.put("/api/env")
@@ -8384,6 +8499,42 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
         # 429 = key is valid but rate-limited; success = valid.
         return {"ok": True, "reachable": True, "message": ""}
     return {"ok": False, "reachable": True, "message": f"Provider returned HTTP {resp.status_code} for this key."}
+
+
+@app.post("/api/providers/credentials/{provider_id}/{field_key}/validate")
+async def validate_owned_provider_credential(
+    provider_id: str,
+    field_key: str,
+    body: ProviderCredentialUpdate,
+    request: Request,
+):
+    """Validate one exact owner-declared provider credential field.
+
+    Unsupported and temporarily unavailable probes are explicit states. They
+    are never reported as successful validation, so a client can require a
+    separate user-confirmed save instead of silently degrading.
+    """
+    metadata = _require_provider_credential_field(provider_id, field_key)
+    role = metadata.get("field_role")
+    if role not in {"primary_secret", "secret_alias", "endpoint"}:
+        return {
+            "status": "unsupported",
+            "message": "Hermes does not provide live validation for this provider setting.",
+        }
+    if field_key not in _CREDENTIAL_PROBES and field_key != "OPENAI_BASE_URL":
+        return {
+            "status": "unsupported",
+            "message": "Hermes does not provide a live validation probe for this credential.",
+        }
+    result = await validate_provider_credential(
+        EnvVarUpdate(key=field_key, value=body.value),
+        request,
+    )
+    if result.get("ok") and result.get("reachable"):
+        return {"status": "valid", "message": result.get("message") or ""}
+    if result.get("reachable"):
+        return {"status": "invalid", "message": result.get("message") or "The provider rejected this value."}
+    return {"status": "unavailable", "message": result.get("message") or "The provider validation endpoint is unavailable."}
 
 
 @app.delete("/api/env")
@@ -10798,6 +10949,14 @@ async def list_oauth_providers(profile: Optional[str] = None):
             providers = []
             for p in _build_oauth_catalog():
                 status = _resolve_provider_status(p["id"], p.get("status_fn"))
+                status = {
+                    **status,
+                    # Safe Product display contract: raw source_label may contain
+                    # an auth-store path. Keep it for Hermes diagnostics, but give
+                    # embedded products an owner-provided label that never exposes
+                    # local filesystem identity.
+                    "display_label": p["name"] if status.get("logged_in") else None,
+                }
                 disconnect_hint = _oauth_provider_disconnect_hint(p, status)
                 providers.append({
                     "id": p["id"],

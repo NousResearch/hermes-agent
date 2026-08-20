@@ -17,7 +17,7 @@ import uuid
 from collections import OrderedDict
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 
@@ -122,6 +122,8 @@ _PHONE_RE = re.compile(r"\+?\d{7,15}")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
+_ATTACHMENT_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_MAX_ATTACHMENT_REDIRECTS = 5
 
 
 def _redact(text: str) -> str:
@@ -151,6 +153,20 @@ def _normalize_server_url(raw: str) -> str:
     if not re.match(r"^https?://", value, flags=re.I):
         value = f"http://{value}"
     return value.rstrip("/")
+
+
+def _http_origin(url: str) -> Optional[tuple[str, str, int]]:
+    """Return a normalised HTTP origin, including the effective port."""
+    try:
+        parsed = urlsplit(url)
+        scheme = parsed.scheme.lower()
+        hostname = (parsed.hostname or "").lower()
+        if scheme not in {"http", "https"} or not hostname:
+            return None
+        port = parsed.port or (443 if scheme == "https" else 80)
+        return scheme, hostname, port
+    except ValueError:
+        return None
 
 
 
@@ -256,6 +272,68 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         res = await self.client.post(self._api_url(path), json=payload)
         res.raise_for_status()
         return res.json()
+
+    async def _get_attachment_response(self, url: str) -> httpx.Response:
+        """Fetch an attachment whilst validating every foreign redirect hop.
+
+        BlueBubbles is commonly self-hosted on loopback or a private address,
+        so the configured origin remains trusted. Once a redirect leaves that
+        exact origin, all later hops use the connect-time SSRF-safe client and
+        automatic redirect following remains disabled.
+        """
+        assert self.client is not None
+        trusted_origin = _http_origin(self.server_url)
+        current_url = url
+        left_trusted_origin = False
+        guarded_client: Optional[httpx.AsyncClient] = None
+
+        try:
+            for redirect_count in range(_MAX_ATTACHMENT_REDIRECTS + 1):
+                current_origin = _http_origin(current_url)
+                use_trusted_client = (
+                    not left_trusted_origin
+                    and trusted_origin is not None
+                    and current_origin == trusted_origin
+                )
+
+                if use_trusted_client:
+                    client = self.client
+                else:
+                    left_trusted_origin = True
+                    if guarded_client is None:
+                        from tools.url_safety import create_ssrf_safe_async_client
+
+                        guarded_client = create_ssrf_safe_async_client(
+                            timeout=60,
+                            follow_redirects=False,
+                        )
+                    client = guarded_client
+
+                response = await client.get(
+                    current_url,
+                    timeout=60,
+                    follow_redirects=False,
+                )
+                if response.status_code not in _ATTACHMENT_REDIRECT_STATUSES:
+                    return response
+
+                location = response.headers.get("location")
+                if not location:
+                    raise RuntimeError(
+                        "BlueBubbles attachment redirect omitted Location"
+                    )
+                if redirect_count >= _MAX_ATTACHMENT_REDIRECTS:
+                    raise RuntimeError("BlueBubbles attachment redirect limit exceeded")
+
+                next_url = urljoin(str(response.url or current_url), location)
+                if _http_origin(next_url) != trusted_origin:
+                    left_trusted_origin = True
+                current_url = next_url
+
+            raise RuntimeError("BlueBubbles attachment redirect limit exceeded")
+        finally:
+            if guarded_client is not None:
+                await guarded_client.aclose()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -821,10 +899,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return None
         try:
             encoded = quote(att_guid, safe="")
-            resp = await self.client.get(
-                self._api_url(f"/api/v1/attachment/{encoded}/download"),
-                timeout=60,
-                follow_redirects=True,
+            resp = await self._get_attachment_response(
+                self._api_url(f"/api/v1/attachment/{encoded}/download")
             )
             resp.raise_for_status()
             data = resp.content

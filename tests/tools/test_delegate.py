@@ -866,6 +866,25 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         )
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    @patch("hermes_cli.runtime_provider.canonical_custom_identity")
+    def test_builtin_parent_keeps_ordinary_inheritance_path(
+        self, mock_canonical, mock_resolve
+    ):
+        """A built-in parent must not be remapped by a matching custom URL."""
+        parent = _make_mock_parent(depth=0)
+        parent.base_url = "https://shared.invalid/v1"
+
+        creds = _resolve_delegation_credentials(
+            {"model": "", "provider": ""}, parent
+        )
+
+        self.assertIsNone(creds["provider"])
+        self.assertIsNone(creds["base_url"])
+        self.assertIsNone(creds["api_key"])
+        mock_canonical.assert_not_called()
+        mock_resolve.assert_not_called()
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolves_but_no_api_key_raises(self, mock_resolve):
         """When provider resolves but has no API key, ValueError is raised."""
         mock_resolve.return_value = {

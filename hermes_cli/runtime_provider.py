@@ -1054,26 +1054,21 @@ def canonical_custom_identity(
 
     candidate_norm = _normalize_custom_provider_name(candidate)
     # A bare/non-routable candidate cannot heal a bare custom override.
-    if not candidate_norm or candidate_norm in {"custom", "auto", "openrouter"}:
-        # 3. URL-only recovery is a last resort because several named custom
-        # providers can legitimately share the same gateway URL.
-        if base_url:
-            return find_custom_provider_identity(base_url)
-        return None
-    # Only return it when it actually resolves to a configured custom entry,
-    # so we never invent a `custom:<x>` that resolution can't honor.
-    try:
-        entry = _get_named_custom_provider(candidate)
-        if entry is not None:
-            # ``candidate`` matched, but it may be the entry's DISPLAY NAME —
-            # ``_get_named_custom_provider`` accepts either spelling. Return
-            # the durable config-key identity instead of deriving it from the
-            # ambiguous base_url.
-            provider_key = str(entry.get("provider_key", "") or "").strip()
-            entry_name = str(entry.get("name", "") or candidate).strip()
-            return custom_provider_slug(entry_name, provider_key)
-    except Exception:
-        pass
+    if candidate_norm and candidate_norm not in {"custom", "auto", "openrouter"}:
+        # Only return it when it actually resolves to a configured custom
+        # entry, so we never invent a `custom:<x>` that resolution can't honor.
+        try:
+            entry = _get_named_custom_provider(candidate)
+            if entry is not None:
+                # ``candidate`` matched, but it may be the entry's DISPLAY NAME
+                # — ``_get_named_custom_provider`` accepts either spelling.
+                # Return the durable config-key identity instead of deriving it
+                # from the ambiguous base_url.
+                provider_key = str(entry.get("provider_key", "") or "").strip()
+                entry_name = str(entry.get("name", "") or candidate).strip()
+                return custom_provider_slug(entry_name, provider_key)
+        except Exception:
+            pass
 
     # 3. URL-only recovery is a last resort because several named custom
     # providers can legitimately share the same gateway URL.

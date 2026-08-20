@@ -4509,35 +4509,36 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         parent_model = str(getattr(parent_agent, "model", "") or "").strip()
         parent_provider = str(getattr(parent_agent, "provider", "") or "").strip()
         parent_base_url = str(getattr(parent_agent, "base_url", "") or "").strip()
-        try:
-            from hermes_cli.runtime_provider import (
-                canonical_custom_identity,
-                resolve_runtime_provider,
-            )
-
-            custom_identity = canonical_custom_identity(
-                base_url=parent_base_url,
-                config_provider=parent_provider,
-                model=configured_model or parent_model,
-            )
-            if custom_identity:
-                runtime = resolve_runtime_provider(
-                    requested=custom_identity,
-                    target_model=configured_model or parent_model or None,
+        if parent_provider.lower().startswith("custom"):
+            try:
+                from hermes_cli.runtime_provider import (
+                    canonical_custom_identity,
+                    resolve_runtime_provider,
                 )
-                return {
-                    "model": configured_model or parent_model or runtime.get("model") or None,
-                    "provider": custom_identity,
-                    "base_url": runtime.get("base_url"),
-                    "api_key": runtime.get("api_key") or None,
-                    "api_mode": runtime.get("api_mode"),
-                    "request_overrides": dict(runtime.get("request_overrides") or {}),
-                    "max_output_tokens": runtime.get("max_output_tokens"),
-                    "command": runtime.get("command"),
-                    "args": list(runtime.get("args") or []),
-                }
-        except Exception as exc:
-            logger.debug("Could not canonicalize inherited custom provider: %s", exc)
+
+                custom_identity = canonical_custom_identity(
+                    base_url=parent_base_url,
+                    config_provider=parent_provider,
+                    model=configured_model or parent_model,
+                )
+                if custom_identity:
+                    runtime = resolve_runtime_provider(
+                        requested=custom_identity,
+                        target_model=configured_model or parent_model or None,
+                    )
+                    return {
+                        "model": configured_model or parent_model or runtime.get("model") or None,
+                        "provider": custom_identity,
+                        "base_url": runtime.get("base_url"),
+                        "api_key": runtime.get("api_key") or None,
+                        "api_mode": runtime.get("api_mode"),
+                        "request_overrides": dict(runtime.get("request_overrides") or {}),
+                        "max_output_tokens": runtime.get("max_output_tokens"),
+                        "command": runtime.get("command"),
+                        "args": list(runtime.get("args") or []),
+                    }
+            except Exception as exc:
+                logger.debug("Could not canonicalize inherited custom provider: %s", exc)
 
         # Built-ins and genuine ad-hoc endpoints keep the ordinary inheritance
         # path; None overrides are resolved from the parent in _build_child_agent.

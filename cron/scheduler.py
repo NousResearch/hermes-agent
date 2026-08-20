@@ -2413,6 +2413,10 @@ def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:
 
     reset_secret_source_cache(_get_hermes_home())
     load_hermes_dotenv(hermes_home=_get_hermes_home())
+    # Dotenv reload and tool-schema invalidation form one cache-coherence
+    # boundary. The schema cache is process-global and its key deliberately
+    # excludes env state, so keep this invalidation adjacent to the reload
+    # instead of treating it as a per-job detail that can drift away.
     # .env may have changed TAVILY_API_KEY, web backend selection, or other
     # check_fn-gated env vars. get_tool_definitions() memoizes quiet_mode=True
     # results with a key that does not include env state, so a stale pre-.env

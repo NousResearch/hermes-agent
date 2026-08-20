@@ -41,6 +41,7 @@ vi.mock('@/store/boot', () => ({
 }))
 
 vi.mock('@/store/windows', () => ({
+  isAuxiliaryWindow: vi.fn(() => false),
   isPeerInstanceWindow: vi.fn(() => false)
 }))
 
@@ -77,6 +78,7 @@ const $pendingConnectionId = connectionStore.$pendingConnectionId
 const initializeConnectionsRegistry = vi.mocked(connectionStore.initializeConnectionsRegistry)
 const refreshConnectionsRegistry = vi.mocked(connectionStore.refreshConnectionsRegistry)
 const selectConnection = vi.mocked(connectionStore.selectConnection)
+const isAuxiliaryWindow = vi.mocked(windowStore.isAuxiliaryWindow)
 const isPeerInstanceWindow = vi.mocked(windowStore.isPeerInstanceWindow)
 const onConnect = vi.fn()
 
@@ -112,6 +114,7 @@ afterEach(() => {
   })
   $pendingConnectionId.set(null)
   $findInPage.set({ active: false, query: '', matchOrdinal: 0, matchCount: 0 })
+  isAuxiliaryWindow.mockReturnValue(false)
   isPeerInstanceWindow.mockReturnValue(false)
 })
 
@@ -136,6 +139,22 @@ describe('ConnectionSwitcher', () => {
 
   it('keeps a full peer on the shared backend instead of replaying app-launch source restoration', async () => {
     isPeerInstanceWindow.mockReturnValue(true)
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      phase: 'renderer.ready',
+      progress: 100,
+      running: false,
+      visible: false
+    })
+
+    render(<ConnectionSwitcher onConnect={onConnect} />)
+
+    await waitFor(() => expect(refreshConnectionsRegistry).toHaveBeenCalledTimes(1))
+    expect(initializeConnectionsRegistry).not.toHaveBeenCalled()
+  })
+
+  it('keeps a secondary session window from replaying app-launch source restoration', async () => {
+    isAuxiliaryWindow.mockReturnValue(true)
     $desktopBoot.set({
       ...$desktopBoot.get(),
       phase: 'renderer.ready',

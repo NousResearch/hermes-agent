@@ -1257,6 +1257,10 @@ def test_credential_mount_skipped_when_source_is_directory(monkeypatch, tmp_path
         lambda: [],
     )
     monkeypatch.setattr(
+        "tools.credential_files.get_bin_directory_mount",
+        lambda: [],
+    )
+    monkeypatch.setattr(
         "tools.credential_files.get_cache_directory_mounts",
         lambda: [],
     )
@@ -1294,6 +1298,10 @@ def test_credential_mount_skipped_when_source_missing(monkeypatch, tmp_path, cap
     )
     monkeypatch.setattr(
         "tools.credential_files.get_skills_directory_mount",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_bin_directory_mount",
         lambda: [],
     )
     monkeypatch.setattr(

@@ -1,9 +1,10 @@
 """File passthrough registry for remote terminal backends.
 
 Remote backends (Docker, Modal, SSH) create sandboxes with no host files.
-This module ensures that credential files, skill directories, and host-side
-cache directories (documents, images, audio, screenshots) are mounted or
-synced into those sandboxes so the agent can access them.
+This module ensures that credential files, skill directories, host-side
+cache directories (documents, images, audio, screenshots), and the local
+``bin/`` sidecar directory are mounted or synced into those sandboxes so
+the agent can access them.
 
 **Credentials and skills** — session-scoped registry fed by skill declarations
 (``required_credential_files``) and user config (``terminal.credential_files``).
@@ -12,8 +13,14 @@ synced into those sandboxes so the agent can access them.
 audio, and processed images.  Mounted read-only so the remote terminal can
 reference files the host side created (e.g. ``unzip`` an uploaded archive).
 
+**Sidecar CLI bin** — ``$HERMES_HOME/bin`` holds host-installed CLIs that
+skills shell out to (mail helpers, identity helpers, etc.).  Mounted/synced
+read-only so bare command names resolve inside docker/singularity sandboxes
+the same way the local terminal already puts ``$HERMES_HOME/bin`` on PATH.
+
 Remote backends call :func:`get_credential_file_mounts`,
-:func:`get_skills_directory_mount` / :func:`iter_skills_files`, and
+:func:`get_skills_directory_mount` / :func:`iter_skills_files`,
+:func:`get_bin_directory_mount` / :func:`iter_bin_files`, and
 :func:`get_cache_directory_mounts` / :func:`iter_cache_files` at sandbox
 creation time and before each command (for resync on Modal).
 """
@@ -400,6 +407,139 @@ def iter_skills_files(
         pass
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Sidecar CLI bin ($HERMES_HOME/bin)
+# ---------------------------------------------------------------------------
+
+# Sane PATH used when docker_env did not already set PATH and we need to
+# prepend the mounted bin dir.  Matches common Linux container defaults
+# (incl. nikolaik/python-nodejs) so node/python stay resolvable.
+_DEFAULT_SANDBOX_PATH = (
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
+
+
+def get_bin_directory_mount(
+    container_base: str = "/root/.hermes",
+) -> list[Dict[str, str]]:
+    """Return mount info for ``$HERMES_HOME/bin`` when it exists.
+
+    Skills that shell out to local CLIs install shims/binaries here (same
+    directory Hermes already uses for managed ``uv``, ``tirith``, etc.).
+    The local terminal backend already appends this dir to PATH; docker and
+    singularity need an explicit bind mount so the binaries are visible.
+
+    **Security:** Bind mounts follow symlinks, so a malicious symlink in
+    ``bin/`` could expose arbitrary host files.  When symlinks are detected,
+    this function creates a sanitized copy (regular files only) — matching
+    :func:`get_skills_directory_mount`.
+
+    Returns a list of dicts with ``host_path`` and ``container_path`` keys
+    (empty when the directory is missing).
+    """
+    hermes_home = _resolve_hermes_home()
+    bin_dir = hermes_home / "bin"
+    if not bin_dir.is_dir():
+        return []
+    return [{
+        "host_path": _safe_bin_path(bin_dir),
+        "container_path": f"{container_base.rstrip('/')}/bin",
+    }]
+
+
+_safe_bin_tempdir: Path | None = None
+
+
+def _safe_bin_path(bin_dir: Path) -> str:
+    """Return *bin_dir* if symlink-free, else a sanitized temp copy."""
+    global _safe_bin_tempdir
+
+    symlinks = [p for p in bin_dir.rglob("*") if p.is_symlink()]
+    if not symlinks:
+        return str(bin_dir)
+
+    for link in symlinks:
+        logger.warning(
+            "credential_files: skipping symlink in bin dir: %s -> %s",
+            link, os.readlink(link),
+        )
+
+    import atexit
+    import shutil
+    import tempfile
+
+    if _safe_bin_tempdir and _safe_bin_tempdir.is_dir():
+        shutil.rmtree(_safe_bin_tempdir, ignore_errors=True)
+
+    safe_dir = Path(tempfile.mkdtemp(prefix="hermes-bin-safe-"))
+    _safe_bin_tempdir = safe_dir
+
+    for item in bin_dir.rglob("*"):
+        if item.is_symlink():
+            continue
+        rel = item.relative_to(bin_dir)
+        target = safe_dir / rel
+        if item.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        elif item.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(item), str(target))
+
+    def _cleanup():
+        if safe_dir.is_dir():
+            shutil.rmtree(safe_dir, ignore_errors=True)
+
+    atexit.register(_cleanup)
+    logger.info("credential_files: created symlink-safe bin copy at %s", safe_dir)
+    return str(safe_dir)
+
+
+def iter_bin_files(
+    container_base: str = "/root/.hermes",
+) -> List[Dict[str, str]]:
+    """Yield individual file entries under ``$HERMES_HOME/bin`` for upload sync.
+
+    Skips symlinks.  Used by Modal/Daytona/SSH backends that cannot bind-mount.
+    """
+    result: List[Dict[str, str]] = []
+    hermes_home = _resolve_hermes_home()
+    bin_dir = hermes_home / "bin"
+    if not bin_dir.is_dir():
+        return result
+    container_root = f"{container_base.rstrip('/')}/bin"
+    for item in bin_dir.rglob("*"):
+        if item.is_symlink() or not item.is_file():
+            continue
+        rel = item.relative_to(bin_dir)
+        result.append({
+            "host_path": str(item),
+            "container_path": f"{container_root}/{rel}",
+        })
+    return result
+
+
+def prepend_bin_to_path(
+    env: dict[str, str],
+    container_bin: str = "/root/.hermes/bin",
+) -> dict[str, str]:
+    """Return *env* with ``container_bin`` prepended to PATH when absent.
+
+    If PATH is unset, seed a sane Linux container PATH so we do not wipe
+    the image default entirely when docker ``-e PATH=`` replaces it.
+    On Windows the local terminal backend already handles PATH via
+    ``os.pathsep``; this helper is for Linux sandbox containers only.
+    """
+    out = dict(env)
+    current = out.get("PATH", "")
+    parts = [p for p in current.split(":") if p] if current else []
+    if container_bin in parts:
+        return out
+    if not parts:
+        parts = [p for p in _DEFAULT_SANDBOX_PATH.split(":") if p]
+    out["PATH"] = ":".join([container_bin, *parts])
+    return out
 
 
 # ---------------------------------------------------------------------------

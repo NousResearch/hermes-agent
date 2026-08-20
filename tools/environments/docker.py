@@ -1010,8 +1010,10 @@ class DockerEnvironment(BaseEnvironment):
 
         # Mount credential files (OAuth tokens, etc.) declared by skills.
         # Read-only so the container can authenticate but not modify host creds.
+        self._bin_container_path: str | None = None
         try:
             from tools.credential_files import (
+                get_bin_directory_mount,
                 get_credential_file_mounts,
                 get_skills_directory_mount,
                 get_cache_directory_mounts,
@@ -1062,6 +1064,27 @@ class DockerEnvironment(BaseEnvironment):
                     "Docker: mounting skills dir %s -> %s",
                     skills_mount["host_path"],
                     skills_mount["container_path"],
+                )
+
+            # Mount $HERMES_HOME/bin so sidecar CLIs (skills that shell out)
+            # resolve the same way they do on the local terminal backend.
+            for bin_mount in get_bin_directory_mount():
+                src = Path(bin_mount["host_path"])
+                if not src.is_dir():
+                    logger.warning(
+                        "Docker: skipping bin mount — source is not a directory: %s",
+                        src,
+                    )
+                    continue
+                volume_args.extend([
+                    "-v",
+                    f"{bin_mount['host_path']}:{bin_mount['container_path']}:ro",
+                ])
+                self._bin_container_path = bin_mount["container_path"]
+                logger.info(
+                    "Docker: mounting bin dir %s -> %s",
+                    bin_mount["host_path"],
+                    bin_mount["container_path"],
                 )
 
             # Mount host-side cache directories (documents, images, audio,
@@ -1235,6 +1258,11 @@ class DockerEnvironment(BaseEnvironment):
         else:
             merged_env = dict(egress_env_overrides)
             merged_env.update(self._env)
+
+        # Prepend mounted $HERMES_HOME/bin so sidecar CLIs resolve by name.
+        if self._bin_container_path:
+            from tools.credential_files import prepend_bin_to_path
+            merged_env = prepend_bin_to_path(merged_env, self._bin_container_path)
 
         # arshkumarsingh #1: NODE_OPTIONS append-merge.  The egress path
         # wants ``--use-openssl-ca`` so Node routes through the OpenSSL

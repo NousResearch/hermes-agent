@@ -3163,6 +3163,9 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
         candidates.append(str(node_bin))
 
     hermes_home = get_hermes_home()
+    hermes_bin = hermes_home / "bin"
+    if _is_dir(hermes_bin):
+        candidates.append(str(hermes_bin))
     hermes_node = hermes_home / "node" / "bin"
     if _is_dir(hermes_node):
         candidates.append(str(hermes_node))

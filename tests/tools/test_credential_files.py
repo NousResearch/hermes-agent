@@ -8,12 +8,15 @@ import pytest
 
 from tools.credential_files import (
     clear_credential_files,
+    get_bin_directory_mount,
     get_credential_file_mounts,
     get_cache_directory_mounts,
     get_skills_directory_mount,
+    iter_bin_files,
     iter_cache_files,
     iter_skills_files,
     map_cache_path_to_container,
+    prepend_bin_to_path,
     register_credential_file,
     register_credential_files,
 )
@@ -123,6 +126,98 @@ class TestSkillsDirectoryMount:
             mounts = get_skills_directory_mount()
 
         assert mounts[0]["host_path"] == str(skills_dir)
+
+
+class TestBinDirectoryMount:
+    def test_returns_mount_when_bin_dir_exists(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        bin_dir = hermes_home / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "my-tool").write_text("#!/bin/sh\necho ok\n")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            mounts = get_bin_directory_mount()
+
+        assert len(mounts) == 1
+        assert mounts[0]["host_path"] == str(bin_dir)
+        assert mounts[0]["container_path"] == "/root/.hermes/bin"
+
+    def test_symlinks_are_sanitized(self, tmp_path):
+        """Symlinks in bin dir should be excluded from the mount."""
+        hermes_home = tmp_path / ".hermes"
+        bin_dir = hermes_home / "bin"
+        bin_dir.mkdir(parents=True)
+        tool = bin_dir / "ok"
+        tool.write_text("#!/bin/sh\necho ok\n")
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        (bin_dir / "evil_link").symlink_to(secret)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            mounts = get_bin_directory_mount()
+
+        assert len(mounts) == 1
+        safe_path = Path(mounts[0]["host_path"])
+        assert safe_path != bin_dir
+        assert (safe_path / "ok").exists()
+        assert not (safe_path / "evil_link").exists()
+
+    def test_no_symlinks_returns_original_dir(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        bin_dir = hermes_home / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "ok").write_text("#!/bin/sh\n")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            mounts = get_bin_directory_mount()
+
+        assert mounts[0]["host_path"] == str(bin_dir)
+
+    def test_empty_when_bin_missing(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            assert get_bin_directory_mount() == []
+
+    def test_custom_container_base(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "bin").mkdir(parents=True)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            mounts = get_bin_directory_mount(container_base="/home/user/.hermes")
+
+        assert mounts[0]["container_path"] == "/home/user/.hermes/bin"
+
+    def test_iter_bin_files_skips_symlinks(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        bin_dir = hermes_home / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "ok").write_text("#!/bin/sh\n")
+        secret = tmp_path / "secret"
+        secret.write_text("nope")
+        (bin_dir / "evil").symlink_to(secret)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            files = iter_bin_files()
+
+        paths = {Path(f["host_path"]).name for f in files}
+        assert "ok" in paths
+        assert "evil" not in paths
+        assert files[0]["container_path"].startswith("/root/.hermes/bin/")
+
+    def test_prepend_bin_to_path(self):
+        env = prepend_bin_to_path({"PATH": "/usr/bin:/bin"})
+        assert env["PATH"].startswith("/root/.hermes/bin:")
+        assert "/usr/bin" in env["PATH"]
+
+        # Idempotent when already present
+        again = prepend_bin_to_path(env)
+        assert again["PATH"].count("/root/.hermes/bin") == 1
+
+        seeded = prepend_bin_to_path({})
+        assert seeded["PATH"].startswith("/root/.hermes/bin:")
+        assert "/usr/bin" in seeded["PATH"]
 
 
 class TestIterSkillsFiles:

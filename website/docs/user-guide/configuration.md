@@ -506,6 +506,13 @@ This is useful for:
 - **Receiving files** from the agent (generated code, reports, exports)
 - **Shared workspaces** where both you and the agent access the same files
 
+:::tip Sidecar CLIs under `$HERMES_HOME/bin`
+Skills that shell out to a host binary do **not** need a manual `docker_volumes`
+entry for `$HERMES_HOME/bin`. When that directory exists, Hermes auto-mounts it
+into docker/singularity sandboxes and prepends it to `PATH`. See
+[Sidecar CLI skills](/guides/sidecar-cli-skills).
+:::
+
 If you use a messaging gateway and want the agent to send generated files via
 `MEDIA:/...`, prefer a dedicated host-visible export mount such as
 `/home/user/.hermes/cache/documents:/output`.

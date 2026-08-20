@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
-from agent.skill_utils import is_excluded_skill_path
+from agent.skill_utils import is_excluded_skill_path, EXCLUDED_SKILL_DIRS
 from hermes_cli.sizefmt import format_bytes
 
 logger = logging.getLogger(__name__)
@@ -70,6 +70,21 @@ _ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d{2})?$")
 
 def _backups_dir() -> Path:
     return get_hermes_home() / "skills" / ".curator_backups"
+
+
+def _tar_filter(ti: tarfile.TarInfo):
+    """Keep virtualenvs / VCS / caches out of the snapshot.
+
+    ``tf.add(recursive=True)`` walks into everything; only the *top level* was
+    filtered before, so a skill carrying its own ``.venv`` (torch, opencv,
+    model weights) was rolled into every weekly snapshot — GBs of content that
+    is not restorable anyway, since ``pyvenv.cfg`` hard-codes absolute
+    interpreter paths. Reuses the same exclusion set the skill scanners use.
+    """
+    parts = Path(ti.name).parts
+    if any(p in EXCLUDED_SKILL_DIRS for p in parts):
+        return None
+    return ti
 
 
 def _skills_dir() -> Path:
@@ -268,7 +283,8 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
                     continue
                 # arcname: store paths relative to skills/ so extraction
                 # drops cleanly back into the skills dir.
-                tf.add(str(entry), arcname=entry.name, recursive=True)
+                tf.add(str(entry), arcname=entry.name, recursive=True,
+                       filter=_tar_filter)
         # Capture cron/jobs.json alongside the tarball. Never fails the
         # snapshot — the skills side is the core guarantee; cron is
         # additive. We still record in the manifest whether it was

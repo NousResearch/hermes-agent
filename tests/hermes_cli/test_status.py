@@ -3,6 +3,59 @@ from types import SimpleNamespace
 from hermes_cli.status import show_status
 
 
+def test_show_status_reports_matrix_with_homeserver_and_token(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+    monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "access-token")
+    monkeypatch.delenv("MATRIX_PASSWORD", raising=False)
+    monkeypatch.setenv("MATRIX_HOME_ROOM", "!home:example.org")
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Matrix        ✓ configured (home: !home:example.org)" in output
+    assert "access-token" not in output
+
+
+def test_show_status_reports_matrix_with_homeserver_and_password(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+    monkeypatch.delenv("MATRIX_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("MATRIX_PASSWORD", "password")
+    monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Matrix        ✓ configured" in output
+
+
+def test_show_status_does_not_report_matrix_without_authentication(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+    monkeypatch.delenv("MATRIX_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("MATRIX_PASSWORD", raising=False)
+    monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Matrix        ✗ not configured" in output
+
+
+def test_show_status_does_not_report_matrix_without_homeserver(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("MATRIX_HOMESERVER", raising=False)
+    monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "access-token")
+    monkeypatch.delenv("MATRIX_PASSWORD", raising=False)
+    monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Matrix        ✗ not configured" in output
+
+
 def test_show_status_all_does_not_print_tavily_key_value(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     sentinel = "NONSECRET_SENTINEL_VALUE_DO_NOT_PRINT_123456"

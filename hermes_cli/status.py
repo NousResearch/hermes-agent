@@ -9,6 +9,7 @@ import sys
 import time
 import importlib.util
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
+from collections.abc import Callable
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -488,8 +489,13 @@ def show_status(args):
     print()
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
 
-    platforms = {
+    platforms: dict[str, tuple[str | Callable[[], bool], str | None]] = {
         "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
+        "Matrix": (
+            lambda: bool(os.getenv("MATRIX_HOMESERVER", ""))
+            and (bool(os.getenv("MATRIX_ACCESS_TOKEN", "")) or bool(os.getenv("MATRIX_PASSWORD", ""))),
+            "MATRIX_HOME_ROOM",
+        ),
         "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
         "WhatsApp": ("WHATSAPP_ENABLED", None),
         "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
@@ -506,9 +512,11 @@ def show_status(args):
         "Yuanbao": ("YUANBAO_APP_ID", "YUANBAO_HOME_CHANNEL"),
     }
 
-    for name, (token_var, home_var) in platforms.items():
-        token = os.getenv(token_var, "")
-        has_token = bool(token)
+    for name, (credential, home_var) in platforms.items():
+        if isinstance(credential, str):
+            configured = bool(os.getenv(credential, ""))
+        else:
+            configured = credential()
         
         home_channel = ""
         if home_var:
@@ -517,11 +525,11 @@ def show_status(args):
         if not home_channel and home_var == "QQBOT_HOME_CHANNEL":
             home_channel = os.getenv("QQ_HOME_CHANNEL", "")
         
-        status = "configured" if has_token else "not configured"
+        status = "configured" if configured else "not configured"
         if home_channel:
             status += f" (home: {home_channel})"
         
-        print(f"  {name:<12}  {check_mark(has_token)} {status}")
+        print(f"  {name:<12}  {check_mark(configured)} {status}")
 
     # Plugin-registered platforms
     try:

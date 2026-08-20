@@ -131,6 +131,43 @@ def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[str]:
     return v if isinstance(v, str) else None
 
 
+def maybe_date_change_note(agent: Any, now: Any = None) -> str:
+    """Return a one-line date-change note when the session crossed midnight.
+
+    The system prompt bakes in ``Conversation started: <date>`` and is
+    byte-stable for the life of a conversation (prompt-cache invariant), so a
+    session that runs past midnight leaves the model with a stale idea of
+    today's date. This helper tracks the last date the model was told about
+    on ``agent._last_known_date`` and, when the wall-clock date has moved on,
+    emits a note for the current user message's API-bound copy (the
+    ``api_content`` sidecar channel — persisted and replayed byte-for-byte,
+    so the cache prefix never diverges).
+
+    Seeding is quiet: the first call on a fresh or restored agent records
+    today without announcing (matching the source behavior in
+    MoonshotAI/kimi-code#2564 — a profile with no recorded date seeds
+    silently so only genuine rollovers announce).
+    """
+    try:
+        from datetime import datetime
+
+        current = (now or datetime.now()).strftime("%A, %B %d, %Y")
+    except Exception:
+        return ""
+    last = getattr(agent, "_last_known_date", None)
+    try:
+        agent._last_known_date = current
+    except Exception:
+        pass
+    if last is None or last == current:
+        return ""
+    return (
+        f"[System note: the date has changed since this conversation's "
+        f"context was established. It is now {current} (was {last}). "
+        f"Use the new date for any date-sensitive reasoning.]"
+    )
+
+
 def consume_gateway_turn_context_notes(agent: Any) -> str:
     """Pop the gateway's per-turn must-deliver notes off the agent (one-shot).
 
@@ -1289,6 +1326,15 @@ def build_turn_context(
     # Multimodal (list) content can't take the string sidecar — append a
     # durable text part instead of dropping the fact.
     _gateway_notes = consume_gateway_turn_context_notes(agent)
+    # Date-change note (ported from MoonshotAI/kimi-code#2564): the system
+    # prompt's "Conversation started:" date is byte-stable for cache
+    # integrity, so announce midnight rollovers on the same per-turn user-
+    # message channel instead of touching the prompt.
+    _date_note = maybe_date_change_note(agent)
+    if _date_note:
+        _gateway_notes = (
+            _gateway_notes + "\n\n" + _date_note if _gateway_notes else _date_note
+        )
     if _gateway_notes:
         _gw_turn_content = (
             messages[current_turn_user_idx].get("content")

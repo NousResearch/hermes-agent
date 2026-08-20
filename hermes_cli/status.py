@@ -44,6 +44,11 @@ def redact_key(key: str) -> str:
     return mask_secret(key, empty=color("(not set)", Colors.DIM))
 
 
+def _redacted_home_channel(value: str) -> str:
+    """Mask message delivery targets in shareable status output."""
+    return "[redacted]" if value else ""
+
+
 def _format_iso_timestamp(value) -> str:
     """Format ISO timestamps for status output, converting to local timezone."""
     if not value or not isinstance(value, str):
@@ -519,7 +524,7 @@ def show_status(args):
         
         status = "configured" if has_token else "not configured"
         if home_channel:
-            status += f" (home: {home_channel})"
+            status += f" (home: {_redacted_home_channel(home_channel)})"
         
         print(f"  {name:<12}  {check_mark(has_token)} {status}")
 

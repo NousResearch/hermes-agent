@@ -845,6 +845,103 @@ def contacts_list(args):
     print(json.dumps(contacts, indent=2, ensure_ascii=False))
 
 
+def _build_contact_body(args) -> dict:
+    """args → People API person body dict."""
+    body: dict = {}
+
+    # names
+    given = getattr(args, "given_name", "") or ""
+    family = getattr(args, "family_name", "") or ""
+    if given or family:
+        body["names"] = [{"givenName": given, "familyName": family}]
+
+    # emailAddresses
+    email = getattr(args, "email", "") or ""
+    if email:
+        body["emailAddresses"] = [{"value": e.strip()} for e in email.split(",") if e.strip()]
+
+    # phoneNumbers
+    phone = getattr(args, "phone", "") or ""
+    if phone:
+        body["phoneNumbers"] = [{"value": p.strip()} for p in phone.split(",") if p.strip()]
+
+    # notes -> biographies mapping
+    # notes field is read-only in Google People API, use biographies instead
+    notes = getattr(args, "notes", "") or ""
+    if notes:
+        body["biographies"] = [{"value": notes}]
+
+    return body
+
+
+def contacts_create(args):
+    """Create a new contact."""
+    body = _build_contact_body(args)
+    if not body:
+        print("ERROR: At least one of --given-name, --email, or --phone is required.", file=sys.stderr)
+        sys.exit(1)
+
+    service = build_service("people", "v1")
+    result = service.people().createContact(body=body).execute()
+    print(json.dumps({
+        "status": "created",
+        "resourceName": result.get("resourceName", ""),
+        "name": result.get("names", [{}])[0].get("displayName", "") if result.get("names") else "",
+        "emails": [e.get("value", "") for e in result.get("emailAddresses", [])],
+        "phones": [p.get("value", "") for p in result.get("phoneNumbers", [])],
+    }, indent=2, ensure_ascii=False))
+
+
+def contacts_update(args):
+    """Update an existing contact by resourceName."""
+    service = build_service("people", "v1")
+
+    # Fetch current person to get etag
+    existing = service.people().get(
+        resourceName=args.resource_name,
+        personFields="names,emailAddresses,phoneNumbers,biographies",
+    ).execute()
+
+    # Build update body with etag
+    body = _build_contact_body(args)
+    if not body:
+        print("ERROR: At least one of --given-name, --family-name, --email, --phone, or --notes is required.", file=sys.stderr)
+        sys.exit(1)
+    body["etag"] = existing.get("etag", "")
+
+    # Determine which fields to update
+    update_fields = []
+    if "names" in body:
+        update_fields.append("names")
+    if "emailAddresses" in body:
+        update_fields.append("emailAddresses")
+    if "phoneNumbers" in body:
+        update_fields.append("phoneNumbers")
+    if "biographies" in body:
+        update_fields.append("biographies")
+
+    result = service.people().updateContact(
+        resourceName=args.resource_name,
+        updatePersonFields=",".join(update_fields),
+        body=body,
+    ).execute()
+
+    print(json.dumps({
+        "status": "updated",
+        "resourceName": result.get("resourceName", ""),
+        "name": result.get("names", [{}])[0].get("displayName", "") if result.get("names") else "",
+        "emails": [e.get("value", "") for e in result.get("emailAddresses", [])],
+        "phones": [p.get("value", "") for p in result.get("phoneNumbers", [])],
+    }, indent=2, ensure_ascii=False))
+
+
+def contacts_delete(args):
+    """Delete a contact by resourceName."""
+    service = build_service("people", "v1")
+    service.people().deleteContact(resourceName=args.resource_name).execute()
+    print(json.dumps({"status": "deleted", "resourceName": args.resource_name}, indent=2))
+
+
 # =========================================================================
 # Sheets
 # =========================================================================
@@ -1172,6 +1269,26 @@ def main():
     p = con_sub.add_parser("list")
     p.add_argument("--max", type=int, default=50)
     p.set_defaults(func=contacts_list)
+
+    p = con_sub.add_parser("create")
+    p.add_argument("--given-name", dest="given_name", default="", help="이름 (given name)")
+    p.add_argument("--family-name", dest="family_name", default="", help="성 (family name)")
+    p.add_argument("--email", default="", help="이메일 (콤마로 여러 개 가능)")
+    p.add_argument("--phone", default="", help="전화번호 (콤마로 여러 개 가능)")
+    p.set_defaults(func=contacts_create)
+
+    p = con_sub.add_parser("update")
+    p.add_argument("resource_name", help="people/cXXXX 형식의 resourceName")
+    p.add_argument("--given-name", dest="given_name", default="")
+    p.add_argument("--family-name", dest="family_name", default="")
+    p.add_argument("--email", default="", help="이메일 (콤마로 여러 개 가능, 기존 값 전체 교체)")
+    p.add_argument("--phone", default="", help="전화번호 (콤마로 여러 개 가능, 기존 값 전체 교체)")
+    p.add_argument("--notes", default="", help="메모/주석 추가 (biographies 필드에 저장)")
+    p.set_defaults(func=contacts_update)
+
+    p = con_sub.add_parser("delete")
+    p.add_argument("resource_name", help="people/cXXXX 형식의 resourceName")
+    p.set_defaults(func=contacts_delete)
 
     # --- Sheets ---
     sh = sub.add_parser("sheets")

@@ -410,6 +410,19 @@ class GatewayAuthorizationMixin:
 
         adapter_profile = self._adapter_profile_for_source(source)
 
+        # External resource authorization is an adapter-owned edge check.  It
+        # runs after transport/upstream trust but before ordinary allowlists so
+        # an allowlist cannot bypass a configured remote membership policy.
+        adapter = self._authorization_adapter(source.platform, adapter_profile)
+        if adapter is not None:
+            try:
+                required = getattr(adapter, "external_resource_authorization_required", None)
+                check = getattr(adapter, "external_resource_authorized", None)
+                if callable(required) and required() and callable(check) and not check(source):
+                    return False
+            except Exception:
+                return False
+
         # Relay (and any adapter whose authorization is enforced by a trusted
         # authenticated upstream): the Team Gateway connector authenticates this
         # gateway's WS with a per-instance secret and resolves owner-only author

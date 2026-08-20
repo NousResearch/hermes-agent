@@ -213,6 +213,41 @@ class TestSlackAdapterPluginActionWiring:
         assert "hermes_approve_once" in action_ids
 
 
+    @pytest.mark.parametrize("authorized", [False, True])
+    def test_plugin_callback_is_gated_before_invocation(self, authorized):
+        """The connected wrapper denies/permits the real plugin callback path."""
+        callback = AsyncMock()
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+        adapter._authorize_interactive_user = AsyncMock(return_value=authorized)
+
+        _result, registered = _connect_with_recording_app(
+            adapter,
+            plugin_handlers=[("plugin_action", callback, "test_plugin")],
+        )
+        wrapped = dict(registered)["plugin_action"]
+        ack = AsyncMock()
+        body = {
+            "user": {"id": "U_CLICK", "name": "clicker"},
+            "channel": {"id": "D123"},
+            "team": {"id": "T123"},
+        }
+        asyncio.run(wrapped(ack, body, {"action_id": "plugin_action"}))
+
+        adapter._authorize_interactive_user.assert_awaited_once_with(
+            "U_CLICK",
+            channel_id="D123",
+            user_name="clicker",
+            team_id="T123",
+        )
+        if authorized:
+            callback.assert_awaited_once_with(
+                ack, body, {"action_id": "plugin_action"}
+            )
+        else:
+            callback.assert_not_awaited()
+            ack.assert_awaited_once_with()
+
     def test_plugin_loader_failure_does_not_break_connect(self):
         """If get_plugin_manager() blows up, connect() must still succeed.
 

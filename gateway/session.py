@@ -218,6 +218,10 @@ class SessionSource:
     # deliberately excluded from ``to_dict``/``from_dict`` so a peer can never
     # forge it across the wire or have it restored from persistence.
     delivered_via_upstream_relay: bool = False
+    # Local-only result of an adapter's external resource authorization check.
+    # Deliberately excluded from wire/persistence serialization: a remote event
+    # must never be able to assert this trust decision.
+    external_resource_authorized: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # D-Q2.5 dual-field reconciliation: `scope_id` is canonical, `guild_id`

@@ -2985,6 +2985,14 @@ class BasePlatformAdapter(ABC):
     # generic seam; Slack is merely the first consumer).
     supports_inchannel_continuable: bool = False
 
+    def external_resource_authorization_required(self) -> bool:
+        """Whether this adapter requires a remote resource-membership check."""
+        return False
+
+    def external_resource_authorized(self, source: Any) -> bool:
+        """Return the local, non-wire authorization result for *source*."""
+        return True
+
     # Whether a human is interactively present on this platform to answer a
     # "session restored — what next?" prompt.  The startup auto-resume turn
     # (``_schedule_resume_pending_sessions`` → the ``_is_resume_pending``

@@ -513,7 +513,15 @@ class RelayAdapter(BasePlatformAdapter):
                     "draft_id": draft_id,
                     "content": content,
                     "final": False,
-                    "metadata": self._with_scope(chat_id, dict(metadata or {})),
+                    # Boundary rule (observed in live relay testing): the draft lane
+                    # is a text egress lane like send/edit — a streamed final
+                    # can only render blocks if its frames carry the hint.
+                    "metadata": self._with_scope(
+                        chat_id,
+                        self._with_format_hints_for_chat(
+                            chat_id, dict(metadata or {})
+                        ),
+                    ),
                 },
                 platform=self._platform_by_chat.get(str(chat_id)),
             )
@@ -576,7 +584,13 @@ class RelayAdapter(BasePlatformAdapter):
             "draft_id": draft_id,
             "content": content,
             "final": True,
-            "metadata": self._with_scope(chat_id, dict(metadata or {})),
+            # Same boundary rule as the interim frame: the SEAL frame is the
+            # one the connector's block reconcile reads — a hintless seal is
+            # exactly the plain-code-block downgrade seen in live relay testing.
+            "metadata": self._with_scope(
+                chat_id,
+                self._with_format_hints_for_chat(chat_id, dict(metadata or {})),
+            ),
         }
         _seal_platform = self._platform_by_chat.get(str(chat_id))
         _transport = self._transport  # narrowed by the None-guard above

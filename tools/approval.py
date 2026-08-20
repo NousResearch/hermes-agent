@@ -4891,7 +4891,11 @@ def check_all_command_guards(command: str, env_type: str,
                 "command": _disp_command,
                 "description": _disp_combined_desc,
                 "message": (
-                    f"⚠️ {_disp_combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{_disp_command}\n```"
+                    f"⚠️ {_disp_combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{_disp_command}\n```\n\n"
+                    "STOP: do NOT re-run, rephrase, or re-issue this command — each "
+                    "variant sends the user ANOTHER approval card. Wait for the "
+                    "user's decision; if this turn must end, report that approval "
+                    "is pending."
                 ),
             }
             if smart_denied_for_owner:
@@ -5320,7 +5324,11 @@ def check_execute_code_guard(code: str, env_type: str,
             "description": display_description,
             "message": (
                 f"⚠️ {display_description}. Asking the user for approval.\n\n"
-                f"**Code:**\n```python\n{display_code}\n```"
+                f"**Code:**\n```python\n{display_code}\n```\n\n"
+                "STOP: do NOT re-run, rephrase, or re-issue this code — each "
+                "variant sends the user ANOTHER approval card. Wait for the "
+                "user's decision; if this turn must end, report that approval "
+                "is pending."
             ),
         }
         if smart_denied_for_owner:

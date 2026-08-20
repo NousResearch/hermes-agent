@@ -245,13 +245,13 @@ class _PluginOverridePolicy:
 # ---------------------------------------------------------------------------
 # check_fn TTL cache
 #
-# check_fn callables like tools/terminal_tool.check_terminal_requirements
-# probe external state (Docker daemon, Modal SDK install, playwright binary
+# external state (Docker daemon, Modal SDK install, playwright binary
 # availability). For a long-lived CLI or gateway process, calling them on
 # every get_definitions() is pure waste — external state changes on human
 # timescales. Cache results for ~30 s so env-var flips via ``hermes tools``
 # or live credential file changes propagate within a turn or two without
 # requiring any explicit invalidation.
+#
 #
 # Transient-failure suppression (issue #21658 / #5304): these probes can flap.
 # A single ``subprocess.run([docker, "version"], timeout=5)`` that times out
@@ -273,10 +273,16 @@ _CHECK_FN_TTL_SECONDS = 30.0
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
 _CHECK_FN_CACHE_MAX = 512
 _check_fn_cache: Dict[tuple[Callable, Optional[str]], tuple[float, bool]] = {}
-# Monotonic timestamp of the most recent True result per check_fn.
 _check_fn_last_good: Dict[tuple[Callable, Optional[str]], float] = {}
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
+_NO_CACHE_CHECK_FNS: Set[Callable] = set()
+
+
+def no_cache_check_fn(fn: Callable) -> Callable:
+    """Mark a local, config-backed availability check as uncached."""
+    _NO_CACHE_CHECK_FNS.add(fn)
+    return fn
 
 
 def _prune_check_fn_caches(now: float) -> None:
@@ -322,15 +328,18 @@ def check_fn_cache_scope() -> Optional[str]:
 
 
 def _check_fn_cached(fn: Callable) -> bool:
-    """Return bool(fn()), TTL-cached across calls.
-
-    Exceptions are swallowed as False. A transient False/exception within
-    ``_CHECK_FN_FAILURE_GRACE_SECONDS`` of the last True is suppressed (the
-    last-good True is returned and the failure is NOT cached, so the next call
-    re-probes) to keep flaky external checks (Docker daemon busy, socket
-    contention, probe timeout) from silently stripping tools mid-session.
-    """
+    """Return bool(fn()), TTL-cached across calls."""
     now = time.monotonic()
+    if fn in _NO_CACHE_CHECK_FNS:
+        try:
+            return bool(fn())
+        except Exception:
+            logger.warning(
+                "check_fn %s raised; dependent tools will be unavailable this turn",
+                getattr(fn, "__qualname__", fn),
+                exc_info=True,
+            )
+            return False
     scope = check_fn_cache_scope()
     if scope == CHECK_FN_CACHE_BYPASS:
         try:

@@ -32,6 +32,7 @@ from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_write_text
+from tools.registry import no_cache_check_fn
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -1143,31 +1144,38 @@ def memory_tool(
     return json.dumps(result, ensure_ascii=False)
 
 
-def builtin_memory_stores_enabled() -> bool:
-    """Return whether either built-in store (MEMORY.md / USER.md) is enabled.
+def get_builtin_memory_store_flags(config: Optional[Dict[str, Any]] = None) -> Tuple[bool, bool]:
+    """Return ``(memory_enabled, user_profile_enabled)`` from resolved config.
 
-    ``agent_init`` only builds a ``MemoryStore`` when at least one of
-    ``memory.memory_enabled`` / ``memory.user_profile_enabled`` is true, so with
-    both off the tool dispatches against ``store=None`` and every call fails
-    with "Memory is not available".
-
-    Fails open when config can't be read: an unreadable config must not strip a
-    tool that would otherwise work.
+    ``agent_init`` uses this same predicate to decide whether to construct the
+    ``MemoryStore`` that backs the tool. Missing or unreadable config fails open
+    so availability checks do not remove a tool that would otherwise work.
     """
-    try:
-        from hermes_cli.config import load_config_readonly
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
 
-        section = (load_config_readonly() or {}).get("memory")
-        if not isinstance(section, dict):
-            return True
-        return bool(section.get("memory_enabled", True)) or bool(
-            section.get("user_profile_enabled", True)
-        )
-    except Exception:
-        logger.debug("Could not read memory config for availability", exc_info=True)
-        return True
+            config = load_config_readonly()
+        except Exception:
+            logger.debug("Could not read memory config for availability", exc_info=True)
+            return True, True
+
+    section = config.get("memory") if isinstance(config, dict) else None
+    if not isinstance(section, dict):
+        return True, True
+    return (
+        bool(section.get("memory_enabled", True)),
+        bool(section.get("user_profile_enabled", True)),
+    )
 
 
+def builtin_memory_stores_enabled() -> bool:
+    """Return whether either built-in store (MEMORY.md / USER.md) is enabled."""
+    memory_enabled, user_profile_enabled = get_builtin_memory_store_flags()
+    return memory_enabled or user_profile_enabled
+
+
+@no_cache_check_fn
 def check_memory_requirements() -> bool:
     """Available unless both built-in memory stores are disabled in config."""
     return builtin_memory_stores_enabled()

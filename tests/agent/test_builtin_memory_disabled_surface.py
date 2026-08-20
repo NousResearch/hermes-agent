@@ -74,6 +74,23 @@ class TestBuiltinMemoryToolAvailability:
         """No config file at all must not strip a working tool."""
         assert "memory" in _memory_tool_names()
 
+    def test_missing_memory_flags_fail_open_consistently(self):
+        from tools.memory_tool import get_builtin_memory_store_flags
+
+        assert get_builtin_memory_store_flags({"memory": {}}) == (True, True)
+        assert get_builtin_memory_store_flags({}) == (True, True)
+
+    def test_config_flip_updates_tool_without_manual_cache_clear(self, hermes_home):
+        _write_memory_config(
+            hermes_home, memory_enabled=False, user_profile_enabled=False
+        )
+        assert "memory" not in _memory_tool_names()
+
+        _write_memory_config(
+            hermes_home, memory_enabled=True, user_profile_enabled=False
+        )
+        assert "memory" in _memory_tool_names()
+
     def test_unreadable_config_fails_open(self, hermes_home, monkeypatch):
         """A config read error must not silently remove the tool."""
         from tools import memory_tool as memory_tool_module

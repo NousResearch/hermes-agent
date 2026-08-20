@@ -25,8 +25,11 @@ thread, so an in-process import would not reproduce the bug).
 
 import subprocess
 import sys
+from pathlib import Path
 
-REPO_ROOT = "."
+# Derive from __file__ so the test is not cwd-dependent (works regardless of
+# where pytest is invoked from). Sibling tests use the identical pattern.
+REPO_ROOT = str(Path(__file__).resolve().parents[2])
 
 
 def _spawn_worker_import_entry():
@@ -50,8 +53,12 @@ def _spawn_worker_import_entry():
         "    sys.stdout.write('IMPORT_FAILED: ' + errs[0] + '\\n')\n"
         "    sys.exit(2)\n"
         "# main thread of this process still installs SIGPIPE handler\n"
-        "h = signal.getsignal(signal.SIGPIPE)\n"
-        "sys.stdout.write('OK handler_installed=' + str(h is signal.SIG_IGN or callable(h)) + '\\n')\n"
+        "# SIGPIPE is POSIX-only; guard so the probe works on Windows.\n"
+        "if hasattr(signal, 'SIGPIPE'):\n"
+        "    h = signal.getsignal(signal.SIGPIPE)\n"
+        "    sys.stdout.write('OK handler_installed=' + str(h is signal.SIG_IGN or callable(h)) + '\\n')\n"
+        "else:\n"
+        "    sys.stdout.write('OK no_sigpipe_on_platform\\n')\n"
         "sys.exit(0)\n"
     )
     proc = subprocess.run(

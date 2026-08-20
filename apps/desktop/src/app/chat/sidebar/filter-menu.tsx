@@ -63,6 +63,8 @@ import { $unreadFinishedSessionIds, markAllSessionsRead } from '@/store/session'
 import type { SessionStatusBucket } from '@/store/session-dot-state'
 import { $sessionsHaveCost } from '@/store/sidebar-archive'
 
+import type { Translations } from '@/i18n/types'
+
 interface Option<T extends string = string> {
   /** A status dot's full className, from the row's own vocabulary. */
   dot?: string
@@ -71,46 +73,58 @@ interface Option<T extends string = string> {
   label: string
 }
 
-const GROUPINGS: Option<SidebarGrouping>[] = [
-  { icon: 'clock', id: 'date', label: 'Updated' },
-  { icon: 'root-folder', id: 'project', label: 'Project' },
-  { icon: 'pulse', id: 'status', label: 'Status' },
-  { icon: 'account', id: 'profile', label: 'Profile' }
-]
+type SidebarFilterTranslations = Translations['sidebar']['filter']
 
-const ORDERINGS: Option<SidebarOrdering>[] = [
-  { icon: 'clock', id: 'updated', label: 'Updated' },
-  { icon: 'add', id: 'created', label: 'Created' },
-  { icon: 'pulse', id: 'status', label: 'Status' },
-  { icon: 'symbol-numeric', id: 'tokens', label: 'Tokens' },
-  { icon: 'credit-card', id: 'cost', label: 'Cost' },
-  { icon: 'list-ordered', id: 'manual', label: 'Manual' }
-]
+function buildGroupings(t: SidebarFilterTranslations): Option<SidebarGrouping>[] {
+  return [
+    { icon: 'clock', id: 'date', label: t.date },
+    { icon: 'root-folder', id: 'project', label: t.project },
+    { icon: 'pulse', id: 'status', label: t.status },
+    { icon: 'account', id: 'profile', label: t.profile }
+  ]
+}
 
-const ROW_META: Option<SidebarRowMeta>[] = [
-  { icon: 'clock', id: 'updated', label: 'Updated' },
-  { icon: 'comment', id: 'preview', label: 'Preview' },
-  { icon: 'symbol-numeric', id: 'tokens', label: 'Tokens' },
-  { icon: 'credit-card', id: 'cost', label: 'Cost' },
-  { icon: 'git-pull-request', id: 'pr', label: 'PR' },
-  { icon: 'account', id: 'profile', label: 'Profile' }
-]
+function buildOrderings(t: SidebarFilterTranslations): Option<SidebarOrdering>[] {
+  return [
+    { icon: 'clock', id: 'updated', label: t.updated },
+    { icon: 'add', id: 'created', label: t.created },
+    { icon: 'pulse', id: 'status', label: t.status },
+    { icon: 'symbol-numeric', id: 'tokens', label: t.tokens },
+    { icon: 'credit-card', id: 'cost', label: t.cost },
+    { icon: 'list-ordered', id: 'manual', label: t.manual }
+  ]
+}
 
-const PR_FILTERS: Option<PullRequestBucket>[] = [
-  { icon: 'git-pull-request', id: 'open', label: 'Open' },
-  { icon: 'git-pull-request-draft', id: 'draft', label: 'Draft' },
-  { icon: 'git-merge', id: 'merged', label: 'Merged' },
-  { icon: 'git-pull-request-closed', id: 'closed', label: 'Closed' },
-  { icon: 'circle-slash', id: 'none', label: 'No PR' }
-]
+function buildRowMeta(t: SidebarFilterTranslations): Option<SidebarRowMeta>[] {
+  return [
+    { icon: 'clock', id: 'updated', label: t.updated },
+    { icon: 'comment', id: 'preview', label: t.preview },
+    { icon: 'symbol-numeric', id: 'tokens', label: t.tokens },
+    { icon: 'credit-card', id: 'cost', label: t.cost },
+    { icon: 'git-pull-request', id: 'pr', label: t.pr },
+    { icon: 'account', id: 'profile', label: t.profile }
+  ]
+}
 
-const STATUS_FILTERS: Option<SessionStatusBucket>[] = [
-  { dot: sessionDotClassName('needs-input'), id: 'needs-input', label: 'Needs input' },
-  { dot: sessionDotClassName('working'), id: 'working', label: 'Working' },
-  { dot: sessionDotClassName('unread'), id: 'unread', label: 'Unread' },
-  { dot: sessionDotClassName('draft'), id: 'draft', label: 'Draft' },
-  { dot: cn(sessionDotClassName('idle'), 'bg-(--ui-text-quaternary)'), id: 'idle', label: 'Idle' }
-]
+function buildPrFilters(t: SidebarFilterTranslations): Option<PullRequestBucket>[] {
+  return [
+    { icon: 'git-pull-request', id: 'open', label: t.open },
+    { icon: 'git-pull-request-draft', id: 'draft', label: t.draft },
+    { icon: 'git-merge', id: 'merged', label: t.merged },
+    { icon: 'git-pull-request-closed', id: 'closed', label: t.closed },
+    { icon: 'circle-slash', id: 'none', label: t.noPR }
+  ]
+}
+
+function buildStatusFilters(t: SidebarFilterTranslations): Option<SessionStatusBucket>[] {
+  return [
+    { dot: sessionDotClassName('needs-input'), id: 'needs-input', label: t.needsInput },
+    { dot: sessionDotClassName('working'), id: 'working', label: t.working },
+    { dot: sessionDotClassName('unread'), id: 'unread', label: t.unread },
+    { dot: sessionDotClassName('draft'), id: 'draft', label: t.draft },
+    { dot: cn(sessionDotClassName('idle'), 'bg-(--ui-text-quaternary)'), id: 'idle', label: t.idle }
+  ]
+}
 
 function OptionGlyph({ option }: { option: Option }) {
   if (option.dot) {
@@ -150,6 +164,7 @@ function OptionRadio({ option }: { option: Option }) {
 
 export function SidebarFilterMenu({ className }: { className?: string }) {
   const { t } = useI18n()
+  const f = t.sidebar.filter
   const grouping = useStore($sidebarGrouping)
   const ordering = useStore($sidebarOrdering)
   const rowMeta = useStore($sidebarRowMeta)
@@ -176,12 +191,18 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   // been explicitly shut.
   const projectsCollapsed = projects.length > 0 && projects.every(project => nodeOpen[project.id] === false)
 
-  const groupingLabel = GROUPINGS.find(option => option.id === grouping)?.label
+  const groupings = buildGroupings(f)
+  const allOrderings = buildOrderings(f)
+  const allRowMeta = buildRowMeta(f)
+  const prFilters = buildPrFilters(f)
+  const statusFilters = buildStatusFilters(f)
+
+  const groupingLabel = groupings.find(option => option.id === grouping)?.label
 
   // Two options are conditional: dragging a row is what picks manual, so it
   // only appears as a way back out once there's a hand-picked order to leave;
   // and cost is hidden until some session actually reports spend.
-  const orderings = ORDERINGS.filter(option => {
+  const orderings = allOrderings.filter(option => {
     if (option.id === 'manual') {
       return ordering === 'manual'
     }
@@ -189,7 +210,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
     return option.id !== 'cost' || hasCost || ordering === 'cost'
   })
 
-  const rowMetaOptions = ROW_META.filter(option => {
+  const rowMetaOptions = allRowMeta.filter(option => {
     if (option.id === 'cost') {
       return hasCost || rowMeta.includes('cost')
     }
@@ -206,7 +227,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
-          aria-label="Filters"
+          aria-label={f.trigger}
           className={cn(
             className,
             'data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100',
@@ -227,7 +248,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
         <DropdownMenuGroup>
           <DropdownMenuSub>
             <DropdownMenuSubTrigger hideChevron>
-              Grouping
+              {f.grouping}
               <span className="ml-auto flex items-center gap-1 pl-4 text-(--ui-text-tertiary)">
                 {groupingLabel}
                 <Codicon name="chevron-right" size="1rem" />
@@ -238,7 +259,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
                 onValueChange={value => setSidebarGrouping(value as SidebarGrouping)}
                 value={grouping}
               >
-                {GROUPINGS.map(option => (
+                {groupings.map(option => (
                   <OptionRadio key={option.id} option={option} />
                 ))}
               </DropdownMenuRadioGroup>
@@ -246,7 +267,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
           </DropdownMenuSub>
 
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger>Ordering</DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger>{f.ordering}</DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
               <DropdownMenuRadioGroup
                 onValueChange={value => setSidebarOrdering(value as SidebarOrdering)}
@@ -260,7 +281,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
           </DropdownMenuSub>
 
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger>Show</DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger>{f.show}</DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
               {rowMetaOptions.map(option => (
                 <OptionCheckbox
@@ -278,19 +299,19 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
           <OptionCheckbox
             checked={cardRows}
             onCheck={() => setSidebarCardRows(!cardRows)}
-            option={{ icon: 'inbox', id: 'card-rows', label: 'Inbox style' }}
+            option={{ icon: 'inbox', id: 'card-rows', label: f.inboxStyle }}
           />
         </DropdownMenuGroup>
 
         <DropdownMenuSeparator />
 
         <DropdownMenuGroup>
-          <DropdownMenuLabel>Filters</DropdownMenuLabel>
+          <DropdownMenuLabel>{f.filters}</DropdownMenuLabel>
 
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger>Status</DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger>{f.status}</DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
-              {STATUS_FILTERS.map(option => (
+              {statusFilters.map(option => (
                 <OptionCheckbox
                   checked={statusFilter.includes(option.id)}
                   key={option.id}
@@ -305,9 +326,9 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
               this submenu never appears rather than filtering everything out. */}
           {prAvailable && (
             <DropdownMenuSub>
-              <DropdownMenuSubTrigger>Pull request</DropdownMenuSubTrigger>
+              <DropdownMenuSubTrigger>{f.pullRequest}</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
-                {PR_FILTERS.map(option => (
+                {prFilters.map(option => (
                   <OptionCheckbox
                     checked={prFilter.includes(option.id)}
                     key={option.id}
@@ -320,7 +341,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
           )}
 
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger>Profile</DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger>{f.profile}</DropdownMenuSubTrigger>
             <DropdownMenuSubContent className="max-h-80 overflow-y-auto">
               {/* Scoped to one profile the rail is already the filter, so the
                   per-profile boxes only appear where they can narrow something.
@@ -347,7 +368,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
 
           {projects.length > 1 && (
             <DropdownMenuSub>
-              <DropdownMenuSubTrigger>Project</DropdownMenuSubTrigger>
+              <DropdownMenuSubTrigger>{f.project}</DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="max-h-80 overflow-y-auto">
                 {projects.map(project => (
                   <OptionCheckbox
@@ -382,12 +403,12 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
           <OptionCheckbox
             checked={showArchived}
             onCheck={() => setSidebarShowArchived(!showArchived)}
-            option={{ id: 'archived', label: 'Archived' }}
+            option={{ id: 'archived', label: f.archived }}
           />
 
           {/* One way back rather than two near-identical ones: this drops the
               grouping and sort too, which "clear filters" left behind. */}
-          {viewCustomized && <DropdownMenuItem onSelect={resetSidebarView}>Reset to defaults</DropdownMenuItem>}
+          {viewCustomized && <DropdownMenuItem onSelect={resetSidebarView}>{f.resetToDefaults}</DropdownMenuItem>}
         </DropdownMenuGroup>
 
         <DropdownMenuSeparator />
@@ -405,11 +426,11 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
               )
             }
           >
-            {projectsCollapsed ? 'Expand all' : 'Collapse all'}
+            {projectsCollapsed ? f.expandAll : f.collapseAll}
           </DropdownMenuItem>
         )}
         <DropdownMenuItem disabled={unreadIds.length === 0} onSelect={markAllSessionsRead}>
-          Mark all as read
+          {f.markAllAsRead}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

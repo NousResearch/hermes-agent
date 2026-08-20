@@ -1873,6 +1873,40 @@ export interface Translations {
       ageHour: string
       ageMin: string
     }
+    filter: {
+      trigger: string
+      grouping: string
+      ordering: string
+      show: string
+      filters: string
+      status: string
+      pullRequest: string
+      profile: string
+      project: string
+      archived: string
+      markAllAsRead: string
+      resetToDefaults: string
+      expandAll: string
+      collapseAll: string
+      inboxStyle: string
+      updated: string
+      created: string
+      tokens: string
+      cost: string
+      manual: string
+      preview: string
+      pr: string
+      date: string
+      needsInput: string
+      working: string
+      unread: string
+      draft: string
+      idle: string
+      open: string
+      merged: string
+      closed: string
+      noPR: string
+    }
     dateDivider: {
       today: string
       yesterday: string

@@ -1737,6 +1737,51 @@ export const ar = defineLocale({
       ageDay: 'يوم',
       ageHour: 'ساعة',
       ageMin: 'دقيقة'
+    },
+    filter: {
+      trigger: 'تصفية',
+      grouping: 'تجميع',
+      ordering: 'ترتيب',
+      show: 'إظهار',
+      filters: 'تصفية',
+      status: 'الحالة',
+      pullRequest: 'طلب سحب',
+      profile: 'الملف الشخصي',
+      project: 'المشروع',
+      archived: 'مؤرشف',
+      markAllAsRead: 'تحديد الكل كمقروء',
+      resetToDefaults: 'إعادة تعيين إلى الافتراضي',
+      expandAll: 'توسيع الكل',
+      collapseAll: 'طي الكل',
+      inboxStyle: 'نمط البريد الوارد',
+      updated: 'محدّث',
+      created: 'أُنشئ',
+      tokens: 'الرموز',
+      cost: 'التكلفة',
+      manual: 'يدوي',
+      preview: 'معاينة',
+      pr: 'PR',
+      date: 'التاريخ',
+      needsInput: 'يحتاج إدخالاً',
+      working: 'يعمل',
+      unread: 'غير مقروء',
+      draft: 'مسودة',
+      idle: 'خامل',
+      open: 'مفتوح',
+      merged: 'مدمج',
+      closed: 'مغلق',
+      noPR: 'لا يوجد PR'
+    },
+    dateDivider: {
+      today: 'اليوم مبكرًا',
+      yesterday: 'أمس',
+      thisWeek: 'هذا الأسبوع مبكرًا',
+      lastWeek: 'الأسبوع الماضي',
+      thisMonth: 'هذا الشهر مبكرًا'
+    },
+    statusDivider: {
+      working: 'يعمل',
+      done: 'تم'
     }
   },
   composer: {

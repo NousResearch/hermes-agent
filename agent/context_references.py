@@ -106,6 +106,13 @@ _SENSITIVE_HOME_FILES = (
     Path(".npmrc"),
     Path(".pypirc"),
 )
+_TEXT_ATTACHMENT_BOMS = (
+    (b"\xff\xfe\x00\x00", "utf-32"),
+    (b"\x00\x00\xfe\xff", "utf-32"),
+    (b"\xff\xfe", "utf-16"),
+    (b"\xfe\xff", "utf-16"),
+    (b"\xef\xbb\xbf", "utf-8-sig"),
+)
 
 
 @dataclass(frozen=True)
@@ -387,7 +394,7 @@ def _expand_file_reference(
         # so it can read/convert/view the file itself.
         return None, _binary_reference_block(ref, path)
 
-    text = path.read_text(encoding="utf-8")
+    text, encoding = _read_text_attachment(path)
     if ref.line_start is not None:
         lines = text.splitlines()
         start_idx = max(ref.line_start - 1, 0)
@@ -395,8 +402,33 @@ def _expand_file_reference(
         text = "\n".join(lines[start_idx:end_idx])
 
     lang = _code_fence_language(path)
-    label = ref.raw
+    label = ref.raw if encoding == "utf-8" else f"{ref.raw} (decoded as {encoding})"
     return None, f"📄 {label} ({estimate_tokens_rough(text)} tokens)\n```{lang}\n{text}\n```"
+
+
+def _read_text_attachment(path: Path) -> tuple[str, str]:
+    data = path.read_bytes()
+
+    for bom, encoding in _TEXT_ATTACHMENT_BOMS:
+        if data.startswith(bom):
+            return data.decode(encoding), encoding
+
+    try:
+        return data.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        pass
+
+    from charset_normalizer import from_bytes
+
+    result = from_bytes(data)
+    best = result.best()
+    if best is not None:
+        return str(best), best.encoding
+
+    # Re-raise the original UTF-8 error — nothing could decode the bytes.
+    raise UnicodeDecodeError(
+        "utf-8", data, 0, len(data), "no encoding detected by charset-normalizer"
+    )
 
 
 def _expand_folder_reference(

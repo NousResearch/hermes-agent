@@ -28,9 +28,11 @@ import html
 import json
 import logging
 import os
+import re
 import sys
+import time
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Optional, Tuple
 from urllib.parse import quote
 
 # httpx is imported lazily — only the ``_write_summary_via_incoming_webhook``
@@ -89,6 +91,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_image_from_bytes,
     cache_image_from_url,
     cache_media_bytes,
 )
@@ -130,6 +133,90 @@ _MAX_BODY_BYTES = 1_048_576
 # (d542894ad). Pin a host via TEAMS_HOST or extra.host.
 _DEFAULT_HOST = None
 _WEBHOOK_PATH = "/api/messages"
+# ── Teams emoji → Unicode ────────────────────────────────────────────────
+# Teams never sends an emoji as a Unicode character. It sends a 20x20 PNG
+# from its CDN as an ordinary image attachment, and mirrors the message body
+# as a ``text/html`` attachment where the emoji carries the real character in
+# the ``alt`` of an ``<img itemtype="http://schema.skype.com/Emoji">``.
+#
+# Reading only ``activity.text`` therefore drops the emoji outright and hands
+# the model an unreadable 20x20 "screenshot" in its place. It also breaks the
+# turn on providers that enforce a minimum image size: xAI rejects anything
+# under 512 total pixels with a 400 ``invalid_image``, which the retry loop
+# escalates into a model failover the fallback provider cannot "fix" — the
+# request is malformed, not the provider.
+#
+# The HTML mirror is authoritative: ``alt`` carries the character, ``itemid``
+# the shortcode fallback for tenant-custom emoji that have no Unicode
+# equivalent, and ``src`` identifies exactly which image attachments to drop
+# (no CDN-hostname heuristic, so custom emoji hosted elsewhere are covered).
+_TEAMS_EMOJI_ITEMTYPE = "http://schema.skype.com/Emoji"
+_TEAMS_MENTION_ITEMTYPE = "http://schema.skype.com/Mention"
+
+_HTML_IMG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_HTML_ATTR_RE = re.compile(r'''([\w:-]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')''')
+_HTML_BREAK_RE = re.compile(r"</p\s*>|<br\s*/?>", re.IGNORECASE)
+_HTML_MENTION_RE = re.compile(
+    r"<span\b[^>]*itemtype=[\"\']" + re.escape(_TEAMS_MENTION_ITEMTYPE)
+    + r"[\"\'][^>]*>.*?</span\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _html_tag_attrs(tag: str) -> Dict[str, str]:
+    """Parse the attributes of a single HTML tag into a lowercased-key dict."""
+    return {
+        m.group(1).lower(): (m.group(2) if m.group(2) is not None else m.group(3))
+        for m in _HTML_ATTR_RE.finditer(tag)
+    }
+
+
+def _teams_html_to_text(html_body: str) -> Tuple[str, list, set]:
+    """Flatten a Teams ``text/html`` body mirror, restoring emoji as Unicode.
+
+    Returns ``(text, emoji_chars, emoji_srcs)``:
+    - ``text`` — the body as plain text, each emoji back **in place**;
+    - ``emoji_chars`` — the substituted characters, in document order;
+    - ``emoji_srcs`` — the ``src`` URLs of the emoji images, so the caller can
+      drop the matching attachments instead of forwarding 20x20 sprites.
+
+    Non-emoji ``<img>`` tags (genuinely pasted images) are removed from the
+    text and deliberately left in ``attachments`` — they are real content and
+    the existing inline-image path already handles them.
+    """
+    emoji_chars: list = []
+    emoji_srcs: set = set()
+
+    def _swap_img(match: "re.Match") -> str:
+        attrs = _html_tag_attrs(match.group(0))
+        if attrs.get("itemtype", "").strip().lower() != _TEAMS_EMOJI_ITEMTYPE.lower():
+            return ""
+        src = (attrs.get("src") or "").strip()
+        if src:
+            emoji_srcs.add(src)
+        char = html.unescape(attrs.get("alt") or "").strip()
+        if not char:
+            itemid = (attrs.get("itemid") or "").strip()
+            char = f":{itemid}:" if itemid else ""
+        if char:
+            emoji_chars.append(char)
+        return char
+
+    body = _HTML_MENTION_RE.sub("", html_body)
+    body = _HTML_IMG_RE.sub(_swap_img, body)
+    body = _HTML_BREAK_RE.sub("\n", body)
+    body = _HTML_TAG_RE.sub("", body)
+    text = html.unescape(body).replace("\u00a0", " ")
+    lines = [" ".join(line.split()) for line in text.split("\n")]
+    return "\n".join(lines).strip(), emoji_chars, emoji_srcs
+
+
+def _collapse_ws(value: str) -> str:
+    """Whitespace-insensitive form, for comparing two renderings of one body."""
+    return " ".join((value or "").split())
+
+
 
 
 def _parse_bool(value: Any, *, default: bool = False) -> bool:
@@ -495,6 +582,14 @@ _ALLOWED_TEAMS_SERVICE_HOSTS = frozenset({
     "smba.infra.gov.teams.microsoft.us",
 })
 
+# A freshly-pasted Teams inline image briefly returns 401/403 from the Bot
+# Connector: at the instant the message is delivered the bot is not yet
+# authorized to read the just-created attachment, and it becomes readable a few
+# seconds later (observed in prod). Without a retry the transient window drops a
+# valid image permanently, so we re-GET with backoff. Worst case ~15s across 5
+# attempts; steady-state the first attempt succeeds.
+_IMAGE_FETCH_RETRY_DELAYS = (0.0, 1.0, 2.0, 4.0, 8.0)
+
 # Conservative pattern for Bot Framework conversation IDs.  Real values
 # combine digits, colons, hyphens, dots, '@', and the ``thread.skype`` /
 # ``thread.tacv2`` suffixes; reject anything outside this set so a hostile
@@ -524,6 +619,52 @@ def _validate_teams_service_url(raw: str) -> Optional[str]:
         return None
     normalized = raw if raw.endswith("/") else raw + "/"
     return normalized
+
+
+async def _mint_bot_connector_token(
+    *,
+    tenant_id: str,
+    client_id: str,
+    client_secret: str,
+    timeout: float = 15.0,
+) -> Tuple[str, int]:
+    """Mint a Bot Framework Connector bearer token (client_credentials).
+
+    Returns ``(access_token, expires_in_seconds)``; raises ``RuntimeError`` on
+    any failure.  The token has audience ``https://api.botframework.com`` and
+    is used both to POST outbound activities and to fetch token-gated inbound
+    attachment URLs (pasted inline images) on ``smba.trafficmanager.net``.
+    Single shared minter so the standalone-send and inbound-image-fetch paths
+    stay in lock-step (same tenant endpoint, scope, and failure handling).
+    """
+    if not (tenant_id and client_id and client_secret):
+        raise RuntimeError("missing Teams client credentials")
+    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+    import httpx
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(
+            token_url,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "scope": "https://api.botframework.com/.default",
+            },
+        )
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"token request failed ({resp.status_code}): {resp.text[:200]}"
+        )
+    payload = resp.json()
+    access_token = payload.get("access_token")
+    if not access_token:
+        raise RuntimeError("token response missing access_token")
+    try:
+        expires_in = int(payload.get("expires_in", 3600) or 3600)
+    except (TypeError, ValueError):
+        expires_in = 3600
+    return access_token, expires_in
 
 
 async def _standalone_send(
@@ -587,38 +728,26 @@ async def _standalone_send(
     if not _TEAMS_CONV_ID_RE.match(tenant_id):
         return {"error": "Teams standalone send: TEAMS_TENANT_ID contains characters outside the expected set"}
 
-    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
     activities_url = f"{service_url}v3/conversations/{chat_id}/activities"
 
     if not AIOHTTP_AVAILABLE:
         return {"error": "Teams standalone send: aiohttp not installed"}
 
     try:
+        access_token, _ = await _mint_bot_connector_token(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+    except Exception as e:
+        return {"error": f"Teams standalone send: {e}"}
+
+    try:
         import aiohttp as _aiohttp
 
-        # Per-request timeouts so a slow STS endpoint cannot starve the
-        # subsequent activity POST of its budget.
+        # Per-request timeout so a slow Connector cannot hang the send.
         per_request_timeout = _aiohttp.ClientTimeout(total=15.0)
         async with _aiohttp.ClientSession(trust_env=True) as session:
-            async with session.post(
-                token_url,
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "scope": "https://api.botframework.com/.default",
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                timeout=per_request_timeout,
-            ) as token_resp:
-                if token_resp.status >= 400:
-                    body = await token_resp.text()
-                    return {"error": f"Teams standalone send: token request failed ({token_resp.status}): {body[:300]}"}
-                token_payload = await token_resp.json()
-            access_token = token_payload.get("access_token")
-            if not access_token:
-                return {"error": "Teams standalone send: token response missing access_token"}
-
             activity = {
                 "type": "message",
                 "text": message,
@@ -774,6 +903,10 @@ class TeamsAdapter(BasePlatformAdapter):
         # Maps chat_id → ConversationReference captured from incoming messages.
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
+        # Cached Bot Connector bearer (audience api.botframework.com), reused to
+        # fetch token-gated inbound image attachments. Refreshed before expiry.
+        self._bot_token: Optional[str] = None
+        self._bot_token_expiry: float = 0.0
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Defensive re-check: create_adapter() already ran the installer
@@ -870,6 +1003,109 @@ class TeamsAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[teams] Disconnected")
 
+    async def _acquire_bot_connector_token(self) -> Optional[str]:
+        """Return a cached Bot Connector bearer, minting one if needed.
+
+        Returns ``None`` (rather than raising) when credentials are missing or
+        the STS call fails, so the image fetch can fall back gracefully instead
+        of dropping the turn.  The token is cached until ~60s before its
+        advertised expiry.
+        """
+        now = time.monotonic()
+        if self._bot_token and now < self._bot_token_expiry:
+            return self._bot_token
+        if not (self._client_id and self._client_secret and self._tenant_id):
+            return None
+        try:
+            token, expires_in = await _mint_bot_connector_token(
+                tenant_id=self._tenant_id,
+                client_id=self._client_id,
+                client_secret=self._client_secret,
+            )
+        except Exception as e:
+            logger.warning("[teams] Failed to acquire Bot Connector token: %s", e)
+            return None
+        # Refresh a minute early to avoid racing the expiry on a slow fetch.
+        self._bot_token = token
+        self._bot_token_expiry = now + max(0.0, expires_in - 60)
+        return token
+
+    async def _fetch_teams_image_bytes(self, url: str, timeout: float = 30.0) -> bytes:
+        """Fetch inline-image bytes, authenticating to the Bot Connector.
+
+        Unlike file uploads (pre-signed SharePoint ``downloadUrl``), a pasted
+        inline image arrives as a token-gated Bot Framework attachment URL on
+        ``smba.trafficmanager.net`` (``contentType image/*``, no ``downloadUrl``).
+        Fetching it requires the bot's ``api.botframework.com`` bearer — an
+        anonymous GET returns 401, which is why such images were previously
+        dropped.  The bearer is attached ONLY for known Bot Framework hosts so
+        a tampered ``contentUrl`` cannot exfiltrate the token to an arbitrary
+        origin.  ``data:`` URIs are decoded inline (no network).
+        """
+        if url.startswith("data:"):
+            import base64
+            import binascii
+
+            header, _, b64 = url.partition(",")
+            if ";base64" not in header:
+                raise ValueError("unsupported non-base64 data: image URI")
+            try:
+                return base64.b64decode(b64, validate=True)
+            except (binascii.Error, ValueError) as e:
+                raise ValueError(f"invalid data: image URI: {e}")
+
+        from tools.url_safety import is_safe_url
+        from gateway.platforms.base import _ssrf_redirect_guard
+
+        if not is_safe_url(url):
+            raise ValueError("Blocked unsafe image URL (SSRF protection)")
+
+        from urllib.parse import urlparse
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
+            "Accept": "image/*",
+        }
+        # Attach the bot bearer ONLY for Bot Framework hosts — never leak it to
+        # an arbitrary origin a hostile contentUrl might point at.
+        bearer_attached = False
+        if (urlparse(url).hostname or "") in _ALLOWED_TEAMS_SERVICE_HOSTS:
+            token = await self._acquire_bot_connector_token()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+                bearer_attached = True
+
+        import httpx
+
+        delays = _IMAGE_FETCH_RETRY_DELAYS
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        ) as client:
+            for attempt, delay in enumerate(delays):
+                if delay:
+                    await asyncio.sleep(delay)
+                response = await client.get(url, headers=headers)
+                if response.status_code < 400:
+                    return response.content
+                # Transient auth window on a freshly-pasted attachment (401/403
+                # only worth retrying when we actually authenticated), plus the
+                # usual rate-limit / server-error retryables.
+                retryable = (
+                    (bearer_attached and response.status_code in (401, 403))
+                    or response.status_code in (408, 429)
+                    or response.status_code >= 500
+                )
+                if not retryable or attempt == len(delays) - 1:
+                    response.raise_for_status()
+                logger.info(
+                    "[teams] image fetch got HTTP %s (attempt %d/%d), retrying",
+                    response.status_code, attempt + 1, len(delays),
+                )
+        # The loop always returns bytes or raises; this is unreachable.
+        raise RuntimeError("image fetch retry loop exited without result")
+
     async def _fetch_attachment_bytes(self, url: str, timeout: float = 30.0) -> bytes:
         """Download attachment bytes with SSRF protection.
 
@@ -921,8 +1157,38 @@ class TeamsAdapter(BasePlatformAdapter):
             text = activity.text
         # Strip <at>BotName</at> HTML tags that Teams prepends for @mentions
         if "<at>" in text:
-            import re
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
+
+        # Restore Teams emoji as Unicode from the text/html body mirror that
+        # Teams attaches to every message (see _teams_html_to_text). Without
+        # this the emoji is lost from the text and forwarded as an unreadable
+        # 20x20 sprite attachment instead.
+        emoji_srcs: set = set()
+        html_mirror = ""
+        for att in getattr(activity, "attachments", None) or []:
+            att_type = (getattr(att, "content_type", None) or "").lower()
+            if att_type.startswith("text/html") and not getattr(att, "content_url", None):
+                content = getattr(att, "content", None)
+                if isinstance(content, str):
+                    html_mirror = content
+                break
+
+        if html_mirror and _TEAMS_EMOJI_ITEMTYPE.lower() in html_mirror.lower():
+            html_text, emoji_chars, emoji_srcs = _teams_html_to_text(html_mirror)
+            if emoji_chars:
+                without_emoji = html_text
+                for char in emoji_chars:
+                    without_emoji = without_emoji.replace(char, "", 1)
+                if _collapse_ws(without_emoji) == _collapse_ws(text):
+                    # The mirror is a faithful rendering of activity.text, so
+                    # adopting it puts every emoji back at its exact position.
+                    text = html_text
+                else:
+                    # The two renderings disagree — an unhandled Teams
+                    # construct, or formatting that survives in one and not
+                    # the other. Never drop the emoji over a position we
+                    # cannot place with confidence: append it instead.
+                    text = f"{text} {''.join(emoji_chars)}".strip()
 
         # Determine chat type from conversation
         conv = activity.conversation
@@ -958,6 +1224,13 @@ class TeamsAdapter(BasePlatformAdapter):
             content_url = getattr(att, "content_url", None)
             content_type = (getattr(att, "content_type", None) or "").lower()
             att_name = getattr(att, "name", None) or ""
+
+            # Teams emoji sprite: already restored as a Unicode character in
+            # the message text above. Forwarding the 20x20 PNG would hand the
+            # model an unreadable "screenshot" and trips providers that
+            # enforce a minimum image size.
+            if content_url and content_url in emoji_srcs:
+                continue
 
             # Skip non-file payloads: Teams mirrors the message body as a
             # text/html attachment on every message, and adaptive/hero cards
@@ -995,14 +1268,34 @@ class TeamsAdapter(BasePlatformAdapter):
                 continue
 
             if content_url and content_type.startswith("image/"):
+                # Pasted inline images are token-gated Bot Connector URLs and
+                # need the bot bearer (see _fetch_teams_image_bytes); fetch the
+                # bytes ourselves and cache to a local path so run.py's native
+                # image pipeline (which keys off local file paths) can attach
+                # them. Falls back to the anonymous URL cache for the rare
+                # public/pre-authed image URL.
+                subtype = content_type.split("/", 1)[-1].split(";", 1)[0].strip()
+                ext = f".{subtype}" if subtype.isalnum() else ".jpg"
                 try:
-                    cached = await cache_image_from_url(content_url)
+                    data = await self._fetch_teams_image_bytes(content_url)
+                    cached = cache_image_from_bytes(data, ext=ext)
                     if cached:
                         media_urls.append(cached)
                         media_types.append(content_type)
                         media_kinds.append("image")
                 except Exception as e:
                     logger.warning("[teams] Failed to cache image attachment: %s", e)
+                    try:
+                        cached = await cache_image_from_url(content_url)
+                        if cached:
+                            media_urls.append(cached)
+                            media_types.append(content_type)
+                            media_kinds.append("image")
+                    except Exception as e2:
+                        logger.warning(
+                            "[teams] Anonymous fallback for image attachment also failed: %s",
+                            e2,
+                        )
                 continue
 
             if content_url:

@@ -1,25 +1,24 @@
-"""Tests for the llamacpp user provider plugin.
+"""Tests for the bundled llamacpp provider plugin.
 
-The llamacpp profile ships as a user plugin at
-``$HERMES_HOME/plugins/model-providers/llamacpp/``. The bundled ``custom``
-profile owns the ``llamacpp`` alias by default; the plugin self-claims that
-alias so user-plugin discovery (which runs after bundled discovery,
-last-writer-wins) repoints it. These tests verify:
+The llamacpp profile ships bundled at
+``plugins/model-providers/llamacpp/``. The bundled ``custom`` profile owns
+the ``llamacpp`` alias by default; the llamacpp plugin imports after it
+(sorted bundled discovery, last-writer-wins) and self-claims that alias.
+These tests verify:
 
- 1. A user plugin named llamacpp claiming the ``llamacpp`` and ``llama-swap``
-    aliases overrides the bundled custom profile for those lookups only
- 2. Without the plugin dir, ``llamacpp`` falls back to the custom profile
-    and ``llama-swap`` resolves to nothing (stock behavior)
- 3. The real installed plugin source (when present on this machine)
-    registers the expected name and aliases
+ 1. A user plugin named llamacpp claiming the ``llamacpp`` and
+    ``llama-swap`` aliases overrides the bundled llamacpp plugin, while
+    custom keeps the rest of its alias family
+ 2. With the bundled plugin dir removed, ``llamacpp`` falls back to the
+    custom profile and ``llama-swap`` resolves to nothing (stock behavior)
+ 3. The bundled plugin source registers the expected name and aliases
+    from both placements (bundled tree and user plugin dir)
 """
 
 from __future__ import annotations
 
 import shutil
 from pathlib import Path
-
-import pytest
 
 from tests.providers.test_plugin_discovery import _clear_provider_caches
 
@@ -52,21 +51,22 @@ def _fresh_hermes_home(tmp_path, monkeypatch) -> Path:
     return hermes_home
 
 
-def _installed_plugin_dir() -> Path | None:
-    """The real user plugin dir on this machine, if installed.
+def _bundled_plugin_dir() -> Path:
+    """The bundled plugin source dir in this checkout.
 
-    tests/conftest.py sandboxes HERMES_HOME to a tempdir before any test
-    module is imported, so ``get_hermes_home()`` cannot see the operator's
-    home from here. Look at the platform-default location directly - this
-    is a read-only source lookup; registration still happens from a copy
-    inside the sandboxed tmp HERMES_HOME, never from the real one.
+    Read-only source lookup; tests that need registration copy the source
+    into a sandboxed placement rather than importing from here.
     """
-    d = Path.home() / ".hermes" / "plugins" / "model-providers" / "llamacpp"
-    return d if (d / "__init__.py").exists() else None
+    return (
+        Path(__file__).resolve().parents[2]
+        / "plugins"
+        / "model-providers"
+        / "llamacpp"
+    )
 
 
-def test_llamacpp_user_plugin_overrides_custom_alias(tmp_path, monkeypatch):
-    """A user plugin named llamacpp takes over the alias custom owns."""
+def test_llamacpp_user_plugin_overrides_bundled_plugin(tmp_path, monkeypatch):
+    """A user plugin named llamacpp replaces the bundled llamacpp plugin."""
     hermes_home = _fresh_hermes_home(tmp_path, monkeypatch)
     plugin_dir = hermes_home / "plugins" / "model-providers" / "llamacpp"
     plugin_dir.mkdir(parents=True)
@@ -82,6 +82,9 @@ def test_llamacpp_user_plugin_overrides_custom_alias(tmp_path, monkeypatch):
         f"Expected the llamacpp user plugin to own 'llamacpp'; got {profile.name!r}"
     )
     assert get_provider_profile("llama-swap") is profile
+    # The stub does not set activates_on_requested_provider; the bundled
+    # plugin does. Its absence proves the user copy won the collision.
+    assert getattr(profile, "activates_on_requested_provider", False) is False
 
     # Only the claimed aliases move; custom keeps the rest of its family.
     for untouched in ("llama.cpp", "llama-cpp", "ollama", "vllm"):
@@ -94,8 +97,18 @@ def test_llamacpp_user_plugin_overrides_custom_alias(tmp_path, monkeypatch):
 
 
 def test_llamacpp_absent_falls_back_to_custom(tmp_path, monkeypatch):
-    """Without the plugin dir, stock resolution is unchanged."""
+    """With the bundled plugin dir removed, stock resolution is restored."""
     _fresh_hermes_home(tmp_path, monkeypatch)
+
+    import providers as _pkg
+
+    stripped_root = tmp_path / "bundled-minus-llamacpp"
+    shutil.copytree(
+        _pkg._BUNDLED_PLUGINS_DIR,
+        stripped_root,
+        ignore=shutil.ignore_patterns("llamacpp", "__pycache__"),
+    )
+    monkeypatch.setattr(_pkg, "_BUNDLED_PLUGINS_DIR", stripped_root)
 
     _clear_provider_caches()
     from providers import get_provider_profile
@@ -109,13 +122,9 @@ def test_llamacpp_absent_falls_back_to_custom(tmp_path, monkeypatch):
     _clear_provider_caches()
 
 
-@pytest.mark.skipif(
-    _installed_plugin_dir() is None,
-    reason="real llamacpp user plugin not installed on this machine",
-)
-def test_installed_llamacpp_plugin_source_registers(tmp_path, monkeypatch):
-    """The actual installed plugin source registers the expected identity."""
-    real_dir = _installed_plugin_dir()
+def test_bundled_plugin_source_registers(tmp_path, monkeypatch):
+    """The bundled plugin source registers the expected identity."""
+    real_dir = _bundled_plugin_dir()
     hermes_home = _fresh_hermes_home(tmp_path, monkeypatch)
     plugin_dir = hermes_home / "plugins" / "model-providers" / "llamacpp"
     plugin_dir.parent.mkdir(parents=True)
@@ -137,17 +146,13 @@ def test_installed_llamacpp_plugin_source_registers(tmp_path, monkeypatch):
     _clear_provider_caches()
 
 
-@pytest.mark.skipif(
-    _installed_plugin_dir() is None,
-    reason="real llamacpp user plugin not installed on this machine",
-)
 def test_bundled_placement_registers_identical_profile(tmp_path, monkeypatch):
-    """Upstream portability: the plugin dir copied unchanged into a bundled
-    model-providers tree registers the identical profile. Only the
-    import module name may differ between placements."""
+    """Placement portability: the plugin source registers the identical
+    profile from a user plugin dir and from a bundled model-providers
+    tree. Only the import module name may differ between placements."""
     import dataclasses
 
-    real_dir = _installed_plugin_dir()
+    real_dir = _bundled_plugin_dir()
 
     def _snapshot():
         from providers import get_provider_profile

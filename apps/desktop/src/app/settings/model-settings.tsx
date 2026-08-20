@@ -868,7 +868,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
             <span className="text-xs text-muted-foreground">{m.defaultsLabel}</span>
             {reasoningSupported && (
               <div className="flex items-center gap-2 text-xs">
-                {m.reasoning}
+                <span className="shrink-0 whitespace-nowrap">{m.reasoning}</span>
                 <Select
                   onValueChange={value => void writeAgentDefault('agent.reasoning_effort', value)}
                   value={effortValue}

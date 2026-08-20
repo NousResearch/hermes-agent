@@ -2605,6 +2605,11 @@ class TestCronContinuableSurfaceInChannel:
                 {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
                 attach_to_session=False,
             )
+        # Delivery must have gone through the LIVE adapter — otherwise a
+        # broken harness that never delivers would also leave the seed
+        # uncalled and this test would pass for the wrong reason.
+        assert len(adapter.sent) == 1
+        assert adapter.sent[0][0] == "C123"
         # Capability absent -> surface fails safe to thread -> flat seed
         # must NOT run (D6).
         seed_mock.assert_not_called()

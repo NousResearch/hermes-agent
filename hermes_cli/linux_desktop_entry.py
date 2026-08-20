@@ -57,13 +57,32 @@ def icon_path(project_root: Path) -> Path:
     return project_root / "apps" / "desktop" / "assets" / "icon.png"
 
 
+def installer_shim_path() -> Optional[str]:
+    """The installer's bash shim (``~/.local/bin/hermes``), if executable.
+
+    GUI launchers run the entry without the user's shell environment, and
+    some (e.g. Deepin's app-launch-helper) even force-run Python scripts
+    with the system interpreter, losing the venv dependencies. The shim
+    sanitizes the env and execs the venv interpreter explicitly, so it
+    survives every launcher.
+    """
+    shim = Path.home() / ".local" / "bin" / "hermes"
+    if shim.is_file() and os.access(shim, os.X_OK):
+        return str(shim)
+    return None
+
+
 def resolve_exec_command() -> str:
     """Build the absolute ``Exec=`` command line for ``hermes desktop``.
 
-    Prefer the real ``hermes`` executable (argv[0] or PATH). When Hermes
-    runs as a module with no launcher installed, use the current
-    interpreter, also absolute.
+    Prefer the installer shim when present (see ``installer_shim_path``).
+    Fall back to the real ``hermes`` executable (argv[0] or PATH), then the
+    current interpreter, also absolute.
     """
+    shim = installer_shim_path()
+    if shim:
+        return " ".join(_quote_exec_arg(a) for a in (shim, "desktop"))
+
     from hermes_cli.relaunch import resolve_hermes_bin
 
     bin_path = resolve_hermes_bin()

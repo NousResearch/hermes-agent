@@ -15,6 +15,9 @@ def xdg_home(tmp_path, monkeypatch) -> Path:
     data_home = tmp_path / "xdg-data"
     monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
     monkeypatch.setattr(lde.sys, "platform", "linux")
+    # Deterministic resolution: the real machine may have the installer
+    # shim present; tests exercise the fallback chain, not the host env.
+    monkeypatch.setattr(lde, "installer_shim_path", lambda: None)
     return data_home
 
 
@@ -74,6 +77,25 @@ def test_installed_entry_is_executable(tmp_path, xdg_home, monkeypatch):
     entry = lde.install_desktop_entry(root)
 
     assert entry.stat().st_mode & stat.S_IXUSR
+
+
+def test_exec_prefers_installer_shim(tmp_path, xdg_home, monkeypatch):
+    root = _make_project(tmp_path)
+    shim = tmp_path / "shim" / "hermes"
+    shim.parent.mkdir()
+    shim.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(lde, "installer_shim_path", lambda: str(shim))
+    # The fallback chain must not be consulted when the shim exists.
+    monkeypatch.setattr(
+        "hermes_cli.relaunch.resolve_hermes_bin",
+        lambda: pytest.fail("resolve_hermes_bin must not run when the shim wins"),
+    )
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    assert exec_line == f"{shim} desktop"
 
 
 def test_exec_falls_back_to_interpreter_module(tmp_path, xdg_home, monkeypatch):

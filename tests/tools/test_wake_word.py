@@ -39,9 +39,26 @@ def test_config_defaults_and_clamping():
     assert ww.wake_phrase({}) == "hey hermes"
 
 
+def test_start_new_session_quoted_false_disables():
+    """Quoted YAML ``"false"`` must disable, not enable (bool() trap)."""
+    assert ww.start_new_session_enabled({}) is True  # default
+    assert ww.start_new_session_enabled({"start_new_session": True}) is True
+    assert ww.start_new_session_enabled({"start_new_session": "true"}) is True
+    assert ww.start_new_session_enabled({"start_new_session": "yes"}) is True
+    assert ww.start_new_session_enabled({"start_new_session": "on"}) is True
+    assert ww.start_new_session_enabled({"start_new_session": False}) is False
+    assert ww.start_new_session_enabled({"start_new_session": "false"}) is False
+    assert ww.start_new_session_enabled({"start_new_session": "no"}) is False
+    assert ww.start_new_session_enabled({"start_new_session": "0"}) is False
+
+
 def test_wake_surface_enabled_gate():
     # Disabled → never, regardless of surface.
     assert ww.wake_surface_enabled("cli", {"enabled": False, "surface": "cli"}) is False
+    # Quoted ``"false"`` (hand-edited YAML) must also disable — bool() trap.
+    assert ww.wake_surface_enabled("cli", {"enabled": "false", "surface": "cli"}) is False
+    assert ww.wake_surface_enabled("tui", {"enabled": "no", "surface": "auto"}) is False
+    assert ww.wake_surface_enabled("cli", {"enabled": "0", "surface": "cli"}) is False
     # auto → every surface is eligible; ownership still admits only one.
     for s in ("cli", "tui", "gui"):
         assert ww.wake_surface_enabled(s, {"enabled": True, "surface": "auto"}) is True
@@ -52,6 +69,72 @@ def test_wake_surface_enabled_gate():
     assert ww.wake_surface_enabled("gui", cfg) is False
     # Missing/blank surface defaults to auto.
     assert ww.wake_surface_enabled("gui", {"enabled": True}) is True
+
+
+def test_profile_routing_quoted_false_skips_enrolled_phrases(monkeypatch, tmp_path):
+    """Quoted ``profile_routing: "false"`` must NOT merge other profiles' phrases.
+
+    ``bool("false")`` is True, which would silently enroll every wake-enabled
+    profile's phrase into this listener (the same trap #81345 fixes for
+    ``start_new_session``).
+    """
+    import sys
+    import types
+
+    fake = types.ModuleType("sherpa_onnx")
+    setattr(
+        fake,
+        "text2token",
+        lambda phrases, **kw: [[f"T{i}" for i in range(len(p))] for p in phrases],
+    )
+    setattr(
+        fake,
+        "KeywordSpotter",
+        type(
+            "KeywordSpotter",
+            (),
+            {
+                "__init__": lambda self, **kw: None,
+                "create_stream": lambda self: object(),
+            },
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", fake)
+    from tools import lazy_deps
+
+    monkeypatch.setattr(lazy_deps, "ensure", lambda *a, **kw: None)
+    monkeypatch.setattr(ww, "_active_profile_name", lambda: "default")
+    enrolled = {"coder": "hey coder", "research": "hey research"}
+    monkeypatch.setattr(ww, "enrolled_profile_phrases", lambda: enrolled)
+
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "tokens.txt").write_text("")
+    (model / "bpe.model").write_text("")
+    for pat in ("encoder-x.onnx", "decoder-x.onnx", "joiner-x.onnx"):
+        (model / pat).write_text("")
+
+    def _engine(cfg):
+        return ww._SherpaKwsEngine(cfg)
+
+    # Quoted "false" → only the own phrase is enrolled.
+    off = _engine(
+        {
+            "sherpa": {"model_dir": str(model)},
+            "phrase": "hey hermes",
+            "profile_routing": "false",
+        }
+    )
+    assert set(off._display_to_profile.values()) == {"default"}
+    # True (or absent default) → enrolled phrases merged in.
+    on = _engine(
+        {
+            "sherpa": {"model_dir": str(model)},
+            "phrase": "hey hermes",
+            "profile_routing": True,
+        }
+    )
+    assert set(on._display_to_profile.values()) == {"default", "coder", "research"}
 
 
 def test_looks_like_path():

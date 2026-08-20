@@ -14660,6 +14660,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 load_wake_word_config,
                 owns_listener,
                 start_listening,
+                start_new_session_enabled,
             )
         except Exception as e:
             if announce:
@@ -14686,7 +14687,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # (onnxruntime is a large wheel) — tell the user why this is slow.
             _cprint(f"{_DIM}Installing wake word engine (first use — this may take a minute)...{_RST}")
 
-        self._wake_start_new_session = bool(cfg.get("start_new_session", True))
+        self._wake_start_new_session = start_new_session_enabled(cfg)
         try:
             start_listening(self._on_wake_word, owner=self, config=cfg)
         except Exception as e:
@@ -14831,6 +14832,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             is_listening,
             load_wake_word_config,
             owns_listener,
+            start_new_session_enabled,
         )
 
         cfg = load_wake_word_config()
@@ -14843,7 +14845,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _cprint(f"  Phrase:      \"{reqs['phrase']}\"")
         _cprint(f"  Provider:    {reqs['provider']}")
         _cprint(f"  Surface:     {cfg.get('surface', 'auto')}")
-        _cprint(f"  New session: {'yes' if cfg.get('start_new_session', True) else 'no'}")
+        _cprint(f"  New session: {'yes' if start_new_session_enabled(cfg) else 'no'}")
         if state == "LISTENING" and audio_is_silent():
             _cprint(f"  {_ACCENT}⚠ Microphone delivers only silence — the listener can't hear anything.{_RST}")
             _cprint(f"  {_DIM}On macOS: System Settings > Privacy & Security > Microphone — allow your"

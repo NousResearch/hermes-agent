@@ -65,6 +65,7 @@ class HookRegistry:
         # event_type -> [handler_fn, ...]
         self._handlers: Dict[str, List[Callable]] = {}
         self._loaded_hooks: List[dict] = []  # metadata for listing
+        self._background_tasks: set[asyncio.Task[Any]] = set()
 
     @property
     def loaded_hooks(self) -> List[dict]:
@@ -174,6 +175,19 @@ class HookRegistry:
             handlers.extend(self._handlers.get(wildcard_key, []))
         return handlers
 
+    async def _run_background_handler(self, event_type: str, result: Any) -> None:
+        """Await a best-effort handler while preserving normal error reporting."""
+        try:
+            await result
+        except Exception as e:
+            print(f"[hooks] Error in handler for '{event_type}': {e}", flush=True)
+
+    def _schedule_background_handler(self, event_type: str, result: Any) -> None:
+        """Schedule and retain a handler task until it finishes."""
+        task = asyncio.create_task(self._run_background_handler(event_type, result))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
     async def emit(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
         """
         Fire all handlers registered for an event, discarding return values.
@@ -195,7 +209,10 @@ class HookRegistry:
                 result = fn(event_type, context)
                 # Support both sync and async handlers
                 if asyncio.iscoroutine(result):
-                    await result
+                    if event_type == "gateway:startup":
+                        self._schedule_background_handler(event_type, result)
+                    else:
+                        await result
             except Exception as e:
                 print(f"[hooks] Error in handler for '{event_type}': {e}", flush=True)
 

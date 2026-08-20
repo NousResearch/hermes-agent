@@ -93,6 +93,21 @@ class TestAutoVoiceReplyFormat:
         voice_event = _make_event(Platform.TELEGRAM, chat_id="123", message_type=MessageType.VOICE)
         assert runner._should_send_voice_reply(voice_event, "hello", [], already_sent=True) is True
 
+    def test_matrix_voice_input_voice_only_uses_runner_path(self):
+        """Matrix voice input must not be deduplicated before runner TTS."""
+        runner = _make_runner()
+        runner._voice_mode["matrix:!room:example.org"] = "voice_only"
+        adapter = _make_adapter(Platform.MATRIX)
+        adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+        runner.adapters[Platform.MATRIX] = adapter
+        event = _make_event(
+            Platform.MATRIX,
+            chat_id="!room:example.org",
+            message_type=MessageType.VOICE,
+        )
+
+        assert runner._should_send_voice_reply(event, "hello", []) is True
+
 def _make_runner() -> GatewayRunner:
     with patch("gateway.run.GatewayRunner._load_voice_modes", return_value={}):
         runner = GatewayRunner.__new__(GatewayRunner)

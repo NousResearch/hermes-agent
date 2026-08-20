@@ -21988,7 +21988,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # When streaming already delivered the text (already_sent=True),
         # the base adapter will receive None and can't run auto-TTS,
         # so the runner must take over.
-        if is_voice_input and not already_sent:
+        # Matrix voice events are re-entered through the runner after STT;
+        # unlike the voice-channel adapters, Matrix does not complete the
+        # native voice reply in its base-adapter path.
+        if is_voice_input and not already_sent and event.source.platform != Platform.MATRIX:
             return False
 
         return True

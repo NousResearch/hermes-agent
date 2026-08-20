@@ -1326,6 +1326,7 @@ DEFAULT_CONFIG = {
         #   "off"     — no watcher messages at all
         "background_process_notifications": "concise",
         "streaming": False,
+        "editor_auto_submit": True,  # Auto-submit on Ctrl+G in external editor (False = Ctrl+G exits without submit)
         "timestamps": False,      # Show message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")
         "final_response_markdown": "strip",  # render | strip | raw

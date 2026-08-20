@@ -1985,3 +1985,154 @@ class TestBuzzAdapterEdit:
 
         assert await adapter.delete_message(CHANNEL, "") is False
         assert cli.calls == []
+# ── Durable channel cursors across restart (#90464) ───────────────────────
+
+
+class TestChannelCursorPersistence:
+    """A restart must resume from the saved cursor, not reseed from history.
+
+    Seeding marks every event currently in the channel as seen. Anything that
+    arrived while the gateway was down is in that history, so an unconditional
+    reseed swallows it permanently even though the relay still has it.
+    """
+
+    @pytest.fixture
+    def adapter(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        a = _make_adapter()
+        a._dispatched = []
+
+        async def capture(**kwargs):
+            a._dispatched.append(kwargs)
+
+        a._dispatch_message = capture
+        a._message_handler = AsyncMock()
+        return a
+
+    @staticmethod
+    def _cursor_file(tmp_path):
+        return tmp_path / "buzz" / "channel-cursors.json"
+
+    async def _seed(self, adapter, *events):
+        cli = _ScriptedCli()
+        cli.script("messages", "get", list(events))
+        adapter._run_cli = cli
+        adapter._load_cursors()
+        await adapter._seed_channel(CHANNEL, chat_type="group")
+        adapter._save_cursors()
+        return cli
+
+    @pytest.mark.asyncio
+    async def test_seed_writes_a_cursor(self, adapter, tmp_path):
+        await self._seed(adapter, _event("e1", created_at=100), _event("e2", created_at=200))
+
+        saved = json.loads(self._cursor_file(tmp_path).read_text(encoding="utf-8"))
+        assert saved["identity"] == SELF_PUBKEY
+        assert saved["relay"] == "https://test.relay"
+        assert saved["channels"][CHANNEL]["last_ts"] == 200
+        assert saved["channels"][CHANNEL]["seen"] == ["e1", "e2"]
+
+    @pytest.mark.asyncio
+    async def test_restart_resumes_instead_of_reseeding(self, adapter, tmp_path, monkeypatch):
+        await self._seed(adapter, _event("e1", content="@Chip first", created_at=100))
+
+        # Restart. The relay now also holds a mention that landed while the
+        # gateway was down, and it sits in the same history a reseed reads.
+        restarted = _make_adapter()
+        restarted._dispatched = []
+
+        async def capture(**kwargs):
+            restarted._dispatched.append(kwargs)
+
+        restarted._dispatch_message = capture
+        restarted._message_handler = AsyncMock()
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [
+            _event("e1", content="@Chip first", created_at=100),
+            _event("e2", content="@Chip sent while you were down", created_at=150),
+        ])
+        restarted._run_cli = cli
+        restarted._load_cursors()
+        await restarted._seed_channel(CHANNEL, chat_type="group")
+
+        # Restoring must not spend a CLI call on history it is not going to use.
+        assert cli.calls == []
+        state = restarted._channel_state[CHANNEL]
+        assert set(state["seen"]) == {"e1"}
+        assert state["last_ts"] == 100
+
+        # The first poll after the restart delivers the missed mention.
+        await restarted._poll_channel(CHANNEL)
+        assert [d["message_id"] for d in restarted._dispatched] == ["e2"]
+
+    @pytest.mark.asyncio
+    async def test_cursor_survives_only_for_the_same_identity_and_relay(self, adapter, tmp_path, monkeypatch):
+        await self._seed(adapter, _event("e1", created_at=100))
+
+        # Same machine, different bot: channel ids would collide but the event
+        # stream behind them is another one, so the cursor must be ignored.
+        other = _make_adapter()
+        other._self_pubkey = OTHER_PUBKEY
+        other._load_cursors()
+        assert other._restored_cursors == {}
+
+        elsewhere = _make_adapter({"relay_url": "https://other.relay"})
+        elsewhere._load_cursors()
+        assert elsewhere._restored_cursors == {}
+
+    @pytest.mark.asyncio
+    async def test_unreadable_cursor_file_falls_back_to_seeding(self, adapter, tmp_path):
+        path = self._cursor_file(tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{ not json", encoding="utf-8")
+
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [_event("e1", created_at=100)])
+        adapter._run_cli = cli
+        adapter._load_cursors()
+        await adapter._seed_channel(CHANNEL, chat_type="group")
+
+        # Degrades to the old behaviour rather than failing the connect.
+        assert adapter._restored_cursors == {}
+        assert set(adapter._channel_state[CHANNEL]["seen"]) == {"e1"}
+
+    @pytest.mark.asyncio
+    async def test_restored_seen_set_stays_bounded(self, adapter, tmp_path):
+        cap = _buzz_mod._SEEN_CAP
+        path = self._cursor_file(tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({
+                "identity": SELF_PUBKEY,
+                "relay": "https://test.relay",
+                "channels": {
+                    CHANNEL: {
+                        "chat_type": "group",
+                        "last_ts": 100,
+                        "seen": [f"e{i}" for i in range(cap * 2)],
+                    }
+                },
+            }),
+            encoding="utf-8",
+        )
+        adapter._load_cursors()
+        await adapter._seed_channel(CHANNEL, chat_type="group")
+
+        seen = adapter._channel_state[CHANNEL]["seen"]
+        assert len(seen) == cap
+        # The newest ids are the ones worth keeping for de-dupe.
+        assert f"e{cap * 2 - 1}" in seen
+        assert "e0" not in seen
+
+    @pytest.mark.asyncio
+    async def test_idle_poll_does_not_rewrite_the_cursor(self, adapter, tmp_path):
+        cli = await self._seed(adapter, _event("e1", created_at=100))
+        path = self._cursor_file(tmp_path)
+        before = path.stat().st_mtime_ns
+
+        cli.responses.clear()
+        cli.script("messages", "get", [_event("e1", created_at=100)])
+        await adapter._poll_channel(CHANNEL)
+
+        assert path.stat().st_mtime_ns == before
+

@@ -224,6 +224,9 @@ def _escape_unresolved_presentation_mention(content: str, error: str) -> Optiona
 _FETCH_LIMIT = 50
 # Bound on the per-channel de-dupe set (events, not bytes).
 _SEEN_CAP = 500
+# Where the per-channel cursors survive a restart, relative to HERMES_HOME.
+_CURSOR_STATE_SUBDIR = "buzz"
+_CURSOR_STATE_FILENAME = "channel-cursors.json"
 # Re-run DM discovery (``dms list`` plus the channels-list fallback) every
 # N poll sweeps to pick up conversations opened mid-run.
 _DM_DISCOVERY_EVERY = 5
@@ -713,6 +716,9 @@ class BuzzAdapter(BasePlatformAdapter):
         # event_meta backs NIP-10 reply-parent resolution for require_mention
         # (thread replies to our own messages count as addressed — #75826).
         self._channel_state: Dict[str, dict] = {}
+        # Cursors read back from disk at connect() and consumed by the first
+        # seed of each channel; empty on a first-ever run.
+        self._restored_cursors: Dict[str, dict] = {}
         self._channel_names: Dict[str, str] = {}
         # channel_id -> raw ``channels list`` entry; drives DM-vs-channel
         # classification (see _may_reclassify_as_dm).
@@ -839,10 +845,14 @@ class BuzzAdapter(BasePlatformAdapter):
             return False
 
         # Seed high-water marks from the newest events so a (re)start never
-        # replays channel history into the agent.
+        # replays channel history into the agent — except where a previous run
+        # left a cursor, which is restored instead so the events that landed
+        # while we were down still dispatch (#90464).
+        self._load_cursors()
         for channel_id in watch:
             await self._seed_channel(channel_id, chat_type="group")
         await self._discover_dms(seed=True)
+        self._save_cursors()
 
         # Inbound transport: prefer the NIP-42-authenticated WebSocket
         # subscription (push, near-zero latency); fall back to CLI polling
@@ -1522,8 +1532,11 @@ class BuzzAdapter(BasePlatformAdapter):
                                 channel_id = subscriptions.get(subscription_id)
                                 state = self._channel_state.get(channel_id or "")
                                 if channel_id and state is not None:
+                                    before = self._cursor_mark(state)
                                     await self._handle_event(channel_id, state, event)
                                     self._trim_seen(state)
+                                    if self._cursor_mark(state) != before:
+                                        self._save_cursors()
                             elif message[0] == "CLOSED":
                                 detail = message[-1] if len(message) > 2 else "subscription closed"
                                 raise ConnectionError(str(detail))
@@ -1567,8 +1580,113 @@ class BuzzAdapter(BasePlatformAdapter):
             "event_meta": OrderedDict(),
         }
 
+    # ── Durable channel cursors ───────────────────────────────────────────
+
+    @staticmethod
+    def _cursor_path() -> Path:
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home() / _CURSOR_STATE_SUBDIR / _CURSOR_STATE_FILENAME
+
+    def _load_cursors(self) -> None:
+        """Read back the cursors a previous run persisted.
+
+        A file written by a different identity or against a different relay is
+        ignored rather than trusted: channel ids would collide while the event
+        stream behind them is a different one.  Any read/parse failure leaves
+        the cursors empty, which degrades to the old seed-from-history
+        behaviour instead of failing the connect.
+        """
+        self._restored_cursors = {}
+        try:
+            path = self._cursor_path()
+            if not path.exists():
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.debug("Buzz: could not read channel cursors", exc_info=True)
+            return
+        if not isinstance(data, dict):
+            return
+        if (
+            data.get("identity") != self._self_pubkey
+            or data.get("relay") != self.relay_url
+        ):
+            return
+        channels = data.get("channels")
+        if not isinstance(channels, dict):
+            return
+        for channel_id, entry in channels.items():
+            if not isinstance(entry, dict):
+                continue
+            try:
+                last_ts = int(entry.get("last_ts") or 0)
+            except (TypeError, ValueError):
+                continue
+            raw_seen = entry.get("seen")
+            seen = (
+                [str(event_id) for event_id in raw_seen][-_SEEN_CAP:]
+                if isinstance(raw_seen, list)
+                else []
+            )
+            self._restored_cursors[str(channel_id)] = {
+                "chat_type": str(entry.get("chat_type") or ""),
+                "last_ts": last_ts,
+                "seen": seen,
+            }
+
+    def _save_cursors(self) -> None:
+        """Persist every watched channel's cursor.  Never raises."""
+        payload = {
+            "identity": self._self_pubkey,
+            "relay": self.relay_url,
+            "channels": {
+                channel_id: {
+                    "chat_type": state.get("chat_type") or "group",
+                    "last_ts": int(state.get("last_ts") or 0),
+                    "seen": list(state.get("seen") or ()),
+                }
+                for channel_id, state in self._channel_state.items()
+            },
+        }
+        try:
+            from utils import atomic_json_write
+
+            atomic_json_write(self._cursor_path(), payload, indent=None)
+        except Exception:
+            logger.debug("Buzz: could not persist channel cursors", exc_info=True)
+
+    @staticmethod
+    def _cursor_mark(state: dict) -> tuple:
+        """Cheap change detector for one channel's cursor."""
+        seen = state.get("seen") or ()
+        return (
+            int(state.get("last_ts") or 0),
+            len(seen),
+            next(reversed(seen), None) if seen else None,
+        )
+
+    def _restore_channel_state(self, channel_id: str, chat_type: str) -> bool:
+        """Install a persisted cursor for *channel_id*; True when one existed.
+
+        Restoring is what closes the restart gap: seeding from current history
+        instead would mark everything that arrived while the gateway was down
+        as already seen, so the relay's durable copy is never dispatched
+        (#90464).
+        """
+        restored = self._restored_cursors.pop(channel_id, None)
+        if restored is None:
+            return False
+        state = self._new_channel_state(restored["chat_type"] or chat_type)
+        state["last_ts"] = restored["last_ts"]
+        state["seen"] = OrderedDict((event_id, None) for event_id in restored["seen"])
+        self._channel_state[channel_id] = state
+        return True
+
     async def _seed_channel(self, channel_id: str, chat_type: str) -> None:
         """Initialize a channel's high-water mark from its newest events."""
+        if self._restore_channel_state(channel_id, chat_type):
+            return
         state = self._new_channel_state(chat_type)
         self._channel_state[channel_id] = state
         code, out, err = await self._run_cli(
@@ -1617,7 +1735,7 @@ class BuzzAdapter(BasePlatformAdapter):
                     continue
                 if seed:
                     await self._seed_channel(dm_id, chat_type="dm")
-                else:
+                elif not self._restore_channel_state(dm_id, "dm"):
                     self._channel_state[dm_id] = self._new_channel_state("dm")
                 self._channel_names.setdefault(dm_id, "DM")
 
@@ -1637,7 +1755,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 continue
             if seed:
                 await self._seed_channel(ch_id, chat_type="dm")
-            else:
+            elif not self._restore_channel_state(ch_id, "dm"):
                 self._channel_state[ch_id] = self._new_channel_state("dm")
 
     async def _poll_channel(self, channel_id: str) -> None:
@@ -1655,9 +1773,14 @@ class BuzzAdapter(BasePlatformAdapter):
                 "Buzz: poll of channel %s failed — %s", channel_id, _cli_error_message(err, code)
             )
             return
+        before = self._cursor_mark(state)
         for event in _parse_json_list(out):
             await self._handle_event(channel_id, state, event)
         self._trim_seen(state)
+        # Persist only when the sweep actually moved the cursor, so an idle
+        # channel does not rewrite the file every poll interval.
+        if self._cursor_mark(state) != before:
+            self._save_cursors()
 
     async def _handle_event(self, channel_id: str, state: dict, event: dict) -> None:
         """De-dupe, filter, and dispatch a single ``messages get`` event."""

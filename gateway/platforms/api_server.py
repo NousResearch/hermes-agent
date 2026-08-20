@@ -6618,6 +6618,36 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
+    @staticmethod
+    def _normalized_request_profile() -> str:
+        """Return the URL-selected profile principal for this request."""
+        profile = _api_request_profile.get()
+        if not profile or profile == "default":
+            return "default"
+        return str(profile)
+
+    def _run_profile_forbidden(self, run_id: str) -> Optional["web.Response"]:
+        """Fail closed when this request's profile does not own the run.
+
+        Runs live in adapter-global maps keyed only by run_id. Multiplexed
+        ``/p/<profile>/`` requests authenticate as that profile, so mutating
+        handlers must compare against the profile that created the run before
+        reading or changing clarification state.
+        """
+        status = self._run_statuses.get(run_id)
+        if status is None:
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
+        owner = str(status.get("request_profile") or "default")
+        if owner != self._normalized_request_profile():
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
+        return None
+
     def _set_awaiting_user(
         self,
         *,
@@ -6872,6 +6902,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id=session_id,
             model=body.get("model", self._model_name),
             awaiting_user=False,
+            request_profile=self._normalized_request_profile(),
         )
 
         # Background task outlives the HTTP response (and thus the middleware
@@ -7428,11 +7459,9 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
-        if run_id not in self._run_statuses:
-            return web.json_response(
-                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
-                status=404,
-            )
+        owned_err = self._run_profile_forbidden(run_id)
+        if owned_err:
+            return owned_err
         try:
             body = await request.json()
         except Exception:

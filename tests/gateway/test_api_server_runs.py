@@ -81,6 +81,18 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     return app
 
 
+def _create_multiplex_runs_app(adapter: APIServerAdapter) -> web.Application:
+    """Runs + clarification routes under /p/{profile}/ with profile middleware."""
+    app = web.Application(middlewares=[adapter._make_profile_prefix_middleware()])
+    app["api_server_adapter"] = adapter
+    app.router.add_post("/p/{profile}/v1/runs", adapter._handle_runs)
+    app.router.add_post(
+        "/p/{profile}/v1/runs/{run_id}/clarification",
+        adapter._handle_run_clarification,
+    )
+    return app
+
+
 def _make_slow_agent(**kwargs):
     """Create a mock agent that blocks in run_conversation until interrupted.
 
@@ -570,6 +582,107 @@ class TestRunEvents:
                 },
             )
             assert duplicate.status == 409
+
+    @pytest.mark.asyncio
+    async def test_clarification_rejects_other_profile(self, adapter, tmp_path, monkeypatch):
+        """A valid other-profile key must not resolve another profile's pending clarify."""
+        from agent import secret_scope as ss
+        from gateway.config import GatewayConfig
+
+        alpha_home = tmp_path / "profiles" / "alpha"
+        beta_home = tmp_path / "profiles" / "beta"
+        alpha_home.mkdir(parents=True)
+        beta_home.mkdir(parents=True)
+        alpha_key = "a" * 32
+        beta_key = "b" * 32
+        (alpha_home / ".env").write_text(f"API_SERVER_KEY={alpha_key}\n", encoding="utf-8")
+        (beta_home / ".env").write_text(f"API_SERVER_KEY={beta_key}\n", encoding="utf-8")
+
+        adapter._api_key = "c" * 32
+        adapter.gateway_runner = type(
+            "_Runner", (), {"config": GatewayConfig(multiplex_profiles=True)}
+        )()
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex, profile_allowlist=None: [
+                ("default", tmp_path),
+                ("alpha", alpha_home),
+                ("beta", beta_home),
+            ],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir",
+            lambda name: {"alpha": alpha_home, "beta": beta_home}.get(name, tmp_path),
+        )
+        ss.set_multiplex_active(True)
+        app = _create_multiplex_runs_app(adapter)
+        callback_result = {}
+
+        def make_agent(**kwargs):
+            mock_agent = MagicMock()
+
+            def run_conversation(**_run_kwargs):
+                callback_result["answer"] = kwargs["clarify_callback"](
+                    "Which env?",
+                    ["Staging", "Production"],
+                )
+                return {"final_response": callback_result["answer"]}
+
+            mock_agent.run_conversation.side_effect = run_conversation
+            mock_agent.session_prompt_tokens = 0
+            mock_agent.session_completion_tokens = 0
+            mock_agent.session_total_tokens = 0
+            return mock_agent
+
+        try:
+            async with TestClient(TestServer(app)) as cli:
+                with patch.object(adapter, "_create_agent", side_effect=make_agent):
+                    started = await cli.post(
+                        "/p/alpha/v1/runs",
+                        json={"input": "hello"},
+                        headers={"Authorization": f"Bearer {alpha_key}"},
+                    )
+                    assert started.status == 202
+                    run_id = (await started.json())["run_id"]
+                    event = await asyncio.wait_for(
+                        adapter._run_streams[run_id].get(), timeout=3
+                    )
+                    assert event["event"] == "clarify.request"
+                    assert adapter._run_statuses[run_id]["request_profile"] == "alpha"
+                    pending = clarify_mod.get_pending_by_id(
+                        event["request_id"], session_key=run_id
+                    )
+                    assert pending is not None
+
+                    body = {
+                        "request_id": event["request_id"],
+                        "response": {"type": "choice", "choice_id": "choice-1"},
+                    }
+                    cross = await cli.post(
+                        f"/p/beta/v1/runs/{run_id}/clarification",
+                        json=body,
+                        headers={"Authorization": f"Bearer {beta_key}"},
+                    )
+                    assert cross.status == 404
+                    assert clarify_mod.get_pending_by_id(
+                        event["request_id"], session_key=run_id
+                    ) is not None
+                    assert "answer" not in callback_result
+
+                    owned = await cli.post(
+                        f"/p/alpha/v1/runs/{run_id}/clarification",
+                        json=body,
+                        headers={"Authorization": f"Bearer {alpha_key}"},
+                    )
+                    assert owned.status == 200
+
+                    for _ in range(40):
+                        if callback_result.get("answer") == "Staging":
+                            break
+                        await asyncio.sleep(0.05)
+                    assert callback_result["answer"] == "Staging"
+        finally:
+            ss.set_multiplex_active(False)
 
     @pytest.mark.asyncio
     async def test_clarification_rejects_malformed_and_oversized_text(self, adapter):

@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -98,6 +99,21 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
         normalized[key] = value
 
     return normalized
+
+
+def _docker_volume_destination(volume: str) -> str | None:
+    """Return the normalized container path from Docker's short volume syntax."""
+    parts = volume.rsplit(":", 2)
+    if len(parts) < 2:
+        return None
+
+    # With no mode the destination is last; with ``:ro``/``:rw`` it is the
+    # penultimate field. Splitting from the right preserves Windows drive
+    # prefixes in the host path.
+    destination = parts[-1] if parts[-1].startswith("/") else parts[-2]
+    if not destination.startswith("/"):
+        return None
+    return posixpath.normpath("/" + destination.lstrip("/"))
 
 
 def _load_hermes_env_vars() -> dict[str, str]:
@@ -951,6 +967,7 @@ class DockerEnvironment(BaseEnvironment):
 
         # User-configured volume mounts (from config.yaml docker_volumes)
         volume_args = []
+        configured_volume_destinations: set[str] = set()
         workspace_explicitly_mounted = False
         for vol in (volumes or []):
             if not isinstance(vol, str):
@@ -961,6 +978,9 @@ class DockerEnvironment(BaseEnvironment):
                 continue
             if ":" in vol:
                 volume_args.extend(["-v", vol])
+                destination = _docker_volume_destination(vol)
+                if destination:
+                    configured_volume_destinations.add(destination)
                 if ":/workspace" in vol:
                     workspace_explicitly_mounted = True
             else:
@@ -1018,6 +1038,17 @@ class DockerEnvironment(BaseEnvironment):
             )
 
             for mount_entry in get_credential_file_mounts():
+                container_path = mount_entry["container_path"]
+                normalized_container_path = posixpath.normpath(
+                    "/" + container_path.lstrip("/")
+                )
+                if normalized_container_path in configured_volume_destinations:
+                    logger.info(
+                        "Docker: skipping automatic credential mount for %s; "
+                        "destination is explicitly configured",
+                        container_path,
+                    )
+                    continue
                 src = Path(mount_entry["host_path"])
                 if src.is_dir():
                     # Docker-in-Docker: Docker auto-created the source path as
@@ -1036,12 +1067,12 @@ class DockerEnvironment(BaseEnvironment):
                     continue
                 volume_args.extend([
                     "-v",
-                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro",
+                    f"{mount_entry['host_path']}:{container_path}:ro",
                 ])
                 logger.info(
                     "Docker: mounting credential %s -> %s",
                     mount_entry["host_path"],
-                    mount_entry["container_path"],
+                    container_path,
                 )
 
             # Mount skill directories (local + external) so skill

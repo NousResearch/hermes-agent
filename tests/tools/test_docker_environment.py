@@ -1315,6 +1315,74 @@ def test_credential_mount_skipped_when_source_missing(monkeypatch, tmp_path, cap
     )
 
 
+@pytest.mark.parametrize(
+    "explicit_mount",
+    [
+        "/host/google_token.json:/root/.hermes/google_token.json:rw",
+        r"C:\Users\me\google_token.json:/root/.hermes/google_token.json:rw",
+    ],
+)
+def test_explicit_volume_destination_overrides_automatic_credential_mount(
+    monkeypatch, tmp_path, explicit_mount,
+):
+    """An explicit bind must not be followed by a duplicate read-only bind."""
+    token = tmp_path / "google_token.json"
+    token.write_text("fixture")
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+    monkeypatch.setattr(
+        "tools.credential_files.get_credential_file_mounts",
+        lambda: [{
+            "host_path": str(token),
+            "container_path": "/root/.hermes/google_token.json",
+        }],
+    )
+    monkeypatch.setattr("tools.credential_files.get_skills_directory_mount", lambda: [])
+    monkeypatch.setattr("tools.credential_files.get_cache_directory_mounts", lambda: [])
+
+    _make_dummy_env(volumes=[explicit_mount])
+
+    run_args = next(
+        cmd for cmd, _ in calls
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "run"
+    )
+    mounts = [run_args[index + 1] for index, arg in enumerate(run_args[:-1]) if arg == "-v"]
+    credential_mounts = [
+        mount for mount in mounts
+        if ":/root/.hermes/google_token.json" in mount
+    ]
+    assert credential_mounts == [explicit_mount]
+
+
+def test_automatic_credential_mount_remains_read_only_without_explicit_override(
+    monkeypatch, tmp_path,
+):
+    """Skill-declared credentials stay read-only unless the user opts in."""
+    token = tmp_path / "google_token.json"
+    token.write_text("fixture")
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+    monkeypatch.setattr(
+        "tools.credential_files.get_credential_file_mounts",
+        lambda: [{
+            "host_path": str(token),
+            "container_path": "/root/.hermes/google_token.json",
+        }],
+    )
+    monkeypatch.setattr("tools.credential_files.get_skills_directory_mount", lambda: [])
+    monkeypatch.setattr("tools.credential_files.get_cache_directory_mounts", lambda: [])
+
+    _make_dummy_env()
+
+    run_args = next(
+        cmd for cmd, _ in calls
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "run"
+    )
+    assert f"{token}:/root/.hermes/google_token.json:ro" in run_args
+
+
 # ── s6-overlay /init image handling (issue #34628) ────────────────
 
 

@@ -596,11 +596,27 @@ stays local.
 | `container_tag` | `hermes` | Container tag used for search and writes. Supports `{identity}` template for profile-scoped tags. |
 | `auto_recall` | `true` | Inject relevant memory context before turns |
 | `auto_capture` | `true` | Store cleaned user-assistant turns after each response |
-| `max_recall_results` | `10` | Max recalled items to format into context |
-| `profile_frequency` | `50` | Include profile facts on first turn and every N turns |
+| `max_recall_results` | `10` | Total recalled-item budget across all context sections (bounded to 1–20) |
+| `recall_min_similarity` | `0.76` | Minimum 0–1 similarity for automatic semantic recall; missing, invalid, and lower scores are not injected |
+| `prefetch_include_profile` | `false` | Opt in to automatic static and dynamic profile context; explicit `supermemory_profile` calls are unchanged |
+| `profile_frequency` | `50` | When profile prefetch is opted in, include it on the first turn and every N turns |
 | `capture_mode` | `all` | Skip tiny or trivial turns by default |
 | `search_mode` | `hybrid` | Search mode: `hybrid`, `memories`, or `documents` |
 | `api_timeout` | `5.0` | Timeout for SDK and ingest requests |
+
+For example, this keeps profile prefetch disabled while admitting at most six
+automatically recalled memories with similarity of at least `0.82`:
+
+```json
+{
+  "max_recall_results": 6,
+  "recall_min_similarity": 0.82,
+  "prefetch_include_profile": false
+}
+```
+
+To opt in to profile prefetch, set `prefetch_include_profile` to `true`; the
+profile is then included on the first turn and every `profile_frequency` turns.
 
 **Environment variables:** `SUPERMEMORY_API_KEY` (required), `SUPERMEMORY_BASE_URL` (compatibility fallback when `base_url` is not configured), `SUPERMEMORY_CONTAINER_TAG` (overrides config).
 
@@ -608,10 +624,11 @@ Base URL precedence is `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:
 
 **Key features:**
 - Automatic context fencing — strips recalled memories from captured turns to prevent recursive memory pollution
+- Automatic semantic recall uses direct memory search, admits only results at or above `recall_min_similarity`, and shares one `max_recall_results` budget across all rendered context sections
+- Automatic static/dynamic profile prefetch is off by default; set `prefetch_include_profile` to `true` to include it on the first turn and every `profile_frequency` turns. The explicit `supermemory_profile` tool remains available regardless.
 - Full-session ingest — the entire conversation is sent once at session boundaries
 - Session-end conversation ingest (to `/v4/conversations`) for richer profile + graph building in Supermemory
 - End-to-end self-hosted routing — SDK, probe, and conversation-ingest requests use the same configured endpoint
-- Profile facts injected on first turn and at configurable intervals
 - **Profile-scoped containers** — use `{identity}` in `container_tag` (e.g. `hermes-{identity}` → `hermes-coder`) to isolate memories per Hermes profile
 - **Multi-container mode** — enable `enable_custom_container_tags` with a `custom_containers` list to let the agent read/write across named containers. Automatic operations stay on the primary container.
 

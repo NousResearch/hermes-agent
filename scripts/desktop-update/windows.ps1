@@ -35,7 +35,8 @@
 #
 # Marker: we claim HERMES_HOME\.hermes-update-in-progress with OUR pid as
 # step 0 (the wrapper cmd.exe pid the Desktop saw is useless -- it exits
-# immediately). hermes_cli/update_lock.py's ancestry rule lets our
+# immediately), retaining HERMES_UPDATE_STARTED_AT from the Desktop hand-off.
+# hermes_cli/update_lock.py's ancestry rule lets our
 # `hermes update` child adopt the claim; electron/update-marker.ts parks a
 # relaunched Desktop on it. Cleanup only removes the marker while WE still
 # own it (a handoff partner that rewrote it keeps its claim).
@@ -47,12 +48,14 @@ param(
     [string]$RelaunchExe = "",
     [switch]$NoUi,
     [switch]$NoMarkerCleanup,
-    [switch]$SelfTestUi
+    [switch]$SelfTestUi,
+    [switch]$SelfTestPipeDrain,
+    [switch]$SelfTestMarker
 )
 
-if (-not $SelfTestUi -and -not $InstallRoot) {
-    # Mandatory in spirit; relaxed in the signature only so -SelfTestUi can
-    # drive the UI without a checkout.
+if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
+    # Mandatory in spirit; relaxed in the signature only so the self-test
+    # switches can drive the UI / the pipe drain without a checkout.
     throw "-InstallRoot is required"
 }
 
@@ -583,6 +586,59 @@ function Start-DesktopRelaunch {
     return $spawned
 }
 
+# How long a step's pipes get to reach EOF AFTER the step process itself has
+# exited (#90455). This is not a step timeout -- the step is already gone by
+# the time the clock starts, and everything it wrote is sitting in the pipe
+# buffer ready to read, so the grace only has to cover the final drain.
+#
+# It exists because pipe EOF is not the child's to give. Windows hands the
+# write end of a redirected pipe to the child as an INHERITABLE handle, so
+# every descendant that is spawned without its own redirection gets a
+# duplicate -- and the read side does not see EOF until the last of them
+# closes it. `hermes update` deliberately runs its build steps with stdout
+# inherited (hermes_cli/main.py, the tee-stderr runner), so the tree under a
+# step is arbitrarily deep and not something this script can enumerate. When
+# one of those descendants is a resident gateway, the pipe stays open for the
+# life of the gateway, i.e. forever.
+#
+# Overridable so the pipe-drain self-test does not have to sit out the real
+# grace; not documented as a user knob.
+$script:StepDrainGraceSeconds = 20
+if ($env:HERMES_UPDATE_PIPE_DRAIN_SECONDS) {
+    $parsedGrace = 0
+    if ([int]::TryParse($env:HERMES_UPDATE_PIPE_DRAIN_SECONDS, [ref]$parsedGrace) -and $parsedGrace -ge 0) {
+        $script:StepDrainGraceSeconds = $parsedGrace
+    }
+}
+
+function Step-PipeDrain($Reader, [ref]$Task, $Buffer, $Sink, [ref]$Moved) {
+    # Advance one redirected pipe by whatever has already arrived, without
+    # ever blocking. Returns $true once the pipe has reached EOF (or its read
+    # faulted), $false while more may still come. Sets $Moved when this call
+    # actually consumed bytes, so the caller can tell a busy pipe from a quiet
+    # one and skip its idle wait.
+    #
+    # The chunked ReadAsync loop is the point: ReadToEndAsync().Result cannot
+    # hand back a partial read, so abandoning it loses the whole step's output.
+    # Draining into a StringBuilder means an abandoned pipe still yields every
+    # byte that arrived before we gave up.
+    if ($null -eq $Task.Value) { return $true }
+    if (-not $Task.Value.IsCompleted) { return $false }
+    $count = 0
+    try {
+        $count = $Task.Value.Result
+    } catch {
+        # Faulted/cancelled read: treat as EOF rather than retrying forever.
+        $Task.Value = $null
+        return $true
+    }
+    if ($count -le 0) { $Task.Value = $null; return $true }
+    [void]$Sink.Append($Buffer, 0, $count)
+    $Moved.Value = $true
+    $Task.Value = $Reader.ReadAsync($Buffer, 0, $Buffer.Length)
+    return $false
+}
+
 function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     # The window does not stream child output, so no line-pump: both pipes
     # drain asynchronously (no deadlock however chatty the child) while a small
@@ -590,6 +646,15 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     # stretches (pip installs) -- the old EndOfStream pump blocked on quiet
     # children and froze it. Full output still lands in the hand-off log
     # afterwards, where `hermes debug share` picks it up.
+    #
+    # The drain is bounded once the step exits (#90455). Waiting for pipe EOF
+    # is waiting on the step's whole surviving descendant tree, and this
+    # function sits upstream of every terminal obligation the hand-off has --
+    # .hermes-update-result.json, clearing .hermes-update-in-progress,
+    # relaunching the Desktop. One resident grandchild holding an inherited
+    # handle used to strand all three and leave the Desktop on "Updating
+    # Hermes" until the user killed something by hand. Losing the tail of a
+    # log is the strictly better failure.
     # System.Diagnostics.Process directly: Start-Process's .ExitCode is
     # unreliably $null under PS 5.1 even with the Handle-touch workaround.
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -611,15 +676,64 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     $psi.EnvironmentVariables["PYTHONUTF8"] = "1"
     $psi.CreateNoWindow = $true
     $proc = [System.Diagnostics.Process]::Start($psi)
-    $outTask = $proc.StandardOutput.ReadToEndAsync()
-    $errTask = $proc.StandardError.ReadToEndAsync()
-    while (-not $proc.HasExited) {
-        Start-Sleep -Milliseconds 150
+    $outSink = New-Object System.Text.StringBuilder
+    $errSink = New-Object System.Text.StringBuilder
+    $outBuffer = New-Object char[] 16384
+    $errBuffer = New-Object char[] 16384
+    $outTask = $proc.StandardOutput.ReadAsync($outBuffer, 0, $outBuffer.Length)
+    $errTask = $proc.StandardError.ReadAsync($errBuffer, 0, $errBuffer.Length)
+    $abandonAt = $null
+    $abandoned = $false
+    while ($true) {
+        $moved = $false
+        $outDone = Step-PipeDrain $proc.StandardOutput ([ref]$outTask) $outBuffer $outSink ([ref]$moved)
+        $errDone = Step-PipeDrain $proc.StandardError ([ref]$errTask) $errBuffer $errSink ([ref]$moved)
+        if ($proc.HasExited) {
+            if ($outDone -and $errDone) { break }
+            # Clock starts at the step's exit, not at its start: a slow step is
+            # not a stuck one, and only a pipe outliving its process is.
+            if ($null -eq $abandonAt) {
+                $abandonAt = (Get-Date).AddSeconds($script:StepDrainGraceSeconds)
+            } elseif ((Get-Date) -ge $abandonAt) {
+                $abandoned = $true
+                break
+            }
+        }
+        # Only idle when both pipes came up empty this pass, and idle on the
+        # reads themselves rather than on the clock.
+        #
+        # Sleeping after a chunk that DID arrive meters the drain at one buffer
+        # per tick (16 KiB / 150ms ~ 107 KB/s), and because the pipe then backs
+        # up that is backpressure on the running step, not just a slow read --
+        # a chatty step blocks on write() waiting for us. Waiting for EOF and
+        # trickling toward it are two ways to make a fast step slow, and this
+        # function is upstream of the hand-off's obligations either way.
+        #
+        # A flat sleep is not enough on its own: a freshly issued ReadAsync is
+        # rarely complete by the very next pass, so the loop would sleep 150ms
+        # between chunks anyway. WaitAny returns the instant either pipe has
+        # something (and immediately if one already does), and expires on its
+        # own so a silent step still animates the marquee and still advances
+        # the abandon deadline.
+        if (-not $moved) {
+            $live = @($outTask, $errTask) | Where-Object { $null -ne $_ }
+            if ($live.Count -gt 0) {
+                [void][System.Threading.Tasks.Task]::WaitAny([System.Threading.Tasks.Task[]]$live, 150)
+            } else {
+                Start-Sleep -Milliseconds 150
+            }
+        }
         if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
     }
-    $proc.WaitForExit()
-    $outText = $outTask.Result
-    $errText = $errTask.Result
+    # Bounded overload deliberately: the argument-less overload also waits on
+    # redirected streams, which is the very wait we just bounded. HasExited is
+    # already true here, so this call only settles ExitCode.
+    [void]$proc.WaitForExit(5000)
+    if ($abandoned) {
+        Write-HandoffLog ("{0}!| pipe drain abandoned after {1}s: '{0}' exited but a surviving descendant still holds its stdout/stderr handles. Continuing the hand-off with the output captured so far (#90455)." -f $Tag, $script:StepDrainGraceSeconds)
+    }
+    $outText = $outSink.ToString()
+    $errText = $errSink.ToString()
     foreach ($ln in ($outText -split "`r?`n")) {
         if ($ln.Trim()) { Write-HandoffLog ("{0}| {1}" -f $Tag, $ln) }
     }
@@ -665,6 +779,119 @@ if ($SelfTestUi) {
     exit 0
 }
 
+# -SelfTestPipeDrain: prove Invoke-HermesStep survives a leaked pipe ------
+# The #90455 deadlock needs no update, no checkout and no Hermes install to
+# reproduce -- only a step whose grandchild outlives it holding the inherited
+# write end of the redirected pipe. That is exactly what this builds, so the
+# fix has an executable proof on Windows instead of a source-grep. Exits
+# before any marker/desktop machinery, same as -SelfTestUi; touches nothing
+# but its own temp files.
+#
+# Two arms, because the bound and the drain rate fail in opposite directions:
+#
+#   leak  -- a step whose grandchild outlives it. Guards the #90455 deadlock:
+#            the drain must abandon rather than wait out the descendant.
+#   flood -- a chatty step that leaks nothing. Guards the other cliff: a drain
+#            that idles after every chunk it reads is metered at one buffer per
+#            tick, which backpressures the running step. Waiting for EOF and
+#            trickling toward it are both ways to make a fast step slow.
+if ($SelfTestPipeDrain) {
+    New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
+    $hold = 60
+    if ($env:HERMES_SELFTEST_HOLD_SECONDS) { $hold = [int]$env:HERMES_SELFTEST_HOLD_SECONDS }
+    $floodKb = 8192
+    if ($env:HERMES_SELFTEST_FLOOD_KB) { $floodKb = [int]$env:HERMES_SELFTEST_FLOOD_KB }
+    # $PSHOME is this interpreter's own directory -- no hardcoded system path.
+    $powershell = Join-Path $PSHOME "powershell.exe"
+    $stamp = [Guid]::NewGuid().ToString("N")
+    $childPs1 = Join-Path $TempDir "hermes-pipe-drain-$stamp.ps1"
+    $floodPs1 = Join-Path $TempDir "hermes-pipe-flood-$stamp.ps1"
+    $pidFile = Join-Path $TempDir "hermes-pipe-drain-$stamp.pid"
+    # UseShellExecute=$false with no redirection is what makes the grandchild
+    # inherit our stdout/stderr -- the whole point of the fixture. Anything
+    # that redirects (Start-Process, subprocess with stdout=DEVNULL) would
+    # close the handle and the deadlock would not reproduce.
+    $childSource = @'
+param([int]$Hold, [string]$PidFile)
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = Join-Path $PSHOME "powershell.exe"
+$psi.Arguments = "-NoProfile -Command Start-Sleep -Seconds $Hold"
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+$grandchild = [System.Diagnostics.Process]::Start($psi)
+[System.IO.File]::WriteAllText($PidFile, [string]$grandchild.Id)
+Write-Output "pipe-drain step output"
+[Console]::Out.Flush()
+exit 7
+'@
+    # Writes straight to the console stream, holding nothing: a step that is
+    # merely loud. `hermes update` is this shape -- the Electron/vite build
+    # alone is megabytes. Few large lines rather than many small ones on
+    # purpose: Write-HandoffLog is one Add-Content per line and runs inside the
+    # measured window, so line-heavy output would time the logger instead of
+    # the drain.
+    $floodSource = @'
+param([int]$Kb)
+$chunk = "x" * (131072 - 1)
+for ($i = 0; $i -lt [Math]::Ceiling($Kb / 128); $i++) { [Console]::Out.Write($chunk + "`n") }
+[Console]::Out.Flush()
+exit 5
+'@
+    [System.IO.File]::WriteAllText($childPs1, $childSource)
+    [System.IO.File]::WriteAllText($floodPs1, $floodSource)
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $res = Invoke-HermesStep $powershell @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $childPs1,
+        "-Hold", [string]$hold, "-PidFile", $pidFile
+    ) "pipedrain"
+    $sw.Stop()
+    $elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 2)
+
+    $leakPid = 0
+    if (Test-Path -LiteralPath $pidFile) {
+        [void][int]::TryParse((Get-Content -LiteralPath $pidFile -Raw).Trim(), [ref]$leakPid)
+    }
+    $leakAlive = $false
+    if ($leakPid -gt 0) {
+        $leakAlive = [bool](Get-Process -Id $leakPid -ErrorAction SilentlyContinue)
+        Stop-Process -Id $leakPid -Force -ErrorAction SilentlyContinue
+    }
+
+    $floodSw = [System.Diagnostics.Stopwatch]::StartNew()
+    $flood = Invoke-HermesStep $powershell @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $floodPs1,
+        "-Kb", [string]$floodKb
+    ) "pipeflood"
+    $floodSw.Stop()
+    $floodElapsed = [Math]::Round($floodSw.Elapsed.TotalSeconds, 2)
+    $floodBytes = $flood.Output.Length
+
+    Remove-Item -LiteralPath $childPs1, $floodPs1, $pidFile -Force -ErrorAction SilentlyContinue
+
+    # The grandchild still being alive at return is what makes this a proof
+    # rather than a timing coincidence: the pipe was demonstrably still open.
+    $budget = $script:StepDrainGraceSeconds + 30
+    # A sleep-per-chunk drain moves 16 KiB/150ms ~ 107 KB/s, so 8 MiB takes
+    # ~76s. Generous enough for a loaded CI runner, far under the trickle.
+    $floodBudget = 25
+    $problems = @()
+    if (-not $leakAlive) { $problems += "handle-holding grandchild was not alive on return (fixture did not reproduce the leak)" }
+    if ($elapsed -ge $budget) { $problems += "leak arm returned in ${elapsed}s, over the ${budget}s budget" }
+    if ($res.Code -ne 7) { $problems += "leak arm exit code $($res.Code), expected 7" }
+    if ($res.Output -notmatch "pipe-drain step output") { $problems += "leak arm step output was lost" }
+    if ($floodElapsed -ge $floodBudget) { $problems += "flood arm returned in ${floodElapsed}s, over the ${floodBudget}s budget -- the drain is metering itself, which backpressures the step" }
+    if ($flood.Code -ne 5) { $problems += "flood arm exit code $($flood.Code), expected 5" }
+    if ($floodBytes -lt ($floodKb * 1024)) { $problems += "flood arm captured $floodBytes bytes of $($floodKb * 1024)" }
+
+    $detail = "leak: elapsed=${elapsed}s budget=${budget}s code=$($res.Code) grandchildAlive=$leakAlive | flood: ${floodKb}KB in ${floodElapsed}s budget=${floodBudget}s bytes=$floodBytes code=$($flood.Code)"
+    if ($problems.Count -gt 0) {
+        Write-Host "PIPE-DRAIN SELF-TEST: FAIL $detail -- $($problems -join '; ')"
+        exit 1
+    }
+    Write-Host "PIPE-DRAIN SELF-TEST: PASS $detail"
+    exit 0
+}
+
 try {
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
     Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue
@@ -674,12 +901,23 @@ try {
     # -- 0. Claim the update marker with OUR pid ---------------------------
     try {
         $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $startedAt = 0L
+        $hasStartedAt = [int64]::TryParse($env:HERMES_UPDATE_STARTED_AT, [ref]$startedAt)
+        if (-not $hasStartedAt -or $startedAt -gt $epoch -or ($epoch - $startedAt) -gt 1200) {
+            $startedAt = $epoch
+        }
         # WriteAllText for byte-exact LF framing: Set-Content emits CRLF and
         # the marker contract (Rust/TS/Python readers) is "<pid>\n<ts>\n".
-        [System.IO.File]::WriteAllText($MarkerPath, "$PID`n$epoch`n")
+        [System.IO.File]::WriteAllText($MarkerPath, "$PID`n$startedAt`n")
         Write-HandoffLog "claimed update marker (pid $PID)"
     } catch {
         Write-HandoffLog "WARNING: could not write update marker: $($_.Exception.Message)"
+    }
+
+    if ($SelfTestMarker) {
+        $finalCode = 0
+        $finalMsg = "marker self-test complete"
+        exit 0
     }
 
     # -- 1. Wait for the Desktop to exit (FAIL CLOSED) ----------------------

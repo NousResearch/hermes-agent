@@ -258,6 +258,55 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
     except (subprocess.CalledProcessError, OSError):
         return None
 
+# Files that define the editable install. A pull that touches none of them
+# cannot have invalidated it.
+_INSTALL_DEFINING_FILES = (
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "MANIFEST.in",
+    "uv.lock",
+)
+
+def _editable_install_is_current(git_cmd, cwd, pre_pull_sha: str | None) -> bool:
+    """True when the pulled commits cannot have invalidated the editable install.
+
+    ``uv pip install -e .`` never audits an editable target — it reinstalls on
+    every invocation, and every reinstall rewrites the console-script shims.
+    On Windows that rewrite is the only reason the running ``hermes.exe`` has
+    to be quarantined, and a quarantine that loses its race is the whole
+    ``os error 32`` family. Not reinstalling when the reinstall provably
+    cannot change anything removes that risk outright for the common update,
+    rather than trying to make the rename win more often.
+
+    Skipping is safe because Hermes pins its editable finder to a *static*
+    module list (``[tool.setuptools] py-modules`` plus
+    ``packages.find.include``). The one source-only change that would stale
+    that finder is a new top-level module or package, and it cannot land
+    without a ``pyproject.toml`` diff. Dependencies and ``[project.scripts]``
+    live there too. New submodules inside an already-mapped package resolve
+    through the real package directory and need no reinstall.
+
+    Fails closed: an unresolvable pre-pull SHA (shallow checkout, ZIP swap)
+    or a failed ``git diff`` returns False and the install runs as before.
+    """
+    if not pre_pull_sha:
+        return False
+    try:
+        result = subprocess.run(
+            git_cmd
+            + ["diff", "--name-only", f"{pre_pull_sha}..HEAD", "--"]
+            + list(_INSTALL_DEFINING_FILES),
+            cwd=cwd,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+    except OSError:
+        return False
+    if result.returncode != 0:
+        return False
+    return not result.stdout.strip()
+
 def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
     """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
 
@@ -5698,7 +5747,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # via ``_recover_from_interrupted_install``. Cleared after the core
         # ``.[all]`` install completes — lazy refresh uses a separate marker.
         _write_update_incomplete_marker()
-        print("→ Updating Python dependencies...")
+        deps_current = _editable_install_is_current(
+            git_cmd, _m().PROJECT_ROOT, pre_pull_sha
+        )
+        if deps_current:
+            print("→ Python dependencies unchanged — skipping reinstall")
+        else:
+            print("→ Updating Python dependencies...")
         from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
         # Keep managed uv current — runs `uv self update` if we already have one.
@@ -5718,12 +5773,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 uv_env.pop("PYTHONHOME", None)
                 install_group = "termux-all"
                 print("  → Termux detected: using uv + curated termux-all optional profile...")
-            if _m()._is_termux_env(uv_env) and _is_android_python():
-                print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-                _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
-            _m()._install_python_dependencies_with_optional_fallback(
-                [uv_bin, "pip"], env=uv_env, group=install_group
-            )
+            if not deps_current:
+                if _m()._is_termux_env(uv_env) and _is_android_python():
+                    print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
+                    _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
+                _m()._install_python_dependencies_with_optional_fallback(
+                    [uv_bin, "pip"], env=uv_env, group=install_group
+                )
         else:
             # Use sys.executable to explicitly call the venv's pip module,
             # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -5746,13 +5802,24 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _m()._is_termux_env():
                 install_group = "termux-all"
                 print("  → Termux detected: using curated termux-all optional profile...")
-            if _m()._is_termux_env() and _is_android_python():
-                print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-                _install_psutil_android_compat(pip_cmd)
-            _m()._install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+            if not deps_current:
+                if _m()._is_termux_env() and _is_android_python():
+                    print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
+                    _install_psutil_android_compat(pip_cmd)
+                _m()._install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
 
         install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
         lazy_env = uv_env if uv_bin else None
+
+        if deps_current:
+            # The verification normally runs inside the install we just
+            # skipped. Run it here so a wrong skip self-heals into a real
+            # install (both verifiers reinstall what they find missing)
+            # instead of leaving a venv nobody checked.
+            _m()._verify_core_dependencies_installed(
+                install_prefix, env=lazy_env, group=install_group
+            )
+            _m()._verify_console_scripts_installed(install_prefix, env=lazy_env)
 
         # Core ``.[all]`` install finished. Clear the generic core breadcrumb
         # before the lazy-refresh phase — that phase uses its own marker so a

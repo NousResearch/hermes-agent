@@ -2263,6 +2263,51 @@ class TestBuildSchemaFromConfig:
 # ---------------------------------------------------------------------------
 
 
+class TestMainModelAssignment:
+    def test_provider_switch_clears_stale_key_env(self):
+        from hermes_cli.web_server import _apply_main_model_assignment
+
+        model_cfg = {
+            "provider": "huawei-modelarts",
+            "default": "glm-5.2",
+            "base_url": "https://api.modelarts-maas.com/v2",
+            "key_env": "HERMES_CUSTOM_HUAWEI_MODELARTS_API_KEY",
+            "api_mode": "chat_completions",
+        }
+
+        result = _apply_main_model_assignment(
+            model_cfg,
+            provider="openai-api",
+            model="gpt-5.6-sol",
+        )
+
+        assert result["provider"] == "openai-api"
+        assert result["default"] == "gpt-5.6-sol"
+        assert result["base_url"] == ""
+        assert "key_env" not in result
+        assert "api_mode" not in result
+
+    def test_same_provider_repick_preserves_key_env(self):
+        from hermes_cli.web_server import _apply_main_model_assignment
+
+        model_cfg = {
+            "provider": "custom-provider",
+            "default": "old-model",
+            "base_url": "https://custom.example.test/v1",
+            "key_env": "HERMES_CUSTOM_PROVIDER_API_KEY",
+        }
+
+        result = _apply_main_model_assignment(
+            model_cfg,
+            provider="custom-provider",
+            model="new-model",
+        )
+
+        assert result["default"] == "new-model"
+        assert result["base_url"] == "https://custom.example.test/v1"
+        assert result["key_env"] == "HERMES_CUSTOM_PROVIDER_API_KEY"
+
+
 class TestConfigRoundTrip:
     """Verify config survives GET → edit → PUT without data loss."""
 

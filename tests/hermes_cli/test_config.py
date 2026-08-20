@@ -15,6 +15,7 @@ from hermes_cli.config import (
     get_compatible_custom_providers,
     _explicit_config_paths,
     _normalize_max_turns_config,
+    clear_model_endpoint_credentials,
     is_provider_enabled,
     load_config,
     load_env,
@@ -244,6 +245,36 @@ class TestSaveAndLoadRoundtrip:
 
 
 
+
+
+class TestClearModelEndpointCredentials:
+    def test_clears_key_env_with_endpoint_credentials_by_default(self):
+        model_cfg = {
+            "provider": "custom-provider",
+            "api_key": "sk-old",
+            "api": "legacy-old",
+            "api_mode": "chat_completions",
+            "base_url": "https://old.example.test/v1",
+            "key_env": "HERMES_CUSTOM_OLD_API_KEY",
+        }
+
+        clear_model_endpoint_credentials(model_cfg, clear_base_url=True)
+
+        assert "api_key" not in model_cfg
+        assert "api" not in model_cfg
+        assert "api_mode" not in model_cfg
+        assert "base_url" not in model_cfg
+        assert "key_env" not in model_cfg
+
+    def test_can_preserve_key_env_when_caller_needs_it(self):
+        model_cfg = {
+            "provider": "custom-provider",
+            "key_env": "HERMES_CUSTOM_PROVIDER_API_KEY",
+        }
+
+        clear_model_endpoint_credentials(model_cfg, clear_key_env=False)
+
+        assert model_cfg["key_env"] == "HERMES_CUSTOM_PROVIDER_API_KEY"
 
 
 class TestSaveEnvValueSecure:

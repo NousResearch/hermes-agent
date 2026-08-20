@@ -95,6 +95,54 @@ class TestRelayAdapterCapabilityMapping:
         assert adapter.supports_inchannel_continuable is True
 
 
+class TestPerPlatformCapability:
+    """One RelayAdapter fronts N platforms; the D6 gate must read the
+    DESTINATION platform's negotiated descriptor, not the primary identity's
+    scalar — the connector advertises the bit per platform at handshake."""
+
+    class _Transport:
+        def __init__(self, by_platform):
+            self._by_platform = by_platform
+            self._identities = [(p, "hermes") for p in by_platform]
+
+        def descriptor_for_platform(self, platform):
+            return self._by_platform.get(platform)
+
+    def _adapter(self, primary, by_platform):
+        from gateway.config import PlatformConfig
+        from gateway.relay.adapter import RelayAdapter
+
+        config = PlatformConfig(enabled=True, extra={})
+        return RelayAdapter(config, primary, transport=self._Transport(by_platform))
+
+    def test_primary_true_does_not_leak_onto_other_platform(self):
+        """Slack-primary (capable) + Discord fronted (not advertised):
+        Discord must NOT inherit Slack's bit through the scalar."""
+        slack = _descriptor(supports_inchannel_continuable=True)
+        discord = _descriptor(platform="discord", label="Discord",
+                              markdown_dialect="markdown")
+        adapter = self._adapter(slack, {"slack": slack, "discord": discord})
+        assert adapter.supports_inchannel_continuable_for_platform("slack") is True
+        assert adapter.supports_inchannel_continuable_for_platform("discord") is False
+
+    def test_nonprimary_advertised_bit_is_honored(self):
+        """Discord-primary (not capable) + Slack fronted (advertised):
+        Slack's own descriptor must win over the primary scalar False."""
+        discord = _descriptor(platform="discord", label="Discord",
+                              markdown_dialect="markdown")
+        slack = _descriptor(supports_inchannel_continuable=True)
+        adapter = self._adapter(discord, {"slack": slack, "discord": discord})
+        assert adapter.supports_inchannel_continuable_for_platform("slack") is True
+        assert adapter.supports_inchannel_continuable_for_platform("discord") is False
+
+    def test_unknown_platform_falls_back_to_scalar(self):
+        """A platform the transport has no descriptor for (or a transport
+        predating descriptor_for_platform) keeps the scalar behavior."""
+        slack = _descriptor(supports_inchannel_continuable=True)
+        adapter = self._adapter(slack, {"slack": slack})
+        assert adapter.supports_inchannel_continuable_for_platform("matrix") is True
+
+
 class TestSurfaceKnobResolution:
     """_resolve_cron_surface_mode reads the knob from BOTH config shapes."""
 

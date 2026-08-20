@@ -2810,16 +2810,34 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # consumer; "first consumer ≠ definition").
         surface_mode = _resolve_cron_surface_mode(pconfig, platform_name)
         in_channel_surface = surface_mode == "in_channel"
-        if in_channel_surface and runtime_adapter is not None and not getattr(
-            runtime_adapter, "supports_inchannel_continuable", False
-        ):
-            # Fail safe (D6): platform has no in_channel continuation primitive.
-            logger.debug(
-                "Job '%s': cron_continuable_surface=in_channel not supported on "
-                "%s, using thread",
-                job.get("id", "?"), platform_name,
+        if in_channel_surface and runtime_adapter is not None:
+            # Per-platform capability first: one RelayAdapter fronts N
+            # platforms and the connector advertises the bit per platform at
+            # handshake — the scalar attr only carries the PRIMARY identity's
+            # bit. Native adapters (no per-platform query) keep the class
+            # attribute path unchanged.
+            per_platform_check = getattr(
+                runtime_adapter, "supports_inchannel_continuable_for_platform",
+                None,
             )
-            in_channel_surface = False
+            if callable(per_platform_check):
+                try:
+                    surface_supported = bool(per_platform_check(platform_name))
+                except Exception:
+                    surface_supported = False
+            else:
+                surface_supported = bool(getattr(
+                    runtime_adapter, "supports_inchannel_continuable", False
+                ))
+            if not surface_supported:
+                # Fail safe (D6): platform has no in_channel continuation
+                # primitive.
+                logger.debug(
+                    "Job '%s': cron_continuable_surface=in_channel not supported on "
+                    "%s, using thread",
+                    job.get("id", "?"), platform_name,
+                )
+                in_channel_surface = False
 
         if in_channel_surface and origin_target and live_adapter_ready:
             # Force flat delivery (D2): the continuable-channel target must

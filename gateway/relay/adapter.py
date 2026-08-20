@@ -716,6 +716,36 @@ class RelayAdapter(BasePlatformAdapter):
         """Backward-compatible internal alias for follow-up routing."""
         return self.fronts_platform(platform)
 
+    def supports_inchannel_continuable_for_platform(self, platform: Any) -> bool:
+        """Whether ONE fronted logical platform can host the flat continuable
+        cron surface (the D6 gate in cron/scheduler.py).
+
+        The scalar ``supports_inchannel_continuable`` carries only the PRIMARY
+        identity's bit, but one RelayAdapter fronts N platforms and the
+        connector advertises the capability per platform at handshake. On a
+        multi-platform relay the scalar both leaks the primary's True onto
+        platforms whose own descriptor never advertised it and suppresses a
+        non-primary platform's advertised True. Resolve the platform's own
+        negotiated descriptor off the transport; fall back to the scalar only
+        when the per-platform descriptor is unavailable (single-platform
+        transport, or a transport predating descriptor_for_platform).
+        """
+        platform_value = str(getattr(platform, "value", platform) or "")
+        if platform_value and self._transport is not None:
+            resolve = getattr(self._transport, "descriptor_for_platform", None)
+            if callable(resolve):
+                try:
+                    per_platform = resolve(platform_value)
+                except Exception:  # noqa: BLE001 - capability lookup must never break delivery
+                    per_platform = None
+                if per_platform is not None:
+                    return bool(
+                        getattr(
+                            per_platform, "supports_inchannel_continuable", False
+                        )
+                    )
+        return bool(self.supports_inchannel_continuable)
+
     async def on_interrupt(self, session_key: str, chat_id: str) -> None:
         """Bridge a connector-delivered /stop into the adapter's interrupt path.
 

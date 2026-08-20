@@ -7,6 +7,7 @@ only). Visible differences stay with did-you-mean suggestions.
 """
 
 import json
+import os
 import unicodedata
 
 import pytest
@@ -59,6 +60,18 @@ class TestUnicodeVariantRepair:
     def test_plain_missing_file_unchanged(self, ws):
         result = json.loads(read_file_tool(str(ws / "missing.txt")))
         assert "not found" in result.get("error", "").lower()
+
+    @pytest.mark.linux_only  # os.mkfifo is POSIX-only
+    def test_variant_special_file_refused_instead_of_hanging(self, tmp_path, monkeypatch):
+        # The repair re-enters read_file below the tool layer, so the
+        # tool-level stat guard never sees the variant. A not-found path
+        # whose unicode-equivalent entry is a FIFO must hit the shell-side
+        # regular-file probe and come back with an error. Without that
+        # probe the variant read opens the FIFO and blocks.
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        os.mkfifo(tmp_path / "it’s.pipe")
+        result = json.loads(read_file_tool(str(tmp_path / "it's.pipe")))
+        assert "not a regular file" in (result.get("error") or "")
 
 
 class TestNearMissSuggestion:

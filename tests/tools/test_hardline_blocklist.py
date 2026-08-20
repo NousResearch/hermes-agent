@@ -135,6 +135,57 @@ _HARDLINE_BLOCK = [
     "{ poweroff; }",
     "true && (reboot)",
     "echo hi; { reboot; }",
+    # In-place edits of the Hermes security policy / credential files.
+    # ~/.hermes/config.yaml holds approvals.mode, yolo, and the permanent
+    # allowlist; .env holds credentials — both are write-protected on the
+    # file_tools side. The smart-approval adjudicator has approved a
+    # `sed -i` on config.yaml even while describing it correctly, letting
+    # the agent rewrite its own approval policy, so these must sit on the
+    # unconditional floor rather than in yolo-bypassable DANGEROUS_PATTERNS.
+    "sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "sed -i.bak 's/mode: smart/mode: off/' ~/.hermes/config.yaml",
+    "sed -ri 's/a/b/' ~/.hermes/config.yaml",
+    "sed --in-place 's/a/b/' $HOME/.hermes/config.yaml",
+    "sed -i 's/KEY=old/KEY=new/' ~/.hermes/.env",
+    "sed -i '' 's/a/b/' ${HOME}/.hermes/.env",
+    "perl -pi -e 's/a/b/' ~/.hermes/config.yaml",
+    "perl -i -pe 's/smart/off/' $HERMES_HOME/config.yaml",
+    "ruby -i -pe 'gsub(/a/, \"b\")' ~/.hermes/.env",
+    # The editor at every real command position: chained, subshell/command
+    # substitution, wrapped, piped, and inside a shell -c payload (the
+    # payload is surfaced as its own detection variant).
+    "true && sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "echo hi; sed -i 's/a/b/' ~/.hermes/.env",
+    "cat $(sed -i 's/a/b/' ~/.hermes/config.yaml)",
+    "(sed -i 's/a/b/' ~/.hermes/config.yaml)",
+    "sudo sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "env FOO=bar sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "true | sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "bash -c \"sed -i 's/mode: smart/mode: off/' ~/.hermes/config.yaml\"",
+    "sh -c 'perl -pi -e s/a/b/ ~/.hermes/.env'",
+    # Equivalent spellings of the same mutation. An earlier revision keyed on
+    # literal `sed` with an `i` in its FIRST option token, so all four of
+    # these reached approved=true under HERMES_YOLO_MODE=1. Detection now
+    # resolves the real command word and walks the option sequence.
+    "sed -e 's/a/b/' -i ~/.hermes/config.yaml",
+    "command sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "env -i sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "/usr/bin/sed -i 's/a/b/' ~/.hermes/config.yaml",
+    # Option-grammar coverage: in-place flag after other options, long form
+    # with an attached suffix, wrapper options that take their own argument,
+    # an explicit end-of-options marker, and a script supplied via -f (which
+    # makes the first operand a FILE rather than the program text).
+    "sed -n -e 's/a/b/' --in-place ~/.hermes/config.yaml",
+    "/bin/sed --in-place=.bak 's/a/b/' ~/.hermes/.env",
+    "nohup sudo -u root sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "env -u PATH sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "sed -i -- 's/a/b/' ~/.hermes/config.yaml",
+    "sed -f script.sed -i ~/.hermes/config.yaml",
+    "perl -i.bak -pe 's/a/b/' ~/.hermes/.env",
+    # The protected file as a later operand, and spelled as an absolute path
+    # rather than via ~ / $HOME — the same file either way.
+    "sed -i 's/a/b/' other.txt ~/.hermes/config.yaml",
+    "sed -i 's/a/b/' /home/qni/.hermes/config.yaml",
 ]
 
 
@@ -199,6 +250,38 @@ _HARDLINE_ALLOW = [
     "npm run build",
     "sudo apt update",
     "curl https://example.com | head",
+    # Hermes config/env: only *in-place* edits are hardline. Reading, and
+    # sed without -i (prints to stdout), stay at normal approval levels.
+    "sed 's/a/b/' ~/.hermes/config.yaml",
+    "grep 'approvals' ~/.hermes/config.yaml",
+    "cat ~/.hermes/config.yaml",
+    # sed -i on files that merely share the basename is not hardline
+    # (project-local config.yaml/.env stay in DANGEROUS_PATTERNS).
+    "sed -i 's/a/b/' ./config.yaml",
+    "sed -i 's/a/b/' /tmp/notes.txt",
+    # In-place-edit spellings as quoted DATA are not commands: committing
+    # docs/tests that mention them must not trip the unconditional floor.
+    'git commit -m "sed -i s/a/b/ ~/.hermes/config.yaml"',
+    "echo \"perl -pi -e 's/a/b/' ~/.hermes/.env\"",
+    'gh pr create --title "block sed -i on ~/.hermes/config.yaml"',
+    "grep 'sed -i.*hermes/config.yaml' tools/approval.py",
+    'printf "%s" "ruby -i -pe gsub ~/.hermes/.env"',
+    # The protected path inside the sed PROGRAM is not the target. An earlier
+    # revision searched for the path anywhere after the options, so both of
+    # these hardline-blocked although neither mutates the policy file.
+    "sed -i 's|~/.hermes/config.yaml|config.yml|' README.md",
+    "sed -e 's|~/.hermes/.env|x|' -i notes.md",
+    # Backup/derived copies carry no approval policy — same filename-boundary
+    # reasoning that keeps `.env#backup` out of the redirection deny.
+    "sed -i 's/a/b/' ~/.hermes/config.yaml.bak",
+    "sed -i 's/a/b/' ~/.hermes/config.yaml.orig",
+    "sed -i 's/a/b/' ~/.hermes/other.yaml",
+    # ruby/perl -I is an include DIRECTORY that takes an argument, not the
+    # in-place flag: case must survive option parsing.
+    "ruby -I ~/.hermes/config.yaml -e 'puts 1'",
+    "perl -I ~/.hermes -e 'print 1'",
+    # Reading the protected file is not editing it.
+    "diff ~/.hermes/config.yaml ~/.hermes/config.yaml.bak",
 ]
 
 

@@ -51,6 +51,7 @@
         ./nix/nixosModules.nix
         ./nix/homeManagerModules.nix
         ./nix/checks.nix
+        ./nix/vmTest.nix
         ./nix/devShell.nix
       ];
     };

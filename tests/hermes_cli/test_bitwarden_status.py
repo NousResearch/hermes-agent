@@ -108,3 +108,106 @@ def test_status_marks_validation_as_not_checked_without_bws_binary(monkeypatch, 
     assert "Token validation" in out
     assert "not checked" in out
     assert "bws not installed" in out
+
+
+# ---------------------------------------------------------------------------
+# A configured server_url reaches bws through the CLI's own project-list path,
+# which does not go through fetch_bitwarden_secrets — so validation cannot be
+# left to fetch callers.  These run the real _list_projects and inspect the
+# environment the bws child would have been given.
+# ---------------------------------------------------------------------------
+
+
+def _capture_bws_env(monkeypatch, *, returncode: int = 0, stdout: str = "[]"):
+    """Let _list_projects run for real; capture the env handed to bws."""
+    from unittest import mock
+
+    from hermes_cli import secrets_cli
+
+    captured: dict = {}
+
+    def _fake_run(cmd, **kwargs):
+        captured.update(kwargs["env"])
+        return mock.Mock(returncode=returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(secrets_cli.subprocess, "run", _fake_run)
+    return captured
+
+
+def test_status_drops_invalid_configured_server_url(monkeypatch, capsys):
+    """`hermes secrets bitwarden status` must not send the token to http://."""
+    from hermes_cli import secrets_cli
+
+    monkeypatch.setattr(
+        secrets_cli,
+        "load_config",
+        lambda: _bitwarden_config(server_url="http://attacker.example"),
+    )
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.token-present")
+    monkeypatch.setattr(
+        secrets_cli.bw,
+        "find_bws",
+        lambda install_if_missing=False: Path("/tmp/bws"),
+    )
+    monkeypatch.setattr(secrets_cli, "_bws_version", lambda _binary: "bws v2.1.0")
+    env = _capture_bws_env(monkeypatch)
+
+    assert secrets_cli.cmd_status(Namespace()) == 0
+
+    assert env["BWS_ACCESS_TOKEN"] == "0.token-present"
+    assert "BWS_SERVER_URL" not in env
+    out = capsys.readouterr().out
+    assert "Ignoring the configured Bitwarden server_url" in out
+
+
+def test_status_keeps_valid_configured_server_url(monkeypatch):
+    """The legitimate self-hosted / EU case keeps working."""
+    from hermes_cli import secrets_cli
+
+    monkeypatch.setattr(
+        secrets_cli,
+        "load_config",
+        lambda: _bitwarden_config(server_url="https://vault.bitwarden.eu"),
+    )
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.token-present")
+    monkeypatch.setattr(
+        secrets_cli.bw,
+        "find_bws",
+        lambda install_if_missing=False: Path("/tmp/bws"),
+    )
+    monkeypatch.setattr(secrets_cli, "_bws_version", lambda _binary: "bws v2.1.0")
+    env = _capture_bws_env(monkeypatch)
+
+    assert secrets_cli.cmd_status(Namespace()) == 0
+
+    assert env["BWS_SERVER_URL"] == "https://vault.bitwarden.eu"
+
+
+def test_token_rotation_drops_invalid_configured_server_url(monkeypatch, capsys):
+    """Token verification probes Bitwarden too — same endpoint rules apply."""
+    from hermes_cli import secrets_cli
+
+    monkeypatch.setattr(
+        secrets_cli,
+        "load_config",
+        lambda: _bitwarden_config(server_url="http://attacker.example"),
+    )
+    monkeypatch.setattr(
+        secrets_cli.bw,
+        "find_bws",
+        lambda install_if_missing=True: Path("/tmp/bws"),
+    )
+    monkeypatch.setattr(secrets_cli, "save_env_value", lambda *_a, **_kw: None)
+    monkeypatch.setattr(secrets_cli, "get_env_path", lambda: Path("/tmp/.env"))
+    monkeypatch.setattr(secrets_cli.bw, "clear_caches", lambda: None)
+    env = _capture_bws_env(monkeypatch)
+
+    rc = secrets_cli.cmd_token(
+        Namespace(access_token="0.new-token", no_verify=False)
+    )
+
+    assert rc == 0
+    assert env["BWS_ACCESS_TOKEN"] == "0.new-token"
+    assert "BWS_SERVER_URL" not in env
+    out = capsys.readouterr().out
+    assert "Ignoring the configured Bitwarden server_url" in out

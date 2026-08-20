@@ -421,10 +421,15 @@ def _token_validation_status(
     if not token.startswith("0."):
         messages.append(_NOT_BSM_TOKEN_WARNING_CONTINUING)
     probe_console = Console(file=io.StringIO(), record=True, width=200)
-    if _list_projects(binary, token, probe_console, server_url=server_url) is None:
-        details = probe_console.export_text(styles=False).strip()
-        if details:
-            messages.extend(line.rstrip() for line in details.splitlines())
+    projects = _list_projects(binary, token, probe_console, server_url=server_url)
+    # The probe stays quiet unless something is wrong, so surface whatever it printed either
+    # way. A rejected server_url is reported even when the probe then succeeds against the bws
+    # default — the endpoint changed under the user, and a silent fallback is exactly what
+    # they must not be left with.
+    details = probe_console.export_text(styles=False).strip()
+    if details:
+        messages.extend(line.rstrip() for line in details.splitlines())
+    if projects is None:
         return "[red]failed[/red]", messages
     return "[green]passed[/green]", messages
 

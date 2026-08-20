@@ -1945,6 +1945,54 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound — send / edit / send_image / send_voice / …
     # =========================================================================
 
+    async def create_handoff_thread(
+        self,
+        parent_chat_id: str,
+        name: str,
+    ) -> Optional[str]:
+        """Create a fresh thread for a session handoff.
+
+        Used by the gateway's handoff watcher (``/handoff``) and the cron
+        scheduler's continuable-thread path (``attach_to_session``).
+
+        Feishu has no dedicated thread/topic-creation primitive usable as a
+        send target: the only valid way to address a thread is the reply API
+        anchored at the thread's root message (``reply_in_thread=true``; a
+        ``receive_id_type="thread_id"`` create is rejected by the API with
+        99992402 — #78975). Feishu surfaces any reply chain as a "topic" in
+        both DMs and groups, so we mirror Slack's seed-anchor pattern
+        (``plugins/platforms/slack/adapter.py``): post an anchor message
+        (``Hermes — <name>``) and return its ``message_id``. Follow-up sends
+        carry ``reply_to=<anchor>`` (or ``metadata["thread_id"]=<anchor>``
+        for anchorless cron sends — see ``_send_raw_message``), which the
+        adapter's send path already routes via the reply API with
+        ``reply_in_thread=true``.
+
+        Returns ``None`` when the anchor post fails — the caller falls back
+        to the origin-DM mirror (base contract, see
+        ``gateway/platforms/base.py``). Never raises.
+        """
+        if not self._client:
+            return None
+        try:
+            anchor_text = f"Hermes — {str(name or 'session').strip()[:80]}"
+            result = await self.send(parent_chat_id, anchor_text)
+            if result.success and result.message_id:
+                return str(result.message_id)
+            logger.warning(
+                "[Feishu] create_handoff_thread: anchor send failed for %s",
+                parent_chat_id,
+            )
+            return None
+        except Exception as exc:
+            logger.warning(
+                "[Feishu] create_handoff_thread failed for %s: %s",
+                parent_chat_id,
+                exc,
+                exc_info=True,
+            )
+            return None
+
     async def send(
         self,
         chat_id: str,
@@ -4835,18 +4883,23 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
 
-        # For topic/thread messages that fell back from reply→create, use
-        # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
+        # Anchorless thread/continuable-cron send: ``metadata["thread_id"]``
+        # is the thread's root message id (the anchor posted by
+        # ``create_handoff_thread``). Feishu addresses threads only via the
+        # reply API with ``reply_in_thread=true`` — there is no
+        # ``receive_id_type="thread_id"`` on message.create (the API rejects
+        # it with 99992402, #78975). Reply to the anchor to land in the
+        # topic instead of the main chat.
         _thread_id = (metadata or {}).get("thread_id")
         if _thread_id:
-            body = self._build_create_message_body(
-                receive_id=_thread_id,
-                msg_type=msg_type,
+            body = self._build_reply_message_body(
                 content=payload,
+                msg_type=msg_type,
+                reply_in_thread=True,
                 uuid_value=str(uuid.uuid4()),
             )
-            request = self._build_create_message_request("thread_id", body)
+            request = self._build_reply_message_request(_thread_id, body)
+            return await self._run_blocking(self._client.im.v1.message.reply, request)
         else:
             receive_id = chat_id
             receive_id_type = "chat_id"

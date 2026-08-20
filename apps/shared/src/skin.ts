@@ -91,6 +91,18 @@ export type SkinColors = Partial<Record<SkinColorToken, string>> & { [key: strin
 /** Branding strings per token. Open-ended for the same reason. */
 export type SkinBranding = Partial<Record<SkinBrandingToken, string>> & { [key: string]: string | undefined }
 
+/** Spinner animation data (matches Python's skin `spinner:` block). */
+export interface SkinSpinner {
+  /** Faces cycled while waiting for the API response. */
+  waiting_faces?: string[]
+  /** Faces cycled during model reasoning. */
+  thinking_faces?: string[]
+  /** Verbs shown in spinner messages while busy. */
+  thinking_verbs?: string[]
+  /** Decorative brackets around the spinner, each entry a [left, right] pair. */
+  wings?: [string, string][]
+}
+
 /** The resolved skin payload (matches Python's `resolve_skin()`). */
 export interface HermesSkin {
   name?: string
@@ -107,4 +119,7 @@ export interface HermesSkin {
   banner_hero?: string
   tool_prefix?: string
   help_header?: string
+  spinner?: SkinSpinner
+  /** Per-tool emoji overrides, keyed by tool name. */
+  tool_emojis?: Record<string, string>
 }

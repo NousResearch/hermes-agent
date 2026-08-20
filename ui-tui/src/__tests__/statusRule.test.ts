@@ -117,4 +117,12 @@ describe('busyIndicatorWidth', () => {
       expect(busyIndicatorWidth(style, true)).toBeGreaterThan(busyIndicatorWidth(style, false))
     }
   })
+
+  it('reserves extra width for wide skin verbs', () => {
+    const wide = ['crafting the plan', 'tempering steel', 'polishing the gemstones']
+
+    expect(busyIndicatorWidth('kaomoji', false, wide)).toBeGreaterThan(busyIndicatorWidth('kaomoji', false))
+    // Verb-less styles stay verb-less regardless of the active verb list.
+    expect(busyIndicatorWidth('unicode', false, wide)).toBe(1)
+  })
 })

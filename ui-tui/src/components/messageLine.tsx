@@ -134,7 +134,7 @@ export const MessageLine = memo(function MessageLine({
     const preview = compactPreview(stripped, maxChars) || '(empty tool result)'
 
     return (
-      <Box alignSelf="flex-start" borderColor={t.color.muted} borderStyle="round" marginLeft={3} paddingX={1}>
+      <Box alignSelf="flex-start" borderColor={t.color.responseBorder} borderStyle="round" marginLeft={3} paddingX={1}>
         {hasAnsi(msg.text) ? (
           <Text wrap="truncate-end">
             <Ansi>{safeAnsi}</Ansi>

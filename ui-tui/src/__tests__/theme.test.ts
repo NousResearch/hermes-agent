@@ -256,6 +256,70 @@ describe('fromSkin', () => {
     expect(theme.color.selectionBg).toBe('#654321')
   })
 
+  it('maps status bar strong/dim roles from skins', async () => {
+    const { DEFAULT_THEME, fromSkin } = await importThemeWithCleanEnv()
+
+    const theme = fromSkin(
+      {
+        status_bar_strong: '#FFAA00',
+        status_bar_dim: '#888888'
+      },
+      {}
+    )
+
+    expect(theme.color.statusStrong).toBe('#FFAA00')
+    expect(theme.color.statusDim).toBe('#888888')
+
+    // Unset → documented fallbacks: accent for strong, muted tone for dim.
+    const fallback = fromSkin({}, {})
+    expect(fallback.color.statusStrong).toBe(DEFAULT_THEME.color.statusStrong)
+    expect(fallback.color.statusDim).toBe(DEFAULT_THEME.color.statusDim)
+    expect(fallback.color.statusStrong).toBe(fallback.color.accent)
+    expect(fallback.color.statusDim).toBe(fallback.color.muted)
+  })
+
+  it('maps response border and input rule from skins', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    // Bright authored colors: the engine's contrast adaptation lifts dark
+    // chrome (same as `border`), so use floor-passing values to assert the
+    // raw mapping.
+    const theme = fromSkin(
+      {
+        response_border: '#FFD700',
+        input_rule: '#FFBF00'
+      },
+      {}
+    )
+
+    expect(theme.color.responseBorder).toBe('#FFD700')
+    expect(theme.color.inputRule).toBe('#FFBF00')
+
+    // Unset → the derived border tone.
+    const fallback = fromSkin({}, {})
+    expect(fallback.color.responseBorder).toBe(fallback.color.border)
+    expect(fallback.color.inputRule).toBe(fallback.color.border)
+  })
+
+  it('normalizes status strong/dim foregrounds on light Apple Terminal', async () => {
+    const { fromSkin } = await importThemeWithEnv({ TERM_PROGRAM: 'Apple_Terminal' })
+
+    const theme = fromSkin(
+      {
+        status_bar_strong: '#FFD700',
+        status_bar_dim: '#8B8682'
+      },
+      {}
+    )
+
+    // statusStrong is a normalized foreground (ansi256 bucket); statusDim is
+    // a muted foreground pinned to the muted bucket like `muted` itself.
+    expect(theme.color.statusStrong).toMatch(/^ansi256\(\d+\)$/)
+    // Assert the relationship, not the bucket literal: statusDim must stay in
+    // the muted family and track the same normalization as `muted`.
+    expect(theme.color.statusDim).toBe(theme.color.muted)
+  })
+
   it('overrides branding', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
     const { brand } = fromSkin({}, { agent_name: 'TestBot', prompt_symbol: '$' })

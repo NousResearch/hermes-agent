@@ -18976,6 +18976,50 @@ def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
         server._sessions.pop("archive-trunc-sid", None)
 
 
+def test_resolve_skin_includes_spinner_and_tool_emojis(tmp_path, monkeypatch):
+    """The TUI skin payload must carry spinner + tool_emojis so skins can
+    theme ticker verbs/faces and per-tool glyphs (issue #7307)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    skins = home / "skins"
+    skins.mkdir()
+    (skins / "ticker.yaml").write_text(
+        "name: ticker\n"
+        "spinner:\n"
+        "  waiting_faces: [\"(o)\"]\n"
+        "  thinking_faces: [\"(^)\"]\n"
+        "  thinking_verbs: [\"zooming\", \"weaving\"]\n"
+        "  wings: [[\"⟪\", \"⟫\"]]\n"
+        "tool_emojis:\n"
+        "  bash: \"🐚\"\n",
+        encoding="utf-8",
+    )
+    (home / "config.yaml").write_text("display:\n  skin: ticker\n", encoding="utf-8")
+    token = set_hermes_home_override(home)
+    try:
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+        payload = server.resolve_skin()
+        assert payload.get("spinner") == {
+            "waiting_faces": ["(o)"],
+            "thinking_faces": ["(^)"],
+            "thinking_verbs": ["zooming", "weaving"],
+            "wings": [["⟪", "⟫"]],
+        }
+        assert payload.get("tool_emojis") == {"bash": "🐚"}
+    finally:
+        reset_hermes_home_override(token)
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+        # Reset the skin engine's cached active skin so other tests are clean.
+        from hermes_cli import skin_engine
+
+        skin_engine._active_skin = None
+        skin_engine._active_skin_name = "default"
+
+
 def test_insert_message_rows_sets_row_id_on_fresh_dicts(tmp_path):
     """#82959: _insert_message_rows must assign _row_id on freshly inserted message dicts."""
     from hermes_state import SessionDB

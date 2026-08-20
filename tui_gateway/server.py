@@ -3723,6 +3723,10 @@ def resolve_skin() -> dict:
             "banner_hero": skin.banner_hero,
             "tool_prefix": skin.tool_prefix,
             "help_header": (skin.branding or {}).get("help_header", ""),
+            # Spinner animation data (faces/verbs/wings) and per-tool emoji
+            # overrides: skins author them in YAML; the TUI renders them.
+            "spinner": skin.spinner,
+            "tool_emojis": skin.tool_emojis,
         }
     except Exception:
         return {}

@@ -1,5 +1,6 @@
 import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
+import { computed } from 'nanostores'
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
@@ -7,6 +8,7 @@ import { $delegationState } from '../app/delegationStore.js'
 import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
 import { $isStatusRuleOccluded } from '../app/overlayStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
+import { $uiState } from '../app/uiStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
@@ -23,10 +25,34 @@ import { scrollbarColors } from './overlayPrimitives.js'
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
-// Keep verb segment width stable so status-bar content to the right doesn't
-// jitter when the ticker rotates between short/long verbs.
-export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
-export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
+// Keep the verb segment width stable so status-bar content to the right
+// doesn't jitter when the ticker rotates between short/long verbs. Width is
+// measured in TERMINAL CELLS (stringWidth), so wide/emoji skin verbs pad
+// correctly instead of jittering the bar (JS `.length` counts UTF-16 units).
+export const verbPadLen = (verbs: readonly string[]) =>
+  verbs.reduce((max, v) => Math.max(max, stringWidth(v)), 0) + 1 // + ellipsis
+export const VERB_PAD_LEN = verbPadLen(VERBS)
+
+// Pad to the reserved display width in TERMINAL CELLS: `.padEnd` counts
+// UTF-16 units, so a CJK/combining verb (width ≠ length) would overrun the
+// reservation and jitter the status bar.
+export const padVerb = (verb: string, verbs: readonly string[] = VERBS) => {
+  const text = `${verb}…`
+  const width = stringWidth(text)
+  const target = verbPadLen(verbs)
+
+  return width < target ? text + ' '.repeat(target - width) : text
+}
+
+// Active ticker verbs: a skin's `spinner.thinking_verbs` override the
+// built-in defaults (documented in skins.md; the Python CLI already honors
+// them). Computed so the width reservation and the ticker share one source
+// of truth and both react to `skin.changed`.
+export const $tickerVerbs = computed($uiState, state => {
+  const skinVerbs = state.skin?.spinner?.thinking_verbs
+
+  return Array.isArray(skinVerbs) && skinVerbs.length > 0 ? skinVerbs : VERBS
+})
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
@@ -110,9 +136,13 @@ export const MAX_DURATION_WIDTH = Math.max(
 // `unicode` is a bare 1-col braille spinner with no verb, while kaomoji/emoji/
 // ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
 // Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
-export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
+export const busyIndicatorWidth = (
+  style: IndicatorStyle,
+  hasDuration: boolean,
+  verbs: readonly string[] = VERBS
+): number => {
   const { showVerb } = renderIndicator(style, 0)
-  const verb = showVerb ? 1 + VERB_PAD_LEN : 0
+  const verb = showVerb ? 1 + verbPadLen(verbs) : 0
   // ` · ` plus the bounded clock (e.g. `59m 59s`).
   const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
 
@@ -121,9 +151,10 @@ export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean):
 
 function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: null | number; style: IndicatorStyle }) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
-  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
+  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * Math.max(1, $tickerVerbs.get().length)))
   const [now, setNow] = useState(() => Date.now())
   const isOccluded = useStore($isStatusRuleOccluded)
+  const verbs = useStore($tickerVerbs)
 
   // Pre-compute cadence + verb-visibility for the active style so an
   // `/indicator` switch re-arms the interval (and skips the verb timer
@@ -162,8 +193,8 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   }, [intervalMs, isOccluded, showVerb])
 
   const { frame } = renderIndicator(style, tick)
-  const verb = VERBS[verbTick % VERBS.length] ?? ''
-  const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
+  const verb = verbs[verbTick % verbs.length] ?? ''
+  const verbSegment = showVerb ? ` ${padVerb(verb, verbs)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra
@@ -490,6 +521,12 @@ export function StatusRule({
   const pct = usage.context_percent
   const barColor = ctxBarColor(pct, t)
   const segs = statusBarSegments(cols)
+  // Synchronous read, not a hook: StatusRule is a pure render function in the
+  // house tests (invoked directly, no React tree). Skin swaps still re-render
+  // it because applySkin also swaps the theme, which arrives via the `t` prop.
+  const verbs = $tickerVerbs.get()
+  // NOTE: keep `verbs` sourced from the computed above — it is the same list
+  // FaceTicker renders and the same list busyIndicatorWidth reserves.
 
   // On narrow terminals the context read-out collapses to a bare token count
   // (`12k tok`) and the visual fill bar is dropped entirely.
@@ -528,7 +565,7 @@ export function StatusRule({
   // (kaomoji is wide + verb; unicode is a bare 1-col spinner). When a notice
   // occupies the slot it reserves only `noticeReserve` (it shrinks/truncates).
   const slotWidth = busy
-    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
+    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null, verbs)
     : showNotice
       ? noticeReserve
       : stringWidth(status)
@@ -634,7 +671,7 @@ export function StatusRule({
           {showBattery ? (
             <Text color={batteryColorVal}>
               {batteryText}
-              <Text color={t.color.muted}>{' │ '}</Text>
+              <Text color={t.color.statusDim}>{' │ '}</Text>
             </Text>
           ) : null}
           {busy ? (
@@ -662,20 +699,22 @@ export function StatusRule({
               {' (dev credits)'}
             </Text>
           ) : null}
-          <Text color={t.color.muted} wrap="truncate-end">
+          <Text color={t.color.statusDim} wrap="truncate-end">
             {' │ '}
+          </Text>
+          <Text color={t.color.statusStrong} wrap="truncate-end">
             {modelText}
           </Text>
           {ctxLabel ? (
-            <Text color={t.color.muted} wrap="truncate-end">
+            <Text color={t.color.statusDim} wrap="truncate-end">
               {' │ '}
-              {ctxLabel}
+              <Text color={t.color.muted}>{ctxLabel}</Text>
             </Text>
           ) : null}
         </Box>
         {showFocus ? (
           <Box flexDirection="row" flexShrink={0}>
-            <Text color={t.color.muted}>{' │ '}</Text>
+            <Text color={t.color.statusDim}>{' │ '}</Text>
             <Text color={t.color.warn}>◉ focus</Text>
           </Box>
         ) : null}

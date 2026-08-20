@@ -32,6 +32,8 @@ export interface ThemeColors {
   prompt: string
   sessionLabel: string
   sessionBorder: string
+  /** Input-area separator rule (───). Defaults to `border`. */
+  inputRule: string
 
   statusBg: string
   statusFg: string
@@ -39,6 +41,12 @@ export interface ThemeColors {
   statusWarn: string
   statusBad: string
   statusCritical: string
+  /** Status-bar highlighted text (e.g. the model label). Defaults to `accent`. */
+  statusStrong: string
+  /** Status-bar separators / muted text. Defaults to the muted tone. */
+  statusDim: string
+  /** Agent response-box border. Defaults to `border`. */
+  responseBorder: string
   selectionBg: string
 
   diffAdded: string
@@ -93,11 +101,15 @@ const ANSI_NORMALIZED_FOREGROUNDS: readonly (keyof ThemeColors)[] = [
   'statusWarn',
   'statusBad',
   'statusCritical',
+  'statusStrong',
   'shellDollar',
   'tool'
 ]
 
-const ANSI_MUTED_FOREGROUNDS: readonly (keyof ThemeColors)[] = ['muted', 'sessionLabel', 'sessionBorder', 'thinking']
+// Muted foregrounds: pinned to the muted ansi256 bucket on light Apple
+// Terminal. statusDim is the status bar's dim/separator role, so it stays in
+// the muted family like `muted` itself.
+const ANSI_MUTED_FOREGROUNDS: readonly (keyof ThemeColors)[] = ['muted', 'sessionLabel', 'sessionBorder', 'thinking', 'statusDim']
 
 function xtermEightBitRgb(colorNumber: number): [number, number, number] {
   if (colorNumber >= 232) {
@@ -353,6 +365,8 @@ export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
     // colour" by design (#11300).
     sessionLabel: muted,
     sessionBorder: muted,
+    inputRule: seeds.border ?? tones.border,
+    responseBorder: seeds.border ?? tones.border,
 
     statusBg: surface,
     statusFg: tones.statusFg,
@@ -360,6 +374,10 @@ export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
     statusWarn: seeds.statusWarn,
     statusBad: seeds.statusBad,
     statusCritical: seeds.statusCritical,
+    // statusStrong is the status bar's highlight (defaults to the accent
+    // identity); statusDim tracks the muted tone like the other dim roles.
+    statusStrong: seeds.accent,
+    statusDim: muted,
     selectionBg: seeds.selection ?? tones.selection,
 
     ...(isLight ? DIFF_LIGHT : DIFF_DARK),
@@ -481,7 +499,11 @@ const DISPLAY_FOREGROUNDS: readonly (keyof ThemeColors)[] = [
   'label',
   'prompt',
   'statusFg',
+  'statusStrong',
+  'statusDim',
   'border',
+  'responseBorder',
+  'inputRule',
   'muted',
   'sessionLabel',
   'sessionBorder',
@@ -910,8 +932,12 @@ export function fromSkin(
     completionMetaCurrentBg: c('completion_menu_meta_current_bg') ?? activeRow,
     sessionLabel: c('session_label') ?? c('banner_dim') ?? derived.sessionLabel,
     sessionBorder: c('session_border') ?? c('banner_dim') ?? derived.sessionBorder,
+    inputRule: c('input_rule') ?? derived.border,
+    responseBorder: c('response_border') ?? derived.border,
     statusBg: c('status_bar_bg') ?? surface,
     statusFg: c('status_bar_text') ?? c('ui_text') ?? c('banner_text') ?? derived.statusFg,
+    statusStrong: c('status_bar_strong') ?? seeds.accent,
+    statusDim: c('status_bar_dim') ?? derived.muted,
     selectionBg: c('selection_bg') ?? c('completion_menu_current_bg') ?? derived.selectionBg,
     // Element tokens + skinnable diffs (theme-sdk): overridable, else the
     // derived defaults (tool→accent, thinking→muted, diff_* → DIFF_* ladder).

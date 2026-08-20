@@ -174,6 +174,10 @@ const applySkin = (s: GatewaySkin) => {
   lastSkin = s
   const theme = themeForSkin(s)
 
+  // Keep the raw payload in UI state so components can read skin data that
+  // has no theme role (spinner verbs/faces, tool_emojis) and live-update on
+  // `skin.changed`.
+  patchUiState({ skin: s })
   commitTheme(theme)
   paintTerminalDefaults(theme)
 }

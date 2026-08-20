@@ -7370,7 +7370,9 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, workspace_kind, workspace_path, "
+            "skills, max_retries, model_override, provider_override, "
+            "reasoning_effort "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -7419,8 +7421,9 @@ def decompose_triage_task(
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, created_at, created_by, skills, "
+                " max_retries, model_override, provider_override, reasoning_effort) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -7431,6 +7434,11 @@ def decompose_triage_task(
                     tenant,
                     now,
                     (author or "decomposer"),
+                    root_row["skills"],
+                    root_row["max_retries"],
+                    root_row["model_override"],
+                    root_row["provider_override"],
+                    root_row["reasoning_effort"],
                 ),
             )
             _append_event(

@@ -88,5 +88,30 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
     assert any(ev.kind == "decomposed" for ev in events)
 
 
+def test_decompose_children_inherit_worker_settings(kanban_home):
+    with kb.connect() as conn:
+        root = kb.create_task(
+            conn,
+            title="bounded worker",
+            triage=True,
+            skills=["github-code-review"],
+            max_retries=4,
+            model_override="test-model",
+            provider_override="test-provider",
+            reasoning_effort="high",
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[{"title": "child", "assignee": "worker"}],
+        )
+        child = kb.get_task(conn, child_ids[0])
+
+    assert child.skills == ["github-code-review"]
+    assert child.max_retries == 4
+    assert child.model_override == "test-model"
+    assert child.provider_override == "test-provider"
+    assert child.reasoning_effort == "high"
 
 

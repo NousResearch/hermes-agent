@@ -149,15 +149,27 @@ export function resolveVisibleKeys(stored: Set<string> | null, providers: readon
 
   for (const provider of providers) {
     const providerPrefix = `${provider.slug}::`
-
-    const hasStoredProvider = [...stored].some(key => key.startsWith(providerPrefix) && !isProviderSentinel(key))
-
     const hasSentinel = stored.has(emptyProviderSentinelKey(provider.slug))
 
-    if (hasStoredProvider || hasSentinel) {
+    if (hasSentinel) {
       continue
     }
 
+    const currentKeys = new Set(
+      collapseModelFamilies(provider.models ?? []).map(family => modelVisibilityKey(provider.slug, family.id))
+    )
+
+    const hasCurrentStoredModel = [...stored].some(
+      key => key.startsWith(providerPrefix) && !isProviderSentinel(key) && currentKeys.has(key)
+    )
+
+    if (hasCurrentStoredModel) {
+      continue
+    }
+
+    // A provider with only removed/renamed stored model ids is effectively
+    // uncustomized. Restore its current defaults so catalog churn cannot make
+    // the whole configured provider disappear from the picker.
     expandProviderDefaults(provider, next)
   }
 

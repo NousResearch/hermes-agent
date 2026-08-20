@@ -96,6 +96,14 @@ def load_picker_context() -> ConfigContext:
         current_model = str(model_cfg) if model_cfg else ""
         current_provider = ""
         current_base_url = ""
+
+    if current_provider.strip().lower() == "custom" and current_base_url:
+        from hermes_cli.runtime_provider import find_custom_provider_identity
+
+        current_provider = (
+            find_custom_provider_identity(current_base_url) or current_provider
+        )
+
     raw = cfg.get("providers")
     excluded = cfg.get("model_catalog", {}).get("excluded_providers") or []
     return ConfigContext(

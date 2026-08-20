@@ -2661,6 +2661,7 @@ def list_authenticated_providers(
     # https://coding-intl.dashscope.aliyuncs.com/v1 collides with the built-in
     # alibaba-coding-plan row when DASHSCOPE_API_KEY is present). Fixes #16970.
     _builtin_endpoints: set = set()
+    _builtin_slugs_by_endpoint: dict[str, set[str]] = {}
 
     def _norm_url(url: str) -> str:
         return str(url or "").strip().rstrip("/").lower()
@@ -2686,6 +2687,9 @@ def list_authenticated_providers(
         normed = _norm_url(url)
         if normed:
             _builtin_endpoints.add(normed)
+            _builtin_slugs_by_endpoint.setdefault(normed, set()).add(
+                str(slug or "").strip().lower()
+            )
 
     def _has_fast_aws_sdk_signal() -> bool:
         """Return True when explicit AWS auth config is present.
@@ -3716,15 +3720,42 @@ def list_authenticated_providers(
             )
             if _pair_key[0] and _pair_key[1] and _pair_key in _section3_emitted_pairs:
                 continue
+            _grp_url_norm = _pair_key[1]
+            _grp_is_current = (
+                slug.lower() == _current_provider_norm
+                or _current_provider_norm in {
+                    str(alias).lower()
+                    for alias in grp.get("aliases", set())
+                }
+            ) or (
+                _current_provider_norm == "custom"
+                and bool(_current_base_url_norm)
+                and _grp_url_norm == _current_base_url_norm
+                and _current_base_url_group_count == 1
+            )
             # Skip if a built-in row (sections 1/2/2b) already represents this
             # endpoint. Fixes #16970: a user-defined "my-dashscope" pointing at
             # https://coding-intl.dashscope.aliyuncs.com/v1 duplicates the
             # built-in alibaba-coding-plan row whenever DASHSCOPE_API_KEY is
-            # set. The built-in row carries the curated model list, correct
-            # auth wiring, and canonical slug — keep it and hide the shadow.
-            _grp_url_norm = _pair_key[1]
+            # set. The built-in row normally owns that endpoint. The exception
+            # is an explicitly selected named custom provider: a stale built-in
+            # URL override (for example XAI_BASE_URL) must not erase the current
+            # custom identity from Desktop's explicit-only picker. In that case
+            # remove only the conflicting built-in row and keep the current one.
             if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
-                continue
+                if not _grp_is_current:
+                    continue
+                conflicting_slugs = _builtin_slugs_by_endpoint.get(
+                    _grp_url_norm, set()
+                )
+                if conflicting_slugs:
+                    results = [
+                        row
+                        for row in results
+                        if str(row.get("slug") or "").strip().lower()
+                        not in conflicting_slugs
+                    ]
+                    seen_slugs.difference_update(conflicting_slugs)
             # Live model discovery from custom provider endpoints (matches
             # Section 3 behavior for user ``providers:`` entries).
             # Also probes when no api_key is set (e.g. local llama.cpp /
@@ -3748,18 +3779,6 @@ def list_authenticated_providers(
             #   selection and must not suppress discovery.
             # - When discover_models: false is set, skip live discovery and
             #   keep the configured ``models:`` list regardless of api_key.
-            _grp_is_current = (
-                slug.lower() == _current_provider_norm
-                or _current_provider_norm in {
-                    str(alias).lower()
-                    for alias in grp.get("aliases", set())
-                }
-            ) or (
-                _current_provider_norm == "custom"
-                and bool(_current_base_url_norm)
-                and _grp_url_norm == _current_base_url_norm
-                and _current_base_url_group_count == 1
-            )
             # Discovery is what the user's config asks for; probing is how we
             # get it. When the caller suppresses live probing for latency, the
             # already-discovered catalog on disk still answers the question

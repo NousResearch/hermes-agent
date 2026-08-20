@@ -72,6 +72,66 @@ def _list_auth_returning(rows: list[dict]):
     )
 
 
+def test_named_custom_provider_identity_is_recovered_from_base_url():
+    cfg = _cfg(
+        model={
+            "provider": "custom",
+            "default": "local-model",
+            "base_url": "http://localhost:8000/v1/",
+        },
+        providers={
+            "local": {
+                "api": "http://localhost:8000/v1",
+                "models": ["local-model", "other-model"],
+            }
+        },
+    )
+    rows = [
+        {
+            "slug": "custom:local",
+            "name": "local",
+            "models": ["local-model", "other-model"],
+            "total_models": 2,
+            "is_current": True,
+            "is_user_defined": True,
+            "source": "user-config",
+        }
+    ]
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.runtime_provider.load_config", return_value=cfg),
+        _list_auth_returning(rows) as mock_list,
+    ):
+        payload = build_models_payload(load_picker_context(), explicit_only=True)
+
+    assert mock_list.call_args.kwargs["current_provider"] == "custom:local"
+    assert payload["provider"] == "custom:local"
+    assert payload["providers"][0]["slug"] == "custom:local"
+    assert payload["providers"][0]["models"] == ["local-model", "other-model"]
+
+
+def test_unmatched_custom_base_url_keeps_bare_custom_identity():
+    cfg = _cfg(
+        model={
+            "provider": "custom",
+            "default": "ad-hoc-model",
+            "base_url": "http://localhost:9000/v1",
+        },
+        providers={"local": {"api": "http://localhost:8000/v1"}},
+    )
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.runtime_provider.load_config", return_value=cfg),
+        _list_auth_returning([]) as mock_list,
+    ):
+        payload = build_models_payload(load_picker_context())
+
+    assert mock_list.call_args.kwargs["current_provider"] == "custom"
+    assert payload["provider"] == "custom"
+
+
 def _nous_row(model: str = "openai/gpt-5.5") -> dict:
     return {
         "slug": "nous",
@@ -541,7 +601,6 @@ def _apply_featured_with_dates(rows, dates: dict[str, str]):
 
     with patch("agent.models_dev.get_model_info", side_effect=_fake_get_model_info):
         inventory._apply_featured(rows)
-
 
 
 

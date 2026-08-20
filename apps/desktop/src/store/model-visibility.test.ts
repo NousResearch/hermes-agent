@@ -43,6 +43,17 @@ describe('model visibility', () => {
     expect(visible.has(modelVisibilityKey('local-ollama', 'llama3.2:latest'))).toBe(false)
   })
 
+  it('restores defaults when a provider only has stale stored model keys', () => {
+    const stored = new Set([modelVisibilityKey('local-ollama', 'removed-model')])
+
+    const resolved = resolveVisibleKeys(stored, [
+      provider('local-ollama', ['qwen3:latest', 'llama3.2:latest'])
+    ])
+
+    expect(resolved.has(modelVisibilityKey('local-ollama', 'qwen3:latest'))).toBe(true)
+    expect(resolved.has(modelVisibilityKey('local-ollama', 'llama3.2:latest'))).toBe(true)
+  })
+
   it('preserves hidden-provider sentinel without re-adding defaults', () => {
     // User explicitly hid all models for "nous" — sentinel marks this choice.
     const stored = new Set([emptyProviderSentinelKey('nous')])

@@ -348,6 +348,52 @@ def test_list_authenticated_providers_dedup_honors_base_url_env_override(monkeyp
     )
 
 
+def test_current_named_custom_provider_wins_over_builtin_url_override(monkeypatch):
+    """A stale built-in URL override must not hide the selected custom row.
+
+    A user can migrate an endpoint from a built-in override such as
+    ``XAI_BASE_URL`` to a named ``custom_providers`` entry while leaving the
+    old override in ``.env``. The endpoint dedup should still prefer the
+    explicitly selected named custom identity; otherwise Desktop receives no
+    current row and the whole configured channel disappears from its picker.
+    """
+    endpoint = "https://clip.example.com/v1"
+    monkeypatch.setenv("XAI_API_KEY", "sk-test")
+    monkeypatch.setenv("XAI_BASE_URL", endpoint)
+    monkeypatch.setenv("HERMES_CUSTOM_CLIP_EXAMPLE_COM_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {"xai": {"name": "xAI", "env": ["XAI_API_KEY"]}},
+    )
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom:clip.example.com",
+        current_base_url=endpoint,
+        current_model="gpt-5.6-sol",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Clip.example.com",
+                "base_url": endpoint,
+                "key_env": "HERMES_CUSTOM_CLIP_EXAMPLE_COM_API_KEY",
+                "model": "gpt-5.6-sol",
+                "models": ["gpt-5.6-sol", "grok-4.5"],
+                "discover_models": False,
+            }
+        ],
+        max_models=50,
+    )
+
+    matching_rows = [
+        row for row in providers if row.get("api_url") == endpoint
+    ]
+    assert [row["slug"] for row in matching_rows] == ["custom:clip.example.com"]
+    assert matching_rows[0]["is_current"] is True
+    assert matching_rows[0]["models"] == ["gpt-5.6-sol", "grok-4.5"]
+    assert not any(row["slug"] == "xai" for row in providers)
+
+
 # =============================================================================
 # Tests for _get_named_custom_provider with providers: dict
 # =============================================================================

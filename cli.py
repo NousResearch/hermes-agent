@@ -21185,7 +21185,7 @@ def main(
             for _stream in (sys.stdout, sys.stderr):
                 try:
                     _stream.flush()
-                except Exception:
+                except BaseException:
                     pass
             os._exit(0)
         raise KeyboardInterrupt()

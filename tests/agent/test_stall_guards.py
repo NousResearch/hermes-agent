@@ -17,6 +17,7 @@ These assert behavior contracts, not message snapshots.
 
 from agent.agent_runtime_helpers import trailing_continue_intent
 from agent.tool_guardrails import (
+    IDENTICAL_RESULT_STUB_MIN_CHARS,
     STALL_GUARD_IDENTICAL_CALL_THRESHOLD,
     STALL_GUARD_REPEATABLE_TOOLS,
     ToolCallGuardrailController,
@@ -142,8 +143,10 @@ def _fake_agent(stall_guards=True):
         lambda decision: AIAgent._set_tool_guardrail_halt(agent, decision)
     )
     agent._append = (
-        lambda name, args, result: AIAgent._append_guardrail_observation(
-            agent, name, args, result, failed=False
+        lambda name, args, result, failed=False, tool_call_id="": (
+            AIAgent._append_guardrail_observation(
+                agent, name, args, result, failed=failed, tool_call_id=tool_call_id
+            )
         )
     )
     return agent
@@ -179,6 +182,170 @@ def test_notice_streak_keys_on_raw_result_not_annotated_result():
     args = {"path": "/tmp/x"}
     outs = [agent._append("read_file", args, "contents") for _ in range(3)]
     assert "hermes note" in outs[2]
+
+
+# ── result-reference stubbing (byte-identical duplicate results) ──────────
+
+
+_BIG = "x" * IDENTICAL_RESULT_STUB_MIN_CHARS  # exactly at the stub threshold
+
+
+def test_stub_on_second_identical_call_first_full():
+    agent = _fake_agent()
+    args = {"query": "hermes"}
+    r1 = agent._append("web_search", args, _BIG, tool_call_id="call_1")
+    r2 = agent._append("web_search", args, _BIG, tool_call_id="call_2")
+    assert r1 == _BIG  # first occurrence always enters context whole
+    assert r2 != _BIG
+    assert "byte-identical" in r2
+    assert "web_search" in r2
+    assert "call_1" in r2  # references the FIRST occurrence in the streak
+    assert len(r2) < len(_BIG)
+
+
+def test_no_stub_when_fresh_result_differs():
+    agent = _fake_agent()
+    args = {"query": "hermes"}
+    agent._append("web_search", args, _BIG, tool_call_id="call_1")
+    changed = "y" + _BIG
+    r2 = agent._append("web_search", args, changed, tool_call_id="call_2")
+    assert r2 == changed  # changed result flows through whole
+
+
+def test_changed_result_resets_streak_then_stub_references_new_first():
+    agent = _fake_agent()
+    args = {"id": "job"}
+    agent._append("web_search", args, _BIG, tool_call_id="a")
+    changed = _BIG + "done"
+    r2 = agent._append("web_search", args, changed, tool_call_id="b")
+    assert r2 == changed
+    r3 = agent._append("web_search", args, changed, tool_call_id="c")
+    assert "byte-identical" in r3
+    assert "tool_call_id b" in r3  # new streak's first occurrence, not 'a'
+
+
+def test_no_stub_below_min_chars():
+    agent = _fake_agent()
+    small = "x" * (IDENTICAL_RESULT_STUB_MIN_CHARS - 1)
+    args = {"query": "hermes"}
+    agent._append("web_search", args, small, tool_call_id="c1")
+    r2 = agent._append("web_search", args, small, tool_call_id="c2")
+    assert "byte-identical" not in r2
+    assert r2.startswith(small)  # full payload kept (pre-existing warning suffix allowed)
+
+
+def test_no_stub_for_error_results():
+    agent = _fake_agent()
+    err = "Error executing tool: " + _BIG
+    args = {"command": "boom"}
+    agent._append("terminal", args, err, failed=True, tool_call_id="c1")
+    r2 = agent._append("terminal", args, err, failed=True, tool_call_id="c2")
+    assert "byte-identical" not in r2
+    assert r2.startswith(err)  # models must see fresh errors whole
+
+
+def test_pollers_get_stub_but_never_loop_notice():
+    agent = _fake_agent()
+    args = {"id": "job1"}
+    results = [
+        agent._append("bfl_flux3_get_result", args, _BIG, tool_call_id=f"c{i}")
+        for i in range(4)
+    ]
+    assert results[0] == _BIG
+    for r in results[1:]:
+        assert "byte-identical" in r  # stubbed: unchanged poll saves context
+        assert "consecutive identical call" not in r  # notice stays exempt
+
+
+def test_third_identical_call_gets_stub_plus_loop_notice():
+    agent = _fake_agent()
+    args = {"query": "hermes"}
+    agent._append("web_search", args, _BIG, tool_call_id="c1")
+    agent._append("web_search", args, _BIG, tool_call_id="c2")
+    r3 = agent._append("web_search", args, _BIG, tool_call_id="c3")
+    assert "byte-identical" in r3  # stub replaces the payload
+    assert "3rd consecutive identical call" in r3  # notice appended after it
+    assert r3.index("byte-identical") < r3.index("3rd consecutive")
+
+
+def test_stub_carries_spillover_path_when_first_result_persisted():
+    agent = _fake_agent()
+    args = {"query": "big"}
+    agent._tool_guardrails.record_persisted_result(
+        "c1", "/home/u/.hermes/cache/spillover/c1.txt"
+    )
+    agent._append("web_search", args, _BIG, tool_call_id="c1")
+    r2 = agent._append("web_search", args, _BIG, tool_call_id="c2")
+    assert "/home/u/.hermes/cache/spillover/c1.txt" in r2
+
+
+def test_stub_includes_args_summary_for_compression_safety():
+    agent = _fake_agent()
+    args = {"query": "hermes result stubbing", "limit": 5}
+    agent._append("web_search", args, _BIG, tool_call_id="c1")
+    r2 = agent._append("web_search", args, _BIG, tool_call_id="c2")
+    # Canonical-args preview so the model knows WHAT the call was even if
+    # the referenced message is later evicted by compression.
+    assert "hermes result stubbing" in r2
+
+
+def test_stub_args_summary_truncated_to_120_chars():
+    c = ToolCallGuardrailController()
+    args = {"query": "q" * 500}
+    assert c.observe_call("web_search", args, _BIG, tool_call_id="c1").stub is None
+    stub = c.observe_call("web_search", args, _BIG, tool_call_id="c2").stub
+    assert stub is not None
+    args_part = stub.split("Args: ", 1)[1]
+    assert len(args_part) < 200  # ~120-char preview + ellipsis + closer
+
+
+def test_config_off_disables_stub():
+    agent = _fake_agent(stall_guards=False)
+    args = {"query": "hermes"}
+    agent._append("web_search", args, _BIG, tool_call_id="c1")
+    r2 = agent._append("web_search", args, _BIG, tool_call_id="c2")
+    assert "byte-identical" not in r2
+    assert r2.startswith(_BIG)
+
+
+def test_streak_reset_by_different_call_means_next_identical_is_full():
+    agent = _fake_agent()
+    args = {"query": "hermes"}
+    agent._append("web_search", args, _BIG, tool_call_id="c1")
+    agent._append("read_file", {"path": "/a"}, "other", tool_call_id="c2")
+    r3 = agent._append("web_search", args, _BIG, tool_call_id="c3")
+    assert "byte-identical" not in r3
+    assert r3.startswith(_BIG)  # fresh streak — first occurrence full again
+
+
+def test_multimodal_content_never_stubbed_and_breaks_streak():
+    c = ToolCallGuardrailController()
+    args = {"path": "/img.png"}
+    assert c.observe_call("vision", args, _BIG, tool_call_id="c1").stub is None
+    # Non-string (multimodal) results never form or extend a streak.
+    obs = c.observe_call("vision", args, None, tool_call_id="c2")
+    assert obs.stub is None
+    assert c.observe_call("vision", args, _BIG, tool_call_id="c3").stub is None
+
+
+def test_observe_identical_call_backcompat_notice_still_fires():
+    c = ToolCallGuardrailController()
+    for _ in range(STALL_GUARD_IDENTICAL_CALL_THRESHOLD - 1):
+        assert c.observe_identical_call("web_search", {"q": 1}, "r") is None
+    assert c.observe_identical_call("web_search", {"q": 1}, "r") is not None
+
+
+def test_extract_persisted_path_round_trip():
+    # The stub's spillover reference is parsed from the <persisted-output>
+    # block that maybe_persist_tool_result builds — assert the round trip.
+    from tools.tool_result_storage import (
+        _build_persisted_message,
+        extract_persisted_path,
+    )
+
+    block = _build_persisted_message("preview", True, 50_000, "/tmp/spill/x.txt")
+    assert extract_persisted_path(block) == "/tmp/spill/x.txt"
+    assert extract_persisted_path("plain result") is None
 
 
 # ── said-continue-but-stopped detector ─────────────────────────────────────

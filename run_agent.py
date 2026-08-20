@@ -8239,6 +8239,7 @@ class AIAgent:
         function_result: str,
         *,
         failed: bool,
+        tool_call_id: str = "",
     ) -> str:
         decision = self._tool_guardrails.after_call(
             tool_name,
@@ -8246,20 +8247,36 @@ class AIAgent:
             function_result,
             failed=failed,
         )
-        # Identical-call loop breaker (agent.stall_guards): notice-only, no
+        # Identical-call stall guards (agent.stall_guards): notice-only, no
         # blocking. Observed on the RAW result (before the loop-warning suffix
         # below, whose embedded count changes per call and would defeat
-        # result-identity matching). Appended here — at result construction,
+        # result-identity matching). Applied here — at result construction,
         # before the tool message is built — so it is cache-safe (tool results
         # are append-only; nothing already sent to the provider is mutated).
         stall_notice = None
+        result_stub = None
         if self._stall_guards_enabled():
             try:
-                stall_notice = self._tool_guardrails.observe_identical_call(
-                    tool_name, function_args, function_result,
+                observation = self._tool_guardrails.observe_call(
+                    tool_name,
+                    function_args,
+                    function_result if isinstance(function_result, str) else None,
+                    tool_call_id=tool_call_id,
+                    failed=failed,
                 )
+                stall_notice = observation.notice
+                result_stub = observation.stub
             except Exception as exc:
                 logger.debug("stall-guard identical-call observation failed: %s", exc)
+        # Result-reference stubbing: a 2nd+ consecutive identical call whose
+        # FRESH result is byte-identical enters context as a short reference
+        # stub instead of the duplicate payload. The tool still executed —
+        # this is not a cache; a changed result flows through whole. Only
+        # plain-string results are stubbed (multimodal content lists pass
+        # through untouched), and the current message keeps its role and
+        # tool_call_id — only the content is replaced.
+        if result_stub and isinstance(function_result, str):
+            function_result = result_stub
         if decision.action in {"warn", "halt"}:
             function_result = append_toolguard_guidance(function_result, decision)
         if decision.should_halt:

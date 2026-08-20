@@ -1752,6 +1752,8 @@ agent:
   stall_guards: false
 ```
 
+The same gate also enables **result-reference stubbing**: when a re-issued identical tool call returns a byte-identical fresh result, the duplicate payload enters context as a short reference stub pointing at the earlier result (tool name, `tool_call_id`, an args summary, and — if the first result was persisted to disk — its spillover path) instead of repeating the full output. The tool still executes every time, so polling semantics are preserved: a changed result always flows through whole. Results under 512 characters, error results, and multimodal results are never stubbed, and pollers *are* stubbed (an unchanged poll is exactly the case where the duplicate payload carries no information).
+
 ## TTS Configuration
 
 ```yaml

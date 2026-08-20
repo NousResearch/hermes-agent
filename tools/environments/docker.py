@@ -402,7 +402,14 @@ _NO_NEW_PRIVILEGES_ARGS = ["--security-opt", "no-new-privileges"]
 
 
 def _runtime_reuse_fingerprint(image: str, all_run_args: list[str]) -> str:
-    """Stable Docker-label value for immutable create-time run configuration."""
+    """Stable label for the final immutable ``docker run`` configuration.
+
+    ``all_run_args`` is assembled immediately before this call from every
+    create-time option that Hermes passes to Docker: security, user, mounts,
+    resource, egress, environment, and validated extra arguments.  Values
+    that change that configuration, including rotated proxy credentials, are
+    intentionally part of the fingerprint so reuse fails closed.
+    """
     payload = json.dumps(
         {"image": image, "run_args": all_run_args},
         sort_keys=True,
@@ -1002,6 +1009,11 @@ class DockerEnvironment(BaseEnvironment):
 
         actual_fp = self._container_runtime_fingerprint(container_id)
         if actual_fp != self._runtime_fp:
+            # An empty fingerprint is a deliberate mismatch.  It covers
+            # containers created before this label existed; those legacy
+            # containers are rebuilt once after the upgrade instead of being
+            # reused without proof that their immutable Docker configuration
+            # still matches.
             logger.warning(
                 "Existing container %s runtime fingerprint %r does not "
                 "match current config %r — removing it and starting "

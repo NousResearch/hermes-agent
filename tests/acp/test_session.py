@@ -268,6 +268,39 @@ class TestListAndCleanup:
 class TestPersistence:
     """Verify that sessions are persisted to SessionDB and can be restored."""
 
+    def test_restore_follows_compression_continuation(self, tmp_path):
+        """An ACP resume must target the live storage segment after compression."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session("root", source="acp", model="test")
+        db.append_message("root", role="user", content="before compression")
+        db.end_session("root", "compression")
+        db.create_session(
+            "continuation",
+            source="acp",
+            model="test",
+            parent_session_id="root",
+        )
+        db.append_message("continuation", role="assistant", content="after compression")
+
+        base = time.time() - 1000
+        assert db._conn is not None
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'root'",
+            (base, base + 10),
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 'continuation'",
+            (base + 20,),
+        )
+        db._conn.commit()
+
+        manager = SessionManager(db=db, agent_factory=_mock_agent)
+        restored = manager.get_session("root")
+
+        assert restored is not None
+        assert restored.session_id == "continuation"
+        assert [message["content"] for message in restored.history] == ["after compression"]
+
 
 
 

@@ -108,7 +108,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       }
 
       if (d.type === 'alias') {
-        return void handler(`/${d.target}${argTail}`)
+        return void handler(`/${d.target.replace(/^\/+/, '')}${argTail}`)
       }
 
       // A skill/bundle dispatch's `message` is the expanded skill body —

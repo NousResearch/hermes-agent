@@ -4969,8 +4969,56 @@ async function runGroupChatRounds(group, members, thread) {
         r.turn = null
         return r
       })
+
+      // #89545: the loop's harvest pass only ran at the top of each round of
+      // an ACTIVE loop — a member whose turn timed out after the final round
+      // stayed stranded until the user's NEXT send. Poll for the late reply
+      // in the background (bounded) so long work is late, never lost.
+      // (window feature-detect: the engine also runs under node in tests.)
+      const strandedLeft = Object.keys(($groupChats.get()[group] || {}).stranded || {})
+
+      if (strandedLeft.length && typeof window !== 'undefined') {
+        void harvestStrandedUntilSettled(group, members, thread)
+      }
     }
   }
+}
+
+/** Bounded background harvest for members whose replies outlived the turn
+ *  loop. Polls every 5s for up to 5 minutes; stops early when nothing is
+ *  stranded, a new loop takes the room over (it harvests on its own), or the
+ *  room record disappears (disband). */
+async function harvestStrandedUntilSettled(group, members, thread) {
+  const HARVEST_INTERVAL_MS = 5000
+  const HARVEST_MAX_TRIES = 60
+
+  for (let attempt = 0; attempt < HARVEST_MAX_TRIES; attempt++) {
+    await new Promise(resolve => window.setTimeout(resolve, HARVEST_INTERVAL_MS))
+
+    const room = $groupChats.get()[group]
+
+    if (!room || room.running) {
+      return
+    }
+
+    const stranded = room.stranded || {}
+
+    if (!Object.keys(stranded).length) {
+      return
+    }
+
+    for (const member of members) {
+      if (Object.prototype.hasOwnProperty.call(stranded, groupMemberKey(member))) {
+        try {
+          await harvestStrandedGroupReply(group, member)
+        } catch {
+          // Best-effort: the next tick retries; the bound stops runaways.
+        }
+      }
+    }
+  }
+
+  recordGroupActivity(group, { kind: 'failed', member: null, thread })
 }
 
 /** User send into a group room. `thread` continues that thread (its reply
@@ -8892,7 +8940,7 @@ function mentionTokenAt(text, caret) {
  *  the strings parseGroupChatMentions resolves. Keyboard: Up/Down navigate,
  *  Enter/Tab insert (Enter falls through to submit when the popover is
  *  closed), Escape dismisses. */
-function GroupMentionInput({ members, onChange, value, ...inputProps }) {
+function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...inputProps }) {
   const allMeta = useValue($botMeta)
   const inputRef = useRef(null)
   const [token, setToken] = useState(null)
@@ -8995,32 +9043,55 @@ function GroupMentionInput({ members, onChange, value, ...inputProps }) {
             )
           })
         : null,
-      jsx(Input, {
+      jsx(Textarea, {
         ...inputProps,
         ref: inputRef,
         value,
+        rows: 1,
+        // Multi-line room prompts (#89884): the composer was a single-line
+        // Input whose form submitted on every Enter — newlines were
+        // impossible. Enter (no Shift) still submits via onSubmitDraft;
+        // Shift+Enter falls through to the textarea's native newline.
+        className: cn('max-h-40 min-h-9 resize-none', inputProps.className),
         onChange: event => {
           onChange(event.target.value)
           refreshToken(event.target)
         },
         onClick: event => refreshToken(event.target),
         onKeyDown: event => {
-          if (!open) {
-            return
+          if (open) {
+            if (event.key === 'ArrowDown') {
+              event.preventDefault()
+              setSelected((active + 1) % options.length)
+
+              return
+            }
+
+            if (event.key === 'ArrowUp') {
+              event.preventDefault()
+              setSelected((active - 1 + options.length) % options.length)
+
+              return
+            }
+
+            if (event.key === 'Enter' || event.key === 'Tab') {
+              event.preventDefault()
+              insert(options[active].handle)
+
+              return
+            }
+
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              setToken(null)
+
+              return
+            }
           }
 
-          if (event.key === 'ArrowDown') {
+          if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault()
-            setSelected((active + 1) % options.length)
-          } else if (event.key === 'ArrowUp') {
-            event.preventDefault()
-            setSelected((active - 1 + options.length) % options.length)
-          } else if (event.key === 'Enter' || event.key === 'Tab') {
-            event.preventDefault()
-            insert(options[active].handle)
-          } else if (event.key === 'Escape') {
-            event.preventDefault()
-            setToken(null)
+            onSubmitDraft?.()
           }
         },
         onBlur: () => setToken(null)
@@ -9220,6 +9291,39 @@ function GroupChatWorkspace({ group, members, onBack }) {
   // composer, otherwise the reply box of that thread. Data URLs, already
   // downscaled — they ride the send into every responding member's session.
   const [pendingImages, setPendingImages] = useState({})
+
+  // Scroll anchoring (#89835): rooms used to open at scroll position 0 and
+  // stay there while replies streamed in. Scroll the bottom sentinel into
+  // view on mount and whenever the log grows — but only when the user is
+  // already near the bottom, so reading history is never yanked away.
+  const bottomSentinelRef = useRef(null)
+  const stickToBottomRef = useRef(true)
+
+  useEffect(() => {
+    const sentinel = bottomSentinelRef.current
+
+    if (!sentinel) {
+      return
+    }
+
+    const viewport = sentinel.closest('[data-slot="scroll-area-viewport"]')
+
+    if (viewport) {
+      const onScroll = () => {
+        stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 80
+      }
+
+      viewport.addEventListener('scroll', onScroll, { passive: true })
+
+      return () => viewport.removeEventListener('scroll', onScroll)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (stickToBottomRef.current) {
+      bottomSentinelRef.current?.scrollIntoView({ block: 'end' })
+    }
+  }, [room.log.length, room.running])
 
   const imagesFor = thread => pendingImages[thread ?? 'main'] || []
 
@@ -9733,6 +9837,7 @@ function GroupChatWorkspace({ group, members, onBack }) {
                     members,
                     value: replyDrafts[id] || '',
                     onChange: text => setReplyDrafts(prev => ({ ...prev, [id]: text })),
+                    onSubmitDraft: () => submitReply(id),
                     onPaste: event => pasteImages(id, event)
                   }),
                   attachButton(id),
@@ -9814,7 +9919,11 @@ function GroupChatWorkspace({ group, members, onBack }) {
                       ? `${groupSpeakerLabel(room.turn)} is thinking…`
                       : 'The room is working…'
                 }, 'working')
-              : null
+              : null,
+            // Scroll anchor (#89835): rooms opened at scroll position 0, mid-
+            // history. The effect below scrolls this sentinel into view on
+            // mount and on log growth — unless the user has scrolled up.
+            jsx('div', { ref: bottomSentinelRef, 'aria-hidden': true }, 'bottom-sentinel')
           ]
         })
       }),
@@ -9837,6 +9946,7 @@ function GroupChatWorkspace({ group, members, onBack }) {
                   members,
                   value: draft,
                   onChange: setDraft,
+                  onSubmitDraft: submit,
                   onPaste: event => pasteImages(null, event)
                 }),
                 attachButton(null),

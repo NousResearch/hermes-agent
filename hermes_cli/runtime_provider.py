@@ -1407,8 +1407,16 @@ def _resolve_azure_foundry_runtime(
 
     Raises :class:`AuthError` when required values are missing.
     """
-    explicit_api_key = str(explicit_api_key or "").strip()
     explicit_base_url_clean = str(explicit_base_url or "").strip().rstrip("/")
+
+    # Preserve callable token providers (Entra ID bearer provider forwarded
+    # from the main runtime's api_key). str() would convert callables to
+    # "<function ... at 0x...>" which gets sent to Azure as an invalid bearer
+    # token, causing HTTP 401. (#72421)
+    if callable(explicit_api_key):
+        pass  # keep callable as-is
+    else:
+        explicit_api_key = str(explicit_api_key or "").strip()
 
     cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
     cfg_base_url = ""

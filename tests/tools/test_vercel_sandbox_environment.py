@@ -16,6 +16,13 @@ from types import SimpleNamespace
 
 import pytest
 
+try:
+    CreateSandboxRequest = importlib.import_module(
+        "vercel._internal.sandbox.models"
+    ).CreateSandboxRequest
+except ImportError:
+    CreateSandboxRequest = None
+
 
 class _FakeRunResult:
     def __init__(self, output: str | bytes = "", exit_code: int = 0):
@@ -163,6 +170,13 @@ class _FakeSDK:
 
     def create(self, **kwargs):
         self.create_kwargs.append(kwargs)
+        source = kwargs.get("source")
+        if (
+            isinstance(source, dict)
+            and source.get("type") == "snapshot"
+            and kwargs.get("runtime") is not None
+        ):
+            raise ValueError("source: snapshot source cannot be combined with runtime")
         if self.create_side_effects:
             effect = self.create_side_effects.pop(0)
             if isinstance(effect, Exception):
@@ -536,7 +550,31 @@ class TestSnapshotPersistence:
             "type": "snapshot",
             "snapshot_id": "snap_saved",
         }
+        assert "runtime" not in vercel_sdk.create_kwargs[0]
         assert vercel_module._load_snapshots() == {"task-123": "snap_saved"}
+
+    @pytest.mark.skipif(
+        CreateSandboxRequest is None,
+        reason="vercel 0.7.2 optional dependency is not installed",
+    )
+    def test_snapshot_restore_kwargs_satisfy_pinned_vercel_request_contract(
+        self, make_env, vercel_module, vercel_sdk, monkeypatch, tmp_path
+    ):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        vercel_module._store_snapshot("task-123", "snap_saved")
+
+        make_env()
+
+        restore_kwargs = vercel_sdk.create_kwargs[0]
+        assert CreateSandboxRequest is not None
+        request = CreateSandboxRequest(
+            project_id="project-test",
+            source=restore_kwargs["source"],
+            runtime=restore_kwargs.get("runtime"),
+        )
+        assert request.source.type == "snapshot"
+        assert request.runtime is None
 
     def test_restore_failure_prunes_snapshot_and_falls_back_to_fresh_sandbox(
         self, make_env, vercel_module, vercel_sdk, monkeypatch, tmp_path
@@ -557,6 +595,7 @@ class TestSnapshotPersistence:
             "snapshot_id": "snap_stale",
         }
         assert "source" not in vercel_sdk.create_kwargs[1]
+        assert vercel_sdk.create_kwargs[1]["runtime"] == "node22"
         assert vercel_module._load_snapshots() == {}
 
     def test_cleanup_stops_when_snapshot_fails_without_storing_metadata(

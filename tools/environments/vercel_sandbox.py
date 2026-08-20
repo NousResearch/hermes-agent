@@ -314,7 +314,6 @@ class VercelSandboxEnvironment(BaseEnvironment):
                     "sandbox restore",
                     lambda: Sandbox.create(
                         timeout=self._create_params.timeout,
-                        runtime=self._create_params.runtime,
                         resources=self._create_params.resources,
                         source={"type": "snapshot", "snapshot_id": snapshot_id},
                     ),

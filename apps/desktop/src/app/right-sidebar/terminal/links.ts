@@ -25,10 +25,10 @@ export function isTerminalLinkActivation(
 }
 
 // The terminal spends the ⌘/Ctrl modifier on activation itself, so it has no
-// second chord left to mean "native browser" — ⇧ takes that job here. Elsewhere
-// a bare click opens in-app and ⌘ escapes to the OS; here it's ⌘ to open and
-// ⇧⌘ to escape, which keeps both gestures reachable without stealing the
-// selection back from a plain click.
+// second chord left for destination — ⇧ takes that job here. Chat is the
+// inverse: bare click is the OS browser and ⌘ opens the in-app pane. Here it's
+// ⌘ to open (in-app) and ⇧⌘ to escape to the OS, so a bare click still belongs
+// to selection.
 const activate = (event: MouseEvent, uri: string) => {
   if (isTerminalLinkActivation(event)) {
     openLink(uri, { native: event.shiftKey })

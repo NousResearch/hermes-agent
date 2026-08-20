@@ -203,9 +203,10 @@ export function openExternalLink(href: string): void {
 }
 
 /**
- * True when a click asked for the SYSTEM browser — ⌘ on macOS, Ctrl elsewhere,
- * the modifier every app uses for "open this somewhere else". Middle-click
- * counts too: it is the other half of the same convention.
+ * True when a click used the open-elsewhere modifier — ⌘ on macOS, Ctrl
+ * elsewhere, or middle-click. Chat treats that as "open in the preview pane";
+ * a bare click is the system browser. Middle-click still goes to the OS
+ * (onAuxClick), matching every other app's new-tab convention.
  */
 export function wantsNativeBrowser(event: Pick<MouseEvent, 'button' | 'ctrlKey' | 'metaKey'>): boolean {
   return event.button === 1 || (IS_MAC ? event.metaKey : event.ctrlKey)
@@ -214,10 +215,11 @@ export function wantsNativeBrowser(event: Pick<MouseEvent, 'button' | 'ctrlKey' 
 /**
  * Where a link the user clicked should open.
  *
- * A web page opens in the in-app browser — that pane exists so reading a doc
- * doesn't cost a context switch out of Hermes, and it is the surface the agent
- * can see. ⌘/Ctrl-click (or middle-click) escapes to the real browser, which is
- * where you go for anything needing your logged-in session or a password.
+ * Default is the system browser — the logged-in session, extensions, and
+ * spatial window the user already lives in. ⌘/Ctrl-click (chat) or an
+ * explicit `{ native: false }` opens the in-app pane, which is the surface
+ * the agent can read. The shipped hint already said "⌘/Ctrl-click for
+ * preview pane"; the click router had been inverted against that copy.
  *
  * Everything that ISN'T a web page — `mailto:`, `file:`, a custom scheme — has
  * no business in the webview and always hands off to the OS.
@@ -229,7 +231,11 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
     return
   }
 
-  if (options.native || !/^https?:$/i.test(parseUrl(target)?.protocol ?? '')) {
+  const isWeb = /^https?:$/i.test(parseUrl(target)?.protocol ?? '')
+
+  // native defaults to true so a bare `openLink(url)` (url chips, etc.)
+  // matches a bare click. Pass native: false for the in-app pane.
+  if (options.native !== false || !isWeb) {
     openExternalLink(target)
 
     return
@@ -307,7 +313,7 @@ export function ExternalLink({
         }
 
         event.preventDefault()
-        openLink(target, { native: wantsNativeBrowser(event.nativeEvent) })
+        openLink(target, { native: !wantsNativeBrowser(event.nativeEvent) })
       }}
       rel="noopener noreferrer"
       target="_blank"

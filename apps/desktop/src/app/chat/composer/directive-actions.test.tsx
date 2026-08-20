@@ -64,7 +64,7 @@ describe('ComposerDirectiveActions', () => {
     expect(pillValue()).toBe('https://example.com/docs')
   })
 
-  it('opens a url in the in-app browser rather than navigating the app', async () => {
+  it('opens a url in the system browser rather than navigating the app', () => {
     const openExternal = vi.fn().mockResolvedValue(undefined)
 
     desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
@@ -74,8 +74,8 @@ describe('ComposerDirectiveActions', () => {
     hover(chips(editor, 'url')[0]!)
     fireEvent.click(screen.getByRole('button'))
 
-    expect(openExternal).not.toHaveBeenCalled()
-    await vi.waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/docs'))
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/docs')
+    expect($previewTabs.get()).toHaveLength(0)
     expect(pillValue()).toBeNull()
   })
 

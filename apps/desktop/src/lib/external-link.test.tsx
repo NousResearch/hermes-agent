@@ -106,9 +106,9 @@ describe('external link helpers', () => {
     expect(bridge).toHaveBeenCalledTimes(1)
   })
 
-  // A web link belongs in the in-app browser now; the OS browser is the
-  // ⌘/Ctrl-click escape hatch.
-  it('opens a web link in the in-app browser', async () => {
+  // Bare click is the system browser; ⌘/Ctrl-click is the in-app pane
+  // (matches t.preview.linkHint).
+  it('opens a web link in the system browser', () => {
     const openExternal = vi.fn().mockResolvedValue(undefined)
     installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
 
@@ -116,13 +116,13 @@ describe('external link helpers', () => {
 
     fireEvent.click(screen.getByRole('link', { name: 'Example link' }))
 
-    expect(openExternal).not.toHaveBeenCalled()
-    await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/path/to/resource'))
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
+    expect($previewTabs.get()).toHaveLength(0)
   })
 
-  // Platform-specific on purpose (same rule as terminal links / middle-click):
-  // ⌘ on macOS, Ctrl elsewhere. The suite runs as non-mac.
-  it('escapes to the OS browser on the platform open-elsewhere modifier', () => {
+  // Platform-specific on purpose: ⌘ on macOS, Ctrl elsewhere. The suite
+  // runs as non-mac.
+  it('opens the in-app preview on the platform open-elsewhere modifier', async () => {
     const openExternal = vi.fn().mockResolvedValue(undefined)
     installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
 
@@ -130,8 +130,8 @@ describe('external link helpers', () => {
 
     fireEvent.click(screen.getByRole('link', { name: 'Example link' }), IS_MAC ? { metaKey: true } : { ctrlKey: true })
 
-    expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
-    expect($previewTabs.get()).toHaveLength(0)
+    expect(openExternal).not.toHaveBeenCalled()
+    await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/path/to/resource'))
   })
 
   // A webview can't do anything useful with these, so they always hand off.

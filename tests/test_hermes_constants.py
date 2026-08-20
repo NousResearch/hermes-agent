@@ -338,6 +338,43 @@ class TestNodeToolRunnable:
 
 
 
+class TestNodeToolRunnableWindowsNbsp:
+    """Regression for #80499 — cmd.exe tokenizes U+00A0 (nbsp) as a space.
+
+    A .cmd/.bat shim is probed through cmd.exe. When the shim path contains a
+    U+00A0 (e.g. a Hermes-managed Node tree under %LOCALAPPDATA%), subprocess's
+    argv quoting does not protect the nbsp, so cmd.exe splits the path mid-way
+    and a healthy shim reports as not runnable. The probe must hand cmd.exe a
+    pre-quoted command line, keeping the nbsp inside a quoted argument.
+    """
+
+    def test_cmd_shim_with_nbsp_probe_is_pre_quoted(self, tmp_path, monkeypatch):
+        nbsp = chr(0x00A0)
+        shim_dir = tmp_path / ("LocalAppData" + nbsp + "dir")
+        shim_dir.mkdir(parents=True)
+        shim = shim_dir / "npm.cmd"
+        shim.write_text("@echo off\nnode --version\n", encoding="utf-8")
+
+        captured = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append(cmd)
+            return SimpleNamespace(returncode=0)
+
+        import subprocess as subprocess_mod
+        import hermes_cli._subprocess_compat as subprocess_compat
+
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: 0x08000000)
+        monkeypatch.setattr(subprocess_mod, "run", fake_run)
+
+        assert node_tool_runnable(str(shim)) is True
+        (probe,) = captured
+        assert probe == f'"{shim}" --version'
+        # The nbsp must sit inside the quoted command token, not split from it.
+        assert nbsp in probe[1:probe.rindex('"')]
+
+
 class TestIsContainer:
     """Tests for is_container() — Docker/Podman detection."""
 

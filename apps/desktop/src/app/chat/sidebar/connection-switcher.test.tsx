@@ -40,6 +40,10 @@ vi.mock('@/store/boot', () => ({
   })
 }))
 
+vi.mock('@/store/windows', () => ({
+  isPeerInstanceWindow: vi.fn(() => false)
+}))
+
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
@@ -65,6 +69,7 @@ vi.mock('@/i18n', () => ({
 
 const connectionStore = await import('@/store/connections')
 const bootStore = await import('@/store/boot')
+const windowStore = await import('@/store/windows')
 const $activeConnectionId = connectionStore.$activeConnectionId as ReturnType<typeof atom<null | string>>
 const $connectionsRegistry = connectionStore.$connectionsRegistry
 const $desktopBoot = bootStore.$desktopBoot
@@ -72,6 +77,7 @@ const $pendingConnectionId = connectionStore.$pendingConnectionId
 const initializeConnectionsRegistry = vi.mocked(connectionStore.initializeConnectionsRegistry)
 const refreshConnectionsRegistry = vi.mocked(connectionStore.refreshConnectionsRegistry)
 const selectConnection = vi.mocked(connectionStore.selectConnection)
+const isPeerInstanceWindow = vi.mocked(windowStore.isPeerInstanceWindow)
 const onConnect = vi.fn()
 
 const connection = (id: string, label: string, kind: 'local' | 'remote' = 'remote') => ({
@@ -106,6 +112,7 @@ afterEach(() => {
   })
   $pendingConnectionId.set(null)
   $findInPage.set({ active: false, query: '', matchOrdinal: 0, matchCount: 0 })
+  isPeerInstanceWindow.mockReturnValue(false)
 })
 
 describe('ConnectionSwitcher', () => {
@@ -125,6 +132,22 @@ describe('ConnectionSwitcher', () => {
     })
 
     await waitFor(() => expect(initializeConnectionsRegistry).toHaveBeenCalledTimes(1))
+  })
+
+  it('keeps a full peer on the shared backend instead of replaying app-launch source restoration', async () => {
+    isPeerInstanceWindow.mockReturnValue(true)
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      phase: 'renderer.ready',
+      progress: 100,
+      running: false,
+      visible: false
+    })
+
+    render(<ConnectionSwitcher onConnect={onConnect} />)
+
+    await waitFor(() => expect(refreshConnectionsRegistry).toHaveBeenCalledTimes(1))
+    expect(initializeConnectionsRegistry).not.toHaveBeenCalled()
   })
 
   it('adds no source chrome for a local-only setup', () => {

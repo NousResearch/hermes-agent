@@ -36,6 +36,7 @@ import {
 } from '@/store/connections'
 import { closeFindBar } from '@/store/find-in-page'
 import { notifyError } from '@/store/notifications'
+import { isPeerInstanceWindow } from '@/store/windows'
 
 export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: boolean; onConnect: () => void }) {
   const { t } = useI18n()
@@ -64,8 +65,10 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
     // The primary boot owns its initial config/session fetches. Restoring a
     // different source before those settle lets a late primary response repaint
     // the sidebar under the new source label. Switch only after boot completes,
-    // then the normal source reset/refetch remains the final writer.
-    if (!boot.running) {
+    // then the normal source reset/refetch remains the final writer. Full peer
+    // windows already joined the shared backend during their own boot; replaying
+    // this app-launch preference there would move them away from that backend.
+    if (!boot.running && !isPeerInstanceWindow()) {
       void initializeConnectionsRegistry().catch(() => undefined)
     }
   }, [boot.running])

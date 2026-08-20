@@ -35,6 +35,30 @@ def test_config_set_managed_key_rejected(homes, capsys):
 
 
 
+def test_config_set_rejects_bare_string_managed_model(tmp_path, monkeypatch, capsys):
+    """Admin bare ``model: org/locked`` must block ``hermes config set model.default``."""
+    home = tmp_path / "home"
+    home.mkdir()
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    import hermes_cli.config as cfg
+    from hermes_cli import managed_scope
+
+    cfg._LOAD_CONFIG_CACHE.clear()
+    cfg._RAW_CONFIG_CACHE.clear()
+    (managed / "config.yaml").write_text("model: org/locked\n", encoding="utf-8")
+    managed_scope.invalidate_managed_cache()
+
+    with pytest.raises(SystemExit) as exc:
+        cfg.set_config_value("model.default", "user/override")
+    assert exc.value.code != 0
+    captured = capsys.readouterr()
+    assert "managed" in (captured.out + captured.err).lower()
+    assert cfg.read_raw_config().get("model", {}).get("default") != "user/override"
+
+
 # ── env write guards ─────────────────────────────────────────────────────────
 
 

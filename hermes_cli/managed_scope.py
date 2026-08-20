@@ -168,9 +168,7 @@ def apply_managed_overlay(config: dict) -> dict:
         # read. _normalize_root_model_keys only promotes the string when there
         # are root provider/base_url keys to migrate, so handle the bare case
         # here (matches cli.py's own string-model handling).
-        if isinstance(managed_expanded.get("model"), str):
-            managed_expanded = dict(managed_expanded)
-            managed_expanded["model"] = {"default": managed_expanded["model"]}
+        managed_expanded = _promote_bare_model_string(managed_expanded)
         return _deep_merge(config, managed_expanded)
     except Exception:  # noqa: BLE001 — overlay must never break a caller
         logger.warning("managed scope: failed to apply config overlay", exc_info=True)
@@ -188,6 +186,18 @@ def _parse_env(f) -> Dict[str, str]:
     return out
 
 
+def _promote_bare_model_string(config: dict) -> dict:
+    """Promote root ``model: <str>`` to ``{"default": <str>}`` (copy-on-write).
+
+    Kept in sync with apply_managed_overlay and managed_config_keys so write
+    guards see the same leaf (``model.default``) that runtime merge pins.
+    """
+    if isinstance(config.get("model"), str):
+        config = dict(config)
+        config["model"] = {"default": config["model"]}
+    return config
+
+
 def _flatten_keys(d: dict, prefix: str = "") -> set:
     keys: set = set()
     for k, v in d.items():
@@ -201,7 +211,9 @@ def _flatten_keys(d: dict, prefix: str = "") -> set:
 
 def managed_config_keys() -> set:
     """Dotted leaf keys pinned by the managed config (e.g. {'model.default'})."""
-    return _flatten_keys(load_managed_config())
+    # Promote bare ``model: x/y`` before flattening so is_key_managed("model.default")
+    # matches apply_managed_overlay's effective pin.
+    return _flatten_keys(_promote_bare_model_string(load_managed_config()))
 
 
 def is_key_managed(dotted_key: str) -> bool:

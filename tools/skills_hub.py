@@ -4750,10 +4750,23 @@ def ensure_hub_dirs() -> None:
     hub_dir.mkdir(parents=True, exist_ok=True)
     _quarantine_dir().mkdir(exist_ok=True)
     _index_cache_dir().mkdir(exist_ok=True)
-    hub_lock = HubLockFile(path=lock_file)
-    with _exclusive_file_lock(hub_lock.mutex_path):
+    lock_mutex = lock_file.with_name(f".{lock_file.name}.lock")
+    with _exclusive_file_lock(lock_mutex):
         if not lock_file.exists():
-            hub_lock._save_unlocked({"version": 1, "installed": {}})
+            fd, raw_tmp = tempfile.mkstemp(
+                prefix=f".{lock_file.name}.",
+                suffix=".tmp",
+                dir=lock_file.parent,
+            )
+            tmp_path = Path(raw_tmp)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write('{"version": 1, "installed": {}}\n')
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp_path, lock_file)
+            finally:
+                tmp_path.unlink(missing_ok=True)
     if not audit_log.exists():
         audit_log.touch()
     if not taps_file.exists():

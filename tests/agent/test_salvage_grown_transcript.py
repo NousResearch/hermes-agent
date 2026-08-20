@@ -8,7 +8,12 @@ from agent.context_compressor import (
 from agent.model_metadata import estimate_messages_tokens_rough
 
 
-def test_salvage_stubs_old_tools_and_drops_todo():
+def test_salvage_stubs_old_tools_and_keeps_todo_when_stubbing_suffices():
+    """Tool stubbing alone gets under budget → the todo snapshot survives.
+
+    The snapshot is the only in-transcript todo re-injection at the boundary
+    (and may carry the pruned-skill reload notice), so it is last-resort only.
+    """
     original = [
         {"role": "user", "content": "go"},
         {"role": "assistant", "content": "ok"},
@@ -29,10 +34,67 @@ def test_salvage_stubs_old_tools_and_drops_todo():
 
     assert out is not None
     assert estimate_messages_tokens_rough(out) < estimate_messages_tokens_rough(original)
-    assert not any(m.get("_todo_snapshot_synthetic") for m in out)
+    assert any(m.get("_todo_snapshot_synthetic") for m in out)
     tools = [m["content"] for m in out if m.get("role") == "tool"]
     assert tools[-1] == "keep-latest"
     assert any("cleared to save context space" in t for t in tools)
+
+
+def test_salvage_drops_todo_only_as_last_resort():
+    """When cheaper ops cannot get under budget, the snapshot is dropped."""
+    original = [
+        {"role": "user", "content": "please do the thing " + ("o" * 600)},
+        {"role": "assistant", "content": "ok"},
+    ]
+    grown = [
+        {"role": "user", "content": "summary of the ask"},
+        {"role": "assistant", "content": "ok"},
+        {
+            "role": "user",
+            "content": "Current todos:\n- [ ] " + ("t" * 800),
+            "_todo_snapshot_synthetic": True,
+        },
+    ]
+    assert estimate_messages_tokens_rough(grown) > estimate_messages_tokens_rough(original)
+
+    out = salvage_grown_transcript(original, grown)
+
+    assert out is not None
+    assert estimate_messages_tokens_rough(out) < estimate_messages_tokens_rough(original)
+    assert not any(m.get("_todo_snapshot_synthetic") for m in out)
+
+
+def test_salvage_last_resort_preserves_pruned_skill_reload_notice():
+    """7a16840add couples the reload notice into the snapshot — it survives."""
+    from agent.conversation_compression import _PRUNED_SKILL_RELOAD_NOTICE_HEADER
+
+    notice = (
+        f"{_PRUNED_SKILL_RELOAD_NOTICE_HEADER}\n"
+        "Reload with skill_view(name='example-skill') before acting."
+    )
+    original = [
+        {"role": "user", "content": "please do the thing " + ("o" * 3000)},
+        {"role": "assistant", "content": "ok"},
+    ]
+    grown = [
+        {"role": "user", "content": "summary of the ask"},
+        {"role": "assistant", "content": "ok"},
+        {
+            "role": "user",
+            "content": "Current todos:\n- [ ] " + ("t" * 4000) + f"\n\n{notice}",
+            "_todo_snapshot_synthetic": True,
+        },
+    ]
+    assert estimate_messages_tokens_rough(grown) > estimate_messages_tokens_rough(original)
+
+    out = salvage_grown_transcript(original, grown)
+
+    assert out is not None
+    assert estimate_messages_tokens_rough(out) < estimate_messages_tokens_rough(original)
+    snapshot_rows = [m for m in out if m.get("_todo_snapshot_synthetic")]
+    assert len(snapshot_rows) == 1
+    assert snapshot_rows[0]["content"].startswith(_PRUNED_SKILL_RELOAD_NOTICE_HEADER)
+    assert "Current todos" not in snapshot_rows[0]["content"]
 
 
 def test_salvage_returns_none_when_nothing_can_shrink():

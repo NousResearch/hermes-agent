@@ -345,7 +345,9 @@ class TestInPlaceAntiGrowthGuard:
             tool_bodies = [m.get("content") for m in compressed if m.get("role") == "tool"]
             assert any(isinstance(body, str) and body.startswith("keep-me") for body in tool_bodies)
             assert any("cleared to save context space" in (body or "") for body in tool_bodies)
-            assert not any(m.get("_todo_snapshot_synthetic") for m in compressed)
+            # Tool stubbing alone got under budget, so the todo snapshot (the
+            # only in-transcript todo re-injection) survives the salvage.
+            assert any(m.get("_todo_snapshot_synthetic") for m in compressed)
 
     def test_in_place_still_commits_shrinking_compression(self):
         """The guard must not block legitimate compressions — a result SMALLER

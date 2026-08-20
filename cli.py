@@ -9246,10 +9246,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # ``self.api_key`` may be a callable (Azure Foundry Entra ID bearer
         # provider). Never invoke it; just identify the auth surface.
         from agent.azure_identity_adapter import is_token_provider
-        if is_token_provider(self.api_key):
+
+        # Prefer the LIVE agent's credential when one exists: HermesCLI's
+        # constructor seeds self.api_key from OPENAI/OPENROUTER env vars
+        # before provider resolution runs, so on non-OpenAI providers (Nous,
+        # Anthropic, ...) the constructor value is a different vendor's key
+        # than the one actually authenticating requests. /config displaying
+        # an sk-proj-... OpenAI key next to a Nous base URL was the visible
+        # symptom (full-surface CLI QA sweep, Aug 2026).
+        display_key = self.api_key
+        agent = getattr(self, "agent", None)
+        if agent is not None and getattr(agent, "api_key", None):
+            display_key = agent.api_key
+        if is_token_provider(display_key):
             api_key_display = "Microsoft Entra ID"
-        elif isinstance(self.api_key, str) and len(self.api_key) > 12:
-            api_key_display = f"{self.api_key[:8]}...{self.api_key[-4:]}"
+        elif isinstance(display_key, str) and len(display_key) > 12:
+            api_key_display = f"{display_key[:8]}...{display_key[-4:]}"
         else:
             api_key_display = "Not set!"
         

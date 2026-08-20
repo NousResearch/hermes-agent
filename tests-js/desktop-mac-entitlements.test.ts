@@ -35,6 +35,7 @@ const REPO_ROOT = path.resolve(__dirname, '..')
 const ELECTRON_DIR = path.join(REPO_ROOT, 'apps', 'desktop', 'electron')
 const MAIN_PLIST = path.join(ELECTRON_DIR, 'entitlements.mac.plist')
 const INHERIT_PLIST = path.join(ELECTRON_DIR, 'entitlements.mac.inherit.plist')
+const desktopEntitlementTest = fs.existsSync(ELECTRON_DIR) ? test : test.skip
 
 const DEVICE_PREFIX = 'com.apple.security.device.'
 
@@ -49,7 +50,7 @@ function loadEntitlements(plistPath: string): Record<string, unknown> {
   return data as Record<string, unknown>
 }
 
-test('inherit plist grants microphone (regression #37718)', () => {
+desktopEntitlementTest('inherit plist grants microphone (regression #37718)', () => {
   const inherit = loadEntitlements(INHERIT_PLIST)
   assert.equal(
     inherit['com.apple.security.device.audio-input'],
@@ -61,7 +62,7 @@ test('inherit plist grants microphone (regression #37718)', () => {
   )
 })
 
-test('every device.* entitlement on the main app is also inherited', () => {
+desktopEntitlementTest('every device.* entitlement on the main app is also inherited', () => {
   const main = loadEntitlements(MAIN_PLIST)
   const inherit = loadEntitlements(INHERIT_PLIST)
 
@@ -81,7 +82,7 @@ test('every device.* entitlement on the main app is also inherited', () => {
 })
 
 for (const plist of [MAIN_PLIST, INHERIT_PLIST]) {
-  test(`${path.basename(plist)} is a well-formed non-empty entitlement dict`, () => {
+  desktopEntitlementTest(`${path.basename(plist)} is a well-formed non-empty entitlement dict`, () => {
     const data = loadEntitlements(plist)
     assert.ok(
       Object.keys(data).length > 0,

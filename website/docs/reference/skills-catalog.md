@@ -99,6 +99,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`action-first-answers`](/docs/user-guide/skills/bundled/productivity/productivity-action-first-answers) | Use when the user asks for ADHD-friendly, action-first, terse, no-preamble replies or wants communication optimized for starting friction. Put the concrete action/result first, cap steps, include time estimates when useful, and end with... | `productivity/action-first-answers` |
 | [`airtable`](/docs/user-guide/skills/bundled/productivity/productivity-airtable) | Airtable REST API via curl. Records CRUD, filters, upserts. | `productivity/airtable` |
 | [`box`](/docs/user-guide/skills/bundled/productivity/productivity-box) | Box manages cloud files, sharing, search, and metadata. | `productivity/box` |
 | [`document-to-action-items`](/docs/user-guide/skills/bundled/productivity/productivity-document-to-action-items) | Extract cited obligations, deadlines, tasks from documents. | `productivity/document-to-action-items` |

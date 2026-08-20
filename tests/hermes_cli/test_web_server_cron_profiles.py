@@ -427,6 +427,8 @@ def test_profile_call_cannot_retarget_ticker_store_mid_write(
 
 @pytest.mark.asyncio
 async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_profiles):
+    from fastapi import Request
+
     from hermes_cli import web_server
 
     worker_job = web_server._call_cron_for_profile(
@@ -437,7 +439,13 @@ async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_pr
         name="named-profile-job",
     )
 
-    paused = await web_server.pause_cron_job(worker_job["id"])
+    # pause_cron_job is admin-gated (_require_dashboard_admin) since the Mini
+    # App tiered access control landed; a bare Request with no
+    # request.state.token_principal set resolves to the cookie/session
+    # caller's unrestricted scope, same as this direct call always got before
+    # that gate existed.
+    request = Request(scope={"type": "http", "headers": []})
+    paused = await web_server.pause_cron_job(request, worker_job["id"])
     assert paused["profile"] == "worker_alpha"
     assert paused["enabled"] is False
 
@@ -455,7 +463,16 @@ async def test_dashboard_cron_mutations_notify_selected_profile_provider(
     isolated_profiles,
     monkeypatch,
 ):
+    from fastapi import Request
+
     from hermes_cli import web_server
+
+    # pause/resume/delete are admin-gated (_require_dashboard_admin) since the
+    # Mini App tiered access control landed; a bare Request with no
+    # request.state.token_principal set resolves to the cookie/session
+    # caller's unrestricted scope, same as these direct calls always got
+    # before that gate existed.
+    request = Request(scope={"type": "http", "headers": []})
 
     notified_profiles = []
     monkeypatch.setattr(
@@ -477,9 +494,9 @@ async def test_dashboard_cron_mutations_notify_selected_profile_provider(
         web_server.CronJobUpdate(updates={"name": "provider-notify-job-updated"}),
         profile="worker_alpha",
     )
-    await web_server.pause_cron_job(created["id"], profile="worker_alpha")
-    await web_server.resume_cron_job(created["id"], profile="worker_alpha")
-    await web_server.delete_cron_job(created["id"], profile="worker_alpha")
+    await web_server.pause_cron_job(request, created["id"], profile="worker_alpha")
+    await web_server.resume_cron_job(request, created["id"], profile="worker_alpha")
+    await web_server.delete_cron_job(request, created["id"], profile="worker_alpha")
 
     assert notified_profiles == ["worker_alpha"] * 5
 
@@ -558,7 +575,11 @@ async def test_trigger_cron_job_fires_only_selected_job_and_returns_refreshed_st
         ),
     )
 
+    from fastapi import Request
+
+    request = Request(scope={"type": "http", "headers": []})
     triggered = await web_server.trigger_cron_job(
+        request,
         selected["id"],
         profile="worker_alpha",
     )
@@ -604,8 +625,11 @@ async def test_trigger_cron_job_reports_lost_claim_as_conflict(
         lambda: ClaimLostProvider(),
     )
 
+    from fastapi import Request
+
+    request = Request(scope={"type": "http", "headers": []})
     with pytest.raises(HTTPException) as exc:
-        await web_server.trigger_cron_job(job["id"], profile="worker_alpha")
+        await web_server.trigger_cron_job(request, job["id"], profile="worker_alpha")
 
     assert exc.value.status_code == 409
     assert "already running" in exc.value.detail
@@ -641,7 +665,11 @@ async def test_trigger_cron_job_forces_paused_job_atomically(
         lambda: ForceProvider(),
     )
 
+    from fastapi import Request
+
+    request = Request(scope={"type": "http", "headers": []})
     triggered = await web_server.trigger_cron_job(
+        request,
         job["id"],
         profile="worker_alpha",
     )
@@ -680,8 +708,11 @@ async def test_trigger_paused_job_rejects_legacy_provider_without_mutating_job(
         lambda: LegacyProvider(),
     )
 
+    from fastapi import Request
+
+    request = Request(scope={"type": "http", "headers": []})
     with pytest.raises(HTTPException) as exc:
-        await web_server.trigger_cron_job(job["id"], profile="worker_alpha")
+        await web_server.trigger_cron_job(request, job["id"], profile="worker_alpha")
 
     assert exc.value.status_code == 409
     assert "forced" in exc.value.detail.lower()
@@ -721,7 +752,11 @@ async def test_trigger_cron_job_returns_refreshed_execution_failure(
         lambda: FailedProvider(),
     )
 
+    from fastapi import Request
+
+    request = Request(scope={"type": "http", "headers": []})
     triggered = await web_server.trigger_cron_job(
+        request,
         job["id"],
         profile="worker_alpha",
     )
@@ -756,7 +791,11 @@ async def test_trigger_cron_job_returns_completed_snapshot_for_retained_oneshot(
         lambda: SuccessfulProvider(),
     )
 
+    from fastapi import Request
+
+    request = Request(scope={"type": "http", "headers": []})
     triggered = await web_server.trigger_cron_job(
+        request,
         job["id"],
         profile="worker_alpha",
     )
@@ -806,8 +845,11 @@ async def test_cron_profile_scan_runs_off_event_loop(isolated_profiles, monkeypa
     monkeypatch.setattr(web_server, "_cron_profile_dicts", tracking_profile_dicts)
     monkeypatch.setattr(web_server, "_find_cron_job_profile", tracking_find)
 
+    from fastapi import Request
+
+    request = Request(scope={"type": "http", "headers": []})
     jobs = await web_server.list_cron_jobs(profile="all")
-    paused = await web_server.pause_cron_job(worker_job["id"])
+    paused = await web_server.pause_cron_job(request, worker_job["id"])
 
     assert any(job["id"] == worker_job["id"] for job in jobs)
     assert paused["profile"] == "worker_alpha"
@@ -1117,7 +1159,10 @@ async def test_cron_delete_with_profile_deletes_only_target_profile(isolated_pro
         name="shared-name-worker",
     )
 
-    deleted = await web_server.delete_cron_job(worker_job["id"], profile="worker_alpha")
+    from fastapi import Request
+
+    request = Request(scope={"type": "http", "headers": []})
+    deleted = await web_server.delete_cron_job(request, worker_job["id"], profile="worker_alpha")
     assert deleted == {"ok": True}
 
     remaining_default = await web_server.list_cron_jobs(profile="default")

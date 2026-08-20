@@ -38,6 +38,10 @@ LOG_FILES = {
     # Every stdio MCP subprocess's stderr (tools/mcp_tool.py redirects it
     # here, with per-server session markers) — the "MCP output channel".
     "mcp": "mcp-stderr.log",
+    # hermes_cli/main.py's `hermes update` output mirror (opened in append
+    # mode, no rotation) -- added for the Mini App's admin log viewer, one of
+    # the four logs it surfaces alongside agent/errors/gateway.
+    "update": "update.log",
 }
 
 # Log line timestamp regex — matches "2026-04-05 22:35:00,123" or

@@ -234,6 +234,24 @@ export const reassignTask = (id: string, profile: string) =>
 
 export const reclaimTask = (id: string) => nudged(call(withBoard(`/tasks/${id}/reclaim`), { method: 'POST', body: {} }))
 
+export interface SpecifyOutcome {
+  ok: boolean
+  task_id: string
+  reason?: null | string
+  new_title?: null | string
+}
+
+export interface DecomposeOutcome extends SpecifyOutcome {
+  fanout: boolean
+  child_ids: string[]
+}
+
+export const specifyTask = (id: string) =>
+  nudged(call<SpecifyOutcome>(withBoard(`/tasks/${id}/specify`), { method: 'POST', body: {} }))
+
+export const decomposeTask = (id: string) =>
+  nudged(call<DecomposeOutcome>(withBoard(`/tasks/${id}/decompose`), { method: 'POST', body: {} }))
+
 export const uploadAttachment = (id: string, upload: { filename: string; contentType?: string; bytes: ArrayBuffer }) =>
   call(withBoard(`/tasks/${id}/attachments`), { method: 'POST', upload })
 

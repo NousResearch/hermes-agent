@@ -146,6 +146,17 @@ type KanbanMessages = {
   deliveredLive: string
   requeueWithNote: string
   notePosted: string
+  triageActions: string
+  specify: string
+  specifying: string
+  specified: string
+  specifiedRetitled: (title: string) => string
+  decompose: string
+  decomposing: string
+  decomposed: (count: number) => string
+  decomposedSingle: string
+  actionFailed: (action: string, reason: string) => string
+  unknownError: string
   activity: (n: number) => string
   runs: (n: number) => string
   workerLog: string
@@ -349,6 +360,17 @@ export const en: KanbanMessages = {
   deliveredLive: 'Delivered to the running worker within a few seconds.',
   requeueWithNote: 'Requeue with note',
   notePosted: 'Note posted — worker requeued',
+  triageActions: 'Triage actions',
+  specify: 'Specify',
+  specifying: 'Specifying…',
+  specified: 'Specified',
+  specifiedRetitled: title => `Specified — retitled: ${title}`,
+  decompose: 'Decompose',
+  decomposing: 'Decomposing…',
+  decomposed: count => `Decomposed into ${count} children`,
+  decomposedSingle: 'Single task (no fanout)',
+  actionFailed: (action, reason) => `${action} failed: ${reason}`,
+  unknownError: 'unknown error',
   activity: n => `Activity · ${n}`,
   runs: n => `Runs · ${n}`,
   workerLog: 'Worker log',
@@ -550,6 +572,17 @@ const ja: KanbanMessages = {
   deliveredLive: '数秒以内に実行中のワーカーへ届きます。',
   requeueWithNote: 'メモを付けて再キュー',
   notePosted: 'メモを投稿しました — ワーカーを再キューしました',
+  triageActions: 'トリアージ操作',
+  specify: '仕様化',
+  specifying: '仕様化中…',
+  specified: '仕様化しました',
+  specifiedRetitled: title => `仕様化しました — 新しいタイトル: ${title}`,
+  decompose: '分解',
+  decomposing: '分解中…',
+  decomposed: count => `${count} 件の子タスクに分解しました`,
+  decomposedSingle: '単一タスク（分解なし）',
+  actionFailed: (action, reason) => `${action}に失敗しました: ${reason}`,
+  unknownError: '不明なエラー',
   activity: n => `アクティビティ・${n}`,
   runs: n => `実行・${n}`,
   workerLog: 'ワーカーログ',
@@ -749,6 +782,17 @@ const zh: KanbanMessages = {
   deliveredLive: '几秒内送达运行中的工作单元。',
   requeueWithNote: '附带备注重新入队',
   notePosted: '备注已发布 — 工作单元已重新入队',
+  triageActions: '分诊操作',
+  specify: '细化',
+  specifying: '正在细化…',
+  specified: '已细化',
+  specifiedRetitled: title => `已细化 — 新标题：${title}`,
+  decompose: '分解',
+  decomposing: '正在分解…',
+  decomposed: count => `已分解为 ${count} 个子任务`,
+  decomposedSingle: '单个任务（未拆分）',
+  actionFailed: (action, reason) => `${action}失败：${reason}`,
+  unknownError: '未知错误',
   activity: n => `活动・${n}`,
   runs: n => `运行・${n}`,
   workerLog: '工作单元日志',
@@ -947,6 +991,17 @@ const zhHant: KanbanMessages = {
   deliveredLive: '幾秒內送達執行中的工作單元。',
   requeueWithNote: '附上備註重新排入佇列',
   notePosted: '備註已發布 — 工作單元已重新排入佇列',
+  triageActions: '分診操作',
+  specify: '細化',
+  specifying: '正在細化…',
+  specified: '已細化',
+  specifiedRetitled: title => `已細化 — 新標題：${title}`,
+  decompose: '分解',
+  decomposing: '正在分解…',
+  decomposed: count => `已分解為 ${count} 個子任務`,
+  decomposedSingle: '單一任務（未拆分）',
+  actionFailed: (action, reason) => `${action}失敗：${reason}`,
+  unknownError: '未知錯誤',
   activity: n => `活動・${n}`,
   runs: n => `執行・${n}`,
   workerLog: '工作單元日誌',

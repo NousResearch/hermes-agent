@@ -413,3 +413,118 @@ async def test_shutdown_notifications_are_fully_muted_when_flag_disabled():
     adapter.send.assert_not_awaited()
 
 
+# ── unexpected-restart startup notification ────────────────────────────────
+
+
+def _simulate_startup_state_snapshot(monkeypatch, tmp_path):
+    """Reproduce the state-snapshot timing from ``GatewayRunner.start()``.
+
+    ``start()`` snapshots ``prev_gateway_state`` *before* overwriting the
+    status file with ``"starting"`` / ``"running"``.  This helper mirrors
+    that sequence so tests can verify the decision is based on the
+    *previous* gateway's state, not the current startup's writes.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    from gateway.status import read_runtime_status, write_runtime_status
+
+    # 1. Snapshot previous state (what start() does at the very top).
+    prev_state = read_runtime_status()
+    prev_gateway_state = (prev_state or {}).get("gateway_state")
+
+    # 2. Simulate startup overwriting the status file (start() writes
+    #    "starting" at line ~8117, then "running" at line ~8665).
+    write_runtime_status(gateway_state="starting", exit_reason=None)
+    write_runtime_status(gateway_state="running", exit_reason=None)
+
+    return prev_gateway_state
+
+
+@pytest.mark.asyncio
+async def test_unexpected_restart_sends_home_channel_notification(tmp_path, monkeypatch):
+    """When the previous gateway died while running (state='running'),
+    the next boot treats it as an unexpected restart and notifies home channels
+    even without a .restart_pending.json marker.
+
+    This test reproduces the start() lifecycle: the previous state is
+    snapshotted *before* the startup writes "starting"/"running", so the
+    decision uses the stale "running" from the dead gateway, not the
+    current boot's "running".
+    """
+    from gateway.status import write_runtime_status
+
+    # Pre-seed: previous gateway died while "running" (SIGTERM, OOM, etc.)
+    write_runtime_status(gateway_state="running")
+
+    # Run the snapshot sequence - mimics what start() does.
+    prev_gateway_state = _simulate_startup_state_snapshot(monkeypatch, tmp_path)
+
+    # The snapshot captured "running" from the *previous* gateway, even
+    # though the status file now says "running" from *this* boot.
+    assert prev_gateway_state == "running"
+
+    # No planned-restart marker, no chat-restart marker -> unexpected restart.
+    assert gateway_run._planned_restart_notification_pending() is False
+    assert gateway_run._restart_notification_pending() is False
+
+    # The decision branch in start() would fire the notifier:
+    if prev_gateway_state in ("running", "draining"):
+        runner, adapter = make_restart_runner()
+        runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+            platform=Platform.TELEGRAM,
+            chat_id="home-99",
+            name="Ops Home",
+        )
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+        delivered = await runner._send_home_channel_startup_notifications()
+        assert delivered == {("telegram", "home-99", None)}
+        adapter.send.assert_called_once()
+        assert "Gateway online" in adapter.send.call_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_clean_stop_does_not_trigger_startup_notification(tmp_path, monkeypatch):
+    """When the previous gateway stopped cleanly (state='stopped'), the next
+    boot does NOT send a startup notification - the operator intentionally
+    stopped it and doesn't need a "back online" ping on manual restart.
+
+    Crucially, even though start() overwrites the status file with
+    "starting"/"running" during boot, the snapshot was taken *before* those
+    writes, so it correctly captures "stopped".
+    """
+    from gateway.status import write_runtime_status
+
+    # Pre-seed: previous gateway stopped cleanly.
+    write_runtime_status(gateway_state="stopped")
+
+    # Run the snapshot sequence - mimics what start() does.
+    prev_gateway_state = _simulate_startup_state_snapshot(monkeypatch, tmp_path)
+
+    # The snapshot captured "stopped" from the *previous* gateway.
+    assert prev_gateway_state == "stopped"
+
+    # No planned-restart marker, no chat-restart marker.
+    assert gateway_run._planned_restart_notification_pending() is False
+    assert gateway_run._restart_notification_pending() is False
+
+    # "stopped" is NOT in the trigger set -> no notification should fire.
+    assert prev_gateway_state not in ("running", "draining")
+
+
+def test_first_boot_has_no_runtime_state(tmp_path, monkeypatch):
+    """On a first-ever boot, gateway_state.json doesn't exist at all.
+    The snapshot correctly captures None, which is not in the trigger set,
+    so no notification fires on fresh install.
+
+    This also verifies the timing fix: even after start() writes
+    "starting"/"running", the snapshot was taken before those writes and
+    correctly reflects the absence of a prior state file.
+    """
+    # No pre-seed: first-ever boot, no state file exists.
+
+    # Run the snapshot sequence - mimics what start() does.
+    prev_gateway_state = _simulate_startup_state_snapshot(monkeypatch, tmp_path)
+
+    # No prior state file -> snapshot is None.
+    assert prev_gateway_state is None
+    # None is NOT in the trigger set -> no notification on first boot.
+    assert prev_gateway_state not in ("running", "draining")

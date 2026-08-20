@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import enum
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -264,6 +265,75 @@ _PAYLOAD_TOO_LARGE_PATTERNS = [
     "request_too_large",
     "request exceeds the maximum size",
 ]
+
+# Byte-size request-limit detection (port of block/goose#11173).
+#
+# Byte-capped gateways/proxies in front of a provider return HTTP 400 (not
+# 413) when the request BODY exceeds a byte-size limit, e.g.:
+#   "Server received a request which exceeds maximum allowed content length.
+#    RequestSize(bytes): 34021227, Limit(bytes): 33554432."
+# None of the token-flavored _CONTEXT_OVERFLOW_PATTERNS match these, and the
+# exact-phrase _PAYLOAD_TOO_LARGE_PATTERNS miss most spellings, so the 400
+# fell through to format_error → non-retryable fallback. An image-heavy
+# session (large in bytes, small in tokens) then never triggers compression
+# and re-sends the same oversized history — permanently stuck.
+#
+# Detection requires a CONJUNCTION of a byte-limit subject and an overflow
+# signal so generic length complaints stay out (see the negative cases in
+# tests): "tools[0].description content length exceeds maximum allowed" or
+# "temperature exceeds maximum allowed value" must NOT match.
+
+# Phrases that name the request body / payload size as the subject.
+_BYTE_SIZE_SUBJECT_PHRASES = (
+    "request size",
+    "requestsize",
+    "request body size",
+    "request payload size",
+    "payload size",
+    "body size",
+)
+
+# Complete "X too large" spellings that are unambiguous on their own.
+_BYTE_SIZE_TOO_LARGE_PHRASES = (
+    "request body is too large",
+    "request body too large",
+    "request payload is too large",
+    "request payload too large",
+    "payload is too large",
+    "payload too large",
+)
+
+# Overflow signals — at least one must accompany a byte-limit subject.
+_BYTE_SIZE_OVERFLOW_SIGNALS = ("exceed", "too large", "too big")
+
+
+def _is_byte_size_limit_message(error_msg: str) -> bool:
+    """Return True when *error_msg* describes a request-body byte-size cap.
+
+    ``error_msg`` must already be lowercased (callers pass the lowercased
+    aggregate message). "content length" / "content-length" alone is too
+    ambiguous (providers use it for field-level length complaints), so it
+    only counts when the message also mentions the request or bytes as
+    standalone words.
+    """
+    if not error_msg:
+        return False
+
+    has_subject = any(p in error_msg for p in _BYTE_SIZE_SUBJECT_PHRASES)
+    too_large = any(p in error_msg for p in _BYTE_SIZE_TOO_LARGE_PHRASES)
+
+    if not (has_subject or too_large):
+        # "content length"/"content-length" + a standalone "request"/"byte(s)"
+        # word (e.g. "...maximum allowed content length. RequestSize(bytes):").
+        if "content length" in error_msg or "content-length" in error_msg:
+            words = set(re.split(r"[^a-z0-9]+", error_msg))
+            if not ({"request", "byte", "bytes", "requestsize"} & words):
+                return False
+        else:
+            return False
+
+    return any(s in error_msg for s in _BYTE_SIZE_OVERFLOW_SIGNALS)
+
 
 # Image-size patterns.  Matched against 400 bodies (not 413) because most
 # providers return a 400 with a specific image-too-big message before the
@@ -1547,6 +1617,20 @@ def _classify_400(
             should_compress=True,
         )
 
+    # Byte-size request-limit 400s (byte-capped gateways/proxies return 400,
+    # not 413, when the request BODY exceeds a byte cap). Token-flavored
+    # overflow patterns above miss these entirely; without this check the
+    # error classifies as format_error and an image-heavy session never
+    # compresses — every retry re-sends the same oversized history. Route to
+    # payload_too_large so the existing 413 compression recovery fires.
+    # (port of block/goose#11173)
+    if _is_byte_size_limit_message(error_msg):
+        return result_fn(
+            FailoverReason.payload_too_large,
+            retryable=True,
+            should_compress=True,
+        )
+
     # Some providers return model-not-found as 400 instead of 404 (e.g. OpenRouter).
     if any(p in error_msg for p in _PROVIDER_POLICY_BLOCKED_PATTERNS):
         return result_fn(
@@ -1702,6 +1786,17 @@ def _classify_by_message(
 
     # Payload-too-large patterns (from message text when no status_code)
     if any(p in error_msg for p in _PAYLOAD_TOO_LARGE_PATTERNS):
+        return result_fn(
+            FailoverReason.payload_too_large,
+            retryable=True,
+            should_compress=True,
+        )
+
+    # Byte-size request-limit spellings that the exact-phrase list above
+    # misses ("Request body size exceeds the maximum allowed limit",
+    # "RequestSize(bytes): N, Limit(bytes): M"). Same recovery: compress.
+    # (port of block/goose#11173)
+    if _is_byte_size_limit_message(error_msg):
         return result_fn(
             FailoverReason.payload_too_large,
             retryable=True,

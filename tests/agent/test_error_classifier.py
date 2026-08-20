@@ -516,6 +516,50 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.payload_too_large
         assert result.should_compress is True
 
+    # ── Byte-size request limits (port of block/goose#11173) ──
+    # Byte-capped gateways return HTTP 400 (not 413) when the request BODY
+    # exceeds a byte limit. These must route to payload_too_large so the
+    # compression recovery fires — an image-heavy session is large in bytes
+    # but small in tokens, so no token-flavored pattern matches.
+
+    @pytest.mark.parametrize("message", [
+        "Server received a request which exceeds maximum allowed content "
+        "length. RequestSize(bytes): 34021227, Limit(bytes): 33554432.",
+        "Request body size exceeds the maximum allowed limit",
+        "Request body is too large",
+        "Request payload too large",
+        "Content-Length exceeds the maximum allowed request size",
+    ])
+    def test_400_byte_size_limit_is_payload_too_large(self, message):
+        e = MockAPIError(message, status_code=400)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.payload_too_large, message
+        assert result.retryable is True
+        assert result.should_compress is True
+
+    @pytest.mark.parametrize("message", [
+        "metadata length exceeds maximum allowed",
+        "temperature exceeds maximum allowed value",
+        "Invalid request body: temperature exceeds maximum allowed value",
+        "tools[0].description content length exceeds maximum allowed",
+        "response content length exceeds maximum allowed",
+    ])
+    def test_400_generic_length_errors_not_payload_too_large(self, message):
+        e = MockAPIError(message, status_code=400)
+        result = classify_api_error(e)
+        assert result.reason != FailoverReason.payload_too_large, message
+        assert result.reason != FailoverReason.context_overflow, message
+
+    def test_message_only_byte_size_limit_is_payload_too_large(self):
+        # No status_code at all — proxies re-wrap the 400 into a bare string.
+        e = Exception(
+            "Server received a request which exceeds maximum allowed content "
+            "length. RequestSize(bytes): 34021227, Limit(bytes): 33554432."
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.payload_too_large
+        assert result.should_compress is True
+
     # ── Context overflow ──
 
 

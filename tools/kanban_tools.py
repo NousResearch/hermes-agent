@@ -1386,6 +1386,8 @@ def _handle_create(args: dict, **kw) -> str:
     # preserving the repository/branch convention without sharing a checkout.
     workspace_kind = args.get("workspace_kind")
     workspace_path = args.get("workspace_path")
+    base_ref = args.get("base_ref")
+    required_paths = args.get("required_paths")
     project_id = args.get("project") or args.get("project_id")
     project_source_task_id = None
     _inherit_project = workspace_kind is None and workspace_path is None
@@ -1443,6 +1445,8 @@ def _handle_create(args: dict, **kw) -> str:
                 priority=int(priority) if priority is not None else 0,
                 workspace_kind=str(workspace_kind),
                 workspace_path=workspace_path,
+                base_ref=base_ref,
+                required_paths=required_paths,
                 project_id=project_id,
                 project_source_task_id=project_source_task_id,
                 triage=triage,
@@ -1469,6 +1473,8 @@ def _handle_create(args: dict, **kw) -> str:
                 status=new_task.status if new_task else None,
                 workspace_kind=new_task.workspace_kind if new_task else None,
                 workspace_path=new_task.workspace_path if new_task else None,
+                base_ref=new_task.base_ref if new_task else None,
+                required_paths=list(new_task.required_paths or []) if new_task else [],
                 project_id=new_task.project_id if new_task else None,
                 subscribed=subscribed,
             )
@@ -2202,6 +2208,21 @@ KANBAN_CREATE_SCHEMA = {
                 "description": (
                     "Absolute path for 'dir' or 'worktree' workspace. "
                     "Relative paths are rejected at dispatch."
+                ),
+            },
+            "base_ref": {
+                "type": "string",
+                "description": (
+                    "Git revision from which the task worktree branch must "
+                    "start. Only valid for worktree tasks."
+                ),
+            },
+            "required_paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Repository-relative implementation paths that must exist "
+                    "in the resolved task revision before dispatch."
                 ),
             },
             "project": {

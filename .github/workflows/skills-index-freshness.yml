@@ -117,6 +117,10 @@ jobs:
             echo "Summary:      ${{ steps.probe.outputs.summary }}"
           fi
 
+      - name: Checkout
+        if: steps.probe.outputs.status != 'ok'
+        uses: actions/checkout@v4
+
       - name: Get GitHub App token
         if: steps.probe.outputs.status != 'ok'
         id: app-token

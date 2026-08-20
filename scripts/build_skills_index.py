@@ -162,9 +162,13 @@ def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
     print(f"    {len(by_repo)} unique repos to scan", flush=True)
 
     resolved_count = 0
+    _completed_repos = 0
+    _total_repos = len(by_repo)
+    _resolve_start = time.time()
 
     # Fetch trees in parallel (up to 6 concurrent)
     def _resolve_repo(repo: str, entries: list):
+        nonlocal _completed_repos
         tree = _fetch_repo_tree(repo, auth)
         if not tree:
             return 0
@@ -232,6 +236,14 @@ def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
             except Exception as e:
                 repo = futures[future]
                 print(f"    Warning: {repo}: {e}", file=sys.stderr)
+            _completed_repos += 1
+            if _completed_repos % 50 == 0:
+                elapsed = time.time() - _resolve_start
+                rate = _completed_repos / elapsed if elapsed > 0 else 0
+                remaining = (_total_repos - _completed_repos) / rate if rate > 0 else 0
+                print(f"    Progress: {_completed_repos}/{_total_repos} repos "
+                      f"({resolved_count} resolved, {elapsed:.0f}s elapsed, "
+                      f"~{remaining:.0f}s remaining)", flush=True)
 
     elapsed = time.time() - start
     print(f"  Resolved {resolved_count}/{len(skills_sh)} paths ({elapsed:.1f}s)",

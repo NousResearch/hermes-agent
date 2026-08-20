@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0.0",
+  "project_root": "/tmp/test-project",
+  "scanned_at": "2026-05-30T12:00:00Z",
+  "total_files": 2,
+  "total_lines": 100,
+  "languages": {"python": 2},
+  "categories": {"code": 2},
+  "frameworks": [],
+  "warnings": [],
+  "files": [
+    {
+      "path": "/tmp/test-project/src/main.py",
+      "relative_path": "src/main.py",
+      "language": "python",
+      "category": "code",
+      "lines": 80,
+      "size_bytes": 2048,
+      "functions": ["main", "parse_config"],
+      "classes": ["ConfigParser"]
+    },
+    {
+      "path": "/tmp/test-project/src/main.py",
+      "relative_path": "src/main.py",
+      "language": "python",
+      "category": "code",
+      "lines": 80,
+      "size_bytes": 2048,
+      "functions": ["entry_point"],
+      "classes": ["Application"]
+    }
+  ]
+}

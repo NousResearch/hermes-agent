@@ -6824,8 +6824,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(1)
 
     except subprocess.CalledProcessError as e:
+        label, detail = _describe_update_failure(e)
+        mark = "⚠" if _m()._is_windows() else "✗"
+        print(f"{mark} {label}: {e}")
+        if detail:
+            print("  ↳ last output from the failed step:")
+            for line in detail.splitlines():
+                print(f"    {line}")
         if _m()._is_windows():
-            print(f"⚠ Git update failed: {e}")
             print("→ Falling back to ZIP download...")
             print()
             desktop_build_ok = _update_via_zip(
@@ -6835,7 +6841,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if gateway_mode:
                 _write_gateway_update_exit_code(desktop_build_ok)
         else:
-            print(f"✗ Update failed: {e}")
             sys.exit(1)
 
 # --- Hoisted from the body of _cmd_update_impl (self-contained, no closure state) ---
@@ -6859,6 +6864,47 @@ def _restart_phase_failure_is_incomplete(surviving, pre_restart_pids) -> bool:
         return True
     # surviving == []: safe only if we know nothing was running beforehand.
     return pre_restart_pids is None or bool(pre_restart_pids)
+
+
+def _describe_update_failure(exc: subprocess.CalledProcessError) -> tuple[str, str]:
+    """Name the stage that actually failed, so a Python-deps failure is not
+    reported as a git failure.
+
+    The whole update runs under one ``try``. A failure in the Python-dependency
+    install (``uv/pip install -e .``) surfaced here as a bare
+    ``CalledProcessError`` and was printed as "Git update failed" — even though
+    the git pull had already succeeded — sending users to diagnose git when the
+    real cause was the deps step (e.g. the ``cryptography._rust.pyd`` self-lock
+    in #83569). Classify the failing command instead of assuming git, and
+    return any captured stderr/stdout tail to surface (#85840).
+
+    ``detail`` is best-effort: the streaming install path leaves ``stderr``
+    unset (uv writes its own progress to the console), so the tail is often
+    empty and callers fall back to the exit status alone.
+    """
+    cmd = exc.cmd
+    parts = cmd if isinstance(cmd, (list, tuple)) else [cmd]
+    tokens = [str(p) for p in parts]
+    lowered = [t.lower() for t in tokens]
+    exe = tokens[0].replace("\\", "/").rsplit("/", 1)[-1].lower() if tokens else ""
+
+    is_install = "install" in lowered and any(
+        ("pip" in t or "uv" in t) for t in lowered
+    )
+    if is_install:
+        label = "Python dependency install failed"
+    elif exe == "git" or exe == "git.exe":
+        label = "Git update failed"
+    else:
+        label = "Update step failed"
+
+    raw = exc.stderr or exc.output
+    detail = ""
+    if raw:
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", "replace")
+        detail = "\n".join(str(raw).splitlines()[-12:]).strip()
+    return label, detail
 
 
 def _print_items(items, label, key, fallback_key=None):

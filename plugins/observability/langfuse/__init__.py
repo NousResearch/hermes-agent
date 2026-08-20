@@ -703,6 +703,28 @@ def _serialize_messages(messages: Any) -> list[dict[str, Any]]:
     for message in messages[-12:]:
         if not isinstance(message, dict):
             continue
+        item_type = message.get("type")
+        if item_type == "function_call":
+            serialized.append({
+                "type": item_type,
+                "call_id": message.get("call_id"),
+                "name": _safe_value(message.get("name")),
+                "arguments": _safe_value(
+                    message.get("arguments"),
+                    parse_json_strings=True,
+                ),
+            })
+            continue
+        if item_type == "function_call_output":
+            serialized.append({
+                "type": item_type,
+                "call_id": message.get("call_id"),
+                "output": _safe_value(
+                    message.get("output"),
+                    parse_json_strings=True,
+                ),
+            })
+            continue
         role = message.get("role")
         item = {
             "role": role,

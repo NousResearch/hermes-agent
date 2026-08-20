@@ -686,6 +686,38 @@ class TestAssistantMessageSerialization:
 
 
 class TestToolCallOutputBackfill:
+    def test_serialize_messages_preserves_responses_tool_items(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        messages = [
+            {
+                "type": "function_call",
+                "call_id": "call-1",
+                "name": "web_extract",
+                "arguments": '{"urls": ["https://example.com"]}',
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call-1",
+                "output": '{"ok": true}',
+            },
+        ]
+
+        assert mod._serialize_messages(messages) == [
+            {
+                "type": "function_call",
+                "call_id": "call-1",
+                "name": "web_extract",
+                "arguments": {"urls": ["https://example.com"]},
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call-1",
+                "output": {"ok": True},
+            },
+        ]
+
     def test_post_tool_call_backfills_matching_turn_tool_call_output(self, monkeypatch):
         sys.modules.pop("plugins.observability.langfuse", None)
         mod = importlib.import_module("plugins.observability.langfuse")

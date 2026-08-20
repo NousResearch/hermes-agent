@@ -103,6 +103,10 @@ EP_GET_BOT_QR = "ilink/bot/get_bot_qrcode"
 EP_GET_QR_STATUS = "ilink/bot/get_qrcode_status"
 
 LONG_POLL_TIMEOUT_MS = 35_000
+# Hard ceiling for server-suggested long-poll budgets (see
+# ``_apply_long_poll_timeout_hint``). Default boot value stays 35s; iLink may
+# ask for longer, but never for an unbounded hang.
+MAX_LONG_POLL_TIMEOUT_MS = 120_000
 API_TIMEOUT_MS = 15_000
 CONFIG_TIMEOUT_MS = 10_000
 QR_TIMEOUT_MS = 35_000
@@ -124,6 +128,20 @@ def _is_stale_session_ret(
     if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
         return False
     return (errmsg or "").lower() == "unknown error"
+
+
+def _apply_long_poll_timeout_hint(current_ms: int, suggested) -> int:
+    """Return the next long-poll wait budget for getUpdates.
+
+    iLink may return ``longpolling_timeout_ms`` after each poll. Trust
+    positive ints so the server can lengthen the wait, but clamp to
+    ``MAX_LONG_POLL_TIMEOUT_MS`` so a bad or malicious suggestion cannot
+    pin ``_poll_loop`` (and delay disconnect cancellation) for an
+    unbounded wall-clock hang via ``asyncio.wait_for``.
+    """
+    if isinstance(suggested, int) and suggested > 0:
+        return min(suggested, MAX_LONG_POLL_TIMEOUT_MS)
+    return current_ms
 
 
 MEDIA_IMAGE = 1
@@ -1383,9 +1401,9 @@ class WeixinAdapter(BasePlatformAdapter):
                     sync_buf=sync_buf,
                     timeout_ms=timeout_ms,
                 )
-                suggested_timeout = response.get("longpolling_timeout_ms")
-                if isinstance(suggested_timeout, int) and suggested_timeout > 0:
-                    timeout_ms = suggested_timeout
+                timeout_ms = _apply_long_poll_timeout_hint(
+                    timeout_ms, response.get("longpolling_timeout_ms")
+                )
 
                 ret = response.get("ret", 0)
                 errcode = response.get("errcode", 0)

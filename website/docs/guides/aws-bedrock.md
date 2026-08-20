@@ -10,7 +10,7 @@ Hermes Agent supports Amazon Bedrock as a native provider using the **Converse A
 
 ## Prerequisites
 
-- **AWS credentials** — any source supported by the [boto3 credential chain](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html):
+- **AWS credentials** — any source supported by the [boto3 credential chain](https://docs.aws.amazon.com/boto3/latest/guide/credentials.html):
   - IAM instance role (EC2, ECS, Lambda — zero config)
   - `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` environment variables
   - `AWS_PROFILE` for SSO or named profiles

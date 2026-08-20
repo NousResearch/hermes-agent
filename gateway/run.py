@@ -30122,6 +30122,67 @@ def _gateway_stderr_formatter() -> logging.Formatter:
     return RedactingFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
+def _build_cron_start_kwargs(
+    runner: Any,
+    cron_provider: Any,
+    *,
+    multiplex_cron: bool = False,
+) -> Dict[str, Any]:
+    """Build the kwargs for ``cron_provider.start`` for the gateway ticker.
+
+    The shared defaults (``adapters`` + ``loop``) apply to every provider.
+    ``profile_adapters`` and ``profile_homes`` are multiplex-only additions
+    consumed exclusively by ``InProcessCronScheduler``; they are injected ONLY
+    when the resolved provider is the in-process ticker. External providers
+    (Chronos) implement ``start(stop_event, *, adapters, loop, interval)`` and
+    must never receive them — widening the generic provider call broke
+    external providers with a deterministic TypeError (review #83197).
+    """
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    cron_start_kwargs: Dict[str, Any] = {
+        "adapters": runner.adapters,
+        "loop": asyncio.get_running_loop(),
+    }
+    if isinstance(cron_provider, InProcessCronScheduler):
+        # Multiplex profiles: expose the gateway's per-profile live-adapter
+        # map so cron delivery for a secondary-profile job routes through THAT
+        # profile's bot/chat (not the default profile's shared
+        # ``runner.adapters`` dict). Without this, a secondary-profile cron
+        # delivery picked the wrong adapter (or none) even when the owning
+        # profile's token resolved correctly. Deliberately scoped to the
+        # in-process provider: it is the ONLY provider whose ``start()``
+        # consumes ``profile_adapters`` (interface rule: start() signature
+        # growth must not break providers).
+        _profile_adapters = getattr(runner, "_profile_adapters", None)
+        if _profile_adapters:
+            cron_start_kwargs["profile_adapters"] = _profile_adapters
+        if multiplex_cron:
+            # Tell the built-in ticker which profile homes to tick so
+            # secondary-profile cron jobs actually fire (#69377).
+            try:
+                profile_homes = _multiplex_profile_homes(runner.config)
+                if profile_homes:
+                    cron_start_kwargs["profile_homes"] = profile_homes
+                    logger.info(
+                        "Cron scheduler will tick %d profile(s) under multiplex: %s",
+                        len(profile_homes),
+                        [p[0] if isinstance(p, tuple) else p for p in profile_homes],
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Could not resolve profile homes for multiplex cron: %s",
+                    exc,
+                )
+        # External cron providers own their remote scheduling contract. Only
+        # the in-process ticker polls local due jobs, so only it receives the
+        # local external-drain dispatch gate.
+        cron_start_kwargs["can_dispatch"] = lambda: not (
+            runner._draining or runner._external_drain_active
+        )
+    return cron_start_kwargs
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -30655,49 +30716,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         resolve_cron_scheduler(),
         multiplex_profiles=multiplex_cron,
     )
-    cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
-
-    # Multiplex profiles: expose the gateway's per-profile live-adapter map so
-    # cron delivery for a secondary-profile job routes through THAT profile's
-    # bot/chat (not the default profile's shared ``runner.adapters`` dict).
-    # Without this, a secondary-profile cron delivery picked the wrong adapter
-    # (or none) even when the owning profile's token resolved correctly.
-    _profile_adapters = getattr(runner, "_profile_adapters", None)
-    if _profile_adapters:
-        cron_start_kwargs["profile_adapters"] = _profile_adapters
-
-    # Multiplex profiles: tell the built-in ticker which profile homes to
-    # tick so secondary-profile cron jobs actually fire (#69377).
-    # Without this, only the process-global HERMES_HOME (default profile)
-    # is iterated and every secondary profile's cron store is silently
-    # ignored — jobs show as "scheduled" with a valid next_run_at but
-    # never execute because no ticker owns that store.
-    if (
-        isinstance(cron_provider, InProcessCronScheduler)
-        and multiplex_cron
-    ):
-        try:
-            profile_homes = _multiplex_profile_homes(runner.config)
-            if profile_homes:
-                cron_start_kwargs["profile_homes"] = profile_homes
-                logger.info(
-                    "Cron scheduler will tick %d profile(s) under multiplex: %s",
-                    len(profile_homes),
-                    [p[0] if isinstance(p, tuple) else p for p in profile_homes],
-                )
-        except Exception as exc:
-            logger.warning(
-                "Could not resolve profile homes for multiplex cron: %s",
-                exc,
-            )
-
-    # External cron providers own their remote scheduling contract. Only the
-    # in-process ticker polls local due jobs, so only it receives the local
-    # external-drain dispatch gate.
-    if isinstance(cron_provider, InProcessCronScheduler):
-        cron_start_kwargs["can_dispatch"] = lambda: not (
-            runner._draining or runner._external_drain_active
-        )
+    cron_start_kwargs = _build_cron_start_kwargs(
+        runner,
+        cron_provider,
+        multiplex_cron=multiplex_cron,
+    )
     cron_thread = threading.Thread(
         target=cron_provider.start,
         args=(cron_stop,),

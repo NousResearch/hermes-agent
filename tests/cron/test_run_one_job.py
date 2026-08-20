@@ -429,3 +429,190 @@ def test_run_one_job_threads_profile_adapters_to_delivery(monkeypatch, tmp_path)
     assert received["shared_adapters"] == {"telegram": "default-telegram-adapter"}
 
 
+def test_deliver_adapters_missing_profile_map_never_uses_shared(monkeypatch, tmp_path):
+    """Review #83197 (ghosty-11) blocker 2: a non-default profile whose entry is
+    MISSING from ``profile_adapters`` must get ``{}`` — NEVER the shared
+    default-profile ``adapters`` dict. Falling back to the default map would
+    recreate the wrong-bot/wrong-chat identity path."""
+    from agent import secret_scope as ss
+
+    (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=x\n")
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "home-ops"
+    )
+
+    shared = {"telegram": "default-telegram-adapter"}
+    # profile_adapters has NO "home-ops" entry at all.
+    selected = s._deliver_adapters_for_job(
+        {"id": "j12"}, adapters=shared,
+        profile_adapters={"other": {"telegram": "other-adapter"}},
+    )
+    assert selected == {}
+
+
+def test_deliver_adapters_empty_profile_map_never_uses_shared(monkeypatch, tmp_path):
+    """Review #1 (ghosty-11) blocker 2: a non-default profile whose entry is an
+    EMPTY dict must resolve to ``{}`` — never the shared default map."""
+    (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=x\n")
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "home-ops"
+    )
+
+    shared = {"telegram": "default-telegram-adapter"}
+    selected = s._deliver_adapters_for_job(
+        job={"id": "j13"}, adapters=shared,
+        profile_adapters={"home-ops": {}},
+    )
+    assert selected == {}
+
+
+def test_deliver_adapters_none_profile_adapters_keeps_shared(monkeypatch, tmp_path):
+    """Review #1 blocker 2: ``profile_adapters=None`` (non-multiplex path)
+    keeps the shared ``adapters`` dict — existing behavior unchanged."""
+    (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=x\n")
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "home-ops"
+    )
+
+    shared = {"telegram": "default-telegram-adapter"}
+    selected = s._deliver_adapters_for_job(
+        {"id": "j14"}, adapters=shared, profile_adapters=None
+    )
+    assert selected == {"telegram": "default-telegram-adapter"}
+
+
+def test_deliver_adapters_resolution_error_returns_empty(monkeypatch, tmp_path):
+    """Review #1 blocker 2: when profile resolution RAISES, the authority-safe
+    fallback is ``{}`` — never the shared default-profile map."""
+    (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=x\n")
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+
+    def _boom():
+        raise RuntimeError("profile resolution broke")
+
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", _boom)
+
+    shared = {"telegram": "default-telegram-adapter"}
+    selected = s._deliver_adapters_for_job(
+        {"id": "j15"}, adapters=shared,
+        profile_adapters={"home-ops": {"telegram": "home-ops-adapter"}},
+    )
+    assert selected == {}
+
+
+def test_deliver_adapters_empty_profile_map_falls_back_to_standalone(monkeypatch, tmp_path):
+    """Review #1 blocker 2 end-to-end: ``{}`` (the identity-safe result for a
+    missing/empty secondary registry) permits the existing STANDALONE delivery
+    path — the transport lookup finds no live adapter and delivery uses the
+    active profile's scoped credential instead of the default profile's bot."""
+    (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=profile_bot_token_123\n")
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "home-ops"
+    )
+    monkeypatch.setattr(
+        s, "_resolve_delivery_targets",
+        lambda job: [{"platform": "telegram", "chat_id": "123", "thread_id": None}],
+    )
+    monkeypatch.setattr(
+        "tools.send_message_tool._send_to_platform", lambda *a, **k: None
+    )
+
+    resolve_calls = []
+
+    def _fake_resolve(platform, config, adapters):
+        resolve_calls.append(adapters)
+        return None  # no live transport -> standalone path
+
+    monkeypatch.setattr("gateway.delivery.resolve_delivery_transport", _fake_resolve)
+
+    # Shared adapters exist but the owning profile's map is missing -> the
+    # transport lookup must receive {} (never the shared default map), so the
+    # standalone path uses the active profile's scoped credential.
+    err = s._deliver_result(
+        {"id": "j16", "deliver": "telegram", "name": "t"},
+        "hello",
+        adapters={"telegram": "default-telegram-adapter"},
+        profile_adapters={},
+        loop=None,
+    )
+    assert resolve_calls == [{}]
+    # With no gateway config the standalone path correctly reports the
+    # platform as not configured — the identity contract is the {} lookup.
+    assert err is None or "not configured/enabled" in str(err)
+
+
+def test_run_one_job_resets_scope_when_save_output_raises(monkeypatch, tmp_path):
+    """Review #1 (ghosty-11): scope-reset regression for the save_job_output
+    raising path — the finally must tear the profile secret scope down even
+    when a step between run and delivery raises."""
+    from agent import secret_scope as ss
+
+    (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=x\n")
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(s, "claim_dispatch", lambda _jid: True)
+    monkeypatch.setattr(
+        s, "create_execution", lambda *_a, **_kw: {"id": "exec-j17"}
+    )
+    monkeypatch.setattr(s, "mark_execution_running", lambda _eid: None)
+
+    def fake_run_job(job, *, defer_agent_teardown=None, extra_prompt=None):
+        return (True, "out", "final", None)
+
+    def fake_save(jid, out):
+        raise RuntimeError("save output boom")
+
+    monkeypatch.setattr(s, "run_job", fake_run_job)
+    monkeypatch.setattr(s, "save_job_output", fake_save)
+    monkeypatch.setattr(s, "_deliver_result", lambda *_a, **_k: None)
+    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
+    monkeypatch.setattr(s, "finish_execution", lambda *a, **k: None)
+
+    ss.set_multiplex_active(True)
+    try:
+        ok = s.run_one_job({"id": "j17", "name": "t"})
+    finally:
+        ss.set_multiplex_active(False)
+
+    # The finally reset the scope even though save raised mid-body.
+    assert ss.current_secret_scope() is None
+
+
+def test_run_one_job_resets_scope_when_delivery_raises_base_exception(monkeypatch, tmp_path):
+    """Review #1 (ghosty-11): scope-reset regression for the delivery raising a
+    BaseException path — the finally must tear the profile secret scope down
+    even when _deliver_result raises."""
+    from agent import secret_scope as ss
+
+    (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=x\n")
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+
+    def fake_run_job(job, *, defer_agent_teardown=None, extra_prompt=None):
+        return (True, "out", "final", None)
+
+    def fake_deliver(*a, **k):
+        raise KeyboardInterrupt("delivery hard-interrupt")
+
+    monkeypatch.setattr(s, "run_job", fake_run_job)
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "_deliver_result", fake_deliver)
+    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
+    monkeypatch.setattr(s, "finish_execution", lambda *a, **k: None)
+
+    ss.set_multiplex_active(True)
+    try:
+        try:
+            s.run_one_job({"id": "j18", "name": "t", "deliver": "telegram"})
+        except KeyboardInterrupt:
+            pass  # hard interrupt propagates
+    finally:
+        ss.set_multiplex_active(False)
+
+    # The finally block still reset the scope even though delivery raised a
+    # BaseException (KeyboardInterrupt).
+    assert ss.current_secret_scope() is None
+
+

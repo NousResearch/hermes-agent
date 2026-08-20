@@ -2619,17 +2619,32 @@ def _deliver_adapters_for_job(job: dict, adapters=None, profile_adapters=None):
 
     Mirrors the lookup in gateway/authz_mixin (``_profile_adapters[profile]``),
     but keyed off the job's active profile home resolved at delivery time.
+
+    Identity-boundary contract (review #83197): for ANY resolved non-default
+    profile, this returns that profile's non-empty map or ``{}`` — NEVER the
+    default profile's shared ``adapters`` map. Falling back to the default
+    map when the owning profile's registry is missing/empty would recreate
+    the exact wrong-bot/wrong-chat identity path this fix exists to remove.
+    ``{}`` still permits the existing standalone delivery path to use the
+    active profile's scoped credential. On profile-resolution failure the
+    authority-safe fallback is also ``{}``.
     """
-    if profile_adapters:
+    if profile_adapters is not None:
         try:
             from hermes_cli.profiles import get_active_profile_name
             profile = get_active_profile_name() or "default"
             if profile != "default":
                 profile_map = profile_adapters.get(profile)
-                if isinstance(profile_map, dict) and profile_map:
+                if isinstance(profile_map, dict):
                     return profile_map
+                return {}
         except Exception:
-            logger.debug("profile-adapters resolution failed; falling back to shared adapters", exc_info=True)
+            logger.debug(
+                "profile-adapters resolution failed; returning empty adapter map "
+                "(never the default profile's shared adapters)",
+                exc_info=True,
+            )
+            return {}
     return adapters or {}
 
 

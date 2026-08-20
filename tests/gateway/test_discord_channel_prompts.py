@@ -36,12 +36,29 @@ from gateway.session import SessionSource
 
 class _CapturingAgent:
     last_init = None
+    last_instance = None
+    init_count = 0
 
     def __init__(self, *args, **kwargs):
         type(self).last_init = dict(kwargs)
+        type(self).last_instance = self
+        type(self).init_count += 1
         self.tools = []
+        self.calls = []
 
-    def run_conversation(self, user_message, conversation_history=None, task_id=None, persist_user_message=None):
+    def run_conversation(
+        self,
+        user_message,
+        conversation_history=None,
+        task_id=None,
+        persist_user_message=None,
+        ephemeral_user_context=None,
+    ):
+        self.calls.append({
+            "user_message": user_message,
+            "persist_user_message": persist_user_message,
+            "ephemeral_user_context": ephemeral_user_context,
+        })
         return {
             "final_response": "ok",
             "messages": [],
@@ -145,6 +162,7 @@ async def test_retry_preserves_channel_prompt(monkeypatch):
         source=_make_source(),
         raw_message=SimpleNamespace(),
         channel_prompt="Channel prompt",
+        ephemeral_user_context="Location context",
     )
 
     result = await runner._handle_retry_command(event)
@@ -152,5 +170,84 @@ async def test_retry_preserves_channel_prompt(monkeypatch):
     assert result == "ok"
     retried_event = runner._handle_message.await_args.args[0]
     assert retried_event.channel_prompt == "Channel prompt"
+    assert retried_event.ephemeral_user_context == "Location context"
 
 
+@pytest.mark.asyncio
+async def test_run_agent_keeps_user_context_out_of_system_prompt_cache_and_transcript(
+    monkeypatch, tmp_path
+):
+    _install_fake_agent(monkeypatch)
+    runner = _make_runner()
+
+    (tmp_path / "config.yaml").write_text("agent:\n  system_prompt: Global prompt\n", encoding="utf-8")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_env_path", tmp_path / ".env")
+    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "***",
+        },
+    )
+
+    import hermes_cli.tools_config as tools_config
+
+    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
+
+    _CapturingAgent.last_init = None
+    _CapturingAgent.last_instance = None
+    _CapturingAgent.init_count = 0
+    event = MessageEvent(
+        text="hi",
+        source=_make_source(),
+        message_id="m1",
+        channel_prompt="Channel prompt",
+        ephemeral_user_context="Location: 1.0, 2.0",
+    )
+    result = await runner._run_agent(
+        message="hi",
+        context_prompt="Context prompt",
+        history=[],
+        source=_make_source(),
+        session_id="session-1",
+        session_key="agent:main:discord:thread:12345",
+        channel_prompt=event.channel_prompt,
+        ephemeral_user_context=event.ephemeral_user_context,
+    )
+    second_result = await runner._run_agent(
+        message="hi again",
+        context_prompt="Context prompt",
+        history=[],
+        source=_make_source(),
+        session_id="session-1",
+        session_key="agent:main:discord:thread:12345",
+        channel_prompt=event.channel_prompt,
+        ephemeral_user_context="Location: 3.0, 4.0",
+    )
+
+    assert result["final_response"] == "ok"
+    assert second_result["final_response"] == "ok"
+    assert _CapturingAgent.init_count == 1
+    assert _CapturingAgent.last_init["ephemeral_system_prompt"] == (
+        "Context prompt\n\nChannel prompt\n\nGlobal prompt"
+    )
+    assert "Location:" not in _CapturingAgent.last_init["ephemeral_system_prompt"]
+    assert _CapturingAgent.last_instance.calls == [
+        {
+            "user_message": "hi",
+            "persist_user_message": None,
+            "ephemeral_user_context": "Location: 1.0, 2.0",
+        },
+        {
+            "user_message": "hi again",
+            "persist_user_message": None,
+            "ephemeral_user_context": "Location: 3.0, 4.0",
+        },
+    ]

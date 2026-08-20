@@ -8437,6 +8437,7 @@ class AIAgent:
         persist_user_display_kind: Optional[str] = None,
         persist_user_display_metadata: Optional[Dict[str, Any]] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        ephemeral_user_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.aux_accounting import (
@@ -8802,6 +8803,7 @@ class AIAgent:
                         persist_user_display_kind=persist_user_display_kind,
                         persist_user_display_metadata=persist_user_display_metadata,
                         moa_config=moa_config,
+                        ephemeral_user_context=ephemeral_user_context,
                     )
                 finally:
                     # The lease remains held through relay/task finalization, but

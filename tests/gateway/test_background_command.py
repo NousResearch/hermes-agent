@@ -85,6 +85,113 @@ class TestHandleBackgroundCommand:
         result = await runner._handle_background_command(event)
         assert "Usage:" in result
 
+    @pytest.mark.asyncio
+    async def test_valid_prompt_starts_task(self):
+        """Running /background with a prompt returns confirmation and starts task."""
+        runner = _make_runner()
+
+        # Patch asyncio.create_task to capture the coroutine
+        created_tasks = []
+        original_create_task = asyncio.create_task
+
+        def capture_task(coro, *args, **kwargs):
+            # Close the coroutine to avoid warnings
+            coro.close()
+            mock_task = MagicMock()
+            created_tasks.append(mock_task)
+            return mock_task
+
+        with patch("gateway.run.asyncio.create_task", side_effect=capture_task):
+            event = _make_event(text="/background Summarize the top HN stories")
+            result = await runner._handle_background_command(event)
+
+        assert "🔄" in result
+        assert "Background task started" in result
+        assert "bg_" in result  # task ID starts with bg_
+        assert "Summarize the top HN stories" in result
+        assert len(created_tasks) == 1  # background task was created
+
+    @pytest.mark.asyncio
+    async def test_telegram_dm_topic_passes_trigger_anchor_to_task(self):
+        """Telegram private-topic completion sends need the original command message id."""
+        runner = _make_runner()
+        runner._run_background_task = AsyncMock()
+
+        def capture_task(coro, *args, **kwargs):
+            coro.close()
+            mock_task = MagicMock()
+            return mock_task
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            chat_type="dm",
+            thread_id="20197",
+        )
+        event = MessageEvent(
+            text="/background summarize",
+            source=source,
+            message_id="463",
+            reply_to_message_id="462",
+            ephemeral_user_context="Location: 40.4168, -3.7038",
+        )
+
+        with patch("gateway.run.asyncio.create_task", side_effect=capture_task):
+            result = await runner._handle_background_command(event)
+
+        assert "Background task started" in result
+        runner._run_background_task.assert_called_once()
+        assert runner._run_background_task.call_args.kwargs["event_message_id"] == "463"
+        assert runner._run_background_task.call_args.kwargs[
+            "ephemeral_user_context"
+        ] == "Location: 40.4168, -3.7038"
+
+    @pytest.mark.asyncio
+    async def test_prompt_truncated_in_preview(self):
+        """Long prompts are truncated to 60 chars in the confirmation message."""
+        runner = _make_runner()
+        long_prompt = "A" * 100
+
+        with patch("gateway.run.asyncio.create_task", side_effect=lambda c, **kw: (c.close(), MagicMock())[1]):
+            event = _make_event(text=f"/background {long_prompt}")
+            result = await runner._handle_background_command(event)
+
+        assert "..." in result
+        # Should not contain the full prompt
+        assert long_prompt not in result
+
+    @pytest.mark.asyncio
+    async def test_task_id_is_unique(self):
+        """Each background task gets a unique task ID."""
+        runner = _make_runner()
+        task_ids = set()
+
+        with patch("gateway.run.asyncio.create_task", side_effect=lambda c, **kw: (c.close(), MagicMock())[1]):
+            for i in range(5):
+                event = _make_event(text=f"/background task {i}")
+                result = await runner._handle_background_command(event)
+                # Extract task ID from result (format: "Task ID: bg_HHMMSS_hex")
+                for line in result.split("\n"):
+                    if "Task ID:" in line:
+                        tid = line.split("Task ID:")[1].strip()
+                        task_ids.add(tid)
+
+        assert len(task_ids) == 5  # all unique
+
+    @pytest.mark.asyncio
+    async def test_works_across_platforms(self):
+        """The /background command works for all platforms."""
+        for platform in [Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK]:
+            runner = _make_runner()
+            with patch("gateway.run.asyncio.create_task", side_effect=lambda c, **kw: (c.close(), MagicMock())[1]):
+                event = _make_event(
+                    text="/background test task",
+                    platform=platform,
+                )
+                result = await runner._handle_background_command(event)
+                assert "Background task started" in result
+
 
 # ---------------------------------------------------------------------------
 # _run_background_task
@@ -126,6 +233,7 @@ class TestRunBackgroundTask:
         mock_adapter.send = AsyncMock()
         mock_adapter.extract_media = MagicMock(return_value=([], "Hello from background!"))
         mock_adapter.extract_images = MagicMock(return_value=([], "Hello from background!"))
+        mock_adapter.toolsets_for_source = MagicMock(return_value=None)
         runner.adapters[Platform.TELEGRAM] = mock_adapter
 
         source = SessionSource(
@@ -154,7 +262,12 @@ class TestRunBackgroundTask:
             mock_agent_instance.run_conversation.return_value = mock_result
             MockAgent.return_value = mock_agent_instance
 
-            await runner._run_background_task("say hello", source, "bg_test")
+            await runner._run_background_task(
+                "say hello",
+                source,
+                "bg_test",
+                ephemeral_user_context="Location: 40.4168, -3.7038",
+            )
 
         # Should have sent the result
         mock_adapter.send.assert_called_once()
@@ -167,6 +280,11 @@ class TestRunBackgroundTask:
         assert agent_kwargs["checkpoint_max_snapshots"] == 8
         assert agent_kwargs["checkpoint_max_total_size_mb"] == 222
         assert agent_kwargs["checkpoint_max_file_size_mb"] == 3
+        mock_agent_instance.run_conversation.assert_called_once_with(
+            user_message="say hello",
+            task_id="bg_test",
+            ephemeral_user_context="Location: 40.4168, -3.7038",
+        )
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
 

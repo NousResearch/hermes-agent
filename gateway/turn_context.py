@@ -81,6 +81,10 @@ class TurnContext:
     history: Any = None
     context_prompt: Optional[str] = None
     channel_prompt: Optional[str] = None
+    # Volatile platform context for the current user turn only.  It is passed
+    # to AIAgent's API-only sidecar, never persisted into the transcript or
+    # folded into the system/channel prompt.
+    ephemeral_user_context: Optional[str] = None
     session_id: Optional[str] = None
     session_key: Optional[str] = None
     run_generation: Optional[int] = None

@@ -219,6 +219,30 @@ class TestFetchApiModels:
         assert probe["resolved_base_url"] == "https://api.githubcopilot.com"
         assert probe["used_fallback"] is False
 
+    def test_probe_api_models_parses_bare_array_response(self):
+        """Together AI returns ``[{"id": ...}, ...]`` (no ``data`` envelope).
+
+        Regression: the parser used to call ``data.get("data", [])`` on the
+        payload, raising ``AttributeError`` on a list, which the broad
+        ``except Exception`` swallowed — reporting the endpoint unreachable.
+        """
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'[{"id": "moonshotai/Kimi-K3"}, {"id": "deepseek-ai/DeepSeek-V4-Pro"}]'
+
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
+            probe = probe_api_models("sk-test", "https://api.together.xyz/v1")
+
+        assert probe["models"] == ["moonshotai/Kimi-K3", "deepseek-ai/DeepSeek-V4-Pro"]
+        assert probe["probed_url"] == "https://api.together.xyz/v1/models"
+        assert probe["used_fallback"] is False
+
 
 class TestGithubReasoningEfforts:
     def test_gpt5_supports_minimal_to_high(self):

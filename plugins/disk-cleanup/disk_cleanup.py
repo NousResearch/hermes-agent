@@ -144,14 +144,40 @@ ALLOWED_CATEGORIES = {
     "chrome-profile", "cron-output", "other",
 }
 
+# User workspace trees that must NEVER be auto-deleted by either deletion
+# path (file-level guess_category() and the empty-dir sweep).  Defined in
+# ONE place: add a new protected top level here, not in the two call sites
+# (review #84354 — the two lists used to drift).
+#
+# NOTE: protection is TOP-LEVEL-ONLY.  Only direct children of the scan
+# root (HERMES_HOME) are matched by name; a nested dir like src/scripts/
+# does NOT match.  The empty-dir sweep walks top-level roots only, and
+# guess_category() only checks rel.parts[0].
+#
+# `state/` is a deliberately generic name: we protect the top-level
+# state/ tree as user workspace.  Hermes' own disposable runtime files
+# live under cache/ and cron/output/, and disk-cleanup scans HERMES_HOME
+# itself (never adjacent roots), so shielding HERMES_HOME/state/ is the
+# intent — never delete on name-prefix alone.
+_USER_WORKSPACE_PROTECTED_TOP_LEVELS = frozenset({
+    # User-authored and project trees (#75403, also #32164, #37721).
+    "patches", "projects", "skins", "themes", "contributors",
+    "profiles", "backups", "optional-skills",
+    # User workspace trees (2026-08-12: scripts/tests/test_deny_ignore.py
+    # was tracked as category="test" and deleted at session end — three
+    # reproductions in 20 minutes, cleanup.log AUTO_QUICK (session_end)).
+    # scripts/docs/state hold user/agent work products and must never be
+    # auto-deleted on name-prefix alone.
+    "scripts", "docs", "state",
+})
+
 _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     "logs", "memories", "sessions", "cron", "cronjobs",
-    "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
-    "hermes-agent", "backups", "profiles", ".worktrees",
-    # User-authored project trees — never sweep empty directories
-    # inside these (#75403).
-    "patches", "projects", "skins", "themes", "contributors",
-})
+    "cache", "skills", "plugins", "disk-cleanup",
+    "hermes-agent", ".worktrees",
+    # .worktrees/ is sweep-protected only (git worktree checkouts are not
+    # user data) — intentionally absent from the file-deletion list.
+}) | _USER_WORKSPACE_PROTECTED_TOP_LEVELS
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
     ".git", "node_modules", "venv", ".venv",
@@ -577,16 +603,16 @@ def guess_category(path: Path) -> Optional[str]:
     try:
         rel = path.resolve().relative_to(hermes_home)
         top = rel.parts[0] if rel.parts else ""
-        if top in {
+        if top in ({
             "disk-cleanup", "logs", "memories", "sessions", "config.yaml",
             "skills", "plugins", ".env", "USER.md", "MEMORY.md", "SOUL.md",
             "auth.json", "hermes-agent",
-            # User-authored and project trees — never auto-delete files
-            # inside these just because they happen to be named test_* or
-            # tmp_* (#75403, also #32164, #37721).
-            "patches", "projects", "skins", "themes", "contributors",
-            "profiles", "backups", "optional-skills",
-        }:
+            # Exact-name file protections above (config.yaml/.env/USER.md/
+            # MEMORY.md/SOUL.md/auth.json are files, not dirs).  Directory
+            # protections come from _USER_WORKSPACE_PROTECTED_TOP_LEVELS —
+            # shared with the empty-dir sweep; add new ones there, not here
+            # (review #84354).  Protection is top-level-only (rel.parts[0]).
+        } | _USER_WORKSPACE_PROTECTED_TOP_LEVELS):
             return None
         if top == "cron" or top == "cronjobs":
             # Only files under the disposable ``output/`` subtree are

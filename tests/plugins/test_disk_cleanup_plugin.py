@@ -14,7 +14,9 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 
 import importlib
 import json
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -106,13 +108,29 @@ class TestGuessCategory:
         p.write_text("x")
         assert dg.guess_category(p) == "test"
 
-    def test_skips_protected_top_level(self, _isolate_env):
+    @pytest.mark.parametrize(
+        "top",
+        [
+            "logs",
+            # User workspace trees protected since 2026-08-12
+            # (scripts/tests/test_deny_ignore.py was deleted three times
+            # in 20 minutes — see plugins/disk-cleanup/disk_cleanup.py).
+            "scripts",
+            "docs",
+            "state",
+            # Project trees protected by #75403.
+            "patches",
+            "projects",
+        ],
+    )
+    def test_skips_protected_top_level(self, _isolate_env, top):
         dg = _load_lib()
-        logs_dir = _isolate_env / "logs"
-        logs_dir.mkdir()
-        p = logs_dir / "test_log.txt"
+        protected_dir = _isolate_env / top
+        protected_dir.mkdir()
+        p = protected_dir / "test_file.py"
         p.write_text("x")
-        # Even though it matches test_* pattern, logs/ is excluded.
+        # Even though it matches test_* pattern, the top-level dir is
+        # excluded.
         assert dg.guess_category(p) is None
 
     def test_cron_subtree_categorised(self, _isolate_env):
@@ -277,6 +295,77 @@ class TestDryRun:
         auto, prompt = dg.dry_run()
         # test → auto, other → neither (doesn't hit any rule)
         assert any(i["path"] == str(test_f) for i in auto)
+
+
+class TestEmptyDirProtection:
+    """The empty-dir sweep must never enter protected top-level trees
+    (_EMPTY_DIR_PROTECTED_TOP_LEVEL) — sibling of the file-level
+    guess_category() protection added 2026-08-12."""
+
+    @pytest.mark.parametrize("top", ["scripts", "docs", "state", "logs"])
+    def test_empty_dirs_under_protected_top_level_not_swept(self, _isolate_env, top):
+        dg = _load_lib()
+        empty = _isolate_env / top / "nested" / "empty"
+        empty.mkdir(parents=True)
+        summary = dg.quick()
+        assert empty.exists(), f"empty dir under {top}/ must not be swept"
+        assert summary["empty_dirs"] == 0
+
+    def test_unprotected_empty_dir_still_swept(self, _isolate_env):
+        dg = _load_lib()
+        empty = _isolate_env / "scratch" / "empty"
+        empty.mkdir(parents=True)
+        summary = dg.quick()
+        assert not empty.exists(), "unprotected empty dir should be swept"
+        assert summary["empty_dirs"] >= 1
+
+
+class TestUserWorkspaceProtection:
+    """Regression (2026-08-12): user workspace trees (scripts/docs/state)
+    must never be deleted on name-prefix alone — even for stale
+    tracked.json entries carrying category="test" (three reproductions in
+    cleanup.log before the fix)."""
+
+    def test_quick_never_deletes_user_workspace_test_file(self, _isolate_env):
+        dg = _load_lib()
+        victim = _isolate_env / "scripts" / "tests" / "test_deny_ignore.py"
+        victim.parent.mkdir(parents=True)
+        victim.write_text("x = 1\n")
+        # Simulate a stale pre-fix tracked.json entry (track() accepts the
+        # explicit category; quick() must re-validate and skip it).
+        dg.track(str(victim), "test", silent=True)
+        summary = dg.quick()
+        assert victim.exists(), "quick() deleted a user workspace file!"
+        assert summary["deleted"] == 0
+        # The stale entry is dropped from tracking (re-classified as None).
+        assert dg.load_tracked() == []
+
+    def test_guess_tmp_hermes_test_still_test(self, _isolate_env):
+        dg = _load_lib()
+        p = Path("/tmp/hermes-dc-test/test_ephemeral.py")
+        assert dg.guess_category(p) == "test"
+
+    def test_quick_still_deletes_tmp_hermes_test_file(self, _isolate_env):
+        dg = _load_lib()
+        tmp_root = Path(tempfile.mkdtemp(prefix="hermes-dc-e2e-"))
+        victim = tmp_root / "test_ephemeral.py"
+        victim.write_text("x = 1\n")
+        try:
+            # Guard the environment assumption: this regression test must
+            # exercise the DELETION path, so the tmp root has to resolve
+            # OUTSIDE every protected top level.  If TMPDIR pointed inside
+            # a protected tree (e.g. HERMES_HOME/state), guess_category()
+            # would return None here and the "still deletes" assertion
+            # below would mis-fire (protection is top-level-only).
+            assert dg.guess_category(victim) == "test", (
+                "tmp root must not be under a protected top level"
+            )
+            dg.track(str(victim), "test", silent=True)
+            summary = dg.quick()
+            assert not victim.exists(), "tmp hermes test file should still be cleaned"
+            assert summary["deleted"] == 1
+        finally:
+            shutil.rmtree(tmp_root, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

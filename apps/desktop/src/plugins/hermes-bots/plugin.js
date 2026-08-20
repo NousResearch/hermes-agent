@@ -62,7 +62,7 @@ import {
   useQuery,
   useValue
 } from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const { McpTab, ToolsetConfigPanel } = sdk
@@ -9268,7 +9268,7 @@ function GroupClarifyCard({ entry, members }) {
   })
 }
 
-function GroupChatWorkspace({ group, members, onBack }) {
+function GroupChatWorkspace({ group, members, onBack, visible = true }) {
   const rooms = useValue($groupChats)
   const allMeta = useValue($botMeta)
   const room = rooms[group] || { log: [], running: false }
@@ -9324,6 +9324,22 @@ function GroupChatWorkspace({ group, members, onBack }) {
       bottomSentinelRef.current?.scrollIntoView({ block: 'end' })
     }
   }, [room.log.length, room.running])
+
+  // Retained-pane reopen (#89835 follow-up): a hot-mounted room pane stays
+  // mounted while another workspace tab is active, so returning to it never
+  // remounts and the mount-time anchor doesn't rerun. Re-anchor on the
+  // hidden → visible edge — an explicit reopen, so it overrides a stale
+  // read-position and mirrors what a fresh open does.
+  const wasVisibleRef = useRef(visible)
+
+  useEffect(() => {
+    if (visible && !wasVisibleRef.current) {
+      stickToBottomRef.current = true
+      bottomSentinelRef.current?.scrollIntoView({ block: 'end' })
+    }
+
+    wasVisibleRef.current = visible
+  }, [visible])
 
   const imagesFor = thread => pendingImages[thread ?? 'main'] || []
 
@@ -10049,15 +10065,25 @@ function closeGroupChatMainTab(group) {
 
 /** Main-window wrapper: seats the member roster reactively (live roster +
  *  bot meta + the room's stored cross-connection descriptors) so the room
- *  keeps working as members change while the tab is open. */
+ *  keeps working as members change while the tab is open. Also subscribes to
+ *  this pane's visibility (feature-detected host.paneVisibility): retained
+ *  panes stay mounted while hidden, so the workspace needs the hidden →
+ *  visible edge to re-anchor its log to the bottom (#89835 follow-up). */
 function GroupChatMainView({ group }) {
   const allMeta = useValue($botMeta)
   // Subscribe: membership changes ride bot meta AND the room record.
   useValue($groupChats)
   const roster = useValue($lastRoster)
   const members = groupChatMemberBots(group, roster, allMeta)
+  // Older SDKs have no paneVisibility: fall back to an always-visible atom so
+  // the hook order stays stable and behavior matches the previous build.
+  const $visible = useMemo(
+    () => (typeof host.paneVisibility === 'function' ? host.paneVisibility(`plugin-workspace:${ID}:group:${slugify(group)}`) : atom(true)),
+    [group]
+  )
+  const visible = useValue($visible)
 
-  return jsx(GroupChatWorkspace, { group, members, onBack: () => closeGroupChatMainTab(group) })
+  return jsx(GroupChatWorkspace, { group, members, visible, onBack: () => closeGroupChatMainTab(group) })
 }
 
 /** Open a group chat the Discord way: a tab taking over the MAIN chat window

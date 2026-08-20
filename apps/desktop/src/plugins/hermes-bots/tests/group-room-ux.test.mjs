@@ -15,10 +15,11 @@ const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 //            until the user's NEXT send (harvest only ran inside the loop).
 
 test('room composer is a textarea with Enter=submit, Shift+Enter=newline (#89884)', () => {
-  const component = source.slice(
-    source.indexOf('function GroupMentionInput'),
-    source.indexOf('function GroupChatWorkspace')
-  )
+  // Slice ONLY GroupMentionInput — functions merged between it and
+  // GroupChatWorkspace (e.g. GroupClarifyCard) legitimately use Input.
+  const start = source.indexOf('function GroupMentionInput')
+  const nextFn = source.indexOf('\nfunction ', start + 1)
+  const component = source.slice(start, nextFn)
 
   // The control is the SDK Textarea, not the single-line Input.
   assert.match(component, /jsx\(Textarea, \{/)
@@ -42,6 +43,21 @@ test('room log anchors to the bottom with a user-scroll guard (#89835)', () => {
   // Effect keys on log growth; the guard keeps history reading stable.
   assert.match(workspace, /\[room\.log\.length, room\.running\]/)
   assert.match(workspace, /scrollIntoView/)
+})
+
+test('retained-pane reopen re-anchors to the bottom (#89835 follow-up)', () => {
+  // A hot-mounted room pane never remounts when the user tabs back to it, so
+  // the workspace re-anchors on the hidden → visible edge, fed by the
+  // feature-detected host.paneVisibility authority (always-visible fallback
+  // keeps older SDKs on the previous behavior).
+  const workspace = source.slice(source.indexOf('function GroupChatWorkspace'))
+  assert.match(workspace, /visible = true/)
+  assert.match(workspace, /wasVisibleRef/)
+  assert.match(workspace, /\[visible\]/)
+  const mainView = source.slice(source.indexOf('function GroupChatMainView'), source.indexOf('function openGroupChat'))
+  assert.match(mainView, /typeof host\.paneVisibility === 'function'/)
+  assert.match(mainView, /plugin-workspace:\$\{ID\}:group:\$\{slugify\(group\)\}/)
+  assert.match(mainView, /atom\(true\)/)
 })
 
 test('stranded replies get a bounded background harvest after the loop settles (#89545)', () => {

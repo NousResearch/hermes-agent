@@ -3024,12 +3024,19 @@ class FeishuAdapter(BasePlatformAdapter):
         action = "added" if "created" in event_type else "removed"
         synthetic_text = f"reaction:{action}:{emoji_type}"
 
-        sender_profile = await self._resolve_sender_profile(user_id_obj)
         chat_info = await self.get_chat_info(chat_id)
+        source_chat_type = self._resolve_source_chat_type(
+            chat_info=chat_info,
+            event_chat_type=chat_type_raw,
+        )
+        sender_profile = await self._resolve_sender_profile(
+            user_id_obj,
+            chat_id=chat_id if source_chat_type in {"group", "forum"} else None,
+        )
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type_raw),
+            chat_type=source_chat_type,
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
             thread_id=None,
@@ -3375,11 +3382,19 @@ class FeishuAdapter(BasePlatformAdapter):
 
         chat_id = getattr(message, "chat_id", "") or ""
         chat_info = await self.get_chat_info(chat_id)
-        sender_profile = await self._resolve_sender_profile(sender_id, is_bot=is_bot)
+        source_chat_type = self._resolve_source_chat_type(
+            chat_info=chat_info,
+            event_chat_type=chat_type,
+        )
+        sender_profile = await self._resolve_sender_profile(
+            sender_id,
+            is_bot=is_bot,
+            chat_id=chat_id if source_chat_type in {"group", "forum"} else None,
+        )
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
+            chat_type=source_chat_type,
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
             thread_id=thread_id,
@@ -4151,6 +4166,7 @@ class FeishuAdapter(BasePlatformAdapter):
         sender_id: Any,
         *,
         is_bot: bool = False,
+        chat_id: Optional[str] = None,
     ) -> Dict[str, Optional[str]]:
         """Map Feishu's three-tier user IDs onto Hermes' SessionSource fields.
 
@@ -4173,11 +4189,39 @@ class FeishuAdapter(BasePlatformAdapter):
         display_name = await self._resolve_sender_name_from_api(
             name_lookup_id, is_bot=is_bot,
         )
+        # External or cross-tenant group members can be visible in the chat
+        # while the Contact API rejects them with ``no user authority``. The
+        # chat-members endpoint still returns an authoritative display name
+        # keyed by this app's open_id, so use it as a group-only fallback.
+        if not display_name and not is_bot and chat_id and open_id:
+            display_name = await self._resolve_sender_name_from_chat_members(
+                chat_id,
+                open_id,
+            )
         return {
             "user_id": primary_id,
             "user_name": display_name,
             "user_id_alt": union_id,
         }
+
+    async def _resolve_sender_name_from_chat_members(
+        self,
+        chat_id: str,
+        open_id: str,
+    ) -> Optional[str]:
+        """Resolve one group sender from the existing chat-member directory."""
+        for name, member_open_id in await self._fetch_chat_mention_members(chat_id):
+            if member_open_id != open_id:
+                continue
+            normalized = str(name or "").strip()
+            if not normalized:
+                return None
+            self._sender_name_cache[open_id] = (
+                normalized,
+                time.time() + _FEISHU_SENDER_NAME_TTL_SECONDS,
+            )
+            return normalized
+        return None
 
     def _get_cached_sender_name(self, sender_id: Optional[str]) -> Optional[str]:
         """Return a cached sender name only while its TTL is still valid."""

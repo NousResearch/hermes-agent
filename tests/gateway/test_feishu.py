@@ -1723,6 +1723,38 @@ class TestSenderNameResolution(unittest.TestCase):
         self.assertEqual(result, "Bob")
         self.assertIn("ou_bob", adapter._sender_name_cache)
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_group_sender_falls_back_to_chat_members_when_contact_api_denies_name(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._resolve_sender_name_from_api = AsyncMock(return_value=None)
+        adapter._fetch_chat_mention_members = AsyncMock(
+            return_value=[
+                ("Bryan Min", "ou_bryan"),
+                ("Ork Sokheng", "ou_sokheng"),
+            ]
+        )
+        sender_id = SimpleNamespace(
+            open_id="ou_sokheng",
+            user_id=None,
+            union_id="on_sokheng",
+        )
+
+        result = asyncio.run(
+            adapter._resolve_sender_profile(sender_id, chat_id="oc_jamii2")
+        )
+
+        self.assertEqual(result["user_id"], "ou_sokheng")
+        self.assertEqual(result["user_name"], "Ork Sokheng")
+        self.assertEqual(result["user_id_alt"], "on_sokheng")
+        adapter._fetch_chat_mention_members.assert_awaited_once_with("oc_jamii2")
+        self.assertEqual(
+            adapter._sender_name_cache["ou_sokheng"][0],
+            "Ork Sokheng",
+        )
+
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestBotNameResolution(unittest.TestCase):
@@ -2465,5 +2497,3 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
-
-

@@ -45,6 +45,11 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
     "x-amz-signature",
 })
 
+# Opaque transport credentials used by WebSocket gateway URLs. Unlike HTTP(S)
+# round-trip URLs, WebSocket endpoints are connection metadata and should never
+# be replayed from logs or tool output.
+_WEBSOCKET_TRANSPORT_QUERY_PARAMS = frozenset({"access_key", "ticket"})
+
 # Sensitive form-urlencoded / JSON body key names (case-insensitive exact match).
 # Exact match, NOT substring — "token_count" and "session_id" must NOT match.
 # Ported from nearai/ironclaw#2529.
@@ -609,7 +614,10 @@ def _mask_token(token: str) -> str:
     return mask_secret(token, head=6, tail=4, floor=18)
 
 
-def _redact_query_string(query: str) -> str:
+def _redact_query_string(
+    query: str,
+    sensitive_params: frozenset[str] = _SENSITIVE_QUERY_PARAMS,
+) -> str:
     """Redact sensitive parameter values in a URL query string.
 
     Handles `k=v&k=v` format. Sensitive keys (case-insensitive) have values
@@ -624,11 +632,26 @@ def _redact_query_string(query: str) -> str:
             parts.append(pair)
             continue
         key, _, value = pair.partition("=")
-        if key.lower() in _SENSITIVE_QUERY_PARAMS:
+        if key.lower() in sensitive_params:
             parts.append(f"{key}=***")
         else:
             parts.append(pair)
     return "&".join(parts)
+
+
+def _redact_websocket_transport_query_params(text: str) -> str:
+    """Redact opaque connection credentials from WebSocket endpoint URLs."""
+    def _sub(m: re.Match) -> str:
+        if m.group(1).casefold() not in {"ws", "wss"}:
+            return m.group(0)
+        query = _redact_query_string(
+            m.group(4),
+            sensitive_params=_WEBSOCKET_TRANSPORT_QUERY_PARAMS,
+        )
+        fragment = m.group(5) or ""
+        return f"{m.group(1)}://{m.group(2)}{m.group(3)}?{query}{fragment}"
+
+    return _URL_WITH_QUERY_RE.sub(_sub, text)
 
 
 def _redact_url_query_params(text: str) -> str:
@@ -989,6 +1012,13 @@ def redact_sensitive_text(
     # userinfo is never a round-trip workflow token (those live in the query
     # string), so masking it can't break a skill. The ``user:pass@`` form is
     # left to pass through per #34029.
+
+    # WebSocket endpoint query strings are transport metadata, not links the
+    # agent must navigate. Lark/Feishu SDK connection URLs include opaque
+    # ``access_key`` and ``ticket`` values that otherwise leak into logs.
+    folded_text = text.casefold()
+    if "ws://" in folded_text or "wss://" in folded_text:
+        text = _redact_websocket_transport_query_params(text)
 
     if redact_url_credentials:
         text = _redact_strict_url_credentials(text)

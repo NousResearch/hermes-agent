@@ -338,6 +338,28 @@ class TestRedactingFormatter:
         assert "abc123def456" not in result
         assert "sk-pro" in result
 
+    def test_redacts_websocket_transport_credentials(self):
+        formatter = RedactingFormatter("%(message)s")
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg=(
+                "connecting to wss://gateway.example.test/connect"
+                "?access_key=opaque-access-value&ticket=opaque-ticket-value"
+            ),
+            args=(),
+            exc_info=None,
+        )
+
+        result = formatter.format(record)
+
+        assert "opaque-access-value" not in result
+        assert "opaque-ticket-value" not in result
+        assert "access_key=***" in result
+        assert "ticket=***" in result
+
 
 class TestPrintenvSimulation:
     """Simulate what happens when the agent runs `env` or `printenv`."""
@@ -466,6 +488,32 @@ class TestWebUrlsNotRedacted:
         text = "postgres://admin:dbpass@db.internal:5432/app"
         result = redact_sensitive_text(text)
         assert "dbpass" not in result
+
+
+class TestWebSocketTransportCredentialRedaction:
+    @pytest.mark.parametrize("scheme", ["ws", "wss"])
+    def test_transport_credentials_are_redacted(self, scheme):
+        text = (
+            f"{scheme}://gateway.example.test/connect"
+            "?Access_Key=opaque-access-value&TICKET=opaque-ticket-value"
+            "&service_id=public"
+        )
+
+        result = redact_sensitive_text(text)
+
+        assert result == (
+            f"{scheme}://gateway.example.test/connect"
+            "?Access_Key=***&TICKET=***&service_id=public"
+        )
+
+    @pytest.mark.parametrize("scheme", ["http", "https"])
+    def test_http_round_trip_credentials_remain_unchanged(self, scheme):
+        text = (
+            f"{scheme}://example.test/connect"
+            "?access_key=opaque-access-value&ticket=opaque-ticket-value"
+        )
+
+        assert redact_sensitive_text(text) == text
 
 
 class TestStrictUrlCredentialRedaction:

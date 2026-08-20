@@ -63,7 +63,13 @@ FLY_API_SOCKET = "/.fly/api"
 
 
 # config.yaml default (D2). Behavioural setting -> config, not env.
-DEFAULT_IDLE_TIMEOUT_MINUTES = 5
+# 2 minutes: with the gateway owning the suspend (idle predicate covers agent
+# turns, cron, API runs, and background work; the relay drains + flips before
+# the freeze), a short window is safe — real work always blocks the suspend and
+# resume-from-suspend is sub-second, so the only cost of waking "too eagerly"
+# after a quiet spell is a Fly-proxied poke away. Longer windows just bill idle
+# RAM. Raise per-instance via gateway.scale_to_zero.idle_timeout_minutes.
+DEFAULT_IDLE_TIMEOUT_MINUTES = 2
 
 _TRUTHY = {"1", "true", "yes", "on"}
 

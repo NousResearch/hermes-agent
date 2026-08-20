@@ -2925,7 +2925,7 @@ DEFAULT_CONFIG = {
         # — whether the feature is enabled at all is the Labs toggle, never a
         # config key (decisions.md D2/D11). 0/negative falls back to the default.
         "scale_to_zero": {
-            "idle_timeout_minutes": 5,
+            "idle_timeout_minutes": 2,
         },
 
         # Auto-resume restart-loop breaker (#30719, defense-3). When the

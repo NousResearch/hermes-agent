@@ -12,6 +12,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 
+ELEMENT_STATE_KEYS = ("value", "selected", "enabled")
+
+
 @dataclass
 class UIElement:
     """One interactable element on the current screen."""

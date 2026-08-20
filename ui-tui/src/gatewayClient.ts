@@ -146,6 +146,7 @@ export class GatewayClient extends EventEmitter {
   private ready = false
   private readyTimer: ReturnType<typeof setTimeout> | null = null
   private subscribed = false
+  private drainArmed = false
   private drainGeneration = 0
   private stdoutRl: ReturnType<typeof createInterface> | null = null
   private stderrRl: ReturnType<typeof createInterface> | null = null
@@ -229,6 +230,10 @@ export class GatewayClient extends EventEmitter {
     this.stdoutRl = null
     this.stderrRl = null
     this.clearReadyTimer()
+
+    if (this.drainArmed) {
+      this.scheduleDrain()
+    }
   }
 
   private startReadyTimer(python: string, cwd: string) {
@@ -615,7 +620,7 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
-  drain() {
+  private scheduleDrain() {
     // Defer the buffered-event replay to the next microtask, and DO NOT flip
     // `subscribed` until that microtask runs.
     //
@@ -659,6 +664,14 @@ export class GatewayClient extends EventEmitter {
         this.emit('exit', code)
       }
     })
+  }
+
+  drain() {
+    // Remember that the consumer has mounted. Transport resets temporarily
+    // clear `subscribed`, but replacement transports must re-arm this same
+    // deferred FIFO drain without requiring the mount effect to run again.
+    this.drainArmed = true
+    this.scheduleDrain()
   }
 
   getLogTail(limit = 20): string {

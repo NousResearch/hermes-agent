@@ -175,3 +175,45 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_exec_command_substitutes_args_placeholder(self):
+        """`{args}` in a quick command is replaced with what the user typed."""
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"note": {"type": "exec", "command": "printf %s {args}"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("note", "42 Example Project")
+        result = await runner._handle_message(event)
+        assert result == "42 Example Project"
+
+    @pytest.mark.asyncio
+    async def test_exec_command_args_are_shell_quoted(self):
+        """Substitution happens into a shell string, so args must be quoted."""
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"note": {"type": "exec", "command": "printf %s {args}"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("note", "; echo INJECTED")
+        result = await runner._handle_message(event)
+        assert result == "; echo INJECTED"
+
+    @pytest.mark.asyncio
+    async def test_exec_command_without_args_leaves_no_placeholder(self):
+        """An unused `{args}` must not leak the literal placeholder."""
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"note": {"type": "exec", "command": "printf [%s] {args}"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("note", "")
+        result = await runner._handle_message(event)
+        assert result == "[]"

@@ -17512,6 +17512,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
+                        if "{args}" in exec_cmd:
+                            # Let a quick command take arguments: `/note some text ...`
+                            # substitutes into `{args}`. The command is handed to a
+                            # shell, so the user-supplied text must be quoted — an
+                            # unquoted substitution would make every quick command
+                            # an injection point for anyone allowed to invoke it.
+                            user_args = (event.get_command_args() or "").strip()
+                            exec_cmd = exec_cmd.replace(
+                                "{args}", shlex.quote(user_args) if user_args else ""
+                            )
                         try:
                             # Sanitize env to prevent credential leakage —
                             # quick commands run in the gateway process which

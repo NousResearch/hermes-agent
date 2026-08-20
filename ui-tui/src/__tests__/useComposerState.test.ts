@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { looksLikeDroppedPath } from '../app/useComposerState.js'
+import { looksLikeDroppedPath, resolveImagePathAttachment } from '../app/useComposerState.js'
 
 describe('looksLikeDroppedPath', () => {
   it('recognizes macOS screenshot temp paths and file URIs', () => {
@@ -55,5 +55,31 @@ describe('looksLikeDroppedPath', () => {
     expect(looksLikeDroppedPath('/usr/bin/test')).toBe(true)
     expect(looksLikeDroppedPath('/tmp/file.txt')).toBe(true)
     expect(looksLikeDroppedPath('/etc/hosts')).toBe(true) // has second /
+  })
+})
+
+describe('resolveImagePathAttachment', () => {
+  it('does not resurrect the consumed slash command after the RPC resolves', async () => {
+    let resolveRequest!: (value: { name: string; path: string }) => void
+
+    let input = '/image /tmp/dashboard.png'
+
+    const request = new Promise<{ name: string; path: string }>(resolve => {
+      resolveRequest = resolve
+    })
+
+    const pending = resolveImagePathAttachment(
+      () => request,
+      () => input,
+      (_attached, value, cursor) => ({
+        cursor: cursor + 13,
+        value: `${value}[[ Image 1 ]]`
+      })
+    )
+
+    input = ''
+    resolveRequest({ name: 'dashboard.png', path: '/tmp/dashboard.png' })
+
+    await expect(pending).resolves.toMatchObject({ value: '[[ Image 1 ]]' })
   })
 })

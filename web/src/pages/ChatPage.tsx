@@ -71,6 +71,7 @@ import {
   shouldFollowPtyOutput,
 } from "@/lib/pty-scroll";
 import {
+  imageAttachPtyFrames,
   imageFilesFromTransfer,
   transferMayContainImage,
   uploadChatImage,
@@ -618,7 +619,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // The Chat tab is an xterm mirror of a TUI inside the gateway. Server-side
     // clipboard.paste / xclip never see the browser clipboard, so image paste
     // must upload browser bytes to HERMES_HOME/images, then drive `/image`
-    // over the PTY (same burst-then-Return timing as handleCopyLast).
+    // over the PTY. Keep command text and Return in distinct frames so Ink
+    // parses keystrokes instead of treating the whole frame as pasted text.
     let imageUploadDisposed = false;
     const pasteDelay = () =>
       new Promise<void>((resolve) => window.setTimeout(resolve, 40));
@@ -637,11 +639,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           );
           return;
         }
-        ws.send(`/image ${path}`);
+        const [command, submit] = imageAttachPtyFrames(path);
+        ws.send(command);
         await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
-        const s = wsRef.current;
-        if (!s || s.readyState !== WebSocket.OPEN) return;
-        s.send("\r");
+        const current = wsRef.current;
+        if (!current || current.readyState !== WebSocket.OPEN) return;
+        current.send(submit);
         await pasteDelay();
       }
       term.focus();

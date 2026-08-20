@@ -65,6 +65,12 @@ source ~/.bashrc    # reload shell (or: source ~/.zshrc)
 hermes              # start chatting!
 ```
 
+### Managed hosting
+
+If you'd rather not run the VPS yourself, deploy a managed Hermes Agent in one click. Storage, backups and a free subdomain are included, and a share of every subscription goes back to Hermes Agent.
+
+[![Deploy with Zenith](https://cdn.zenith.hosting/buttons/deploy-with-zenith.svg)](https://zenith.hosting/host/hermes-agent)
+
 ### Troubleshooting
 
 #### Windows Defender or antivirus flags `uv.exe` as malware

@@ -3686,12 +3686,11 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
 
       child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
         cwd: HERMES_HOME,
-        env: {
-          ...process.env,
+        env: scrubDesktopChildEnv(process.env, {
           HERMES_HOME,
           HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
           PATH: pathWithHermesManagedNode(venvBin)
-        },
+        }),
         detached: true,
         stdio: 'ignore'
       })
@@ -3713,11 +3712,10 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     } else {
       child = spawnUpdaterProcess(updater, updaterArgs, {
         cwd: HERMES_HOME,
-        env: {
-          ...process.env,
+        env: scrubDesktopChildEnv(process.env, {
           HERMES_HOME,
           PATH: pathWithHermesManagedNode(venvBin)
-        },
+        }),
         detached: true,
         stdio: 'ignore'
       })
@@ -3848,11 +3846,10 @@ async function handOffWindowsBootstrapRecovery(reason) {
 
   const child = spawnUpdaterProcess(updater, updaterArgs, {
     cwd: HERMES_HOME,
-    env: {
-      ...process.env,
+    env: scrubDesktopChildEnv(process.env, {
       HERMES_HOME,
       PATH: pathWithHermesManagedNode(venvBin)
-    },
+    }),
     detached: true,
     stdio: 'ignore'
   })
@@ -4077,12 +4074,11 @@ async function applyUpdatesPosixHandoff(opts: any) {
 
   const child = spawnUpdaterProcess(handoff.command, args, {
     cwd: HERMES_HOME,
-    env: {
-      ...process.env,
+    env: scrubDesktopChildEnv(process.env, {
       HERMES_HOME,
       HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
       PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
-    },
+    }),
     detached: true,
     stdio: 'ignore'
   })
@@ -14706,7 +14702,7 @@ async function getUninstallSummary() {
         ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary'],
         hiddenWindowsChildOptions({
           cwd: agentRoot,
-          env: { ...process.env, HERMES_HOME, NO_COLOR: '1' },
+          env: scrubDesktopChildEnv(process.env, { HERMES_HOME, NO_COLOR: '1' }),
           stdio: ['ignore', 'pipe', 'ignore']
         })
       )

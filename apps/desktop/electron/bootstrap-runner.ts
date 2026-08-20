@@ -38,6 +38,7 @@ import fsp from 'node:fs/promises'
 import https from 'node:https'
 import path from 'node:path'
 
+import { scrubDesktopChildEnv } from './scrub-child-env'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
 const IS_WINDOWS = process.platform === 'win32'
@@ -466,12 +467,11 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       fullArgs,
       hiddenWindowsChildOptions({
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
+        env: scrubDesktopChildEnv(process.env, {
           // Pass HERMES_HOME through so install.ps1 respects the caller's
           // choice rather than re-computing the default.
           HERMES_HOME: hermesHome || process.env.HERMES_HOME || ''
-        }
+        })
       })
     )
 
@@ -564,10 +564,9 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
   return new Promise<any>((resolve, reject) => {
     const child = spawn('bash', [scriptPath, ...args], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
+      env: scrubDesktopChildEnv(process.env, {
         HERMES_HOME: hermesHome || process.env.HERMES_HOME || ''
-      }
+      })
     })
 
     let stdout = ''

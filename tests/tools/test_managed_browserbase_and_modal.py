@@ -139,7 +139,7 @@ def _install_fake_tools_package():
     plugins_package.__path__ = []  # type: ignore[attr-defined]
     sys.modules["plugins"] = plugins_package
     plugins_browser_package = types.ModuleType("plugins.browser")
-    plugins_browser_package.__path__ = []  # type: ignore[attr-defined]
+    plugins_browser_package.__path__ = [str(PLUGINS_DIR / "browser")]  # type: ignore[attr-defined]
     sys.modules["plugins.browser"] = plugins_browser_package
 
     for _name, _classname in (

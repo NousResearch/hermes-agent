@@ -19,11 +19,10 @@ def test_browser_use_preserves_provider_timeout(monkeypatch):
         ok=True,
         headers={},
     )
-    response.json.return_value = {
-        "id": "browser-session-1",
-        "cdpUrl": "ws://browser-use.example/devtools/browser/1",
-        "timeoutAt": "2030-01-01T00:05:00Z",
-    }
+    response.iter_content.return_value = [
+        b'{"id":"browser-session-1","cdpUrl":"ws://browser-use.example/'
+        b'devtools/browser/1","timeoutAt":"2030-01-01T00:05:00Z"}'
+    ]
 
     monkeypatch.setattr(
         provider,

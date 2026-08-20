@@ -40,6 +40,10 @@ import requests
 
 from agent.browser_provider import BrowserProvider
 from agent.secret_scope import get_secret
+from plugins.browser._response import (
+    read_browser_provider_json,
+    read_browser_provider_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +150,7 @@ class BrowserbaseBrowserProvider(BrowserProvider):
                 headers=headers,
                 json=session_config,
                 timeout=30,
+                stream=True,
             )
 
             proxies_fallback = False
@@ -160,11 +165,13 @@ class BrowserbaseBrowserProvider(BrowserProvider):
                         "Sessions may timeout during long operations."
                     )
                     session_config.pop("keepAlive", None)
+                    response.close()
                     response = requests.post(
                         f"{config['base_url']}/v1/sessions",
                         headers=headers,
                         json=session_config,
                         timeout=30,
+                        stream=True,
                     )
 
                 if response.status_code == 402 and enable_proxies:
@@ -174,24 +181,40 @@ class BrowserbaseBrowserProvider(BrowserProvider):
                         "Bot detection may be less effective."
                     )
                     session_config.pop("proxies", None)
+                    response.close()
                     response = requests.post(
                         f"{config['base_url']}/v1/sessions",
                         headers=headers,
                         json=session_config,
                         timeout=30,
+                        stream=True,
                     )
         except requests.RequestException as exc:
             raise RuntimeError(
                 f"Browserbase API connection failed: {exc}"
             ) from exc
 
-        if not response.ok:
-            raise RuntimeError(
-                f"Failed to create Browserbase session: "
-                f"{response.status_code} {response.text}"
-            )
+        try:
+            if not response.ok:
+                try:
+                    error_text = read_browser_provider_text(
+                        response,
+                        label="Browserbase session create error",
+                    )
+                except RuntimeError as exc:
+                    error_text = str(exc)
+                raise RuntimeError(
+                    f"Failed to create Browserbase session: "
+                    f"{response.status_code} {error_text}"
+                )
 
-        session_data = response.json()
+            session_data = read_browser_provider_json(
+                response,
+                label="Browserbase session create",
+            )
+        finally:
+            response.close()
+
         session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
 
         if enable_proxies and not proxies_fallback:

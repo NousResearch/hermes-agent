@@ -87,7 +87,15 @@ describe('retintTheme', () => {
       const before = nousTheme[mode]!
       const after = rose[mode]!
 
-      for (const key of ['primary', 'ring', 'midground', 'composerRing', 'accent', 'secondary', 'userBubble'] as const) {
+      for (const key of [
+        'primary',
+        'ring',
+        'midground',
+        'composerRing',
+        'accent',
+        'secondary',
+        'userBubble'
+      ] as const) {
         expect(after[key], `${mode}.${key}`).not.toBe(before[key])
       }
     }

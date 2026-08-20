@@ -84,6 +84,7 @@ describe('skipKittyKeyboardProtocol', () => {
     const { env } = await import('../utils/env.js')
     const { skipKittyKeyboardProtocol } = await import('./terminal.js')
     const saved = env.terminal
+
     try {
       env.terminal = 'ghostty'
       expect(skipKittyKeyboardProtocol()).toBe(true)
@@ -98,6 +99,7 @@ describe('skipKittyKeyboardProtocol', () => {
       const { env } = await import('../utils/env.js')
       const { skipKittyKeyboardProtocol } = await import('./terminal.js')
       const saved = env.terminal
+
       try {
         env.terminal = terminal
         expect(skipKittyKeyboardProtocol()).toBe(false)

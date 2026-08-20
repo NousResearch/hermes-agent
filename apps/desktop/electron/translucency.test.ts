@@ -668,6 +668,7 @@ describe('resolving the book for the painted appearance', () => {
     const book = setTranslucencyValues(normalizeBook({ material: 'popover', mode: 'glass' }, true), 'dark', {
       intensity: 33
     })
+
     const resolved = resolveTranslucency(book, 'dark', false)
 
     expect(resolved.intensity).toBe(33)

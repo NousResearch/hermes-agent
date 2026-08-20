@@ -1478,9 +1478,7 @@ export default class Ink {
     // on each call.
     if (supportsExtendedKeys()) {
       this.options.stdout.write(
-        DISABLE_KITTY_KEYBOARD +
-          (skipKittyKeyboardProtocol() ? '' : ENABLE_KITTY_KEYBOARD) +
-          ENABLE_MODIFY_OTHER_KEYS
+        DISABLE_KITTY_KEYBOARD + (skipKittyKeyboardProtocol() ? '' : ENABLE_KITTY_KEYBOARD) + ENABLE_MODIFY_OTHER_KEYS
       )
     }
 

@@ -99,7 +99,15 @@ function useDrag(onMove: (x: number, y: number) => void) {
 }
 
 /** Lightness (y, 1→0) × chroma (x, 0→CHROMA_MAX) at one hue. */
-function ChromaLightnessField({ hue, lch, onPick }: { hue: number; lch: Oklch; onPick: (l: number, c: number) => void }) {
+function ChromaLightnessField({
+  hue,
+  lch,
+  onPick
+}: {
+  hue: number
+  lch: Oklch
+  onPick: (l: number, c: number) => void
+}) {
   const canvas = useRef<HTMLCanvasElement>(null)
   const drag = useDrag((x, y) => onPick(1 - y, x * CHROMA_MAX))
 

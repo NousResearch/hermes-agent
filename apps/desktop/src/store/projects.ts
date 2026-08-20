@@ -416,6 +416,7 @@ export async function refreshProjects(): Promise<void> {
 
   try {
     context = await activeProjectsContext()
+
     const payload = await gatewayRequestOn<ProjectsPayload>(
       context.gateway,
       'projects.list',
@@ -559,6 +560,7 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
 
   try {
     const context = await activeProjectsContext()
+
     const res = await gatewayRequestOn<{ project: SidebarProjectTree | null }>(
       context.gateway,
       'projects.project_sessions',
@@ -672,6 +674,7 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
     // the merged session-derived + scanned list.
     try {
       const context = await activeProjectsContext()
+
       const discovered = await gatewayRequestOn<{
         repos?: unknown
         discovery_policy?: unknown
@@ -684,6 +687,7 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
       // being blanked back to the silent, unpopulated state of #81723.
       if (discovered?.repos === undefined) {
         markProjectsRpcFailure(new Error('projects.discover_repos returned no repo list'))
+
         return
       }
 
@@ -700,6 +704,7 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
       // let the sidebar show the error/absent state.
       markProjectsRpcFailure(err)
     }
+
     return
   }
 
@@ -763,6 +768,7 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
     }
 
     state.completedSignature = signature
+
     // Completion refresh only when the focused profile still matches the one
     // the scan was captured under. refreshProjectTree() re-derives the current
     // context, so skipping on mismatch keeps a stale scan from publishing into

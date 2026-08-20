@@ -179,6 +179,7 @@ export function retintTheme(theme: DesktopTheme, color: string): DesktopTheme {
   }
 
   const light = seedFor(theme.colors, seed)
+
   const retinted: DesktopTheme = {
     ...theme,
     colors: theme.colors.primary === light ? theme.colors : retintColors(theme.colors, light, false)

@@ -579,13 +579,17 @@ describe('repository discovery policy', () => {
     isDesktopFsRemoteMode.mockReturnValue(true)
     const scanRepos = vi.fn()
     desktopGit.mockReturnValue({ scanRepos } as never)
+
     const request = vi.fn(async (method: string) =>
       method === 'projects.tree'
         ? { active_id: null, projects: [], scoped_session_ids: [] }
         : { accepted: false, repos: [] }
     )
+
     gatewayWith(request)
-    $projectTree.set([{ id: 'seed', label: 'seed', path: null, repos: [], sessionCount: 0 } satisfies SidebarProjectTree])
+    $projectTree.set([
+      { id: 'seed', label: 'seed', path: null, repos: [], sessionCount: 0 } satisfies SidebarProjectTree
+    ])
 
     await scanAndRecordRepos(true)
 
@@ -613,17 +617,23 @@ describe('repository discovery policy', () => {
     // keep its last known list and flag the failure, not go silently blank.
     isDesktopFsRemoteMode.mockReturnValue(true)
     desktopGit.mockReturnValue({ scanRepos: vi.fn() } as never)
+
     const request = vi.fn(async (method: string) => {
       if (method === 'projects.discover_repos') {
         throw new Error('discover_repos failed')
       }
+
       if (method === 'projects.tree') {
         return { active_id: null, projects: [], scoped_session_ids: [] }
       }
+
       return { accepted: false, repos: [] }
     })
+
     gatewayWith(request)
-    $projectTree.set([{ id: 'seed', label: 'seed', path: null, repos: [], sessionCount: 0 } satisfies SidebarProjectTree])
+    $projectTree.set([
+      { id: 'seed', label: 'seed', path: null, repos: [], sessionCount: 0 } satisfies SidebarProjectTree
+    ])
 
     await scanAndRecordRepos(true)
 
@@ -633,9 +643,7 @@ describe('repository discovery policy', () => {
       expect.objectContaining({ preview_limit: expect.any(Number) })
     )
     // ... the cached tree is preserved ...
-    expect($projectTree.get()).toEqual([
-      { id: 'seed', label: 'seed', path: null, repos: [], sessionCount: 0 }
-    ])
+    expect($projectTree.get()).toEqual([{ id: 'seed', label: 'seed', path: null, repos: [], sessionCount: 0 }])
   })
 
   it('does not treat an error-shaped discover_repos response as a successful refresh', async () => {
@@ -644,13 +652,15 @@ describe('repository discovery policy', () => {
     // the silent, empty sidebar of #81723.
     isDesktopFsRemoteMode.mockReturnValue(true)
     desktopGit.mockReturnValue({ scanRepos: vi.fn() } as never)
+
     const request = vi.fn(async (method: string) =>
-      method === 'projects.tree'
-        ? { active_id: null, projects: [], scoped_session_ids: [] }
-        : { accepted: false }
+      method === 'projects.tree' ? { active_id: null, projects: [], scoped_session_ids: [] } : { accepted: false }
     )
+
     gatewayWith(request)
-    $projectTree.set([{ id: 'seed', label: 'seed', path: null, repos: [], sessionCount: 0 } satisfies SidebarProjectTree])
+    $projectTree.set([
+      { id: 'seed', label: 'seed', path: null, repos: [], sessionCount: 0 } satisfies SidebarProjectTree
+    ])
 
     await scanAndRecordRepos(true)
 
@@ -658,9 +668,7 @@ describe('repository discovery policy', () => {
       'projects.tree',
       expect.objectContaining({ preview_limit: expect.any(Number) })
     )
-    expect($projectTree.get()).toEqual([
-      { id: 'seed', label: 'seed', path: null, repos: [], sessionCount: 0 }
-    ])
+    expect($projectTree.get()).toEqual([{ id: 'seed', label: 'seed', path: null, repos: [], sessionCount: 0 }])
   })
 
   it('records repos under the profile the scan started with, not one focused mid-scan', async () => {
@@ -678,10 +686,13 @@ describe('repository discovery policy', () => {
     )
 
     gatewayWith(request)
+
     const scanRepos = vi.fn(() => {
       markScanStarted()
+
       return scanResult
     })
+
     desktopGit.mockReturnValue({ scanRepos } as never)
     getHermesConfig.mockResolvedValue({
       desktop: {
@@ -756,6 +767,7 @@ describe('project tree profile isolation', () => {
 
   it('does not publish a late projects.list response from the previous profile', async () => {
     const { promise: defaultResponse, resolve: resolveDefault } = deferred<unknown>()
+
     const request = vi.fn((_method: string, params: Record<string, unknown>) =>
       params.profile === 'default'
         ? defaultResponse
@@ -764,6 +776,7 @@ describe('project tree profile isolation', () => {
             projects: [{ id: 'profile-b', label: 'Profile B' }]
           })
     )
+
     const gateway = { connectionState: 'open', request }
     activeGateway.mockReturnValue(gateway as never)
     gatewayAtom.set(gateway as never)
@@ -782,6 +795,7 @@ describe('project tree profile isolation', () => {
 
   it('does not publish a late projects.tree response from the previous profile', async () => {
     const { promise: defaultResponse, resolve: resolveDefault } = deferred<unknown>()
+
     const request = vi.fn((_method: string, params: Record<string, unknown>) =>
       params.profile === 'default'
         ? defaultResponse
@@ -791,6 +805,7 @@ describe('project tree profile isolation', () => {
             scoped_session_ids: []
           })
     )
+
     const gateway = { connectionState: 'open', request }
     activeGateway.mockReturnValue(gateway as never)
     gatewayAtom.set(gateway as never)
@@ -810,6 +825,7 @@ describe('project tree profile isolation', () => {
 
   it('drops a late hydrated-project response from the previous profile', async () => {
     const { promise: defaultResponse, resolve: resolveDefault } = deferred<unknown>()
+
     const request = vi.fn((_method: string, params: Record<string, unknown>) =>
       params.profile === 'default'
         ? defaultResponse
@@ -817,6 +833,7 @@ describe('project tree profile isolation', () => {
             project: { id: 'profile-b', label: 'Profile B', path: null, repos: [], sessionCount: 0 }
           })
     )
+
     const gateway = { connectionState: 'open', request }
     activeGateway.mockReturnValue(gateway as never)
     gatewayAtom.set(gateway as never)

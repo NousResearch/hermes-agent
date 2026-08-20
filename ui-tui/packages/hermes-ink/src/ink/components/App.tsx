@@ -341,6 +341,7 @@ export default class App extends PureComponent<Props, State> {
           if (!skipKittyKeyboardProtocol()) {
             this.props.stdout.write(ENABLE_KITTY_KEYBOARD)
           }
+
           this.props.stdout.write(ENABLE_MODIFY_OTHER_KEYS)
         }
 

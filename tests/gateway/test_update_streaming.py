@@ -11,6 +11,7 @@ import json
 import os
 import time
 import asyncio
+import logging
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -250,6 +251,61 @@ class TestWatchUpdateProgress:
         # Check session was marked as having pending prompt
         # (may be cleared by the time we check since update finished)
 
+    @pytest.mark.asyncio
+    async def test_whatsapp_prompt_log_is_metadata_only(self, tmp_path, caplog):
+        """Prompt delivery preserves private text but diagnostics do not."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        wa_id = "15551234567"
+        private_marker = "private-update-marker"
+        prompt_text = f"Restore {private_marker} for {wa_id}?"
+
+        pending = {
+            "platform": "whatsapp_cloud",
+            "chat_id": wa_id,
+            "user_id": wa_id,
+            "session_key": f"agent:main:whatsapp_cloud:dm:{wa_id}",
+        }
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("output\n")
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.WHATSAPP_CLOUD: mock_adapter}
+
+        async def simulate_prompt_cycle():
+            await asyncio.sleep(0.2)
+            (hermes_home / ".update_prompt.json").write_text(
+                json.dumps({"prompt": prompt_text, "default": "n", "id": "wa-private"})
+            )
+            await asyncio.sleep(0.2)
+            (hermes_home / ".update_response").write_text("n")
+            (hermes_home / ".update_prompt.json").unlink(missing_ok=True)
+            await asyncio.sleep(0.2)
+            (hermes_home / ".update_exit_code").write_text("0")
+
+        with caplog.at_level(logging.INFO, logger="gateway.run"), patch(
+            "gateway.run._hermes_home", hermes_home
+        ):
+            task = asyncio.create_task(simulate_prompt_cycle())
+            await runner._watch_update_progress(
+                poll_interval=0.1,
+                stream_interval=0.2,
+                timeout=10.0,
+            )
+            await task
+
+        sent = " ".join(str(call) for call in mock_adapter.send.call_args_list)
+        assert prompt_text in sent
+        diagnostic_text = " ".join(
+            record.message
+            for record in caplog.records
+            if record.name == "gateway.run"
+        )
+        assert private_marker not in diagnostic_text
+        assert wa_id not in diagnostic_text
+        assert "prompt_len=" in diagnostic_text
+        assert "default_present=True" in diagnostic_text
+
 
     @pytest.mark.asyncio
     async def test_prompt_is_recovered_after_watcher_restart(self, tmp_path):
@@ -397,4 +453,3 @@ class TestCmdUpdateGatewayMode:
 
         assert len(calls) == 1
         assert "Restore" in calls[0]
-

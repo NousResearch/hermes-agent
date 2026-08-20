@@ -39,6 +39,7 @@ from gateway.session import (
     SessionSource,
     build_session_key,
     is_shared_multi_user_session,
+    session_key_for_log,
 )
 from hermes_cli.config import atomic_config_write, cfg_get, clear_model_endpoint_credentials
 from utils import (
@@ -192,13 +193,13 @@ class GatewaySlashCommandsMixin:
                         "Agent resource cleanup for session %s exceeded %ss during "
                         "/new reset; proceeding with reset (the worker thread is left "
                         "to finish on its own). (#35994)",
-                        session_key, _RESET_CLEANUP_TIMEOUT_S,
+                        session_key_for_log(session_key), _RESET_CLEANUP_TIMEOUT_S,
                     )
                 except Exception as cleanup_exc:
                     logger.warning(
                         "Agent resource cleanup for session %s failed during /new "
-                        "reset: %s (#35994)",
-                        session_key, cleanup_exc,
+                        "reset (error_type=%s) (#35994)",
+                        session_key_for_log(session_key), type(cleanup_exc).__name__,
                     )
         self._evict_cached_agent(session_key)
 
@@ -1448,7 +1449,10 @@ class GatewaySlashCommandsMixin:
                 interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason="stop_command_pending",
             )
-            logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
+            logger.info(
+                "STOP (pending) for session %s — sentinel cleared",
+                session_key_for_log(session_key),
+            )
             return EphemeralReply(t("gateway.stop.stopped_pending"))
         if agent:
             # Force-clean the session lock so a truly hung agent doesn't
@@ -1478,9 +1482,9 @@ class GatewaySlashCommandsMixin:
                 )
             logger.info(
                 "STOP (thread sibling) by %s — interrupted %d run(s) in thread: %s",
-                session_key,
+                session_key_for_log(session_key),
                 len(sibling_keys),
-                ", ".join(sibling_keys),
+                ", ".join(session_key_for_log(key) for key in sibling_keys),
             )
             return EphemeralReply(t("gateway.stop.stopped"))
 
@@ -5548,7 +5552,7 @@ class GatewaySlashCommandsMixin:
                     save_config_value("approvals.mcp_reload_confirm", False)
                     logger.info(
                         "User opted out of /reload-mcp confirmation (session=%s)",
-                        session_key,
+                        session_key_for_log(session_key),
                     )
                 except Exception as exc:
                     logger.warning("Failed to persist mcp_reload_confirm=false: %s", exc)

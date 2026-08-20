@@ -218,6 +218,25 @@ def test_user_message_preserves_platform_event_timestamp():
     assert ctx.messages[-1]["timestamp"] == 123.5
 
 
+def test_turn_log_records_length_without_message_body(caplog):
+    agent = _FakeAgent()
+    private_body = "call 15551234567 about private details"
+
+    with caplog.at_level("INFO", logger="agent.turn_context"):
+        _build(agent, user_message=private_body)
+
+    records = [
+        record.message
+        for record in caplog.records
+        if record.name == "agent.turn_context"
+        and record.message.startswith("conversation turn:")
+    ]
+    assert len(records) == 1
+    assert private_body not in records[0]
+    assert "15551234567" not in records[0]
+    assert f"msg_len={len(private_body)}" in records[0]
+
+
 # ── Trivial-prompt prefetch gate (PR #25350 salvage) ─────────────────────────
 #
 # The prologue is the ONLY place the per-turn synchronous

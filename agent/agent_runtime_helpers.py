@@ -4347,9 +4347,8 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     else:
         messages[target_idx]["content"] = existing_content + marker
     _ra().logger.info(
-        "Delivered /steer to agent after tool batch (%d chars): %s",
+        "Delivered /steer to agent after tool batch: msg_len=%d",
         len(steer_text),
-        steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
     )
 
 

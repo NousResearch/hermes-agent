@@ -408,6 +408,17 @@ _JWT_RE = re.compile(
 # Negative lookahead prevents matching hex strings or identifiers
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 
+# Bare E.164 digits, as supplied by WhatsApp Cloud's ``wa_id`` field. This is
+# deliberately opt-in: an unqualified 7-15 digit sequence can also be a build,
+# account, or database identifier, so the global redactor must not reclassify
+# every numeric identifier as phone PII. Identifier punctuation is excluded at
+# both boundaries to avoid masking fragments such as ``ref_15551234567`` or
+# ``ref_15551234567``. Punctuation remains a valid boundary, matching the
+# existing E.164 behavior and ordinary prose such as ``call 15551234567.``
+_BARE_PHONE_RE = re.compile(
+    r"(?<![A-Za-z0-9_+])([1-9]\d{6,14})(?![A-Za-z0-9_])"
+)
+
 # URLs containing query strings — matches `scheme://...?...[# or end]`.
 # Used to scan text for URLs whose query params may contain secrets.
 # Ported from nearai/ironclaw#2529.
@@ -778,6 +789,7 @@ def redact_sensitive_text(
     code_file: bool = False,
     file_read: bool = False,
     redact_url_credentials: bool = False,
+    redact_bare_phone_numbers: bool = False,
 ) -> str:
     """Apply all redaction patterns to a block of text.
 
@@ -790,6 +802,11 @@ def redact_sensitive_text(
     additionally redact credential-named query parameters and ``user:pass@``
     URL userinfo. The default remains False because actionable OAuth callback,
     magic-link, and pre-signed URLs must survive ordinary tool flows unchanged.
+
+    Set redact_bare_phone_numbers=True only at boundaries where a digit-only
+    value is known to be a phone identity (for example WhatsApp Cloud
+    ``wa_id`` logging). It stays disabled by default because bare 7-15 digit
+    values are also common non-sensitive identifiers.
 
     Set code_file=True to skip the ENV-assignment and JSON-field regex
     patterns when the text is known to be source code (e.g. MAX_TOKENS=***
@@ -997,14 +1014,22 @@ def redact_sensitive_text(
     if "&" in text and "=" in text:
         text = _redact_form_body(text)
 
-    # E.164 phone numbers (Signal, WhatsApp)
+    # E.164 phone numbers (Signal, WhatsApp). Bare digit-only values are
+    # selected only by explicit PII boundaries; see _BARE_PHONE_RE.
+    def _redact_phone(m):
+        phone = m.group(1)
+        if len(phone) <= 8:
+            return phone[:2] + "****" + phone[-2:]
+        return phone[:4] + "****" + phone[-4:]
+
+    def _redact_bare_phone(m):
+        phone = m.group(1)
+        return phone[:2] + "****" + phone[-2:]
+
     if "+" in text:
-        def _redact_phone(m):
-            phone = m.group(1)
-            if len(phone) <= 8:
-                return phone[:2] + "****" + phone[-2:]
-            return phone[:4] + "****" + phone[-4:]
         text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
+    if redact_bare_phone_numbers:
+        text = _BARE_PHONE_RE.sub(_redact_bare_phone, text)
 
     return text
 

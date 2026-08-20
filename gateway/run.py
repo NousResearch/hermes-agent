@@ -682,6 +682,83 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
     return redacted
 
 
+def _log_safe_gateway_identity(platform: Any, value: Any) -> str:
+    """Return a diagnostic identity without exposing WhatsApp phone data.
+
+    WhatsApp and WhatsApp Cloud use phone-derived bare digit identifiers.  The
+    same shapes are legitimate non-phone identifiers on other platforms, so
+    the opt-in bare-phone pass must remain platform-scoped.  WhatsApp display
+    names are private too; values that are not a phone-shaped identifier are
+    represented only by presence metadata at log boundaries.
+    """
+    return log_safe_gateway_identity(platform, value)
+
+
+def _log_inbound_message(event: Any, source: Any) -> None:
+    """Log inbound routing metadata without persisting message bodies or PII."""
+    platform_name = _gateway_platform_value(getattr(source, "platform", ""))
+    user_present = bool(
+        getattr(source, "user_name", None)
+        or getattr(source, "user_id", None)
+    )
+    chat_present = bool(getattr(source, "chat_id", None))
+    message_text = str(getattr(event, "text", None) or "")
+    reply_text = str(getattr(event, "reply_to_text", None) or "")
+    reply_id = getattr(event, "reply_to_message_id", None)
+
+    logger.info(
+        "inbound message: platform=%s user_present=%s chat_present=%s "
+        "msg_len=%d reply_to_id_present=%s reply_to_text_len=%d",
+        platform_name,
+        user_present,
+        chat_present,
+        len(message_text),
+        reply_id is not None,
+        len(reply_text),
+    )
+
+
+def _log_startup_restore_message(event: Any) -> None:
+    """Log a queued startup message without persisting its routing identity."""
+    source = getattr(event, "source", None)
+    platform_name = _gateway_platform_value(
+        getattr(source, "platform", "unknown") if source else "unknown"
+    )
+    logger.info(
+        "Queued inbound message during gateway startup restore: "
+        "platform=%s chat_present=%s",
+        platform_name,
+        bool(getattr(source, "chat_id", None)),
+    )
+
+
+def _log_response_ready(
+    platform_name: str,
+    source: Any,
+    response_time: float,
+    api_calls: int,
+    response_length: int,
+) -> None:
+    """Log response diagnostics without persisting the destination identity."""
+    logger.info(
+        "response ready: platform=%s chat_present=%s time=%.1fs "
+        "api_calls=%d response=%d chars",
+        platform_name,
+        bool(getattr(source, "chat_id", None)),
+        response_time,
+        api_calls,
+        response_length,
+    )
+
+
+def _log_leftover_steer(steer_text: str) -> None:
+    """Log leftover steer delivery without persisting its message body."""
+    logger.debug(
+        "Delivering leftover /steer as next turn: msg_len=%d",
+        len(steer_text),
+    )
+
+
 def _redact_approval_command(cmd: "str | None") -> str:
     """Redact credentials from a command before it goes into an approval prompt.
 
@@ -2566,6 +2643,8 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
+    log_safe_gateway_identity,
+    session_key_for_log,
 )
 from gateway.delivery import (
     DeliveryRouter,
@@ -2592,6 +2671,8 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    _log_media_path,
+    _log_send_error,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     build_auto_tts_output_path,
@@ -2627,6 +2708,11 @@ from gateway.whatsapp_identity import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _log_adapter_error(adapter: Any, error: object) -> str:
+    """Render a delivery error without exposing WhatsApp provider bodies."""
+    return _log_send_error(getattr(adapter, "platform", None), error)
 
 
 _OWN_POLICY_OPEN_ENV = {
@@ -5312,7 +5398,9 @@ class TurnRunner:
             )
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
-                model, runtime_kwargs.get("provider"), ctx.session_key or "",
+                model,
+                runtime_kwargs.get("provider"),
+                session_key_for_log(ctx.session_key or ""),
             )
         except Exception as exc:
             return {
@@ -5569,7 +5657,7 @@ class TurnRunner:
                             "state.db (stale self-heal artifact, "
                             "#54878 x #54947) — discarding instead of "
                             "reusing across the routing recovery",
-                            ctx.session_key, _cached_sid,
+                            session_key_for_log(ctx.session_key), _cached_sid,
                         )
                         evicted = self._runner._agent_cache.pop(ctx.session_key, None)
                         _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
@@ -5591,7 +5679,9 @@ class TurnRunner:
                             "Agent cache invalidated for session %s: "
                             "message_count changed (%s -> %s), "
                             "possible cross-process write",
-                            ctx.session_key, _cached_mc, _current_msg_count,
+                            session_key_for_log(ctx.session_key),
+                            _cached_mc,
+                            _current_msg_count,
                         )
                         evicted = self._runner._agent_cache.pop(ctx.session_key, None)
                         _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
@@ -5623,7 +5713,10 @@ class TurnRunner:
                         # Refresh agent max_iterations from current config
                         # (cached agent may have been created with old config)
                         agent.max_iterations = max_iterations
-                        logger.debug("Reusing cached agent for session %s", ctx.session_key)
+                        logger.debug(
+                            "Reusing cached agent for session %s",
+                            session_key_for_log(ctx.session_key),
+                        )
                         reused_cached_agent = True
 
         # Lock released — refresh the fallback chain from disk for the
@@ -5709,7 +5802,11 @@ class TurnRunner:
                         agent, _sig, _current_msg_count, ctx.session_id,
                     )
                     self._runner._enforce_agent_cache_cap()
-            logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, _sig)
+            logger.debug(
+                "Created new agent for session %s (sig=%s)",
+                session_key_for_log(ctx.session_key),
+                _sig,
+            )
 
         # Per-message state — callbacks and reasoning config change every
         # turn and must not be baked into the cached agent constructor.
@@ -5932,7 +6029,10 @@ class TurnRunner:
                     result = fut.result(timeout=15)
                     send_ok = bool(getattr(result, "success", False))
                 except Exception as exc:
-                    logger.warning("Clarify send failed: %s", exc)
+                    logger.warning(
+                        "Clarify send failed: %s",
+                        _log_adapter_error(ctx._status_adapter, exc),
+                    )
                     send_ok = False
 
             if not send_ok:
@@ -6005,7 +6105,9 @@ class TurnRunner:
                     "Persisted transcript lagged live cached history for "
                     "session %s (disk=%d, memory=%d); preserving live "
                     "conversation context (possible FTS write corruption)",
-                    ctx.session_key, len(agent_history), len(_selected),
+                    session_key_for_log(ctx.session_key),
+                    len(agent_history),
+                    len(_selected),
                 )
                 # The live in-memory history bypassed the
                 # _build_gateway_agent_history cleanup pipeline above —
@@ -6088,11 +6190,14 @@ class TurnRunner:
                         return
                     logger.warning(
                         "Button-based approval failed (send returned error), falling back to text: %s",
-                        _approval_result.error,
+                        _log_adapter_error(
+                            ctx._status_adapter, _approval_result.error
+                        ),
                     )
                 except Exception as _e:
                     logger.warning(
-                        "Button-based approval failed, falling back to text: %s", _e
+                        "Button-based approval failed, falling back to text: %s",
+                        _log_adapter_error(ctx._status_adapter, _e),
                     )
 
             # Fallback: plain text approval prompt.  Use the adapter's
@@ -6122,7 +6227,10 @@ class TurnRunner:
                 if _approval_send_fut is not None:
                     _approval_send_fut.result(timeout=15)
             except Exception as _e:
-                logger.error("Failed to send approval request: %s", _e)
+                logger.error(
+                    "Failed to send approval request: %s",
+                    _log_adapter_error(ctx._status_adapter, _e),
+                )
 
         # Keep real user text separate from API-only recovery guidance.  If
         # an auto-continue note is prepended below, persist the original
@@ -6425,7 +6533,7 @@ class TurnRunner:
                     logger.info(
                         "Skipping session split sync for stale run %s — "
                         "generation %s is no longer current",
-                        ctx.session_key or "?",
+                        session_key_for_log(ctx.session_key or "?"),
                         ctx.run_generation,
                     )
                 elif entry_session_id == agent_session_id:
@@ -6435,7 +6543,7 @@ class TurnRunner:
                         "Skipping session split sync for %s because the "
                         "session binding moved from %s to %s before "
                         "compression finished",
-                        ctx.session_key or "?",
+                        session_key_for_log(ctx.session_key or "?"),
                         ctx.session_id,
                         entry_session_id,
                     )
@@ -7981,7 +8089,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 logger.debug(
                     "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
-                    resolved_session_key or "", model, override_model,
+                    session_key_for_log(resolved_session_key or ""),
+                    model,
+                    override_model,
                     override_runtime.get("provider"),
                 )
                 return override_model, override_runtime
@@ -7989,14 +8099,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # resolution and apply model/provider from the override on top.
             logger.debug(
                 "Session model override (no api_key, fallback): session=%s config_model=%s override_model=%s",
-                resolved_session_key or "", model, override_model,
+                session_key_for_log(resolved_session_key or ""),
+                model,
+                override_model,
             )
         else:
             logger.debug(
                 "No session model override: session=%s config_model=%s override_keys=%s",
-                resolved_session_key or "", model,
+                session_key_for_log(resolved_session_key or ""),
+                model,
                 [
-                    _key
+                    session_key_for_log(_key)
                     for _key, _st in list(self._sessions_map().items())
                     if _st.conversation.model_override is not None
                 ][:5] or "[]",
@@ -8088,7 +8201,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Empty model resolved for session=%s — recovering "
                     "last-known-good model %s (config read likely returned "
                     "empty; see #35314)",
-                    resolved_session_key or "", _recovered,
+                    session_key_for_log(resolved_session_key or ""),
+                    _recovered,
                 )
                 model = _recovered
         elif model:
@@ -9920,7 +10034,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Compression in-flight check failed while reading session %s; "
                 "treating compression as active to avoid interrupting a possible "
                 "parent-session rotation",
-                session_key,
+                session_key_for_log(session_key),
                 exc_info=True,
             )
             return True
@@ -10013,7 +10127,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
             logger.warning(
                 "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
-                session_key,
+                session_key_for_log(session_key),
                 self._BUSY_QUEUE_MAX_PENDING,
             )
             return
@@ -10064,13 +10178,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # otherwise unauthorized users in shared threads (Slack/Telegram/Discord)
         # can inject messages into an active session they don't own.
         if not self._is_user_authorized(event.source):
+            platform = event.source.platform
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
-                "user=%s (%s), platform=%s, session=%s",
-                event.source.user_id,
-                event.source.user_name,
-                event.source.platform.value if event.source.platform else "unknown",
-                session_key,
+                "user=%s, user_name_present=%s, platform=%s, session=%s",
+                _log_safe_gateway_identity(platform, event.source.user_id),
+                bool(event.source.user_name),
+                platform.value if platform else "unknown",
+                session_key_for_log(session_key),
             )
             return True  # handled (silently dropped); do not fall through
 
@@ -10158,7 +10273,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _reply = await _approval_handler(event)
                     logger.info(
                         "Approval response via plain text: session=%s verb=%s args=%r",
-                        session_key, _verb, _normalized_args,
+                        session_key_for_log(session_key),
+                        _verb,
+                        _normalized_args,
                     )
                     _adapter = self._adapter_for_source(event.source)
                     if _adapter and _reply:
@@ -10172,11 +10289,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 metadata=self._thread_metadata_for_source(event.source, _anchor),
                             )
                     return True
-        except Exception:
+        except Exception as exc:
             logger.warning(
                 "Plain-text approval routing failed for session %s; "
-                "falling through to busy handling",
-                session_key, exc_info=True,
+                "falling through to busy handling (error_type=%s)",
+                session_key_for_log(session_key),
+                type(exc).__name__,
             )
 
         # Normal busy case (agent actively running a task)
@@ -10232,7 +10350,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.info(
                 "Demoting busy_input_mode 'interrupt' to 'queue' for session %s "
                 "because the running agent has active subagents (#30170)",
-                session_key,
+                session_key_for_log(session_key),
             )
             effective_mode = "queue"
         demoted_for_compression = (
@@ -10243,7 +10361,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.info(
                 "Demoting busy_input_mode 'interrupt' to 'queue' for session %s "
                 "because context compression is in flight (#56391)",
-                session_key,
+                session_key_for_log(session_key),
             )
             effective_mode = "queue"
         steered = False
@@ -10276,7 +10394,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     steered = bool(running_agent.steer(steer_text))
                 except Exception as exc:
-                    logger.warning("Gateway steer failed for session %s: %s", session_key, exc)
+                    logger.warning(
+                        "Gateway steer failed for session %s (error_type=%s)",
+                        session_key_for_log(session_key),
+                        type(exc).__name__,
+                    )
                     steered = False
             if not steered:
                 # Fall back to queue (merge into pending messages, no interrupt)
@@ -10294,7 +10416,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 redirected = bool(running_agent.redirect((event.text or "").strip()))
             except Exception as exc:
-                logger.warning("Gateway redirect failed for session %s: %s", session_key, exc)
+                logger.warning(
+                    "Gateway redirect failed for session %s (error_type=%s)",
+                    session_key_for_log(session_key),
+                    type(exc).__name__,
+                )
                 redirected = False
 
         # Store the message so it's processed as the next turn after the
@@ -10350,7 +10476,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # never actually delivered.
         busy_ack_enabled = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
         if not busy_ack_enabled:
-            logger.debug("Busy ack suppressed for session %s", session_key)
+            logger.debug(
+                "Busy ack suppressed for session %s",
+                session_key_for_log(session_key),
+            )
             return True  # input still processed, just no ack sent
 
         # Debounce before consulting config-heavy display settings. Rapid
@@ -10383,7 +10512,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 )
             if not steer_ack_enabled:
-                logger.debug("Busy steer ack suppressed for session %s", session_key)
+                logger.debug(
+                    "Busy steer ack suppressed for session %s",
+                    session_key_for_log(session_key),
+                )
                 return True
 
         self._session_state(session_key).turn.busy_ack_ts = now
@@ -10499,7 +10631,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 metadata=thread_meta,
             )
         except Exception as e:
-            logger.debug("Failed to send busy-ack: %s", e)
+            logger.debug(
+                "Failed to send busy-ack: %s",
+                _log_adapter_error(adapter, e),
+            )
 
         return True
 
@@ -10584,7 +10719,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
             try:
                 request_hard_interrupt(agent, reason)
-                logger.debug("Interrupted running agent for session %s during shutdown", session_key)
+                logger.debug(
+                    "Interrupted running agent for session %s during shutdown",
+                    session_key_for_log(session_key),
+                )
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
         # API-server / desk turns are adapter-owned and never enter
@@ -10720,9 +10858,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     source = getattr(entry, "origin", None) if entry else None
             except Exception as e:
                 logger.debug(
-                    "Failed to load session origin for shutdown notification %s: %s",
-                    session_key,
-                    e,
+                    "Failed to load session origin for shutdown notification %s "
+                    "(error_type=%s)",
+                    session_key_for_log(session_key),
+                    type(e).__name__,
                 )
 
             if source is None:
@@ -10788,20 +10927,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug(
                         "Failed to send shutdown notification to %s:%s: %s",
                         platform_str,
-                        chat_id,
-                        getattr(result, "error", "send returned success=False"),
+                        _log_safe_gateway_identity(platform_str, chat_id),
+                        _log_send_error(
+                            platform_str,
+                            getattr(result, "error", "send returned success=False"),
+                        ),
                     )
                     continue
 
                 notified.add(dedup_key)
                 logger.info(
                     "Sent shutdown notification to active chat %s:%s",
-                    platform_str, chat_id,
+                    platform_str,
+                    _log_safe_gateway_identity(platform_str, chat_id),
                 )
             except Exception as e:
                 logger.debug(
                     "Failed to send shutdown notification to %s:%s: %s",
-                    platform_str, chat_id, e,
+                    platform_str,
+                    _log_safe_gateway_identity(platform_str, chat_id),
+                    _log_send_error(platform_str, e),
                 )
 
         if self._restart_requested and restart_source is not None:
@@ -10871,8 +11016,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug(
                         "Failed to send shutdown notification to home channel %s:%s: %s",
                         platform.value,
-                        home.chat_id,
-                        getattr(result, "error", "send returned success=False"),
+                        _log_safe_gateway_identity(platform, home.chat_id),
+                        _log_send_error(
+                            platform,
+                            getattr(result, "error", "send returned success=False"),
+                        ),
                     )
                     continue
 
@@ -10880,14 +11028,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info(
                     "Sent shutdown notification to home channel %s:%s",
                     platform.value,
-                    home.chat_id,
+                    _log_safe_gateway_identity(platform, home.chat_id),
                 )
             except Exception as e:
                 logger.debug(
                     "Failed to send shutdown notification to home channel %s:%s: %s",
                     platform.value,
-                    home.chat_id,
-                    e,
+                    _log_safe_gateway_identity(platform, home.chat_id),
+                    _log_send_error(platform, e),
                 )
 
     async def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
@@ -11254,7 +11402,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.warning(
                         "Auto-suspended stuck session %s (active across %d "
                         "consecutive restarts — likely a stuck loop)",
-                        session_key, counts[session_key],
+                        session_key_for_log(session_key), counts[session_key],
                     )
             except Exception:
                 pass
@@ -11807,12 +11955,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._startup_restore_queue = queue
         queue.append(event)
         try:
-            source = event.source
-            logger.info(
-                "Queued inbound message during gateway startup restore: platform=%s chat=%s",
-                source.platform.value if source and source.platform else "unknown",
-                source.chat_id if source else "unknown",
-            )
+            _log_startup_restore_message(event)
         except Exception:
             pass
 
@@ -11987,7 +12130,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as send_err:
                 logger.warning(
                     "obligation %s: redelivery send raised: %s",
-                    row["obligation_id"], send_err,
+                    row["obligation_id"], _log_adapter_error(adapter, send_err),
                 )
                 result = None
             try:
@@ -11997,15 +12140,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.info(
                         "Redelivered recovered final response to %s:%s "
                         "(obligation %s, attempt %d)",
-                        row["platform"], row["chat_id"],
+                        row["platform"],
+                        _log_safe_gateway_identity(
+                            row["platform"], row["chat_id"]
+                        ),
                         row["obligation_id"], row["attempts"],
                     )
                 else:
-                    await asyncio.to_thread(
-                        mark_failed,
-                        row["obligation_id"],
-                        str(getattr(result, "error", "") or "send failed"),
-                    )
+                        await asyncio.to_thread(
+                            mark_failed,
+                            row["obligation_id"],
+                            _log_send_error(
+                                platform,
+                                getattr(result, "error", "") or "send failed",
+                            ),
+                        )
             except Exception:
                 logger.debug("delivery ledger update failed", exc_info=True)
 
@@ -12017,7 +12166,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await self.async_session_store.clear_resume_pending(session_key)
                 except Exception:
                     logger.debug(
-                        "clear_resume_pending failed for %s", session_key,
+                        "clear_resume_pending failed for %s",
+                        session_key_for_log(session_key),
                         exc_info=True,
                     )
         return redelivered
@@ -12100,7 +12250,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if adapter is None:
                 logger.debug(
                     "Skipping auto-resume for %s: adapter not ready for %s",
-                    entry.session_key,
+                    session_key_for_log(entry.session_key),
                     getattr(source.platform, "value", source.platform),
                 )
                 continue
@@ -12116,13 +12266,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.warning(
                         "Skipping auto-resume for %s: session owner is no "
                         "longer authorized under the current allowlist",
-                        entry.session_key,
+                        session_key_for_log(entry.session_key),
                     )
                     continue
             except Exception as exc:
                 logger.warning(
                     "Skipping auto-resume for %s: authorization check failed: %s",
-                    entry.session_key, exc,
+                    session_key_for_log(entry.session_key),
+                    _log_send_error(getattr(source, "platform", None), exc),
                 )
                 continue
 
@@ -13425,10 +13576,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await self._session_db.complete_handoff(session_id)
                     except Exception as exc:
                         logger.warning(
-                            "Handoff for session %s failed: %s",
-                            session_id, exc, exc_info=True,
+                            "Handoff for session %s failed (error_type=%s)",
+                            session_id, type(exc).__name__,
                         )
-                        await self._session_db.fail_handoff(session_id, str(exc))
+                        await self._session_db.fail_handoff(
+                            session_id,
+                            _log_send_error(row.get("platform"), exc),
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -13604,8 +13758,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         logger.info(
             "Handoff: dispatching synthetic turn for CLI session %s → %s "
             "(home=%s, thread=%s, session_key=%s)",
-            cli_session_id, platform_name, home.chat_id, effective_thread_id,
-            session_key,
+            cli_session_id,
+            platform_name,
+            _log_safe_gateway_identity(platform_name, home.chat_id),
+            effective_thread_id,
+            session_key_for_log(session_key),
         )
 
         # Dispatch through the runner directly. Going through
@@ -13634,10 +13791,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 send_metadata or None,
             )
         except Exception as exc:
-            raise RuntimeError(f"adapter.send failed: {exc}") from exc
+            raise RuntimeError(
+                f"adapter.send failed: {_log_send_error(platform, exc)}"
+            ) from exc
 
         if not getattr(result, "success", True):
-            err = getattr(result, "error", "send returned success=False")
+            err = _log_send_error(
+                platform,
+                getattr(result, "error", "send returned success=False"),
+            )
             raise RuntimeError(f"adapter.send failed: {err}")
 
     async def _session_expiry_watcher(self, interval: int = 300):
@@ -13949,7 +14111,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "(timeout=%.0fs, ~%d min); pending inbound present "
                 "| last_activity=%s | provenance=%s "
                 "(agent.session_stall_timeout)",
-                session_key,
+                session_key_for_log(session_key),
                 idle_seconds,
                 timeout_seconds,
                 mins,
@@ -13965,7 +14127,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not chat_id:
                 logger.warning(
                     "Session stall notify skipped (no chat_id): session=%s",
-                    session_key,
+                    session_key_for_log(session_key),
                 )
                 # Cannot deliver; latch to avoid log spam every tick.
                 notified_map[session_key] = True
@@ -13997,7 +14159,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info(
                     "Session stall notify aborted (no longer stale): "
                     "session=%s pending=%s fresh_idle=%s",
-                    session_key,
+                    session_key_for_log(session_key),
                     still_pending,
                     fresh_idle,
                 )
@@ -14029,15 +14191,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "Session stall notify send timed out after %.0fs "
                         "for %s; will retry next tick",
                         _STALL_NOTIFY_SEND_TIMEOUT_SECONDS,
-                        session_key,
+                        session_key_for_log(session_key),
                     )
                     continue  # do not latch; retry next tick
                 # Adapters often return SendResult(success=False) instead of raising.
                 if result is not None and getattr(result, "success", True) is False:
                     logger.warning(
                         "Session stall notify failed for %s: %s",
-                        session_key,
-                        getattr(result, "error", "send returned success=False"),
+                        session_key_for_log(session_key),
+                        _log_adapter_error(
+                            adapter,
+                            getattr(result, "error", "send returned success=False"),
+                        ),
                     )
                     continue  # do not latch; retry next tick
                 sent += 1
@@ -14045,8 +14210,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as exc:
                 logger.warning(
                     "Session stall notify failed for %s: %s",
-                    session_key,
-                    exc,
+                    session_key_for_log(session_key),
+                    _log_adapter_error(adapter, exc),
                 )
                 # Do not latch — retry next watcher tick until delivery or episode clear.
 
@@ -14602,7 +14767,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     _pre_drain_keys.append(_sk)
                 except Exception as _e:
-                    logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
+                    logger.debug(
+                        "pre-drain mark_resume_pending failed for %s: %s",
+                        session_key_for_log(_sk), type(_e).__name__,
+                    )
 
             _cron_at_start = self._active_cron_job_count()
             _api_at_start = self._active_api_run_count()
@@ -14663,7 +14831,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except Exception as _e:
                             logger.debug(
                                 "clear_resume_pending after drain failed for %s: %s",
-                                _sk, _e,
+                                session_key_for_log(_sk), type(_e).__name__,
                             )
 
             if timed_out:
@@ -14708,7 +14876,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception as _e:
                         logger.debug(
                             "mark_resume_pending failed for %s: %s",
-                            _sk, _e,
+                            session_key_for_log(_sk), type(_e).__name__,
                         )
                 self._interrupt_running_agents(
                     _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
@@ -15900,11 +16068,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if getattr(result, "success", False):
                     return
-            except Exception:
+            except Exception as exc:
                 logger.debug(
-                    "[%s] send_private_notice failed, falling back to public",
+                    "[%s] send_private_notice failed, falling back to public "
+                    "(error_detail=%s)",
                     getattr(source, "platform", "?"),
-                    exc_info=True,
+                    _log_adapter_error(adapter, exc),
                 )
 
         await adapter.send(source.chat_id, content, metadata=metadata)
@@ -16065,7 +16234,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.warning(
                 "Async-delegation completion could not bind routing key %s to "
                 "owning session %s; dropping injection.",
-                session_entry.session_key,
+                session_key_for_log(session_entry.session_key),
                 target_session_id,
             )
             return None
@@ -16075,7 +16244,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "(was %s) for routing key %s (#57498)",
             target_session_id,
             prior_session_id,
-            session_entry.session_key,
+            session_key_for_log(session_entry.session_key),
         )
         return switched
 
@@ -16209,7 +16378,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Telegram sends /start for bot launches/deep-links. Treat it as a
         # platform ping, not a user command: no help dump, no agent
         # interrupt, no queued text.
-        logger.info("Ignoring /start platform ping for active session %s", quick_key)
+        logger.info(
+            "Ignoring /start platform ping for active session %s",
+            session_key_for_log(quick_key),
+        )
         return ""
 
     async def _busy_egress_command(self, event: MessageEvent, quick_key: str, source):
@@ -16229,7 +16401,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             interrupt_reason=_INTERRUPT_REASON_STOP,
             invalidation_reason="stop_command",
         )
-        logger.info("STOP for session %s — agent interrupted, session lock released", quick_key)
+        logger.info(
+            "STOP for session %s — agent interrupted, session lock released",
+            session_key_for_log(quick_key),
+        )
         return EphemeralReply(t("gateway.stop.stopped"))
 
     async def _busy_new_command(self, event: MessageEvent, quick_key: str, source):
@@ -16320,8 +16495,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 accepted = running_agent.steer(steer_text)
             except Exception as exc:
-                logger.warning("Steer failed for session %s: %s", quick_key, exc)
-                return f"⚠️ Steer failed: {exc}"
+                safe_error = _log_send_error(getattr(source, "platform", None), exc)
+                logger.warning(
+                    "Steer failed for session %s: %s",
+                    session_key_for_log(quick_key),
+                    safe_error,
+                )
+                return f"⚠️ Steer failed: {safe_error}"
             if accepted:
                 preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
                 return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
@@ -16499,7 +16679,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
                         _result.get("reason"),
                         source.platform.value if source.platform else "unknown",
-                        source.chat_id or "unknown",
+                        _log_safe_gateway_identity(
+                            source.platform,
+                            source.chat_id or "unknown",
+                        ),
                     )
                     return None
                 if _action == "rewrite":
@@ -16524,7 +16707,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
                 return None
         elif not self._is_user_authorized(source):
-            logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+            logger.warning(
+                "Unauthorized user: %s (%s) on %s",
+                _log_safe_gateway_identity(source.platform, source.user_id),
+                _log_safe_gateway_identity(source.platform, source.user_name),
+                source.platform.value,
+            )
             # In DMs: offer pairing code. In groups: silently ignore.
             if (
                 source.chat_type == "dm"
@@ -16724,7 +16912,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "Recognized /%s during pending update prompt for %s; "
                         "cancelled prompt with default and dispatching command",
                         _recognized_cmd,
-                        _quick_key,
+                        session_key_for_log(_quick_key),
                     )
                 except OSError as e:
                     logger.warning(
@@ -16757,7 +16945,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info(
                     "Gateway retained pending clarify after voice transcription "
                     "produced no usable text (session=%s, id=%s)",
-                    _quick_key,
+                    session_key_for_log(_quick_key),
                     _pending_clarify.clarify_id,
                 )
                 return ""
@@ -16772,7 +16960,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _text_outcome == _clarify_mod.TEXT_RESOLVED:
                     logger.info(
                         "Gateway intercepted clarify text response (session=%s, id=%s)",
-                        _quick_key, _pending_clarify.clarify_id,
+                        session_key_for_log(_quick_key),
+                        _pending_clarify.clarify_id,
                     )
                     # The clarify callback pauses the platform typing/status
                     # indicator while waiting so Slack users can type their
@@ -16917,8 +17106,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning(
                     "Evicting stale _running_agents entry for %s "
                     "(age: %.0fs, idle: %.0fs, timeout: %.0fs)%s",
-                    _quick_key, _stale_age, _stale_idle,
-                    _raw_stale_timeout, _stale_detail,
+                    session_key_for_log(_quick_key),
+                    _stale_age,
+                    _stale_idle,
+                    _raw_stale_timeout,
+                    _stale_detail,
                 )
                 self._invalidate_session_run_generation(
                     _quick_key,
@@ -16964,7 +17156,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
             if event.message_type == MessageType.PHOTO:
-                logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
+                logger.debug(
+                    "PRIORITY photo follow-up for session %s — queueing without interrupt",
+                    session_key_for_log(_quick_key),
+                )
                 adapter = self._adapter_for_source(source)
                 if adapter:
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
@@ -16986,7 +17181,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug(
                     "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
                     time.time() - _started_at,
-                    _quick_key,
+                    session_key_for_log(_quick_key),
                 )
                 adapter = self._adapter_for_source(source)
                 if adapter:
@@ -17008,7 +17203,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if event.get_command() == "stop":
                     # Force-clean the sentinel so the session is unlocked.
                     self._release_running_agent_state(_quick_key)
-                    logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
+                    logger.info(
+                        "HARD STOP (pending) for session %s — sentinel cleared",
+                        session_key_for_log(_quick_key),
+                    )
                     return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
                 # Queue the message so it will be picked up after the
                 # agent starts.
@@ -17033,7 +17231,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
                 )
             if effective_busy_input_mode == "queue":
-                logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
+                logger.debug(
+                    "PRIORITY queue follow-up for session %s",
+                    session_key_for_log(_quick_key),
+                )
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
             if effective_busy_input_mode == "steer":
@@ -17052,12 +17253,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         steered = bool(running_agent.steer(steer_text))
                     except Exception as exc:
-                        logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
+                        logger.warning(
+                            "PRIORITY steer failed for session %s (error_type=%s)",
+                            session_key_for_log(_quick_key),
+                            type(exc).__name__,
+                        )
                         steered = False
                 if steered:
-                    logger.debug("PRIORITY steer for session %s", _quick_key)
+                    logger.debug(
+                        "PRIORITY steer for session %s",
+                        session_key_for_log(_quick_key),
+                    )
                     return None
-                logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
+                logger.debug(
+                    "PRIORITY steer-fallback-to-queue for session %s",
+                    session_key_for_log(_quick_key),
+                )
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
             # #30170 — Subagent protection (PRIORITY path). Same rationale
@@ -17072,7 +17283,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info(
                     "PRIORITY interrupt demoted to queue for session %s "
                     "because the running agent has active subagents (#30170)",
-                    _quick_key,
+                    session_key_for_log(_quick_key),
                 )
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
@@ -17088,7 +17299,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info(
                     "PRIORITY interrupt demoted to queue for session %s "
                     "because context compression is in flight (#56391)",
-                    _quick_key,
+                    session_key_for_log(_quick_key),
                 )
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
@@ -17105,15 +17316,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ):
                 try:
                     if running_agent.redirect((event.text or "").strip()):
-                        logger.debug("PRIORITY redirect for session %s", _quick_key)
+                        logger.debug(
+                            "PRIORITY redirect for session %s",
+                            session_key_for_log(_quick_key),
+                        )
                         return None
                 except Exception as exc:
                     logger.warning(
-                        "PRIORITY redirect failed for session %s: %s",
-                        _quick_key,
-                        exc,
+                        "PRIORITY redirect failed for session %s (error_type=%s)",
+                        session_key_for_log(_quick_key),
+                        type(exc).__name__,
                     )
-            logger.debug("PRIORITY interrupt for session %s", _quick_key)
+            logger.debug(
+                "PRIORITY interrupt for session %s",
+                session_key_for_log(_quick_key),
+            )
             _interrupt_text = event.text
             _media_urls = getattr(event, "media_urls", None) or []
             if self._pending_event_audio_paths(event):
@@ -17289,7 +17506,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_help_command(event)
 
         if canonical == "start":
-            logger.info("Ignoring /start platform ping for session %s", _quick_key)
+            logger.info(
+                "Ignoring /start platform ping for session %s",
+                session_key_for_log(_quick_key),
+            )
             return ""
 
         if canonical == "commands":
@@ -17868,7 +18088,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if self._external_drain_active and not is_internal:
             logger.info(
                 "Refusing new turn for session %s — external drain active.",
-                _quick_key,
+                session_key_for_log(_quick_key),
             )
             return (
                 "⏳ This agent is draining for a maintenance action and isn't "
@@ -17890,7 +18110,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _limit_message is not None:
             logger.info(
                 "Rejecting new active session %s: max_concurrent_sessions reached",
-                _quick_key,
+                session_key_for_log(_quick_key),
             )
             return _limit_message
         _claim_state = self._session_state(_quick_key)
@@ -18139,12 +18359,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         message_text = await self._enrich_message_with_vision(
                             message_text,
                             image_paths,
+                            platform=getattr(source, "platform", None),
                         )
 
             if audio_paths:
                 message_text, _successful_transcripts = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
+                    platform=getattr(source, "platform", None),
                 )
                 # Echo each successful transcript back to the user immediately
                 # when configured. Lets users verify STT quality in real-time,
@@ -18457,7 +18679,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             cached_sources[session_key] = dataclasses.replace(source)
         except Exception:
-            logger.debug("Failed to cache live session source for %s", session_key, exc_info=True)
+            logger.debug(
+                "Failed to cache live session source for %s",
+                session_key_for_log(session_key),
+                exc_info=True,
+            )
             return
         # LRU: mark as most-recently-used and trim to max size.
         try:
@@ -18710,15 +18936,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
-        _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
-        _msg_preview = (event.text or "")[:80].replace("\n", " ")
-        _reply_id = getattr(event, "reply_to_message_id", None)
-        _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
-        logger.info(
-            "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
-            _platform_name, source.user_name or source.user_id or "unknown",
-            source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
-        )
+        _log_inbound_message(event, source)
 
         # Get or create session
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
@@ -18728,7 +18946,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if recovered is not None:
             logger.info(
                 "telegram topic recovery: chat=%s user=%s %r -> %s",
-                source.chat_id, source.user_id, source.thread_id, recovered,
+                _log_safe_gateway_identity(source.platform, source.chat_id),
+                _log_safe_gateway_identity(source.platform, source.user_id),
+                source.thread_id,
+                recovered,
             )
             source = dataclasses.replace(source, thread_id=recovered)
             try:
@@ -19043,7 +19264,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     event.text = "\n\n".join(_combined_parts)
                     logger.info(
                         "[Gateway] Auto-loaded skill(s) %s for session %s",
-                        _loaded_names, session_key,
+                        _loaded_names, session_key_for_log(session_key),
                     )
             except Exception as e:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
@@ -20111,7 +20332,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not self._is_session_run_current(_quick_key, run_generation):
                 logger.info(
                     "Discarding stale agent result for %s — generation %d is no longer current",
-                    _quick_key or "?",
+                    session_key_for_log(_quick_key or "?"),
                     run_generation,
                 )
                 _stale_adapter = self._adapter_for_source(source)
@@ -20156,10 +20377,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
             _resp_len = len(response)
-            logger.info(
-                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
-                _platform_name, source.chat_id or "unknown",
-                _response_time, _api_calls, _resp_len,
+            _log_response_ready(
+                _gateway_platform_value(getattr(source, "platform", "")),
+                source,
+                _response_time,
+                _api_calls,
+                _resp_len,
             )
 
             # NOTE: the cross-process cache-coherence re-baseline
@@ -20184,7 +20407,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _e:
                     logger.debug(
                         "clear_resume_pending failed for %s: %s",
-                        session_key, _e,
+                        session_key_for_log(session_key), type(_e).__name__,
                     )
 
             # Normalize empty responses: surface errors, partial failures, and
@@ -20224,7 +20447,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "Skipping agent-result session split sync for %s because "
                         "the session binding moved from %s to %s before "
                         "compression finished",
-                        session_key or "?",
+                        session_key_for_log(session_key or "?"),
                         _run_start_session_id,
                         session_entry.session_id,
                     )
@@ -20728,7 +20951,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await _err_adapter.stop_typing(source.chat_id)
             except Exception:
                 pass
-            logger.exception("Agent error in session %s", session_key)
+            logger.error(
+                "Agent error in session %s (error_type=%s)",
+                session_key_for_log(session_key),
+                type(e).__name__,
+            )
             # Crash-resilience for failures that happen before AIAgent enters
             # run_conversation() (for example: provider/httpx client init
             # failures). In that path the agent cannot persist the current
@@ -20915,7 +21142,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",
             canonical_cmd,
             source.platform.value if source.platform else "?",
-            source.user_id,
+            _log_safe_gateway_identity(source.platform, source.user_id),
         )
         allowed_preview = sorted(policy.user_allowed_commands)
         if allowed_preview:
@@ -21302,7 +21529,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         self._enqueue_fifo(quick_key, hb_event, adapter)
                     except Exception as exc:
-                        logger.debug("heartbeat poll for %s failed: %s", quick_key, exc)
+                        logger.debug(
+                            "heartbeat poll for %s failed (error_type=%s)",
+                            session_key_for_log(quick_key), type(exc).__name__,
+                        )
 
         try:
             task = asyncio.create_task(_poll_loop())
@@ -21337,7 +21567,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if result is not None and not getattr(result, "success", True):
             logger.warning(
                 "goal continuation: status send failed: %s",
-                getattr(result, "error", "unknown error"),
+                _log_adapter_error(
+                    adapter, getattr(result, "error", "unknown error")
+                ),
             )
 
     async def _defer_goal_status_notice_after_delivery(self, source: Any, message: str) -> None:
@@ -21359,7 +21591,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 await self._send_goal_status_notice(source, message)
             except Exception as exc:
-                logger.warning("goal continuation: status send failed: %s", exc, exc_info=True)
+                logger.warning(
+                    "goal continuation: status send failed: %s",
+                    _log_adapter_error(adapter, exc),
+                )
 
         try:
             session_key = self._session_key_for_source(source)
@@ -21877,10 +22112,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
             logger.info(
-                "Suppressing duplicate voice transcript for guild=%s user=%s: %s",
+                "Suppressing duplicate voice transcript for guild=%s user=%s "
+                "transcript_len=%d",
                 guild_id,
                 user_id,
-                transcript[:100],
+                len(transcript),
             )
             return
 
@@ -21962,7 +22198,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not should:
             logger.debug(
                 "Auto voice reply skipped: mode=%s adapter_auto_tts=%s chat=%s platform=%s",
-                voice_mode, adapter_auto_tts, chat_id, event.source.platform.value,
+                voice_mode,
+                adapter_auto_tts,
+                _log_safe_gateway_identity(event.source.platform, chat_id),
+                event.source.platform.value,
             )
             return False
 
@@ -22176,7 +22415,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         metadata=_thread_meta,
                     )
                 except Exception as e:
-                    logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
+                    logger.warning(
+                        "[%s] Post-stream image batch delivery failed: %s",
+                        adapter.name,
+                        _log_adapter_error(adapter, e),
+                    )
 
             for media_path, is_voice in non_image_media:
                 try:
@@ -22200,10 +22443,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             metadata=_thread_meta,
                         )
                 except Exception as e:
-                    logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+                    logger.warning(
+                        "[%s] Post-stream media delivery failed: %s",
+                        adapter.name,
+                        _log_adapter_error(adapter, e),
+                    )
 
         except Exception as e:
-            logger.warning("Post-stream media extraction failed: %s", e)
+            logger.warning(
+                "Post-stream media extraction failed: %s",
+                _log_adapter_error(adapter, e),
+            )
 
     async def _deliver_queued_first_response(
         self,
@@ -22408,7 +22658,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if image_paths:
                     try:
                         enriched_prompt = await self._enrich_message_with_vision(
-                            prompt, image_paths,
+                            prompt,
+                            image_paths,
+                            platform=getattr(source, "platform", None),
                         )
                     except Exception as e:
                         logger.warning("Background task vision enrichment failed: %s", e)
@@ -23418,13 +23670,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if persisted:
                         logger.info(
                             "User opted out of destructive slash confirm (session=%s)",
-                            session_key,
+                            session_key_for_log(session_key),
                         )
                     else:
                         logger.warning(
                             "Could not persist destructive_slash_confirm=false "
                             "(session=%s); config.yaml is not writable",
-                            session_key,
+                            session_key_for_log(session_key),
                         )
                 except Exception as exc:
                     logger.warning(
@@ -23817,7 +24069,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         metadata=_non_conversational_metadata(metadata, platform=platform),
                     )
                 except Exception as e:
-                    logger.debug("Update stream send failed: %s", e)
+                    logger.debug(
+                        "Update stream send failed: %s",
+                        _log_send_error(platform, e),
+                    )
 
         while loop.time() < deadline:
             # Check for completion
@@ -23848,9 +24103,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "❌ Hermes update failed (exit code {}).".format(exit_code),
                             metadata=_non_conversational_metadata(metadata, platform=platform),
                         )
-                    logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
+                    logger.info(
+                        "Update finished (exit=%s), notified %s",
+                        exit_code,
+                        session_key_for_log(session_key),
+                    )
                 except Exception as e:
-                    logger.warning("Update final notification failed: %s", e)
+                    logger.warning(
+                        "Update final notification failed: %s",
+                        _log_send_error(platform, e),
+                    )
 
                 # Cleanup
                 for p in (pending_path, claimed_path, output_path,
@@ -23929,7 +24191,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_key
                         ).persistent.update_prompt_pending = True
                         # .update_response to continue — it doesn't re-check
-                        logger.info("Forwarded update prompt to %s: %s", session_key, prompt_text[:80])
+                        logger.info(
+                            "Forwarded update prompt to %s: prompt_len=%d "
+                            "default_present=%s native_buttons=%s",
+                            session_key_for_log(session_key),
+                            len(prompt_text),
+                            bool(default),
+                            sent_buttons,
+                        )
                 except (json.JSONDecodeError, OSError) as e:
                     logger.debug("Failed to read update prompt: %s", e)
 
@@ -23976,6 +24245,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         cleanup = True
         active_pending_path = claimed_path
+        platform_str = ""
         try:
             if pending_path.exists():
                 try:
@@ -24061,11 +24331,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info(
                     "Sent post-update notification to %s:%s (exit=%s)",
                     platform_str,
-                    chat_id,
+                    _log_safe_gateway_identity(platform_str, chat_id),
                     exit_code,
                 )
         except Exception as e:
-            logger.warning("Post-update notification failed: %s", e)
+            logger.warning(
+                "Post-update notification failed: %s",
+                _log_send_error(platform_str, e),
+            )
         finally:
             if cleanup:
                 active_pending_path.unlink(missing_ok=True)
@@ -24081,6 +24354,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not notify_path.exists():
             return None
 
+        platform_str = ""
         try:
             data = json.loads(notify_path.read_text(encoding="utf-8"))
             platform_str = data.get("platform")
@@ -24137,19 +24411,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning(
                     "Restart notification to %s:%s was not delivered: %s",
                     platform_str,
-                    chat_id,
-                    getattr(result, "error", "send returned success=False"),
+                    _log_safe_gateway_identity(platform_str, chat_id),
+                    _log_send_error(
+                        platform_str,
+                        getattr(result, "error", "send returned success=False"),
+                    ),
                 )
                 return None
 
             logger.info(
                 "Sent restart notification to %s:%s",
                 platform_str,
-                chat_id,
+                _log_safe_gateway_identity(platform_str, chat_id),
             )
             return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
         except Exception as e:
-            logger.warning("Restart notification failed: %s", e)
+            logger.warning(
+                "Restart notification failed: %s",
+                _log_send_error(platform_str, e),
+            )
             return None
         finally:
             notify_path.unlink(missing_ok=True)
@@ -24216,8 +24496,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.warning(
                         "Home-channel startup notification failed for %s:%s: %s",
                         platform.value,
-                        home.chat_id,
-                        getattr(result, "error", "send returned success=False"),
+                        _log_safe_gateway_identity(platform, home.chat_id),
+                        _log_send_error(
+                            platform,
+                            getattr(result, "error", "send returned success=False"),
+                        ),
                     )
                     continue
 
@@ -24225,14 +24508,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info(
                     "Sent home-channel startup notification to %s:%s",
                     platform.value,
-                    home.chat_id,
+                    _log_safe_gateway_identity(platform, home.chat_id),
                 )
             except Exception as exc:
                 logger.warning(
                     "Home-channel startup notification failed for %s:%s: %s",
                     platform.value,
-                    home.chat_id,
-                    exc,
+                    _log_safe_gateway_identity(platform, home.chat_id),
+                    _log_send_error(platform, exc),
                 )
 
         return delivered
@@ -24490,6 +24773,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         user_text: str,
         image_paths: List[str],
+        *,
+        platform=None,
     ) -> str:
         """
         Auto-analyze user-attached images with the vision tool and prepend
@@ -24521,7 +24806,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enriched_parts = []
         for path in image_paths:
             try:
-                logger.debug("Auto-analyzing user image: %s", path)
+                logger.debug(
+                    "Auto-analyzing user image: %s",
+                    _log_media_path(platform, path),
+                )
                 result_json = await vision_analyze_tool(
                     image_url=path,
                     user_prompt=analysis_prompt,
@@ -24542,7 +24830,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         f"with vision_analyze using image_url: {path}]"
                     )
             except Exception as e:
-                logger.error("Vision auto-analysis error: %s", e)
+                logger.error(
+                    "Vision auto-analysis error: %s",
+                    _log_send_error(platform, e),
+                )
                 enriched_parts.append(
                     f"[The user sent an image but something went wrong when I "
                     f"tried to look at it~ You can try examining it yourself "
@@ -24561,6 +24852,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         user_text: str,
         audio_paths: List[str],
+        *,
+        platform=None,
     ) -> tuple[str, List[str]]:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
@@ -24608,7 +24901,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 transcribe_audio_local_fallback,
             )
         except ModuleNotFoundError as e:
-            logger.error("Transcription module unavailable: %s", e)
+            logger.error(
+                "Transcription module unavailable: %s",
+                _log_send_error(platform, e),
+            )
             unavailable_note = "[voice message could not be transcribed]"
             _placeholder = "(The user sent a message with no text content)"
             if user_text and user_text.strip() == _placeholder:
@@ -24621,7 +24917,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         successful_transcripts: List[str] = []
         for path in audio_paths:
             try:
-                logger.debug("Transcribing user voice: %s", path)
+                logger.debug(
+                    "Transcribing user voice: %s",
+                    _log_media_path(platform, path),
+                )
                 result = await asyncio.to_thread(
                     transcribe_audio, path, None, "gateway",
                 )
@@ -24633,7 +24932,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if fallback.get("success"):
                         logger.info(
                             "Configured STT failed for %s; recovered with local STT",
-                            path,
+                            _log_media_path(platform, path),
                         )
                         result = fallback
                 if result["success"]:
@@ -24669,7 +24968,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # even after transcription starts working. The cause is
                     # logged for operator diagnosis but kept out of the
                     # LLM-visible prompt.
-                    logger.info("Voice transcription failed for %s: %s", path, error)
+                    logger.info(
+                        "Voice transcription failed for %s: %s",
+                        _log_media_path(platform, path),
+                        _log_send_error(platform, error),
+                    )
                     from tools.credential_files import to_agent_visible_cache_path
 
                     agent_path = to_agent_visible_cache_path(os.path.abspath(path))
@@ -24678,7 +24981,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         f"the audio is available at: {agent_path}]"
                     )
             except Exception as e:
-                logger.error("Transcription error: %s", e)
+                logger.error(
+                    "Transcription error: %s",
+                    _log_send_error(platform, e),
+                )
                 from tools.credential_files import to_agent_visible_cache_path
 
                 agent_path = to_agent_visible_cache_path(os.path.abspath(path))
@@ -24733,6 +25039,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
             text,
             audio_paths,
+            platform=getattr(getattr(event, "source", None), "platform", None),
         )
         setattr(event, "_gateway_pending_stt_text", enriched_text)
         setattr(event, "_gateway_pending_stt_transcripts", list(successful_transcripts))
@@ -24777,7 +25084,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata=metadata,
                 )
             except Exception as echo_exc:
-                logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
+                logger.debug(
+                    "%s echo failed (non-fatal): %s",
+                    log_context,
+                    _log_adapter_error(adapter, echo_exc),
+                )
 
     async def _transcribe_and_echo_pending_voice(
         self,
@@ -24821,7 +25132,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return enriched_text or text, transcripts
         except Exception as trans_exc:
-            logger.warning("%s transcription failed: %s", log_context, trans_exc)
+            logger.warning(
+                "%s transcription failed: %s",
+                log_context,
+                _log_adapter_error(adapter, trans_exc),
+            )
             return text, []
 
     def _build_process_event_source(self, evt: dict):
@@ -24847,8 +25162,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as exc:
                 logger.debug(
                     "Synthetic process-event session-store lookup failed for %s: %s",
-                    session_key,
-                    exc,
+                    session_key_for_log(session_key),
+                    type(exc).__name__,
                 )
 
             cached_source = self._get_cached_session_source(session_key)
@@ -24869,7 +25184,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Synthetic event source unresolvable: "
                 "session_key=%r platform=%r chat_type=%r chat_id=%r "
                 "evt_type=%s",
-                session_key, platform_name, chat_type, chat_id,
+                session_key_for_log(session_key),
+                platform_name,
+                chat_type,
+                _log_safe_gateway_identity(platform_name, chat_id),
                 evt.get("type", "?"),
             )
             return None
@@ -25066,8 +25384,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
                 platform_name,
-                source.chat_id,
-                source.thread_id,
+                _log_safe_gateway_identity(source.platform, source.chat_id),
+                _log_safe_gateway_identity(source.platform, source.thread_id),
             )
             # Relay-plane egress priming (defect #4, staging 2026-08-09): a
             # synthetic turn injected right after a restart reaches a relay
@@ -26216,7 +26534,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._session_state(session_key).conversation.model_override = override
         logger.info(
             "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
-            session_key, override.get("model"), provider or "",
+            session_key_for_log(session_key),
+            override.get("model"),
+            provider or "",
         )
 
     def _apply_session_model_override(
@@ -26443,7 +26763,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 store.pop(session_key, None)
         self._clear_session_boundary_security_state(session_key)
         logger.debug(
-            "Cleared conversation scope for %s (%s)", session_key, reason
+            "Cleared conversation scope for %s (%s)",
+            session_key_for_log(session_key),
+            reason,
         )
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:
@@ -26472,8 +26794,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as e:
                 logger.debug(
                     "Failed to clear slash-confirm state for session boundary %s: %s",
-                    session_key,
-                    e,
+                    session_key_for_log(session_key),
+                    type(e).__name__,
                 )
 
         try:
@@ -26486,8 +26808,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.debug(
                 "Failed to clear approval state for session boundary %s: %s",
-                session_key,
-                e,
+                session_key_for_log(session_key),
+                type(e).__name__,
             )
 
     def _begin_session_run_generation(self, session_key: str) -> int:
@@ -26511,7 +26833,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if reason:
             logger.info(
                 "Invalidated run generation for %s → %d (%s)",
-                session_key,
+                session_key_for_log(session_key),
                 generation,
                 reason,
             )
@@ -27677,7 +27999,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if not _run_still_current():
                             logger.info(
                                 "Discarding stale proxy stream for %s — generation %d is no longer current",
-                                session_key or "?",
+                                session_key_for_log(session_key or "?"),
                                 run_generation or 0,
                             )
                             return {
@@ -27745,7 +28067,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not _run_still_current():
             logger.info(
                 "Discarding stale proxy result for %s — generation %d is no longer current",
-                session_key or "?",
+                session_key_for_log(session_key or "?"),
                 run_generation or 0,
             )
             return {
@@ -27862,10 +28184,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 thread_id=getattr(source, "thread_id", None),
                 parent_chat_id=getattr(source, "parent_chat_id", None),
             )
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "Profile route matching failed for %s/%s, falling back to default",
-                source.platform, source.chat_id, exc_info=True,
+                "Profile route matching failed for %s/%s (error_type=%s), "
+                "falling back to default",
+                source.platform,
+                _log_safe_gateway_identity(source.platform, source.chat_id),
+                type(exc).__name__,
             )
             return None
         if matched:
@@ -27889,8 +28214,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return matched.profile
         logger.debug(
             "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s",
-            source.platform.value, source.chat_id,
-            getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None),
+            source.platform.value,
+            _log_safe_gateway_identity(source.platform, source.chat_id),
+            _log_safe_gateway_identity(
+                source.platform,
+                getattr(source, "thread_id", None),
+            ),
+            _log_safe_gateway_identity(
+                source.platform,
+                getattr(source, "parent_chat_id", None),
+            ),
         )
         return None
 
@@ -27933,8 +28266,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "falling back to global HERMES_HOME",
                     explicit_profile,
                     source.platform.value,
-                    source.chat_id,
-                    getattr(source, "guild_id", None),
+                    _log_safe_gateway_identity(source.platform, source.chat_id),
+                    _log_safe_gateway_identity(
+                        source.platform,
+                        getattr(source, "guild_id", None),
+                    ),
                 )
                 return get_hermes_home()
             return profile_dir
@@ -27946,8 +28282,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Failed to resolve profile directory for source %s/%s (guild_id=%s), "
                 "falling back to global HERMES_HOME: %s",
                 source.platform.value,
-                source.chat_id,
-                getattr(source, "guild_id", None),
+                _log_safe_gateway_identity(source.platform, source.chat_id),
+                _log_safe_gateway_identity(
+                    source.platform,
+                    getattr(source, "guild_id", None),
+                ),
                 explicit_profile or "(no profile)",
                 exc_info=True,
             )
@@ -28608,7 +28947,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ):
                 logger.info(
                     "Skipping stale agent promotion for %s — generation %s is no longer current",
-                    session_key or "",
+                    session_key_for_log(session_key or ""),
                     run_generation,
                 )
                 return
@@ -28960,7 +29299,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             logger.info(
                                 "Backup interrupt detected for session %s "
                                 "(monitor task state: %s)",
-                                session_key,
+                                session_key_for_log(session_key),
                                 "done" if interrupt_monitor.done() else "running",
                             )
                             _backup_agent.interrupt(_bp_text)
@@ -29062,7 +29401,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             logger.info(
                                 "Backup interrupt detected for session %s "
                                 "(monitor task state: %s)",
-                                session_key,
+                                session_key_for_log(session_key),
                                 "done" if interrupt_monitor.done() else "running",
                             )
                             _backup_agent.interrupt(_bp_text)
@@ -29091,7 +29430,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.error(
                     "Agent idle for %.0fs (timeout %.0fs) in session %s "
                     "| last_activity=%s | iteration=%s/%s | tool=%s",
-                    _secs_ago, _agent_timeout, session_key,
+                    _secs_ago,
+                    _agent_timeout,
+                    session_key_for_log(session_key),
                     _last_desc, _iter_n, _iter_max,
                     _cur_tool or "none",
                 )
@@ -29190,7 +29531,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     await _stts.wait_complete(timeout=10.0)
                 except Exception as _stts_done_err:
-                    logger.debug("streaming TTS wait_complete error: %s", _stts_done_err)
+                    logger.debug(
+                        "streaming TTS wait_complete error: %s",
+                        _log_send_error(getattr(source, "platform", None), _stts_done_err),
+                    )
                 if not _stts.done:
                     # Timeout before or after audible audio: abort to free
                     # the consumer task.  Audible streams retain suppression;
@@ -29220,7 +29564,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _is_control_interrupt_message(interrupt_message):
                         logger.info(
                             "Ignoring control interrupt message for session %s: %s",
-                            session_key or "?",
+                            session_key_for_log(session_key or "?"),
                             interrupt_message,
                         )
                     else:
@@ -29248,7 +29592,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else:
                         pending = _pending_text or _build_media_placeholder(pending_event)
                     if pending:
-                        logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
+                        logger.debug(
+                            "Processing queued message after agent completion: msg_len=%d",
+                            len(pending),
+                        )
 
             # Leftover /steer: if a steer arrived after the last tool batch
             # (e.g. during the final API call), the agent couldn't inject it
@@ -29258,7 +29605,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _leftover_steer = result.get("pending_steer")
                 if _leftover_steer:
                     pending = _leftover_steer
-                    logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
+                    _log_leftover_steer(pending)
 
             # Safety net: if the pending text is a slash command (e.g. "/stop",
             # "/new"), discard it — commands should never be passed to the agent
@@ -29285,14 +29632,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if self._draining and (pending_event or pending):
                 logger.info(
                     "Discarding pending follow-up for session %s during gateway %s",
-                    session_key or "?",
+                    session_key_for_log(session_key or "?"),
                     self._status_action_label(),
                 )
                 pending_event = None
                 pending = None
 
             if pending_event or pending:
-                logger.debug("Processing pending message: '%s...'", pending[:40])
+                logger.debug("Processing pending message: msg_len=%d", len(pending))
 
                 # Clear the adapter's interrupt event so the next _run_agent call
                 # doesn't immediately re-trigger the interrupt before the new agent
@@ -29306,7 +29653,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.warning(
                         "Interrupt recursion depth %d reached for session %s — "
                         "queueing message instead of recursing.",
-                        _interrupt_depth, session_key,
+                        _interrupt_depth,
+                        session_key_for_log(session_key),
                     )
                     adapter = self._adapter_for_source(source)
                     if adapter and pending_event:
@@ -29358,19 +29706,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _intentional_silence:
                         logger.info(
                             "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
-                            session_key or "?",
+                            session_key_for_log(session_key or "?"),
                         )
                     elif first_response:
                         try:
                             if _already_streamed:
                                 logger.info(
                                     "Queued follow-up for session %s: final text delivery confirmed; delivering explicit media before continuing.",
-                                    session_key or "?",
+                                    session_key_for_log(session_key or "?"),
                                 )
                             else:
                                 logger.info(
                                     "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
-                                    session_key or "?",
+                                    session_key_for_log(session_key or "?"),
                                 )
                             await self._deliver_queued_first_response(
                                 first_response,
@@ -29383,7 +29731,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 stream_consumer=_sc,
                             )
                         except Exception as e:
-                            logger.warning("Failed to send first response before queued message: %s", e)
+                            logger.warning(
+                                "Failed to send first response before queued message: %s",
+                                _log_adapter_error(adapter, e),
+                            )
                     # Release deferred bg-review notifications now that the
                     # first response has been delivered.  Pop from the
                     # adapter's callback dict (prevents double-fire in
@@ -29428,7 +29779,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
                         logger.info(
                             "Discarding stale goal continuation for session %s — goal is no longer active",
-                            session_key or "?",
+                            session_key_for_log(session_key or "?"),
                         )
                         return result
                     # Resolve the follow-up's session key BEFORE preparing the
@@ -29441,7 +29792,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         logger.debug(
                             "Queued follow-up session-key resolution failed; reusing %s",
-                            session_key or "?",
+                            session_key_for_log(session_key or "?"),
                             exc_info=True,
                         )
                     next_message = await self._prepare_profile_scoped_inbound_message_text(
@@ -29657,7 +30008,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not _is_empty_sentinel and not _transformed and (_streamed or _content_delivered):
                 logger.info(
                     "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
-                    session_key or "?",
+                    session_key_for_log(session_key or "?"),
                     _streamed,
                     _previewed,
                     _content_delivered,
@@ -29681,7 +30032,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if getattr(_sc, "_turn_split_delivery", False):
                     logger.info(
                         "Stale streamed finalize detected for session %s on a multi-message split; skipping the in-place reconciliation edit and delivering the complete response via normal final send (#78541).",
-                        session_key or "?",
+                        session_key_for_log(session_key or "?"),
                     )
                 elif _sc_msg_id and _sc_msg_id != "__no_edit__" and _sc_adapter is not None:
                     try:
@@ -29695,23 +30046,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             response["already_sent"] = True
                             logger.info(
                                 "Reconciled stale streamed finalize for session %s: edited message %s with the complete response (#71643).",
-                                session_key or "?", _sc_msg_id,
+                                session_key_for_log(session_key or "?"),
+                                _sc_msg_id,
                             )
                         else:
                             logger.warning(
-                                "Stale-finalize reconciliation edit failed for session %s (%s); sending complete response via normal final send.",
-                                session_key or "?",
-                                getattr(_reconcile_res, "error", None),
+                            "Stale-finalize reconciliation edit failed for session %s (%s); sending complete response via normal final send.",
+                            session_key_for_log(session_key or "?"),
+                                _log_adapter_error(
+                                    _sc_adapter,
+                                    getattr(_reconcile_res, "error", None),
+                                ),
                             )
                     except Exception as _edit_err:
                         logger.warning(
                             "Stale-finalize reconciliation edit failed for session %s: %s; sending complete response via normal final send.",
-                            session_key or "?", _edit_err,
+                            session_key_for_log(session_key or "?"),
+                            _log_adapter_error(_sc_adapter, _edit_err),
                         )
                 else:
                     logger.info(
                         "Stale streamed finalize detected for session %s with no editable message; delivering complete response via normal final send (#71643).",
-                        session_key or "?",
+                        session_key_for_log(session_key or "?"),
                     )
             elif not _is_empty_sentinel and _transformed and _sc is not None:
                 # Plugin hooks transformed the response after streaming — edit the
@@ -29728,12 +30084,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         response["already_sent"] = True
                         logger.info(
                             "Edited streamed message %s for session %s to include plugin-transformed content.",
-                            _sc_msg_id, session_key or "?",
+                            _sc_msg_id, session_key_for_log(session_key or "?"),
                         )
                     except Exception as _edit_err:
                         logger.warning(
                             "Failed to edit streamed message for session %s: %s",
-                            session_key or "?", _edit_err,
+                            session_key_for_log(session_key or "?"),
+                            _log_adapter_error(_sc_adapter, _edit_err),
                         )
 
         # Schedule deletion of tracked temporary progress bubbles after the

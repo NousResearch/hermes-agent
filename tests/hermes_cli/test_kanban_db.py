@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
+import json
 import os
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -16,6 +19,30 @@ import pytest
 
 import hermes_state
 from hermes_cli import kanban_db as kb
+from hermes_cli import auth as auth_mod
+
+
+def _tree_inventory(root: Path) -> dict:
+    """Capture every directory/file attribute relevant to read-only proofs."""
+    if not root.exists():
+        return {}
+    paths = [root, *sorted(root.rglob("*"))]
+    result = {}
+    for path in paths:
+        st = path.lstat()
+        digest = None
+        if stat.S_ISREG(st.st_mode):
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        elif stat.S_ISLNK(st.st_mode):
+            digest = os.readlink(path)
+        result[str(path.relative_to(root))] = (
+            "dir" if stat.S_ISDIR(st.st_mode) else "file" if stat.S_ISREG(st.st_mode) else "symlink" if stat.S_ISLNK(st.st_mode) else "other",
+            st.st_mode,
+            st.st_size,
+            digest,
+            st.st_mtime_ns,
+        )
+    return result
 
 
 @pytest.fixture
@@ -1187,6 +1214,236 @@ def test_resolve_hermes_argv_module_actually_runs():
 
 
 # ---------------------------------------------------------------------------
+
+
+def test_codex_capability_preflight_uses_pool_and_blocks_irrecoverable_oauth(monkeypatch):
+    task = _make_task(id="codex", assignee="programmer", provider_override="openai-codex")
+    calls = []
+
+    class Pool:
+        _entries = []
+        def select_readonly(self):
+            calls.append("select")
+            raise auth_mod.AuthError("revoked", provider="openai-codex", code="invalid_grant", relogin_required=True)
+
+    monkeypatch.setattr("agent.credential_pool.load_pool_readonly", lambda provider: Pool())
+    monkeypatch.setattr(kb, "_profile_model_provider", lambda profile: "openai-codex")
+    monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", lambda profile: "/tmp")
+    reason = kb._codex_capability_failure(task)
+    assert calls == ["select"]
+    assert reason is not None and "invalid_grant" in reason and "fallback" in reason.lower()
+
+
+def test_codex_capability_preflight_exhausted_pool_fails_closed(monkeypatch):
+    task = _make_task(id="codex-exhausted", assignee="programmer", provider_override="openai-codex")
+
+    class Pool:
+        _entries = [types.SimpleNamespace(last_status="exhausted")]
+
+        def select_readonly(self):
+            return None
+
+    monkeypatch.setattr("agent.credential_pool.load_pool_readonly", lambda provider: Pool())
+    reason = kb._codex_capability_failure(task)
+    assert reason is not None
+    assert "codex_auth_unavailable" in reason
+
+
+def test_review_dispatch_capability_blocks_before_claim_or_spawn(kanban_home, monkeypatch, tmp_path):
+    profile_home = tmp_path / "profiles" / "reviewer"
+    monkeypatch.setattr(kb, "_profile_model_provider", lambda _: "openai-codex")
+    monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", lambda _: str(profile_home))
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _: True)
+    auth_path = tmp_path / "root" / "auth.json"
+    auth_path.parent.mkdir()
+    auth_path.write_text("{\"version\": 1}", encoding="utf-8")
+    monkeypatch.setattr(auth_mod, "_auth_file_path", lambda: profile_home / "auth.json")
+    monkeypatch.setattr(auth_mod, "_global_auth_file_path", lambda: auth_path)
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="review codex", assignee="reviewer")
+        conn.execute("UPDATE tasks SET status='review' WHERE id=?", (task_id,))
+        result = kb.dispatch_once(conn, spawn_fn=lambda *args: pytest.fail("review claim/spawn occurred"))
+        task = kb.get_task(conn, task_id)
+        runs = conn.execute("SELECT id FROM task_runs WHERE task_id=?", (task_id,)).fetchall()
+        events = conn.execute("SELECT kind FROM task_events WHERE task_id=?", (task_id,)).fetchall()
+    assert result.spawned == []
+    assert task is not None
+    assert task.status == "blocked" and task.block_kind == "capability"
+    assert task.claim_lock is None and runs == []
+    assert [row["kind"] for row in events] == ["created", "capability_blocked"]
+
+
+@pytest.mark.parametrize("case", [
+    "malformed_json", "invalid_utf8", "oversized", "directory", "symlink",
+    "unsupported_structure", "io_failure",
+])
+def test_codex_preflight_parser_matrix_is_read_only_and_fails_closed(
+    kanban_home, monkeypatch, tmp_path, case,
+):
+    import agent.credential_pool as credential_pool
+    profile_home, root_home = tmp_path / "profile", tmp_path / "root"
+    profile_home.mkdir(); root_home.mkdir()
+    profile_auth, root_auth = profile_home / "auth.json", root_home / "auth.json"
+    root_auth.write_text(json.dumps({"version": 1, "providers": {"openai-codex": {
+        "tokens": {"access_token": "root-access", "refresh_token": "root-refresh"}
+    }}}), encoding="utf-8")
+    if case == "malformed_json": profile_auth.write_bytes(b"{bad")
+    elif case == "invalid_utf8": profile_auth.write_bytes(b"\xff\xfe")
+    elif case == "oversized": profile_auth.write_bytes(b"x" * (credential_pool._CODEX_PREFLIGHT_MAX_BYTES + 1))
+    elif case == "directory": profile_auth.mkdir()
+    elif case == "symlink": profile_auth.symlink_to(root_auth)
+    elif case == "unsupported_structure": profile_auth.write_text(json.dumps({"providers": {"openai-codex": []}}), encoding="utf-8")
+    elif case == "io_failure": profile_auth.write_text(json.dumps({"providers": {}}), encoding="utf-8")
+    monkeypatch.setattr(kb, "_profile_model_provider", lambda _: "openai-codex")
+    monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", lambda _: str(profile_home))
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _: True)
+    monkeypatch.setattr(auth_mod, "_auth_file_path", lambda: profile_auth)
+    monkeypatch.setattr(auth_mod, "_global_auth_file_path", lambda: root_auth)
+    before = (_tree_inventory(profile_home), _tree_inventory(root_home))
+    real_open = credential_pool.Path.open
+    if case == "io_failure":
+        monkeypatch.setattr(credential_pool.Path, "open", lambda path, *a, **k: (_ for _ in ()).throw(OSError("synthetic read failure")) if path == profile_auth else real_open(path, *a, **k))
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title=f"codex matrix {case}", assignee="programmer")
+        result = kb.dispatch_once(conn, spawn_fn=lambda *args: pytest.fail("claim/spawn occurred"))
+        task = kb.get_task(conn, task_id)
+        runs = conn.execute("SELECT id FROM task_runs WHERE task_id=?", (task_id,)).fetchall()
+        events = conn.execute("SELECT kind FROM task_events WHERE task_id=?", (task_id,)).fetchall()
+    if case == "io_failure":
+        monkeypatch.setattr(credential_pool.Path, "open", real_open)
+    assert task is not None and task.status == "blocked" and task.block_kind == "capability"
+    assert task.claim_lock is None and result.spawned == [] and runs == []
+    assert [row["kind"] for row in events] == ["created", "capability_blocked"]
+    assert _tree_inventory(profile_home) == before[0] and _tree_inventory(root_home) == before[1]
+    for suffix in (".lock", ".corrupt", ".bak", ".tmp"):
+        assert not list(profile_home.rglob(f"*{suffix}")) and not list(root_home.rglob(f"*{suffix}"))
+
+
+def test_non_codex_programmer_route_is_not_capability_gated(monkeypatch):
+    task = _make_task(id="openrouter", assignee="programmer", provider_override="openrouter")
+    monkeypatch.setattr("agent.credential_pool.load_pool_readonly", lambda provider: pytest.fail("unexpected pool access"))
+    assert kb._codex_capability_failure(task) is None
+
+
+def test_unresolved_profile_provider_is_not_capability_gated(monkeypatch):
+    task = _make_task(id="unresolved", assignee="ordinary-profile")
+    monkeypatch.setattr(kb, "_profile_model_provider", lambda _profile: "")
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool_readonly",
+        lambda _provider: pytest.fail("unexpected pool access"),
+    )
+    assert kb._codex_capability_failure(task) is None
+
+
+def test_codex_capability_preflight_does_not_create_profile_shadow(
+    monkeypatch, tmp_path
+):
+    profile_home = tmp_path / "profiles" / "reviewer"
+    profile_auth = profile_home / "auth.json"
+    global_auth = tmp_path / "root" / "auth.json"
+    global_auth.parent.mkdir(parents=True)
+    global_auth.write_text(json.dumps({
+        "version": 1,
+        "providers": {"openai-codex": {
+            "tokens": {"access_token": "global-a", "refresh_token": "global-r"}
+        }},
+    }), encoding="utf-8")
+    before_global = global_auth.read_bytes()
+    monkeypatch.setattr(auth_mod, "_auth_file_path", lambda: profile_auth)
+    monkeypatch.setattr(auth_mod, "_global_auth_file_path", lambda: global_auth)
+    monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", lambda _: str(profile_home))
+    task = _make_task(id="codex", assignee="reviewer", provider_override="openai-codex")
+    assert kb._codex_capability_failure(task) is None
+    assert not profile_auth.exists()
+    assert global_auth.read_bytes() == before_global
+
+
+def test_dispatch_once_capability_blocks_codex_before_claim_without_fallback_or_shadow(kanban_home, monkeypatch, tmp_path):
+    profile_home = tmp_path / "profiles" / "programmer"
+    monkeypatch.setattr(kb, "_profile_model_provider", lambda _: "openai-codex")
+    monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", lambda _: str(profile_home))
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _: True)
+    global_auth = tmp_path / "root" / "auth.json"
+    global_auth.parent.mkdir(parents=True)
+    global_auth.write_text(json.dumps({"version": 1}), encoding="utf-8")
+    monkeypatch.setattr(auth_mod, "_auth_file_path", lambda: profile_home / "auth.json")
+    monkeypatch.setattr(auth_mod, "_global_auth_file_path", lambda: global_auth)
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="codex capability", assignee="programmer")
+        result = kb.dispatch_once(conn, dry_run=False, spawn_fn=lambda *args: pytest.fail("claim occurred"))
+        task = kb.get_task(conn, task_id)
+        runs = conn.execute("SELECT id FROM task_runs WHERE task_id = ?", (task_id,)).fetchall()
+    assert result.spawned == [] and result.skipped_capability[0][0] == task_id
+    assert task.status == "blocked" and task.block_kind == "capability"
+    assert "codex_auth_unavailable" in task.last_failure_error and runs == []
+    assert not (profile_home / "auth.json").exists()
+    assert global_auth.read_bytes() == b'{"version": 1}'
+
+
+def test_dispatch_once_unreadable_codex_auth_fails_closed_without_disk_mutation(kanban_home, monkeypatch, tmp_path):
+    """An auth read failure blocks before claim and cannot create lock/repair files."""
+    import agent.credential_pool as credential_pool
+
+    profile_home = tmp_path / "profiles" / "programmer"
+    global_home = tmp_path / "root"
+    profile_auth = profile_home / "auth.json"
+    global_auth = global_home / "auth.json"
+    profile_home.mkdir(parents=True)
+    global_home.mkdir(parents=True)
+    profile_auth.write_text('{"providers": {}}', encoding="utf-8")
+    global_auth.write_text('{"providers": {}}', encoding="utf-8")
+    before = (_tree_inventory(profile_home), _tree_inventory(global_home))
+
+    monkeypatch.setattr(kb, "_profile_model_provider", lambda _: "openai-codex")
+    monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", lambda _: str(profile_home))
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _: True)
+    monkeypatch.setattr(auth_mod, "_auth_file_path", lambda: profile_auth)
+    monkeypatch.setattr(auth_mod, "_global_auth_file_path", lambda: global_auth)
+    monkeypatch.setattr(credential_pool, "_codex_read_json_readonly", lambda path: (_ for _ in ()).throw(PermissionError("denied")))
+
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="unreadable codex", assignee="programmer")
+        result = kb.dispatch_once(conn, dry_run=False, spawn_fn=lambda *args: pytest.fail("claim occurred"))
+        task = kb.get_task(conn, task_id)
+        runs = conn.execute("SELECT id FROM task_runs WHERE task_id = ?", (task_id,)).fetchall()
+        events = conn.execute("SELECT kind FROM task_events WHERE task_id = ?", (task_id,)).fetchall()
+
+    assert result.spawned == []
+    assert result.skipped_capability[0][0] == task_id
+    assert task.status == "blocked" and task.block_kind == "capability"
+    assert task.claim_lock is None and task.started_at is None
+    assert runs == []
+    assert [row["kind"] for row in events] == ["created", "capability_blocked"]
+    assert "denied" not in task.last_failure_error
+    assert _tree_inventory(profile_home) == before[0]
+    assert _tree_inventory(global_home) == before[1]
+    assert not list(profile_home.rglob("*.lock"))
+    assert not list(global_home.rglob("*.lock"))
+    assert not list(profile_home.rglob("*.corrupt"))
+    assert not list(global_home.rglob("*.corrupt"))
+
+
+def test_dispatch_once_healthy_codex_pool_claims_through_same_preflight(kanban_home, monkeypatch, tmp_path):
+    profile_home = tmp_path / "profiles" / "programmer"
+    spawned = []
+    class HealthyPool:
+        _entries = [object()]
+        def select_readonly(self):
+            return self._entries[0]
+    monkeypatch.setattr(kb, "_profile_model_provider", lambda _: "openai-codex")
+    monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", lambda _: str(profile_home))
+    monkeypatch.setattr("agent.credential_pool.load_pool_readonly", lambda _: HealthyPool())
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _: True)
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="codex healthy", assignee="programmer")
+        result = kb.dispatch_once(conn, dry_run=False, spawn_fn=lambda task, workdir, **kwargs: spawned.append((task.id, workdir)) or 4242)
+        task = kb.get_task(conn, task_id)
+        runs = conn.execute("SELECT id FROM task_runs WHERE task_id = ?", (task_id,)).fetchall()
+    assert task is not None and result.skipped_capability == []
+    assert spawned == [(task_id, task.workspace_path)] and task.status == "running" and len(runs) == 1
+    assert not (profile_home / "auth.json").exists()
+
+
 # task_age — guard against corrupt timestamp values
 #
 # The Task dataclass declares ``created_at: int`` but rows come from sqlite

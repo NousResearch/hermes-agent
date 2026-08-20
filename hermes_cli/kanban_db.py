@@ -8049,6 +8049,7 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+    skipped_capability: list[tuple[str, str, str]] = field(default_factory=list)
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -9569,6 +9570,89 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _profile_model_provider(profile: Optional[str]) -> str:
+    if not profile:
+        return ""
+    try:
+        from hermes_cli.profiles import resolve_profile_env
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.config import load_config_readonly
+        token = set_hermes_home_override(resolve_profile_env(profile))
+        try:
+            config = load_config_readonly()
+        finally:
+            reset_hermes_home_override(token)
+        model = config.get("model") if isinstance(config, dict) else None
+        return str(model.get("provider") or "").strip().lower() if isinstance(model, dict) else ""
+    except Exception:
+        _log.debug("kanban capability: unable to resolve model provider")
+        # Provider resolution is intentionally tri-state at this boundary:
+        # only an explicit openai-codex result opts a task into the native
+        # Codex capability preflight.  An unresolved profile may be a
+        # launcher, external provider, or an ordinary test fixture, and must
+        # not be reinterpreted as Codex.
+        return ""
+
+
+def _codex_capability_failure(task: Task) -> Optional[str]:
+    provider = (task.provider_override or _profile_model_provider(task.assignee)).strip().lower()
+    if provider != "openai-codex":
+        return None
+    profile_token = None
+    try:
+        from agent.credential_pool import STATUS_EXHAUSTED, load_pool_readonly
+        from hermes_cli.auth import AuthError
+        from hermes_cli.profiles import resolve_profile_env
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        if task.assignee:
+            profile_token = set_hermes_home_override(resolve_profile_env(task.assignee))
+        pool = load_pool_readonly("openai-codex")
+        selected = pool.select_readonly()
+        if selected is None:
+            raise AuthError(
+                "No usable Codex credentials remain after preflight",
+                provider="openai-codex", code="codex_auth_unavailable",
+                relogin_required=True,
+            )
+    except Exception as exc:
+        # Preflight is fail-closed: unreadable, malformed, unsupported, or
+        # otherwise unevaluable auth state is never treated as healthy and is
+        # never allowed to fall through to another provider.
+        code = getattr(exc, "code", None)
+        safe_code = str(code).strip() if isinstance(code, str) else ""
+        if not safe_code or any(not (char.isalnum() or char in "_-") for char in safe_code):
+            safe_code = "codex_auth_unavailable"
+        return f"OpenAI Codex OAuth capability unavailable ({safe_code}); credential state could not be safely evaluated. No provider fallback or retry was attempted."
+    finally:
+        if profile_token is not None:
+            reset_hermes_home_override(profile_token)
+    return None
+
+
+def _block_codex_capability_before_dispatch(
+    conn: sqlite3.Connection,
+    task: Task,
+    *,
+    assignee: str,
+    dry_run: bool,
+    result: "DispatchResult",
+) -> bool:
+    """Fail closed before any claim/run/spawn mutation for unsupported auth."""
+    reason = _codex_capability_failure(task)
+    if reason is None:
+        return False
+    result.skipped_capability.append((task.id, assignee, reason))
+    if not dry_run:
+        with write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='blocked', block_kind='capability', "
+                "last_failure_error=? WHERE id=? AND status IN ('ready', 'review')",
+                (reason, task.id),
+            )
+            _append_event(conn, task.id, "capability_blocked", {"reason": reason})
+    return True
+
+
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one review+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
@@ -10181,6 +10265,11 @@ def _dispatch_once_locked(
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
             continue
+        capability_task = get_task(conn, row["id"])
+        if capability_task and _block_codex_capability_before_dispatch(
+            conn, capability_task, assignee=row_assignee, dry_run=dry_run, result=result
+        ):
+            continue
         # Per-profile concurrency cap (#21582): even if there's global
         # headroom, refuse to spawn for an assignee that's already at
         # its in-flight cap. Prevents one profile's local model / API
@@ -10328,6 +10417,11 @@ def _dispatch_once_locked(
             profile_exists = None  # type: ignore[assignment]
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
+            continue
+        capability_task = get_task(conn, row["id"])
+        if capability_task and _block_codex_capability_before_dispatch(
+            conn, capability_task, assignee=row["assignee"], dry_run=dry_run, result=result
+        ):
             continue
         if _per_profile_cap is not None:
             current = _per_profile_running.get(row["assignee"], 0)

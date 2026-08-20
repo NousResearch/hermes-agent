@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
-import { $layoutTree } from '@/components/pane-shell/tree/store'
+import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
 import {
+  $focusedSessionIsTile,
+  $focusedStoredSessionId,
   $sessionStates,
   $sessionTiles,
   blankDraftTile,
@@ -22,6 +24,81 @@ import {
 
 const tile = (storedSessionId: string): SessionTile => ({ storedSessionId })
 const tilePane = (id: string) => `session-tile:${id}`
+
+describe('focused session state', () => {
+  beforeEach(() => {
+    $selectedStoredSessionId.set(null)
+    $layoutTree.set(null)
+    noteActiveTreeGroup(null)
+  })
+
+  afterEach(() => {
+    $selectedStoredSessionId.set(null)
+    $layoutTree.set(null)
+    noteActiveTreeGroup(null)
+  })
+
+  it('reports workspace focus', () => {
+    $selectedStoredSessionId.set('main')
+    $layoutTree.set(group(['workspace'], { active: 'workspace', id: 'main-group' }))
+    noteActiveTreeGroup('main-group')
+
+    expect($focusedSessionIsTile.get()).toBe(false)
+    expect($focusedStoredSessionId.get()).toBe('main')
+  })
+
+  it('reports a differing tile', () => {
+    $selectedStoredSessionId.set('main')
+    $layoutTree.set(
+      split('row', [
+        group(['workspace'], { active: 'workspace', id: 'main-group' }),
+        group([tilePane('tile')], { active: tilePane('tile'), id: 'tile-group' })
+      ])
+    )
+    noteActiveTreeGroup('tile-group')
+
+    expect($focusedSessionIsTile.get()).toBe(true)
+    expect($focusedStoredSessionId.get()).toBe('tile')
+  })
+
+  it('reports a tile when its identity equals selection', () => {
+    $selectedStoredSessionId.set('tile')
+    $layoutTree.set(group([tilePane('tile')], { active: tilePane('tile'), id: 'tile-group' }))
+    noteActiveTreeGroup('tile-group')
+
+    expect($focusedSessionIsTile.get()).toBe(true)
+    expect($focusedStoredSessionId.get()).toBe('tile')
+  })
+
+  it('reports workspace state without a group or tree', () => {
+    $selectedStoredSessionId.set('main')
+    $layoutTree.set(group([tilePane('tile')], { active: tilePane('tile'), id: 'tile-group' }))
+
+    expect($focusedSessionIsTile.get()).toBe(false)
+    expect($focusedStoredSessionId.get()).toBe('main')
+
+    noteActiveTreeGroup('tile-group')
+    $layoutTree.set(null)
+
+    expect($focusedSessionIsTile.get()).toBe(false)
+    expect($focusedStoredSessionId.get()).toBe('main')
+  })
+
+  it('preserves restored tile focus then returns to workspace', () => {
+    $layoutTree.set(group(['workspace', tilePane('tile')], { active: tilePane('tile'), id: 'main-group' }))
+    noteActiveTreeGroup('main-group')
+    markSelectionRestore()
+    $selectedStoredSessionId.set('tile')
+
+    expect($focusedSessionIsTile.get()).toBe(true)
+    expect($focusedStoredSessionId.get()).toBe('tile')
+
+    $selectedStoredSessionId.set('next')
+
+    expect($focusedSessionIsTile.get()).toBe(false)
+    expect($focusedStoredSessionId.get()).toBe('next')
+  })
+})
 
 describe('resetTileRuntimeBindings', () => {
   afterEach(() => {

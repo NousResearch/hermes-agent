@@ -988,13 +988,16 @@ export function reopenLastClosedTile(): void {
 
 /** Stored id of the focused session (the interacted zone's tile, else the
  *  primary's selection). Null on a fresh draft. */
-export const $focusedStoredSessionId = computed(
-  [$activeTreeGroup, $layoutTree, $selectedStoredSessionId],
-  (groupId, tree, selected) => {
-    const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
+const $focusedTreePaneId = computed([$activeTreeGroup, $layoutTree], (groupId, tree) =>
+  groupId && tree ? findGroup(tree, groupId)?.active : undefined
+)
 
-    return active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
-  }
+export const $focusedSessionIsTile = computed($focusedTreePaneId, active =>
+  Boolean(active?.startsWith(TILE_PANE_PREFIX))
+)
+
+export const $focusedStoredSessionId = computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) =>
+  active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
 )
 
 /** Every session currently OPEN as a surface: the primary's selection plus

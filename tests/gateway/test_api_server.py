@@ -1055,6 +1055,43 @@ class TestChatCompletionsEndpoint:
 
 
     @pytest.mark.asyncio
+    async def test_session_chat_stream_forwards_reasoning_available(self, adapter):
+        async def _mock_run_agent(**kwargs):
+            kwargs["tool_progress_callback"](
+                "reasoning.available",
+                preview="reasoning text",
+            )
+            return (
+                {"final_response": "ok", "messages": [], "api_calls": 1},
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": "s1"}, None)),
+                patch.object(adapter, "_conversation_history_for_session", return_value=[]),
+                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+            ):
+                resp = await cli.post(
+                    "/api/sessions/s1/chat/stream",
+                    json={"message": "hi"},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        events = {
+            event: json.loads(data)
+            for event, data in (
+                (frame.splitlines()[0].removeprefix("event: "), frame.splitlines()[1].removeprefix("data: "))
+                for frame in body.strip().split("\n\n")
+            )
+        }
+        assert events["reasoning.available"]["text"] == "reasoning text"
+        assert "tool.progress" not in events
+
+
+    @pytest.mark.asyncio
     async def test_stream_task_done_callback_enqueues_eos_for_chat_completions(self, adapter):
         """Regression guard for #24451: completion callback must signal SSE EOS."""
         app = _create_app(adapter)

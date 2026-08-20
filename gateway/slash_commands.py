@@ -19,6 +19,7 @@ import asyncio
 import dataclasses
 import hashlib
 import inspect
+import json
 import logging
 import os
 import re
@@ -575,9 +576,16 @@ class GatewaySlashCommandsMixin:
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
-        from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
+        from gateway.run import (
+            _AGENT_PENDING_SENTINEL,
+            _get_channel_override,
+            _load_gateway_config,
+            _resolve_gateway_model,
+        )
 
         source = event.source
+        normalize_source = getattr(self, "_normalize_source_for_session_key")
+        source = await asyncio.to_thread(normalize_source, source)
         session_entry = await self.async_session_store.get_or_create_session(source)
 
         connected_platforms = [p.value for p in self.adapters.keys()]
@@ -657,53 +665,173 @@ class GatewaySlashCommandsMixin:
                 except Exception:
                     status_agent = None
 
+        has_live_agent = (
+            status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL
+        )
         model_name = ""
         provider_name = ""
         base_url = ""
-        route_resolved = False
         context_used = 0
         context_total = 0
-        if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
-            live_model = _clean_str(getattr(status_agent, "model", ""))
-            live_provider = _clean_str(getattr(status_agent, "provider", ""))
-            if live_model and live_provider:
-                model_name = live_model
-                provider_name = live_provider
-                base_url = _clean_str(getattr(status_agent, "base_url", ""))
-                route_resolved = True
+        if has_live_agent:
+            model_name = _clean_str(getattr(status_agent, "model", ""))
+            provider_name = _clean_str(getattr(status_agent, "provider", ""))
+            base_url = _clean_str(getattr(status_agent, "base_url", ""))
             ctx = getattr(status_agent, "context_compressor", None)
             if ctx is not None:
                 context_used = _int_value(getattr(ctx, "last_prompt_tokens", 0))
                 context_total = _int_value(getattr(ctx, "context_length", 0))
 
-        persisted_model = _clean_str(persisted_route.get("model"))
-        persisted_provider = _clean_str(persisted_route.get("billing_provider"))
-        if not route_resolved and persisted_model and persisted_provider:
-            model_name = persisted_model
-            provider_name = persisted_provider
-            base_url = _clean_str(persisted_route.get("billing_base_url"))
-            route_resolved = True
-        if not route_resolved:
-            model_name = _clean_str(session_row.get("model"))
-            provider_name = _clean_str(session_row.get("billing_provider"))
-            base_url = _clean_str(session_row.get("billing_base_url"))
-        context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
-
+        # Prefer a live/cached route, then explicit session/channel overrides,
+        # then the last actual gateway route persisted for this session.  The
+        # current config and historical billing fields are fallbacks for
+        # sessions without one of those more authoritative sources.  This is
+        # a pure display path: never call the state-mutating runtime resolver
+        # or credential helpers from /status.
         user_config: dict[str, Any] = {}
-        if not model_name or not provider_name or not context_total:
+        if not has_live_agent or not model_name or not provider_name or not context_total:
             try:
                 user_config = _load_gateway_config()
             except Exception:
                 user_config = {}
+
+        model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
+        if not isinstance(model_cfg, dict):
+            model_cfg = {}
+
+        persisted_runtime: dict[str, Any] = {}
+        raw_model_config = session_row.get("model_config")
+        if isinstance(raw_model_config, dict):
+            parsed_model_config = raw_model_config
+        elif isinstance(raw_model_config, str) and raw_model_config.strip():
+            try:
+                parsed_model_config = json.loads(raw_model_config)
+            except (TypeError, ValueError):
+                parsed_model_config = {}
+        else:
+            parsed_model_config = {}
+        if isinstance(parsed_model_config, dict):
+            candidate_runtime = parsed_model_config.get("gateway_runtime")
+            if isinstance(candidate_runtime, dict):
+                persisted_runtime = candidate_runtime
+        persisted_model = ""
+        persisted_provider = ""
+        if persisted_runtime:
+            persisted_model = _clean_str(
+                persisted_runtime.get("model") or session_row.get("model")
+            )
+            persisted_provider = _clean_str(persisted_runtime.get("provider"))
+
+        session_override: dict[str, Any] = {}
+        try:
+            peek_session_state = getattr(self, "_peek_session_state", None)
+            state = (
+                peek_session_state(session_key)
+                if callable(peek_session_state)
+                else None
+            )
+            conversation = getattr(state, "conversation", None)
+            override = getattr(conversation, "model_override", None)
+            if isinstance(override, dict):
+                session_override = override
+        except Exception:
+            pass
+        if not session_override:
+            override = getattr(session_entry, "model_override", None)
+            if isinstance(override, dict):
+                session_override = override
+
+        channel_override = None
+        try:
+            config = getattr(self, "config", None)
+            channel_platform = getattr(source, "platform", None)
+            if config is not None and channel_platform is not None:
+                channel_thread_id = getattr(source, "thread_id", None)
+                channel_parent_id = getattr(source, "parent_chat_id", None)
+                channel_override = _get_channel_override(
+                    config,
+                    channel_platform,
+                    str(getattr(source, "chat_id", "") or ""),
+                    thread_id=str(channel_thread_id) if channel_thread_id else None,
+                    parent_id=str(channel_parent_id) if channel_parent_id else None,
+                )
+        except Exception:
+            channel_override = None
+
+        has_channel_route_override = channel_override is not None and bool(
+            _clean_str(getattr(channel_override, "model", ""))
+            or _clean_str(getattr(channel_override, "provider", ""))
+        )
+        has_session_route_override = bool(session_override) or has_channel_route_override
+
+        # ``/status`` is display-only: it computes the displayed route PURELY
+        # and never invokes the state-mutating runtime resolver
+        # (``_resolve_session_agent_runtime``) or any credential helper, so the
+        # render leaves no trace in conversation/process/credential state.  The
+        # precedence below is: live/cached agent → session ``/model`` override
+        # (#2) → channel override (#3) → persisted ``gateway_runtime`` (#4) →
+        # current global config (#5) → legacy first-accounted billing (#6).
+
+        # ``billing_provider`` is intentionally first-accounted attribution,
+        # while ``gateway_runtime`` is synchronized after each completed turn
+        # with the route that actually answered the session.  For an incomplete
+        # live route (or an idle session) with no explicit session/channel
+        # override, the last actual gateway route (persisted ``gateway_runtime``,
+        # #4) is more authoritative than the current global config (#5), so
+        # apply it BEFORE the config fallbacks below.
+        if not has_session_route_override:
+            if not model_name:
+                model_name = persisted_model
+            if not provider_name:
+                provider_name = persisted_provider
+
+        # An explicit session ``/model`` override (#2) beats a channel override
+        # (#3) beats the current global config (#5); ``resolve_effective_model``
+        # is the single owner of that ordering.  Only consult it for what a more
+        # authoritative live or persisted source did not already supply.
+        if not model_name:
+            try:
+                from hermes_cli.model_switch import resolve_effective_model
+
+                model_name = resolve_effective_model(
+                    session_override,
+                    channel_override,
+                    _resolve_gateway_model(user_config),
+                )
+            except Exception:
+                model_name = _clean_str(model_cfg.get("default"))
+        if not provider_name:
+            provider_name = _clean_str(session_override.get("provider"))
+        if not provider_name and channel_override is not None:
+            provider_name = _clean_str(getattr(channel_override, "provider", ""))
+        if not provider_name:
+            provider_name = _clean_str(model_cfg.get("provider"))
+
+        # Resolve directly from current config before consulting historical
+        # billing metadata whenever no persisted runtime field is present.
         if not model_name:
             model_name = _resolve_gateway_model(user_config)
         if not provider_name:
-            model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
-            if isinstance(model_cfg, dict):
-                provider_name = _clean_str(model_cfg.get("provider"))
+            provider_name = _clean_str(model_cfg.get("provider"))
+
+        # The dominant persisted model route keeps historical model/provider
+        # attribution coherent (#87227), but it remains below current routing
+        # config for /status (#77521).  Fall back to legacy summary fields only
+        # when no complete dominant route exists.
+        dominant_model = _clean_str(persisted_route.get("model"))
+        dominant_provider = _clean_str(persisted_route.get("billing_provider"))
+        if not model_name and not provider_name and dominant_model and dominant_provider:
+            model_name = dominant_model
+            provider_name = dominant_provider
+            base_url = _clean_str(persisted_route.get("billing_base_url"))
+        else:
+            model_name = model_name or _clean_str(session_row.get("model"))
+            provider_name = provider_name or _clean_str(session_row.get("billing_provider"))
+            base_url = base_url or _clean_str(session_row.get("billing_base_url"))
+        context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
+
         if not context_total:
-            model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
-            configured_context = model_cfg.get("context_length") if isinstance(model_cfg, dict) else None
+            configured_context = model_cfg.get("context_length")
             if isinstance(configured_context, int) and configured_context > 0:
                 context_total = configured_context
 

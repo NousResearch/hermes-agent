@@ -201,3 +201,59 @@ def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatc
     assert ("claim", "cli", True) in calls
     assert ("run", "hello", []) in calls
     assert calls[-1] == ("finalize", "quiet-session")
+
+
+def test_quiet_single_query_exits_nonzero_for_incomplete_turn(monkeypatch):
+    import cli as cli_mod
+
+    result = {
+        "final_response": "I reached the iteration limit before finishing.",
+        "completed": False,
+        "failed": False,
+        "interrupted": False,
+    }
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.provider = "test-provider"
+            self.model = "test-model"
+            self.session_id = "quiet-session"
+            self.conversation_history = []
+            self._active_agent_route_signature = "same-route"
+            self.agent = SimpleNamespace(
+                session_id="quiet-session",
+                platform="cli",
+                quiet_mode=False,
+                suppress_status_output=False,
+                stream_delta_callback=object(),
+                tool_gen_callback=object(),
+                run_conversation=lambda **_kwargs: result,
+            )
+
+        def _claim_active_session(self, *_args, **_kwargs):
+            return True
+
+        def _ensure_runtime_credentials(self):
+            return True
+
+        def _resolve_turn_agent_config(self, _query):
+            return {
+                "signature": "same-route",
+                "model": None,
+                "runtime": None,
+                "request_overrides": None,
+            }
+
+        def _init_agent(self, **_kwargs):
+            return True
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
+    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli_mod.atexit, "register", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_mod, "_finalize_single_query", lambda _cli: None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.main(query="hello", quiet=True, toolsets="terminal")
+
+    assert exc_info.value.code == 1

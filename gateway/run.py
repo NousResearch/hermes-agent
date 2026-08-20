@@ -19998,6 +19998,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
 
             response = agent_result.get("final_response") or ""
+            # Preserve the agent's semantic turn outcome through the platform
+            # delivery boundary. A non-empty fallback can still represent an
+            # incomplete turn (for example, iteration-budget exhaustion), and
+            # protocol adapters such as A2A must not infer completion merely
+            # because text was delivered successfully.
+            if isinstance(getattr(event, "metadata", None), dict):
+                event.metadata["agent_turn_completed"] = (
+                    agent_result.get("completed") is not False
+                )
             # Hidden-reasoning-only retry exhaustion: the loop's sentinel text
             # ("Codex response remained incomplete after 3 continuation
             # attempts") doubles as final_response, so it would be delivered

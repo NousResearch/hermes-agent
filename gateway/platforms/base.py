@@ -6450,6 +6450,10 @@ class BasePlatformAdapter(ABC):
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                if "agent_turn_completed" in event.metadata:
+                    _final_thread_metadata["agent_turn_completed"] = bool(
+                        event.metadata["agent_turn_completed"]
+                    )
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has

@@ -71,6 +71,25 @@ def _make_incomplete_result() -> dict:
     }
 
 
+def _make_budget_exhausted_result() -> dict:
+    summary = "I reached the iteration limit before finishing."
+    return {
+        "final_response": summary,
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": summary},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "api_calls": 1,
+        "partial": False,
+        "completed": False,
+        "interrupted": False,
+        "turn_exit_reason": "max_iterations_reached(1/1)",
+        "last_prompt_tokens": 0,
+    }
+
+
 def _make_runner(adapter: CaptureSlackAdapter) -> gateway_run.GatewayRunner:
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.config = GatewayConfig(
@@ -153,3 +172,71 @@ async def test_incomplete_codex_turn_stays_out_of_slack_transcript(monkeypatch, 
         ("start", "m-1"),
         ("complete", "m-1", ProcessingOutcome.SUCCESS),
     ]
+
+
+@pytest.mark.asyncio
+async def test_gateway_delivery_preserves_incomplete_turn_metadata(monkeypatch, tmp_path):
+    adapter = CaptureSlackAdapter()
+    runner = _make_runner(adapter)
+    runner._run_agent = AsyncMock(return_value=_make_budget_exhausted_result())
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100,
+    )
+    monkeypatch.setenv("SLACK_HOME_CHANNEL", "C123")
+
+    adapter.set_message_handler(runner._handle_message)
+    adapter._keep_typing = lambda *_args, **_kwargs: asyncio.Event().wait()
+
+    event = _make_event()
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["content"] == (
+        "I reached the iteration limit before finishing."
+    )
+    assert adapter.sent[0]["metadata"]["notify"] is True
+    assert adapter.sent[0]["metadata"]["agent_turn_completed"] is False
+
+
+@pytest.mark.asyncio
+async def test_gateway_delivery_defaults_legacy_result_to_completed(monkeypatch, tmp_path):
+    adapter = CaptureSlackAdapter()
+    runner = _make_runner(adapter)
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "Done.",
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "Done."},
+            ],
+            "tools": [],
+            "history_offset": 0,
+            "api_calls": 1,
+        }
+    )
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100,
+    )
+    monkeypatch.setenv("SLACK_HOME_CHANNEL", "C123")
+
+    adapter.set_message_handler(runner._handle_message)
+    adapter._keep_typing = lambda *_args, **_kwargs: asyncio.Event().wait()
+
+    event = _make_event()
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["content"] == "Done."
+    assert adapter.sent[0]["metadata"]["agent_turn_completed"] is True

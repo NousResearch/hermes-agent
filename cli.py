@@ -20725,7 +20725,10 @@ def main(
                         # permanently block the card. Non-kanban runs keep the
                         # plain 0/1 contract automation wrappers expect.
                         _exit_code = 0
-                        if isinstance(result, dict) and result.get("failed"):
+                        if isinstance(result, dict) and (
+                            result.get("failed")
+                            or result.get("completed") is False
+                        ):
                             _exit_code = 1
                             if os.environ.get("HERMES_KANBAN_TASK") and result.get(
                                 "failure_reason"

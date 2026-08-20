@@ -884,7 +884,11 @@ class A2AAdapter(BasePlatformAdapter):
             except Exception as e:
                 return security.redact_outbound(f"Profile dispatch failed: {e}"), protocol.STATE_FAILED
             if proc.returncode != 0:
-                msg = (proc.stderr or proc.stdout or f"profile exited {proc.returncode}").strip()
+                # Quiet CLI writes the useful partial response to stdout and
+                # session bookkeeping to stderr.  Iteration exhaustion now
+                # exits nonzero, but the partial response is still valuable to
+                # the peer, so prefer it over the stderr session-id line.
+                msg = (proc.stdout or proc.stderr or f"profile exited {proc.returncode}").strip()
                 return security.redact_outbound(msg[-2000:]), protocol.STATE_FAILED
             if not session_id:
                 session_id = self._latest_a2a_session(profile, start)
@@ -1243,7 +1247,12 @@ class A2AAdapter(BasePlatformAdapter):
         if not (metadata or {}).get("notify"):
             logger.debug("A2A: ignoring non-final send for context %s", chat_id)
             return SendResult(success=True, message_id=message_id)
-        if not self._resolve_oldest_for_context(chat_id, protocol.STATE_COMPLETED, content or ""):
+        state = (
+            protocol.STATE_COMPLETED
+            if (metadata or {}).get("agent_turn_completed", True)
+            else protocol.STATE_FAILED
+        )
+        if not self._resolve_oldest_for_context(chat_id, state, content or ""):
             # No waiter (e.g. a late chunk or out-of-band send) — drop it.
             logger.debug("A2A: send() for context %s had no pending waiter", chat_id)
         return SendResult(success=True, message_id=message_id)

@@ -9563,7 +9563,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         print()
     
     def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Return recent CLI sessions for in-chat browsing/resume affordances."""
+        """Return recent human-facing sessions for in-chat browsing/resume."""
         if not self._session_db:
             return []
         try:
@@ -9571,12 +9571,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             return query_session_listing(
                 self._session_db,
-                source="cli",
+                source=None,
                 current_session_id=self.session_id,
-                include_all_sources=False,
+                include_all_sources=True,
                 include_unnamed=True,
                 limit=limit,
-                exclude_sources=["kanban", "tool"],
+                exclude_sources=["kanban", "tool", "subagent"],
             )
         except Exception:
             return []

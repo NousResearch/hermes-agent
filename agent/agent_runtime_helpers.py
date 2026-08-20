@@ -3758,6 +3758,36 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
             removed_dupes,
         )
+
+    # 4. Drop assistant messages left with nothing to send.  Step 3 empties an
+    # assistant message's tool_calls when every call it carried was a duplicate,
+    # which happens with models that reuse the same tool_call_id across turns
+    # (observed: kimi-k2.7-code re-emitting "terminal_121").  Strict providers
+    # reject the resulting content-less message with HTTP 400 "the message at
+    # position N with role 'assistant' must not be empty", and that error is
+    # non-retryable, so the whole turn dies.  Reasoning-bearing messages are kept
+    # so codex-style continuity is untouched.
+    pruned: List[Dict[str, Any]] = []
+    removed_empty = 0
+    for msg in messages:
+        if (
+            msg.get("role") == "assistant"
+            and not str(msg.get("content") or "").strip()
+            and not msg.get("tool_calls")
+            and not msg.get("function_call")
+            and not msg.get("reasoning")
+            and not msg.get("reasoning_content")
+            and not msg.get("reasoning_details")
+        ):
+            removed_empty += 1
+            continue
+        pruned.append(msg)
+    if removed_empty:
+        messages = pruned
+        _ra().logger.warning(
+            "Pre-call sanitizer: dropped %d empty assistant message(s)",
+            removed_empty,
+        )
     return messages
 
 

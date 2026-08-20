@@ -371,3 +371,71 @@ def test_actual_runtime_config_local_base_url_without_key(monkeypatch):
 
     assert resolved["api_key"] == ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
     assert resolved["api_mode"] == "codex_responses"
+
+
+# ---------------------------------------------------------------------------
+# Responses-API routing on the agent-side predicate
+#
+# The tests above cover the registry/config route (determine_api_mode,
+# resolve_runtime_provider), which is what the PRIMARY path consults. The
+# fallback-activation ladder in agent/chat_completion_helpers.py does not
+# consult the registry — it derives fb_api_mode from an explicit provider list
+# plus AIAgent._provider_model_requires_responses_api, defaulting to
+# chat_completions. That predicate had no `actual` coverage, so when its
+# `actual` branch was dropped in 8f2712725 (an unrelated /refine commit) every
+# registry-route test above still passed and nothing failed.
+# ---------------------------------------------------------------------------
+
+
+def test_actual_predicate_requires_responses_api_for_non_gpt5_models():
+    """`actual` is Responses-only for every model it serves, not just gpt-5.x."""
+    from run_agent import AIAgent
+
+    for model in ("actual/local-model", "kimi-k2", "llama-3.3-70b", ""):
+        assert AIAgent._provider_model_requires_responses_api(
+            model, provider="actual"
+        ) is True, f"actual/{model!r} must route to the Responses API"
+
+
+def test_actual_predicate_is_case_and_whitespace_insensitive():
+    from run_agent import AIAgent
+
+    for spelling in ("ACTUAL", " actual ", "Actual"):
+        assert AIAgent._provider_model_requires_responses_api(
+            "some-model", provider=spelling
+        ) is True
+
+
+def test_actual_predicate_matches_its_registry_transport():
+    """The predicate must agree with the overlay that defines the wire format.
+
+    Ties the agent-side answer to the single source of truth, so a future edit
+    to either side that desynchronises them fails here.
+    """
+    from hermes_cli.providers import HERMES_OVERLAYS
+    from run_agent import AIAgent
+
+    assert HERMES_OVERLAYS["actual"].transport == "codex_responses"
+    assert AIAgent._provider_model_requires_responses_api(
+        "actual/local-model", provider="actual"
+    ) is True
+
+
+def test_other_providers_keep_their_existing_routing():
+    """Restoring the `actual` branch must not disturb its neighbours."""
+    from run_agent import AIAgent
+
+    # Nous and custom stay on chat completions even for gpt-5.x.
+    assert AIAgent._provider_model_requires_responses_api(
+        "gpt-5.4", provider="nous"
+    ) is False
+    assert AIAgent._provider_model_requires_responses_api(
+        "gpt-5.4", provider="custom"
+    ) is False
+    # An unrelated provider still falls through to the model-name rule.
+    assert AIAgent._provider_model_requires_responses_api(
+        "gpt-5.4", provider="openrouter"
+    ) is True
+    assert AIAgent._provider_model_requires_responses_api(
+        "llama-3.3-70b", provider="openrouter"
+    ) is False

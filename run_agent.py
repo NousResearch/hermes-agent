@@ -7490,6 +7490,7 @@ class AIAgent:
             "opencode-go", "opencode-zen",
             "zai", "bedrock",
             "xiaomi", "vertex",
+            "custom",
         }:
             return True
         base = (getattr(self, "base_url", "") or "").lower()

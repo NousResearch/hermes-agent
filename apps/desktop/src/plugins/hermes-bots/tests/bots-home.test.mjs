@@ -106,6 +106,7 @@ globalThis.__home = {
   botRosterKey,
   parseRosterKey,
   ghostRosterOwner,
+  rosterWithSelectedOwner,
   reconcileRosterSelection,
   saveRosterPreference,
   saveSelectedRosterBot,
@@ -341,6 +342,34 @@ test('an offline gateway keeps the selection and its identity (relaunch case)', 
   assertNothingRouted(t, 'rendering an offline owner')
 })
 
+test('cold-start outage keeps the selected owner in the visible roster without caching every bot', () => {
+  const t = load()
+  const sources = [
+    { connectionId: 'work-vps', kind: 'remote', label: 'Work', reachable: false, error: 'ECONNREFUSED' },
+    { connectionId: 'local', kind: 'local', label: 'This device', reachable: true }
+  ]
+  const localOnly = [{ connectionId: 'local', name: 'writer' }]
+
+  const restored = t.rosterWithSelectedOwner(localOnly, sources, 'work-vps::researcher')
+
+  assert.equal(restored.length, 2, 'only the exact selected owner is restored, not an invented remote roster')
+  assert.equal(t.botRosterKey(restored[1]), 'work-vps::researcher')
+  assert.equal(restored[1].connectionLabel, 'Work')
+  assert.equal(restored[1].sourceReachable, false)
+  assert.equal(t.rosterWithSelectedOwner(restored, sources, 'work-vps::researcher').length, 2, 'never duplicated')
+})
+
+test('a reachable source never receives a ghost row for a deleted bot', () => {
+  const t = load()
+  const roster = [{ connectionId: 'local', name: 'writer' }]
+  const sources = [
+    { connectionId: 'work-vps', kind: 'remote', label: 'Work', reachable: true },
+    { connectionId: 'local', kind: 'local', label: 'This device', reachable: true }
+  ]
+
+  assert.equal(t.rosterWithSelectedOwner(roster, sources, 'work-vps::deleted').length, 1)
+})
+
 test('a reachable source that no longer lists the bot clears the selection', () => {
   const t = load()
   t.setPluginCtx({ storage: { set: () => undefined } })
@@ -506,6 +535,26 @@ test('an explicit remote selection fronts the home over a focused chat', async (
   await t.openRosterBot({ connectionId: 'work-vps', connectionLabel: 'Work', name: 'relay', remoteSource: true })
   assert.equal(t.opened.length, 1)
   assert.equal(t.$selectedRosterKey.get(), 'work-vps::relay')
+})
+
+test('entering Bot Mode fronts the selected-owner home over a Sessions composer', () => {
+  const t = load({ focusedStoredSessionId: 'sessions-chat' })
+  t.$botsPaneVisible.set(true)
+
+  t.syncBotsHomeWorkspace()
+  assert.deepEqual(t.opened, [], 'passive polling still leaves a focused session alone')
+
+  t.syncBotsHomeWorkspace(true)
+  assert.equal(t.opened.length, 1, 'the Bot Mode transition has an exact owner instead of the Sessions composer')
+  assert.equal(t.opened[0].id, 'hermes-bots:home')
+})
+
+test('source contract: sidebar entry and boot restore explicitly front the Bot Mode home', () => {
+  assert.match(pluginSource, /stopSidebarSync = \$sidebarVisible\.listen\(visible => \{[\s\S]{0,350}?syncWorkspaceSurfaces\(Boolean\(visible\)\)/)
+  assert.match(
+    pluginSource,
+    /\$botChatFocused\.set\(sessionOwnsWorkspace\(\)\)[\s\S]{0,350}?syncWorkspaceSurfaces\(Boolean\(\$sidebarVisible\.get\(\)\)\)/
+  )
 })
 
 test('an opened chat releases the center once focus leaves it', () => {

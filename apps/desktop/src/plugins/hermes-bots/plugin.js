@@ -11055,6 +11055,23 @@ function ghostRosterOwner(key, sources) {
   }
 }
 
+/** Keep the exact selected owner visible through a cold-start outage without
+ *  persisting the whole remote roster. The source registry supplies the
+ *  gateway identity/status; the source-qualified selection supplies the bot
+ *  identity. Once that source answers again, the live row replaces the ghost
+ *  (or reconciliation clears it when the bot was actually removed). */
+function rosterWithSelectedOwner(roster, sources, key) {
+  const rows = Array.isArray(roster) ? roster : []
+
+  if (!key || selectedRosterBot(rows, key)) {
+    return rows
+  }
+
+  const ghost = ghostRosterOwner(key, sources)
+
+  return ghost ? [...rows, ghost] : rows
+}
+
 /** Keep the persisted selection honest against the live roster and seat a
  *  first selection when there is none. PRESENTATION ONLY: it never opens,
  *  prepares, activates, or creates anything — an unreachable owner keeps its
@@ -11368,13 +11385,13 @@ function openBotsHomeWorkspace(explicit = false) {
  *  deliberately does not close an open home — the home may sit over a
  *  focused-but-hidden chat after an explicit selection; the chat reclaims
  *  the center on its focus EDGE (handleWorkspaceFocusChange). */
-function syncBotsHomeWorkspace() {
+function syncBotsHomeWorkspace(explicit = false) {
   if (!$botsPaneVisible.get() || $groupChatWorkspace.get() || $openBotChat.get()) {
     closeBotsHomeWorkspace()
     return
   }
 
-  openBotsHomeWorkspace()
+  openBotsHomeWorkspace(explicit)
 }
 
 /** An opened bot chat stops owning the center once focus leaves it (closed,
@@ -11662,6 +11679,7 @@ function BotsPane() {
   const rememberedSources = useValue($lastSources)
   useValue($botRosterPrefs)
   const selectionHydrated = useValue($selectedRosterHydrated)
+  const selectedRosterKey = useValue($selectedRosterKey)
 
   // The socket opening (boot, SSH reconnect, sleep/wake) is the signal to
   // retry immediately instead of waiting out the poll interval.
@@ -11689,7 +11707,11 @@ function BotsPane() {
   // a notice; the full error card is reserved for "never had a roster".
   const live = Array.isArray(data?.profiles) ? data.profiles : null
   const source = live ?? (error ? $lastRoster.get() : [])
-  const roster = source.slice().sort((a, b) => {
+  const sourceSnapshot = Array.isArray(data?.sources) ? data.sources : rememberedSources
+  const sourceWithSelectedOwner = selectionHydrated
+    ? rosterWithSelectedOwner(source, sourceSnapshot, selectedRosterKey)
+    : source
+  const roster = sourceWithSelectedOwner.slice().sort((a, b) => {
     const pa = isPinned(a) ? 1 : 0
     const pb = isPinned(b) ? 1 : 0
 
@@ -11704,7 +11726,6 @@ function BotsPane() {
   // neutral loading state instead of flashing the first-run "No bots" copy.
   const initialRosterLoading = !data && !error && roster.length === 0
   const activeRosterKeys = new Set(activeBots(roster, activeProfile, gatewayState).map(botRosterKey))
-  const sourceSnapshot = Array.isArray(data?.sources) ? data.sources : rememberedSources
   const gatewayOptions = rosterGatewayOptions(sourceSnapshot, roster)
   const selectedGateway = gatewayOptions.find(option => option.connectionId === gatewayFilter)
   const gatewayFilterExists = gatewayFilter === 'all' || Boolean(selectedGateway)
@@ -12689,14 +12710,18 @@ export default {
 
       // One recompute for both main-area surfaces: they answer the same
       // question (who owns the center) from the same three signals.
-      const syncWorkspaceSurfaces = () => {
-        syncBotsHomeWorkspace()
+      const syncWorkspaceSurfaces = (explicitHome = false) => {
+        syncBotsHomeWorkspace(explicitHome)
         syncRoutinesPane()
       }
 
       const stopSidebarSync = $sidebarVisible.listen(visible => {
         $botsPaneVisible.set(Boolean(visible))
-        syncWorkspaceSurfaces()
+        // Entering Bot Mode is a user-visible ownership transition, even
+        // when layout restore left a Sessions composer focused underneath.
+        // Front the selected bot's home; the session remains alive and can
+        // reclaim the center on its own focus edge.
+        syncWorkspaceSurfaces(Boolean(visible))
       })
       const stopGroupSync = $groupChatWorkspace.listen(syncWorkspaceSurfaces)
       // The home tab's visibility flips are the ONLY signal for two real
@@ -12736,7 +12761,11 @@ export default {
 
       $botsPaneVisible.set(Boolean($sidebarVisible.get()))
       $botChatFocused.set(sessionOwnsWorkspace())
-      syncWorkspaceSurfaces()
+      // A persisted layout can boot directly into Bot Mode while restoring
+      // the generic Sessions workspace as the active sibling. Treat that as
+      // entering Bot Mode so the exact selected owner, not the composer,
+      // owns the first frame after plugin hydration.
+      syncWorkspaceSurfaces(Boolean($sidebarVisible.get()))
 
       if (typeof ctx.onDispose === 'function') {
         // The registration disposer is already tracked by ctx.register; only

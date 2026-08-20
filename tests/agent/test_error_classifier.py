@@ -354,6 +354,53 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_rotate_credential is False
 
+    def test_429_with_insufficient_balance_is_billing_not_rate_limit(self):
+        """A 429 about money must not get the rate-limit cooldown.
+
+        z.ai answers a depleted balance with status 429 and
+        "1113 Insufficient balance ... Please recharge". Classified as rate_limit
+        that earns the 429 TTL — one hour, or 60s when it is the pool's only
+        credential (EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS) — so the pool goes back
+        to a key that cannot serve a request until someone tops it up. The wait is
+        days, not minutes, and only the billing classification reflects that.
+        """
+        e = MockAPIError(
+            "1113 Insufficient balance, Please recharge and try again",
+            status_code=429,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_429_with_an_exhausted_plan_allowance_is_billing(self):
+        """Same shape for a plan whose window has run out rather than a balance."""
+        e = MockAPIError(
+            "Your credits have been exhausted for this billing period",
+            status_code=429,
+        )
+        assert classify_api_error(e).reason == FailoverReason.billing
+
+    def test_429_without_a_money_body_is_still_rate_limit(self):
+        """The guard against over-classifying: an ordinary throttle is unchanged,
+        and must stay retryable so the caller backs off rather than benching."""
+        e = MockAPIError("Rate limit exceeded, please slow down", status_code=429)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_429_overload_still_outranks_a_money_reading(self):
+        """Ordering guard. A busy endpoint says nothing about this account's
+        balance, and its recovery (back off, keep the key) is not the billing one,
+        so the overload branch must keep winning even if both phrases appear.
+        """
+        e = MockAPIError(
+            "The service may be temporarily overloaded, please try again later "
+            "(insufficient balance elsewhere in the body)",
+            status_code=429,
+        )
+        assert classify_api_error(e).reason == FailoverReason.overloaded
+
     def test_429_normal_rate_limit_still_rotates(self):
         """Guard: a genuine 429 rate limit (no overload language) must still
         classify as rate_limit and rotate the credential. (#14038)"""

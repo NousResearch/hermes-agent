@@ -1285,6 +1285,26 @@ def _classify_by_status(
                 should_fallback=True,
                 error_context=ctx,
             )
+        # A 429 whose body is about MONEY, not rate. Providers reuse 429 for a
+        # depleted balance or an exhausted plan allowance — z.ai returns
+        # "1113 Insufficient balance ... Please recharge" and a weekly-quota
+        # message naming a reset days away, both with status 429. Classified as
+        # rate_limit, those get the 429 cooldown (one hour, or 60s when it is the
+        # pool's only credential via EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS), so
+        # the pool returns to a provider that cannot serve a request until the
+        # balance is topped up or the window rolls over — days, not minutes.
+        #
+        # Placed after the overload and OpenRouter-upstream checks on purpose:
+        # a busy endpoint and an aggregator's upstream throttle are both 429s
+        # that say nothing about this account's balance, and both have their own
+        # correct recovery above.
+        if any(p in error_msg for p in _BILLING_PATTERNS):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,

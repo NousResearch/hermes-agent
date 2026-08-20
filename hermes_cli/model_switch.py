@@ -1382,6 +1382,10 @@ def _configured_provider_matches(
                     matches[slug] = hit
                     break
 
+    configured_provider_keys = {
+        key.strip().lower() for key in matches if isinstance(key, str) and key.strip()
+    }
+
     if isinstance(custom_providers, list):
         for entry in custom_providers:
             if not isinstance(entry, dict):
@@ -1402,7 +1406,7 @@ def _configured_provider_matches(
             if (
                 isinstance(provider_key, str)
                 and provider_key.strip()
-                and provider_key.strip().lower() in {k.lower() for k in matches}
+                and provider_key.strip().lower() in configured_provider_keys
             ):
                 continue
             for key in ("models", "model", "default_model"):

@@ -137,13 +137,26 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
         logger.debug("Failed to register ACP task cwd override", exc_info=True)
 
 
+def _acp_base_toolsets(config: dict | None = None) -> List[str]:
+    """Resolve ACP toolsets through the shared per-platform config resolver."""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        config = config if isinstance(config, dict) else load_config()
+        return sorted(_get_platform_tools(config, "acp"))
+    except Exception:
+        logger.debug("Failed to resolve ACP platform toolsets", exc_info=True)
+    return ["hermes-acp"]
+
+
 def _expand_acp_enabled_toolsets(
     toolsets: List[str] | None = None,
     mcp_server_names: List[str] | None = None,
 ) -> List[str]:
     """Return ACP toolsets plus explicit MCP server toolsets for this session."""
     expanded: List[str] = []
-    for name in list(toolsets or ["hermes-acp"]):
+    for name in list(toolsets or _acp_base_toolsets()):
         if name and name not in expanded:
             expanded.append(name)
 
@@ -626,18 +639,9 @@ class SessionManager:
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()
 
-        configured_mcp_servers = [
-            name
-            for name, cfg in (config.get("mcp_servers") or {}).items()
-            if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
-        ]
-
         kwargs = {
             "platform": "acp",
-            "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
-                mcp_server_names=configured_mcp_servers,
-            ),
+            "enabled_toolsets": _acp_base_toolsets(config),
             "quiet_mode": True,
             "session_id": session_id,
             "session_db": self._get_db(),

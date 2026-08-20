@@ -274,6 +274,46 @@ class TestPersistence:
 
 
 
+    def test_create_session_honors_platform_toolsets_acp(self, tmp_path, monkeypatch):
+        """ACP uses the shared platform resolver, including MCP and global disables."""
+        captured = {}
+
+        def fake_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(model=kwargs.get("model"), enabled_toolsets=kwargs.get("enabled_toolsets"))
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "test-model"},
+            "platform_toolsets": {"acp": ["web", "terminal", "file"]},
+            "mcp_servers": {"olympus": {"command": "python", "enabled": True}},
+            "agent": {"disabled_toolsets": ["terminal"]},
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None, **kwargs: {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "***",
+                "command": None,
+                "args": [],
+            },
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            manager.create_session(cwd="/work")
+
+        assert captured["enabled_toolsets"] == ["file", "olympus", "web"]
+
+    def test_acp_base_toolsets_falls_back_when_resolver_fails(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            MagicMock(side_effect=RuntimeError("bad config")),
+        )
+
+        assert acp_session._acp_base_toolsets({}) == ["hermes-acp"]
 
 
 

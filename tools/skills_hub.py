@@ -5080,6 +5080,15 @@ def install_from_quarantine(
                         final_install_dir, installed_binding
                     ):
                         raise ValueError("Install target entry changed during attestation")
+                    if (
+                        expected_scan_hash
+                        and full_content_hash(final_install_dir) != expected_scan_hash
+                    ):
+                        raise ValueError("Installed content changed after attestation")
+                    if not _directory_binding_matches(
+                        final_install_dir, installed_binding
+                    ):
+                        raise ValueError("Install target entry changed before lock commit")
                     lock = HubLockFile()
                     lock.record_install(
                         name=safe_skill_name,

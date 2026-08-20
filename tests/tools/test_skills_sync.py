@@ -1099,6 +1099,46 @@ class TestRestoreOfficialOptionalSkill:
         assert entry["install_path"] == "newcat/demo"
         assert entry["identifier"] == "official/newcat/demo"
 
+    def test_restore_removes_new_target_when_lock_commit_fails(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_hub as hub
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "newcat" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Official\n")
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        identity = "git:NousResearch/hermes-agent@" + "a" * 40
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(ss, "_optional_root_identity", lambda _path: identity)
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda *_args: {"SKILL.md": b"# Verified\n"},
+        )
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_hash",
+            lambda *_args: __import__("tools.skills_guard", fromlist=["full_content_hash_for_files"]).full_content_hash_for_files({"SKILL.md": b"# Verified\n"}),
+        )
+        calls = []
+
+        def _fail_lock_write(*_args, **_kwargs):
+            calls.append(True)
+            raise OSError("lock write failed")
+
+        monkeypatch.setattr(hub.HubLockFile, "record_install", _fail_lock_write)
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert calls == [True]
+        assert result["ok"] is False
+        assert not (skills_dir / "newcat" / "demo").exists()
+
     def test_restore_reports_backup_when_publish_cleanup_blocks_rollback(
         self, monkeypatch, tmp_path
     ):

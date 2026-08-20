@@ -712,6 +712,10 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                             )
                             if not _directory_binding_matches(dest, installed_binding):
                                 raise ValueError("Restore target entry changed before lock commit")
+                            if full_content_hash(dest) != authoritative_hash:
+                                raise ValueError("Restored bytes changed after attestation")
+                            if not _directory_binding_matches(dest, installed_binding):
+                                raise ValueError("Restore target entry changed before lock commit")
                             HubLockFile(path=skills_root / ".hub" / "lock.json").record_install(
                                 name=folder_name,
                                 source="official",
@@ -729,6 +733,17 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
             except (OSError, TimeoutError, ValueError):
                 rollback_failures: List[str] = []
                 available_backups: List[str] = []
+                if published and dest.exists():
+                    try:
+                        with _bound_directory(dest.parent) as destination_binding:
+                            if not _directory_binding_matches(
+                                dest.parent, destination_binding
+                            ):
+                                raise ValueError("Restore destination changed during rollback")
+                            _rmtree_bound(dest.parent, dest.name, destination_binding)
+                        published = False
+                    except (OSError, ValueError):
+                        rollback_failures.append(install_path)
                 for original, backup, rel in reversed(moved):
                     if not backup.exists():
                         continue
@@ -749,7 +764,7 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                 if rollback_failures:
                     message = (
                         f"Official restore rollback incomplete for: {folder_name}; "
-                        "the previous version remains in the backup directory."
+                        "one or more restored targets remain active or require recovery."
                     )
                 else:
                     message = f"Official restore rolled back for: {folder_name}"

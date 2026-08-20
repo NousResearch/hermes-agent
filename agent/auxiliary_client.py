@@ -4284,6 +4284,28 @@ def _is_transient_transport_error(exc: Exception) -> bool:
     return isinstance(status, int) and (status == 408 or 500 <= status < 600)
 
 
+def _is_zai_vision_route_error(exc: Exception) -> bool:
+    """Detect ZAI vision routing errors that warrant same-provider retries.
+
+    glm-4.6v-flash intermittently routes vision requests to a text-only
+    backend (400 "Model only support text input"), returns code 1214
+    ("modelCode 不存在") when the id briefly leaves the routing table, or
+    rate-limits the free tier (429 code 1305). These are transient server
+    routing states, not client bugs, so the auxiliary retry loop treats them
+    as retryable for vision tasks.
+    """
+    err = str(exc).lower()
+    if ("400" in err or "invalidparameter" in err) and "model only support text input" in err:
+        return True
+    if "1214" in err and "modelcode" in err:
+        return True
+    if ("429" in err or "ratelimiterror" in type(exc).__name__.lower()) and (
+        "1305" in err or "访问量过大" in err or "请稍后再试" in err
+    ):
+        return True
+    return False
+
+
 _DEFAULT_TRANSIENT_RETRIES = 2
 # Base for exponential backoff between transient retries (seconds). Overridable
 # so tests can zero it out and not sleep real wall-clock time.
@@ -4307,7 +4329,7 @@ def _transient_retry_count() -> int:
         if val is None:
             return _DEFAULT_TRANSIENT_RETRIES
         n = int(val)
-        return max(0, min(n, 6))
+        return max(0, min(n, 8))
     except Exception:
         return _DEFAULT_TRANSIENT_RETRIES
 
@@ -9526,7 +9548,10 @@ def _call_llm_impl(
                 task,
                 provider=request_provider, base_url=_base_info)
         except Exception as transient_err:
-            if not _is_transient_transport_error(transient_err):
+            if not (
+                _is_transient_transport_error(transient_err)
+                or (task == "vision" and _is_zai_vision_route_error(transient_err))
+            ):
                 raise
             # Compression is on the critical preflight path: a user cannot
             # continue or resume an oversized session until it compacts. A
@@ -9573,7 +9598,10 @@ def _call_llm_impl(
                         ),
                         task)
                 except Exception as retry_transient:
-                    if not _is_transient_transport_error(retry_transient):
+                    if not (
+                        _is_transient_transport_error(retry_transient)
+                        or (task == "vision" and _is_zai_vision_route_error(retry_transient))
+                    ):
                         raise
                     _last_transient = retry_transient
             # Retries exhausted — fall through to first_err fallback handling.
@@ -10301,7 +10329,10 @@ async def _async_call_llm_impl(
                 task,
                 provider=request_provider, base_url=_client_base)
         except Exception as transient_err:
-            if not _is_transient_transport_error(transient_err):
+            if not (
+                _is_transient_transport_error(transient_err)
+                or (task == "vision" and _is_zai_vision_route_error(transient_err))
+            ):
                 raise
             # See call_llm(): compression is on the critical preflight path,
             # so skip the same-provider retry on a full-budget timeout and
@@ -10313,20 +10344,37 @@ async def _async_call_llm_impl(
                     transient_err,
                 )
                 raise
-            logger.info(
-                "Auxiliary %s (async): transient transport error; retrying "
-                "once on the same provider before fallback: %s",
-                task or "call", transient_err,
-            )
-            return _validate_llm_response(
-                await _relay_async_completion(
-                    client,
-                    kwargs,
-                    provider=request_provider,
-                    api_mode=resolved_api_mode,
-                    create=_acreate,
-                ),
-                task)
+            _max_transient_retries = _transient_retry_count()
+            _last_transient = transient_err
+            for _attempt in range(1, _max_transient_retries + 1):
+                _backoff = min(_TRANSIENT_RETRY_BACKOFF_BASE * (2.0 ** (_attempt - 1)), 8.0)
+                logger.info(
+                    "Auxiliary %s (async): transient transport error (attempt %d/%d); "
+                    "retrying same provider after %.1fs before fallback: %s",
+                    task or "call", _attempt, _max_transient_retries, _backoff,
+                    _last_transient,
+                )
+                import asyncio as _asyncio
+                await _asyncio.sleep(_backoff)
+                try:
+                    return _validate_llm_response(
+                        await _relay_async_completion(
+                            client,
+                            kwargs,
+                            provider=request_provider,
+                            api_mode=resolved_api_mode,
+                            create=_acreate,
+                        ),
+                        task)
+                except Exception as retry_transient:
+                    if not (
+                        _is_transient_transport_error(retry_transient)
+                        or (task == "vision" and _is_zai_vision_route_error(retry_transient))
+                    ):
+                        raise
+                    _last_transient = retry_transient
+            # Retries exhausted -- fall through to first_err fallback handling.
+            raise _last_transient
     except Exception as first_err:
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)

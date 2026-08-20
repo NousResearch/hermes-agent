@@ -30,6 +30,12 @@ export const LOCALE_OPTIONS = [
     configValue: 'ja'
   },
   {
+    id: 'pt',
+    name: 'Português (Brasil)',
+    englishName: 'Portuguese',
+    configValue: 'pt'
+  },
+  {
     id: 'ar',
     name: 'العربية',
     englishName: 'Arabic',
@@ -71,6 +77,17 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   ja: 'ja',
   'ja-jp': 'ja',
   ja_jp: 'ja',
+  pt: 'pt',
+  'pt-br': 'pt',
+  pt_br: 'pt',
+  'pt-pt': 'pt',
+  pt_pt: 'pt',
+  portuguese: 'pt',
+  'portuguese-br': 'pt',
+  português: 'pt',
+  portugues: 'pt',
+  brasileiro: 'pt',
+  brasil: 'pt',
   ar: 'ar',
   'ar-sa': 'ar',
   ar_sa: 'ar',

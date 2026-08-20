@@ -750,7 +750,7 @@ def safe_json_loads(text: str, default: Any = None) -> Any:
     """
     try:
         return json.loads(text)
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return default
 
 
@@ -809,7 +809,10 @@ def env_float(key: str, default: float = 0.0) -> float:
 
 def env_bool(key: str, default: bool = False) -> bool:
     """Read an environment variable as a boolean."""
-    return is_truthy_value(os.getenv(key, ""), default=default)
+    value = os.getenv(key)
+    # Pass None (not "") when the variable is unset so is_truthy_value
+    # honors the caller's default instead of treating "" as false.
+    return is_truthy_value(value, default=default)
 
 
 # ─── Proxy Helpers ────────────────────────────────────────────────────────────

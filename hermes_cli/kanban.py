@@ -562,6 +562,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_claim.add_argument("task_id")
     p_claim.add_argument("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS,
                          help="Claim TTL in seconds (default: 900)")
+    p_claim.add_argument(
+        "--allow-session",
+        action="store_true",
+        help="Allow claiming a dispatcher-managed task from a session context "
+             "(no heartbeat; the claim will be reclaimed once the TTL expires - "
+             "only use for short tasks that finish inside the lease)",
+    )
 
     # --- comment / complete / block / unblock / archive ---
     p_comment = sub.add_parser("comment", help="Append a comment")
@@ -2084,6 +2091,30 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
 
 
 def _cmd_claim(args: argparse.Namespace) -> int:
+    # Session claims have no heartbeat and cannot be terminated on reclaim,
+    # so claiming a dispatcher-managed task (assignee is a real profile)
+    # risks two concurrent writers once the TTL expires (#83736). Refuse
+    # unless the caller opts in via --allow-session. Dispatcher workers
+    # carry HERMES_KANBAN_RUN_ID, and control-plane lanes (assignee not a
+    # profile) are pulled by terminals by design - both stay claimable.
+    if not args.allow_session and not os.environ.get("HERMES_KANBAN_RUN_ID"):
+        with kb.connect_closing() as conn:
+            existing = kb.get_task(conn, args.task_id)
+        if existing is not None and existing.assignee:
+            from hermes_cli.profiles import profile_exists
+
+            if profile_exists(existing.assignee):
+                print(
+                    f"cannot claim {args.task_id}: task is dispatcher-managed "
+                    f"(assignee profile '{existing.assignee}'). Session claims have no "
+                    "heartbeat and cannot be terminated on reclaim, so the dispatcher "
+                    "would spawn a second worker into the same workspace once the TTL "
+                    "expires. Create the task and let the dispatcher own execution, or "
+                    "pass --allow-session for short tasks guaranteed to finish inside "
+                    f"the lease ({args.ttl}s).",
+                    file=sys.stderr,
+                )
+                return 1
     with kb.connect_closing() as conn:
         task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
         if task is None:

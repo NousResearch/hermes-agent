@@ -49,6 +49,66 @@ async def test_returns_false_when_no_session_store():
 
 
 @pytest.mark.asyncio
+async def test_structural_lock_absence_still_fails_open():
+    runner = _make_runner(holder_value=None)
+    session_db = MagicMock()
+    session_db._db = MagicMock(spec=[])
+    runner._session_db = session_db
+
+    assert await runner._session_has_compression_in_flight("k") is False
+
+
+@pytest.mark.asyncio
+async def test_db_helper_instance_lookup_failure_reports_unknown():
+    runner = _make_runner(holder_value=None)
+
+    class BrokenLockLookupDB:
+        @property
+        def get_compression_lock_holder(self):
+            raise AttributeError("descriptor lookup failed")
+
+    session_db = MagicMock()
+    session_db._db = BrokenLockLookupDB()
+    runner._session_db = session_db
+
+    assert await runner._session_has_compression_in_flight("k") is None
+
+
+@pytest.mark.asyncio
+async def test_non_callable_db_helper_reports_unknown():
+    runner = _make_runner(holder_value=None)
+    raw_db = MagicMock()
+    raw_db.get_compression_lock_holder = "not-callable"
+    session_db = MagicMock()
+    session_db._db = raw_db
+    runner._session_db = session_db
+
+    assert await runner._session_has_compression_in_flight("k") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc_type", (RuntimeError, AttributeError, TypeError))
+async def test_db_lock_probe_error_reports_unknown(exc_type):
+    runner = _make_runner(holder_value=None)
+    runner._session_db._db.get_compression_lock_holder = MagicMock(
+        side_effect=exc_type("sqlite temporarily unavailable")
+    )
+
+    assert await runner._session_has_compression_in_flight("k") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc_type", (RuntimeError, AttributeError, TypeError))
+async def test_store_lookup_error_reports_unknown(exc_type):
+    runner = _make_runner(holder_value=None)
+    runner.session_store._ensure_loaded_locked = MagicMock(
+        side_effect=exc_type("routing index temporarily unavailable")
+    )
+
+    assert await runner._session_has_compression_in_flight("k") is None
+
+
+@pytest.mark.asyncio
 async def test_db_call_runs_off_event_loop():
     """Regression core: get_compression_lock_holder MUST execute in non-event-loop thread."""
     sink = {}

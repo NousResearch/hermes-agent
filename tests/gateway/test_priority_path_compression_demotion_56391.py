@@ -50,7 +50,7 @@ def _make_event(text: str) -> MessageEvent:
     return MessageEvent(text=text, source=_make_source(), message_id="m1")
 
 
-def _make_runner(*, compression_in_flight: bool):
+def _make_runner(*, compression_in_flight: bool | None):
     """Minimal GatewayRunner with an active running agent for this session.
 
     Mirrors tests/gateway/test_running_agent_session_toggles.py's harness
@@ -147,3 +147,17 @@ async def test_priority_path_does_not_interrupt_when_compression_in_flight():
     assert queued is not None and queued.text == "still there?"
 
 
+@pytest.mark.asyncio
+async def test_priority_path_queues_when_compression_state_is_unavailable():
+    """A failed lock probe must not masquerade as compression or interrupt."""
+    runner, agent_mock, sk = _make_runner(compression_in_flight=None)
+
+    result = await runner._handle_message(_make_event("still there?"))
+
+    agent_mock.interrupt.assert_not_called()
+    queued = runner.adapters[Platform.TELEGRAM]._pending_messages.get(sk)
+    assert queued is not None and queued.text == "still there?"
+    assert result is not None
+    assert "Session state unavailable" in result
+    assert "queued" in result.lower()
+    assert "Compressing context" not in result

@@ -31088,6 +31088,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     _cron_cfg = _cfg.get("cron", {}) if _cfg else {}
     _ticker_enabled = _cron_cfg.get("ticker_enabled", True)  # default true for root
     cron_stop = threading.Event()
+    # InProcessCronScheduler is referenced by the hosted-fire preflight tell
+    # below regardless of whether the ticker is enabled, so import it here
+    # (unconditionally) rather than only inside the ticker-enabled branch.
+    from cron.scheduler_provider import InProcessCronScheduler
     if not _ticker_enabled:
         logger.info(
             "Cron ticker disabled (cron.ticker_enabled=false) — "

@@ -234,7 +234,12 @@ class TestDispatchGuardReleasedAfterHang:
 
                 n = sched.tick(verbose=False)  # sync=True by default: waits for the job
                 assert n == 1
-                assert timeouts == [0.2]
+                assert timeouts  # at least one timed init
+                # The stale-session reaper may also init SessionDB in the same
+                # tick (its hang is non-fatal by design), so assert the config
+                # value was honoured for every recorded init instead of an
+                # exact single-entry list.
+                assert all(t == 0.2 for t in timeouts)
 
                 # Without the fix this would still contain the job ID forever.
                 assert "guard-sessiondb-hang" not in sched.get_running_job_ids()

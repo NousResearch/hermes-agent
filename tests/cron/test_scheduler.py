@@ -571,6 +571,10 @@ class TestRunJobSessionPersistence:
         """The real finally path keeps the lease when DB closure fails."""
         job = {"id": "test-job", "name": "test", "prompt": "hello"}
         fake_db = MagicMock()
+        # Pin the tip lookup to None — an unconfigured MagicMock returns a
+        # truthy mock, steering the finally block down the compression-tip
+        # path so end_session("cron_complete") never fires.
+        fake_db.get_compression_tip.return_value = None
         fake_db.end_session.side_effect = RuntimeError("DB locked")
 
         with patch("cron.scheduler._hermes_home", tmp_path), \

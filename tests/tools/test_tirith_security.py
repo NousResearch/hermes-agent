@@ -629,15 +629,15 @@ class TestSpawnWarningDedup:
 
 
 # ---------------------------------------------------------------------------
-# .app TLD suppression (issue #24461)
+# Benign TLD suppression (.app, .dev — issue #24461)
 # ---------------------------------------------------------------------------
 
 _CFG = {"tirith_enabled": True, "tirith_path": "tirith",
         "tirith_timeout": 5, "tirith_fail_open": True}
 
 
-class TestAppTldSuppression:
-    """warn verdicts whose only finding is lookalike_tld/.app are downgraded to allow."""
+class TestBenignTldSuppression:
+    """warn verdicts whose only finding is lookalike_tld/.app or .dev are downgraded to allow."""
 
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
@@ -653,41 +653,70 @@ class TestAppTldSuppression:
 
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
-    def test_mixed_findings_preserve_warn(self, mock_cfg, mock_run):
-        """If .app finding is accompanied by another finding, warn is preserved."""
+    def test_dev_only_warn_downgraded_to_allow(self, mock_cfg, mock_run):
+        mock_cfg.return_value = _CFG
+        findings = [{"rule_id": "lookalike_tld", "value": ".dev",
+                     "message": "Domain uses '.dev' TLD which can be confused with file extensions"}]
+        mock_run.return_value = _mock_run(2, _json_stdout(findings, ".dev TLD warning"))
+        result = check_command_security("curl https://example.dev")
+        assert result["action"] == "allow"
+        assert result["findings"] == []
+        assert result["summary"] == ""
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_mixed_app_and_dev_all_suppressed(self, mock_cfg, mock_run):
+        """If every finding is a benign lookalike_tld, warn is downgraded to allow."""
         mock_cfg.return_value = _CFG
         findings = [
             {"rule_id": "lookalike_tld", "value": ".app"},
+            {"rule_id": "lookalike_tld", "value": ".dev"},
+        ]
+        mock_run.return_value = _mock_run(2, _json_stdout(findings))
+        result = check_command_security("curl https://a.app https://b.dev")
+        assert result["action"] == "allow"
+        assert result["findings"] == []
+        assert result["summary"] == ""
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_mixed_findings_preserve_warn(self, mock_cfg, mock_run):
+        """If benign finding is accompanied by another finding, warn is preserved."""
+        mock_cfg.return_value = _CFG
+        findings = [
+            {"rule_id": "lookalike_tld", "value": ".dev"},
             {"rule_id": "shortened_url", "severity": "medium"},
         ]
         mock_run.return_value = _mock_run(2, _json_stdout(findings, "mixed"))
-        result = check_command_security("curl https://bit.ly/test.app")
+        result = check_command_security("curl https://bit.ly/test.dev")
         assert result["action"] == "warn"
         assert len(result["findings"]) == 2
 
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
     def test_block_verdict_never_suppressed(self, mock_cfg, mock_run):
-        """block exit code is never downgraded, even if finding looks like .app."""
+        """block exit code is never downgraded, even if findings look benign."""
         mock_cfg.return_value = _CFG
-        findings = [{"rule_id": "lookalike_tld", "value": ".app"}]
+        findings = [{"rule_id": "lookalike_tld", "value": ".dev"}]
         mock_run.return_value = _mock_run(1, _json_stdout(findings, "block"))
-        result = check_command_security("curl https://example.app")
+        result = check_command_security("curl https://example.dev")
         assert result["action"] == "block"
 
 
-class TestIsAppTldFinding:
-    """Unit tests for the _is_app_tld_finding helper."""
+class TestIsBenignTldFinding:
+    """Unit tests for the _is_benign_tld_finding helper."""
 
     @pytest.mark.parametrize("finding, expected", [
-        ({"rule_id": "lookalike_tld", "value": ".APP"}, True),   # case-insensitive
+        ({"rule_id": "lookalike_tld", "value": ".APP"}, True),   # case-insensitive .app
+        ({"rule_id": "lookalike_tld", "value": ".DEV"}, True),   # case-insensitive .dev
         ({"rule_id": "lookalike_tld", "message": "Domain uses '.app' TLD"}, True),
+        ({"rule_id": "lookalike_tld", "description": "TLD .dev looks like a file extension"}, True),
         ({"rule_id": "shortened_url", "value": ".app"}, False),  # wrong rule_id
-        ({"rule_id": "lookalike_tld", "value": ".zip"}, False),  # other TLD
+        ({"rule_id": "lookalike_tld", "value": ".zip"}, False),  # non-benign TLD
     ])
-    def test_app_tld_detection(self, finding, expected):
-        from tools.tirith_security import _is_app_tld_finding
-        assert _is_app_tld_finding(finding) is expected
+    def test_benign_tld_detection(self, finding, expected):
+        from tools.tirith_security import _is_benign_tld_finding
+        assert _is_benign_tld_finding(finding) is expected
 
 
 # ---------------------------------------------------------------------------

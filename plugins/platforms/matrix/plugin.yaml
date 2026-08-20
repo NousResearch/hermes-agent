@@ -14,15 +14,19 @@ requires_env:
     description: "Matrix homeserver URL (e.g. https://matrix.org)"
     prompt: "Matrix homeserver URL"
     password: false
+optional_env:
   - name: MATRIX_ACCESS_TOKEN
-    description: "Matrix access token (or use MATRIX_PASSWORD for password login)"
+    description: "Matrix access token (preferred; or use MATRIX_USER_ID + MATRIX_PASSWORD)"
     prompt: "Matrix access token"
     password: true
-optional_env:
   - name: MATRIX_PASSWORD
-    description: "Matrix account password (alternative to MATRIX_ACCESS_TOKEN)"
+    description: "Matrix account password (alternative to MATRIX_ACCESS_TOKEN; requires MATRIX_USER_ID)"
     prompt: "Matrix password"
     password: true
+  - name: MATRIX_USER_ID
+    description: "Full Matrix user ID (@bot:server) — required for password login, auto-detected with a token"
+    prompt: "Matrix user ID (@user:server)"
+    password: false
   - name: MATRIX_ALLOWED_USERS
     description: "Comma-separated Matrix user IDs allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"

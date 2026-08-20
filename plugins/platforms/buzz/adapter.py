@@ -392,6 +392,15 @@ class BuzzAdapter(BasePlatformAdapter):
             _rm_cfg = _rm_raw
         self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
 
+        # Reply anchoring: "first"/"all" thread the reply onto the parent event
+        # id, "off" posts every reply as a normal top-level channel message.
+        # Mirrors the Discord/Telegram adapters, which already honor this
+        # PlatformConfig field; without it Buzz threaded unconditionally.
+        # Env (BUZZ_REPLY_TO_MODE) overrides config.yaml.
+        _rtm = (os.getenv("BUZZ_REPLY_TO_MODE") or getattr(config, "reply_to_mode", "first")
+                or "first")
+        self._reply_to_mode: str = str(_rtm).strip().lower()
+
         # Inbound transport: "auto" (WebSocket with poll fallback, default),
         # "websocket" (require WS; fail connect when it can't authenticate),
         # or "poll" (CLI polling only). Env (BUZZ_TRANSPORT) overrides
@@ -610,7 +619,7 @@ class BuzzAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
         reply_target = reply_to or (metadata or {}).get("thread_id")
-        if reply_target:
+        if reply_target and self._reply_to_mode != "off":
             args += ["--reply-to", str(reply_target)]
         code, out, err = await self._run_cli(args, input_text=content)
         if code != 0:
@@ -681,7 +690,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 "--file", str(local),
                 "--content", "-",
             ]
-            if reply_to:
+            if reply_to and self._reply_to_mode != "off":
                 args += ["--reply-to", str(reply_to)]
             code, out, err = await self._run_cli(args, input_text=caption or "")
             if code != 0:
@@ -1386,7 +1395,11 @@ async def _standalone_send(
         return {"error": "Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)"}
 
     args = ["messages", "send", "--channel", target, "--content", "-"]
-    if thread_id:
+    # Same reply_to_mode gate as the live adapter, so out-of-process cron
+    # delivery (deliver=buzz) doesn't thread when the operator asked for flat.
+    _rtm = (os.getenv("BUZZ_REPLY_TO_MODE")
+            or getattr(pconfig, "reply_to_mode", "first") or "first")
+    if thread_id and str(_rtm).strip().lower() != "off":
         args += ["--reply-to", str(thread_id)]
     for path in media_files or []:
         args += ["--file", str(path)]

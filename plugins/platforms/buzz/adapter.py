@@ -107,6 +107,11 @@ _WS_MAX_MESSAGE_BYTES = 2_000_000
 _WS_MEMBERSHIP_KIND = 44100
 _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
 
+# Presence heartbeat: re-publish ``online`` while connected so relay-side
+# TTL expiry never marks a healthy gateway stale.  Published only between
+# connect() and disconnect(), so it always reflects real liveness.
+_PRESENCE_HEARTBEAT_S = 30.0
+
 # Where to look for a credentials JSON (keys: nsec / private_key_hex) when
 # BUZZ_PRIVATE_KEY is not set.  Module-level so tests can point it at a tmpdir.
 _DEFAULT_CREDENTIALS_DIR = Path("~/.config/buzz").expanduser()
@@ -428,6 +433,8 @@ class BuzzAdapter(BasePlatformAdapter):
         self._ws_active = False  # True while the WS loop owns inbound delivery
         self._membership_since = 0
         self._lock_key: Optional[str] = None
+        self._presence_task: Optional[asyncio.Task] = None
+        self._presence_online = False  # True after a successful online publish
         # channel_id -> {"chat_type", "last_ts", "seen": OrderedDict[event_id, None]}
         self._channel_state: Dict[str, dict] = {}
         self._channel_names: Dict[str, str] = {}
@@ -557,6 +564,11 @@ class BuzzAdapter(BasePlatformAdapter):
         if transport_used == "poll":
             self._poll_task = asyncio.create_task(self._poll_loop())
         self._mark_connected()
+        # Publish real presence: online now, heartbeat while connected,
+        # offline on disconnect.  Without this the relay has no presence
+        # record for the agent and clients always show it as offline.
+        await self._publish_presence("online")
+        self._presence_task = asyncio.create_task(self._presence_loop())
         logger.info(
             "Buzz: connected to %s as %s, watching %d channel(s) via %s%s",
             self.relay_url,
@@ -570,6 +582,15 @@ class BuzzAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop the inbound transport and drop runtime state."""
         self._mark_disconnected()
+        if self._presence_task and not self._presence_task.done():
+            self._presence_task.cancel()
+            try:
+                await self._presence_task
+            except asyncio.CancelledError:
+                pass
+        self._presence_task = None
+        if self._presence_online:
+            await self._publish_presence("offline")
         lock_key = getattr(self, "_lock_key", None)
         if lock_key:
             try:
@@ -596,6 +617,28 @@ class BuzzAdapter(BasePlatformAdapter):
         self._poll_task = None
         self._channel_state = {}
         self._poll_count = 0
+
+    async def _publish_presence(self, status: str) -> None:
+        """Best-effort presence publish via the CLI; never fails the caller."""
+        try:
+            code, _out, err = await self._run_cli(["users", "set-presence", "--status", status])
+        except Exception as e:
+            logger.warning("Buzz: presence publish '%s' failed — %s", status, e)
+            return
+        if code != 0:
+            logger.warning(
+                "Buzz: could not publish presence '%s' — %s",
+                status,
+                _cli_error_message(err, code),
+            )
+            return
+        self._presence_online = status == "online"
+
+    async def _presence_loop(self) -> None:
+        """Re-publish online presence on a heartbeat while connected."""
+        while True:
+            await asyncio.sleep(_PRESENCE_HEARTBEAT_S)
+            await self._publish_presence("online")
 
     # ── Sending ───────────────────────────────────────────────────────────
 
@@ -1032,8 +1075,13 @@ class BuzzAdapter(BasePlatformAdapter):
         is_dm = state["chat_type"] == "dm"
         # In shared channels, respond only when addressed — unless
         # require_mention is disabled, in which case respond to every message.
-        # DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_mentioned(content):
+        # DMs always dispatch.  "Addressed" means a visible mention in the
+        # content OR a p-tag to our pubkey: clients mark typed mentions with
+        # a p-tag even when the text form is one the content matcher cannot
+        # recognize (underscore vs space display-name forms, client renames).
+        if not is_dm and self.require_mention and not (
+            self._is_mentioned(content) or self._p_tagged_to_self(event)
+        ):
             return
 
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
@@ -1099,6 +1147,27 @@ class BuzzAdapter(BasePlatformAdapter):
         description = str(meta.get("description") or "").strip()
         return name == "DM" and not description
 
+    def _p_tagged_to_self(self, event: dict) -> bool:
+        """True when ``event`` carries a ``["p", <our pubkey>]`` tag.
+
+        In a real channel that tag is only ever the artifact of a typed
+        @mention — never of a plain broadcast or a bare reply — so it is a
+        reliable mention signal even when the visible text uses a name form
+        the content matcher does not recognize (e.g. ``@Hermes_Default``
+        when the profile display name is ``Hermes Default``)."""
+        if not self._self_pubkey:
+            return False
+        tags = event.get("tags")
+        if not isinstance(tags, list):
+            return False
+        return any(
+            isinstance(tag, (list, tuple))
+            and len(tag) > 1
+            and tag[0] == "p"
+            and str(tag[1]).lower() == self._self_pubkey
+            for tag in tags
+        )
+
     def _is_direct_message_event(self, channel_id: str, event: dict) -> bool:
         """True when ``event`` is shaped like a direct message to us: a chat
         message from another user, p-tagged to our pubkey, whose content does
@@ -1111,17 +1180,7 @@ class BuzzAdapter(BasePlatformAdapter):
         pubkey = str(event.get("pubkey") or "").lower()
         if not pubkey or pubkey == self._self_pubkey:
             return False
-        tags = event.get("tags")
-        if not isinstance(tags, list):
-            return False
-        p_tagged_to_self = any(
-            isinstance(tag, (list, tuple))
-            and len(tag) > 1
-            and tag[0] == "p"
-            and str(tag[1]).lower() == self._self_pubkey
-            for tag in tags
-        )
-        if not p_tagged_to_self:
+        if not self._p_tagged_to_self(event):
             return False
         content = event.get("content")
         return isinstance(content, str) and not self._is_mentioned(content)

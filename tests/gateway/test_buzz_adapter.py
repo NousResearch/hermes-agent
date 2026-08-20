@@ -250,6 +250,42 @@ class TestMentionGating:
         await self._poll_with(adapter, _event("e1", content="@Chip hello", created_at=10))
         assert adapter._dispatched == []
 
+    @pytest.mark.asyncio
+    async def test_ptagged_mention_dispatched_despite_unrecognized_name(self, adapter):
+        # Real community channel (metadata present): a p-tag to self is the
+        # artifact of a typed mention, so the message dispatches even when
+        # the text form ("@Chip_Bot") doesn't match the display name ("Chip").
+        adapter._channel_meta[CHANNEL] = {
+            "channel_id": CHANNEL, "name": "general", "description": "General conversation",
+        }
+        await self._poll_with(
+            adapter,
+            _tagged_event("e1", CHANNEL, content="@Chip_Bot please confirm", p=SELF_PUBKEY, created_at=10),
+        )
+        assert len(adapter._dispatched) == 1
+
+    @pytest.mark.asyncio
+    async def test_unrecognized_name_without_ptag_still_ignored(self, adapter):
+        adapter._channel_meta[CHANNEL] = {
+            "channel_id": CHANNEL, "name": "general", "description": "General conversation",
+        }
+        await self._poll_with(
+            adapter,
+            _tagged_event("e1", CHANNEL, content="@Chip_Bot please confirm", created_at=10),
+        )
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_bare_reply_without_mention_or_ptag_ignored(self, adapter):
+        adapter._channel_meta[CHANNEL] = {
+            "channel_id": CHANNEL, "name": "general", "description": "General conversation",
+        }
+        await self._poll_with(
+            adapter,
+            _tagged_event("e1", CHANNEL, content="Thank you!", reply_to="f" * 64, created_at=10),
+        )
+        assert adapter._dispatched == []
+
 
 # ── DM classification via p-tags (issue #68871) ──────────────────────────
 #
@@ -348,7 +384,9 @@ class TestDmClassification:
     @pytest.mark.asyncio
     async def test_channel_like_metadata_blocks_latch_even_without_mention(self, adapter):
         """Second guard on its own: even a p-tagged, un-mentioned message
-        cannot reclassify a conversation whose metadata says real channel."""
+        cannot reclassify a conversation whose metadata says real channel.
+        It still dispatches — as a GROUP message via the p-tag mention rule —
+        because a self p-tag in a real channel is always a typed mention."""
         adapter._channel_meta[CHANNEL]["description"] = ""
         adapter._channel_meta[CHANNEL]["name"] = "announcements"
         await self._poll_with(
@@ -356,7 +394,7 @@ class TestDmClassification:
             _tagged_event("e1", CHANNEL, content="fyi everyone", p=SELF_PUBKEY),
         )
         assert adapter._channel_state[CHANNEL]["chat_type"] == "group"
-        assert adapter._dispatched == []
+        assert [d["chat_type"] for d in adapter._dispatched] == ["group"]
 
 
     @pytest.mark.asyncio
@@ -464,6 +502,67 @@ class TestBuzzAdapterLifecycle:
         adapter._run_cli = cli
         assert await adapter.connect() is False
         assert adapter._lock_key is None
+
+
+# ── Presence ──────────────────────────────────────────────────────────────
+
+
+class TestPresence:
+    """The adapter must publish real presence: online on connect, heartbeat
+    while connected, offline on disconnect."""
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        monkeypatch.setattr(_buzz_mod, "_resolve_private_key", lambda extra=None: "nsec1test")
+        a = _make_adapter(extra={"transport": "poll"})
+        a.cli_path = "/fake/buzz"
+        return a
+
+    def _script_connect(self, adapter):
+        cli = _ScriptedCli()
+        cli.script("users", "get", [{"pubkey": SELF_PUBKEY, "display_name": "Chip"}])
+        cli.script("channels", "list", [
+            {"channel_id": CHANNEL, "name": "general", "description": "General conversation"},
+        ])
+        adapter._run_cli = cli
+        return cli
+
+    @staticmethod
+    def _presence_statuses(cli):
+        return [
+            c[0][-1]
+            for c in cli.calls
+            if c[0][:3] == ["users", "set-presence", "--status"]
+        ]
+
+    @pytest.mark.asyncio
+    async def test_connect_publishes_online_disconnect_publishes_offline(self, adapter):
+        cli = self._script_connect(adapter)
+        assert await adapter.connect() is True
+        assert self._presence_statuses(cli) == ["online"]
+        await adapter.disconnect()
+        assert self._presence_statuses(cli) == ["online", "offline"]
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_republishes_online_while_connected(self, adapter, monkeypatch):
+        monkeypatch.setattr(_buzz_mod, "_PRESENCE_HEARTBEAT_S", 0.05)
+        cli = self._script_connect(adapter)
+        assert await adapter.connect() is True
+        await asyncio.sleep(0.18)
+        await adapter.disconnect()
+        statuses = self._presence_statuses(cli)
+        assert statuses.count("online") >= 2
+        assert statuses[-1] == "offline"
+
+    @pytest.mark.asyncio
+    async def test_connect_succeeds_when_presence_publish_fails(self, adapter):
+        cli = self._script_connect(adapter)
+        cli.script("users", "set-presence", "{}", code=2, stderr="relay error")
+        assert await adapter.connect() is True
+        # The failed online publish must not leave a stale flag that
+        # disconnect would turn into a bogus offline publish.
+        await adapter.disconnect()
+        assert "offline" not in self._presence_statuses(cli)
 
 
 # ── Credentials / requirements ────────────────────────────────────────────

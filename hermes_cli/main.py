@@ -6117,6 +6117,24 @@ def _nixos_build_env() -> dict[str, str] | None:
         pass  # nix-shell not available — caller will get None
 
     return None
+
+
+def _looks_like_install_script_failure(result: subprocess.CompletedProcess) -> bool:
+    """Return True when a failed npm install appears to be caused by
+    install-script / postinstall / native-build errors rather than a
+    fundamental network or resolution failure.
+    """
+    stderr = (result.stderr or "")
+    if "info run" in stderr:
+        return True
+    if "EAGAIN" in stderr and "spawn" in stderr:
+        return True
+    import re
+    if re.search(r"ERR!.*(?:install|postinstall|preinstall|node-gyp|sh -c)", stderr):
+        return True
+    return False
+
+
 def _run_npm_install_deterministic(
     npm: str,
     cwd: Path,
@@ -6172,9 +6190,29 @@ def _run_npm_install_deterministic(
             ci_result = _run([npm_exe, "ci", "--include=dev", *extra_args])
             if ci_result.returncode == 0:
                 return ci_result
+            # Install-script failure on `npm ci`: retry `npm ci --ignore-scripts`
+            # to preserve the lockfile-respecting contract. The previous
+            # version retried `npm install --ignore-scripts`, which mutates
+            # committed lockfiles (Teknium's review, 2026-07-14).
+            if _looks_like_install_script_failure(ci_result):
+                logging.getLogger(__name__).debug(
+                    "npm ci failed with install-script error; retrying with --ignore-scripts"
+                )
+                ci_retry = _run([npm_exe, "ci", "--include=dev", "--ignore-scripts", *extra_args])
+                if ci_retry.returncode == 0:
+                    return ci_retry
+                ci_result = ci_retry
             # Fall through to `npm install` — lockfile may be out of sync on a
             # WIP fork/branch, or `npm ci` may not be available on very old npm.
-        return _run([npm_exe, "install", "--no-save", "--include=dev", *extra_args])
+        install_result = _run([npm_exe, "install", "--no-save", "--include=dev", *extra_args])
+        if install_result.returncode != 0 and _looks_like_install_script_failure(install_result):
+            logging.getLogger(__name__).debug(
+                "npm install failed with install-script error; retrying with --ignore-scripts"
+            )
+            return _run(
+                [npm_exe, "install", "--no-save", "--include=dev", "--ignore-scripts", *extra_args]
+            )
+        return install_result
 
     result = _attempt(npm)
     if result.returncode == 0:

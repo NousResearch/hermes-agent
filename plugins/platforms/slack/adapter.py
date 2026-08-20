@@ -6123,8 +6123,9 @@ class SlackAdapter(BasePlatformAdapter):
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         # Detect mentions authored only inside Block Kit blocks too (#52387)
         routing_text = _slack_mention_detection_text(event) or original_text or ""
+        is_native_mentioned = bool(bot_uid and f"<@{bot_uid}>" in routing_text)
         is_mentioned = bool(
-            (bot_uid and f"<@{bot_uid}>" in routing_text)
+            is_native_mentioned
             or self._slack_message_matches_mention_patterns(routing_text)
         )
         event_thread_ts = event.get("thread_ts")
@@ -6188,6 +6189,14 @@ class SlackAdapter(BasePlatformAdapter):
             if force_process:
                 pass  # Explicit internal routing path (reaction trigger).
             elif (
+                self._slack_strict_mention()
+                or channel_id in self._slack_strict_mention_channels()
+            ) and not is_native_mentioned:
+                # Strict mode means a fresh native Slack mention on this exact
+                # message. Wake-word patterns, free-response membership, thread
+                # history, and active sessions cannot satisfy it.
+                return
+            elif (
                 channel_id not in self._slack_require_mention_channels()
                 and (
                     channel_id in self._slack_free_response_channels()
@@ -6212,8 +6221,6 @@ class SlackAdapter(BasePlatformAdapter):
                         event_thread_ts,
                     )
                     return
-            elif self._slack_strict_mention() and not is_mentioned:
-                return  # Strict mode: ignore until @-mentioned again
             elif (
                 self._slack_thread_require_mention()
                 and is_thread_reply
@@ -6271,6 +6278,7 @@ class SlackAdapter(BasePlatformAdapter):
             if (
                 thread_ts
                 and not self._slack_strict_mention()
+                and channel_id not in self._slack_strict_mention_channels()
                 and not self._slack_thread_require_mention()
             ):
                 self._register_mentioned_thread(thread_ts, team_id=team_id)
@@ -8786,6 +8794,22 @@ class SlackAdapter(BasePlatformAdapter):
             "on",
         }
 
+    def _slack_strict_mention_channels(self) -> set:
+        """Return channels requiring a fresh explicit @-mention every turn.
+
+        Unlike ``require_mention_channels``, this disables mentioned-thread,
+        bot-thread, and active-session wakeups for the selected channels while
+        leaving normal follow-up behavior unchanged everywhere else.
+        """
+        raw = self.config.extra.get("strict_mention_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_STRICT_MENTION_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str) and raw.strip():
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        return set()
+
     def _slack_ignore_other_user_mentions(self) -> bool:
         """When true, ignore channel/thread messages addressed to another user.
 
@@ -9505,6 +9529,11 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
     if "strict_mention" in slack_cfg and not os.getenv("SLACK_STRICT_MENTION"):
         os.environ["SLACK_STRICT_MENTION"] = str(slack_cfg["strict_mention"]).lower()
+    strict_channels = slack_cfg.get("strict_mention_channels")
+    if strict_channels is not None and not os.getenv("SLACK_STRICT_MENTION_CHANNELS"):
+        if isinstance(strict_channels, list):
+            strict_channels = ",".join(str(value) for value in strict_channels)
+        os.environ["SLACK_STRICT_MENTION_CHANNELS"] = str(strict_channels)
     if "ignore_other_user_mentions" in slack_cfg and not os.getenv("SLACK_IGNORE_OTHER_USER_MENTIONS"):
         os.environ["SLACK_IGNORE_OTHER_USER_MENTIONS"] = str(
             slack_cfg["ignore_other_user_mentions"]

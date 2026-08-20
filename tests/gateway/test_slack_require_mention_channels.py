@@ -64,6 +64,7 @@ def _clean_env(monkeypatch, tmp_path):
         "SLACK_REQUIRE_MENTION_CHANNELS",
         "SLACK_FREE_RESPONSE_CHANNELS",
         "SLACK_STRICT_MENTION",
+        "SLACK_STRICT_MENTION_CHANNELS",
         "SLACK_THREAD_REQUIRE_MENTION",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -138,6 +139,23 @@ def test_yaml_bridge_sets_env(monkeypatch):
     monkeypatch.delenv("SLACK_REQUIRE_MENTION_CHANNELS", raising=False)
 
 
+def test_strict_mention_channels_csv_list_and_yaml_bridge(monkeypatch):
+    assert _make({"strict_mention_channels": "C1, C2"})._slack_strict_mention_channels() == {
+        "C1",
+        "C2",
+    }
+    assert _make({"strict_mention_channels": ["C1", "C2"]})._slack_strict_mention_channels() == {
+        "C1",
+        "C2",
+    }
+
+    monkeypatch.delenv("SLACK_STRICT_MENTION_CHANNELS", raising=False)
+    _apply_yaml_config({}, {"strict_mention_channels": ["C1", "C2"]})
+    import os
+
+    assert os.environ["SLACK_STRICT_MENTION_CHANNELS"] == "C1,C2"
+
+
 # ---------------------------------------------------------------------------
 # Routing behaviour
 # ---------------------------------------------------------------------------
@@ -157,3 +175,52 @@ async def test_forced_channel_wake_checks_still_apply(adapter):
     adapter.handle_message.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_strict_channel_rejects_unmentioned_active_thread_followup(adapter):
+    adapter.config.extra["strict_mention_channels"] = CHANNEL_ID
+    adapter._mentioned_threads.add("100.000")
+    adapter._has_active_session_for_thread.return_value = True
+
+    await adapter._handle_slack_message(
+        _event("follow-up", ts="101.000", thread_ts="100.000")
+    )
+
+    adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_strict_channel_accepts_and_strips_current_message_mention(adapter):
+    adapter.config.extra["strict_mention_channels"] = CHANNEL_ID
+
+    await adapter._handle_slack_message(
+        _event(f"<@{BOT_USER_ID}> proceed", ts="101.000", thread_ts="100.000")
+    )
+
+    adapter.handle_message.assert_called_once()
+    message = adapter.handle_message.await_args.args[0]
+    assert message.text == "proceed"
+    assert "100.000" not in adapter._mentioned_threads
+
+
+@pytest.mark.asyncio
+async def test_strict_channel_rejects_wake_word_without_native_mention(adapter):
+    adapter.config.extra["strict_mention_channels"] = CHANNEL_ID
+    adapter.config.extra["mention_patterns"] = ["Tracey"]
+
+    await adapter._handle_slack_message(_event("Tracey proceed"))
+
+    adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_strict_channel_overrides_free_response_overlap(adapter):
+    adapter.config.extra["strict_mention_channels"] = CHANNEL_ID
+    adapter.config.extra["free_response_channels"] = CHANNEL_ID
+    adapter._mentioned_threads.add("100.000")
+    adapter._has_active_session_for_thread.return_value = True
+
+    await adapter._handle_slack_message(
+        _event("follow-up", ts="101.000", thread_ts="100.000")
+    )
+
+    adapter.handle_message.assert_not_called()

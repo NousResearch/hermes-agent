@@ -601,6 +601,13 @@ slack:
   # must @mention the bot before Hermes will respond.
   strict_mention: false
 
+  # Per-channel form of strict_mention. Every ordinary top-level or thread
+  # message in a listed channel needs a fresh @mention; mentioned-thread,
+  # bot-thread, and active-session auto-follow are disabled there. Other
+  # channels keep normal follow-up behavior. Comma-separated IDs or a list.
+  # Env: SLACK_STRICT_MENTION_CHANNELS.
+  strict_mention_channels: ""
+
   # Ignore messages addressed to another user: when a channel or thread
   # message *opens* by @mentioning someone other than the bot (e.g.
   # "@rasha can you take this?"), stay silent unless the bot is also
@@ -662,9 +669,14 @@ The gating options compose — each answers a different question:
 | `require_mention_channels` | Which channels ALWAYS need an @mention, even when `require_mention` is `false` or the channel is free-response? Wins over both. | none | Listed channels |
 | `thread_require_mention` | Do **thread replies** need an @mention, even when top-level messages don't? Mentioned threads are not remembered. | `false` | Threads only |
 | `strict_mention` | Does **every** channel message (top-level and thread) need a fresh @mention? Disables all auto-follow: mentioned-thread memory, bot-reply follow-ups, active-session resume. | `false` | All channels + threads |
+| `strict_mention_channels` | Which channels need a fresh @mention on every ordinary top-level and thread message? Disables auto-follow only there. | none | Listed channels + threads |
 | `ignore_other_user_mentions` | Should a message that **opens by @mentioning someone else** (`@rasha can you take this?`) be skipped? Overrides free-response and thread auto-follow; mid-sentence references still reach the bot. | `false` | Channels + group DMs |
 
-Rules of thumb: `strict_mention` is the broadest hammer; `thread_require_mention` quiets busy threads without touching top-level gating; `require_mention_channels` re-tightens individual channels on an otherwise free-response bot; `ignore_other_user_mentions` only skips messages explicitly addressed to another person. 1:1 DMs always respond and are unaffected by all of these.
+Rules of thumb: `strict_mention` is the broadest hammer; `strict_mention_channels` applies the same fresh-mention behavior only to selected channels; `thread_require_mention` quiets busy threads without touching top-level gating; `require_mention_channels` re-tightens individual channels on an otherwise free-response bot while preserving ongoing-thread follow-up; `ignore_other_user_mentions` only skips messages explicitly addressed to another person. 1:1 DMs always respond and are unaffected by all of these.
+
+:::caution Adapter gating happens before the agent runs
+Slack strips the bot's own routing mention before constructing the agent-visible message. Do not duplicate mention authorization in `channel_prompts` by requiring the rendered message to still contain `<@BOT_ID>`; configure the adapter gate instead.
+:::
 
 ### Accepting messages from other bots (`allow_bots`)
 

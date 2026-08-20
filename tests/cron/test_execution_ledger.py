@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import sqlite3
@@ -130,6 +131,25 @@ def test_recovery_does_not_mark_live_process_execution_unknown(monkeypatch, tmp_
 
     assert executions.recover_interrupted_executions() == 0
     assert executions.latest_execution("still-live")["status"] == "running"
+
+
+def test_list_executions_orders_by_utc_claimed_at_not_lexicographic(monkeypatch, tmp_path):
+    """Mixed-offset timestamps should be ordered by UTC time, not string sort."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    calls = iter(
+        [
+            datetime(2026, 3, 29, 0, 30, tzinfo=timezone(timedelta(hours=1)),),
+            datetime(2026, 3, 29, 1, 0, tzinfo=timezone(timedelta(hours=2))),
+        ]
+    )
+
+    monkeypatch.setattr(executions, "_hermes_now", lambda: next(calls))
+
+    first = executions.create_execution("tz-job", source="builtin")
+    second = executions.create_execution("tz-job", source="builtin")
+
+    listed = executions.list_executions(job_id="tz-job")
+    assert [row["id"] for row in listed] == [first["id"], second["id"]]
 
 
 def test_restart_marks_interrupted_execution_unknown_without_requeue(tmp_path):

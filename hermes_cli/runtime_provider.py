@@ -35,6 +35,7 @@ from hermes_cli.auth import (
     resolve_xai_oauth_runtime_credentials,
     resolve_qwen_runtime_credentials,
     resolve_api_key_provider_credentials,
+    is_external_process_provider,
     resolve_external_process_provider_credentials,
     has_usable_secret,
     is_actual_local_base_url,
@@ -2086,10 +2087,10 @@ def resolve_runtime_provider(
                 "requested_provider": requested_provider,
             }
 
-    if provider == "copilot-acp":
+    if is_external_process_provider(provider):
         creds = resolve_external_process_provider_credentials(provider)
         return {
-            "provider": "copilot-acp",
+            "provider": provider,
             "api_mode": "chat_completions",
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),

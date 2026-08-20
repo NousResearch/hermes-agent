@@ -244,6 +244,16 @@ class ProviderConfig:
     api_key_env_vars: tuple = ()
     # Optional env var for base URL override
     base_url_env_var: str = ""
+    # For external_process providers: how to locate and invoke the local CLI.
+    # command_env_vars are checked in priority order before default_command;
+    # args_env_var (shlex-split) overrides default_args. When base_url starts
+    # with one of remote_base_url_prefixes the provider talks to an already
+    # running process, so a missing local command is not an error.
+    command_env_vars: tuple = ()
+    default_command: str = ""
+    default_args: tuple = ()
+    args_env_var: str = ""
+    remote_base_url_prefixes: tuple = ()
 
 
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
@@ -304,6 +314,11 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="external_process",
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
+        command_env_vars=("HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH"),
+        default_command="copilot",
+        default_args=("--acp", "--stdio"),
+        args_env_var="HERMES_COPILOT_ACP_ARGS",
+        remote_base_url_prefixes=("acp+tcp://",),
     ),
     "gemini": ProviderConfig(
         id="gemini",
@@ -7119,33 +7134,63 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
+def _resolve_external_process_invocation(
+    pconfig: ProviderConfig,
+) -> Tuple[str, List[str], Optional[str], str, bool]:
+    """Resolve command/args/base_url for an external-process provider.
+
+    Every value comes from the provider's own ProviderConfig, so any plugin
+    declaring auth_type="external_process" is served by the same path.
+    Returns (command, args, resolved_command, base_url, is_remote).
+    """
+    command = ""
+    for env_var in pconfig.command_env_vars:
+        command = os.getenv(env_var, "").strip()
+        if command:
+            break
+    if not command:
+        command = pconfig.default_command
+
+    raw_args = os.getenv(pconfig.args_env_var, "").strip() if pconfig.args_env_var else ""
+    args = shlex.split(raw_args) if raw_args else list(pconfig.default_args)
+
+    base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
+    if not base_url:
+        base_url = pconfig.inference_base_url
+
+    resolved_command = shutil.which(command) if command else None
+    is_remote = bool(
+        pconfig.remote_base_url_prefixes
+        and base_url.startswith(tuple(pconfig.remote_base_url_prefixes))
+    )
+    return command, args, resolved_command, base_url, is_remote
+
+
+def is_external_process_provider(provider_id: str) -> bool:
+    """True when the provider is backed by a local subprocess."""
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    return bool(pconfig and pconfig.auth_type == "external_process")
+
+
 def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for providers that run a local subprocess."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
+    command, args, resolved_command, base_url, is_remote = (
+        _resolve_external_process_invocation(pconfig)
     )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
-    base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
-    if not base_url:
-        base_url = pconfig.inference_base_url
-
-    resolved_command = shutil.which(command) if command else None
+    available = bool(resolved_command or is_remote)
     return {
-        "configured": bool(resolved_command or base_url.startswith("acp+tcp://")),
+        "configured": available,
         "provider": provider_id,
         "name": pconfig.name,
         "command": command,
         "args": args,
         "resolved_command": resolved_command,
         "base_url": base_url,
-        "logged_in": bool(resolved_command or base_url.startswith("acp+tcp://")),
+        "logged_in": available,
     }
 
 
@@ -7352,29 +7397,24 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
             code="invalid_provider",
         )
 
-    base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
-    if not base_url:
-        base_url = pconfig.inference_base_url
-
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
+    command, args, resolved_command, base_url, is_remote = (
+        _resolve_external_process_invocation(pconfig)
     )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
-    resolved_command = shutil.which(command) if command else None
-    if not resolved_command and not base_url.startswith("acp+tcp://"):
+    if not resolved_command and not is_remote:
+        hint = (
+            f" Install it or set {'/'.join(pconfig.command_env_vars)}."
+            if pconfig.command_env_vars
+            else ""
+        )
         raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
-            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+            f"Could not find the {pconfig.name} command '{command}'.{hint}",
             provider=provider_id,
-            code="missing_copilot_cli",
+            code="missing_external_process_command",
         )
 
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        "api_key": provider_id,
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,

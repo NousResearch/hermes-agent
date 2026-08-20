@@ -8013,6 +8013,202 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
 )
 
 
+def _review_implementer_and_reviewer(
+    conn: sqlite3.Connection, task_id: str,
+) -> "tuple[Optional[str], Optional[str]]":
+    """Return ``(implementer, reviewer)`` from the task's latest
+    ``review_requested`` event payload, or ``(None, None)`` if none exists.
+
+    ``reviewer`` is ``None`` when the card was submitted for review without
+    an explicit ``reviewer=`` (the common case — see ``request_review``'s
+    docstring: ``assignee`` is left untouched in that case, so the task's
+    ``assignee`` column still names the IMPLEMENTER, not a distinct
+    reviewer). Callers use this to detect the self-review case before
+    auto-spawning the review lane.
+    """
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? "
+        "AND kind = 'review_requested' ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None or not row["payload"]:
+        return (None, None)
+    try:
+        payload = json.loads(row["payload"])
+    except (ValueError, TypeError):
+        return (None, None)
+    if not isinstance(payload, dict):
+        return (None, None)
+    implementer = payload.get("implementer")
+    reviewer = payload.get("reviewer")
+    implementer = implementer if isinstance(implementer, str) and implementer.strip() else None
+    reviewer = reviewer if isinstance(reviewer, str) and reviewer.strip() else None
+    return (implementer, reviewer)
+
+
+# Shared author name stamped on dispatcher-generated card comments for the
+# one-time alerts below (self-review guard, bootstrap-failure guard). Kept
+# as its own constant — rather than a literal repeated in each function —
+# so every dispatcher alert comment is trivially attributable to "the
+# dispatcher wrote this, not a worker" from one place. NOTE: PR-89973
+# (nonspawnable-assignee alert, landed separately) defines the same-named
+# constant for its own alert function; if both PRs land, keep only one
+# definition — the value is identical.
+_NONSPAWNABLE_ALERT_AUTHOR = "hermes-dispatcher"
+
+
+def _emit_self_review_alert(
+    conn: sqlite3.Connection, task_id: str, assignee: str,
+) -> None:
+    """First-occurrence event + card comment for a ``skipped_self_review`` task.
+
+    Root cause (#kanban-self-review-gaveup 2026-08-19, see t_eee837c7): when
+    a worker calls ``kanban_request_review(...)`` without an explicit
+    ``reviewer=``, ``request_review`` deliberately leaves ``tasks.assignee``
+    unchanged (it still names the IMPLEMENTER — see that function's
+    docstring). The review-lane dispatcher used to key spawn eligibility
+    purely on ``status='review' AND assignee is spawnable``, so it
+    re-spawned the SAME profile onto its OWN just-completed card. That
+    worker has no legitimate transition left to make (the card is already
+    correctly in ``review`` with real work delivered) and either re-issues
+    the same ``kanban_request_review``/``kanban_complete`` calls (rejected:
+    "task is not in running/ready") or exits rc=0 with the task still
+    ``running``. Either way ``detect_crashed_workers`` reaps it as
+    ``crashed`` (clean-exit protocol violation), increments
+    ``consecutive_failures``, and the breaker can trip ``gave_up`` on a
+    card whose work is complete and already handed off — a false negative
+    that also burns the failure budget. Measured case: t_ea832a93, runs
+    5258/5260, both spawned within 68s of run 5256's successful
+    ``kanban_request_review``.
+
+    The dispatcher now skips auto-spawning this case (see the review loop's
+    ``claim_review_task`` call site) — the card just waits in ``review`` for
+    a human or a distinct reviewer profile to pull it, which is exactly the
+    review-gate the card was submitted for. This announces that decision
+    once per (task, assignee) so it isn't mistaken for a stuck queue.
+    """
+    try:
+        already = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = ? "
+            "AND payload LIKE ? LIMIT 1",
+            (
+                task_id,
+                "self_review_alerted",
+                f'%"assignee": "{assignee}"%',
+            ),
+        ).fetchone()
+        if already:
+            return
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "self_review_alerted",
+                {
+                    "assignee": assignee,
+                    "hint": (
+                        "task was submitted for review without a distinct "
+                        "reviewer= (assignee still names the implementer); "
+                        "dispatcher will not auto-spawn the same profile "
+                        "onto its own completed card — pull it manually or "
+                        "reassign to a reviewer profile"
+                    ),
+                },
+            )
+            add_comment(
+                conn, task_id, _NONSPAWNABLE_ALERT_AUTHOR,
+                (
+                    f"\u26a0\ufe0f Dispatcher: this card is in `review` but "
+                    f"still assigned to `{assignee}`, the same profile that "
+                    "implemented it (no distinct `reviewer=` was passed to "
+                    "`kanban_request_review`). Auto-spawning that profile "
+                    "here would just respawn it onto its own already-"
+                    "delivered work with no valid transition left to make — "
+                    "that previously caused false `crashed`/`gave_up` "
+                    "outcomes on completed cards (see t_eee837c7). This "
+                    "card will stay in `review` until a human pulls it or "
+                    "it is reassigned to a distinct reviewer profile. "
+                    "(One-time alert.)"
+                ),
+            )
+    except Exception:
+        _log.debug(
+            "kanban dispatch: failed to emit self-review alert for "
+            "task %s assignee %r", task_id, assignee, exc_info=True,
+        )
+
+
+def _emit_bootstrap_failure_alert(
+    conn: sqlite3.Connection, task_id: str, assignee: str,
+) -> None:
+    """First-occurrence event + card comment for a ``bootstrap_failed`` task.
+
+    Root cause (#kanban-bootstrap-failure-gaveup 2026-08-19, t_eee837c7,
+    diagnosed against t_ea832a93/t_83812b77/t_ea89769e/t_966f138b/
+    t_f7f32991): a worker spawned with an unresolvable ``--skills``/profile
+    name (e.g. the review lane force-loading ``sdlc-review`` onto a profile
+    that doesn't have it linked) dies during CLI init with ``Error: Unknown
+    skill(s): ...`` / ``Profile '...' does not exist`` before it can call
+    any kanban lifecycle tool. ``detect_crashed_workers`` now recognizes
+    this deterministic signature (see ``_worker_log_bootstrap_failure``)
+    and releases the task WITHOUT counting a failure — retrying spawns the
+    identical crash every time, so the old behavior (counting it as an
+    ordinary crash) could burn ``consecutive_failures`` to the breaker on a
+    card whose actual task work was already complete, a false ``gave_up``.
+
+    Unlike a rate-limit release this never clears on its own — a human has
+    to fix the profile/skill/toolset config — so it is alerted once per
+    (task, assignee) exactly like ``_emit_nonspawnable_alert`` /
+    ``_emit_self_review_alert``, instead of silently bouncing the task
+    between ``running`` and its source phase every tick forever.
+    """
+    try:
+        already = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = ? "
+            "AND payload LIKE ? LIMIT 1",
+            (
+                task_id,
+                "bootstrap_failure_alerted",
+                f'%"assignee": "{assignee}"%',
+            ),
+        ).fetchone()
+        if already:
+            return
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "bootstrap_failure_alerted",
+                {
+                    "assignee": assignee,
+                    "hint": (
+                        "worker died at CLI init on an unresolvable "
+                        "skill/profile name (deterministic — retrying "
+                        "will not help); consecutive_failures was NOT "
+                        "incremented for this, but the underlying config "
+                        "gap needs a human fix"
+                    ),
+                },
+            )
+            add_comment(
+                conn, task_id, _NONSPAWNABLE_ALERT_AUTHOR,
+                (
+                    f"\u26a0\ufe0f Dispatcher: the worker spawned for "
+                    f"`{assignee}` died at startup with an unresolvable "
+                    "skill or profile name (see `last_failure_error` on "
+                    "this task, or `hermes kanban log` for the exact "
+                    "line). This is deterministic — every retry will "
+                    "crash identically — so it was NOT counted toward "
+                    "the failure breaker, but it also will not fix "
+                    "itself. Check the assignee profile's linked skills "
+                    "(e.g. a force-loaded review skill like `sdlc-review` "
+                    "missing from its skill tree) and re-link before this "
+                    "card can make progress. (One-time alert.)"
+                ),
+            )
+    except Exception:
+        _log.debug(
+            "kanban dispatch: failed to emit bootstrap-failure alert for "
+            "task %s assignee %r", task_id, assignee, exc_info=True,
+        )
+
+
 @dataclass
 class DispatchResult:
     """Outcome of a single ``dispatch`` pass."""
@@ -8049,6 +8245,17 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+
+    skipped_self_review: list[str] = field(default_factory=list)
+    """Review-lane task ids skipped because ``assignee`` still names the
+    IMPLEMENTER (no distinct ``reviewer=`` was passed to
+    ``kanban_request_review`` — see ``request_review``'s docstring).
+    Auto-spawning here would respawn the same profile onto its own
+    just-completed card with no valid transition left to make, which used
+    to surface as a false ``crashed``/``gave_up`` on finished work
+    (#kanban-self-review-gaveup 2026-08-19, t_eee837c7). NOT an
+    operator-actionable failure by itself — the card is correctly waiting
+    in ``review`` for a human or a distinct reviewer profile."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -8069,6 +8276,15 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    bootstrap_failed: list[str] = field(default_factory=list)
+    """Task ids whose workers died at CLI init on a deterministic
+    unresolvable skill/profile name (see ``_worker_log_bootstrap_failure``,
+    #kanban-bootstrap-failure-gaveup 2026-08-19, t_eee837c7) and were
+    released back to their source phase WITHOUT counting a failure — the
+    same crash would repeat on every retry, so counting it would just
+    false-trip the breaker on work that may already be complete. Unlike
+    ``rate_limited`` this never self-clears; each occurrence gets a
+    one-time alert (event + comment) pointing at the config gap."""
     skipped_locked: bool = False
     """True when this tick was skipped because another process already held
     the board's dispatch lock (issue #35240). A losing dispatcher does no
@@ -8849,7 +9065,62 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+_BOOTSTRAP_FAILURE_LOG_TAIL_BYTES = 8192
+# How much of the worker's log to read from the end when checking for a
+# deterministic startup-failure signature. Generous enough to catch the
+# banner even behind normal startup chatter, small enough to stay cheap on
+# every crashed-worker reclaim.
+
+
+def _worker_log_bootstrap_failure(
+    task_id: str, board: Optional[str] = None,
+) -> Optional[str]:
+    """Tail the task's worker log for a deterministic bootstrap-failure
+    signature (unresolvable skill/profile at CLI init) and return the
+    matching line, or ``None`` if the log is absent or shows no such
+    signature.
+
+    #kanban-bootstrap-failure-gaveup (2026-08-19, t_eee837c7): a worker
+    requested with an unresolvable skill/toolset/profile name dies during
+    CLI init, before it can call kanban_block/kanban_complete — no amount
+    of retrying fixes a name that doesn't exist on the target profile.
+    Measured case: force-loaded ``sdlc-review`` was missing from 8 review
+    profiles (a PR #145 allowlist gap), crashing every review-lane spawn
+    with ``Error: Unknown skill(s): sdlc-review`` in ~60s, which
+    ``detect_crashed_workers`` was then counting as an ordinary
+    ``consecutive_failures`` tick toward the ``gave_up`` breaker — even
+    though the underlying card's actual work was already complete.
+
+    Best-effort: any I/O error degrades to ``None`` (fall back to the
+    ordinary crash/protocol-violation classification) rather than raising
+    into the dispatch loop.
+    """
+    try:
+        log_path = worker_logs_dir(board=board) / f"{task_id}.log"
+        if not log_path.exists():
+            return None
+        with open(log_path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - _BOOTSTRAP_FAILURE_LOG_TAIL_BYTES))
+            tail = fh.read().decode("utf-8", errors="replace")
+        for line in tail.splitlines():
+            if "Unknown skill(s):" in line:
+                return line.strip()[:500]
+            if "Profile '" in line and "does not exist" in line:
+                return line.strip()[:500]
+        return None
+    except Exception:
+        _log.debug(
+            "kanban dispatch: failed to tail worker log for bootstrap "
+            "failure check (task %s)", task_id, exc_info=True,
+        )
+        return None
+
+
+def detect_crashed_workers(
+    conn: sqlite3.Connection, board: Optional[str] = None,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Appends a ``crashed`` event and restores the task's source phase.
@@ -8876,9 +9147,21 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     ``check_respawn_guard`` defers their respawn until the window clears.
     The ids are returned via the ``_last_rate_limited`` function attribute
     (the public return stays the crashed-only ``list[str]``).
+
+    When the worker's log shows a deterministic bootstrap-failure signature
+    (unresolvable ``--skills``/profile name at CLI init — see
+    ``_worker_log_bootstrap_failure``), that is likewise released WITHOUT
+    counting a failure: retrying spawns the identical crash every time, so
+    burning ``consecutive_failures`` on it only serves to false-trip the
+    breaker on a card whose actual task work may already be complete
+    (#kanban-bootstrap-failure-gaveup 2026-08-19, t_eee837c7). Unlike a
+    quota wall this never self-clears, so it is also alerted once via
+    ``_emit_bootstrap_failure_alert`` and surfaced through the
+    ``_last_bootstrap_failed`` function attribute.
     """
     crashed: list[str] = []
     rate_limited: list[str] = []
+    bootstrap_failed: list[str] = []
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
     # write_txn so can't nest). ``protocol_violation`` flags the
@@ -8916,7 +9199,41 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
-            if kind == "clean_exit":
+            bootstrap_failure_line = None
+            if kind in ("clean_exit", "nonzero_exit"):
+                # Check for a deterministic bootstrap failure (unresolvable
+                # skill/profile at CLI init) BEFORE the ordinary clean_exit /
+                # nonzero_exit classification below — see
+                # _worker_log_bootstrap_failure's docstring
+                # (#kanban-bootstrap-failure-gaveup 2026-08-19, t_eee837c7).
+                # This can present as either exit kind depending on which
+                # code path in cli.py raises, so both are checked.
+                bootstrap_failure_line = _worker_log_bootstrap_failure(
+                    row["id"], board=board,
+                )
+            if bootstrap_failure_line is not None:
+                # Deterministic startup failure — retrying spawns the exact
+                # same crash every time, so this must NOT consume
+                # consecutive_failures / the protocol-violation streak (both
+                # exist to bound RETRYABLE failures) and must NOT loop
+                # silently. Requeue to source phase like a rate-limit release
+                # (no failure counted) but keep it visibly distinct via its
+                # own outcome/event kind and an operator alert, since unlike
+                # a quota wall this never clears on its own — it needs a
+                # human to fix the profile/skill/toolset config.
+                protocol_violation = False
+                error_text = (
+                    f"pid {pid} bootstrap failure (deterministic, not "
+                    f"retried as a normal failure): {bootstrap_failure_line}"
+                )
+                event_kind = "bootstrap_failed"
+                event_payload = {
+                    "pid": pid,
+                    "claimer": row["claim_lock"],
+                    "exit_code": code,
+                    "log_line": bootstrap_failure_line,
+                }
+            elif kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
                 # ``running`` in the DB — it exited without calling
                 # ``kanban_complete`` / ``kanban_block``. Overwhelmingly the
@@ -8987,10 +9304,16 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 (retry_status, row["id"], pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
-                # Rate-limited requeues are a clean release, not a crash —
-                # record the run outcome as ``rate_limited`` so the board
-                # history doesn't show a phantom crash for a quota wall.
-                _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
+                # Rate-limited / bootstrap-failure requeues are a clean
+                # release, not a crash — record the run outcome accordingly
+                # so the board history doesn't show a phantom crash for a
+                # quota wall or a deterministic startup failure.
+                if rate_limited_exit:
+                    _run_outcome = "rate_limited"
+                elif bootstrap_failure_line is not None:
+                    _run_outcome = "bootstrap_failed"
+                else:
+                    _run_outcome = "crashed"
                 run_id = _end_run(
                     conn, row["id"],
                     outcome=_run_outcome, status=_run_outcome,
@@ -9023,6 +9346,17 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         (error_text[:500], row["id"]),
                     )
                     rate_limited.append(row["id"])
+                elif bootstrap_failure_line is not None:
+                    # Same "no failure counted" treatment as rate-limited,
+                    # but this needs a human, not a wait — the respawn guard
+                    # doesn't have a bespoke "bootstrap blocker" reason yet,
+                    # so the alert (below, once per task+assignee) is the
+                    # actionable signal rather than a silent auto-requeue.
+                    conn.execute(
+                        "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                        (error_text[:500], row["id"]),
+                    )
+                    bootstrap_failed.append(row["id"])
                 else:
                     if protocol_violation:
                         # Stamp the failure error now: a below-budget
@@ -9132,6 +9466,17 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # Same side-channel for rate-limited requeues — these did NOT count a
     # failure and are NOT crashes, so they stay out of the ``crashed`` return.
     detect_crashed_workers._last_rate_limited = rate_limited  # type: ignore[attr-defined]
+    # Same side-channel for deterministic bootstrap failures (unresolvable
+    # skill/profile at CLI init) — also did NOT count a failure, also not a
+    # real crash. Each gets a one-time alert (event + comment), since unlike
+    # a rate limit this needs a human to fix the config, not a wait.
+    detect_crashed_workers._last_bootstrap_failed = bootstrap_failed  # type: ignore[attr-defined]
+    for _bf_tid in bootstrap_failed:
+        _bf_row = conn.execute(
+            "SELECT assignee FROM tasks WHERE id = ?", (_bf_tid,),
+        ).fetchone()
+        if _bf_row is not None and _bf_row["assignee"]:
+            _emit_bootstrap_failure_alert(conn, _bf_tid, _bf_row["assignee"])
     # Worker-lifecycle observer (RFC #58548): exit events are tick-derived
     # from this reclaim pass — fired only now, after the main reclaim txn
     # AND the breaker accounting above have committed, so subscribers always
@@ -9951,7 +10296,7 @@ def _dispatch_once_locked(
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
-    result.crashed = detect_crashed_workers(conn)
+    result.crashed = detect_crashed_workers(conn, board=board)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
     # itself so the public list-return stays stable. Pull them into the
     # DispatchResult here so telemetry / tests see the trip.
@@ -9968,6 +10313,15 @@ def _dispatch_once_locked(
     )
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
+    # Bootstrap-failure requeues (deterministic unresolvable skill/profile
+    # at CLI init, no failure counted) — surface for telemetry / tests.
+    # See DispatchResult.bootstrap_failed and
+    # _worker_log_bootstrap_failure's docstring.
+    _crash_bootstrap_failed = getattr(
+        detect_crashed_workers, "_last_bootstrap_failed", []
+    )
+    if _crash_bootstrap_failed:
+        result.bootstrap_failed.extend(_crash_bootstrap_failed)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
@@ -10345,6 +10699,27 @@ def _dispatch_once_locked(
                         conn, row["id"], "respawn_guarded",
                         {"reason": guard_reason},
                     )
+            continue
+        # Self-review guard (#kanban-self-review-gaveup 2026-08-19,
+        # t_eee837c7): when the card was submitted for review without a
+        # distinct ``reviewer=``, ``request_review`` deliberately leaves
+        # ``assignee`` naming the IMPLEMENTER (see its docstring). Spawning
+        # here would hand the same profile its own just-completed card with
+        # no valid transition left to make — the worker either redundantly
+        # re-issues kanban_request_review/kanban_complete (both rejected:
+        # "task is not in running/ready") or exits rc=0 with the task still
+        # 'running', and detect_crashed_workers then reaps that as a
+        # protocol-violation crash, ticking consecutive_failures toward a
+        # false gave_up on genuinely completed work. Measured case:
+        # t_ea832a93 runs 5258/5260, both within 68s of run 5256's
+        # successful kanban_request_review. Skip the auto-spawn instead;
+        # the card waits in review for a human or a distinct reviewer
+        # profile to pull it, which is the review gate working as intended.
+        _impl, _revr = _review_implementer_and_reviewer(conn, row["id"])
+        if _revr is None and _impl is not None and _impl == row["assignee"]:
+            result.skipped_self_review.append(row["id"])
+            if not dry_run:
+                _emit_self_review_alert(conn, row["id"], row["assignee"])
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))

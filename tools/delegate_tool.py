@@ -22,6 +22,8 @@ import contextvars
 import json
 import logging
 import re
+import shutil
+import subprocess
 
 logger = logging.getLogger(__name__)
 import os
@@ -1170,6 +1172,46 @@ def check_delegate_requirements() -> bool:
     return True
 
 
+def _coding_runtime_preflight() -> str:
+    """Describe authenticated external coding CLIs available to a child."""
+    checks = (
+        ("Claude CLI", "claude", ["auth", "status"]),
+        ("Codex CLI", "codex", ["login", "status"]),
+    )
+    available: List[str] = []
+    unavailable: List[str] = []
+    for label, binary, args in checks:
+        executable = shutil.which(binary)
+        if not executable:
+            unavailable.append(f"{label} (not installed)")
+            continue
+        try:
+            result = subprocess.run(
+                [executable, *args],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            unavailable.append(f"{label} (authentication check failed)")
+            continue
+        if result.returncode == 0:
+            available.append(f"{label} (authenticated)")
+        else:
+            unavailable.append(f"{label} (not authenticated)")
+
+    selection = (
+        f"Authenticated external runtimes: {', '.join(available)}."
+        if available
+        else "No authenticated external coding CLI is available."
+    )
+    if unavailable:
+        selection += f" Do not launch: {', '.join(unavailable)}."
+    return selection
+
+
 def _build_child_system_prompt(
     goal: str,
     context: Optional[str] = None,
@@ -1213,6 +1255,12 @@ def _build_child_system_prompt(
         "points over paragraphs, and don't replay your whole process. Your "
         "response is returned to the parent agent as a summary, and overlong "
         "summaries crowd out the parent's context window."
+    )
+    parts.append(
+        "\nEXTERNAL CODING RUNTIME PREFLIGHT:\n"
+        f"{_coding_runtime_preflight()} "
+        "Use an authenticated runtime listed above or continue with native "
+        "Hermes tools; do not launch an unavailable runtime to rediscover the failure."
     )
     if role == "orchestrator":
         child_note = (

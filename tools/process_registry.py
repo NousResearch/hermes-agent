@@ -371,6 +371,7 @@ class ProcessSession:
     task_id: str = ""                           # Task/sandbox isolation key
     session_key: str = ""                       # Gateway session key (for reset protection)
     pid: Optional[int] = None                   # OS process ID
+    process_group_id: Optional[int] = None     # Owned POSIX group captured at spawn
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
     env_ref: Any = None                         # Reference to the environment object
     cwd: Optional[str] = None                   # Working directory
@@ -956,6 +957,70 @@ class ProcessRegistry:
             except (psutil.AccessDenied, OSError):
                 pass
 
+    @classmethod
+    def _terminate_owned_process_group(
+        cls,
+        pid: int,
+        process_group_id: Optional[int],
+        expected_start: Optional[int] = None,
+    ) -> bool:
+        """Terminate one process group created by ``spawn_local``.
+
+        Capturing the group at spawn avoids the race where the shell exits and
+        its descendants are reparented before a later process-tree walk. The
+        leader identity is revalidated, and Hermes' own group is never touched.
+        """
+        if _IS_WINDOWS or not process_group_id:
+            return False
+        if expected_start is not None and not cls._host_pid_is_ours(pid, expected_start):
+            # A reaped group leader is expected when a wrapper exits before its
+            # children. A live PID with the same number is a reuse hazard and
+            # must fail closed; an absent leader cannot own a newly reused group.
+            try:
+                os.getpgid(pid)  # windows-footgun: ok — guarded above
+            except ProcessLookupError:
+                pass
+            except (PermissionError, OSError):
+                return False
+            else:
+                return False
+        try:
+            if process_group_id == os.getpgrp():
+                logger.error(
+                    "Refusing to terminate process group %d because Hermes belongs to it",
+                    process_group_id,
+                )
+                return False
+        except OSError:
+            return False
+
+        def _group_alive() -> bool:
+            try:
+                os.killpg(process_group_id, 0)  # windows-footgun: ok — guarded above
+                return True
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                return True
+
+        try:
+            os.killpg(process_group_id, signal.SIGTERM)  # windows-footgun: ok — guarded above
+        except ProcessLookupError:
+            return True
+        except (PermissionError, OSError):
+            return False
+
+        grace = cls._daemon_term_grace_seconds()
+        deadline = time.monotonic() + grace
+        while grace > 0 and time.monotonic() < deadline and _group_alive():
+            time.sleep(0.05)
+        if grace > 0 and _group_alive():
+            try:
+                os.killpg(process_group_id, signal.SIGKILL)  # windows-footgun: ok — guarded above
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        return True
+
     # ----- Spawn -----
 
     @staticmethod
@@ -1160,6 +1225,11 @@ class ProcessRegistry:
         session.process = proc
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
+        if not _IS_WINDOWS:
+            try:
+                session.process_group_id = os.getpgid(proc.pid)
+            except ProcessLookupError:
+                session.process_group_id = None
 
         try:
             # Start output reader thread
@@ -2093,6 +2163,12 @@ class ProcessRegistry:
             # unit cleanup).  Stop the scope to reap any survivors.
             if session.systemd_unit:
                 _stop_systemd_unit(session.systemd_unit)
+            elif session.process_group_id:
+                self._terminate_owned_process_group(
+                    session.pid or session.process_group_id,
+                    session.process_group_id,
+                    session.host_start_time,
+                )
             with session._lock:
                 result = {
                     "status": "already_exited",
@@ -2121,7 +2197,12 @@ class ProcessRegistry:
                 # Local process -- kill the process tree. On Windows this
                 # must be taskkill /T /F; Popen.terminate() only kills the
                 # shell wrapper and leaves Git Bash descendants behind.
-                self._terminate_host_pid(session.process.pid, session.host_start_time)
+                if not self._terminate_owned_process_group(
+                    session.process.pid,
+                    session.process_group_id,
+                    session.host_start_time,
+                ):
+                    self._terminate_host_pid(session.process.pid, session.host_start_time)
             elif session.env_ref and session.pid:
                 # Non-local -- kill inside sandbox
                 session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)

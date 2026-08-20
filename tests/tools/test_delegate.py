@@ -11,6 +11,7 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import subprocess
 import threading
 import time
 import types
@@ -133,11 +134,34 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("max_spawn_depth", overrides["description"])
 
 class TestChildSystemPrompt(unittest.TestCase):
-    def test_goal_only(self):
+    @patch(
+        "tools.delegate_tool._coding_runtime_preflight",
+        return_value="Claude CLI (not authenticated); Codex CLI (authenticated).",
+    )
+    def test_goal_only(self, _preflight):
         prompt = _build_child_system_prompt("Fix the tests")
         self.assertIn("Fix the tests", prompt)
         self.assertIn("YOUR TASK", prompt)
         self.assertNotIn("CONTEXT", prompt)
+        self.assertIn("EXTERNAL CODING RUNTIME PREFLIGHT", prompt)
+        self.assertIn("Codex CLI (authenticated)", prompt)
+
+    @patch("tools.delegate_tool.subprocess.run")
+    @patch("tools.delegate_tool.shutil.which")
+    def test_coding_runtime_preflight_rejects_logged_out_cli(self, which, run):
+        from tools import delegate_tool
+
+        which.side_effect = lambda name: f"/usr/bin/{name}"
+        run.side_effect = [
+            subprocess.CompletedProcess([], 1),
+            subprocess.CompletedProcess([], 0),
+        ]
+
+        result = delegate_tool._coding_runtime_preflight()
+
+        self.assertIn("Claude CLI (not authenticated)", result)
+        self.assertIn("Codex CLI (authenticated)", result)
+        self.assertEqual(run.call_count, 2)
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):

@@ -2,11 +2,14 @@
 
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+from pathlib import Path
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -1097,6 +1100,54 @@ class TestKillProcess:
             assert ("terminate", 424242) in terminate_calls
         finally:
             registry._running.pop(s.id, None)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+@pytest.mark.live_system_guard_bypass
+def test_kill_process_terminates_descendant_after_wrapper_exits(registry):
+    """Cancellation reaches group children even after their shell exits."""
+    child_pid_file = Path(tempfile.mkstemp(prefix="hermes-child-pid-")[1])
+    child_pid_file.unlink()
+    code = (
+        "import os,time,pathlib; "
+        f"pathlib.Path({str(child_pid_file)!r}).write_text(str(os.getpid())); "
+        "devnull=os.open(os.devnull, os.O_WRONLY); "
+        "os.dup2(devnull, 1); os.dup2(devnull, 2); "
+        "time.sleep(30)"
+    )
+    session = registry.spawn_local(
+        f"{shlex.quote(sys.executable)} -c {shlex.quote(code)} &"
+    )
+    try:
+        assert _wait_until(child_pid_file.exists, timeout=5.0)
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+        assert _wait_until(
+            lambda: session.process.poll() is not None,
+            timeout=5.0,
+        ), "wrapper did not exit"
+        assert _wait_until(lambda: session.exited, timeout=5.0)
+
+        result = registry.kill_process(session.id)
+
+        assert result["status"] == "already_exited"
+        import psutil
+
+        assert _wait_until(
+            lambda: not psutil.pid_exists(child_pid)
+            or psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE,
+            timeout=5.0,
+        ), "descendant survived tracked cancellation"
+    finally:
+        child_pid_file.unlink(missing_ok=True)
+        if 'child_pid' in locals():
+            try:
+                import psutil
+
+                child = psutil.Process(child_pid)
+                if child.status() != psutil.STATUS_ZOMBIE:
+                    child.kill()
+            except psutil.NoSuchProcess:
+                pass
 
 
 # =========================================================================

@@ -38,12 +38,20 @@ function loadProvide({ roster, active = 'default', meta = {} } = {}) {
     },
     document: { getElementById: () => null, createElement: () => ({}), head: { appendChild: () => undefined } },
     queryClient: {
-      getQueryData: () => roster,
+      // Key-exact semantics like the real QueryClient (v5): a 2-element
+      // ROSTER_KEY lookup MUST miss the 3-element cache keys useRoster
+      // writes — the bug behind issue #89303 was invisible under the old
+      // key-ignoring mock.
+      getQueryData: key =>
+        key.length === 3 && key[0] === 'hermes-bots' && key[1] === 'roster'
+          ? roster
+          : undefined,
+      getQueriesData: () => (Array.isArray(roster?.profiles) ? [[['hermes-bots', 'roster', 'local'], roster]] : []),
       invalidateQueries: () => undefined,
       setQueryData: () => undefined
     },
     host: {
-      state: { profile: { get: () => active, listen: () => () => undefined }, gateway: { get: () => null, listen: () => () => undefined } },
+      state: { profile: { get: () => active, listen: () => () => undefined }, gateway: { get: () => null, listen: () => () => undefined }, connectionId: { get: () => 'local', listen: () => () => undefined } },
       request: async () => ({}),
       onEvent: () => () => undefined
     },

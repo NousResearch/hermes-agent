@@ -7454,6 +7454,7 @@ class DiscordAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+        requesting_user_id: Optional[str] = None,
     ) -> SendResult:
         """
         Send a button-based exec approval prompt for a dangerous command.
@@ -7521,6 +7522,9 @@ class DiscordAdapter(BasePlatformAdapter):
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(
                 getattr(self.config, "extra", None)
             )
+            approval_scope = _resolve_approval_scope(
+                getattr(self.config, "extra", None)
+            )
             view = ExecApprovalView(
                 session_key=session_key,
                 allowed_user_ids=self._allowed_user_ids,
@@ -7530,6 +7534,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 allow_permanent=allow_permanent,
                 allow_session=allow_session,
                 smart_denied=smart_denied,
+                requesting_user_id=str(requesting_user_id) if requesting_user_id else None,
+                approval_scope=approval_scope,
             )
 
             send_kwargs: Dict[str, Any] = {"content": content, "embed": embed, "view": view}
@@ -8765,6 +8771,33 @@ def _resolve_exec_approval_admin_gate(
     return (True, admin_ids)
 
 
+_VALID_APPROVAL_SCOPES = {"owner", "admins", "any"}
+
+
+def _resolve_approval_scope(config_extra: Optional[dict]) -> str:
+    """Resolve the approval scope from a platform's ``extra`` config.
+
+    Returns one of ``"owner"``, ``"admins"``, or ``"any"``.
+
+    - ``"owner"`` (default): only the user who triggered the command may
+      approve it.  ``requesting_user_id`` must match the clicker's user id
+      (or the admin gate must pass).  This prevents User B from approving
+      a dangerous command that User A triggered in a shared thread.
+    - ``"admins"``: any user in ``allow_admin_from`` may approve.  Falls
+      back to ``"owner"`` semantics when no admins are configured.
+    - ``"any"``: any admitted user may approve (legacy behavior).
+    """
+    extra = config_extra if isinstance(config_extra, dict) else {}
+    raw = str(extra.get("approval_scope", "owner")).strip().lower()
+    if raw not in _VALID_APPROVAL_SCOPES:
+        logger.warning(
+            "Discord approval_scope=%r is not one of %s; falling back to 'owner'",
+            raw, _VALID_APPROVAL_SCOPES,
+        )
+        return "owner"
+    return raw
+
+
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
 
@@ -8797,6 +8830,8 @@ def _define_discord_view_classes() -> None:
             allow_permanent: bool = True,
             allow_session: bool = True,
             smart_denied: bool = False,
+            requesting_user_id: Optional[str] = None,
+            approval_scope: str = "owner",
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
@@ -8809,6 +8844,13 @@ def _define_discord_view_classes() -> None:
             self.admin_user_ids = {
                 str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()
             }
+            # Session-owner binding: the user who triggered the dangerous
+            # command.  When ``approval_scope`` is ``"owner"`` (the default),
+            # only this user may click the approval buttons.  This prevents
+            # User B from approving a command that User A triggered in a
+            # shared thread (#80281).
+            self.requesting_user_id = str(requesting_user_id) if requesting_user_id else None
+            self.approval_scope = approval_scope if approval_scope in _VALID_APPROVAL_SCOPES else "owner"
             self.resolved = False
             if smart_denied or not allow_session:
                 self.remove_item(self.allow_session)
@@ -8825,29 +8867,54 @@ def _define_discord_view_classes() -> None:
             chat and the lower-stakes component views stay user-scope. The
             gate fails closed: if it's on but no admins are configured, nobody
             can approve (logged once so the misconfiguration is visible).
+
+            Session-owner binding (#80281): when ``approval_scope`` is
+            ``"owner"`` (the default), the clicker must be the same user who
+            triggered the command.  ``"admins"`` allows any configured admin
+            (requires ``require_admin``).  ``"any"`` preserves the legacy
+            behavior where any admitted user can approve.
             """
             if not _component_check_auth(
                 interaction, self.allowed_user_ids, self.allowed_role_ids,
             ):
                 return False
-            if not self.require_admin:
-                return True
+
             user = getattr(interaction, "user", None)
             try:
                 uid = str(getattr(user, "id", "") or "")
             except Exception:
                 uid = ""
-            if uid and uid in self.admin_user_ids:
+
+            # Admin gate (opt-in, layered on top of scope check).
+            if self.require_admin:
+                if not uid or uid not in self.admin_user_ids:
+                    if not self.admin_user_ids:
+                        logger.warning(
+                            "[Discord] require_admin_for_exec_approval is enabled but "
+                            "no admins are configured (allow_admin_from is empty) — "
+                            "exec approval buttons are disabled for everyone. Add "
+                            "admin user IDs under the discord platform's "
+                            "allow_admin_from, or disable the toggle."
+                        )
+                    return False
+
+            # Session-owner binding (#80281).
+            if self.approval_scope == "any":
                 return True
-            if not self.admin_user_ids:
-                logger.warning(
-                    "[Discord] require_admin_for_exec_approval is enabled but "
-                    "no admins are configured (allow_admin_from is empty) — "
-                    "exec approval buttons are disabled for everyone. Add "
-                    "admin user IDs under the discord platform's "
-                    "allow_admin_from, or disable the toggle."
+            if self.approval_scope == "admins" and self.require_admin and uid in self.admin_user_ids:
+                return True
+            # Default: "owner" — clicker must be the requesting user.
+            if self.requesting_user_id and uid and uid != self.requesting_user_id:
+                logger.info(
+                    "[Discord] exec-approval click by user %s rejected: "
+                    "session owner is %s (approval_scope=owner)",
+                    uid, self.requesting_user_id,
                 )
-            return False
+                return False
+            # No requesting_user_id → fall back to legacy behavior (admitted
+            # user can approve). This covers CLI sessions and platforms that
+            # don't propagate a user identity.
+            return True
 
         async def _resolve(
             self, interaction: discord.Interaction, choice: str,

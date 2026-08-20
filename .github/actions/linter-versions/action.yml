@@ -1,0 +1,30 @@
+name: Resolve pinned linter versions
+description: >-
+  Read the exact ruff/ty pins out of pyproject.toml's ``dev`` extra, so CI
+  installs the same linter versions contributors get from
+  ``uv sync --extra dev``. Without this, ``uv tool install ruff`` in a
+  blocking job floats to the newest release and a linter bump can fail main
+  on code nobody touched. Fails the step if a pin is missing or inexact —
+  never falls back to floating.
+
+outputs:
+  ruff:
+    description: Version pinned for ruff in the dev extra (e.g. 0.15.10).
+    value: ${{ steps.pins.outputs.ruff }}
+  ty:
+    description: Version pinned for ty in the dev extra (e.g. 0.0.21).
+    value: ${{ steps.pins.outputs.ty }}
+
+runs:
+  using: composite
+  steps:
+    - id: pins
+      shell: bash
+      # tee so the resolved versions show up in the job log too — otherwise
+      # everything lands in $GITHUB_OUTPUT and the step looks like a no-op.
+      # ``pipefail`` is load-bearing, not decoration: tee exits 0, so without
+      # it a failed resolve would be swallowed and the install step would run
+      # with an empty version.
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/read_pins.py" | tee -a "$GITHUB_OUTPUT"

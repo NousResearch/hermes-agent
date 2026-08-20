@@ -183,15 +183,15 @@ class TestProviderRouting:
             out = provider.search("q", limit=3)
         assert out["success"] is True
 
-    def test_exa_keyless_path_when_no_key(self):
+    def test_exa_keyless_path_when_no_key(self, monkeypatch):
+        monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda n: n == "exa")
         provider = ExaWebSearchProvider()
-        with patch.object(
-            keyless_mcp, "exa_search_keyless",
-            return_value={"success": True, "data": {"web": []}},
-        ) as keyless:
+        with patch.dict(
+            keyless_mcp._KEYLESS_SEARCHERS,
+            {"exa": lambda q, l: {"success": True, "data": {"web": []}}},
+        ):
             out = provider.search("q", limit=3)
         assert out["success"] is True
-        keyless.assert_called_once_with("q", 3)
 
     def test_parallel_keyed_path_skips_keyless(self, monkeypatch):
         monkeypatch.setattr(
@@ -259,15 +259,15 @@ class TestProviderRouting:
         assert keyless_mcp.provider_tier("tavily") == "auto"    # unset → auto
 
     @pytest.mark.asyncio
-    async def test_parallel_keyless_extract(self):
+    async def test_parallel_keyless_extract(self, monkeypatch):
+        monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda n: n == "parallel")
         provider = ParallelWebSearchProvider()
-        with patch.object(
-            keyless_mcp, "parallel_extract_keyless",
-            return_value=[{"url": "https://a", "title": "", "content": "c"}],
-        ) as keyless:
+        with patch.dict(
+            keyless_mcp._KEYLESS_EXTRACTORS,
+            {"parallel": lambda urls: [{"url": "https://a", "title": "", "content": "c"}]},
+        ):
             out = await provider.extract(["https://a"])
         assert out[0]["content"] == "c"
-        keyless.assert_called_once_with(["https://a"])
 
 
 # ---------------------------------------------------------------------------

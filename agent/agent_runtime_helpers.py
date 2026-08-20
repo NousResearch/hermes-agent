@@ -2576,6 +2576,15 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             client_kwargs["default_headers"] = existing
     except Exception:
         _ra().logger.debug("Copilot default-header guard skipped", exc_info=True)
+    # All primary construction and recovery paths must identify Hermes to the
+    # official Codex endpoint, including snapshots with custom header overrides.
+    from agent.auxiliary_client import _apply_required_codex_headers
+
+    _apply_required_codex_headers(
+        client_kwargs,
+        access_token=client_kwargs.get("api_key", ""),
+        base_url=str(client_kwargs.get("base_url", "")),
+    )
     # Uses the module-level `OpenAI` name, resolved lazily on first
     # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
     client = _ra().OpenAI(**client_kwargs)

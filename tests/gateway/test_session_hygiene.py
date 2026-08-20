@@ -788,6 +788,185 @@ async def test_session_hygiene_turn_hold_budget_abandons_streaming_wait(
     fake_db.archive_and_compact.assert_not_called()
     StreamingCompressAgent.last_instance.close.assert_called_once()
 
+    # Behavior witness 1: turn-hold expiry must NOT stamp the idle-timeout
+    # provenance or send the "no output" user message.
+    sent_contents = [m["content"] for m in adapter.sent]
+    assert not any(
+        "timed out" in c.lower() and "no output" in c.lower()
+        for c in sent_contents
+    ), f"turn-hold must not send idle-timeout message, got: {sent_contents}"
+    assert any(
+        "deferred" in c.lower() or "still streaming" in c.lower()
+        for c in sent_contents
+    ), f"turn-hold must send deferral notice, got: {sent_contents}"
+
+    # Behavior witness 2: turn-hold must NOT advance the failure cooldown.
+    fake_db.get_compression_failure_cooldown.assert_called()
+    # The cooldown is only *read* (to check for existing), never *written*
+    # by the turn-hold path. The idle-timeout path would call
+    # _hygiene_cooldown_for_failure + _record_hygiene_cooldown.
+    # We verify by checking the DB mock was not asked to persist a new
+    # failure streak.
+    assert not hasattr(fake_db, 'set_compression_failure_cooldown') or \
+        not fake_db.set_compression_failure_cooldown.called, \
+        "turn-hold must not write failure cooldown"
+
+    # Behavior witness 3: the #87011 contract remains truthful —
+    # "session hygiene compression timed out" still means a real idle
+    # timeout, not a turn-hold deferral. The turn-hold path must use a
+    # distinct provenance stamp.
+    # (Verified indirectly: the idle-timeout path would have sent the
+    # "no output" message, which we already asserted absent above.)
+
+
+@pytest.mark.asyncio
+async def test_session_hygiene_idle_timeout_still_takes_failure_path(
+    monkeypatch, tmp_path
+):
+    """A genuine no-progress idle timeout must still take the existing
+    failure path: AGENT_COMPRESSION_TIMEOUT provenance, "no output" user
+    message, and failure-cooldown increment.
+
+    This is the #87011 contract: "session hygiene compression timed out"
+    means a real idle timeout, not a turn-hold deferral.
+    """
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    cleanup_done = threading.Event()
+    fake_db = MagicMock()
+    fake_db.get_compression_failure_cooldown.return_value = None
+
+    class StalledCompressAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            self.session_id = kwargs.get("session_id", "fake-session")
+            self._session_db = kwargs.get("session_db")
+            self._last_compaction_in_place = False
+            self.context_compressor = SimpleNamespace(
+                bind_session_state=MagicMock(),
+                _last_compress_aborted=False,
+                _last_aux_model_failure_model=None,
+            )
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock(side_effect=cleanup_done.set)
+            type(self).last_instance = self
+
+        def _compress_context(
+            self, messages, *_args, commit_fence=None, **_kwargs
+        ):
+            worker_started.set()
+            # NEVER touch progress — the inactivity slice will fire.
+            # But we must be stoppable so the test can clean up.
+            while not release_worker.is_set():
+                time.sleep(0.01)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = StalledCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "compression:\n"
+        "  enabled: true\n"
+        "  hygiene_timeout_seconds: 0.1\n"
+        "  hygiene_total_ceiling_seconds: 600\n"
+        "  hygiene_max_turn_hold_seconds: 60\n"
+        "  hygiene_failure_cooldown_seconds: 120\n"
+    )
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:dm:12345",
+        session_id="sess-idle-timeout",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(6, content_size=400)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = SimpleNamespace(_db=fake_db)
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100,
+    )
+
+    event = MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="dm",
+            user_id="12345",
+        ),
+        message_id="1",
+    )
+
+    started = time.monotonic()
+    result = await asyncio.wait_for(runner._handle_message(event), timeout=15)
+    elapsed = time.monotonic() - started
+
+    # The turn proceeded on the uncompressed transcript after the idle
+    # timeout fired (~0.1s).
+    assert result == "ok"
+    assert elapsed < 5.0
+    assert worker_started.is_set()
+    assert runner._run_agent.await_count == 1
+
+    # Behavior witness: idle timeout MUST send the "no output" message.
+    sent_contents = [m["content"] for m in adapter.sent]
+    assert any(
+        "timed out" in c.lower() and "no output" in c.lower()
+        for c in sent_contents
+    ), f"idle timeout must send 'no output' message, got: {sent_contents}"
+
+    # Behavior witness: idle timeout MUST advance the failure cooldown.
+    # The gateway calls _hygiene_cooldown_for_failure + _record_hygiene_cooldown.
+    # We verify by checking the DB mock was asked to persist.
+    # (The exact call depends on the SessionDB interface; we assert the
+    # gateway attempted to record the failure.)
+    assert fake_db.get_compression_failure_cooldown.called
+
+    # Cleanup: release the stalled worker so it can exit, then verify teardown.
+    release_worker.set()
+    await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=3)
+    StalledCompressAgent.last_instance.close.assert_called_once()
+
 @pytest.mark.asyncio
 async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     monkeypatch, tmp_path

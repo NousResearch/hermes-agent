@@ -77,6 +77,39 @@ class _AsyncCM:
         return False
 
 
+class _FakeAiohttpContent:
+    def __init__(self, payload: bytes):
+        self._payload = payload
+        self._offset = 0
+        self.bytes_read = 0
+
+    async def read(self, size: int = -1):
+        chunk = self._payload[self._offset : self._offset + size]
+        self._offset += len(chunk)
+        self.bytes_read += len(chunk)
+        return chunk
+
+
+class _FakeErrorResponse:
+    def __init__(self):
+        self.status = 500
+        self.content = _FakeAiohttpContent(b"bridge failure " * 1000 + b"tail-marker")
+        self.text = AsyncMock(side_effect=AssertionError("unbounded text read"))
+        self.released = False
+
+    def release(self):
+        self.released = True
+
+
+def _assert_limited_error_response(response: _FakeErrorResponse, error: str):
+    from plugins.platforms.whatsapp import adapter as whatsapp_mod
+
+    assert "tail-marker" not in error
+    response.text.assert_not_awaited()
+    assert response.content.bytes_read == whatsapp_mod._WHATSAPP_ERROR_BODY_LIMIT_BYTES + 1
+    assert response.released is True
+
+
 # ---------------------------------------------------------------------------
 # format_message tests
 # ---------------------------------------------------------------------------
@@ -180,6 +213,30 @@ class TestSendChunking:
             payload = call.kwargs.get("json") or call[1].get("json")
             final_text = adapter.DEFAULT_REPLY_PREFIX + payload["message"]
             assert len(final_text) <= adapter.MAX_MESSAGE_LENGTH
+
+
+class TestBridgeErrorBodyLimits:
+    @pytest.mark.asyncio
+    async def test_send_poll_limits_error_body(self):
+        adapter = _make_adapter()
+        response = _FakeErrorResponse()
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(response))
+
+        result = await adapter.send_poll("chat1", "Choose", ["A", "B"])
+
+        assert not result.success
+        _assert_limited_error_response(response, result.error)
+
+    @pytest.mark.asyncio
+    async def test_send_location_limits_error_body(self):
+        adapter = _make_adapter()
+        response = _FakeErrorResponse()
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(response))
+
+        result = await adapter.send_location("chat1", 1.25, 2.5)
+
+        assert not result.success
+        _assert_limited_error_response(response, result.error)
 
 
 # ---------------------------------------------------------------------------

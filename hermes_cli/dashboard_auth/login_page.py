@@ -420,7 +420,7 @@ _PASSWORD_FORM_SCRIPT = """\
       if (err) { err.hidden = true; err.textContent = ''; }
       if (btn) { btn.disabled = true; }
       var body = {
-        provider: form.getAttribute('data-provider') || '',
+        provider: (form.querySelector('input[name=provider]') || {}).value || '',
         username: (form.querySelector('input[name=username]') || {}).value || '',
         password: (form.querySelector('input[name=password]') || {}).value || '',
         next: (form.querySelector('input[name=next]') || {}).value || ''
@@ -516,6 +516,7 @@ def _render_password_form(provider, next_path: str) -> str:
         f'      <form class="provider-form" data-provider="{pname}" '
         f'autocomplete="on">\n'
         f'        <div class="form-title">Sign in with {plabel}</div>\n'
+        f'        <input type="hidden" name="provider" value="{pname}">\n'
         f'        <input type="hidden" name="next" value="{safe_next}">\n'
         f'        <label class="field">\n'
         f'          <span class="field-label">Username</span>\n'

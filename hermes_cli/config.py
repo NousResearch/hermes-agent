@@ -10,6 +10,7 @@ This module provides:
 - hermes config edit     - Open config in editor
 - hermes config get      - Print a resolved configuration value
 - hermes config set      - Set a specific value
+- hermes config append   - Append a JSON value to a list
 - hermes config unset    - Remove a user configuration value
 - hermes config wizard   - Re-run setup wizard
 """
@@ -5537,6 +5538,74 @@ def set_config_value(key: str, value: str, force: bool = False):
         ))
 
 
+def append_config_value(key: str, value: str):
+    """Parse a JSON value and append it to a list-valued config path."""
+    if is_managed():
+        managed_error("append configuration values")
+        return
+
+    from hermes_cli import managed_scope
+
+    managed_keys = managed_scope.managed_config_keys()
+    managed_key = next(
+        (
+            candidate
+            for candidate in managed_keys
+            if key == candidate or key.startswith(f"{candidate}.")
+        ),
+        None,
+    )
+    if managed_key is not None:
+        managed_dir = managed_scope.get_managed_dir()
+        src = (managed_dir / "config.yaml") if managed_dir else "the managed scope"
+        print(
+            f"Cannot append to '{key}': it is managed by your administrator "
+            f"({src}) and cannot be changed. Contact your administrator to modify it.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        parsed_value = json.loads(value)
+    except json.JSONDecodeError as exc:
+        print(
+            f"✗ Cannot append to '{key}': value must be valid JSON "
+            f"({exc.msg} at column {exc.colno}).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    default_value = _get_nested(DEFAULT_CONFIG, key)
+    if default_value is not _MISSING and not isinstance(default_value, list):
+        print(
+            f"✗ Cannot append to '{key}': this configuration path is not "
+            "configured as a list.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    config_path = get_config_path()
+    require_readable_config_before_write(config_path)
+    try:
+        from utils import atomic_roundtrip_yaml_append
+
+        initial_values = (
+            copy.deepcopy(default_value) if isinstance(default_value, list) else None
+        )
+        atomic_roundtrip_yaml_append(
+            config_path,
+            key,
+            parsed_value,
+            initial_values=initial_values,
+        )
+    except (ValueError, TimeoutError) as exc:
+        print(f"✗ Cannot append to '{key}': {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    ensure_hermes_home()
+    print(f"✓ Appended value to {key} in {config_path}")
+
+
 def get_config_value(key: str, *, as_json: bool = False):
     """Print a resolved configuration value."""
     if _is_env_config_key(key):
@@ -5659,6 +5728,20 @@ def config_command(args):
             print("           and allow a scalar to replace a whole mapping section")
             sys.exit(1)
         set_config_value(key, value, force=force)
+
+    elif subcmd == "append":
+        key = getattr(args, "key", None)
+        value = getattr(args, "value", None)
+        if not key or value is None:
+            print("Usage: hermes config append <dotted-list-path> <json-value>")
+            print()
+            print("Example:")
+            print(
+                "  hermes config append hooks.pre_llm_call "
+                "'{\"command\":\"/path/check.py\",\"timeout\":9}'"
+            )
+            sys.exit(1)
+        append_config_value(key, value)
 
     elif subcmd == "unset":
         key = getattr(args, 'key', None)

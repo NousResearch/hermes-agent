@@ -47,6 +47,15 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
         "running version doesn't recognize (the value is saved either way).",
     )
 
+    # config append
+    config_append = config_subparsers.add_parser(
+        "append", help="Append a JSON value to a list"
+    )
+    config_append.add_argument(
+        "key", nargs="?", help="Dotted list path (e.g., hooks.pre_llm_call)"
+    )
+    config_append.add_argument("value", nargs="?", help="JSON value to append")
+
     # config unset
     config_unset = config_subparsers.add_parser(
         "unset", help="Remove a configuration value"

@@ -1,5 +1,6 @@
 """Shared utility functions for hermes-agent."""
 
+import contextlib
 import errno
 import json
 import logging
@@ -7,6 +8,7 @@ import os
 import shutil
 import stat
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Union
@@ -15,6 +17,12 @@ from urllib.parse import urlparse
 import yaml
 
 logger = logging.getLogger(__name__)
+
+_YAML_MUTATION_LOCKS: dict[str, threading.RLock] = {}
+_YAML_MUTATION_LOCKS_GUARD = threading.Lock()
+_YAML11_AMBIGUOUS_WORDS = {
+    "y", "n", "yes", "no", "true", "false", "on", "off", "null", "~",
+}
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
@@ -620,6 +628,180 @@ def atomic_roundtrip_yaml_update(
         raise
 
 
+@contextlib.contextmanager
+def _yaml_mutation_lock(path: Union[str, Path], timeout: float = 10.0):
+    """Serialize a YAML read-modify-write section across threads and processes."""
+    path = Path(path)
+    lock_key = str(path.resolve())
+    with _YAML_MUTATION_LOCKS_GUARD:
+        thread_lock = _YAML_MUTATION_LOCKS.setdefault(lock_key, threading.RLock())
+
+    with thread_lock:
+        lock_path = path.with_name(f".{path.name}.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_file = lock_path.open("a+b")
+        acquired = False
+        try:
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"0")
+                lock_file.flush()
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    lock_file.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except (OSError, IOError):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"Timed out waiting for configuration lock {lock_path}"
+                        )
+                    time.sleep(0.05)
+            yield
+        finally:
+            if acquired:
+                try:
+                    lock_file.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                except (OSError, IOError):
+                    pass
+            lock_file.close()
+
+
+def atomic_roundtrip_yaml_append(
+    path: Union[str, Path],
+    key_path: str,
+    value: Any,
+    *,
+    initial_values: list[Any] | None = None,
+) -> None:
+    """Append to a dotted list path without losing YAML formatting or updates."""
+    from ruamel.yaml import YAML
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+    from ruamel.yaml.error import YAMLError
+    from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    yaml_rt = YAML(typ="rt")
+    yaml_rt.preserve_quotes = True
+    yaml_rt.allow_unicode = True
+    yaml_rt.default_flow_style = False
+    yaml_rt.indent(mapping=2, sequence=4, offset=2)
+
+    def _yaml11_safe_value(item: Any) -> Any:
+        if isinstance(item, str) and item.lower() in _YAML11_AMBIGUOUS_WORDS:
+            return DoubleQuotedScalarString(item)
+        if isinstance(item, dict):
+            return CommentedMap(
+                (_yaml11_safe_value(key), _yaml11_safe_value(child))
+                for key, child in item.items()
+            )
+        if isinstance(item, list):
+            return CommentedSeq(_yaml11_safe_value(child) for child in item)
+        return item
+
+    with _yaml_mutation_lock(path):
+        if path.exists():
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    loaded = yaml_rt.load(f)
+                    config = CommentedMap() if loaded is None else loaded
+            except (YAMLError, UnicodeError) as exc:
+                raise ValueError(f"Cannot parse {path}: {exc}") from exc
+        else:
+            config = CommentedMap()
+        if not isinstance(config, CommentedMap):
+            raise ValueError("configuration root is not a mapping")
+
+        parts = key_path.split(".")
+        if not key_path or any(not part for part in parts):
+            raise ValueError("list path must contain non-empty dotted segments")
+
+        current: Any = config
+        for part in parts[:-1]:
+            if isinstance(current, list):
+                try:
+                    current = current[int(part)]
+                except (TypeError, ValueError, IndexError) as exc:
+                    raise ValueError(
+                        f"segment {part!r} is not an existing list index"
+                    ) from exc
+            elif isinstance(current, dict):
+                if part not in current:
+                    current[part] = CommentedMap()
+                elif not isinstance(current[part], (dict, list)):
+                    raise ValueError(
+                        f"segment {part!r} contains "
+                        f"{type(current[part]).__name__}, not a container"
+                    )
+                current = current[part]
+            else:
+                raise ValueError(
+                    f"encountered {type(current).__name__} before the list target"
+                )
+
+        leaf = parts[-1]
+        if isinstance(current, list):
+            try:
+                target = current[int(leaf)]
+            except (TypeError, ValueError, IndexError) as exc:
+                raise ValueError(
+                    f"segment {leaf!r} is not an existing list index"
+                ) from exc
+        else:
+            if leaf not in current:
+                current[leaf] = CommentedSeq(
+                    _yaml11_safe_value(item) for item in (initial_values or [])
+                )
+            target = current[leaf]
+        if not isinstance(target, list):
+            raise ValueError(
+                f"target contains {type(target).__name__}, not a list"
+            )
+        target.append(_yaml11_safe_value(value))
+
+        original_mode = _preserve_file_mode(path)
+        original_owner = _preserve_file_owner(path)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent),
+            prefix=f".{path.stem}_",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                yaml_rt.dump(config, f)
+                f.flush()
+                os.fsync(f.fileno())
+            real_path = atomic_replace(tmp_path, path)
+            real_path_obj = Path(real_path)
+            _restore_file_owner(real_path_obj, original_owner)
+            _restore_file_mode(real_path_obj, original_mode)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+
 def atomic_roundtrip_yaml_save(
     path: Union[str, Path],
     new_state: dict,
@@ -686,10 +868,6 @@ def atomic_roundtrip_yaml_save(
     # `approvals.mode: off` silently round-trips back as `False` under
     # yaml.safe_load. Force-quote any new string value that YAML 1.1 would
     # otherwise misparse as bool/null.
-    _YAML11_AMBIGUOUS_WORDS = {
-        "y", "n", "yes", "no", "true", "false", "on", "off", "null", "~",
-    }
-
     def _quote_if_yaml11_ambiguous(value):
         if isinstance(value, str) and value.lower() in _YAML11_AMBIGUOUS_WORDS:
             return DoubleQuotedScalarString(value)

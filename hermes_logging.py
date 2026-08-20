@@ -37,7 +37,7 @@ import sys
 import threading
 from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Union
 
 # On Windows, stdlib ``RotatingFileHandler`` calls ``os.rename()`` in
 # ``doRollover()`` and fails with ``PermissionError [WinError 32]`` whenever
@@ -75,6 +75,10 @@ from hermes_constants import get_config_path, get_hermes_home
 # is idempotent — calling it twice is safe but the second call is a no-op
 # unless ``force=True``.
 _logging_initialized = False
+
+# First Hermes home initialised in this process. Its handler set owns
+# process-level (untagged) records — see "Per-profile log routing".
+_primary_home_key: Optional[str] = None
 
 # Thread-local storage for per-conversation session context.
 _session_context = threading.local()
@@ -317,6 +321,27 @@ def setup_logging(
 
     root = logging.getLogger()
 
+    # Per-profile routing (see "Per-profile log routing" above). Every handler
+    # created here belongs to ``home``; records tagged with a DIFFERENT profile
+    # home must not be written to it. The FIRST home initialised in the process
+    # is the primary one, and its handlers additionally accept untagged
+    # (process-level) records so cron/housekeeping lines are never dropped.
+    #
+    # Why "first call" and not ``get_process_hermes_home()``: the launch home is
+    # whatever the entrypoint passed here (``gateway/run.py`` passes its
+    # ``_hermes_home`` explicitly, which need not equal ``HERMES_HOME``), while
+    # later calls come from ``agent_init`` inside a per-profile scope. Anchoring
+    # on the first initialised home keeps a single-profile install byte-identical
+    # to before, because there is only ever one handler set and it takes
+    # everything.
+    global _primary_home_key
+    _home_key = str(home.resolve())
+    with _queue_state_lock:
+        if _primary_home_key is None:
+            _primary_home_key = _home_key
+        _is_primary = _home_key == _primary_home_key
+    _home_filter = _ProfileHomeFilter(_home_key, is_process_home=_is_primary)
+
     # --- agent.log (INFO+) — the main activity log -------------------------
     _add_rotating_handler(
         root,
@@ -325,6 +350,7 @@ def setup_logging(
         max_bytes=max_bytes,
         backup_count=backups,
         formatter=RedactingFormatter(_LOG_FORMAT),
+        log_filter=_home_filter,
     )
 
     # --- errors.log (WARNING+) — quick triage log --------------------------
@@ -335,6 +361,7 @@ def setup_logging(
         max_bytes=2 * 1024 * 1024,
         backup_count=2,
         formatter=RedactingFormatter(_LOG_FORMAT),
+        log_filter=_home_filter,
     )
 
     # --- gateway.log (INFO+, gateway component only) ------------------------
@@ -346,7 +373,7 @@ def setup_logging(
             max_bytes=5 * 1024 * 1024,
             backup_count=3,
             formatter=RedactingFormatter(_LOG_FORMAT),
-            log_filter=_ComponentFilter(COMPONENT_PREFIXES["gateway"]),
+            log_filter=(_ComponentFilter(COMPONENT_PREFIXES["gateway"]), _home_filter),
         )
 
     # --- gui.log (INFO+, dashboard/tui-gateway components) -----------------
@@ -358,7 +385,7 @@ def setup_logging(
             max_bytes=10 * 1024 * 1024,
             backup_count=5,
             formatter=RedactingFormatter(_LOG_FORMAT),
-            log_filter=_ComponentFilter(COMPONENT_PREFIXES["gui"]),
+            log_filter=(_ComponentFilter(COMPONENT_PREFIXES["gui"]), _home_filter),
         )
 
     if _logging_initialized and not force:
@@ -406,6 +433,88 @@ def setup_verbose_logging() -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
     # rex-deploy at INFO for sandbox status.
     logging.getLogger("rex-deploy").setLevel(logging.INFO)
+
+
+# ---------------------------------------------------------------------------
+# Per-profile log routing
+# ---------------------------------------------------------------------------
+#
+# A multiplexed gateway (``gateway.multiplex_profiles``) is ONE process serving
+# several profiles. Because file handlers live on the root logger and are added
+# additively, once a second profile is initialised every record reaches EVERY
+# handler — so an owner's private conversation is written into
+# ``profiles/<guest>/logs/agent.log`` as well. Measured on a live gateway: 132
+# lines of the owner's session, including inbound Telegram message text, landed
+# in a guest profile's log.
+#
+# The fix tags each record with the home that was active when it was CREATED
+# (the record factory runs on the emitting thread, where the profile's
+# context-local override is still visible — the QueueListener worker thread has
+# no such context), and each file handler drops records that belong to a
+# different home.
+#
+# Records created outside any profile scope (cron ticks, housekeeping, startup)
+# carry ``None`` and are treated as process-level: they go to the launch home's
+# files only, so background noise never fans out into guest directories.
+
+
+def _record_home_key(record: logging.LogRecord) -> Optional[str]:
+    """Return the profile-home tag attached to *record*, if any."""
+    value = getattr(record, "hermes_home_key", None)
+    return str(value) if value else None
+
+
+class _ProfileHomeFilter(logging.Filter):
+    """Keep only records belonging to the handler's own Hermes home.
+
+    ``home_key`` is the resolved home this handler writes under.
+    ``is_process_home`` marks the handler set of the home the process was
+    launched with; those handlers also accept untagged (process-level) records
+    so nothing is silently dropped when no profile scope is active.
+    """
+
+    def __init__(self, home_key: str, is_process_home: bool) -> None:
+        super().__init__()
+        self.home_key = home_key
+        self.is_process_home = is_process_home
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        key = _record_home_key(record)
+        if key is None:
+            # No profile scope was active: process-level record.
+            return self.is_process_home
+        return key == self.home_key
+
+
+def _install_profile_home_record_factory() -> None:
+    """Tag every LogRecord with the profile home active at creation time.
+
+    Runs on the emitting thread, which is the only place the context-local
+    override is readable — by the time the ``QueueListener`` worker formats the
+    record, that context is gone. Idempotent.
+    """
+    current_factory = logging.getLogRecordFactory()
+    if getattr(current_factory, "_hermes_home_injector", False):
+        return
+
+    def _home_record_factory(*args, **kwargs):
+        record = current_factory(*args, **kwargs)
+        try:
+            from hermes_constants import get_hermes_home_override
+
+            override = get_hermes_home_override()
+        except Exception:
+            override = None
+        record.hermes_home_key = (  # type: ignore[attr-defined]
+            str(Path(override).resolve()) if override else None
+        )
+        return record
+
+    _home_record_factory._hermes_home_injector = True  # type: ignore[attr-defined]
+    logging.setLogRecordFactory(_home_record_factory)
+
+
+_install_profile_home_record_factory()
 
 
 # ---------------------------------------------------------------------------
@@ -702,7 +811,7 @@ def rotating_file_handlers() -> list:
 
 def _reset_queued_handlers() -> None:
     """Tear down the async logging queue + listener (test-isolation helper)."""
-    global _log_queue
+    global _log_queue, _primary_home_key
     with _queue_state_lock:
         _stop_queue_listener_locked()
         root = logging.getLogger()
@@ -716,6 +825,10 @@ def _reset_queued_handlers() -> None:
                 pass
         _queued_file_handlers.clear()
         _log_queue = None
+        # The primary-home anchor is per handler-set: leaving a stale value here
+        # would make the next setup_logging() treat a fresh home as secondary,
+        # so its handlers would silently reject process-level records.
+        _primary_home_key = None
 
 
 def _add_rotating_handler(
@@ -726,7 +839,7 @@ def _add_rotating_handler(
     max_bytes: int,
     backup_count: int,
     formatter: logging.Formatter,
-    log_filter: Optional[logging.Filter] = None,
+    log_filter: "Optional[Union[logging.Filter, Sequence[logging.Filter]]]" = None,
 ) -> None:
     """Add a ``RotatingFileHandler`` to *logger*, skipping if one already
     exists for the same resolved file path (idempotent).
@@ -734,8 +847,10 @@ def _add_rotating_handler(
     Parameters
     ----------
     log_filter
-        Optional filter to attach to the handler (e.g. ``_ComponentFilter``
-        for gateway.log).
+        Optional filter, or sequence of filters, to attach to the handler
+        (e.g. ``_ComponentFilter`` for gateway.log plus ``_ProfileHomeFilter``
+        for per-profile routing). All supplied filters must pass — stdlib
+        applies handler filters conjunctively.
     """
     resolved = path.resolve()
     for existing in _queued_file_handlers:
@@ -753,7 +868,14 @@ def _add_rotating_handler(
     handler.setLevel(level)
     handler.setFormatter(formatter)
     if log_filter is not None:
-        handler.addFilter(log_filter)
+        # Accept one filter or a sequence; stdlib applies them conjunctively.
+        filters = (
+            [log_filter]
+            if isinstance(log_filter, logging.Filter)
+            else list(log_filter)
+        )
+        for flt in filters:
+            handler.addFilter(flt)
     # Route through the async queue instead of ``logger.addHandler(handler)`` so
     # the rotation-lock wait never runs on the caller's (often event-loop) thread.
     _register_queued_handler(handler)

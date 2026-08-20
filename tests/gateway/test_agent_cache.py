@@ -727,6 +727,10 @@ class TestCachedAgentInactivityReset:
         assert agent._last_activity_ts > old_ts, (
             "Stale idle time should be cleared so the new turn gets a fresh window"
         )
+        assert agent._idle_gap_at_turn_start == _FAKE_NOW - old_ts, (
+            "Fresh cached turns must stash the pre-reset idle gap so "
+            "idle-compaction can still see gateway resume time"
+        )
 
 
     def test_fresh_turn_resets_provenance(self):
@@ -750,6 +754,7 @@ class TestCachedAgentInactivityReset:
 
         agent = self._fake_agent(stale_seconds=1200.0)
         old_ts = agent._last_activity_ts
+        agent._idle_gap_at_turn_start = 123.0
 
         GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=1)
 
@@ -757,6 +762,7 @@ class TestCachedAgentInactivityReset:
             "_last_activity_ts must not be reset on interrupt-recursive turns "
             "(interrupt_depth>0) — the watchdog needs the accumulated idle time"
         )
+        assert agent._idle_gap_at_turn_start == 123.0
 
     def test_interrupt_turn_preserves_desc(self):
         """interrupt_depth=1: desc preserved — it is semantically paired with ts."""
@@ -1061,4 +1067,3 @@ class TestCrossProcessInvalidationDefersCleanup:
         # Stale entry was popped, hard-teardown path never used.
         assert "telegram:s1" not in runner._agent_cache
         runner._cleanup_agent_resources.assert_not_called()
-

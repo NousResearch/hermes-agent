@@ -49,8 +49,15 @@ jobs:
             libssl-dev \
             patchelf
 
-      # No restore-keys: a partial hit leaves a stale target dir, and a cold
-      # build is only a few minutes. Keyed on the lockfile plus the toolchain.
+      # Keyed on Cargo.toml, not Cargo.lock: apps/bootstrap-installer/.gitignore
+      # excludes the lockfile (a create-tauri-app scaffold default), so there is
+      # nothing pinned to hash and `--locked` cannot be used. That also means
+      # this crate re-resolves its whole dependency graph on every build, which
+      # is a real gap for a signed installer given the pinning policy in
+      # AGENTS.md — tracking separately rather than widening this PR.
+      #
+      # No restore-keys: a partial hit leaves a stale target dir, and cargo
+      # re-resolves correctly on top of a Cargo.toml-keyed hit anyway.
       - name: Restore cargo cache
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
@@ -58,9 +65,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             apps/bootstrap-installer/src-tauri/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('apps/bootstrap-installer/src-tauri/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ hashFiles('apps/bootstrap-installer/src-tauri/Cargo.toml') }}
 
       # --lib only: the integration/bin targets would need a built frontend
       # (vite dist) that this lane deliberately does not produce.
       - name: cargo test
-        run: cargo test --lib --locked
+        run: cargo test --lib

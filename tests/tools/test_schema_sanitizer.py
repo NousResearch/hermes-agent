@@ -348,172 +348,150 @@ def test_dependent_schemas_still_recursively_sanitized():
     )
 
 
-# ---------------------------------------------------------------------------
-# collapse_const_unions — anyOf/oneOf of same-typed const branches -> enum
-# Ported from: block/goose tool_schema_normalize.rs (Apache-2.0)
-# ---------------------------------------------------------------------------
-
-from tools.schema_sanitizer import collapse_const_unions
-
-
-def test_pure_const_union_collapses_to_enum():
-    schema = {
-        "anyOf": [
-            {"const": "red"},
-            {"const": "green"},
-            {"const": "blue"},
-        ]
-    }
-    out = collapse_const_unions(schema)
-    assert out == {"type": "string", "enum": ["red", "green", "blue"]}
-
-
-def test_oneof_const_union_collapses_to_enum():
-    schema = {"oneOf": [{"const": 1}, {"const": 2}, {"const": 3}]}
-    out = collapse_const_unions(schema)
-    assert out == {"type": "integer", "enum": [1, 2, 3]}
-
-
-def test_mixed_union_left_alone():
-    schema = {
-        "anyOf": [
-            {"const": "a"},
-            {"type": "string", "minLength": 3},
-        ]
-    }
-    out = collapse_const_unions(copy.deepcopy(schema))
-    assert out == schema
-
-
-def test_non_uniform_const_types_left_alone():
-    schema = {"anyOf": [{"const": "a"}, {"const": 1}]}
-    out = collapse_const_unions(copy.deepcopy(schema))
-    assert out == schema
-
-
-def test_bool_consts_not_confused_with_integers():
-    # bool is a subclass of int in Python; True/1 must not merge types.
-    schema = {"anyOf": [{"const": True}, {"const": 1}]}
-    out = collapse_const_unions(copy.deepcopy(schema))
-    assert out == schema
-    collapsed = collapse_const_unions({"anyOf": [{"const": True}, {"const": False}]})
-    assert collapsed == {"type": "boolean", "enum": [True, False]}
-
-
-def test_nested_const_unions_collapse():
-    schema = {
+def test_unrename_tool_args_prefixItems_basic():
+    original_params = {
         "type": "object",
         "properties": {
-            "mode": {"anyOf": [{"const": "fast"}, {"const": "slow"}]},
-            "inner": {
-                "type": "object",
-                "properties": {
-                    "level": {"oneOf": [{"const": 1}, {"const": 2}]},
-                },
-            },
-        },
-    }
-    out = collapse_const_unions(schema)
-    assert out["properties"]["mode"] == {"type": "string", "enum": ["fast", "slow"]}
-    assert out["properties"]["inner"]["properties"]["level"] == {
-        "type": "integer",
-        "enum": [1, 2],
-    }
-
-
-def test_outer_metadata_carried_onto_collapsed_enum():
-    schema = {
-        "title": "Color",
-        "description": "Pick a color",
-        "default": "red",
-        "anyOf": [{"const": "red"}, {"const": "blue"}],
-    }
-    out = collapse_const_unions(schema)
-    assert out == {
-        "type": "string",
-        "enum": ["red", "blue"],
-        "title": "Color",
-        "description": "Pick a color",
-        "default": "red",
-    }
-
-
-def test_branch_metadata_does_not_block_collapse():
-    schema = {
-        "anyOf": [
-            {"const": "a", "title": "A", "description": "first"},
-            {"const": "b", "type": "string"},
-        ]
-    }
-    out = collapse_const_unions(schema)
-    assert out == {"type": "string", "enum": ["a", "b"]}
-
-
-def test_branch_with_mismatched_declared_type_left_alone():
-    schema = {"anyOf": [{"const": "a", "type": "integer"}, {"const": "b"}]}
-    out = collapse_const_unions(copy.deepcopy(schema))
-    assert out == schema
-
-
-def test_null_plus_const_union_ordering_with_nullable_strip():
-    """MCP pipeline: nullable strip runs first, then const collapse.
-
-    ``anyOf: [{const a}, {const b}, {type: null}]`` has TWO non-null branches
-    so strip_nullable_unions leaves it; collapse_const_unions must then handle
-    the remaining null branch by collapsing consts and keeping nullability as
-    a hint.
-    """
-    from tools.mcp_tool import _normalize_mcp_input_schema
-
-    schema = {
-        "type": "object",
-        "properties": {
-            "mode": {
-                "anyOf": [
-                    {"const": "fast"},
-                    {"const": "slow"},
-                    {"type": "null"},
+            "tuple": {
+                "type": "array",
+                "prefixItems": [
+                    {
+                        "type": "object",
+                        "properties": {"bad~key": {"type": "string"}},
+                    }
                 ],
-                "default": None,
             }
         },
     }
-    out = _normalize_mcp_input_schema(schema)
-    mode = out["properties"]["mode"]
-    assert mode["type"] == "string"
-    assert mode["enum"] == ["fast", "slow"]
-    assert mode.get("nullable") is True
+    model_args = {"tuple": [{"bad_key": "test"}]}
+    restored = unrename_tool_args(original_params, model_args)
+    assert restored["tuple"][0] == {"bad~key": "test"}
 
 
-def test_normalize_mcp_input_schema_collapses_const_unions():
-    from tools.mcp_tool import _normalize_mcp_input_schema
-
-    schema = {
+def test_prefix_items_sanitize_and_unrename_round_trip():
+    original_params = {
         "type": "object",
         "properties": {
-            "color": {
-                "description": "Pick one",
-                "anyOf": [{"const": "red"}, {"const": "green"}],
+            "tuple": {
+                "type": "array",
+                "prefixItems": [
+                    {
+                        "type": "object",
+                        "properties": {"bad~key": {"type": "string"}},
+                    }
+                ],
             }
         },
     }
-    out = _normalize_mcp_input_schema(schema)
-    assert out["properties"]["color"] == {
-        "description": "Pick one",
-        "type": "string",
-        "enum": ["red", "green"],
+    sanitized_tools = sanitize_tool_schemas([
+        _tool("t", copy.deepcopy(original_params))
+    ])
+    sanitized_params = sanitized_tools[0]["function"]["parameters"]
+    tuple_item = sanitized_params["properties"]["tuple"]["prefixItems"][0]
+    assert set(tuple_item["properties"]) == {"bad_key"}
+
+    model_args = {"tuple": [{"bad_key": "test"}]}
+    assert unrename_tool_args(original_params, model_args) == {
+        "tuple": [{"bad~key": "test"}]
     }
 
 
-def test_collapse_const_unions_does_not_mutate_input():
-    schema = {"anyOf": [{"const": "x"}, {"const": "y"}]}
-    snapshot = copy.deepcopy(schema)
-    collapse_const_unions(schema)
-    assert schema == snapshot
+def test_unrename_tool_args_prefixItems_positional():
+    original_params = {
+        "type": "object",
+        "properties": {
+            "tuple": {
+                "type": "array",
+                "prefixItems": [
+                    {
+                        "type": "object",
+                        "properties": {"first~key": {"type": "string"}},
+                    },
+                    {
+                        "type": "object",
+                        "properties": {"second~key": {"type": "string"}},
+                    },
+                ],
+            }
+        },
+    }
+    model_args = {"tuple": [{"first_key": "a"}, {"second_key": "b"}]}
+    restored = unrename_tool_args(original_params, model_args)
+    assert restored["tuple"][0] == {"first~key": "a"}
+    assert restored["tuple"][1] == {"second~key": "b"}
 
 
-def test_collapse_is_deterministic():
-    schema = {"anyOf": [{"const": "b"}, {"const": "a"}]}
-    first = collapse_const_unions(copy.deepcopy(schema))
-    second = collapse_const_unions(copy.deepcopy(schema))
-    assert first == second == {"type": "string", "enum": ["b", "a"]}
+def test_unrename_tool_args_prefixItems_and_items():
+    original_params = {
+        "type": "object",
+        "properties": {
+            "tuple": {
+                "type": "array",
+                "prefixItems": [
+                    {
+                        "type": "object",
+                        "properties": {"pos~key": {"type": "string"}},
+                    }
+                ],
+                "items": {
+                    "type": "object",
+                    "properties": {"trail~key": {"type": "string"}},
+                },
+            }
+        },
+    }
+    model_args = {"tuple": [{"pos_key": "a"}, {"trail_key": "b"}, {"trail_key": "c"}]}
+    restored = unrename_tool_args(original_params, model_args)
+    assert restored["tuple"][0] == {"pos~key": "a"}
+    assert restored["tuple"][1] == {"trail~key": "b"}
+    assert restored["tuple"][2] == {"trail~key": "c"}
+
+
+def test_unrename_tool_args_nested_prefixItems():
+    original_params = {
+        "type": "object",
+        "properties": {
+            "tuple": {
+                "type": "array",
+                "prefixItems": [
+                    {
+                        "type": "array",
+                        "prefixItems": [
+                            {
+                                "type": "object",
+                                "properties": {"bad~key": {"type": "string"}},
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
+    }
+    model_args = {"tuple": [[{"bad_key": "value"}]]}
+
+    assert unrename_tool_args(original_params, model_args) == {
+        "tuple": [[{"bad~key": "value"}]]
+    }
+
+
+def test_unrename_tool_args_nested_homogeneous_items():
+    original_params = {
+        "type": "object",
+        "properties": {
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"bad~key": {"type": "string"}},
+                    },
+                },
+            }
+        },
+    }
+    model_args = {"rows": [[{"bad_key": "a"}], [{"bad_key": "b"}]]}
+
+    assert unrename_tool_args(original_params, model_args) == {
+        "rows": [[{"bad~key": "a"}], [{"bad~key": "b"}]]
+    }

@@ -221,12 +221,14 @@ class RealtimeSession:
             return False
 
     def _send_json(self, payload: dict) -> None:
-        assert self._ws is not None
+        if self._ws is None:
+            raise RuntimeError("WebSocket is not connected; call connect() first")
         with self._send_lock:
             self._ws.send(json.dumps(payload))
 
     def _recv(self, timeout: Optional[float] = None):
-        assert self._ws is not None
+        if self._ws is None:
+            raise RuntimeError("WebSocket is not connected; call connect() first")
         try:
             if timeout is None:
                 return self._ws.recv()

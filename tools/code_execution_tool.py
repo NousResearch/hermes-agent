@@ -653,6 +653,7 @@ def _rpc_server_loop(
     server_sock: socket.socket,
     task_id: str,
     tool_call_log: list,
+    tool_call_results: list,
     tool_call_counter: list,   # mutable [int] so the thread can increment
     max_tool_calls: int,
     allowed_tools: frozenset,
@@ -762,6 +763,9 @@ def _rpc_server_loop(
                     "args_preview": args_preview,
                     "duration": round(call_duration, 2),
                 })
+                # A script may print only progress headings, so preserve the
+                # dispatched result for the model as well as script stdout.
+                tool_call_results.append({"tool": tool_name, "result": result})
 
                 conn.sendall((result + "\n").encode())
 
@@ -923,6 +927,7 @@ def _rpc_poll_loop(
     rpc_dir: str,
     task_id: str,
     tool_call_log: list,
+    tool_call_results: list,
     tool_call_counter: list,
     max_tool_calls: int,
     allowed_tools: frozenset,
@@ -1035,6 +1040,7 @@ def _rpc_poll_loop(
                         "args_preview": str(tool_args)[:80],
                         "duration": round(call_duration, 2),
                     })
+                    tool_call_results.append({"tool": tool_name, "result": tool_result})
 
                 # Write response atomically (tmp + rename).
                 # Use echo piping (not stdin_data) because Modal doesn't
@@ -1091,6 +1097,7 @@ def _execute_remote(
     quoted_rpc_dir = shlex.quote(f"{sandbox_dir}/rpc")
 
     tool_call_log: list = []
+    tool_call_results: list = []
     tool_call_counter = [0]
     exec_start = time.monotonic()
     stop_event = threading.Event()
@@ -1135,7 +1142,7 @@ def _execute_remote(
             target=propagate_context_to_thread(_rpc_poll_loop),
             args=(
                 env, f"{sandbox_dir}/rpc", effective_task_id,
-                tool_call_log, tool_call_counter, max_tool_calls,
+                tool_call_log, tool_call_results, tool_call_counter, max_tool_calls,
                 sandbox_tools, stop_event, rpc_token,
             ),
             daemon=True,
@@ -1181,6 +1188,7 @@ def _execute_remote(
             "status": "error",
             "error": str(exc),
             "tool_calls_made": tool_call_counter[0],
+            "tool_results": tool_call_results,
             "duration_seconds": duration,
         }, ensure_ascii=False)
 
@@ -1220,6 +1228,7 @@ def _execute_remote(
         "output": stdout_text,
         "exit_code": exit_code,
         "tool_calls_made": tool_call_counter[0],
+        "tool_results": tool_call_results,
         "duration_seconds": duration,
     }
     result.update(stdout_metadata)
@@ -1363,6 +1372,7 @@ def execute_code(
         rpc_endpoint = sock_path
 
     tool_call_log: list = []
+    tool_call_results: list = []
     tool_call_counter = [0]  # mutable so the RPC thread can increment
     exec_start = time.monotonic()
     server_sock = None
@@ -1414,7 +1424,7 @@ def execute_code(
         rpc_thread = threading.Thread(
             target=propagate_context_to_thread(_rpc_server_loop),
             args=(
-                server_sock, task_id, tool_call_log,
+                server_sock, task_id, tool_call_log, tool_call_results,
                 tool_call_counter, max_tool_calls, sandbox_tools, stop_event, rpc_token,
             ),
             daemon=True,
@@ -1673,6 +1683,7 @@ def execute_code(
             "output": stdout_text,
             "exit_code": exit_code,
             "tool_calls_made": tool_call_counter[0],
+            "tool_results": tool_call_results,
             "duration_seconds": duration,
         }
         result.update(stdout_metadata)

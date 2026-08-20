@@ -33,6 +33,18 @@ services:
     container_name: hermes
     restart: unless-stopped
     network_mode: host
+    # DEV-0115: container hardening.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: 2g
     volumes:
       - ~/.hermes:/opt/data
     environment:

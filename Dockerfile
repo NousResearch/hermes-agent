@@ -2,7 +2,7 @@
 # corruption bug. Build a pinned shared library for the runtime image instead
 # of relying on a distro backport that trixie does not currently provide.
 # See #70480 and https://sqlite.org/wal.html#walresetbug.
-FROM debian:13.4 AS sqlite_build
+FROM debian:13.4@sha256:de6a8f94c0e84f57a8e29769966b9d8c199b0891634280ad75ad804cf9827825 AS sqlite_build
 ARG SQLITE_AUTOCONF_VERSION=3530400
 ARG SQLITE_SHA256=0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c
 RUN apt-get -o Acquire::Retries=3 update && \
@@ -49,7 +49,7 @@ FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df228
 # 2.41) runtime.  Bumping to a new Node major is a one-line ARG change; see
 # #4977.
 FROM node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73 AS node_source
-FROM debian:13.4
+FROM debian:13.4@sha256:de6a8f94c0e84f57a8e29769966b9d8c199b0891634280ad75ad804cf9827825
 
 # Disable Python stdout buffering to ensure logs are printed immediately.
 # Do not write .pyc files at runtime: /opt/hermes is immutable in the

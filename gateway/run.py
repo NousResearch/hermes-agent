@@ -16350,14 +16350,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not is_internal:
             try:
                 from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+                # DEV-0119: pass a minimal read-only view instead of the full
+                # gateway (adapters hold platform tokens) + session store.
+                # This hook runs BEFORE user authorization.
+                from types import SimpleNamespace as _SimpleNamespace
+                _gw_view = _SimpleNamespace(
+                    platform_names=tuple(
+                        (p.value if hasattr(p, "value") else str(p))
+                        for p in self.adapters
+                    ),
+                )
                 _hook_results = _invoke_hook(
                     "pre_gateway_dispatch",
                     event=event,
-                    gateway=self,
-                    # getattr: bare-runner tests build GatewayRunner via
-                    # object.__new__ without __init__ (pitfall #17), and the
-                    # hook must not fail dispatch over a missing attribute.
-                    session_store=getattr(self, "session_store", None),
+                    gateway=_gw_view,
                 )
             except Exception as _hook_exc:
                 logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)

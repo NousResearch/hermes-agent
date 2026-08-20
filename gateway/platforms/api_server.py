@@ -4429,7 +4429,7 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.error("Error running agent for chat completions: %s", e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(f"Internal server error", err_type="server_error"),
                     status=500,
                 )
         else:
@@ -4438,7 +4438,7 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.error("Error running agent for chat completions: %s", e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(f"Internal server error", err_type="server_error"),
                     status=500,
                 )
 
@@ -5563,7 +5563,7 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(f"Internal server error", err_type="server_error"),
                     status=500,
                 )
         else:
@@ -5572,7 +5572,7 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(f"Internal server error", err_type="server_error"),
                     status=500,
                 )
 

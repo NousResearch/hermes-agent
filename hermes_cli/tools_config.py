@@ -1522,11 +1522,13 @@ def _run_cua_driver_installer(
     is_windows = system == "Windows"
     is_linux = system == "Linux"
 
+    # DEV-0122: pin to a tagged release instead of mutable `main`
+    _CUA_TAG = "cua-driver-rs-v0.19.3"
+
     if is_windows:
-        # Mirror the one-liner printed by cua_driver_install_hint().
         ps_oneliner = (
-            "irm https://raw.githubusercontent.com/trycua/cua/main/"
-            "libs/cua-driver/scripts/install.ps1 | iex"
+            "irm https://raw.githubusercontent.com/trycua/cua/"
+            f"{_CUA_TAG}/libs/cua-driver/scripts/install.ps1 | iex"
         )
         install_cmd = [
             "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
@@ -1547,8 +1549,8 @@ def _run_cua_driver_installer(
         import tempfile as _tempfile
 
         install_url = (
-            "https://raw.githubusercontent.com/trycua/cua/main/"
-            "libs/cua-driver/scripts/install.sh"
+            "https://raw.githubusercontent.com/trycua/cua/"
+            f"{_CUA_TAG}/libs/cua-driver/scripts/install.sh"
         )
         manual_hint = f'/bin/bash -c "$(curl -fsSL {install_url})"'
         fd, script_path = _tempfile.mkstemp(prefix="cua-driver-install-", suffix=".sh")

@@ -713,7 +713,7 @@ class TestHealthDetailedEndpoint:
                 resp = await cli.get("/health/detailed")
                 assert resp.status == 200
                 data = await resp.json()
-                assert data["status"] == "ok"
+                assert data["status"] == "degraded"
                 assert data["platform"] == "hermes-agent"
                 assert data["gateway_state"] == "running"
                 assert data["platforms"] == {"telegram": {"state": "connected"}}

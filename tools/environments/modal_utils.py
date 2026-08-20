@@ -13,6 +13,7 @@ trust-boundary decisions in their own modules.
 
 from __future__ import annotations
 
+import os
 import shlex
 import time
 import uuid
@@ -51,7 +52,17 @@ def wrap_modal_stdin_heredoc(command: str, stdin_data: str) -> str:
 
 
 def wrap_modal_sudo_pipe(command: str, sudo_stdin: str) -> str:
-    """Feed sudo via a shell pipe for transports without direct stdin piping."""
+    """Feed sudo via a shell pipe for transports without direct stdin piping.
+
+    Blocked by default when SUDO_PASSWORD is embedded in remote command
+    strings (DEV-0127).  Set ``HERMES_ALLOW_REMOTE_SUDO_PASSWORD=1`` to
+    opt in on transports where the command log is trusted (e.g. Modal).
+    """
+    if os.environ.get("HERMES_ALLOW_REMOTE_SUDO_PASSWORD") not in ("1", "true", "yes"):
+        raise RuntimeError(
+            "SUDO_PASSWORD embedding in remote commands is blocked by default. "
+            "Set HERMES_ALLOW_REMOTE_SUDO_PASSWORD=1 to opt in."
+        )
     return f"printf '%s\\n' {shlex.quote(sudo_stdin.rstrip())} | {command}"
 
 

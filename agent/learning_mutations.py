@@ -191,10 +191,18 @@ def _edit_memory(node_id: str, content: str) -> dict[str, Any]:
 
 def _write_memory(path: Path, chunks: list[str]) -> None:
     """Atomic temp-file + rename via the memory tool, so a concurrent reader
-    never sees a half-written file (and the §-join stays single-sourced)."""
+    never sees a half-written file (and the §-join stays single-sourced).
+
+    The write is held under ``MemoryStore._file_lock`` so a dashboard- or
+    learning-graph-initiated mutation cannot interleave with a concurrent agent
+    read-modify-write on the same memory file. Every other read-modify-write
+    caller in ``MemoryStore`` already acquires this lock; ``_write_file`` itself
+    does not, so this path must hold it explicitly."""
     from tools.memory_tool import MemoryStore
 
-    MemoryStore._write_file(path, [c.strip() for c in chunks if c.strip()])
+    cleaned = [c.strip() for c in chunks if c.strip()]
+    with MemoryStore._file_lock(path):
+        MemoryStore._write_file(path, cleaned)
 
 
 def _clear_skill_cache() -> None:

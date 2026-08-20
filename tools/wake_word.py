@@ -695,12 +695,30 @@ class _SherpaKwsEngine(_Engine):
 
         phrases = list(phrase_map)
         # Runtime tokenization of the arbitrary phrases — the open-vocab core.
-        tokens = text2token(
-            [p.upper() for p in phrases],
-            tokens=str(d / "tokens.txt"),
-            tokens_type="bpe",
-            bpe_model=str(d / "bpe.model"),
-        )
+        # Auto-detect the model family: BPE models (English gigaspeech) carry
+        # bpe.model; zh-en models carry en.phone and tokenize Chinese via
+        # pinyin (initials+finals) and English via CMU-style phonemes
+        # (tokens_type="phone+ppinyin").
+        if (d / "bpe.model").exists():
+            tokens = text2token(
+                [p.upper() for p in phrases],
+                tokens=str(d / "tokens.txt"),
+                tokens_type="bpe",
+                bpe_model=str(d / "bpe.model"),
+            )
+        elif (d / "en.phone").exists():
+            tokens = text2token(
+                [p.upper() for p in phrases],
+                tokens=str(d / "tokens.txt"),
+                tokens_type="phone+ppinyin",
+                lexicon=str(d / "en.phone"),
+            )
+        else:
+            raise RuntimeError(
+                f"sherpa KWS model at {d} is not supported: expected "
+                "bpe.model (English BPE) or en.phone (zh-en) in the "
+                "model directory"
+            )
         import tempfile
 
         # sherpa keyword entries reject spaces in the @display-name; underscore

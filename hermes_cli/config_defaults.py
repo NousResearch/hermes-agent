@@ -3085,6 +3085,8 @@ DEFAULT_CONFIG = {
     # reports 384MB+ databases with 68K+ messages, which slows down FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
+        # Default sort: last-active | started. CLI --sort flag overrides.
+        "list_sort": "last-active",
         # When true, prune ended sessions inactive for retention_days once
         # per (roughly) min_interval_hours at CLI/gateway/cron startup.
         # Activity is the latest message timestamp, falling back to creation

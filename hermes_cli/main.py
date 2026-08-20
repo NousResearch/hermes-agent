@@ -13262,6 +13262,14 @@ def main():
         help="Only sessions in one workspace: a git repo root or project dir "
         "(matched by path substring or basename).",
     )
+    sessions_list.add_argument(
+        "--sort",
+        choices=("started", "last-active"),
+        default=None,
+        help="Sort order: 'started' by session creation time, "
+        "'last-active' by most recent message "
+        "(default: sessions.list_sort from config.yaml)",
+    )
 
     def _add_session_filter_args(p, default_older_help):
         p.add_argument(
@@ -13755,7 +13763,6 @@ def main():
         return _self().cmd_sessions(_args, sessions_parser=sessions_parser)
 
     sessions_parser.set_defaults(func=_dispatch_sessions)
-
     # =========================================================================
     # insights command  (parser built in hermes_cli/subcommands/insights.py)
     # =========================================================================

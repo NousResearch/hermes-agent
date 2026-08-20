@@ -329,8 +329,15 @@ def cmd_sessions(args, sessions_parser=None):
     if action == "list":
         from hermes_state import workspace_key as _ws_key
 
+        _sort = getattr(args, "sort", None)
+        if _sort is None:
+            from hermes_cli.config import load_config
+            _sort = load_config().get("sessions", {}).get("list_sort", "last-active")
+        _order_by_last_active = (_sort == "last-active")
+
         sessions = db.list_sessions_rich(
-            source=args.source, exclude_sources=_exclude, limit=args.limit
+            source=args.source, exclude_sources=_exclude, limit=args.limit,
+            order_by_last_active=_order_by_last_active
         )
 
         # Workspace filter: match a session by its workspace key (git repo

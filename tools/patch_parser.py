@@ -391,7 +391,28 @@ def _validate_operations(
                 pending_content.pop(op.file_path, None)
                 removed_paths.add(op.file_path)
 
-        # ADD: parent directory creation handled by write_file; no pre-check needed.
+        elif op.operation == OperationType.ADD:
+            # ADD creates a file, so — exactly like a MOVE destination — a
+            # later op in the same patch that reads this path (UPDATE, a MOVE
+            # source, or DELETE) must see it in the overlay. Mirror
+            # _apply_add's content extraction (join the '+' lines) so a
+            # subsequent UPDATE validates against precisely what the apply
+            # phase will write. Also drop the path from removed_paths so a
+            # Delete-then-Add recreation reads as present.
+            #
+            # Without this, an Add-then-Update (or Add-then-Move) of the same
+            # path is rejected with "file not found" during validation even
+            # though the two-phase apply — which writes the ADD before reading
+            # it back for the UPDATE — would succeed. Same class as the
+            # Move-then-Update overlay gap; ADD was the missed producer.
+            added_content = '\n'.join(
+                line.content
+                for hunk in op.hunks
+                for line in hunk.lines
+                if line.prefix == '+'
+            )
+            pending_content[op.file_path] = added_content
+            removed_paths.discard(op.file_path)
 
     if not errors and real_change_count == 0:
         errors.append("Patch contains no changes (only context lines were provided)")

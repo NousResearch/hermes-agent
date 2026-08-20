@@ -2741,8 +2741,25 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
 
 def _sess_nowait(params, rid):
-    s = _sessions.get(params.get("session_id") or "")
-    return (s, None) if s else (None, _err(rid, 4001, "session not found"))
+    sid = params.get("session_id") or ""
+    s = _sessions.get(sid)
+    if s:
+        return (s, None)
+    # A session-scoped RPC hit a runtime id the gateway no longer holds
+    # (detached on WS disconnect and orphan-reaped, LRU-evicted, or torn down
+    # after an idle TTL). The client is expected to recover via
+    # session.resume on the STORED session id, but a plain stale-id send
+    # leaves no trace anywhere when the resume never fires — every RPC in
+    # this class returned a silent 4001. Log it so a "message vanished"
+    # report is diagnosable as "request arrived and was rejected" instead of
+    # "request never arrived" (see #90428).
+    logger.warning(
+        "session-scoped RPC rejected: session_id=%r not in memory "
+        "(detached/reaped runtime; client should resume the stored session), rid=%r",
+        sid,
+        rid,
+    )
+    return (None, _err(rid, 4001, "session not found"))
 
 
 def _sess(params, rid):

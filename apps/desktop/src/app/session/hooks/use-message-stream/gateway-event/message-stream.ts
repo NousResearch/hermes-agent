@@ -352,8 +352,12 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     // Structured billing wall forwarded by the gateway (out of credits /
     // payment required) — cache it + raise a billing-specific toast.
+    // A successful terminal frame (no billing payload) clears any sticky
+    // wall left from a recovered failover attempt on this session (#87248).
     if (payload?.billing) {
       surfaceBillingBlock(sessionId, payload.billing)
+    } else if (payload?.status !== 'error' && !failure) {
+      clearBillingBlock(sessionId)
     }
 
     if (isActiveEvent) {

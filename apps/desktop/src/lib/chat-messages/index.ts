@@ -13,6 +13,10 @@ export {
   textPart
 } from './parts'
 export type { UnspokenTurnSpeech } from './parts'
-export { branchGroupForUser, preserveLocalAssistantErrors } from './reconciliation'
+export {
+  assistantLooksSuccessfullySettled,
+  branchGroupForUser,
+  preserveLocalAssistantErrors
+} from './reconciliation'
 export { sealOpenToolParts, upsertToolPart } from './tool-parts'
 export type { ChatMessage, ChatMessagePart, GatewayEventPayload, TimelinePartMetadata } from './types'

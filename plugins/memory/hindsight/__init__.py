@@ -1183,13 +1183,20 @@ class HindsightMemoryProvider(MemoryProvider):
         content is retained with a ``memory-removed`` tag so it remains
         searchable as historical context, rather than being silently lost
         from semantic memory.
+
+        Uses the *resolved* ``content`` parameter (the full entry text
+        returned by ``MemoryStore.remove()``), not a substring selector.
         """
+        if action != "remove":
+            return
+        content = (content or "").strip()
+        if not content:
+            return
         if not self._bank_id:
             return
         if self._shutting_down.is_set():
             return
-        if action == "remove":
-            self._archive_removed_memory(content, target, metadata or {})
+        self._archive_removed_memory(content, target, metadata or {})
 
     def _archive_removed_memory(
         self,
@@ -1201,18 +1208,14 @@ class HindsightMemoryProvider(MemoryProvider):
 
         Enqueues an ``aretain_batch`` call on the existing writer thread,
         same pattern as :meth:`sync_turn`.
+
+        Archives the full removed entry (not a substring selector).
         """
-        old_text = metadata.get("old_text", "")
-        # For remove actions, the removed content is in old_text (bridge passes
-        # it via metadata), not in the content parameter (which is empty).
-        archived = old_text or content
         archive_body = (
             f"[Memory REMOVED from built-in store]\n"
             f"Target: {target}\n"
-            f"Removed: {archived}"
+            f"Removed: {content}"
         )
-        if old_text and content and old_text != content:
-            archive_body += f"\nContent: {content}"
 
         tags = ["memory-removed", f"memory-target:{target}"]
         if metadata.get("session_id"):
@@ -1223,6 +1226,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 item = self._build_retain_kwargs(
                     archive_body,
                     context="memory removal from built-in store",
+                    metadata=metadata,
                     tags=tags,
                 )
                 # _build_retain_kwargs always includes bank_id in the item dict.

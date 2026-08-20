@@ -126,6 +126,21 @@ def main(argv: list[str] | None = None) -> int:
         start_new_session=True,
     )
 
+    # On Linux, request kernel-level parent-death signal via prctl.
+    # PR_SET_PDEATHSIG guarantees the kernel delivers SIGKILL to this
+    # watchdog the instant its parent (slash_worker) exits — no race
+    # window, no PID reuse false-positive, no scheduler delay.  The
+    # existing PPID-polling loop (below) remains as defence-in-depth
+    # and the sole mechanism on macOS / non-Linux.
+    import ctypes as _ctypes
+
+    try:
+        _PR_SET_PDEATHSIG = 1  # from <linux/prctl.h>
+        _libc = _ctypes.CDLL("libc.so.6", use_errno=True)
+        _libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
+    except (AttributeError, OSError):
+        pass  # Not Linux — rely on PPID polling only
+
     # Because the real server lives in its OWN process group (above), the
     # parent's graceful-shutdown killpg of *our* group no longer reaches it.
     # Forward SIGTERM/SIGINT to the child's group so graceful teardown

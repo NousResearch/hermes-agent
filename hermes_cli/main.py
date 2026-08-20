@@ -8133,23 +8133,22 @@ def _find_stale_dashboard_pids(
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
     """Best-effort parse of a dashboard/server cmdline into mode, host, and port."""
     mode = None
-    if any(
-        pattern in command
-        for pattern in (
-            "hermes dashboard",
-            "hermes_cli.main dashboard",
-            "hermes_cli/main.py dashboard",
-        )
-    ):
+    # Tokenize so a profile flag (``-p default``) between the entrypoint and
+    # the subcommand doesn't break the match (see ``_cmdline_has_dashboard_token``
+    # in ``dashboard_procs.py`` for the full rationale).
+    from hermes_cli.dashboard_procs import _cmdline_has_dashboard_token
+
+    if not _cmdline_has_dashboard_token(command):
+        return None
+    import shlex
+
+    try:
+        tokens = [t.strip("\"'").lower() for t in shlex.split(command, posix=False)]
+    except ValueError:
+        tokens = [t.strip("\"'").lower() for t in command.split()]
+    if "dashboard" in tokens:
         mode = "dashboard"
-    elif any(
-        pattern in command
-        for pattern in (
-            "hermes serve",
-            "hermes_cli.main serve",
-            "hermes_cli/main.py serve",
-        )
-    ):
+    elif "serve" in tokens:
         mode = "serve"
     if mode is None:
         return None

@@ -13,6 +13,7 @@ patches on ``hermes_cli.main`` resolve unchanged.
 """
 
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,45 @@ def _m():
     from hermes_cli import main
 
     return main
+
+
+# Entrypoint markers — the dashboard/serve server can be launched via the
+# ``hermes`` launcher (``hermes.exe dashboard``), the venv python re-executing
+# the launcher (``python hermes.exe dashboard``), or the module directly
+# (``python -m hermes_cli.main -p <profile> dashboard``).  When launched via
+# the module, a profile flag (``-p default``) sits between the entrypoint and
+# the ``dashboard``/``serve`` subcommand, so a fixed substring like
+# ``"hermes_cli.main dashboard"`` fails to match.  Tokenize and check that
+# the subcommand appears as a standalone token alongside an entrypoint marker
+# — handles any flag ordering.
+_DASHBOARD_ENTRY_MARKERS = (
+    "hermes_cli.main",
+    "hermes_cli/main.py",
+    "hermes.exe",
+    "hermes dashboard",
+    "hermes serve",
+)
+
+_DASHBOARD_SUBCOMMANDS = ("dashboard", "serve")
+
+
+def _cmdline_has_dashboard_token(cmdline: str) -> bool:
+    """True when ``cmdline`` carries an entrypoint marker AND a dashboard/serve
+    subcommand as a standalone token.
+
+    Tokenizing (rather than fixed substring matching) handles profile flags
+    (``-p default``) that sit between the entrypoint and the subcommand when
+    the server is launched via ``python -m hermes_cli.main``.
+    """
+    if not cmdline:
+        return False
+    if not any(m in cmdline for m in _DASHBOARD_ENTRY_MARKERS):
+        return False
+    try:
+        tokens = [t.strip("\"'").lower() for t in shlex.split(cmdline, posix=False)]
+    except ValueError:
+        tokens = [t.strip("\"'").lower() for t in cmdline.split()]
+    return any(sub in tokens for sub in _DASHBOARD_SUBCOMMANDS)
 
 
 def _scan_dashboard_processes(
@@ -53,18 +93,16 @@ def _scan_dashboard_processes(
 
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
     """
-    patterns = [
-        "hermes dashboard",
-        "hermes_cli.main dashboard",
-        "hermes_cli/main.py dashboard",
-        # The headless backend (`hermes serve`) is the same long-lived server
-        # under a different command name — the desktop app spawns it. Reap it
-        # on update for the same frontend/backend-mismatch reason.
-        "hermes serve",
-        "hermes_cli.main serve",
-        "hermes_cli/main.py serve",
-    ]
     self_pid = os.getpid()
+    # Exclude the entire ancestor chain so the CLI process that invoked this
+    # scan (and its venv launcher stubs) is never mistaken for a running
+    # dashboard/serve.  Mirrors the gateway scanner's fix (#13242).
+    try:
+        from hermes_cli.gateway import _get_ancestor_pids
+
+        ancestor_pids = _get_ancestor_pids()
+    except Exception:
+        ancestor_pids = {self_pid}
     dashboard_processes: list[tuple[int, str]] = []
 
     try:
@@ -100,17 +138,18 @@ def _scan_dashboard_processes(
                     current_cmd = line[len("CommandLine=") :]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
+                    try:
+                        candidate_pid = int(pid_str)
+                    except ValueError:
+                        continue
                     if (
-                        any(p in current_cmd for p in patterns)
-                        and int(pid_str) != self_pid
+                        _cmdline_has_dashboard_token(current_cmd)
+                        and candidate_pid not in ancestor_pids
                     ):
-                        try:
-                            dashboard_processes.append((int(pid_str), current_cmd))
-                        except ValueError:
-                            pass
+                        dashboard_processes.append((candidate_pid, current_cmd))
         else:
             # Linux / macOS: scan the process table via ps and match against
-            # the same explicit patterns list used on Windows.  Using ps
+            # the same tokenized matcher used on Windows.  Using ps
             # (rather than `pgrep -f "hermes.*dashboard"`) keeps us consistent
             # with `hermes_cli.gateway._scan_gateway_pids` and avoids the
             # greedy regex matching unrelated cmdlines that merely contain
@@ -134,7 +173,7 @@ def _scan_dashboard_processes(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if _cmdline_has_dashboard_token(command) and pid not in ancestor_pids:
                         dashboard_processes.append((pid, command))
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []

@@ -1514,6 +1514,15 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Durable cutovers for event kinds newly added to the gateway notifier.
+-- A kind is baselined exactly once, at the current global event id, so an
+-- upgrade cannot reinterpret older rows as newly deliverable notifications.
+CREATE TABLE IF NOT EXISTS kanban_notify_kind_baselines (
+    kind              TEXT PRIMARY KEY,
+    baseline_event_id INTEGER NOT NULL,
+    created_at        INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -2762,6 +2771,23 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         if "delivery_metadata" not in notify_cols:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "delivery_metadata", "delivery_metadata TEXT"
+            )
+
+    # Migration-time notifier cutovers. This must run while opening/upgrading
+    # the schema, not lazily on the first gateway poll: an event created after
+    # startup but before that poll is genuinely new and must still deliver.
+    # INSERT OR IGNORE makes the recorded boundary durable across restarts.
+    baseline_table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'kanban_notify_kind_baselines'"
+    ).fetchone()
+    if baseline_table_exists:
+        for kind in ("block_loop_detected",):
+            conn.execute(
+                "INSERT OR IGNORE INTO kanban_notify_kind_baselines "
+                "(kind, baseline_event_id, created_at) "
+                "VALUES (?, COALESCE((SELECT MAX(id) FROM task_events), 0), ?)",
+                (kind, int(time.time())),
             )
 
     # One-shot backfill: any task that is 'running' before runs existed
@@ -11739,9 +11765,12 @@ def unseen_events_for_sub(
     cursor = int(row["last_event_id"])
     kind_list = list(kinds) if kinds else None
     q = (
-        "SELECT * FROM task_events WHERE task_id = ? AND id > ? "
-        + ("AND kind IN (" + ",".join("?" * len(kind_list)) + ") " if kind_list else "")
-        + "ORDER BY id ASC"
+        "SELECT e.* FROM task_events AS e "
+        "LEFT JOIN kanban_notify_kind_baselines AS b ON b.kind = e.kind "
+        "WHERE e.task_id = ? AND e.id > ? "
+        "AND (b.baseline_event_id IS NULL OR e.id > b.baseline_event_id) "
+        + ("AND e.kind IN (" + ",".join("?" * len(kind_list)) + ") " if kind_list else "")
+        + "ORDER BY e.id ASC"
     )
     params: list[Any] = [task_id, cursor]
     if kind_list:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import subprocess
 import threading
 import time
@@ -151,6 +152,7 @@ def test_notify_sub_crud(kanban_home):
         conn.close()
 
 
+
 def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
     conn1 = kb.connect()
     conn2 = kb.connect()
@@ -203,6 +205,87 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
     finally:
         conn1.close()
         conn2.close()
+
+
+def _make_legacy_notifier_db(db_path):
+    """Create a pre-baseline DB with subscriptions followed by old events."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(kb.SCHEMA_SQL)
+    task_id = kb.create_task(conn, title="legacy task", assignee="w")
+    for chat_id in ("all-kinds", "block-only", "completed-only"):
+        kb.add_notify_sub(
+            conn, task_id=task_id, platform="telegram", chat_id=chat_id,
+        )
+    kb._append_event(conn, task_id, "block_loop_detected", {"old": True})
+    kb._append_event(conn, task_id, "completed", {"summary": "historical"})
+    conn.execute("DROP TABLE kanban_notify_kind_baselines")
+    conn.commit()
+    conn.close()
+    return task_id
+
+
+def test_legacy_notify_migration_baselines_before_first_claim(tmp_path):
+    db_path = tmp_path / "legacy-notifier.db"
+    task_id = _make_legacy_notifier_db(db_path)
+
+    # Opening the legacy DB is the production migration path. The event added
+    # immediately afterward is genuinely new even though no notifier has polled.
+    with kb.connect(db_path) as conn:
+        baseline = conn.execute(
+            "SELECT baseline_event_id FROM kanban_notify_kind_baselines "
+            "WHERE kind = 'block_loop_detected'"
+        ).fetchone()["baseline_event_id"]
+        kb._append_event(conn, task_id, "block_loop_detected", {"old": False})
+
+    # A restart reruns migration idempotently without moving the cutover.
+    with kb.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT baseline_event_id FROM kanban_notify_kind_baselines "
+            "WHERE kind = 'block_loop_detected'"
+        ).fetchone()["baseline_event_id"] == baseline
+
+        _, _, all_kinds = kb.claim_unseen_events_for_sub(
+            conn, task_id=task_id, platform="telegram", chat_id="all-kinds",
+            kinds=["completed", "block_loop_detected"],
+        )
+        assert [(event.kind, event.payload) for event in all_kinds] == [
+            ("completed", {"summary": "historical"}),
+            ("block_loop_detected", {"old": False}),
+        ]
+        _, _, block_only = kb.claim_unseen_events_for_sub(
+            conn, task_id=task_id, platform="telegram", chat_id="block-only",
+            kinds=["block_loop_detected"],
+        )
+        assert [event.payload for event in block_only] == [{"old": False}]
+        _, _, completed_only = kb.claim_unseen_events_for_sub(
+            conn, task_id=task_id, platform="telegram", chat_id="completed-only",
+            kinds=["completed"],
+        )
+        assert [event.payload for event in completed_only] == [
+            {"summary": "historical"}
+        ]
+
+
+def test_legacy_notify_migration_preserves_rewind_retry(tmp_path):
+    db_path = tmp_path / "legacy-notifier-retry.db"
+    task_id = _make_legacy_notifier_db(db_path)
+    with kb.connect(db_path) as conn:
+        kb._append_event(conn, task_id, "block_loop_detected", {"attempt": 1})
+        old_cursor, claimed_cursor, events = kb.claim_unseen_events_for_sub(
+            conn, task_id=task_id, platform="telegram", chat_id="block-only",
+            kinds=["block_loop_detected"],
+        )
+        assert [event.payload for event in events] == [{"attempt": 1}]
+        assert kb.rewind_notify_cursor(
+            conn, task_id=task_id, platform="telegram", chat_id="block-only",
+            claimed_cursor=claimed_cursor, old_cursor=old_cursor,
+        )
+        _, _, retried = kb.claim_unseen_events_for_sub(
+            conn, task_id=task_id, platform="telegram", chat_id="block-only",
+            kinds=["block_loop_detected"],
+        )
+        assert [event.payload for event in retried] == [{"attempt": 1}]
 
 
 # ---------------------------------------------------------------------------
@@ -1406,5 +1489,3 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         assert events == [], "historical events must not replay to a new sub"
     finally:
         conn.close()
-
-

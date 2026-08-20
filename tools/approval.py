@@ -303,12 +303,23 @@ def _is_gateway_approval_context() -> bool:
     ``approvals.cron_mode`` config, not interactive resolve — letting cron
     fall through to the gateway branch would submit a pending approval
     with no listener and block the job indefinitely.
+
+    Webhook sessions are excluded for the same reason: the webhook adapter
+    has no ``send_exec_approval`` and no way to receive ``/approve``
+    replies.  Submitting a pending approval in a webhook context blocks
+    the session for the full approval timeout (60-300 s) with no human
+    who can resolve it.  Webhook dangerous-command handling falls through
+    to the non-interactive path (auto-approve with warning, or deny if
+    running inside a cron context).
     """
     if _is_cron_approval_context():
         return False
+    platform = _get_session_platform()
+    if platform == "webhook":
+        return False
     if env_var_enabled("HERMES_GATEWAY_SESSION"):
         return True
-    return bool(_get_session_platform())
+    return bool(platform)
 
 
 def _resolve_cli_approval_callback(approval_callback=None):

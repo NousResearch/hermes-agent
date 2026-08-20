@@ -927,7 +927,26 @@ def judge_goal(
         return "continue", f"goal_judge auxiliary client unavailable: {exc}", False, None, True
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
-        return "continue", f"judge error: {type(exc).__name__}", False, None, True
+        # Surface the provider's actual error body (truncated), not just the
+        # SDK exception class name — a bare "PermissionDeniedError" hides the
+        # real cause (e.g. OpenRouter 403 "model not available in your region").
+        # Some SDK exceptions stringify to "" with the detail only on
+        # .body/.status; fall back so the reason never ends in a dangling
+        # "TypeName: ".
+        _detail = _truncate(str(exc), 200)
+        if not _detail:
+            # .body/.status may be a dict or other non-str; coerce so the
+            # truncated reason is always a string (never a TypeError from
+            # slicing a dict inside _truncate).
+            _detail = _truncate(
+                str(getattr(exc, "body", None) or getattr(exc, "status", None) or ""),
+                200,
+            )
+        if _detail:
+            reason = f"judge error: {type(exc).__name__}: {_detail}"
+        else:
+            reason = f"judge error: {type(exc).__name__}"
+        return "continue", reason, False, None, True
 
     verdict, reason, parse_failed, wait_directive = _parse_judge_response(raw)
     logger.info("goal judge: verdict=%s reason=%s%s", verdict, _truncate(reason, 120),

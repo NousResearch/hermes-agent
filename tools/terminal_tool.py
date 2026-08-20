@@ -3313,6 +3313,11 @@ def terminal_tool(
                     result_data["watch_patterns"] = proc_session.watch_patterns
 
                 return json.dumps(result_data, ensure_ascii=False)
+            except EnvironmentConnectionError:
+                # Let the outer degraded-mode boundary classify and evict a
+                # cached backend instead of turning infrastructure loss into a
+                # generic failed-start result.
+                raise
             except Exception as e:
                 return json.dumps({
                     "output": "",
@@ -3357,6 +3362,11 @@ def terminal_tool(
                         "bounded_capture": True,
                     }
                     result = env.execute(command, **execute_kwargs)
+                except EnvironmentConnectionError:
+                    # Retrying the same cached backend cannot repair a dead
+                    # transport. The outer handler evicts it so the next tool
+                    # call creates a fresh environment.
+                    raise
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:
@@ -3681,18 +3691,25 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
     keys = {_resolve_container_task_id(task_id)}
     if task_id:
         keys.add(task_id)
-    evicted = []
     with _env_lock:
         for key in keys:
-            env = _active_environments.pop(key, None)
+            _active_environments.pop(key, None)
             _last_activity.pop(key, None)
-            if env is not None:
-                evicted.append(env)
-    for env in evicted:
-        try:
-            env.cleanup()
-        except Exception:
-            logger.debug("cleanup of degraded environment failed", exc_info=True)
+    # ShellFileOperations stores the environment object, not just its key. If
+    # a terminal retry creates a new environment before the next file-tool
+    # call, a stale cache entry would otherwise pass file_tools' key-presence
+    # check and keep using the evicted backend.
+    try:
+        from tools.file_tools import clear_file_ops_cache
+
+        for key in keys:
+            clear_file_ops_cache(key)
+    except Exception:
+        logger.debug("file-ops cache eviction failed", exc_info=True)
+    # Do not call normal backend cleanup here. Remote cleanup can perform
+    # networked sync-back and retry for minutes, but this path is reached only
+    # after that connection is known to be unavailable. Dropping references is
+    # intentional; normal lifecycle cleanup remains unchanged.
 
 
 def check_terminal_requirements() -> bool:

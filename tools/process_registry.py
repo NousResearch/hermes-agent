@@ -43,6 +43,7 @@ import uuid
 from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
+from tools.environments.base import EnvironmentConnectionError
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
@@ -1281,6 +1282,11 @@ class ProcessRegistry:
                 session.completion_reason = "failed_start"
                 session.termination_source = "failed_start"
                 session.output_buffer = result.get("output", "").strip()
+        except EnvironmentConnectionError:
+            # terminal_tool owns the degraded-mode response and cache eviction.
+            # Converting this into a failed ProcessSession would hide the
+            # infrastructure failure from that boundary.
+            raise
         except Exception as e:
             session.exited = True
             session.exit_code = -1

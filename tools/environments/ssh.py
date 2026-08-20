@@ -52,6 +52,23 @@ class SSHEnvironment(BaseEnvironment):
     Uses SSH ControlMaster for connection reuse.
     """
 
+    _CONNECTION_FAILURE_MARKERS = (
+        "connect to host",
+        "connection refused",
+        "connection timed out",
+        "connection reset by peer",
+        "connection closed by",
+        "closed by remote host",
+        "could not resolve hostname",
+        "host key verification failed",
+        "kex_exchange_identification",
+        "network is unreachable",
+        "no route to host",
+        "permission denied (publickey",
+        "remote host has disconnected",
+        "ssh_exchange_identification",
+    )
+
     def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = ""):
         super().__init__(cwd=cwd, timeout=timeout)
@@ -411,6 +428,53 @@ class SSHEnvironment(BaseEnvironment):
             cmd.extend(["bash", "-c", shlex.quote(cmd_string)])
 
         return _popen_bash(cmd, stdin_data)
+
+    @classmethod
+    def _looks_like_connection_failure(cls, result: dict) -> bool:
+        """Return whether an ssh exit looks like a transport/auth failure."""
+        if int(result.get("returncode") or 0) != 255:
+            return False
+        output = str(result.get("output") or "").lower()
+        return any(marker in output for marker in cls._CONNECTION_FAILURE_MARKERS)
+
+    def _connection_probe_failed(self) -> bool:
+        """Confirm a candidate ssh diagnostic is infrastructure-level.
+
+        ssh uses exit 255 for client errors, but a remote command can also
+        intentionally return 255. A one-shot no-op probe avoids degrading a
+        healthy connection based solely on user-command output.
+        """
+        cmd = self._build_ssh_command()
+        cmd.append("true")
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return True
+        return result.returncode != 0
+
+    def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
+        result = super().execute(command, cwd, **kwargs)
+        if (
+            self._looks_like_connection_failure(result)
+            and self._connection_probe_failed()
+        ):
+            raise EnvironmentConnectionError(
+                "SSH connection failed during command execution for "
+                f"{self.user}@{self.host}",
+                retry_hint=(
+                    f"Verify {self.user}@{self.host}:{self.port} is reachable "
+                    "and authentication is valid, then retry the same command."
+                ),
+            )
+        return result
 
     def cleanup(self):
         if self._sync_manager:

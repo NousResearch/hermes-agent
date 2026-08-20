@@ -863,6 +863,15 @@ class DockerEnvironment(BaseEnvironment):
 
     _profile_scoped_passthrough = True
 
+    _DAEMON_UNAVAILABLE_PATTERNS = (
+        "cannot connect to the docker daemon",
+        "docker daemon is not running",
+        "error during connect",
+        "failed to connect to the docker api",
+        "is the docker daemon running",
+        "request returned internal server error for api route",
+    )
+
     def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:
         """Keep explicit docker_forward_env values out of shared snapshots."""
         return tuple(self._forward_env)
@@ -1645,6 +1654,11 @@ class DockerEnvironment(BaseEnvironment):
         """Return True if the output indicates the container no longer exists."""
         return any(p in output for p in self._NO_CONTAINER_PATTERNS)
 
+    @classmethod
+    def _looks_like_daemon_unavailable(cls, output: str) -> bool:
+        lowered = output.lower()
+        return any(pattern in lowered for pattern in cls._DAEMON_UNAVAILABLE_PATTERNS)
+
     def _recreate_container(self) -> bool:
         """Recreate the container after it was removed out-of-band.
 
@@ -1737,6 +1751,16 @@ class DockerEnvironment(BaseEnvironment):
         transparently before retrying once.
         """
         result = super().execute(command, cwd, **kwargs)
+        daemon_unavailable = (
+            result.get("returncode", 0) != 0
+            and self._looks_like_daemon_unavailable(result.get("output", ""))
+        )
+        if daemon_unavailable:
+            # Reuse the definitive daemon probe. If the daemon recovered
+            # between docker exec and this check, preserve the original command
+            # result; otherwise the probe raises EnvironmentConnectionError.
+            _ensure_docker_available()
+            return result
         if (
             result.get("returncode", 0) != 0
             and self._is_container_gone(result.get("output", ""))

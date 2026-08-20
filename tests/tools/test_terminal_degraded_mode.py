@@ -35,6 +35,12 @@ def isolated_env(tmp_path, monkeypatch):
         with tt._env_lock:
             tt._active_environments.clear()
             tt._last_activity.clear()
+        try:
+            from tools.file_tools import clear_file_ops_cache
+
+            clear_file_ops_cache()
+        except ImportError:
+            pass
 
     _clear()
     yield tt
@@ -179,6 +185,136 @@ class TestNonInfrastructureFailuresUntouched:
             "definitely_not_a_real_command_zzz_42", task_id="t-degraded-notfound"))
         assert r["exit_code"] != 0
         assert r.get("status") != "degraded"
+
+
+class TestCachedBackendFailures:
+    @staticmethod
+    def _cache_env(terminal_module, task_id, env):
+        cache_key = terminal_module._resolve_container_task_id(task_id)
+        with terminal_module._env_lock:
+            terminal_module._active_environments[cache_key] = env
+        return cache_key
+
+    def test_foreground_connection_error_reaches_degraded_handler(
+        self, isolated_env, monkeypatch
+    ):
+        from tools import file_tools
+
+        _ssh_backend_env(monkeypatch)
+        monkeypatch.setattr(isolated_env.time, "sleep", lambda _seconds: None)
+        env = MagicMock()
+        env.cwd = "~"
+        env.env = {}
+        env.execute.side_effect = EnvironmentConnectionError(
+            "cached SSH connection lost",
+            retry_hint="Restore connectivity and retry.",
+        )
+        cache_key = self._cache_env(isolated_env, "t-cached-foreground", env)
+        file_tools._file_ops_cache[cache_key] = object()
+
+        result = json.loads(
+            isolated_env.terminal_tool("echo hi", task_id="t-cached-foreground")
+        )
+
+        assert result["status"] == "degraded"
+        assert env.execute.call_count == 1
+        assert cache_key not in isolated_env._active_environments
+        assert cache_key not in file_tools._file_ops_cache
+        # Normal remote cleanup can perform multi-minute sync-back retries.
+        # A backend known to be unreachable must be discarded without it.
+        env.cleanup.assert_not_called()
+
+    def test_background_connection_error_reaches_degraded_handler(
+        self, isolated_env, monkeypatch
+    ):
+        _ssh_backend_env(monkeypatch)
+        env = MagicMock()
+        env.cwd = "~"
+        env.env = {}
+        env.get_temp_dir.return_value = "/tmp"
+        env.execute.side_effect = EnvironmentConnectionError(
+            "cached SSH connection lost",
+            retry_hint="Restore connectivity and retry.",
+        )
+        cache_key = self._cache_env(isolated_env, "t-cached-background", env)
+
+        result = json.loads(
+            isolated_env.terminal_tool(
+                "echo hi", background=True, task_id="t-cached-background"
+            )
+        )
+
+        assert result["status"] == "degraded"
+        assert env.execute.call_count == 1
+        assert cache_key not in isolated_env._active_environments
+
+
+class TestRuntimeTransportClassification:
+    def test_ssh_transport_failure_after_init_raises_connection_error(self, monkeypatch):
+        from tools.environments.base import BaseEnvironment
+        from tools.environments.ssh import SSHEnvironment
+
+        env = object.__new__(SSHEnvironment)
+        env.host = "unreachable.invalid"
+        env.user = "nobody"
+        env.port = 22
+        monkeypatch.setattr(
+            BaseEnvironment,
+            "execute",
+            lambda *_args, **_kwargs: {
+                "output": (
+                    "ssh: connect to host unreachable.invalid port 22: "
+                    "Connection refused"
+                ),
+                "returncode": 255,
+            },
+        )
+        monkeypatch.setattr(env, "_connection_probe_failed", lambda: True, raising=False)
+
+        with pytest.raises(EnvironmentConnectionError, match="SSH connection failed"):
+            env.execute("echo hi")
+
+    def test_ssh_remote_exit_255_is_not_automatically_degraded(self, monkeypatch):
+        from tools.environments.base import BaseEnvironment
+        from tools.environments.ssh import SSHEnvironment
+
+        expected = {"output": "remote command failed", "returncode": 255}
+        env = object.__new__(SSHEnvironment)
+        env.host = "reachable.example"
+        env.user = "nobody"
+        env.port = 22
+        probe = MagicMock(return_value=True)
+        monkeypatch.setattr(BaseEnvironment, "execute", lambda *_a, **_k: expected)
+        monkeypatch.setattr(env, "_connection_probe_failed", probe, raising=False)
+
+        assert env.execute("exit 255") is expected
+        probe.assert_not_called()
+
+    def test_docker_daemon_failure_after_init_raises_connection_error(self, monkeypatch):
+        from tools.environments.base import BaseEnvironment
+        from tools.environments import docker as docker_env
+
+        env = object.__new__(docker_env.DockerEnvironment)
+        env._persist_across_processes = False
+        monkeypatch.setattr(
+            BaseEnvironment,
+            "execute",
+            lambda *_args, **_kwargs: {
+                "output": (
+                    "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. "
+                    "Is the docker daemon running?"
+                ),
+                "returncode": 1,
+            },
+        )
+
+        def _daemon_down():
+            raise EnvironmentConnectionError("Docker daemon is not responding")
+
+        monkeypatch.setattr(docker_env, "_ensure_docker_available", _daemon_down)
+
+        with pytest.raises(EnvironmentConnectionError, match="Docker daemon"):
+            env.execute("echo hi")
 
 
 class TestFailModePreservesRaiseBehavior:

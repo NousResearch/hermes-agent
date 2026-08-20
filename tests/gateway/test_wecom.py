@@ -221,6 +221,67 @@ class TestMediaHelpers:
         assert result["downgraded"] is True
         assert "AMR" in (result["downgrade_note"] or "")
 
+    def test_guess_filename_preserves_quoted_semicolon(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        assert (
+            WeComAdapter._guess_filename(
+                "https://example.com/download",
+                'attachment; filename="quarter; summary.txt"',
+                "text/plain",
+            )
+            == "quarter; summary.txt"
+        )
+
+    def test_guess_filename_prefers_filename_star(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        assert (
+            WeComAdapter._guess_filename(
+                "https://example.com/fallback.txt",
+                "attachment; filename=wrong.txt; filename*=UTF-8''quarter%3B%20summary.pdf",
+                "application/pdf",
+            )
+            == "quarter; summary.pdf"
+        )
+
+    def test_guess_filename_decodes_non_ascii_filename_star(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        assert (
+            WeComAdapter._guess_filename(
+                "https://example.com/fallback.txt",
+                "attachment; filename=wrong.txt; filename*=UTF-8''caf%C3%A9.pdf",
+                "application/pdf",
+            )
+            == "café.pdf"
+        )
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            'attachment; filename="../secret.bin"',
+            'attachment; filename="..\\secret.bin"',
+            "attachment; filename*=UTF-8''..%2Fsecret.bin",
+        ],
+    )
+    def test_guess_filename_strips_disposition_path_segments(self, header):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        assert WeComAdapter._guess_filename("https://example.com/fallback.bin", header, "") == "secret.bin"
+
+    @pytest.mark.parametrize("header", ['attachment; filename=".."', 'attachment; filename="."'])
+    def test_guess_filename_ignores_dot_segment_disposition(self, header):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        assert (
+            WeComAdapter._guess_filename(
+                "https://example.com/reports/fallback",
+                header,
+                "application/pdf",
+            )
+            == "fallback.pdf"
+        )
 
 class TestMediaUpload:
 

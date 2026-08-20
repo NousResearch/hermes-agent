@@ -1,4 +1,5 @@
 from argparse import Namespace
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -130,6 +131,55 @@ def test_oneshot_subprocess_exits_without_teardown_abort():
     # Don't demand byte-empty stderr — an import-time warning from the heavy
     # CLI import chain shouldn't fail this. What matters is no crash traceback.
     assert b"Traceback" not in result.stderr
+
+
+def test_oneshot_declares_stateless_delivery_during_agent_run(monkeypatch, capsys):
+    import hermes_cli.oneshot as oneshot
+    from gateway.session_context import async_delivery_supported, reset_session_vars
+
+    observed = []
+
+    def fake_run(*_args, **_kwargs):
+        observed.append(async_delivery_supported())
+        return "ok", {"final_response": "ok"}
+
+    reset_session_vars()
+    try:
+        monkeypatch.setattr(oneshot, "_run_agent", fake_run)
+        assert oneshot.run_oneshot("hello") == 0
+    finally:
+        reset_session_vars()
+
+    assert observed == [False]
+    assert capsys.readouterr().out == "ok\n"
+
+
+def test_oneshot_keeps_file_logging_enabled(monkeypatch, tmp_path, capsys):
+    import hermes_cli.oneshot as oneshot
+
+    log_path = tmp_path / "agent.log"
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    logger = logging.getLogger("tests.oneshot.file_logging")
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    previous_disable = logging.root.manager.disable
+
+    def fake_run(*_args, **_kwargs):
+        logger.info("one-shot agent activity")
+        return "ok", {"final_response": "ok"}
+
+    logging.disable(logging.NOTSET)
+    try:
+        monkeypatch.setattr(oneshot, "_run_agent", fake_run)
+        assert oneshot.run_oneshot("hello") == 0
+    finally:
+        handler.close()
+        logger.removeHandler(handler)
+        logging.disable(previous_disable)
+
+    assert log_path.read_text(encoding="utf-8") == "one-shot agent activity\n"
+    assert capsys.readouterr().out == "ok\n"
 
 
 
@@ -282,7 +332,6 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
     assert argv == [str(tsx), "src/entry.tsx"]
     assert cwd == tui_dir
     assert calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
-
 
 
 

@@ -3163,10 +3163,15 @@ class ShellFileOperations(FileOperations):
         # nothing converts back — Hermes sets MSYS_NO_PATHCONV for its bash).
         cmd_parts.append(self._escape_native_tool_arg(path))
         
-        # Fetch extra rows so we can report the true total before slicing.
-        # For context mode, rg emits separator lines ("--") between groups,
-        # so we grab generously and filter in Python.
-        fetch_limit = limit + offset + 200 if context > 0 else limit + offset
+        # Fetch one row past the page window so we can detect (and report)
+        # truncation: `truncated = total > offset + limit` can only ever fire
+        # if `head` returns at least offset+limit+1 rows. Without the +1 the
+        # non-context branch capped the fetch at exactly offset+limit, so the
+        # flag was permanently False and the model never paginated past the
+        # first page of matches. For context mode, rg emits separator ("--")
+        # and context lines between groups, so we grab generously and filter
+        # in Python.
+        fetch_limit = limit + offset + 1 + (200 if context > 0 else 0)
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
         # `set -o pipefail` so rg's exit status propagates through `| head`.
@@ -3313,8 +3318,10 @@ class ShellFileOperations(FileOperations):
                 search_root += f"/{self._escape_shell_arg(relative_path)}"
         cmd_parts.append(search_root)
         
-        # Fetch generously so we can compute total before slicing
-        fetch_limit = limit + offset + (200 if context > 0 else 0)
+        # Fetch one row past the page window (offset+limit+1) so the
+        # `truncated = total > offset + limit` check below can actually fire;
+        # capping the fetch at exactly offset+limit left it permanently False.
+        fetch_limit = limit + offset + 1 + (200 if context > 0 else 0)
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
         # `set -o pipefail` so grep's exit status propagates through `| head`

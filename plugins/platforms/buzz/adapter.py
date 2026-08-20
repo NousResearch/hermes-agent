@@ -757,11 +757,12 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
-        # Prefer explicit reply_to, then metadata.thread_id (Slack-style), then
-        # metadata.reply_to_message_id (gateway stream consumer / progress).
-        # Without the last, interim commentary posts flat in the channel.
+        # Prefer the explicit anchor, then the actual triggering message, then
+        # the session-scoping thread root. Fresh-final sends have no explicit
+        # reply_to but carry both metadata fields; replying to thread_id there
+        # would jump from the triggering leaf back to the root.
         meta = metadata or {}
-        reply_target = reply_to or meta.get("thread_id") or meta.get("reply_to_message_id")
+        reply_target = reply_to or meta.get("reply_to_message_id") or meta.get("thread_id")
         if reply_target:
             args += ["--reply-to", str(reply_target)]
         code, out, err = await self._run_cli(args, input_text=content)
@@ -1549,6 +1550,14 @@ class BuzzAdapter(BasePlatformAdapter):
         if _EVENT_ID_RE.fullmatch(event_id) and event_id in roots:
             root = roots[event_id]
             roots.move_to_end(event_id)
+            # A child may have latched this event as a provisional scope before
+            # the event itself arrived. Bridge the event's newly visible parent
+            # or canonical root into that same scope now, before a later direct
+            # reply to the root can open a second Hermes session.
+            if parsed and _EVENT_ID_RE.fullmatch(parsed):
+                roots.setdefault(parsed, root)
+                roots.move_to_end(parsed)
+                self._trim_roots(roots)
             return root
 
         # If the immediate parent already has an established scope, inherit it

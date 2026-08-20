@@ -594,6 +594,8 @@ class TestThreadScopedSessions:
                           created_at=13),
             _thread_event(MIXED_DESCENDANT, CHANNEL, content="@Chip explicit root later",
                           root=THREAD_ROOT, reply=THREAD_PARENT, created_at=14),
+            _thread_event(SIBLING_ROOT, CHANNEL, content="@Chip direct root reply later",
+                          root=THREAD_ROOT, created_at=15),
         ]
         state = adapter._channel_state[CHANNEL]
         # WebSocket events call _handle_event one at a time, without batch
@@ -606,6 +608,7 @@ class TestThreadScopedSessions:
             THREAD_PARENT,
             None,
             THREAD_PARENT,
+            THREAD_PARENT,
         ]
         roots = adapter._channel_state[CHANNEL]["roots"]
         assert (
@@ -613,6 +616,8 @@ class TestThreadScopedSessions:
             == roots[THREAD_PARENT]
             == roots[LATE_SIBLING]
             == roots[MIXED_DESCENDANT]
+            == roots[SIBLING_ROOT]
+            == roots[THREAD_ROOT]
         )
 
     @pytest.mark.asyncio
@@ -1170,6 +1175,32 @@ class TestBuzzAdapterSend:
         args, _stdin = cli.calls[0]
         assert "--reply-to" in args
         assert args[args.index("--reply-to") + 1] == "root-event-abc"
+
+    @pytest.mark.asyncio
+    async def test_send_prefers_trigger_message_over_session_thread_root(self):
+        """Fresh-final sends keep replying to the triggering leaf message.
+
+        ``thread_id`` scopes the Hermes session; it is not the outbound reply
+        anchor when ``reply_to_message_id`` identifies the actual trigger.
+        """
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-final"})
+        adapter._run_cli = cli
+
+        result = await adapter.send(
+            CHANNEL,
+            "fresh final",
+            metadata={
+                "thread_id": THREAD_ROOT,
+                "reply_to_message_id": THREAD_CHILD,
+            },
+        )
+
+        assert result.success is True
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == THREAD_CHILD
 
 
     @pytest.mark.asyncio

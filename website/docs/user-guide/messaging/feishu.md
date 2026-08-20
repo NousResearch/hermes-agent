@@ -63,11 +63,24 @@ In the Feishu developer console, go to **Permission Management** and add the fol
 
 | Scope | Purpose |
 |-------|---------|
-| `im:message` | Receive and read messages |
+| `im:message` | Base messaging scope (read/send via the API) |
+| `im:message.p2p_msg:readonly` | **Receive direct messages** sent to the bot |
+| `im:message.group_at_msg:readonly` | **Receive group messages that @mention the bot** |
+| `im:message.group_msg:readonly` | **Receive all group messages** — only when the @mention requirement is turned off (see [Group Message Policy](#group-message-policy)) |
 | `im:message:send_as_bot` | Send messages as the bot |
 | `im:resource` | Access images, files, and audio sent by users |
 | `im:chat` | Access chat/group metadata |
 | `im:chat:readonly` | Read chat list and membership |
+
+:::warning Receive scopes are required for inbound messages
+`im:message` alone does **not** cause inbound messages to be delivered to the `im.message.receive_v1` event. Feishu gates event delivery on the granular *receive* scopes, which are listed under **any one suffices** for that event in the console:
+
+- Grant `im:message.p2p_msg:readonly` so the bot receives **direct messages**.
+- Grant `im:message.group_at_msg:readonly` so the bot receives **group messages that @mention it**.
+- Grant `im:message.group_msg:readonly` so the bot receives **group messages that do not @mention it** — required only if you turn off the @mention requirement with `FEISHU_REQUIRE_MENTION=false` or a per-chat `require_mention: false`.
+
+A bot that is missing `im:message.group_at_msg:readonly` will answer DMs but **silently ignore every group @mention** — the event is never delivered, so nothing appears in the logs. The same applies to `im:message.group_msg:readonly` and non-mentioned group messages: Hermes will accept them, but Feishu never pushes them.
+:::
 
 **Recommended permissions (for full functionality):**
 
@@ -84,6 +97,10 @@ In **Events and Callbacks**:
 1. Set the connection mode to **Long Connection (WebSocket)** (recommended) or configure a webhook URL
 2. In the **Event Configuration** section, subscribe to:
    - `im.message.receive_v1` — required for receiving messages
+
+:::info
+The `im.message.receive_v1` event only pushes the message types you hold a matching *receive* scope for (the console shows these under **any one suffices**). Grant `im:message.p2p_msg:readonly` to receive DMs, `im:message.group_at_msg:readonly` to receive group @mentions, and `im:message.group_msg:readonly` to receive group messages without an @mention — see [Configure Permissions](#configure-permissions) above. After adding a scope you must publish a new app version, or the change will not take effect.
+:::
 
 ### Publish the App
 
@@ -242,6 +259,10 @@ Set `FEISHU_REQUIRE_MENTION=false` to let Hermes read all group traffic without 
 ```bash
 FEISHU_REQUIRE_MENTION=false
 ```
+
+:::warning Requires an extra Feishu scope
+`im:message.group_at_msg:readonly` only delivers group messages that @mention the bot. To actually receive non-mentioned group traffic, the app also needs `im:message.group_msg:readonly` — add it under **Permission Management** and publish a new app version, otherwise Hermes will accept the messages but Feishu will never send them. See [Configure Permissions](#configure-permissions).
+:::
 
 For per-chat control, set `require_mention` on a `group_rules` entry — see [Per-Group Access Control](#per-group-access-control) below.
 
@@ -524,7 +545,7 @@ platforms:
 | `admin_only` | Only users in the global `admins` list can use the bot in this group |
 | `disabled` | Bot ignores all messages in this group |
 
-Set `require_mention: false` on a `group_rules` entry to skip the @-mention requirement for that specific chat. When omitted, the chat inherits the global `FEISHU_REQUIRE_MENTION` value.
+Set `require_mention: false` on a `group_rules` entry to skip the @-mention requirement for that specific chat. When omitted, the chat inherits the global `FEISHU_REQUIRE_MENTION` value. This also needs the `im:message.group_msg:readonly` scope — see [Group Message Policy](#group-message-policy).
 
 Groups not listed in `group_rules` fall back to `default_group_policy` (defaults to the value of `FEISHU_GROUP_POLICY`).
 
@@ -575,6 +596,8 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | `FEISHU_APP_ID or FEISHU_APP_SECRET not set` | Set both env vars or configure via `hermes gateway setup` |
 | `Another local Hermes gateway is already using this Feishu app_id` | Only one Hermes instance can use the same app_id at a time. Stop the other gateway first. |
 | Bot doesn't respond in groups | Ensure the bot is @mentioned, check `FEISHU_GROUP_POLICY`, and verify the sender is in `FEISHU_ALLOWED_USERS` if policy is `allowlist` |
+| Bot answers DMs but ignores group @mentions | The app is missing the `im:message.group_at_msg:readonly` scope, so Feishu never delivers group @mention events (nothing shows in the logs). Add it under **Permission Management**, then publish a new app version. |
+| Bot replies to @mentions but ignores other group messages with `FEISHU_REQUIRE_MENTION=false` (or `require_mention: false`) | The app is missing the `im:message.group_msg:readonly` scope, so Feishu only delivers @mention events. Add it under **Permission Management**, then publish a new app version. |
 | `Webhook rejected: invalid verification token` | Ensure `FEISHU_VERIFICATION_TOKEN` matches the token in your Feishu app's Event Subscriptions config |
 | `Webhook rejected: invalid signature` | Ensure `FEISHU_ENCRYPT_KEY` matches the encrypt key in your Feishu app config |
 | Post messages show as plain text | The Feishu API rejected the post payload; this is normal fallback behavior. Check logs for details. |

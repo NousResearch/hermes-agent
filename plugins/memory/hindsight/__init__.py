@@ -49,6 +49,7 @@ from agent.secret_scope import get_secret
 
 from agent.memory_provider import MemoryProvider, RecallStatus
 from hermes_constants import get_hermes_home
+from hermes_time import now as _hermes_now
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
 
@@ -540,8 +541,18 @@ def _normalize_observation_scopes(value: Any) -> Any:
 
 
 def _utc_timestamp() -> str:
-    """Return current UTC timestamp in ISO-8601 with milliseconds and Z suffix."""
+    """Return the UTC write/audit time for retain metadata."""
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _event_timestamp() -> str:
+    """Return the configured Hermes event time with an explicit UTC offset."""
+    event_time = _hermes_now()
+    # hermes_time.now() guarantees an aware datetime. Keep this fallback so a
+    # replacement clock cannot silently emit an offset-less Hindsight Event Date.
+    if event_time.tzinfo is None or event_time.utcoffset() is None:
+        event_time = event_time.astimezone()
+    return event_time.isoformat(timespec="seconds")
 
 
 def _embedded_profile_name(config: dict[str, Any]) -> str:
@@ -1975,7 +1986,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread.start()
 
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
-        now = datetime.now(timezone.utc).isoformat()
+        # Hindsight receives this pair as one conversation turn, so both
+        # messages intentionally share the same turn-level event timestamp.
+        now = _event_timestamp()
         return [
             {
                 "role": "user",
@@ -2031,6 +2044,7 @@ class HindsightMemoryProvider(MemoryProvider):
             "bank_id": self._bank_id,
             "content": content,
             "metadata": metadata or self._build_metadata(message_count=1, turn_index=self._turn_index),
+            "timestamp": _event_timestamp(),
         }
         if context is not None:
             kwargs["context"] = context

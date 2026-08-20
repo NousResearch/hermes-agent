@@ -648,6 +648,10 @@ def _write_through_provider_state_to_global_root(
 
 
 class CredentialPool:
+    # #83447: consecutive unmatched-hint rotations are bounded by a time
+    # window (see _unmatched_rotation_streak / _unmatched_rotation_streak_last_ts).
+    _UNMATCHED_ROTATION_WINDOW_SECONDS = 60
+
     def __init__(self, provider: str, entries: List[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
@@ -675,6 +679,12 @@ class CredentialPool:
         # loop runs unbounded and non-interruptible.  Reset whenever a real
         # entry is identified or an escape path returns None.
         self._unmatched_rotation_streak: int = 0
+        # #83447: the caller re-selects between retries (rotate -> swap ->
+        # retry -> select), so the streak must NOT be reset on every
+        # selection — that wiped the cap each cycle and the loop never
+        # terminated. "Consecutive" is enforced by a time window instead:
+        # rotations closer than this many seconds apart accumulate.
+        self._unmatched_rotation_streak_last_ts: float = 0.0
 
     def has_credentials(self) -> bool:
         with self._lock:
@@ -1788,14 +1798,11 @@ class CredentialPool:
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
         if entry is not None:
-            self._unmatched_rotation_streak = 0
             return entry
         # If no entry was available but we just refreshed some, re-select
         # now that the refreshed entries are back in the pool.
         if pending_refresh:
             entry, _ = self._select_under_lock()
-            if entry is not None:
-                self._unmatched_rotation_streak = 0
         return entry
 
     def _select_under_lock(self) -> Tuple[Optional[PooledCredential], List[tuple]]:
@@ -2122,7 +2129,17 @@ class CredentialPool:
                 # handed back at least once without recovery, so stop
                 # guessing and surface the error (no cooldown is written for
                 # anybody — healthy keys stay available for the next turn).
+                # #83447: time-window the streak instead of resetting on
+                # select() — the caller re-selects between retries, so a
+                # per-selection reset lets an all-failing pool rotate the
+                # same dead token forever. Rotations within the window are
+                # "consecutive" and accumulate; a long gap means the streak
+                # is stale and starts fresh.
+                now = time.time()
+                if now - self._unmatched_rotation_streak_last_ts > self._UNMATCHED_ROTATION_WINDOW_SECONDS:
+                    self._unmatched_rotation_streak = 0
                 self._unmatched_rotation_streak += 1
+                self._unmatched_rotation_streak_last_ts = now
                 available_count, _ = self._available_entries()
                 available_count = len(available_count)
                 if self._unmatched_rotation_streak > max(available_count, 1):

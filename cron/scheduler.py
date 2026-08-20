@@ -1730,6 +1730,7 @@ def _seed_cron_thread_session(
     thread_id: str,
     mirror_text: str,
     chat_name: Optional[str] = None,
+    is_dm: bool = False,
 ) -> None:
     """Seed the freshly-opened cron thread's session with the brief.
 
@@ -1739,6 +1740,16 @@ def _seed_cron_thread_session(
     same key the user's reply will resolve to — ``build_session_key`` keys
     threads as participant-shared, so no ``user_id`` is needed) and append the
     brief as an assistant turn via the shipped ``mirror_to_session``.
+
+    ``is_dm`` selects the seeded ``chat_type``: a thread under a DM must seed
+    ``chat_type="dm"`` because the user's in-thread DM reply arrives with
+    chat_type="dm" and ``build_session_key`` routes DM threads through the DM
+    arm (``...:dm:<chat>:<thread>``) — a "thread"-typed seed lands in
+    ``...:thread:<chat>:<thread>``, a row no DM reply ever resolves to
+    (continuation amnesia, Alice live 2026-08-20, job 8e21a957b77b). Channel
+    threads keep ``chat_type="thread"`` (their replies really do arrive as
+    threads). Same sibling-lane class as the flat seed's ``is_dm``
+    (dcca9d8cfe).
 
     Mirrors ``GatewayRunner._process_handoff``'s seed step, but standalone:
     cron reaches the live ``SessionStore`` through the adapter's
@@ -1774,7 +1785,9 @@ def _seed_cron_thread_session(
                     platform=platform_enum,
                     chat_id=seed_chat_id,
                     chat_name=chat_name,
-                    chat_type="thread",
+                    # DM threads key through the DM arm (see docstring); the
+                    # reply's chat_type is what the seed must reproduce.
+                    chat_type="dm" if is_dm else "thread",
                     user_id="system:cron",
                     user_name="Cron",
                     thread_id=str(thread_id),
@@ -3130,6 +3143,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             job, runtime_adapter, platform_name, chat_id,
                             opened_thread_id, mirror_text,
                             chat_name=origin.get("chat_name"),
+                            is_dm=is_dm_target,
                         )
                         thread_seeded = True
                     # in_channel surface: CREATE + seed the flat channel/DM
@@ -3169,6 +3183,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 job, runtime_adapter, platform_name, chat_id,
                                 str(delivered_message_id), mirror_text,
                                 chat_name=origin.get("chat_name"),
+                                is_dm=is_dm_target,
                             )
                     elif in_channel_surface and not origin_target:
                         logger.warning(

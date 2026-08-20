@@ -49,7 +49,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
-from utils import env_var_enabled
+from utils import TERMINAL_TIMEOUT_DEFAULT_SECONDS, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -1644,6 +1644,25 @@ def _get_env_config() -> Dict[str, Any]:
                         cwd, env_type, default_cwd)
             cwd = default_cwd
 
+    # TERMINAL_TIMEOUT=0 parses as a valid int, but 0 means "time out
+    # instantly" for the underlying subprocess/asyncio timeout -- not
+    # "no timeout" as a user might reasonably (but incorrectly) assume.
+    # Left unguarded, this silently breaks every terminal command with a
+    # misleading "timed out after 0s" error that looks like an IPC/hang
+    # bug rather than a config mistake (issue #85809).
+    _configured_timeout = _parse_env_var(
+        "TERMINAL_TIMEOUT", str(TERMINAL_TIMEOUT_DEFAULT_SECONDS)
+    )
+    if _configured_timeout <= 0:
+        logger.warning(
+            "TERMINAL_TIMEOUT=%s is invalid (must be > 0); falling back to "
+            "%ss. 0 does NOT mean \"no timeout\" -- it means instant "
+            "timeout. Check ~/.hermes/.env.",
+            _configured_timeout,
+            TERMINAL_TIMEOUT_DEFAULT_SECONDS,
+        )
+        _configured_timeout = TERMINAL_TIMEOUT_DEFAULT_SECONDS
+
     return {
         "env_type": env_type,
         "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
@@ -1656,7 +1675,7 @@ def _get_env_config() -> Dict[str, Any]:
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
-        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
+        "timeout": _configured_timeout,
         "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
         # SSH-specific config
         "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),

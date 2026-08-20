@@ -1958,11 +1958,16 @@ class ProcessRegistry:
         """
         from tools.ansi_strip import strip_ansi
         from tools.interrupt import is_interrupted as _is_interrupted
+        from utils import resolve_terminal_timeout_default
 
-        try:
-            default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
-        except (ValueError, TypeError):
-            default_timeout = 180
+        # TERMINAL_TIMEOUT<=0 is a "0 means no timeout" misunderstanding,
+        # not a request for an instant timeout -- see the shared helper's
+        # own docstring and issue #85809. This reader used to parse the
+        # env var independently of terminal_tool.py's guard, so a
+        # misconfigured value still produced an immediate, misleading
+        # "timed out after 0s" on this wait() path specifically (review
+        # of #85811).
+        default_timeout = resolve_terminal_timeout_default()
         max_timeout = default_timeout
         requested_timeout = timeout
         timeout_note = None

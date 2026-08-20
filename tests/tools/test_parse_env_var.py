@@ -31,6 +31,47 @@ class TestParseEnvVar:
             assert config["docker_forward_env"] == ["GITHUB_TOKEN", "NPM_TOKEN"]
 
 
+    # -- TERMINAL_TIMEOUT=0 is a "0 = infinite" misunderstanding, not a
+    #    request for an instant timeout (issue #85809) --
+
+    def test_zero_timeout_falls_back_to_default_180(self, caplog):
+        """TERMINAL_TIMEOUT=0 parses as a valid int, but 0 means "time out
+        instantly" for the underlying subprocess/asyncio timeout -- not
+        "no timeout" as a user might reasonably assume. Every command
+        must not silently fail with "timed out after 0s"."""
+        with patch.dict("os.environ", {"TERMINAL_TIMEOUT": "0"}, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["timeout"] == 180, (
+                f"TERMINAL_TIMEOUT=0 must fall back to the 180s default, "
+                f"got {config['timeout']}"
+            )
+        assert any(
+            "TERMINAL_TIMEOUT" in r.message and "0" in r.message
+            for r in caplog.records
+        ), "a warning must be logged so the misconfiguration is diagnosable"
+
+    def test_negative_timeout_falls_back_to_default_180(self):
+        """Same guard must catch a negative value, not just exactly 0."""
+        with patch.dict("os.environ", {"TERMINAL_TIMEOUT": "-5"}, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["timeout"] == 180
+
+    def test_positive_timeout_is_used_unchanged(self):
+        """Sanity: a genuinely positive, intentional timeout override must
+        pass through untouched -- the guard is a floor at 0, not a
+        rewrite of every configured value."""
+        with patch.dict("os.environ", {"TERMINAL_TIMEOUT": "86400"}, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["timeout"] == 86400
+
+    def test_unset_timeout_uses_default_180(self):
+        """Sanity: the ordinary unset case still resolves to the
+        documented 180s default, unaffected by the new guard."""
+        with patch.dict("os.environ", {}, clear=True):
+            config = _tt_mod._get_env_config()
+            assert config["timeout"] == 180
+
+
     # -- invalid int raises ValueError with env var name --
 
 

@@ -40,6 +40,64 @@ OPS = [
     "recompute_ready", "reassign",
 ]
 
+KANBAN_ENV_OVERRIDES = (
+    "HERMES_KANBAN_DB",
+    "HERMES_KANBAN_BOARD",
+    "HERMES_KANBAN_HOME",
+    "HERMES_KANBAN_WORKSPACES_ROOT",
+)
+
+
+def isolate_kanban_env(home):
+    """Route fuzz writes to a per-sequence temp Hermes home.
+
+    Kanban workers receive ``HERMES_KANBAN_DB``/``HERMES_KANBAN_BOARD`` so
+    tools are pinned to the live board they were spawned for. Stress tests
+    must not inherit those pins; otherwise the randomized ``rand *`` tasks in
+    this file can be written into a real project board.
+    """
+    home = Path(home)
+    os.environ["HERMES_HOME"] = str(home)
+    os.environ["HOME"] = str(home)
+    for name in KANBAN_ENV_OVERRIDES:
+        os.environ.pop(name, None)
+    os.environ["HERMES_KANBAN_HOME"] = str(home)
+
+
+def assert_isolated_kanban_db(kb, home):
+    """Fail fast if the fuzz DB resolves outside the temp home."""
+    db_path = kb.kanban_db_path().resolve()
+    home = Path(home).resolve()
+    try:
+        db_path.relative_to(home)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"refusing to run Kanban fuzz test against non-temp DB: {db_path}"
+        ) from exc
+
+
+def test_isolate_kanban_env_clears_worker_board_pins(tmp_path, monkeypatch):
+    """Regression: inherited worker board env must not target live boards."""
+    live_db = tmp_path / "live" / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(live_db))
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "hermes-maintenance")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(tmp_path / "live-ws"))
+
+    home = tmp_path / "isolated-home"
+    isolate_kanban_env(home)
+
+    for m in list(sys.modules.keys()):
+        if m.startswith("hermes_cli"):
+            del sys.modules[m]
+    sys.path.insert(0, WT)
+    from hermes_cli import kanban_db as kb
+
+    assert os.environ.get("HERMES_KANBAN_DB") is None
+    assert os.environ.get("HERMES_KANBAN_BOARD") is None
+    assert os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT") is None
+    assert kb.kanban_db_path() == home / "kanban.db"
+    assert_isolated_kanban_db(kb, home)
+
 
 def assert_invariants(conn, kb, ops_log):
     """Run all invariant checks; raise AssertionError with context on any."""
@@ -234,8 +292,7 @@ def main():
         seed = random.randint(0, 10**9)
         rng = random.Random(seed)
         home = tempfile.mkdtemp(prefix=f"hermes_fuzz_{seq_idx}_")
-        os.environ["HERMES_HOME"] = home
-        os.environ["HOME"] = home
+        isolate_kanban_env(home)
         sys.path.insert(0, WT)
 
         # Fresh module state per sequence to avoid cached init paths.
@@ -244,6 +301,7 @@ def main():
                 del sys.modules[m]
         from hermes_cli import kanban_db as kb
 
+        assert_isolated_kanban_db(kb, home)
         kb.init_db()
         conn = kb.connect()
         task_pool = []

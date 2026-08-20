@@ -16132,6 +16132,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             clone.get_command_args = lambda: args  # type: ignore[method-assign]
         return clone
 
+    # ── X inbox capture trigger helpers ────────────────────────────────────
+    # Sahil drops anything worth remembering (a take, a build experience, a
+    # repo, a weird agent behaviour) into the X manager channel as
+    # "/x <note>". The capture is stored in the content-engine inbox DB for
+    # the thesis incubator. Never posts; never drafts; just stores + ack.
+    X_INBOX_CHANNEL_ID = "1539435276160729148"
+
+    def _is_x_inbox_message(self, event: "MessageEvent") -> bool:
+        """True when this message is a /x capture in the X manager channel."""
+        text = (event.text or "").strip()
+        if not text.lower().startswith("/x"):
+            return False
+        if len(text) > 2 and not text[2].isspace():
+            return False
+        source_chat = str(getattr(event.source, "chat_id", "") or "")
+        return source_chat == self.X_INBOX_CHANNEL_ID
+
+    async def _handle_x_inbox_capture(self, event: "MessageEvent") -> str:
+        """Store the /x capture and reply with a lightweight ack."""
+        text = (event.text or "").strip()
+        note = text[2:].strip() if len(text) > 2 else ""
+        if not note:
+            return ""
+        try:
+            import x_inbox  # type: ignore[import-not-found]
+            cap_id = x_inbox.add_capture(
+                note,
+                source="user",
+                channel=str(getattr(event.source, "chat_id", "") or ""),
+                author_id=str(getattr(event.source, "user_id", "") or ""),
+            )
+        except Exception as exc:
+            self._logger.warning("x-inbox capture failed: %s", exc)
+            return ""
+        try:
+            adapter = self._adapter_for_source(event.source)
+            if adapter is not None:
+                await adapter.send(
+                    self.X_INBOX_CHANNEL_ID,
+                    f"Captured. `{cap_id}`",
+                )
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("x-inbox ack failed: %s", exc)
+        return ""
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -16674,6 +16719,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return _img_result or ""
         except Exception as _img_exc:  # noqa: BLE001 — never break normal dispatch
             self._logger.warning("image-lab trigger failed: %s", _img_exc)
+
+        # X inbox capture trigger (/x <note> in the X manager channel):
+        # store the capture for the thesis incubator and ack. Never drafts
+        # or posts — this is pure capture.
+        try:
+            if self._is_x_inbox_message(event):
+                return await self._handle_x_inbox_capture(event)
+        except Exception as _xin_exc:  # noqa: BLE001 — never break normal dispatch
+            self._logger.warning("x-inbox trigger failed: %s", _xin_exc)
 
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages

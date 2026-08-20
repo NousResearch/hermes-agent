@@ -35,9 +35,11 @@ from config import DB_PATH
 
 LANE_TRANSFORM = "user_material_transform"
 LANE_QUOTE_SCAN = "quote_tweet_scan"
+LANE_REPLY = "reply_draft"
 LANE_ARTICLE = "morning_article"
+LANE_THESIS = "thesis_incubator"
 
-LANES = (LANE_TRANSFORM, LANE_QUOTE_SCAN, LANE_ARTICLE)
+LANES = (LANE_TRANSFORM, LANE_QUOTE_SCAN, LANE_REPLY, LANE_ARTICLE, LANE_THESIS)
 
 # Required argument-pack fields. Every artifact must carry all four, non-empty.
 REQUIRED_PACK_FIELDS = ("claim", "evidence", "mechanism", "position")
@@ -389,6 +391,47 @@ def scan_quote_tweet_candidates(
     if len(artifacts) < QUOTE_SCAN_MIN:
         return []
     return artifacts[:QUOTE_SCAN_MAX]
+
+
+def reply_draft_artifact(
+    *,
+    tweet_id: str,
+    author: str,
+    source_text: str,
+    body: str,
+    pack: ArgumentPack,
+    brand: str = "sahil_twitter",
+) -> XArtifact:
+    """Lane 4: emit a reply-draft artifact for a source tweet.
+
+    ``body`` is the proposed reply text. ``pack`` carries the argument pack.
+    Fail-closed: empty reply or incomplete pack is rejected. The reply is
+    staged as ``pending`` only; there is no publish path.
+    """
+    if not tweet_id or not author or not source_text:
+        raise XManagerError("reply candidate missing source metadata")
+    if not (body or "").strip():
+        raise XManagerError("reply draft has empty body")
+    context = dict(pack.context or {})
+    context.setdefault("tweet_id", tweet_id)
+    context.setdefault("author", author)
+    context.setdefault("source_text", source_text)
+    context.setdefault("source_url", f"https://x.com/i/web/status/{tweet_id}")
+    artifact = XArtifact(
+        id=_new_id(LANE_REPLY),
+        lane=LANE_REPLY,
+        brand=brand,
+        body=body.strip(),
+        pack=ArgumentPack(
+            claim=pack.claim,
+            evidence=pack.evidence,
+            mechanism=pack.mechanism,
+            position=pack.position,
+            context=context,
+        ),
+    )
+    _validate_artifact(artifact)
+    return artifact
 
 
 def morning_article_drafts(

@@ -208,6 +208,39 @@ def test_morning_package_stages_up_to_two_finished_articles():
     assert all(card.channel_id == xm.X_MANAGER_CHANNEL_ID for card in cards)
 
 
+# ── Lane 4: reply drafts ───────────────────────────────────────────────────
+
+
+def test_reply_artifact_requires_source_metadata():
+    with pytest.raises(xm.XManagerError):
+        xm.reply_draft_artifact(
+            tweet_id="", author="a", source_text="src", body="body", pack=_pack()
+        )
+
+
+def test_reply_artifact_requires_body():
+    with pytest.raises(xm.XManagerError):
+        xm.reply_draft_artifact(
+            tweet_id="t1", author="a", source_text="src", body="  ", pack=_pack()
+        )
+
+
+def test_reply_artifact_builds_pending_with_source_context():
+    art = xm.reply_draft_artifact(
+        tweet_id="t1",
+        author="author1",
+        source_text="source text",
+        body="this is a reply",
+        pack=_pack(),
+    )
+    assert art.lane == xm.LANE_REPLY
+    assert art.status == xm.STATUS_PENDING
+    assert art.body == "this is a reply"
+    assert art.pack.context["tweet_id"] == "t1"
+    assert art.pack.context["author"] == "author1"
+    assert art.pack.context["source_url"].endswith("/t1")
+
+
 # ── Approval-only / fail-closed persistence ────────────────────────────────
 
 

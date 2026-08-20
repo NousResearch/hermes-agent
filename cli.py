@@ -3296,8 +3296,23 @@ def _rich_text_from_ansi(text: str) -> _RichText:
 
 
 def _strip_markdown_syntax(text: str) -> str:
-    """Best-effort markdown marker removal for plain-text display."""
+    """Best-effort markdown marker removal for plain-text display.
+
+    Code spans and fenced code blocks are protected while prose markers are
+    removed. Python identifiers and operators commonly use the same
+    characters as Markdown emphasis, so applying prose regexes to code
+    corrupts otherwise verbatim output.
+    """
     plain = _rich_text_from_ansi(text or "").plain
+    protected: list[str] = []
+
+    def _protect(match: re.Match[str]) -> str:
+        token = f"\x00HERMESCODE{len(protected)}\x00"
+        protected.append(match.group(0))
+        return token
+
+    plain = re.sub(r"(```+|~~~+)[^\n]*\n.*?(?:\n(?:```+|~~~+)|$)", _protect, plain, flags=re.DOTALL)
+    plain = re.sub(r"`([^`\n]*)`", _protect, plain)
     # Avoid stripping cron-style expressions like "* * * * *" as if they were
     # Markdown horizontal rules. CommonMark treats three or more "*" as an HR,
     # but in Hermes output it's common to display cron schedules verbatim.
@@ -3308,8 +3323,6 @@ def _strip_markdown_syntax(text: str) -> str:
     plain = re.sub(r"^\s{0,3}(?:\*\s*){3}\s*$", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s{0,3}#{1,6}\s+", "", plain, flags=re.MULTILINE)
     # Preserve blockquotes, lists, and checkboxes because they carry structure.
-    plain = re.sub(r"(```+|~~~+)", "", plain)
-    plain = re.sub(r"`([^`]*)`", r"\1", plain)
     plain = re.sub(r"!\[([^\]]*)\]\([^\)]*\)", r"\1", plain)
     plain = re.sub(r"\[([^\]]+)\]\([^\)]*\)", r"\1", plain)
     plain = re.sub(r"\*\*\*([^*]+)\*\*\*", r"\1", plain)
@@ -3322,6 +3335,8 @@ def _strip_markdown_syntax(text: str) -> str:
     plain = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", plain)
     plain = re.sub(r"~~([^~]+)~~", r"\1", plain)
     plain = re.sub(r"\n{3,}", "\n\n", plain)
+    for index, value in enumerate(protected):
+        plain = plain.replace(f"\x00HERMESCODE{index}\x00", value)
     return plain.strip("\n")
 
 

@@ -6535,6 +6535,26 @@ class TurnRunner:
         }
 
 
+def _discover_plugins_at_startup() -> None:
+    """Load Python plugins once, during gateway startup.
+
+    ``force=True`` because something earlier in the process (a CLI entry
+    point, an import-time side effect) may already have created the global
+    PluginManager and marked it discovered — possibly before HERMES_HOME was
+    readable, leaving an empty registry that plain idempotent discovery would
+    keep. Forcing the rescan here is what makes user plugins' hooks and slash
+    commands available to the gateway.
+
+    Fails open: a broken plugin sweep warns but never blocks boot.
+    """
+    try:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins(force=True)
+    except Exception:
+        logger.warning(
+            "plugin discovery failed at gateway startup", exc_info=True,
+        )
+
 
 # Sentinel for "no explicit session DB has been pinned on this runner", so the
 # ``_session_db`` property can distinguish "resolve from the active profile
@@ -12414,13 +12434,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # gateway lazily imports run_agent inside per-request handlers,
         # so the discover_plugins() side-effect in model_tools.py is NOT
         # guaranteed to have run by the time we reach this point.
-        try:
-            from hermes_cli.plugins import discover_plugins
-            discover_plugins()
-        except Exception:
-            logger.warning(
-                "plugin discovery failed at gateway startup", exc_info=True,
-            )
+        _discover_plugins_at_startup()
 
         # Register the generic relay adapter when a connector relay URL is
         # configured (GATEWAY_RELAY_URL / gateway.relay_url). No URL -> no-op, so
@@ -17700,6 +17714,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # built-ins (command may be an alias target set by the
                     # quick-command block above, so _cmd_def can be stale).
                     if command.replace("_", "-") not in GATEWAY_KNOWN_COMMANDS:
+                        try:
+                            from hermes_cli.plugins import get_plugin_manager
+                            manager = get_plugin_manager()
+                            logger.info(
+                                "Unknown command registry state: discovered=%s plugins=%d "
+                                "hooks=%d commands=%d pre_gateway_dispatch=%d",
+                                bool(getattr(manager, "_discovered", False)),
+                                len(getattr(manager, "_plugins", {})),
+                                sum(len(items) for items in getattr(manager, "_hooks", {}).values()),
+                                len(getattr(manager, "_plugin_commands", {})),
+                                len(getattr(manager, "_hooks", {}).get("pre_gateway_dispatch", [])),
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Unable to inspect plugin registry for unknown command",
+                                exc_info=True,
+                            )
                         logger.warning(
                             "Unrecognized slash command /%s from %s — "
                             "replying with unknown-command notice",

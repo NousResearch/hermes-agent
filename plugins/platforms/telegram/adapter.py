@@ -9020,8 +9020,15 @@ class TelegramAdapter(BasePlatformAdapter):
         if not text or not bot_username:
             return text
         username = re.escape(bot_username)
-        cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
+        cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*", "", text).strip()
         return cleaned or text
+
+    @staticmethod
+    def _promote_text_command_event(event: MessageEvent) -> MessageEvent:
+        """Recover slash commands that Telegram delivered without COMMAND metadata."""
+        if event.message_type == MessageType.TEXT and event.get_command():
+            return dataclasses.replace(event, message_type=MessageType.COMMAND)
+        return event
 
     def _should_observe_unmentioned_group_message(self, message: Message) -> bool:
         """Return True when a group message should be stored but not dispatched."""
@@ -9524,6 +9531,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+        event = self._promote_text_command_event(event)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)

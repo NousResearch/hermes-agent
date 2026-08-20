@@ -1498,6 +1498,59 @@ async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
 
 
 @pytest.mark.asyncio
+async def test_base_processing_stops_typing_before_final_delivery():
+    """The final response must be sent only after the typing refresh is stopped.
+
+    Telegram has no explicit "clear typing" API.  A refresh request that races
+    behind the final message leaves the bot visibly typing for up to five
+    seconds after it has already replied.
+    """
+    adapter = ProgressCaptureAdapter()
+    events = []
+
+    async def _handler(event):
+        await asyncio.sleep(0)
+        return "done"
+
+    async def _stop_typing(chat_id):
+        events.append("typing-stopped")
+        await ProgressCaptureAdapter.stop_typing(adapter, chat_id)
+
+    original_send_with_retry = adapter._send_with_retry
+
+    async def _record_final_delivery(*args, **kwargs):
+        events.append("final-delivery")
+        return await original_send_with_retry(*args, **kwargs)
+
+    adapter.set_message_handler(_handler)
+    adapter.stop_typing = _stop_typing
+    adapter._send_with_retry = _record_final_delivery
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="4",
+    )
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg-1",
+    )
+    session_key = "agent:main:telegram:group:-1001:4"
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await asyncio.wait_for(
+        adapter._process_message_background(event, session_key), timeout=1.0
+    )
+
+    assert "typing-stopped" in events
+    assert "final-delivery" in events
+    assert events.index("typing-stopped") < events.index("final-delivery")
+
+
+@pytest.mark.asyncio
 async def test_run_agent_drops_tool_progress_after_generation_invalidation(monkeypatch, tmp_path):
     import yaml
 

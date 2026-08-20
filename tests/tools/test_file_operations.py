@@ -4,6 +4,7 @@ import os
 import re
 import pytest
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -435,6 +436,16 @@ class TestSearchPathValidation:
         assert "search failed" in result.error.lower() or "Search error" in result.error
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "drives a real POSIX sh script: the fallback shells out to POSIX "
+        "`find`, and `_has_command` probes with `command -v`. "
+        "make_real_subprocess_env runs it through subprocess shell=True, "
+        "which is cmd.exe here, where `find` resolves to the unrelated "
+        "string-search find.exe"
+    ),
+)
 class TestSearchFilesFallbackHiddenPaths:
     def _make_env(self):
         return make_real_subprocess_env("/")
@@ -586,6 +597,10 @@ class _DeletedTestGitBaselineCheck:
 # Atomic write: umask-default permissions for new files
 # =========================================================================
 
+@pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="POSIX file modes are not enforced on NTFS, and os.umask has no effect there",
+)
 class TestAtomicWriteNewFilePermissions:
     """_atomic_write should apply umask-default perms to new files (not 0600)."""
 
@@ -629,6 +644,10 @@ class TestAtomicWriteNewFilePermissions:
         assert dest.stat().st_mode & 0o777 == 0o755
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Symlinks require elevated privileges on Windows",
+)
 class TestAtomicWriteThroughSymlink:
     """_atomic_write must edit a symlink's target, not replace the link.
 

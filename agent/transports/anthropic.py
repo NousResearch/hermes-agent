@@ -106,7 +106,7 @@ class AnthropicTransport(ProviderTransport):
         # tests/agent/test_anthropic_thinking_block_order.py.
         ordered_blocks = []
 
-        for block in response.content:
+        for block in (response.content or []):
             block_dict = _to_plain_data(block)
             clean_block = None
             if isinstance(block_dict, dict):

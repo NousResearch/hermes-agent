@@ -118,6 +118,26 @@ class TestAnthropicTransport:
 
 
 
+    def test_normalize_response_none_content(self, transport):
+        """Test normalization when response.content is None.
+
+        Anthropic can return content=None when the response is empty or
+        refused. Previously this crashed with:
+            TypeError: 'NoneType' object is not iterable
+        because normalize_response iterated response.content directly.
+        """
+        r = SimpleNamespace(
+            content=None,
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=0),
+            model="claude-sonnet-4-6",
+        )
+        nr = transport.normalize_response(r)
+        assert isinstance(nr, NormalizedResponse)
+        assert nr.content is None or nr.content == ""
+        assert nr.tool_calls is None or nr.tool_calls == []
+        assert nr.finish_reason == "stop"
+
     def test_normalize_response_text(self, transport):
         """Test normalization of a simple text response."""
         r = SimpleNamespace(

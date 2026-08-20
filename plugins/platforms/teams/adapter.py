@@ -33,6 +33,9 @@ from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Optional
 from urllib.parse import quote
 
+
+_TEAMS_ATTACHMENT_MAX_REDIRECTS = 20
+
 # httpx is imported lazily — only the ``_write_summary_via_incoming_webhook``
 # code path actually constructs an ``AsyncClient``. Top-level import here
 # pulled in the entire httpx + httpcore stack (~37 ms, ~15 MB) on every
@@ -878,23 +881,49 @@ class TeamsAdapter(BasePlatformAdapter):
         SSRF guard and follows redirects through the shared redirect guard,
         matching the cache_*_from_url helpers in gateway.platforms.base.
         """
-        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
-        from gateway.platforms.base import _ssrf_redirect_guard
+        from tools.url_safety import (
+            create_ssrf_safe_async_client,
+            is_safe_url,
+            redirect_target_from_response,
+        )
+        from gateway.platforms.base import (
+            _read_httpx_body_with_limit,
+        )
 
         if not is_safe_url(url):
             raise ValueError("Blocked unsafe attachment URL (SSRF protection)")
 
         async with create_ssrf_safe_async_client(
             timeout=timeout,
-            follow_redirects=True,
-            event_hooks={"response": [_ssrf_redirect_guard]},
+            follow_redirects=False,
         ) as client:
-            response = await client.get(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"},
-            )
-            response.raise_for_status()
-            return response.content
+            current_url = url
+            for _ in range(_TEAMS_ATTACHMENT_MAX_REDIRECTS + 1):
+                async with client.stream(
+                    "GET",
+                    current_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"
+                    },
+                ) as response:
+                    redirect_url = redirect_target_from_response(response)
+                    if redirect_url:
+                        if not is_safe_url(redirect_url):
+                            raise ValueError(
+                                "Blocked redirect to private/internal address"
+                            )
+                        # Leave the redirect body unread. The response context closes
+                        # it before the next SSRF-validated hop is opened.
+                        current_url = redirect_url
+                        continue
+
+                    response.raise_for_status()
+                    return await _read_httpx_body_with_limit(
+                        response,
+                        media_type="teams attachment",
+                    )
+
+            raise ValueError("Too many redirects fetching Teams attachment")
 
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
         """Process an incoming Teams message and dispatch to the gateway."""

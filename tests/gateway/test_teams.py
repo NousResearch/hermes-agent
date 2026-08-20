@@ -598,6 +598,136 @@ class TestTeamsAttachmentClassification:
         assert len(event.media_urls) == 2
 
 
+class _TrackingAsyncByteStream(httpx.AsyncByteStream):
+    def __init__(self, chunks):
+        self._chunks = chunks
+        self.chunks_read = 0
+        self.closed = False
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            self.chunks_read += 1
+            yield chunk
+
+    async def aclose(self):
+        self.closed = True
+
+
+class TestTeamsAttachmentDownloadLimits:
+    def _make_adapter(self):
+        return TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+
+    def _install_transport(self, monkeypatch, handler):
+        import tools.url_safety as url_safety
+
+        transport = httpx.MockTransport(handler)
+
+        def client_factory(**kwargs):
+            kwargs["transport"] = transport
+            return httpx.AsyncClient(**kwargs)
+
+        monkeypatch.setattr(url_safety, "create_ssrf_safe_async_client", client_factory)
+        monkeypatch.setattr(url_safety, "is_safe_url", lambda _url: True)
+
+    @pytest.mark.anyio
+    async def test_fetch_attachment_enforces_declared_streamed_and_decoded_limits(
+        self,
+        monkeypatch,
+    ):
+        import gzip
+        import gateway.platforms.base as base_mod
+
+        compressed = gzip.compress(b"x" * 256)
+        assert len(compressed) < 64
+        cases = [
+            ([b"1234", b"5678"], {}, 8, 2, b"12345678"),
+            ([b"123456789"], {"content-length": "9"}, 8, 0, None),
+            ([b"1234", b"5678", b"9"], {}, 8, 3, None),
+            (
+                [compressed],
+                {
+                    "content-encoding": "gzip",
+                    "content-length": str(len(compressed)),
+                },
+                64,
+                1,
+                None,
+            ),
+        ]
+
+        for chunks, headers, limit, expected_reads, expected_data in cases:
+            stream = _TrackingAsyncByteStream(chunks)
+            responses = []
+
+            def handler(_request):
+                response = httpx.Response(200, headers=headers, stream=stream)
+                responses.append(response)
+                return response
+
+            with monkeypatch.context() as case_patch:
+                self._install_transport(case_patch, handler)
+                case_patch.setattr(
+                    base_mod,
+                    "get_inbound_media_max_bytes",
+                    lambda: limit,
+                )
+                download = self._make_adapter()._fetch_attachment_bytes(
+                    "https://contoso.sharepoint.com/download/x"
+                )
+                if expected_data is None:
+                    with pytest.raises(
+                        ValueError,
+                        match="Inbound teams attachment payload is too large",
+                    ):
+                        await download
+                else:
+                    assert await download == expected_data
+
+            assert stream.chunks_read == expected_reads
+            assert stream.closed and responses[0].is_closed
+
+    @pytest.mark.anyio
+    async def test_fetch_attachment_does_not_read_safe_redirect_body(
+        self,
+        monkeypatch,
+    ):
+        redirect_stream = _TrackingAsyncByteStream([b"x" * (1024 * 1024)])
+        final_stream = _TrackingAsyncByteStream([b"attachment"])
+        responses = []
+        requested_urls = []
+
+        def handler(request):
+            requested_urls.append(str(request.url))
+            if len(requested_urls) == 1:
+                response = httpx.Response(
+                    302,
+                    headers={"location": "https://cdn.example.test/file"},
+                    stream=redirect_stream,
+                )
+            else:
+                response = httpx.Response(200, stream=final_stream)
+            responses.append(response)
+            return response
+
+        self._install_transport(monkeypatch, handler)
+
+        data = await self._make_adapter()._fetch_attachment_bytes(
+            "https://contoso.sharepoint.com/download/x"
+        )
+
+        assert data == b"attachment"
+        assert requested_urls == [
+            "https://contoso.sharepoint.com/download/x",
+            "https://cdn.example.test/file",
+        ]
+        assert redirect_stream.chunks_read == 0
+        assert final_stream.chunks_read == 1
+        assert all(response.is_closed for response in responses)
+        assert redirect_stream.closed and final_stream.closed
+
+
 # ── _standalone_send (out-of-process cron delivery) ──────────────────────
 
 

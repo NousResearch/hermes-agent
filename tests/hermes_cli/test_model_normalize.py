@@ -89,6 +89,20 @@ class TestCustomProviderIsNotAVendorIdentity:
     """
 
 
+class TestKimiShortAliasNormalization:
+    @pytest.mark.parametrize("provider,expected", [
+        ("kimi-coding", "kimi-k2.6"),
+        ("kimi-coding-cn", "kimi-k2.6"),
+        ("moonshot", "kimi-k2.6"),
+        ("openrouter", "moonshotai/kimi-k2.6"),
+    ])
+    def test_expands_kimi_short_aliases_for_supported_providers(self, provider, expected):
+        assert normalize_model_for_provider("k2p6", provider) == expected
+
+    def test_leaves_kimi_short_alias_untouched_for_unrelated_provider(self):
+        assert normalize_model_for_provider("k2p6", "custom") == "k2p6"
+
+
 # ── detect_vendor ──────────────────────────────────────────────────────
 
 

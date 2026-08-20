@@ -147,24 +147,9 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
         mod = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = mod
 
-        # Register submodules so relative imports work
-        for sub_file in engine_dir.glob("*.py"):
-            if sub_file.name == "__init__.py":
-                continue
-            sub_name = sub_file.stem
-            full_sub_name = f"{module_name}.{sub_name}"
-            if full_sub_name not in sys.modules:
-                sub_spec = importlib.util.spec_from_file_location(
-                    full_sub_name, str(sub_file)
-                )
-                if sub_spec:
-                    sub_mod = importlib.util.module_from_spec(sub_spec)
-                    sys.modules[full_sub_name] = sub_mod
-                    try:
-                        sub_spec.loader.exec_module(sub_mod)
-                    except Exception as e:
-                        logger.debug("Failed to load submodule %s: %s", full_sub_name, e)
-
+        # Execute only the package entrypoint. Standard relative imports work
+        # through the package search location above and load requested siblings
+        # without running arbitrary project scripts during discovery.
         try:
             spec.loader.exec_module(mod)
         except Exception as e:

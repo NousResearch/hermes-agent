@@ -702,6 +702,99 @@ class TestPruning:
         assert total <= MAX_PROCESSES
 
 
+class TestFinishedHandleRelease:
+    """Finished sessions must release their Popen/PTY OS handles immediately.
+
+    Regression for the "file descriptor limit" symptom: a finished-but-
+    unpruned session previously kept its Popen stdout pipe (or PTY master)
+    FD open until the finished-process TTL (FINISHED_TTL_SECONDS) elapsed.
+    Under heavy background churn the gateway could exhaust its FD limit even
+    though the registry never rejects spawns (it prunes oldest-finished at
+    MAX_PROCESSES instead) — the symptom was a retained-handle leak, not a
+    registry-cap rejection. poll()/wait()/read_log() serve from the buffered
+    output_buffer, never from the pipe, so closing the handles at finish is
+    lossless.
+    """
+
+    def test_move_to_finished_closes_popen_pipes(self, registry):
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(0.2)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+        )
+        session = _make_session(sid="proc_handle_close", exited=False)
+        session.process = proc
+        registry._running[session.id] = session
+
+        assert proc.stdout is not None
+        assert not proc.stdout.closed
+
+        # Simulate the reader loop finishing (process exits, EOF drained).
+        proc.wait(timeout=5)
+        session.exited = True
+        session.exit_code = proc.returncode
+        session.completion_reason = "exited"
+        registry._move_to_finished(session)
+
+        assert session.id in registry._finished
+        assert proc.stdout.closed, "finished session must release its stdout pipe FD"  # type: ignore[union-attr]
+
+    def test_move_to_finished_closes_pty(self, registry):
+        """PTY-backed sessions release the PTY master on finish too."""
+        pty_closed = {"closed": False}
+
+        class _FakePty:
+            def close(self):
+                pty_closed["closed"] = True
+
+        session = _make_session(sid="proc_pty_close", exited=True)
+        session._pty = _FakePty()
+        registry._finished[session.id] = session
+
+        registry._move_to_finished(session)
+        assert pty_closed["closed"]
+
+    def test_move_to_finished_safe_without_handles(self, registry):
+        """Env-backed / detached sessions have no local Popen or PTY; the
+        release must be a no-op, not a crash."""
+        session = _make_session(sid="proc_no_handles", exited=True)
+        registry._finished[session.id] = session
+        registry._move_to_finished(session)  # must not raise
+        assert session.id in registry._finished
+
+    def test_poll_still_serves_output_after_handle_release(self, registry):
+        """Output remains queryable after the pipes close — poll() reads the
+        buffered output, never the (now-closed) pipe."""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "print('hello-finish'); import time; time.sleep(0.2)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True,
+        )
+        session = _make_session(sid="proc_poll_after_close", exited=False)
+        session.process = proc
+        registry._running[session.id] = session
+
+        # Drain output like the reader loop would.
+        proc.wait(timeout=5)
+        try:
+            tail = proc.stdout.read() if proc.stdout else ""
+        except ValueError:
+            tail = ""
+        session.output_buffer = tail or ""
+        session.exited = True
+        session.exit_code = proc.returncode
+        session.completion_reason = "exited"
+        registry._move_to_finished(session)
+
+        assert proc.stdout.closed
+        result = registry.poll("proc_poll_after_close")
+        assert result["status"] == "exited"
+        assert "hello-finish" in result["output_preview"]
+
+
 # =========================================================================
 # Spawn env sanitization
 # =========================================================================

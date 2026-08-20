@@ -181,6 +181,7 @@ export const ar = defineLocale({
     swapSidebarSides: 'تبديل جانبي الأشرطة',
     hideRightSidebar: 'إخفاء الشريط الأيمن',
     showRightSidebar: 'إظهار الشريط الأيمن',
+    unreadSessions: count => (count === 1 ? 'جلسة واحدة غير مقروءة' : `${count} جلسات غير مقروءة`),
     muteHaptics: 'كتم الاهتزازات',
     unmuteHaptics: 'تفعيل الاهتزازات',
     openSettings: 'فتح الإعدادات',

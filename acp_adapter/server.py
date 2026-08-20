@@ -2072,6 +2072,17 @@ class HermesACPAgent(acp.Agent):
 
             agent._on_session_title = _notify_title_update
             try:
+                # Clear any stale interrupt flag from a prior cancel()
+                # before starting a new agent turn. Without this, a cancel
+                # on an idle session (or a race between cancel cleanup and
+                # the next prompt) causes the agent to self-interrupt
+                # immediately. The TUI gateway does the same thing before
+                # each turn (tui_gateway/server.py ~L8461).
+                if hasattr(agent, "clear_interrupt"):
+                    try:
+                        agent.clear_interrupt()
+                    except Exception:
+                        pass
                 result = agent.run_conversation(
                     user_message=user_content,
                     conversation_history=state.history,
@@ -2158,7 +2169,7 @@ class HermesACPAgent(acp.Agent):
                     exc_info=True,
                 )
 
-        final_response = result.get("final_response", "")
+        final_response = result.get("final_response", "") or ""
         cancelled = bool(state.cancel_event and state.cancel_event.is_set())
         interrupted = bool(result.get("interrupted")) or cancelled
         # Hermes' local "waiting for model response" interrupt status is metadata,

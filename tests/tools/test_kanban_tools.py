@@ -416,6 +416,52 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_allows_triage_without_assignee(worker_env):
+    """triage=true ideas may omit assignee; specifier / decomposer promote later."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_create({
+        "title": "raw idea for triage",
+        "triage": True,
+    })
+    d = json.loads(out)
+    assert d["ok"] is True, out
+    assert d.get("status") == "triage"
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, d["task_id"])
+        assert task.status == "triage"
+        assert task.assignee is None
+    finally:
+        conn.close()
+
+
+def test_create_rejects_no_assignee_without_triage(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({"title": "needs a worker"})
+    d = json.loads(out)
+    assert d.get("ok") is not True
+    assert "assignee" in (d.get("error") or out).lower()
+
+
+def test_create_schema_only_requires_title():
+    from tools import kanban_tools as kt
+
+    required = kt.KANBAN_CREATE_SCHEMA["parameters"]["required"]
+    assert "title" in required
+    assert "assignee" not in required
+
+
+def test_canonical_assignee_empty_string_is_none():
+    from hermes_cli import kanban_db as kb
+
+    assert kb._canonical_assignee(None) is None
+    assert kb._canonical_assignee("") is None
+    assert kb._canonical_assignee("   ") is None
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()

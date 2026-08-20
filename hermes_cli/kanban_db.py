@@ -3147,12 +3147,21 @@ def _claimer_id() -> str:
 # ---------------------------------------------------------------------------
 
 def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
-    """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
+    """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity).
+
+    Empty / whitespace-only strings are treated as unassigned (None).
+    Previously ``assignee=""`` from dashboard/agent tools raised
+    ``ValueError: profile name cannot be empty`` and made triage create look
+    like a silent save failure (Bill 2026-08-07).
+    """
     if assignee is None:
+        return None
+    s = str(assignee).strip()
+    if not s:
         return None
     from hermes_cli.profiles import normalize_profile_name
 
-    return normalize_profile_name(assignee)
+    return normalize_profile_name(s)
 
 
 def create_task(
@@ -11960,7 +11969,17 @@ def list_profiles_on_disk() -> list[str]:
 
     Includes:
     - named profiles under ``<default-root>/profiles/<name>/config.yaml``
-    - the implicit ``default`` profile when the default Hermes root exists
+
+    Does **not** inject the implicit root name ``default``. The unprofiled
+    Hermes root (``~/.hermes`` without ``-p``) is still how the CLI and
+    dashboard run, but it is not a Kanban worker profile. Unassigned
+    **ready** work is filled by ``kanban.default_assignee`` at dispatch.
+    ``default`` appears in assignee pickers / ``hermes kanban assignees``
+    only when a real ``profiles/default/config.yaml`` exists.
+
+    Tasks already assigned to the name ``default`` still dispatch
+    (``hermes -p default``). They just no longer appear in the picker
+    unless that pack exists.
 
     Reads profile paths directly so this module has no import dependency on
     ``hermes_cli.profiles`` (which pulls in a large chunk of the CLI startup
@@ -11974,8 +11993,6 @@ def list_profiles_on_disk() -> list[str]:
         return []
 
     names: set[str] = set()
-    if default_root.exists():
-        names.add("default")
 
     if profiles_dir.is_dir():
         try:

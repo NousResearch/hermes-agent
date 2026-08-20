@@ -631,8 +631,15 @@ function NewTaskDialog({
 
       // create() derives status (triage flag → 'triage', else 'ready'); move to
       // the requested column when they differ, so a per-column add lands right.
+      // Triage: leave unassigned unless the operator picks someone (specifier
+      // owns promotion). Ready/todo: default assignee so the card can run.
+      // Omit goal_max_turns so the backend default applies (do not hardcode 20).
+      const resolvedAssignee =
+        assignee === PARKED
+          ? undefined
+          : assignee || (isTriage ? undefined : resolvedDefault)
       const { task, warning } = await createTask({
-        assignee: assignee === PARKED ? undefined : assignee || resolvedDefault,
+        assignee: resolvedAssignee,
         body: bodyText.trim() || undefined,
         goal_mode: goalMode,
         parents: parent ? [parent] : undefined,

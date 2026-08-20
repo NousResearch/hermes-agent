@@ -12,14 +12,28 @@ the full SessionStore machinery.
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
-from hermes_cli.config import get_hermes_home
+from hermes_constants import get_process_hermes_home
 
 logger = logging.getLogger(__name__)
 
-_SESSIONS_DIR = get_hermes_home() / "sessions"
-_SESSIONS_INDEX = _SESSIONS_DIR / "sessions.json"
+def _gateway_sessions_dir() -> Path:
+    """Return the gateway process's shared session directory.
+
+    Multiplexed turns install a context-local profile home, but the gateway
+    ``SessionStore`` is created before those scopes and persists every routed
+    chat under the process launch home. Mirroring must resolve the same store.
+    """
+    return get_process_hermes_home() / "sessions"
+
+
+def _gateway_session_db():
+    """Open the SQLite store owned by the gateway process."""
+    from hermes_state import SessionDB
+
+    return SessionDB(db_path=get_process_hermes_home() / "state.db")
 
 
 def mirror_to_session(
@@ -113,8 +127,7 @@ def _find_session_id(
     """
     # Primary: state.db
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
+        db = _gateway_session_db()
         try:
             finder = getattr(db, "find_session_by_origin", None)
             if callable(finder):
@@ -132,11 +145,12 @@ def _find_session_id(
         logger.debug("Mirror state.db session lookup failed: %s", e)
 
     # Fallback: sessions.json (pre-migration databases)
-    if not _SESSIONS_INDEX.exists():
+    sessions_index = _gateway_sessions_dir() / "sessions.json"
+    if not sessions_index.exists():
         return None
 
     try:
-        with open(_SESSIONS_INDEX, encoding="utf-8") as f:
+        with open(sessions_index, encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
         return None
@@ -192,8 +206,7 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
     """Append a message to the SQLite session database."""
     db = None
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
+        db = _gateway_session_db()
         db.append_message(
             session_id=session_id,
             role=message.get("role", "assistant"),

@@ -35,8 +35,7 @@ from pathlib import Path
 
 
 def _fresh_home():
-    """Point HERMES_HOME at a throwaway dir BEFORE importing gateway modules
-    (mirror.py binds _SESSIONS_INDEX from get_hermes_home() at import time)."""
+    """Point the gateway process home at a throwaway directory."""
     d = tempfile.mkdtemp(prefix="cron_inchannel_e2e_")
     os.environ["HERMES_HOME"] = d
     return Path(d)
@@ -49,11 +48,6 @@ import cron.scheduler as sched  # noqa: E402
 import gateway.mirror as mirror  # noqa: E402
 from gateway.config import GatewayConfig, Platform  # noqa: E402
 from gateway.session import SessionStore, SessionSource, build_session_key  # noqa: E402
-
-# Force mirror.py's module-level index path to our temp home (it may have bound
-# a different get_hermes_home() at import if something imported it earlier).
-mirror._SESSIONS_DIR = HOME / "sessions"
-mirror._SESSIONS_INDEX = HOME / "sessions" / "sessions.json"
 
 BRIEF = "brief: PRs need review\n- Harden: session lifecycle teardown"
 
@@ -105,7 +99,7 @@ def _run_scenario(name, chat_id, is_dm, reply_chat_type):
     sid = mirror._find_session_id("slack", chat_id, thread_id=None, user_id="U_HUMAN")
     assert sid, f"{name}: _find_session_id found NO session — the reply would dead-end"
     # Read the session transcript back and confirm the brief text is present.
-    idx = mirror._SESSIONS_INDEX
+    idx = mirror._gateway_sessions_dir() / "sessions.json"
     import json
     data = json.loads(idx.read_text())
     entry = next((e for e in data.values() if isinstance(e, dict) and e.get("session_id") == sid), None)

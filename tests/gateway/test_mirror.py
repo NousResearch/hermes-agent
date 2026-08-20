@@ -11,7 +11,7 @@ from gateway.mirror import (
 
 
 def _setup_sessions(tmp_path, sessions_data):
-    """Helper to write a fake sessions.json and patch module-level paths."""
+    """Helper to write a fake sessions.json."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     index_file = sessions_dir / "sessions.json"
@@ -29,8 +29,9 @@ class TestFindSessionId:
             }
         })
 
-        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
-             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+        with patch.object(
+            mirror_mod, "_gateway_sessions_dir", return_value=sessions_dir
+        ):
             result = _find_session_id("telegram", "12345")
 
         assert result == "sess_abc"
@@ -49,8 +50,9 @@ class TestFindSessionId:
             },
         })
 
-        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
-             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+        with patch.object(
+            mirror_mod, "_gateway_sessions_dir", return_value=sessions_dir
+        ):
             result = _find_session_id("telegram", "12345")
 
         assert result == "sess_new"
@@ -69,14 +71,99 @@ class TestFindSessionId:
             },
         })
 
-        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
-             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+        with patch.object(
+            mirror_mod, "_gateway_sessions_dir", return_value=sessions_dir
+        ):
             result = _find_session_id("telegram", "-1001", thread_id="10")
 
         assert result == "sess_topic_a"
 
+    def test_legacy_index_ignores_secondary_profile_scope(self, tmp_path, monkeypatch):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        gateway_home = tmp_path / "gateway"
+        secondary_home = gateway_home / "profiles" / "secondary"
+        sessions_dir, _ = _setup_sessions(gateway_home, {
+            "secondary-chat": {
+                "session_id": "sess_secondary",
+                "origin": {"platform": "telegram", "chat_id": "12345"},
+                "updated_at": "2026-01-01T00:00:00",
+            }
+        })
+        secondary_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(gateway_home))
+        empty_db = MagicMock()
+        empty_db.find_session_by_origin.return_value = None
+
+        token = set_hermes_home_override(secondary_home)
+        try:
+            with patch(
+                "gateway.mirror._gateway_session_db", return_value=empty_db
+            ):
+                result = _find_session_id("telegram", "12345")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert sessions_dir == mirror_mod._gateway_sessions_dir()
+        assert result == "sess_secondary"
+        empty_db.close.assert_called_once()
+
 
 class TestMirrorToSession:
+
+    def test_mirrors_to_gateway_store_inside_secondary_profile_scope(
+        self, tmp_path, monkeypatch
+    ):
+        """A routed profile scope must not redirect the gateway transcript DB."""
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from hermes_state import SessionDB
+
+        gateway_home = tmp_path / "gateway"
+        secondary_home = gateway_home / "profiles" / "secondary"
+        gateway_home.mkdir()
+        secondary_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(gateway_home))
+
+        gateway_db = SessionDB(db_path=gateway_home / "state.db")
+        gateway_db.create_session(
+            "gw-secondary-chat",
+            "telegram",
+            user_id="user-1",
+            session_key="agent:secondary:telegram:dm",
+            chat_id="chat-1",
+            chat_type="dm",
+        )
+        gateway_db.close()
+
+        token = set_hermes_home_override(secondary_home)
+        try:
+            mirrored = mirror_to_session(
+                "telegram",
+                "chat-1",
+                "secondary profile cron brief",
+                source_label="cron:test-job",
+                user_id="user-1",
+                role="user",
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+        assert mirrored is True
+        gateway_db = SessionDB(db_path=gateway_home / "state.db")
+        try:
+            assert [
+                (message["role"], message["content"])
+                for message in gateway_db.get_messages("gw-secondary-chat")
+            ] == [("user", "secondary profile cron brief")]
+        finally:
+            gateway_db.close()
+        assert not (secondary_home / "state.db").exists()
 
 
     def test_successful_mirror_uses_user_id_for_group_session(self, tmp_path):
@@ -93,8 +180,9 @@ class TestMirrorToSession:
             },
         })
 
-        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
-             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+        with patch.object(
+            mirror_mod, "_gateway_sessions_dir", return_value=sessions_dir
+        ), \
              patch("gateway.mirror._append_to_sqlite") as mock_sqlite:
             result = mirror_to_session(
                 "telegram",
@@ -111,8 +199,9 @@ class TestMirrorToSession:
     def test_no_matching_session(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {})
 
-        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
-             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+        with patch.object(
+            mirror_mod, "_gateway_sessions_dir", return_value=sessions_dir
+        ):
             result = mirror_to_session("telegram", "99999", "Hello!")
 
         assert result is False
@@ -124,7 +213,7 @@ class TestAppendToSqlite:
         from gateway.mirror import _append_to_sqlite
         mock_db = MagicMock()
 
-        with patch("hermes_state.SessionDB", return_value=mock_db):
+        with patch("gateway.mirror._gateway_session_db", return_value=mock_db):
             _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})
 
         mock_db.append_message.assert_called_once()

@@ -20120,6 +20120,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if source.platform == Platform.MATTERMOST
                     else getattr(self, "_show_reasoning", False)
                 )
+            # When streaming already delivered the body, we can't prepend onto
+            # sent text; defer the reasoning block to a trailing send below.
+            _reasoning_pending = None
             if _show_reasoning_effective and response and not _intentional_silence:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
@@ -20148,17 +20151,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _quoted = "\n".join(
                             f"-# {ln}" if ln else "-#" for ln in display_reasoning.splitlines()
                         )
-                        response = f"-# 💭 Reasoning\n{_quoted}\n\n{response}"
+                        _reasoning_block = f"-# 💭 Reasoning\n{_quoted}"
                     elif _reasoning_style == "blockquote":
                         _quoted = "\n".join(
                             f"> {ln}" if ln else ">" for ln in display_reasoning.splitlines()
                         )
-                        response = f"> 💭 **Reasoning:**\n{_quoted}\n\n{response}"
+                        _reasoning_block = f"> 💭 **Reasoning:**\n{_quoted}"
                     else:
                         # Escape ``` inside reasoning so inner fences don't
                         # break the outer code block used to render it.
                         display_reasoning = escape_code_fences_for_display(display_reasoning)
-                        response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                        _reasoning_block = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```"
+                    # When streaming already delivered the body we can't prepend
+                    # onto the sent text, so hold the block back and deliver it
+                    # as a trailing message below (same pattern as the runtime
+                    # footer).  Otherwise prepend as before.
+                    if agent_result.get("already_sent"):
+                        _reasoning_pending = _reasoning_block
+                    else:
+                        response = f"{_reasoning_block}\n\n{response}"
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
@@ -20554,6 +20565,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
+                # Streaming already delivered the body text, but the reasoning
+                # block was held back (see the `already_sent` branch in the
+                # prepend above).  Send it now as its own small trailing message
+                # so streamed Telegram/Discord/etc. replies don't silently lose
+                # the thinking.
+                if _reasoning_pending:
+                    try:
+                        _reason_adapter = self._adapter_for_source(source)
+                        if _reason_adapter:
+                            await _reason_adapter.send(
+                                source.chat_id,
+                                _reasoning_pending,
+                                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                            )
+                    except Exception as _e:
+                        logger.debug("trailing reasoning send failed: %s", _e)
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
                 # Send it now as a small trailing message so Telegram/Discord/etc.

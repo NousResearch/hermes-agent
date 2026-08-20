@@ -61,6 +61,15 @@ _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 # through instead of silently overriding them with the placeholder.
 _DEFAULT_USER_ID = "hermes-user"
 
+# Non-primary agent contexts whose prompts carry task/protocol instructions
+# rather than durable user facts. Durable writes are suppressed from these
+# (#68393); search/read stays available. Mirrors Supermemory's _write_enabled
+# and the Honcho platform="cron" guard.
+_NON_WRITE_CONTEXTS = {"cron", "flush", "subagent"}
+
+# Durable-write tools. mem0_search is read-only and always allowed.
+_WRITE_TOOLS = {"mem0_add", "mem0_update", "mem0_delete"}
+
 
 def _is_client_error(exc: Exception) -> bool:
     """True for user-caused errors (bad ID, not found) that should NOT trip circuit breaker."""
@@ -207,6 +216,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._agent_id = "hermes"
         self._rerank_default = False
         self._channel = "cli"  # gateway channel name (cli/telegram/discord/...)
+        self._write_enabled = True  # gated per agent_context/platform in initialize()
         self._sync_thread = None
         self._prefetch_thread = None
         self._prefetch_query = ""
@@ -364,6 +374,19 @@ class Mem0MemoryProvider(MemoryProvider):
             _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
         )
         self._channel = kwargs.get("platform") or "cli"
+        # Honor the MemoryProvider write-isolation contract at the provider
+        # level (#68393): cron/flush/subagent contexts — and the platform="cron"
+        # case with an empty agent_context — must not perform durable writes,
+        # because those prompts hold task/protocol instructions, not durable
+        # user facts. This is defense-in-depth for provider parity with
+        # Supermemory/Honcho: today the first-party cron/subagent paths don't
+        # initialize this provider at all, so the gate only fires if a future
+        # caller does wire external memory into a non-primary context. Reads/
+        # search stay available regardless.
+        agent_context = kwargs.get("agent_context", "")
+        self._write_enabled = (
+            agent_context not in _NON_WRITE_CONTEXTS and self._channel != "cron"
+        )
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
             atexit.register(self._shutdown_backend)
@@ -478,7 +501,7 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Send the turn to Mem0 for server-side fact extraction (non-blocking)."""
-        if self._backend is None or self._is_breaker_open():
+        if self._backend is None or self._is_breaker_open() or not self._write_enabled:
             return
 
         def _sync():
@@ -530,6 +553,18 @@ class Mem0MemoryProvider(MemoryProvider):
                 vs = self._config.get("oss", {}).get("vector_store", {})
                 msg += f" Check that your {vs.get('provider', 'vector store')} is running."
             return json.dumps({"error": msg})
+
+        # Block explicit durable writes from non-primary contexts (#68393). The
+        # model may still call mem0_add/update/delete, but a cron/flush/subagent
+        # run must not persist task residue as user memory. Read/search is fine.
+        if tool_name in _WRITE_TOOLS and not self._write_enabled:
+            return json.dumps({
+                "result": (
+                    "Not stored: durable memory writes are disabled in "
+                    "cron/flush/subagent contexts to keep task instructions out "
+                    "of long-term memory."
+                )
+            })
 
         if tool_name == "mem0_search":
             query = args.get("query", "")

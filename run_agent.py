@@ -1707,8 +1707,15 @@ class AIAgent:
         # Remove all reasoning tag variants (must match _strip_think_blocks)
         cleaned = self._strip_think_blocks(content)
 
-        # Check if there's any non-whitespace content remaining
-        return bool(cleaned.strip())
+        visible = cleaned.strip()
+        # The empty-response recovery ladder uses "(empty)" as an internal
+        # assistant-turn placeholder so tool→user sequences stay valid. If that
+        # sentinel leaks into (or is echoed as) final content, treat it as no
+        # visible answer so we keep recovering instead of ending the turn on a
+        # blank reply (common with Qwen/Ollama thinking models).
+        if not visible or visible == "(empty)":
+            return False
+        return True
 
     def _strip_think_blocks(self, content: str) -> str:
         """Forwarder — see ``agent.agent_runtime_helpers.strip_think_blocks``."""
@@ -3807,7 +3814,9 @@ class AIAgent:
 
         # Normal completion — stay quiet.  ``text_response(...)`` is the
         # healthy terminal; anything that produced a real reply is fine.
-        if reason.startswith("text_response"):
+        # ``reasoning_promoted_to_content`` already delivered the model's
+        # reasoning as the visible answer, so do not append a "No reply" footer.
+        if reason.startswith("text_response") or reason == "reasoning_promoted_to_content":
             return ""
 
         prefix = "⚠️ No reply: "

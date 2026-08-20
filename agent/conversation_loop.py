@@ -1189,6 +1189,19 @@ _EMPTY_TOOL_RESPONSE_NUDGE = (
     "results above and continue with the task."
 )
 
+# Internal placeholder written into synthetic assistant turns during empty
+# recovery. Must never be treated as a successful user-visible final answer.
+_EMPTY_CONTENT_SENTINEL = "(empty)"
+
+# When thinking/prefill is exhausted but the model still has structured
+# reasoning and no visible content, ask once for a real content-channel answer
+# before hard-promoting the reasoning text.
+_REASONING_PROMOTE_NUDGE = (
+    "Your previous turn put the entire answer in internal reasoning "
+    "and left the visible content empty. Reply now with the user-facing "
+    "answer in the normal content channel only (do not leave content blank)."
+)
+
 
 # Shared recovery hint appended to every content-policy refusal message. Both
 # the HTTP-200 refusal path (``finish_reason=content_filter``) and the
@@ -7644,7 +7657,7 @@ def run_conversation(
                         # Without this, we'd have tool → user which most
                         # APIs reject as an invalid sequence.
                         _nudge_msg = agent._build_assistant_message(assistant_message, finish_reason)
-                        _nudge_msg["content"] = "(empty)"
+                        _nudge_msg["content"] = _EMPTY_CONTENT_SENTINEL
                         _nudge_msg["_empty_recovery_synthetic"] = True
                         append_message(messages, _nudge_msg)
                         append_message(messages, {
@@ -7688,6 +7701,77 @@ def run_conversation(
                         agent._session_messages = messages
                         continue
 
+                    # ── Hard path: promote reasoning to visible content ──
+                    # After thinking-only prefill is exhausted, weaker local
+                    # thinking models (Qwen/Ollama) often keep writing only to
+                    # reasoning and stop with empty content. One explicit
+                    # content-channel nudge, then promote the full reasoning
+                    # text as the user-visible answer instead of ending on a
+                    # blank "(empty)" turn.
+                    _reasoning_text_now = agent._extract_reasoning(assistant_message)
+                    if not _reasoning_text_now and _has_inline_thinking:
+                        _inline_match = re.search(
+                            r"<(?:think|thinking|reasoning)>(.*?)</(?:think|thinking|reasoning)>",
+                            final_response or "",
+                            re.IGNORECASE | re.DOTALL,
+                        )
+                        if _inline_match:
+                            _reasoning_text_now = (_inline_match.group(1) or "").strip()
+                    _prefill_exhausted = (
+                        _has_structured
+                        and agent._thinking_prefill_retries >= 2
+                    )
+                    if (
+                        _prefill_exhausted
+                        and _reasoning_text_now
+                        and not getattr(agent, "_reasoning_promote_nudged", False)
+                    ):
+                        agent._reasoning_promote_nudged = True
+                        logger.info(
+                            "Thinking-only after prefill — nudging for "
+                            "visible content before hard-promoting reasoning"
+                        )
+                        agent._buffer_status(
+                            "⚠️ Reasoning-only reply — asking for a visible answer"
+                        )
+                        _nudge_msg = agent._build_assistant_message(
+                            assistant_message, finish_reason
+                        )
+                        _nudge_msg["content"] = _EMPTY_CONTENT_SENTINEL
+                        _nudge_msg["_empty_recovery_synthetic"] = True
+                        messages.append(_nudge_msg)
+                        messages.append({
+                            "role": "user",
+                            "content": _REASONING_PROMOTE_NUDGE,
+                            "_empty_recovery_synthetic": True,
+                        })
+                        continue
+
+                    if _prefill_exhausted and _reasoning_text_now:
+                        _turn_exit_reason = "reasoning_promoted_to_content"
+                        _promoted = _reasoning_text_now.strip()
+                        logger.info(
+                            "Hard-promoting reasoning to visible content "
+                            "(%d chars) after empty-content recovery",
+                            len(_promoted),
+                        )
+                        agent._emit_status(
+                            "↻ Promoted model reasoning to the visible reply "
+                            "(content channel was empty)"
+                        )
+                        agent._drop_trailing_empty_response_scaffolding(messages)
+                        assistant_msg = agent._build_assistant_message(
+                            assistant_message, finish_reason
+                        )
+                        assistant_msg["content"] = _promoted
+                        assistant_msg["_reasoning_promoted_to_content"] = True
+                        messages.append(assistant_msg)
+                        final_response = _promoted
+                        agent._empty_content_retries = 0
+                        agent._thinking_prefill_retries = 0
+                        agent._reasoning_promote_nudged = False
+                        break
+
                     # ── Empty response retry ──────────────────────
                     # Model returned nothing usable.  Retry up to 3
                     # times before attempting fallback.  This covers
@@ -7697,9 +7781,12 @@ def run_conversation(
                     # always populate reasoning fields via OpenRouter,
                     # so the old `not _has_structured` guard blocked
                     # retries for every reasoning model after prefill.
-                    _truly_empty = not agent._strip_think_blocks(
-                        final_response
+                    _visible_now = agent._strip_think_blocks(
+                        final_response or ""
                     ).strip()
+                    _truly_empty = (
+                        not _visible_now or _visible_now == _EMPTY_CONTENT_SENTINEL
+                    )
                     _prefill_exhausted = (
                         _has_structured
                         and agent._thinking_prefill_retries >= 2
@@ -7861,7 +7948,32 @@ def run_conversation(
                     reasoning_text = agent._extract_reasoning(assistant_message)
                     agent._drop_trailing_empty_response_scaffolding(messages)
                     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
-                    assistant_msg["content"] = "(empty)"
+
+                    # Hard path at the terminal: if reasoning exists, promote the
+                    # FULL reasoning text as the visible answer. Do not persist
+                    # the "(empty)" sentinel when we have something better — that
+                    # sentinel previously leaked into text_response exits and
+                    # looked like an abrupt blank reply in the TUI.
+                    if reasoning_text and reasoning_text.strip():
+                        _promoted = reasoning_text.strip()
+                        _turn_exit_reason = "reasoning_promoted_to_content"
+                        assistant_msg["content"] = _promoted
+                        assistant_msg["_reasoning_promoted_to_content"] = True
+                        messages.append(assistant_msg)
+                        logger.warning(
+                            "Reasoning-only response after exhausting retries; "
+                            "promoted full reasoning to visible content "
+                            "(%d chars)",
+                            len(_promoted),
+                        )
+                        agent._emit_status(
+                            "↻ Promoted model reasoning to the visible reply "
+                            "(content channel stayed empty after retries)"
+                        )
+                        final_response = _promoted
+                        break
+
+                    assistant_msg["content"] = _EMPTY_CONTENT_SENTINEL
                     # This is a user-facing failure sentinel for the gateway,
                     # not real assistant content. Persisting it makes later
                     # "continue" turns replay assistant("(empty)") as if it
@@ -7870,58 +7982,25 @@ def run_conversation(
                     assistant_msg["_empty_terminal_sentinel"] = True
                     append_message(messages, assistant_msg)
 
-                    if reasoning_text:
-                        reasoning_preview = reasoning_text[:500] + "..." if len(reasoning_text) > 500 else reasoning_text
-                        logger.warning(
-                            "Reasoning-only response (no visible content) "
-                            "after exhausting retries and fallback. "
-                            "Reasoning: %s", reasoning_preview,
-                        )
-                        agent._emit_status(
-                            "⚠️ Model produced reasoning but no visible "
-                            "response after all retries. Returning empty."
-                        )
-                    else:
-                        logger.warning(
-                            "Empty response (no content or reasoning) "
-                            "after %d retries. No fallback available. "
-                            "model=%s provider=%s",
-                            agent._empty_content_retries, agent.model,
-                            agent.provider,
-                        )
-                        agent._emit_status(
-                            "❌ Model returned no content after all retries"
-                            + (" and fallback attempts." if agent._fallback_chain else
-                               ". No fallback providers configured.")
-                        )
-
-                    # Deliver a labeled reasoning excerpt instead of a bare
-                    # "(empty)" when the model DID think but never produced
-                    # visible text. This is delivery-only: the persisted
-                    # assistant message above keeps the "(empty)" sentinel
-                    # (its replay semantics prevent empty-response loops),
-                    # and raw chain-of-thought is never promoted to a normal
-                    # answer earlier in the ladder — prefill continuation,
-                    # empty-content retries, and provider fallback all run
-                    # first. Only at this terminal, where the alternative is
-                    # returning nothing, is showing the model's own reasoning
-                    # (clearly labeled as such) strictly more useful.
-                    # Idea credit: PR #48795 (@ligl0325).
-                    if reasoning_text:
-                        final_response = (
-                            "⚠️ The model produced only internal reasoning and "
-                            "no final answer, despite retries"
-                            + (" and fallback" if agent._fallback_chain else "")
-                            + ". Its last reasoning, which may contain the "
-                            "answer:\n\n" + reasoning_preview
-                        )
-                    else:
-                        final_response = "(empty)"
+                    logger.warning(
+                        "Empty response (no content or reasoning) "
+                        "after %d retries. No fallback available. "
+                        "model=%s provider=%s",
+                        agent._empty_content_retries, agent.model,
+                        agent.provider,
+                    )
+                    agent._emit_status(
+                        "❌ Model returned no content after all retries"
+                        + (" and fallback attempts." if agent._fallback_chain else
+                           ". No fallback providers configured.")
+                    )
+                    final_response = _EMPTY_CONTENT_SENTINEL
                     break
                 
                 # Reset retry counter/signature on successful content
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
+                agent._reasoning_promote_nudged = False
                 # Successful content reached — surface the one-shot fallback
                 # switch notice (if a fallback activated this turn) before
                 # dropping the noisy retry buffer, so a provider/model switch

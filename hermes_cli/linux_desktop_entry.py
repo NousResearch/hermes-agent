@@ -67,11 +67,50 @@ def resolve_exec_command() -> str:
     from hermes_cli.relaunch import resolve_hermes_bin
 
     bin_path = resolve_hermes_bin()
-    if bin_path:
+    if bin_path and not _needs_venv_reexec(bin_path):
         argv = [str(Path(bin_path).resolve()), "desktop"]
     else:
-        argv = [str(Path(sys.executable).resolve()), "-m", "hermes_cli.main", "desktop"]
+        # sys.executable is already documented as absolute — do not
+        # Path(...).resolve() it. A venv's python is commonly a *symlink*
+        # to the base interpreter (as it is here); resolving it dereferences
+        # that symlink and launches the base interpreter directly, which
+        # has no association with the venv's pyvenv.cfg and so can't see
+        # its site-packages — reintroducing the exact missing-dependency
+        # crash this fallback exists to avoid.
+        argv = [sys.executable, "-m", "hermes_cli.main", "desktop"]
     return " ".join(_quote_exec_arg(a) for a in argv)
+
+
+def _needs_venv_reexec(bin_path: str) -> bool:
+    """True when *bin_path* can't be launched standalone outside this venv.
+
+    The installed ``~/.local/bin/hermes`` launcher does
+    ``exec venv/bin/python /path/to/hermes "$@"``. Python always sets
+    ``sys.argv[0]`` to the *script* it was told to run, never the
+    interpreter that ran it, so ``resolve_hermes_bin()``'s argv0 fast-path
+    ends up returning that raw script — it's absolute and executable, so
+    it looks like a valid launcher. But its own shebang
+    (``#!/usr/bin/env python3``) resolves to whichever bare ``python3`` is
+    first on ``PATH``, not this venv. A desktop launcher runs with no shell
+    customizations, so that bare interpreter is missing Hermes's
+    dependencies and the app crashes on startup instead of launching
+    (#found via a broken "Hermes" taskbar icon).
+
+    Only python scripts outside the currently-running venv are suspect —
+    a console-script shim installed inside the venv, or a self-contained
+    binary (e.g. a nix store launcher) outside one, both work standalone.
+    """
+    if sys.prefix == sys.base_prefix:
+        return False  # not running inside a venv; argv0 needs no rewrite
+    resolved = os.path.realpath(bin_path)
+    if resolved.startswith(os.path.realpath(sys.prefix) + os.sep):
+        return False  # lives inside this venv already (e.g. a console script)
+    try:
+        with open(bin_path, "r", encoding="utf-8", errors="replace") as fh:
+            first_line = fh.readline()
+    except OSError:
+        return False
+    return first_line.startswith("#!") and "python" in first_line and sys.executable not in first_line
 
 
 def _quote_exec_arg(arg: str) -> str:

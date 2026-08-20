@@ -11,6 +11,7 @@ from gateway.run import (
     _resolve_gateway_display_bool,
     _resolve_progress_thread_id,
 )
+from plugins.platforms.mattermost import adapter as mattermost_adapter
 
 
 class TestMattermostProgressThreadRouting:
@@ -96,6 +97,189 @@ def _make_adapter():
     )
     adapter = MattermostAdapter(config)
     return adapter
+
+
+class _FakeMattermostContent:
+    def __init__(self, body: bytes, *, chunks: list[bytes] | None = None):
+        self.body = body
+        self.chunks = chunks
+        self.read_calls = []
+        self.iter_chunked_calls = []
+
+    async def read(self, size: int = -1) -> bytes:
+        self.read_calls.append(size)
+        if size is None or size < 0:
+            return self.body
+        return self.body[:size]
+
+    async def iter_chunked(self, size: int):
+        self.iter_chunked_calls.append(size)
+        chunks = self.chunks if self.chunks is not None else [self.body]
+        for chunk in chunks:
+            yield chunk
+
+
+class _FakeMattermostResponse:
+    def __init__(
+        self,
+        body: bytes,
+        *,
+        status: int = 200,
+        chunks: list[bytes] | None = None,
+        headers: dict[str, str] | None = None,
+    ):
+        self.status = status
+        self.headers = headers or {}
+        self.content = _FakeMattermostContent(body, chunks=chunks)
+
+    async def json(self):
+        return json.loads(self.content.body)
+
+    async def text(self):
+        return self.content.body.decode("utf-8", errors="replace")
+
+
+class _FakeMattermostRequestContext:
+    def __init__(self, response: _FakeMattermostResponse):
+        self.response = response
+
+    async def __aenter__(self):
+        return self.response
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeMattermostSession:
+    def __init__(self, response: _FakeMattermostResponse):
+        self.response = response
+
+    def get(self, *_args, **_kwargs):
+        return _FakeMattermostRequestContext(self.response)
+
+    def post(self, *_args, **_kwargs):
+        return _FakeMattermostRequestContext(self.response)
+
+    def put(self, *_args, **_kwargs):
+        return _FakeMattermostRequestContext(self.response)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class TestMattermostResponseLimits:
+    @pytest.mark.asyncio
+    async def test_json_reader_rejects_oversized_body(self):
+        from plugins.platforms.mattermost.adapter import _read_mattermost_json_response
+
+        response = _FakeMattermostResponse(b"x" * 9)
+
+        with pytest.raises(ValueError, match="JSON response body exceeded 8 bytes"):
+            await _read_mattermost_json_response(response, limit=8)
+
+        assert response.content.iter_chunked_calls == [65536]
+
+    @pytest.mark.asyncio
+    async def test_json_reader_rejects_oversized_content_length(self):
+        from plugins.platforms.mattermost.adapter import _read_mattermost_json_response
+
+        response = _FakeMattermostResponse(b"{}", headers={"Content-Length": "9"})
+
+        with pytest.raises(ValueError, match="JSON response body exceeded 8 bytes"):
+            await _read_mattermost_json_response(response, limit=8)
+
+        assert response.content.iter_chunked_calls == []
+
+    @pytest.mark.asyncio
+    async def test_text_reader_rejects_oversized_error_body(self):
+        from plugins.platforms.mattermost.adapter import _read_mattermost_text_response
+
+        response = _FakeMattermostResponse(
+            b"x" * 9,
+            status=500,
+            chunks=[b"xxxx", b"xxxx", b"x"],
+        )
+
+        with pytest.raises(ValueError, match="error response body exceeded 8 bytes"):
+            await _read_mattermost_text_response(response, limit=8)
+
+        assert response.content.iter_chunked_calls == [65536]
+
+    @pytest.mark.asyncio
+    async def test_api_get_returns_empty_on_oversized_success_json(self, monkeypatch):
+        monkeypatch.setattr(
+            "plugins.platforms.mattermost.adapter._MATTERMOST_JSON_BODY_MAX_BYTES",
+            8,
+        )
+        adapter = _make_adapter()
+        response = _FakeMattermostResponse(b"x" * 9)
+        adapter._session = _FakeMattermostSession(response)
+
+        assert await adapter._api_get("users/me") == {}
+        assert response.content.iter_chunked_calls == [65536]
+
+    @pytest.mark.asyncio
+    async def test_api_post_bounds_error_body(self, monkeypatch):
+        monkeypatch.setattr(
+            "plugins.platforms.mattermost.adapter._MATTERMOST_ERROR_BODY_MAX_BYTES",
+            8,
+        )
+        adapter = _make_adapter()
+        response = _FakeMattermostResponse(b"x" * 9, status=500)
+        adapter._session = _FakeMattermostSession(response)
+
+        assert await adapter._api_post("posts", {"channel_id": "c", "message": "m"}) == {}
+        assert adapter._last_post_error == "Mattermost error response body exceeded 8 bytes"
+        assert response.content.iter_chunked_calls == [65536]
+
+    @pytest.mark.asyncio
+    async def test_api_put_bounds_success_body(self, monkeypatch):
+        monkeypatch.setattr(mattermost_adapter, "_MATTERMOST_JSON_BODY_MAX_BYTES", 8)
+        response = _FakeMattermostResponse(b'{"id":"p"}')
+        adapter = _make_adapter()
+        adapter._session = _FakeMattermostSession(response)
+
+        assert await adapter._api_put("posts/p", {"message": "m"}) == {}
+        assert response.content.iter_chunked_calls == [65536]
+
+    @pytest.mark.asyncio
+    async def test_upload_file_bounds_error_body(self, monkeypatch):
+        monkeypatch.setattr(mattermost_adapter, "_MATTERMOST_ERROR_BODY_MAX_BYTES", 8)
+        response = _FakeMattermostResponse(b"x" * 9, status=500)
+        adapter = _make_adapter()
+        adapter._session = _FakeMattermostSession(response)
+
+        assert await adapter._upload_file("c", b"data", "x.bin") is None
+        assert response.content.iter_chunked_calls == [65536]
+
+    @pytest.mark.asyncio
+    async def test_standalone_post_bounds_success_body(self, monkeypatch):
+        monkeypatch.setattr(mattermost_adapter, "_MATTERMOST_JSON_BODY_MAX_BYTES", 8)
+        response = _FakeMattermostResponse(b'{"id":"p"}')
+        monkeypatch.setattr("aiohttp.ClientSession", lambda **_kwargs: _FakeMattermostSession(response))
+        config = MagicMock(token="t", extra={"url": "https://mm.example.com"})
+
+        result = await mattermost_adapter._standalone_send(config, "c", "hello")
+
+        assert result == {"error": "Mattermost send failed: Mattermost JSON response body exceeded 8 bytes"}
+        assert response.content.iter_chunked_calls == [65536]
+
+    @pytest.mark.asyncio
+    async def test_standalone_upload_bounds_error_body(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mattermost_adapter, "_MATTERMOST_ERROR_BODY_MAX_BYTES", 8)
+        response = _FakeMattermostResponse(b"x" * 9, status=500)
+        monkeypatch.setattr("aiohttp.ClientSession", lambda **_kwargs: _FakeMattermostSession(response))
+        media = tmp_path / "x.bin"
+        media.write_bytes(b"data")
+        config = MagicMock(token="t", extra={"url": "https://mm.example.com"})
+
+        result = await mattermost_adapter._standalone_send(config, "c", "hello", media_files=[str(media)])
+
+        assert result == {"error": "Mattermost send failed: Mattermost error response body exceeded 8 bytes"}
+        assert response.content.iter_chunked_calls == [65536]
 
 
 class TestMattermostFormatMessage:

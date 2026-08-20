@@ -390,8 +390,9 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
 # heartbeat payload (``loop_tick_socket``).
 #
 # ``probe_gateway_loop_liveness`` reads both signals (a local stat + JSON
-# read + a bounded socket ping — instant, far inside the 10s query tier of
-# the subprocess timeout doc) and classifies the gateway BEFORE any drain
+# read + a bounded socket ping, repeated up to ``tick_strikes`` times when a
+# wedge is suspected — worst case ~3.4s, still far inside the 10s query tier
+# of the subprocess timeout doc) and classifies the gateway BEFORE any drain
 # wait begins:
 #
 # - ``alive``   — the loop answered the tick socket, or the file is fresh and
@@ -399,11 +400,15 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
 #                 take the normal graceful-drain path, which honours the
 #                 in-flight cron drain floor (#86684).
 # - ``wedged``  — the heartbeat belongs to this PID, is stale well past
-#                 several missed beats, AND the tick socket is armed but does
-#                 not answer: both witnesses agree the loop is provably dead.
-#                 Draining is pointless (nothing can run the drain), so
-#                 callers may escalate immediately via
-#                 ``_escalate_wedged_gateway``.
+#                 several missed beats, AND the tick socket is armed but
+#                 stays silent across a sustained window of consecutive
+#                 misses (default 3): both witnesses agree, sustained, that
+#                 the loop is provably dead. One silent probe is never
+#                 destructive authority — a transient synchronous stall can
+#                 outlast a single recv timeout, so a lone miss falls to
+#                 ``unknown``. Draining is pointless for a provably dead
+#                 loop (nothing can run the drain), so callers may escalate
+#                 immediately via ``_escalate_wedged_gateway``.
 # - ``unknown`` — no heartbeat / unreadable / PID mismatch / witness conflict
 #                 (fresh file with a silent loop, armed socket unreachable).
 #                 Treated like ``alive``: never escalate on ambiguity.
@@ -470,12 +475,61 @@ def _probe_loop_tick_socket(
                 pass
 
 
+def _probe_loop_tick_socket_sustained(
+    pid: int,
+    home: Path | None,
+    *,
+    timeout: float = 1.0,
+    strikes: int = 3,
+    gap_s: float = 0.2,
+) -> bool | None:
+    """Probe the tick socket until a reply or the sustained-miss budget.
+
+    A single silent probe is NOT destructive evidence: the loop may be in a
+    short transient synchronous stall (a reconnect storm, a heavy synchronous
+    callback, scheduler delay) that outlasts one recv timeout. Killing a
+    gateway on that would be a false wedge — the exact class of false
+    positive #90502 exists to prevent. Destructive authority therefore
+    requires the loop to fail to answer across a bounded window of
+    ``strikes`` consecutive misses, ``gap_s`` apart; any answer inside the
+    window proves the loop is dispatching and returns ``True``.
+
+    Returns:
+      True  — some attempt got an answer: the loop is dispatching.
+      False — every attempt observed a socket node that stayed silent: the
+              loop did not schedule for the whole window.
+      None  — a probe found no socket node (witness vanished mid-window, or
+              legacy producer): not evidence either way.
+    """
+    saw_node = False
+    total = max(int(strikes), 0)
+    for attempt in range(total):
+        result = _probe_loop_tick_socket(pid, home, timeout=timeout)
+        if result is True:
+            return True
+        if result is None:
+            # The witness is gone — it is no longer answering, but its
+            # absence is not a miss. Ambiguity, never a wedge.
+            if not saw_node:
+                return None
+            # A node that existed and went silent mid-window: the witness
+            # disappeared. Treat as ambiguity too.
+            return None
+        saw_node = True
+        if attempt < total - 1 and gap_s > 0:
+            time.sleep(gap_s)
+    return False
+
+
+
 def probe_gateway_loop_liveness(
     pid: int,
     *,
     stale_after: float = DEFAULT_LOOP_LIVENESS_STALE_AFTER_S,
     home: Path | None = None,
     tick_timeout: float = 1.0,
+    tick_strikes: int = 3,
+    tick_gap_s: float = 0.2,
 ) -> str:
     """Classify a gateway PID's event loop as alive / wedged / unknown.
 
@@ -493,11 +547,15 @@ def probe_gateway_loop_liveness(
 
     A stale file classifies as ``wedged`` only when the producer declared the
     tick socket armed (``loop_tick_socket: true`` in the payload) AND the
-    socket does not answer — both witnesses agree the loop stopped
-    scheduling. Any conflict or ambiguity returns ``unknown`` so callers keep
-    the safe graceful-drain path. Legacy producers (payload without the
-    flag) wrote the file on-loop, so their staleness remains proof and the
-    old contract is unchanged.
+    socket stays silent across a sustained window — ``tick_strikes``
+    consecutive misses (default 3). One silent probe is never destructive
+    authority: a short transient synchronous stall can outlast a single recv
+    timeout, so a single miss returns ``unknown`` and keeps the graceful
+    drain path. Any answer inside the window proves the loop is dispatching
+    and returns ``alive``. Any conflict or ambiguity returns ``unknown`` so
+    callers keep the safe graceful-drain path. Legacy producers (payload
+    without the flag) wrote the file on-loop, so their staleness remains
+    proof and the old contract is unchanged.
 
     Never raises; any ambiguity (missing file, unreadable JSON, PID mismatch)
     returns ``GATEWAY_LOOP_UNKNOWN``.
@@ -549,8 +607,30 @@ def probe_gateway_loop_liveness(
         # without a witness.
         return GATEWAY_LOOP_UNKNOWN
     if witness is False:
-        # Both witnesses agree the loop is not scheduling.
-        return GATEWAY_LOOP_WEDGED
+        # First miss. One silent probe is NOT destructive authority: a
+        # short transient synchronous stall can outlast a single recv
+        # timeout, and killing a live gateway on it would be the exact false
+        # wedge #90502 exists to prevent. Require the loop to stay silent
+        # across the whole bounded window — the first probe above is miss
+        # #1, so ``tick_strikes - 1`` more attempts follow.
+        sustained = _probe_loop_tick_socket_sustained(
+            pid,
+            home,
+            timeout=tick_timeout,
+            strikes=tick_strikes - 1,
+            gap_s=tick_gap_s,
+        )
+        if sustained is False:
+            # Both witnesses agree, sustained: the loop did not schedule for
+            # the entire window.
+            return GATEWAY_LOOP_WEDGED
+        if sustained is True:
+            # The loop answered on a later attempt: it was a transient
+            # stall, not a wedge — the stale file is a stalled write.
+            return GATEWAY_LOOP_ALIVE
+        # Witness vanished mid-window: ambiguity — never kill on it. The
+        # graceful drain path remains the backstop.
+        return GATEWAY_LOOP_UNKNOWN
     # Armed producer but the socket is unreachable: ambiguity — never kill on
     # it. The graceful drain path remains the backstop.
     return GATEWAY_LOOP_UNKNOWN

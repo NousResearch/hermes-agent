@@ -145,6 +145,43 @@ _SKILL = (
 )
 
 
+def _break_write_approval_import(monkeypatch):
+    """Simulate ``from tools import write_approval`` raising ImportError.
+
+    Poisoning ``sys.modules['tools.write_approval']`` alone is not enough:
+    once the real module has been imported anywhere in the process (e.g. by
+    an earlier test in this file), Python caches it as an attribute on the
+    parent ``tools`` package, and ``from tools import write_approval``
+    resolves straight from that attribute without re-touching
+    ``sys.modules`` at all. Both must be cleared to force a real (re-)import
+    attempt, which then hits the poisoned ``sys.modules`` entry and raises.
+    """
+    import sys
+    import tools as tools_pkg
+
+    monkeypatch.delattr(tools_pkg, "write_approval", raising=False)
+    monkeypatch.setitem(sys.modules, "tools.write_approval", None)
+
+
+def test_skill_gate_import_failure_fails_closed(hermes_home, tmp_path, monkeypatch):
+    """If ``tools.write_approval`` can't be imported, the skill write gate
+    must refuse the write (fail closed) rather than silently letting an
+    unattended create/edit/patch/delete through."""
+    from tools.skill_manager_tool import skill_manage
+
+    monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", tmp_path)
+    monkeypatch.setattr("agent.skill_utils.get_all_skills_dirs", lambda: [tmp_path])
+    _break_write_approval_import(monkeypatch)
+
+    r = json.loads(skill_manage(action="create", name="test-skill", content=_SKILL))
+
+    assert r["success"] is False
+    # tmp_path is not pristine (the autouse _hermetic_environment fixture in
+    # tests/conftest.py always pre-creates a hermes_test/ scaffold under it),
+    # so assert on the specific thing that must NOT exist: the refused skill.
+    assert not (tmp_path / "test-skill").exists()
+
+
 # ---------------------------------------------------------------------------
 # Pending store CRUD
 # ---------------------------------------------------------------------------

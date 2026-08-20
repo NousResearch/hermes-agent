@@ -285,6 +285,44 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
         )
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_edit_message_accepts_metadata_keyword(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def update(self, request):
+                captured["calls"].append(request)
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.edit_message(
+                    chat_id="oc_chat",
+                    message_id="om_progress",
+                    content="progress",
+                    metadata={"thread_id": "omt_topic"},
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_progress")
+        self.assertEqual(len(captured["calls"]), 1)
+
 
 class TestAdapterModule(unittest.TestCase):
     def test_load_settings_uses_sdk_defaults_for_invalid_ws_reconnect_values(self):

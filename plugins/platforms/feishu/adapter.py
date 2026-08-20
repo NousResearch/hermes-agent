@@ -2019,6 +2019,7 @@ class FeishuAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Edit a previously sent Feishu text/post message."""
         if not self._client:

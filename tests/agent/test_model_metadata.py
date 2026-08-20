@@ -163,6 +163,199 @@ class TestEstimateMessagesTokensRough:
         assert estimate_messages_tokens_rough([msg]) < 5_000
 
 
+class TestAnthropicInterleavedThinkingDedup:
+    """anthropic_content_blocks (Anthropic's interleaved-thinking replay
+    channel) duplicates the same thinking text into content/reasoning/
+    reasoning_content on the stored message, but _convert_assistant_message
+    (agent/anthropic_adapter.py) reads anthropic_content_blocks alone on
+    replay and never touches the other three. Counting all of them inflated
+    a single thinking block's token cost by up to ~4-5x -- the dominant
+    driver of a preflight/compaction-trigger estimate running far ahead of
+    the real provider prompt_tokens on any session with interleaved
+    thinking enabled.
+
+    NOTE on the underscore: `_wire_message_shadow()` already excludes the
+    legacy back-compat key `_anthropic_content_blocks` (leading underscore).
+    That is a DIFFERENT key from the live wire field `anthropic_content_blocks`
+    (no underscore) that chat_completion_helpers.py actually writes and
+    anthropic_adapter.py actually replays -- the two must not be conflated,
+    since excluding only the underscored legacy key (as the shadow builder
+    did before this fix) leaves the live duplication path completely
+    uncovered. Verified empirically: reverting this fix's dedup and running
+    the reproduction below shows the estimate is 4.04x the correct value on
+    an unpatched _wire_message_shadow().
+
+    The dedup must NOT become an accidental allowlist: the SAME kind of
+    "verbatim replay channel that must count once" pattern also applies to
+    Codex's codex_reasoning_items / codex_message_items (see
+    agent/agent_runtime_helpers.py -- these are "never wire-empty on any
+    api_mode" and are deliberately counted, added in #55572/#55756). A fix
+    that turns _wire_message_shadow() into a field allowlist (rather than a
+    narrow exclusion of specific known-duplicate keys) would silently stop
+    counting these channels -- trading a bounded ~4-5x OVERcount for an
+    ~1000x UNDERcount, which is worse: compaction fires too late and the
+    turn dies on a hard context error instead of compacting early. Every
+    test below that constructs a message carrying a replay channel
+    therefore asserts a payload-proportional LOWER bound (not just an
+    upper bound) so a test can't pass if the channel were accidentally
+    dropped or stubbed.
+    """
+
+    # Channels that must always be counted at least once when present --
+    # dropping any of the three (as an allowlist regression would) must
+    # fail these tests.
+    _REPLAY_CHANNEL_KEYS = (
+        "anthropic_content_blocks",
+        "codex_reasoning_items",
+        "codex_message_items",
+    )
+
+    def _thinking_msg(self, text: str) -> dict:
+        return {
+            "role": "assistant",
+            "content": text,
+            "anthropic_content_blocks": [{"type": "thinking", "thinking": text}],
+            "reasoning": text,
+            "reasoning_content": text,
+        }
+
+    def _assert_payload_proportional(self, result: int, payload_text: str) -> None:
+        """Fails if `result` is anywhere near zero relative to the payload
+        it's supposed to be counting -- catches a dropped/stubbed channel
+        that a simple `> baseline` check would miss.
+        """
+        expected_floor = (len(payload_text) // 4) * 0.9
+        assert result >= expected_floor, (
+            f"estimate {result} is far below the payload-proportional floor "
+            f"{expected_floor:.0f} for a {len(payload_text)}-char payload -- "
+            "the replay channel appears to have been dropped or stubbed "
+            "rather than counted."
+        )
+
+    def test_blocks_present_counts_thinking_text_once(self):
+        """With anthropic_content_blocks present, content/reasoning/
+        reasoning_content duplicates must not inflate the estimate -- only
+        the blocks copy (plus small dict overhead) should count. Both
+        bounds matter: too high means duplication regressed, too low means
+        the channel itself got dropped.
+        """
+        text = "x" * 4000
+        msg = self._thinking_msg(text)
+        result = estimate_messages_tokens_rough([msg])
+        once_only_estimate = (len(text) + 3) // 4
+        # Allow headroom for dict-repr overhead (keys, braces, role, the
+        # blocks list wrapper) without allowing anywhere near a 2x+ multiple
+        # of the once-only estimate, which is what the bug produced.
+        assert result < once_only_estimate * 1.5
+        self._assert_payload_proportional(result, text)
+
+    def test_blocks_absent_still_counts_reasoning_fields_in_full(self):
+        """Non-Anthropic providers (no anthropic_content_blocks) must be
+        unaffected -- reasoning fields are their only copy and must still
+        be counted, not silently dropped.
+        """
+        msg = {
+            "role": "assistant",
+            "content": "hello",
+            "reasoning_content": "thinking about it at length " * 20,
+        }
+        with_reasoning = estimate_messages_tokens_rough([msg])
+        without_reasoning = estimate_messages_tokens_rough(
+            [{"role": "assistant", "content": "hello"}]
+        )
+        assert with_reasoning > without_reasoning
+        self._assert_payload_proportional(with_reasoning, msg["reasoning_content"])
+
+    def test_blocks_present_without_reasoning_fields_unaffected(self):
+        """A message with only content + blocks (no reasoning fields at
+        all) must still dedupe content against blocks -- this path existed
+        before reasoning-field dedup was added and must not regress.
+        """
+        text = "y" * 4000
+        msg = {
+            "role": "assistant",
+            "content": text,
+            "anthropic_content_blocks": [{"type": "thinking", "thinking": text}],
+        }
+        result = estimate_messages_tokens_rough([msg])
+        once_only_estimate = (len(text) + 3) // 4
+        assert result < once_only_estimate * 1.5
+        self._assert_payload_proportional(result, text)
+
+    def test_quadruple_counting_regression_guard(self):
+        """End-to-end: the old unstripped behavior would count the same
+        thinking text 4 times over (content + 2 reasoning fields + the
+        blocks copy itself). Confirm the fixed estimate is meaningfully
+        smaller than that old behavior would have produced, not just
+        smaller than some arbitrary bound.
+        """
+        text = "z" * 4000
+        msg = self._thinking_msg(text)
+        fixed_result = estimate_messages_tokens_rough([msg])
+
+        # Reconstruct what the old (buggy) shadow would have produced:
+        # every field walked in full, nothing deduped against blocks.
+        old_shadow = dict(msg)
+        old_str_len = len(str(old_shadow))
+        old_buggy_estimate = (old_str_len + 3) // 4
+
+        assert fixed_result < old_buggy_estimate / 2
+
+    def test_codex_reasoning_items_counted_once_not_dropped(self):
+        """codex_reasoning_items is a distinct replay channel from
+        anthropic_content_blocks (Codex Responses API continuity, not
+        Anthropic interleaved thinking) -- it must never be excluded by
+        this shadow builder, since it's the only copy of that reasoning
+        content and is deliberately always-counted (#55572/#55756: "never
+        wire-empty on any api_mode"). This is the exact allowlist-
+        regression scenario this class guards against: a fix that reshapes
+        _wire_message_shadow() into a field allowlist would silently stop
+        counting it.
+        """
+        text = "c" * 4000
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": text}],
+        }
+        result = estimate_messages_tokens_rough([msg])
+        self._assert_payload_proportional(result, text)
+
+    def test_codex_message_items_counted_once_not_dropped(self):
+        """Same invariant as codex_reasoning_items, for the sibling
+        codex_message_items channel (structured assistant message items
+        with id/phase, required for prefix cache hits per
+        chat_completion_helpers.py).
+        """
+        text = "d" * 4000
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "codex_message_items": [{"type": "message", "text": text}],
+        }
+        result = estimate_messages_tokens_rough([msg])
+        self._assert_payload_proportional(result, text)
+
+    def test_all_replay_channels_missing_fails_the_proportional_floor(self):
+        """Sanity-check the sanity-check: emptying every replay-channel
+        key on a message that should carry one must actually fail the
+        payload-proportional assertion (i.e. the assertion helper itself
+        has real teeth, not just a name).
+        """
+        text = "e" * 4000
+        msg_with_channel = {
+            "role": "assistant",
+            "content": "",
+            "anthropic_content_blocks": [{"type": "thinking", "thinking": text}],
+        }
+        stripped = {
+            k: v for k, v in msg_with_channel.items()
+            if k not in self._REPLAY_CHANNEL_KEYS
+        }
+        stripped_result = estimate_messages_tokens_rough([stripped])
+        with pytest.raises(AssertionError):
+            self._assert_payload_proportional(stripped_result, text)
+
 
 class TestEstimateRequestTokensRough:
     def test_caches_tools_estimate(self):

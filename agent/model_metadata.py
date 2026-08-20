@@ -3429,7 +3429,7 @@ def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
 def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     """Shadow of a message holding only what the provider actually receives.
 
-    Two adjustments to the raw persisted dict:
+    Adjustments to the raw persisted dict:
 
     * ``api_content`` is a SUBSTITUTE for ``content``, not an addition to it.
       ``turn_context.substitute_api_content()`` pops the sidecar and overwrites
@@ -3446,6 +3446,20 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     * Base64 image payloads are replaced with a placeholder; they are charged
       separately at a flat rate by ``_count_image_tokens``, and counting their
       raw chars here would massively overestimate usage.
+    * ``anthropic_content_blocks`` (Anthropic's interleaved-thinking replay
+      channel -- the raw provider content array stashed onto the message so
+      ``_convert_assistant_message`` in ``agent/anthropic_adapter.py`` can
+      replay it verbatim on the next API call) duplicates the same thinking
+      text into ``content``/``reasoning``/``reasoning_content`` on the stored
+      message, but the replay path reads ``anthropic_content_blocks`` alone
+      for these turns and never touches the other three. Counting all of
+      them inflates a single thinking block's token cost by up to ~4-5x.
+      NOTE: this is intentionally an exclusion of these specific known-
+      duplicate keys, NOT a field allowlist -- an allowlist here would also
+      silently stop counting other verbatim-replay channels that must count
+      once, e.g. Codex's ``codex_reasoning_items``/``codex_message_items``
+      (never wire-empty on any api_mode; deliberately counted per
+      #55572/#55756).
     """
     sidecar = msg.get("api_content")
     sidecar_wins = (
@@ -3453,9 +3467,20 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
         and bool(sidecar)
         and msg.get("role") in ("user", "assistant")
     )
+    has_anthropic_blocks = bool(msg.get("anthropic_content_blocks"))
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
         if k in ("_anthropic_content_blocks", "reasoning_details") or k in PERSISTENCE_ONLY_MESSAGE_FIELDS:
+            continue
+        if k == "anthropic_content_blocks":
+            shadow[k] = v
+            continue
+        if k in ("reasoning", "reasoning_content"):
+            # Skip the reasoning-field duplicates when blocks already carry
+            # the same thinking text for the provider (see docstring).
+            if has_anthropic_blocks:
+                continue
+            shadow[k] = v
             continue
         if k == "api_content":
             # Always popped before the request is built; only counted when it
@@ -3467,6 +3492,10 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
             if sidecar_wins:
                 # The sidecar wins on the wire; skip the clean copy so the
                 # same logical content is not counted twice.
+                continue
+            if has_anthropic_blocks:
+                # Skip the text-extracted duplicate when blocks already
+                # represent the same content for the provider.
                 continue
             if isinstance(v, list):
                 cleaned = []

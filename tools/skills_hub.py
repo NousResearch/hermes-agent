@@ -431,48 +431,15 @@ class GitHubAuth:
 
     def _try_github_app(self) -> Optional[str]:
         """Try GitHub App JWT authentication if credentials are configured."""
-        from agent.secret_scope import get_secret
-        app_id = get_secret("GITHUB_APP_ID")
-        key_path = get_secret("GITHUB_APP_PRIVATE_KEY_PATH")
-        installation_id = get_secret("GITHUB_APP_INSTALLATION_ID")
+        from agent.github_auth import GitHubAppAuth
 
-        if not all([app_id, key_path, installation_id]):
+        if not GitHubAppAuth().credentials_configured():
             return None
-
         try:
-            import jwt  # PyJWT
-        except ImportError:
-            logger.debug("PyJWT not installed, skipping GitHub App auth")
-            return None
-
-        try:
-            key_file = Path(key_path)
-            if not key_file.exists():
-                return None
-            private_key = key_file.read_text(encoding="utf-8")
-
-            now = int(time.time())
-            payload = {
-                "iat": now - 60,
-                "exp": now + (10 * 60),
-                "iss": app_id,
-            }
-            encoded_jwt = jwt.encode(payload, private_key, algorithm="RS256")
-
-            resp = httpx.post(
-                f"https://api.github.com/app/installations/{installation_id}/access_tokens",
-                headers={
-                    "Authorization": f"Bearer {encoded_jwt}",
-                    "Accept": "application/vnd.github.v3+json",
-                },
-                timeout=10,
-            )
-            if resp.status_code == 201:
-                return resp.json().get("token")
+            return GitHubAppAuth().installation_token()
         except Exception as e:
             logger.debug("GitHub App auth failed: %s", e)
-
-        return None
+            return None
 
 
 # ---------------------------------------------------------------------------

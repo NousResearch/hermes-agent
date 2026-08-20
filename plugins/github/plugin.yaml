@@ -1,0 +1,13 @@
+name: github
+version: 1.0.0
+description: "GitHub App connector — issue/PR tools (create, comment, list, get, review, merge) acting as the GitHub App bot identity when configured, with attribution in every result. Auth via GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY_PATH + GITHUB_APP_INSTALLATION_ID (bot) or GITHUB_TOKEN/GH_TOKEN / gh CLI (human)."
+author: NousResearch
+kind: backend
+provides_tools:
+  - github_identity
+  - github_create_issue
+  - github_comment_issue
+  - github_list_issues
+  - github_get_issue
+  - github_review_pr
+  - github_merge_pr

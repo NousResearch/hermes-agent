@@ -99,8 +99,32 @@ def test_get_platform_tools_homeassistant_toolset_enabled_for_cron_when_hass_tok
     # moa must stay off — the original goal of #14798
     assert "moa" not in cron_enabled
 
+
+def test_get_platform_tools_github_auto_enabled_with_app_credentials(monkeypatch):
+    """The github toolset auto-enables when GitHub App credentials exist.
+
+    Mirrors the x_search auto-enable rule: once the user has working GitHub
+    credentials, they don't need to also click through ``hermes tools``.
+    """
+    monkeypatch.setenv("GITHUB_APP_ID", "12345")
+    monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY_PATH", "/tmp/fake-app.pem")
+    monkeypatch.setenv("GITHUB_APP_INSTALLATION_ID", "67890")
+
     cli_enabled = _get_platform_tools({}, "cli")
-    assert "homeassistant" in cli_enabled
+    assert "github" in cli_enabled
+
+
+def test_get_platform_tools_github_off_without_credentials(monkeypatch):
+    """Without any GitHub credential, the github toolset stays off by default."""
+    monkeypatch.delenv("GITHUB_APP_ID", raising=False)
+    monkeypatch.delenv("GITHUB_APP_PRIVATE_KEY_PATH", raising=False)
+    monkeypatch.delenv("GITHUB_APP_INSTALLATION_ID", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setattr("hermes_cli.tools_config._github_credentials_present", lambda: False)
+
+    cli_enabled = _get_platform_tools({}, "cli")
+    assert "github" not in cli_enabled
 
 
 def test_get_platform_tools_homeassistant_uses_active_profile_token(monkeypatch):
@@ -164,7 +188,7 @@ def test_save_platform_tools_preserves_mcp_server_names():
     """
     config = {
         "platform_toolsets": {
-            "cli": ["web", "terminal", "time", "github", "custom-mcp-server"]
+            "cli": ["web", "terminal", "time", "notes-mcp", "custom-mcp-server"]
         }
     }
 
@@ -176,7 +200,7 @@ def test_save_platform_tools_preserves_mcp_server_names():
     saved_toolsets = config["platform_toolsets"]["cli"]
 
     assert "time" in saved_toolsets
-    assert "github" in saved_toolsets
+    assert "notes-mcp" in saved_toolsets
     assert "custom-mcp-server" in saved_toolsets
     assert "web" in saved_toolsets
     assert "browser" in saved_toolsets

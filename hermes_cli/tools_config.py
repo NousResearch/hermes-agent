@@ -117,6 +117,7 @@ CONFIGURABLE_TOOLSETS = [
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
+    ("github",           "🐙 GitHub App Connector",     "issues, comments, PR reviews, merges (bot identity when GITHUB_APP_* configured)"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
@@ -153,7 +154,7 @@ def gui_toolset_label(label: str) -> str:
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a"}
+_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "github", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a"}
 
 
 # Config-only capabilities: they appear in `hermes tools` for provider/API-key
@@ -203,6 +204,37 @@ def _homeassistant_credentials_present() -> bool:
         from agent.secret_scope import get_secret
 
         return bool((get_secret("HASS_TOKEN", "") or "").strip())
+    except Exception:
+        return False
+
+
+def _github_credentials_present() -> bool:
+    """Return whether the active profile has usable GitHub credentials.
+
+    Checks (in order): GitHub App env trio, GITHUB_TOKEN/GH_TOKEN, or the
+    gh CLI being installed. Does NOT hit the network — only inspects local
+    secrets and the environment. Used to auto-enable the ``github`` toolset
+    (mirroring the ``x_search`` / ``homeassistant`` auto-enable rules); the
+    tool's runtime ``check_fn`` still gates schema registration.
+    """
+    try:
+        from agent.github_auth import GitHubAppAuth
+
+        if GitHubAppAuth().credentials_configured():
+            return True
+    except Exception:
+        pass
+    try:
+        from agent.secret_scope import get_secret
+
+        if get_secret("GITHUB_TOKEN") or get_secret("GH_TOKEN"):
+            return True
+    except Exception:
+        pass
+    try:
+        import shutil
+
+        return shutil.which("gh") is not None
     except Exception:
         return False
 
@@ -2528,6 +2560,19 @@ def _get_platform_tools(
         if x_search_auto_enabled:
             enabled_toolsets.add("x_search")
 
+        # Auto-enable ``github`` when GitHub credentials exist (GitHub App
+        # env trio, GITHUB_TOKEN/GH_TOKEN, or gh CLI). Same rationale as
+        # x_search: once you have working creds, you don't have to also
+        # click through ``hermes tools`` to flip the toolset on. Only fires
+        # when the user has not yet saved an explicit toolset list — once
+        # they do, the saved list is authoritative.
+        github_auto_enabled = (
+            _toolset_allowed_for_platform("github", platform)
+            and _github_credentials_present()
+        )
+        if github_auto_enabled:
+            enabled_toolsets.add("github")
+
         default_off = set(_DEFAULT_OFF_TOOLSETS)
         # Legacy safety: if the platform's own name matches a default-off
         # toolset (e.g. `homeassistant` platform + `homeassistant` toolset),
@@ -2550,6 +2595,9 @@ def _get_platform_tools(
         # strip the entry we just added.
         if x_search_auto_enabled and "x_search" in default_off:
             default_off.remove("x_search")
+        # Same carve-out for the github auto-enable inject above.
+        if github_auto_enabled and "github" in default_off:
+            default_off.remove("github")
         _exempt_explicit_platform_native(
             default_off, platform, explicitly_configured=explicitly_configured
         )

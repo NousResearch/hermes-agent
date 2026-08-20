@@ -381,6 +381,16 @@ TOOLSETS = {
         "includes": []
     },
 
+    "github": {
+        "description": "GitHub App connector — issues, comments, PR reviews, and merges acting as the GitHub App bot identity when configured, with attribution in every result",
+        "tools": [
+            "github_identity", "github_create_issue", "github_comment_issue",
+            "github_list_issues", "github_get_issue", "github_review_pr",
+            "github_merge_pr",
+        ],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     

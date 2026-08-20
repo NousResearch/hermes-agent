@@ -8,6 +8,7 @@
 import {
   Button,
   Codicon,
+  ConfirmDialog,
   Dialog,
   DialogContent,
   DialogFooter,
@@ -32,7 +33,16 @@ import {
 } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 
-import { $boardSlug, BOARDS_KEY, createBoard, fetchBoards, fetchProjects, PROJECTS_KEY, updateBoard } from './api'
+import {
+  $boardSlug,
+  archiveBoard,
+  BOARDS_KEY,
+  createBoard,
+  fetchBoards,
+  fetchProjects,
+  PROJECTS_KEY,
+  updateBoard
+} from './api'
 import type { BoardMeta } from './types'
 import { errText, FIELD_LABEL, useKanban } from './ui'
 
@@ -135,13 +145,16 @@ function NewBoardDialog({ onClose, open }: { onClose: () => void; open: boolean 
 function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onClose: () => void }) {
   const k = useKanban()
   const qc = useQueryClient()
+  const selectedSlug = useValue($boardSlug)
   const [name, setName] = useState('')
   const [project, setProject] = useState('')
+  const [confirmArchive, setConfirmArchive] = useState(false)
 
   useEffect(() => {
     if (board) {
       setName(board.name || '')
       setProject(board.project_id || '')
+      setConfirmArchive(false)
     }
   }, [board])
 
@@ -156,30 +169,75 @@ function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onCl
     }
   })
 
+  // Parity with the browser dashboard Archive control + CLI
+  // `hermes kanban boards rm <slug>` (archive, not hard-delete). `default`
+  // cannot be removed — backend refuses it too.
+  const canArchive = Boolean(board && board.slug !== 'default')
+  const boardLabel = board ? board.name || board.slug : ''
+
+  const archive = useMutation({
+    mutationFn: () => archiveBoard(board!.slug),
+    onError: err => host.notify({ kind: 'error', message: errText(err) }),
+    onSuccess: result => {
+      const wasSelected = !selectedSlug || selectedSlug === board!.slug
+      if (wasSelected) {
+        // Fall back to the server's new current board (usually default).
+        // Empty slug means "server current" — same convention as the switcher.
+        $boardSlug.set(result.current && result.current !== 'default' ? result.current : '')
+      }
+      void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+      setConfirmArchive(false)
+      onClose()
+    }
+  })
+
   return (
-    <Dialog onOpenChange={o => !o && onClose()} open={Boolean(board)}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>{board ? k.boardSettingsFor(board.name || board.slug) : k.boardSettings}</DialogTitle>
-        </DialogHeader>
-        <div className="flex flex-col gap-3">
-          <label className="flex flex-col gap-1">
-            <span className={FIELD_LABEL}>{k.name}</span>
-            <Input onChange={event => setName(event.target.value)} placeholder={k.boardNamePlaceholder} value={name} />
-            {board && <span className="text-[0.6875rem] text-(--ui-text-quaternary)">{k.slug(board.slug)}</span>}
-          </label>
-          <ProjectPicker onChange={setProject} value={project} />
-        </div>
-        <DialogFooter>
-          <Button onClick={onClose} variant="text">
-            {k.cancel}
-          </Button>
-          <Button disabled={save.isPending} onClick={() => save.mutate()}>
-            {k.save}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <>
+      <Dialog onOpenChange={o => !o && onClose()} open={Boolean(board)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{board ? k.boardSettingsFor(board.name || board.slug) : k.boardSettings}</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-3">
+            <label className="flex flex-col gap-1">
+              <span className={FIELD_LABEL}>{k.name}</span>
+              <Input onChange={event => setName(event.target.value)} placeholder={k.boardNamePlaceholder} value={name} />
+              {board && <span className="text-[0.6875rem] text-(--ui-text-quaternary)">{k.slug(board.slug)}</span>}
+            </label>
+            <ProjectPicker onChange={setProject} value={project} />
+          </div>
+          <DialogFooter className={canArchive ? 'sm:justify-between' : undefined}>
+            {canArchive ? (
+              <Button
+                disabled={save.isPending || archive.isPending}
+                onClick={() => setConfirmArchive(true)}
+                title={k.archiveBoardTitle}
+                variant="destructive"
+              >
+                {k.archiveBoard}
+              </Button>
+            ) : null}
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button onClick={onClose} variant="text">
+                {k.cancel}
+              </Button>
+              <Button disabled={save.isPending || archive.isPending} onClick={() => save.mutate()}>
+                {k.save}
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <ConfirmDialog
+        confirmLabel={k.archiveBoard}
+        description={k.archiveBoardConfirm(boardLabel)}
+        destructive
+        onClose={() => setConfirmArchive(false)}
+        onConfirm={() => archive.mutateAsync()}
+        open={confirmArchive && canArchive}
+        title={k.archiveBoardTitle}
+      />
+    </>
   )
 }
 

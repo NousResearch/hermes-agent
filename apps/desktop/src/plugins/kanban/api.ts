@@ -257,6 +257,11 @@ export const estimateNew = (title: string, body: string) =>
 export const updateBoard = (slug: string, patch: Record<string, unknown>) =>
   call<{ board: BoardMeta }>(`/boards/${encodeURIComponent(slug)}`, { method: 'PATCH', body: patch })
 
+/** Archive a board (backend default for DELETE). Hard-delete stays CLI-only
+ *  (`?delete=true` / `hermes kanban boards rm --delete`). `default` is refused. */
+export const archiveBoard = (slug: string) =>
+  call<{ current: string; result: unknown }>(`/boards/${encodeURIComponent(slug)}`, { method: 'DELETE' })
+
 export const nudgeDispatcher = () => call<{ spawned?: unknown[] }>(withBoard('/dispatch'), { method: 'POST', body: {} })
 
 export const saveOrchestration = (patch: Record<string, unknown>) =>

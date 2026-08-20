@@ -168,6 +168,9 @@ type KanbanMessages = {
   newBoardDots: string
   boardSettings: string
   boardSettingsFor: (name: string) => string
+  archiveBoard: string
+  archiveBoardTitle: string
+  archiveBoardConfirm: (name: string) => string
   name: string
   boardNamePlaceholder: string
   slug: (slug: string) => string
@@ -370,6 +373,10 @@ export const en: KanbanMessages = {
   newBoardDots: 'New board…',
   boardSettings: 'Board settings…',
   boardSettingsFor: name => `Board settings — ${name}`,
+  archiveBoard: 'Archive board',
+  archiveBoardTitle: 'Archive this board',
+  archiveBoardConfirm: name =>
+    `Archive board “${name}”? It will be moved to boards/_archived/ so you can recover it later. Tasks on this board will no longer appear anywhere in the UI.`,
   name: 'Name',
   boardNamePlaceholder: 'Board name',
   slug: slug => `slug: ${slug}`,
@@ -571,6 +578,10 @@ const ja: KanbanMessages = {
   newBoardDots: '新しいボード…',
   boardSettings: 'ボード設定…',
   boardSettingsFor: name => `ボード設定 — ${name}`,
+  archiveBoard: 'ボードをアーカイブ',
+  archiveBoardTitle: 'このボードをアーカイブ',
+  archiveBoardConfirm: name =>
+    `ボード「${name}」をアーカイブしますか？ boards/_archived/ に移動されるので後から復元できます。このボード上のタスクは UI のどこにも表示されなくなります。`,
   name: '名前',
   boardNamePlaceholder: 'ボード名',
   slug: slug => `slug: ${slug}`,
@@ -770,6 +781,10 @@ const zh: KanbanMessages = {
   newBoardDots: '新建面板…',
   boardSettings: '面板设置…',
   boardSettingsFor: name => `面板设置 — ${name}`,
+  archiveBoard: '归档面板',
+  archiveBoardTitle: '归档此面板',
+  archiveBoardConfirm: name =>
+    `归档面板“${name}”？它会移到 boards/_archived/，之后仍可恢复。此面板上的任务将不再出现在任何界面中。`,
   name: '名称',
   boardNamePlaceholder: '面板名称',
   slug: slug => `slug: ${slug}`,
@@ -968,6 +983,10 @@ const zhHant: KanbanMessages = {
   newBoardDots: '新增面板…',
   boardSettings: '面板設定…',
   boardSettingsFor: name => `面板設定 — ${name}`,
+  archiveBoard: '封存面板',
+  archiveBoardTitle: '封存此面板',
+  archiveBoardConfirm: name =>
+    `封存面板「${name}」？它會移到 boards/_archived/，之後仍可還原。此面板上的任務將不再出現在任何介面中。`,
   name: '名稱',
   boardNamePlaceholder: '面板名稱',
   slug: slug => `slug: ${slug}`,

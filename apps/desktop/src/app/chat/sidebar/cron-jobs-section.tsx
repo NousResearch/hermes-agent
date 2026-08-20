@@ -23,6 +23,7 @@ import type { CronJob } from '@/types/hermes'
 import { jobState, jobTitle, STATE_DOT } from '../../cron/job-state'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
+import { SidebarRowBody, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
 import { SidebarLoadMoreRow } from './load-more-row'
 
 const INACTIVE_STATES = new Set(['completed', 'disabled', 'error', 'paused'])
@@ -304,21 +305,57 @@ function CronJobSidebarRow({
 
   return (
     <div>
+      {/* The shared row chrome, not a copy of it: a cron job and a session sit
+          in the same list, so they line up only if one place owns the geometry. */}
       <ActionsContextMenu ariaLabel={c.actionsTitle} contentClassName="w-44" items={items}>
-        <div className="group/cron relative grid min-h-[1.625rem] grid-cols-[minmax(0,1fr)_auto] items-center rounded-md hover:bg-(--chrome-action-hover)">
-          {/* Lead with the dot in the same w-3.5 cell + pl-2 the session rows use
-              so the cron dots line up with the sessions above; the caret sits next
-              to the label (matching the other sidebar disclosures) and the whole
-              label area toggles the run peek. */}
+        <SidebarRowShell
+          actions={
+            /* Trailing cluster: countdown by default, quick actions on hover. */
+            <div className="flex items-center gap-0.5">
+              <span className="text-[0.6875rem] text-(--ui-text-tertiary) tabular-nums group-hover/cron:hidden">
+                {meta}
+              </span>
+              <div className="hidden items-center gap-0.5 group-hover/cron:flex">
+                <Tip label={c.triggerNow}>
+                  <button
+                    aria-label={c.triggerNow}
+                    className="grid size-5 place-items-center rounded-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground disabled:cursor-wait disabled:opacity-60"
+                    disabled={busy}
+                    onClick={onTrigger}
+                    type="button"
+                  >
+                    {busy ? (
+                      <GlyphSpinner ariaLabel={c.triggerNow} className="text-[0.75rem]" />
+                    ) : (
+                      <Codicon name="zap" size="0.75rem" />
+                    )}
+                  </button>
+                </Tip>
+                <Tip label={c.manage}>
+                  <button
+                    aria-label={c.manage}
+                    className="grid size-5 place-items-center rounded-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
+                    onClick={onManage}
+                    type="button"
+                  >
+                    <Codicon name="watch" size="0.75rem" />
+                  </button>
+                </Tip>
+              </div>
+            </div>
+          }
+          className="group/cron relative hover:bg-(--chrome-action-hover)"
+        >
+          {/* The caret sits next to the label (matching the other sidebar
+              disclosures) and the whole label area toggles the run peek. */}
           <Tip label={label}>
-            <button
+            <SidebarRowBody
               aria-expanded={expanded}
               aria-label={expanded ? c.hideRuns : c.showRuns}
-              className="flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+              className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
               onClick={onTogglePeek}
-              type="button"
             >
-              <span className="grid w-3.5 shrink-0 place-items-center">
+              <SidebarRowLead>
                 <span
                   aria-hidden="true"
                   className={cn(
@@ -327,10 +364,8 @@ function CronJobSidebarRow({
                     state === 'running' && 'size-1.5 animate-pulse'
                   )}
                 />
-              </span>
-              <span className="min-w-0 truncate text-[0.8125rem] text-(--ui-text-secondary) group-hover/cron:text-foreground">
-                {label}
-              </span>
+              </SidebarRowLead>
+              <SidebarRowLabel className="group-hover/cron:text-foreground">{label}</SidebarRowLabel>
               <DisclosureCaret
                 className={cn(
                   'shrink-0 text-(--ui-text-tertiary) transition',
@@ -338,42 +373,9 @@ function CronJobSidebarRow({
                 )}
                 open={expanded}
               />
-            </button>
+            </SidebarRowBody>
           </Tip>
-          {/* Trailing cluster: countdown by default, quick actions on hover. */}
-          <div className="flex items-center gap-0.5 justify-self-end pr-1">
-            <span className="text-[0.6875rem] text-(--ui-text-tertiary) tabular-nums group-hover/cron:hidden">
-              {meta}
-            </span>
-            <div className="hidden items-center gap-0.5 group-hover/cron:flex">
-              <Tip label={c.triggerNow}>
-                <button
-                  aria-label={c.triggerNow}
-                  className="grid size-5 place-items-center rounded-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground disabled:cursor-wait disabled:opacity-60"
-                  disabled={busy}
-                  onClick={onTrigger}
-                  type="button"
-                >
-                  {busy ? (
-                    <GlyphSpinner ariaLabel={c.triggerNow} className="text-[0.75rem]" />
-                  ) : (
-                    <Codicon name="zap" size="0.75rem" />
-                  )}
-                </button>
-              </Tip>
-              <Tip label={c.manage}>
-                <button
-                  aria-label={c.manage}
-                  className="grid size-5 place-items-center rounded-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
-                  onClick={onManage}
-                  type="button"
-                >
-                  <Codicon name="watch" size="0.75rem" />
-                </button>
-              </Tip>
-            </div>
-          </div>
-        </div>
+        </SidebarRowShell>
       </ActionsContextMenu>
       {expanded && <CronJobSidebarRuns jobId={job.id} onOpenRun={onOpenRun} />}
     </div>

@@ -9865,7 +9865,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         is identical either way; only the durability of the dropped turns
         differs.
         """
-
         active_clause = " AND active = 1" if active_only else ""
 
         def _do(conn):

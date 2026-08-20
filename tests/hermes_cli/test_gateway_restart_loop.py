@@ -676,6 +676,70 @@ class TestLifecycleGuardModule:
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("clean prompt", str(script))
 
+    def test_py_script_with_path_literals_not_false_blocked(self, tmp_path):
+        """#79488: a .py script containing path-like string literals (e.g. a
+        BOARD_ROOT = Path(\"/some/dir\") constant) must not be blocked by the
+        shell-script reference walk. Before the fix, _iter_referenced_shell_scripts
+        yielded the .py path (because it contains '/'), read its text, tokenized
+        the Python source as shell commands, and picked up path-like string
+        literals. One of those ('/home/frank/.hermes/kanban/boards') resolved to a
+        directory, causing _read_referenced_script to return unsafe=True (fail-
+        closed), producing a false-positive block on every .py cron script with
+        string-literal paths.
+
+        The terminal tool calls contains_gateway_lifecycle_command_or_referenced_script
+        directly (bypassing check_gateway_lifecycle's .py special-case), so this
+        test exercises that entry point too."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        script = tmp_path / "my_script.py"
+        script.write_text(
+            "from pathlib import Path\n"
+            'BOARD_ROOT = Path("/home/frank/.hermes/kanban/boards")\n'
+            'print("healthy")\n',
+            encoding="utf-8",
+        )
+        command = str(script)
+        # Direct scan of the prompt text — no false positive.
+        assert contains_gateway_lifecycle_command_or_referenced_script(command) is False
+        # Full guard scan (terminal tool path) — also no false positive.
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is False
+
+    def test_py_script_invoked_via_absolute_path_not_blocked(self, tmp_path):
+        """#79488 (real-world repro): invoking a .py script by absolute path — the
+        exact form the governor cron uses — must not be blocked by the
+        shell-script reference walk. This is the production repro:
+        /home/frank/.hermes/scripts/governor_comment_dedupe.py --board ...
+        The script's source text contains path-like string literals whose
+        shlex tokenization produced a directory-resolving token, tripping the
+        fail-closed unsafe=True path."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        # Simulate a .py script with path literals, invoked by absolute path.
+        script = tmp_path / "governor_comment_dedupe.py"
+        script.write_text(
+            '#!/usr/bin/env python3\n'
+            'from pathlib import Path\n'
+            'BOARD_ROOT = Path("/home/frank/.hermes/kanban/boards")\n'
+            'print("COMMENT: no_match \\n")\n',
+            encoding="utf-8",
+        )
+        command = (
+            str(script)
+            + " --board sycode-trading"
+            + " --task-id t_e999168c"
+            + " --classification sycode-fusion-data-plane-gap"
+            + " --owner-packet sycode-trading/t_e999168c"
+            + " --ttl-hours 2"
+        )
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is False
+
     def test_absolute_path_binary_does_not_crash_guard(self):
         """#76762: a terminal command invoking a binary by absolute path
         (e.g. /usr/bin/python3) must not crash the guard with

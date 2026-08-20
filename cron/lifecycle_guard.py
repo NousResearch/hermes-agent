@@ -614,6 +614,18 @@ def _contains_unsafe_gateway_action(
                 return True
         if not script_text:
             continue
+        # Python is executed by the interpreter, never through a POSIX shell:
+        # tokenizing a .py's source as shell (the recursion below does this
+        # to find nested shell references) produces systematic false positives
+        # from string literals, Path objects, and comments whose path-like
+        # tokens resolve to directories or non-scripts. For .py files, run
+        # only the direct command regex on the content — this still catches
+        # a literal lifecycle command embedded in the .py source without the
+        # false-positive shell-reference walk. (#79488)
+        if resolved.suffix == ".py":
+            if _direct_lifecycle_scan(script_text):
+                return True
+            continue
         # Relative references inside a script resolve against that script's
         # directory, not the original command's cwd.
         script_dir = _resolve_script_directory(str(resolved)) or cwd

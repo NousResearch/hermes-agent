@@ -24,6 +24,24 @@ class RecordingAdapter:
         self.handled.append(event)
 
 
+class NoPushAdapter:
+    """Adapter with no push channel — mirrors APIServerAdapter's
+    ``supports_async_delivery = False`` contract, the only real-world
+    adapter that can never text-send or wake-post a notification."""
+
+    supports_async_delivery = False
+
+    def __init__(self):
+        self.sent = []
+        self.handled = []
+
+    async def send(self, chat_id, text, metadata=None):
+        self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+
+    async def handle_message(self, event):
+        self.handled.append(event)
+
+
 class DisconnectedAdapters(dict):
     """Expose a platform during collection, then simulate disconnect on get()."""
 
@@ -44,10 +62,10 @@ async def _run_one_notifier_tick(monkeypatch, runner):
     await runner._kanban_notifier_watcher(interval=1)
 
 
-def _make_runner(adapter):
+def _make_runner(adapter, platform=Platform.TELEGRAM):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running = True
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {platform: adapter}
     runner._kanban_sub_fail_counts = {}
     # Most tests model the default gateway after its dispatcher acquired the
     # singleton lock. Tests for startup or non-owner gateways clear this.
@@ -622,3 +640,148 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     finally:
         conn.close()
     assert remaining == []
+
+
+def test_notifier_ignores_comments_by_default(tmp_path, monkeypatch):
+    """A `commented` event produces no notification when notify_on_comment is unset (#82080).
+
+    ``kanban.notify_on_comment`` defaults to off, so posting a comment on a
+    subscribed task must be byte-identical to today: no message sent, and the
+    comment never claimed off the subscription's cursor.
+    """
+    db_path = tmp_path / "comment-default-off.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="needs a note", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.add_comment(conn, tid, author="orchestrator", body="checking in on progress")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.sent == []
+
+
+def test_notifier_delivers_comment_when_enabled(tmp_path, monkeypatch):
+    """With `kanban.notify_on_comment: true`, a comment from another party notifies (#82080)."""
+    db_path = tmp_path / "comment-enabled.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"notify_on_comment": True}},
+    )
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="needs a note", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.add_comment(conn, tid, author="worker", body="blocked on missing credentials")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._kanban_notifier_profile = "orchestrator"
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert tid in text
+    assert "worker" in text
+    assert "blocked on missing credentials" in text
+    # Wake self-post must NOT fire for a comment — informative, not terminal.
+    assert adapter.handled == []
+
+
+def test_notifier_skips_authors_own_comment(tmp_path, monkeypatch):
+    """The subscriber's own comment must not echo back to them (#82080).
+
+    Mirrors the self-skip in ``inject_new_comments_from_env`` — posting a
+    note authored by the same profile that owns the subscription produces no
+    notification, only a comment from someone else does.
+    """
+    db_path = tmp_path / "comment-self-skip.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"notify_on_comment": True}},
+    )
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="needs a note", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.add_comment(conn, tid, author="orchestrator", body="my own follow-up note")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._kanban_notifier_profile = "orchestrator"
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.sent == []
+    # Cursor still advances past the self-authored comment (claimed, not re-delivered).
+    conn = kb.connect()
+    try:
+        _, remaining = kb.unseen_events_for_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1",
+            kinds=["commented"],
+        )
+    finally:
+        conn.close()
+    assert remaining == []
+
+
+def test_notifier_never_claims_comment_for_non_push_adapter(tmp_path, monkeypatch):
+    """A `commented` event on a non-push adapter (api_server) must not be
+    claimed and silently lost (review on #82123).
+
+    `commented` is deliberately excluded from `_WAKE_KINDS`, so a platform
+    with no push channel has NO delivery path for it at all: no text send
+    (skipped for non-push adapters) and no wake self-post (not a wake kind).
+    Claiming the event anyway would still advance the subscription's cursor,
+    permanently dropping the notification with no retry. It must instead stay
+    unclaimed, exactly like the notify_on_comment-off default.
+    """
+    db_path = tmp_path / "comment-no-push-adapter.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"notify_on_comment": True}},
+    )
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="needs a note", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="api_server", chat_id="chat-1")
+        kb.add_comment(conn, tid, author="worker", body="blocked on missing credentials")
+    finally:
+        conn.close()
+
+    adapter = NoPushAdapter()
+    runner = _make_runner(adapter, platform=Platform.API_SERVER)
+    runner._kanban_notifier_profile = "orchestrator"
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.sent == []
+    assert adapter.handled == []
+
+    conn = kb.connect()
+    try:
+        _, remaining = kb.unseen_events_for_sub(
+            conn, task_id=tid, platform="api_server", chat_id="chat-1",
+            kinds=["commented"],
+        )
+    finally:
+        conn.close()
+    assert len(remaining) == 1

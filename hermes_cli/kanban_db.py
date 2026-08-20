@@ -3999,7 +3999,15 @@ def add_comment(
             "VALUES (?, ?, ?, ?)",
             (task_id, author.strip(), body.strip(), now),
         )
-        _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
+        # `body` (truncated) rides the event payload so the gateway notifier
+        # can surface a preview to subscribers (#82080) without a second
+        # DB read; `len` is kept for existing consumers (kanban_diagnostics).
+        _append_event(
+            conn,
+            task_id,
+            "commented",
+            {"author": author, "len": len(body), "body": body.strip()[:500]},
+        )
         return int(cur.lastrowid or 0)
 
 

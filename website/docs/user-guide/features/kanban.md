@@ -891,6 +891,8 @@ Subscriptions survive a task reaching `done` — completion is reversible (a rev
 
 A chat-originated auto-subscribe is created in `notify+wake` mode: on a terminal event the destination agent both receives the passive message **and** takes a real turn, so it can read the board context and reply in its own voice. See [Delivery modes](#delivery-modes) below.
 
+Set `kanban.notify_on_comment: true` in `config.yaml` to also get pinged whenever `/kanban comment` (or the `kanban_comment` tool) adds a note to a subscribed task — author and a truncated preview of the body. Off by default to avoid noise on chatty threads; a comment never wakes the creator's agent the way `completed`/`blocked`/etc. do, and you never get pinged about your own comment.
+
 ### Output truncation in messaging
 
 Gateway platforms have practical message-length caps. If `/kanban list`, `/kanban show`, or `/kanban tail` produce more than ~3800 characters of output, the response is truncated with a `… (truncated; use \`hermes kanban …\` in your terminal for full output)` footer. The CLI surface has no such cap.

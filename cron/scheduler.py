@@ -44,7 +44,12 @@ from typing import Any, List, Optional, Protocol
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    get_default_hermes_root,
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     _expand_env_vars,
@@ -2174,6 +2179,198 @@ def _relay_fronted_delivery_platforms(connected: set) -> set:
         return set()
 
 
+def _default_cron_broker_policy() -> tuple[bool, set[str], Path]:
+    """Return the explicit default-profile outbound broker policy.
+
+    Multiplexed profiles deliberately keep messaging credentials isolated.  A
+    specialist cron may still need to *deliver* through a single default
+    gateway identity, however.  The broker is therefore opt-in, fail-closed,
+    and limited to an explicit platform allowlist stored on the default
+    profile.  Only routing metadata leaves this helper; credentials stay behind
+    the default profile's normal ``hermes send`` transport.
+    """
+    current_home = get_hermes_home().expanduser().resolve(strict=False)
+    default_home = get_default_hermes_root().expanduser().resolve(strict=False)
+    if current_home == default_home:
+        return False, set(), default_home
+
+    token = set_hermes_home_override(default_home)
+    try:
+        cfg = load_config() or {}
+    except Exception:
+        logger.debug("cron default delivery broker: default config unavailable", exc_info=True)
+        return False, set(), default_home
+    finally:
+        reset_hermes_home_override(token)
+
+    gateway_cfg = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+    cron_cfg = cfg.get("cron") if isinstance(cfg.get("cron"), dict) else {}
+    if gateway_cfg.get("multiplex_profiles") is not True:
+        return False, set(), default_home
+    if cron_cfg.get("broker_outbound_via_default") is not True:
+        return False, set(), default_home
+
+    raw_allowed = cron_cfg.get("broker_outbound_platforms", [])
+    if isinstance(raw_allowed, str):
+        raw_text = raw_allowed.strip()
+        if raw_text.startswith("["):
+            try:
+                raw_allowed = json.loads(raw_text)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raw_allowed = raw_text.split(",")
+        else:
+            raw_allowed = raw_text.split(",")
+    if not isinstance(raw_allowed, (list, tuple, set)):
+        return False, set(), default_home
+    allowed = {
+        str(name).strip().lower()
+        for name in raw_allowed
+        if str(name).strip()
+    }
+    return bool(allowed), allowed, default_home
+
+
+def _default_cron_broker_connected_platforms() -> set[str]:
+    """Return broker-allowed platforms configured on the default profile."""
+    enabled, allowed, default_home = _default_cron_broker_policy()
+    if not enabled:
+        return set()
+    token = set_hermes_home_override(default_home)
+    try:
+        from gateway.config import load_gateway_config
+
+        gateway_config = load_gateway_config()
+        connected = {p.value for p in gateway_config.get_connected_platforms()}
+        # Do not expand relay-fronted logical platforms here. The broker sends
+        # through a separate `hermes send` process, which has no live gateway
+        # adapter/relay connection to borrow. Filter through the send layer's
+        # standalone-capability predicate so live-adapter-only platforms are
+        # never advertised as brokerable.
+        from tools.send_message_tool import supports_standalone_send
+
+        return {
+            name
+            for name in connected & allowed
+            if supports_standalone_send(name)
+        }
+    except Exception:
+        logger.debug("cron default delivery broker: platform probe failed", exc_info=True)
+        return set()
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _default_cron_broker_home_target(platform_name: str) -> tuple[str, Optional[str]]:
+    """Return the default profile's canonical home target for one broker platform."""
+    enabled, allowed, default_home = _default_cron_broker_policy()
+    platform_key = str(platform_name).strip().lower()
+    if not enabled or platform_key not in allowed:
+        return "", None
+    token = set_hermes_home_override(default_home)
+    try:
+        home = _get_config_home_channel(platform_key)
+        if home is None or not getattr(home, "chat_id", None):
+            return "", None
+        thread_id = getattr(home, "thread_id", None)
+        return str(home.chat_id), str(thread_id) if thread_id else None
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _send_via_default_cron_broker(
+    platform_name: str,
+    chat_id: str,
+    content: str,
+    *,
+    thread_id: Optional[str] = None,
+    media_files: Optional[list] = None,
+) -> Optional[str]:
+    """Deliver through the default profile without exposing its credential.
+
+    The specialist scheduler invokes the supported ``hermes send`` CLI in a
+    child process whose HERMES_HOME is the default profile.  This is a narrow
+    outbound capability broker: the specialist agent never receives, reads, or
+    inherits the default profile's messaging secret.
+    """
+    enabled, allowed, default_home = _default_cron_broker_policy()
+    platform_key = str(platform_name).strip().lower()
+    if not enabled or platform_key not in allowed:
+        return f"default delivery broker is not enabled for '{platform_key}'"
+
+    target = f"{platform_key}:{chat_id}"
+    if thread_id is not None and str(thread_id).strip():
+        target = f"{target}:{str(thread_id).strip()}"
+
+    payload = content or ""
+    for media_path in media_files or []:
+        payload += f"\nMEDIA:{media_path}"
+
+    exe_name = "hermes.exe" if os.name == "nt" else "hermes"
+    hermes_exe = Path(sys.executable).with_name(exe_name)
+    if not hermes_exe.exists():
+        resolved = shutil.which("hermes")
+        if not resolved:
+            return "default delivery broker could not locate the Hermes CLI"
+        hermes_exe = Path(resolved)
+
+    # Start from Hermes's normal sanitized child environment so provider keys,
+    # profile-local messaging credentials, and other managed secrets are not
+    # copied from the specialist process into the broker child. The child then
+    # loads Default's own messaging configuration from HERMES_HOME.
+    try:
+        from tools.environments.local import build_subprocess_env
+
+        env = build_subprocess_env()
+    except Exception as exc:
+        # This broker crosses a profile authority boundary. Never fall back to
+        # inheriting the specialist process environment if the centralized
+        # scrubber is unavailable: failing closed is safer than risking a
+        # specialist credential crossing into the Default-scoped child.
+        logger.debug(
+            "cron default delivery broker: sanitized child env unavailable",
+            exc_info=True,
+        )
+        return (
+            "default delivery broker could not build a sanitized child "
+            f"environment: {type(exc).__name__}"
+        )
+    env["HERMES_HOME"] = str(default_home)
+    try:
+        proc = subprocess.run(
+            [
+                str(hermes_exe),
+                "-p",
+                "default",
+                "send",
+                "--to",
+                target,
+                "--file",
+                "-",
+                "--quiet",
+            ],
+            input=payload,
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=120,
+            check=False,
+            creationflags=windows_hide_flags(),
+        )
+    except Exception as exc:
+        return f"default delivery broker failed to launch: {type(exc).__name__}: {exc}"
+    if proc.returncode == 0:
+        return None
+
+    detail = (proc.stderr or proc.stdout or "delivery command failed").strip()
+    try:
+        from agent.redact import redact_sensitive_text
+
+        detail = redact_sensitive_text(detail, force=True)
+    except Exception:
+        detail = "delivery command failed"
+    return f"default delivery broker failed with exit code {proc.returncode}: {detail[:500]}"
+
+
 def cron_delivery_targets() -> list[dict]:
     """Return the platforms a cron job can auto-deliver to.
 
@@ -2198,18 +2395,23 @@ def cron_delivery_targets() -> list[dict]:
     except Exception:
         logger.debug("cron_delivery_targets: gateway config unavailable", exc_info=True)
         connected = set()
+    broker_connected = _default_cron_broker_connected_platforms()
+    available = connected | broker_connected
 
     for name in _iter_home_target_platforms():
-        if name not in connected:
+        if name not in available:
             continue
         if not _is_known_delivery_platform(name):
             continue
         env_var = _resolve_home_env_var(name)
+        home_target = _get_home_target_chat_id(name)
+        if not home_target and name in broker_connected:
+            home_target, _thread_id = _default_cron_broker_home_target(name)
         targets.append(
             {
                 "id": name,
                 "name": name.replace("_", " ").title(),
-                "home_target_set": bool(_get_home_target_chat_id(name)),
+                "home_target_set": bool(home_target),
                 "home_env_var": env_var or None,
             }
         )
@@ -2265,6 +2467,9 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         # platform's home channel as a fallback instead of silently dropping.
         for platform_name in _iter_home_target_platforms():
             chat_id = _get_home_target_chat_id(platform_name)
+            thread_id = _get_home_target_thread_id(platform_name)
+            if not chat_id:
+                chat_id, thread_id = _default_cron_broker_home_target(platform_name)
             if chat_id:
                 logger.info(
                     "Job '%s' has deliver=origin but no origin; falling back to %s home channel",
@@ -2274,7 +2479,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                 return {
                     "platform": platform_name,
                     "chat_id": chat_id,
-                    "thread_id": _get_home_target_thread_id(platform_name),
+                    "thread_id": thread_id,
                 }
         return None
 
@@ -2339,13 +2544,16 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     if not _is_known_delivery_platform(platform_name):
         return None
     chat_id = _get_home_target_chat_id(platform_name)
+    thread_id = _get_home_target_thread_id(platform_name)
+    if not chat_id:
+        chat_id, thread_id = _default_cron_broker_home_target(platform_name)
     if not chat_id:
         return None
 
     return {
         "platform": platform_name,
         "chat_id": chat_id,
-        "thread_id": _get_home_target_thread_id(platform_name),
+        "thread_id": thread_id,
     }
 
 
@@ -2724,6 +2932,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         return msg
 
     delivery_errors = []
+    try:
+        local_connected_platforms = {
+            p.value for p in config.get_connected_platforms()
+        }
+        local_connected_platforms |= _relay_fronted_delivery_platforms(
+            local_connected_platforms
+        )
+    except Exception:
+        local_connected_platforms = set()
+    broker_connected_platforms = _default_cron_broker_connected_platforms()
 
     for target in targets:
         platform_name = target["platform"]
@@ -2769,10 +2987,24 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         from gateway.delivery import resolve_delivery_transport
 
-        transport = resolve_delivery_transport(platform, config, adapters)
+        platform_key = platform_name.lower()
+        brokered = (
+            platform_key not in local_connected_platforms
+            and platform_key in broker_connected_platforms
+        )
+        transport = None if brokered else resolve_delivery_transport(platform, config, adapters)
         if transport is not None:
             pconfig = transport.config
             runtime_adapter = transport.adapter
+        elif brokered:
+            # Outbound-only broker: the specialist profile owns the cron run,
+            # while Default owns the messaging identity.  Keep a credential-free
+            # placeholder config in this process; actual send happens through a
+            # child ``hermes send`` scoped to the default profile below.
+            from gateway.config import PlatformConfig
+
+            pconfig = PlatformConfig(enabled=True)
+            runtime_adapter = None
         else:
             # No live transport: preserve the existing standalone delivery path,
             # which uses the logical platform's configured credential.
@@ -2807,7 +3039,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # case the live-send block is skipped and delivery falls through to the
         # standalone path — which cannot seed the flat session (r3609147550).
         live_adapter_ready = (
-            runtime_adapter is not None
+            not brokered
+            and runtime_adapter is not None
             and loop is not None
             and getattr(loop, "is_running", lambda: False)()
         )
@@ -3287,6 +3520,31 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
 
         if not delivered:
+            if brokered:
+                broker_error = _send_via_default_cron_broker(
+                    platform_name,
+                    str(chat_id),
+                    cleaned_delivery_content,
+                    thread_id=thread_id,
+                    media_files=media_files,
+                )
+                if broker_error:
+                    msg = (
+                        f"brokered delivery to {platform_name}:{chat_id} failed: "
+                        f"{broker_error}"
+                    )
+                    logger.error("Job '%s': %s", job["id"], msg)
+                    target_errors.append(msg)
+                    delivery_errors.extend(target_errors)
+                else:
+                    logger.info(
+                        "Job '%s': delivered to %s:%s via default-profile outbound broker",
+                        job["id"], platform_name, chat_id,
+                    )
+                # Brokered notifications are intentionally one-way.  Do not
+                # seed/mirror a specialist session into Default's chat history;
+                # replies continue with the Default/Orchestrator bot identity.
+                continue
             if transport is not None and transport.is_relay:
                 # Relay owns the logical destination and its connector owns the
                 # platform credential. A native retry could duplicate delivery
@@ -4525,6 +4783,7 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
         return None
 
     connected: Optional[set] = None
+    broker_connected: Optional[set] = None
     for platform_name in platform_parts:
         if not _is_known_delivery_platform(platform_name):
             return (
@@ -4548,10 +4807,16 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
                 )
                 return None  # fail-open
         if platform_name.lower() not in connected:
+            if broker_connected is None:
+                broker_connected = _default_cron_broker_connected_platforms()
+            if platform_name.lower() in broker_connected:
+                continue
             return (
                 f"delivery platform '{platform_name}' has no gateway "
-                "credentials configured (not connected). Configure it via "
-                "`hermes setup` or change the job's `deliver` target."
+                "credentials configured (not connected), and no authorized "
+                "default-profile outbound broker is available. Configure it via "
+                "`hermes setup`, enable the default delivery broker, or change "
+                "the job's `deliver` target."
             )
     return None
 

@@ -2486,6 +2486,16 @@ DEFAULT_CONFIG = {
         # with ONE alert (no re-alert every tick) and NO LLM call is made.
         # Set to false to restore the old behavior (fail during the run).
         "preflight": True,
+        # Optional outbound-only delivery broker for multiplexed profiles.
+        # Named profiles keep their messaging credentials isolated, but when
+        # this is explicitly enabled on Default they may hand a finished cron
+        # payload to Default's normal `hermes send` transport. Credentials are
+        # never copied into the specialist process. Fail closed unless both the
+        # switch and an explicit platform allowlist are present. The grant is
+        # platform-wide outbound authority: an allowed specialist cron may send
+        # to any valid target on that platform, so keep this allowlist narrow.
+        "broker_outbound_via_default": False,
+        "broker_outbound_platforms": [],
         # Fail closed when an unpinned job's current global model/provider
         # differs from its creation-time snapshot. This prevents unattended
         # jobs from silently inheriting a paid default. Set to false only when

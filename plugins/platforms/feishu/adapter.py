@@ -304,7 +304,8 @@ FALLBACK_FORWARD_TEXT = "[Merged forward message]"
 FALLBACK_SHARE_CHAT_TEXT = "[Shared chat]"
 FALLBACK_INTERACTIVE_TEXT = "[Interactive message]"
 FALLBACK_IMAGE_TEXT = "[Image]"
-FALLBACK_ATTACHMENT_TEXT = "[Attachment]"
+FALLBACK_ATTACHMENT_TEXT = '[Attachment]'
+FALLBACK_SHARE_LOCATION_TEXT = '[User shared a location]'
 # ---------------------------------------------------------------------------
 # Post/card parsing helpers
 # ---------------------------------------------------------------------------
@@ -910,6 +911,9 @@ def normalize_feishu_message(
         return _normalize_merge_forward_message(payload)
     if normalized_type == "share_chat":
         return _normalize_share_chat_message(payload)
+    if normalized_type in {"location", "share_location"}:
+        return _normalize_share_location_message(payload)
+
     if normalized_type in {"interactive", "card"}:
         return _normalize_interactive_message(normalized_type, payload)
 
@@ -942,6 +946,50 @@ def _normalize_merge_forward_message(payload: Dict[str, Any]) -> FeishuNormalize
         text_content=text_content,
         relation_kind="merge_forward",
         metadata={"entry_count": len(entries), "title": title},
+    )
+
+
+def _normalize_share_location_message(payload: Dict[str, Any]) -> FeishuNormalizedMessage:
+    # Nested unwrap: 部分老 client 用 {"share_location": {...}}
+    if (
+        isinstance(payload, dict)
+        and "share_location" in payload
+        and isinstance(payload.get("share_location"), dict)
+        and not any(k in payload for k in ("longitude", "latitude", "location_name"))
+    ):
+        payload = payload.get("share_location") or {}
+
+    location_name = str(payload.get("location_name") or "").strip()
+    address = str(payload.get("address") or "").strip()
+    try:
+        longitude = float(payload["longitude"]) if payload.get("longitude") is not None else None
+        latitude = float(payload["latitude"]) if payload.get("latitude") is not None else None
+        precision = float(payload["precision"]) if payload.get("precision") is not None else None
+    except (TypeError, ValueError):
+        longitude = latitude = precision = None
+
+    lines = []
+    if location_name or address:
+        lines.append(f"[Shared location] {location_name or address}")
+    if address and address != location_name:
+        lines.append(f"Address: {address}")
+    if longitude is not None and latitude is not None:
+        lines.append(f"Coordinates: longitude={longitude}, latitude={latitude}")
+    if precision is not None:
+        lines.append(f"Precision (m): {precision}")
+    text_content = "\n".join(lines) or FALLBACK_SHARE_LOCATION_TEXT
+
+    return FeishuNormalizedMessage(
+        raw_type="location",
+        text_content=text_content,
+        relation_kind="share_location",
+        metadata={
+            "location_name": location_name,
+            "address": address,
+            "longitude": longitude,
+            "latitude": latitude,
+            "precision": precision,
+        },
     )
 
 

@@ -511,6 +511,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        codex_app_server_network_access: bool = False,
         requested_provider: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
@@ -601,6 +602,7 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            codex_app_server_network_access=codex_app_server_network_access,
         )
 
     def _get_session_db_for_recall(self):

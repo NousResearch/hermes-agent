@@ -192,6 +192,19 @@ MAX_ITERATIONS_SUMMARY_REQUEST = (
     "without calling any more tools."
 )
 _BACKGROUND_PROCESS_NOTIFICATION_PREFIX = "[IMPORTANT: Background process "
+# Sibling notification prefixes the block above did not cover: watch_disabled
+# and watch_overflow_* share the "[IMPORTANT: ...]" wrapper but not the
+# "Background process " text (watch_overflow is a cross-session summary with
+# no single owning process), and async-delegation completions use their own
+# "[ASYNC DELEGATION ...]" wrapper entirely. See
+# tools/process_registry.py's format_process_notification /
+# _format_async_delegation and gateway/run.py's
+# _format_gateway_process_notification for the exact producer text.
+_WATCH_DISABLED_NOTIFICATION_PREFIX = "[IMPORTANT: Watch patterns disabled"
+_WATCH_OVERFLOW_TRIPPED_PREFIX = "[IMPORTANT: Watch-pattern overflow:"
+_WATCH_OVERFLOW_RELEASED_PREFIX = "[IMPORTANT: Watch-pattern notifications resumed"
+_ASYNC_DELEGATION_COMPLETE_PREFIX = "[ASYNC DELEGATION COMPLETE"
+_ASYNC_DELEGATION_BATCH_COMPLETE_PREFIX = "[ASYNC DELEGATION BATCH COMPLETE"
 
 
 def _fresh_compaction_message_copy(msg: Dict[str, Any]) -> Dict[str, Any]:
@@ -5209,9 +5222,32 @@ This compaction should PRIORITISE preserving all information related to the focu
         if cls._has_compressed_summary_metadata(message):
             return True
         content = message.get("content")
+        text = _content_text_for_contains(content).strip()
+        # Async-delegation completions get the same internal=True /
+        # display_kind="internal_notification" stamping as every other
+        # background notification (gateway/run.py stamps it generically), but
+        # unlike watch/background-process bookkeeping they are NOT synthetic
+        # for compaction purposes: _format_async_delegation's own docstring
+        # says the block carries "the complete result summary" — genuine
+        # actionable content a real user turn would also carry. Excluding
+        # them here would let compaction blank out a delegation's actual
+        # result (test_completion_survives_compaction_verbatim_after_blank_echo,
+        # bc4824167d). They're still excluded from *titling*
+        # (title_generator.py), where the boilerplate wrapper text would make
+        # a bad title regardless of the payload.
+        is_async_delegation_notification = text.startswith(
+            _ASYNC_DELEGATION_COMPLETE_PREFIX
+        ) or text.startswith(_ASYNC_DELEGATION_BATCH_COMPLETE_PREFIX)
+        # display_kind survives SessionDB projection (it is a real column,
+        # not stripped underscore-prefixed metadata) and is the authoritative
+        # marker for background-process notifications persisted via
+        # gateway/run.py's internal-turn stamping. Checked narrowly for this
+        # one kind so model_switch/personality_switch markers (handled by
+        # their own dedicated recognizers) are unaffected.
+        if message.get("display_kind") == "internal_notification" and not is_async_delegation_notification:
+            return True
         if cls._is_context_summary_content(content):
             return True
-        text = _content_text_for_contains(content).strip()
         # Sibling recovery nudges from agent.conversation_loop's retry loop:
         # same "ephemeral scaffolding, not a real human turn" class as the
         # markers above (see _CODEX_INCOMPLETE_NUDGE's own docstring there),
@@ -5239,6 +5275,12 @@ This compaction should PRIORITISE preserving all information related to the focu
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         } or text.startswith(
             _BACKGROUND_PROCESS_NOTIFICATION_PREFIX
+        ) or text.startswith(
+            _WATCH_DISABLED_NOTIFICATION_PREFIX
+        ) or text.startswith(
+            _WATCH_OVERFLOW_TRIPPED_PREFIX
+        ) or text.startswith(
+            _WATCH_OVERFLOW_RELEASED_PREFIX
         ) or text.startswith(
             TODO_INJECTION_HEADER + "\n"
         ) or text.startswith(

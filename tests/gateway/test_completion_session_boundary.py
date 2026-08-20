@@ -16,6 +16,7 @@ Unstamped legacy events keep today's deliver-always behavior.
 
 import asyncio
 import json
+import queue
 from collections import OrderedDict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -297,6 +298,117 @@ def test_async_delegation_gate_unchanged():
 
     assert result is None
     adapter.handle_message.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Watch events (watch_match / watch_disabled) get the same boundary gate
+# ---------------------------------------------------------------------------
+#
+# watch_match/watch_disabled historically bypassed _classify_completion_target
+# entirely — _drain_watch_notifications called _inject_watch_notification
+# directly, so a watch pattern match from a process spawned in session A
+# could still land in session B's chat after /new. This mirrors the
+# completion-type fix above for the watch-event family.
+
+def _watch_match_evt(parent_session_id=None, session_id="proc_watch"):
+    evt = {
+        "type": "watch_match",
+        "session_id": session_id,
+        "session_key": "agent:main:telegram:dm:123",
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "123",
+        "command": "tail -f app.log",
+        "pattern": "ERROR",
+        "output": "ERROR: something broke",
+        "suppressed": 0,
+    }
+    if parent_session_id is not None:
+        evt["parent_session_id"] = parent_session_id
+    return evt
+
+
+def _drain(monkeypatch, runner, evt):
+    q = queue.Queue()
+    q.put(evt)
+    monkeypatch.setattr(runner, "_load_background_notifications_mode", lambda: "concise")
+    asyncio.run(runner._drain_watch_notifications(q))
+
+
+def test_watch_match_from_user_closed_session_is_dropped(monkeypatch):
+    """/new closed the spawning session -> the stamped watch_match must NOT
+    land in the chat's new session."""
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(
+        adapter,
+        session_db=_SessionDB(
+            {"ended_at": 1786288000.0, "end_reason": "session_reset"}
+        ),
+    )
+
+    _drain(monkeypatch, runner, _watch_match_evt("sess-closed"))
+
+    adapter.handle_message.assert_not_awaited()
+
+
+def test_watch_match_from_live_session_delivers(monkeypatch):
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter, session_db=_SessionDB({"ended_at": None}))
+
+    _drain(monkeypatch, runner, _watch_match_evt("sess-live"))
+
+    adapter.handle_message.assert_awaited_once()
+
+
+def test_watch_disabled_from_user_closed_session_is_dropped(monkeypatch):
+    """The watch_disabled summary event carries the same stamp and must be
+    dropped by the same boundary check as watch_match."""
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(
+        adapter,
+        session_db=_SessionDB(
+            {"ended_at": 1786288000.0, "end_reason": "session_reset"}
+        ),
+    )
+    evt = {
+        "type": "watch_disabled",
+        "session_id": "proc_watch",
+        "session_key": "agent:main:telegram:dm:123",
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "123",
+        "suppressed": 3,
+        "message": "Watch patterns disabled for process proc_watch — 5 consecutive rate-limit windows triggered.",
+        "parent_session_id": "sess-closed",
+    }
+
+    _drain(monkeypatch, runner, evt)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+def test_unstamped_watch_match_delivers(monkeypatch):
+    """Legacy/global events without parent_session_id (e.g. the overflow
+    events, which have no single owning session) keep delivering
+    unconditionally, exactly like unstamped completion events do."""
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter, session_db=_SessionDB(None))
+
+    _drain(monkeypatch, runner, _watch_match_evt(None))
+
+    adapter.handle_message.assert_awaited_once()
+
+
+def test_watch_match_retry_verdict_still_delivers(monkeypatch):
+    """Watch events have no watcher to re-poll them, unlike completions —
+    a transient retry verdict must fail open and deliver rather than lose
+    the match outright."""
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter, session_db=None)  # no session_db -> "retry"
+
+    _drain(monkeypatch, runner, _watch_match_evt("sess-uncertain"))
+
+    adapter.handle_message.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

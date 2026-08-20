@@ -365,3 +365,68 @@ class TestOverflowNotificationFormatting:
         out = format_process_notification(evt)
         assert "notifications resumed" in out
         assert "exit code" not in out
+
+
+class TestWatchDisabledSubagentAttribution:
+    """watch_disabled is a single-session, single-process event — same shape
+    as its watch_match sibling (session.id, session.command) — that fires
+    when a background process a subagent started trips WATCH_STRIKE_LIMIT.
+    Without task_id (and the formatter using it), the parent conversation
+    sees "Watch patterns disabled for process ..." with no hint it came from
+    a delegation, unlike watch_match, which already carries this."""
+
+    def test_watch_disabled_event_carries_task_id(self, registry):
+        s = _make_session(task_id="sa-0-watchdis1", watch_patterns=["E"])
+        # Simulate WATCH_STRIKE_LIMIT - 1 strikes already accumulated across
+        # prior cooldown windows, so this one drop trips the limit and emits
+        # watch_disabled without needing to wait out multiple real windows.
+        s._watch_consecutive_strikes = WATCH_STRIKE_LIMIT - 1
+        s._watch_cooldown_until = time.time() + 100
+        registry._check_watch_patterns(s, "E hit\n")
+
+        evt = None
+        while not registry.completion_queue.empty():
+            candidate = registry.completion_queue.get_nowait()
+            if candidate.get("type") == "watch_disabled":
+                evt = candidate
+        assert evt is not None
+        assert evt["task_id"] == "sa-0-watchdis1"
+
+    def test_watch_disabled_formats_without_attribution_for_parent_owned_process(self):
+        from tools.process_registry import format_process_notification
+
+        evt = {
+            "type": "watch_disabled",
+            "session_id": "proc_parent1",
+            "task_id": "t1",
+            "message": "Watch patterns disabled for process proc_parent1 — 3 consecutive rate-limit windows triggered.",
+        }
+        out = format_process_notification(evt)
+        assert "Watch patterns disabled" in out
+        assert "Started by subagent" not in out
+
+    def test_watch_disabled_formats_with_subagent_attribution(self):
+        from tools.delegate_tool import _register_subagent, _unregister_subagent
+        from tools.process_registry import format_process_notification
+
+        sid = "sa-0-watchdisfmt1"
+        _register_subagent({
+            "subagent_id": sid,
+            "goal": "tail the deploy log for errors",
+            "delegation_id": "deleg_watchdis1",
+        })
+        try:
+            evt = {
+                "type": "watch_disabled",
+                "session_id": "proc_child1",
+                "task_id": sid,
+                "message": "Watch patterns disabled for process proc_child1 — 3 consecutive rate-limit windows triggered.",
+            }
+            out = format_process_notification(evt)
+        finally:
+            _unregister_subagent(sid)
+
+        assert "Watch patterns disabled" in out
+        assert f"Started by subagent {sid}" in out
+        assert "of delegation deleg_watchdis1" in out
+        assert "tail the deploy log for errors" in out

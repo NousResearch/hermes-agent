@@ -597,3 +597,74 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+
+class TestInternalNotificationNotTitleable:
+    """Background-process/async-delegation notifications (display_kind=
+    'internal_notification', #82888) must not title a session either — same
+    "machinery persisted under role=user" class as the model-switch marker
+    above, previously unrecognized by both the display_kind check in
+    _is_real_user_turn and the text-prefix list in _MACHINE_PREFIXES.
+    """
+
+    def test_is_real_user_turn_false_for_internal_notification_display_kind(self):
+        """The structural display_kind marker is authoritative, independent
+        of the message text — proven with unrelated-looking content."""
+        from agent.title_generator import _is_real_user_turn
+
+        assert not _is_real_user_turn(
+            {
+                "role": "user",
+                "content": "fix the login button",
+                "display_kind": "internal_notification",
+            }
+        )
+
+    def test_ordinary_user_turn_with_no_display_kind_still_counts(self):
+        from agent.title_generator import _is_real_user_turn
+
+        assert _is_real_user_turn(
+            {"role": "user", "content": "fix the login button"}
+        )
+
+    @pytest.mark.parametrize(
+        "opener",
+        [
+            "[IMPORTANT: Background process proc_1 matched watch pattern "
+            '"ERROR".\nCommand: tail -f app.log\nMatched output:\nERROR: boom]',
+            "[IMPORTANT: Watch patterns disabled for process proc_1 — 5 "
+            "consecutive rate-limit windows triggered (min spacing 30s). "
+            "Falling back to notify_on_complete semantics; you'll get "
+            "exactly one notification when the process exits.]",
+            "[IMPORTANT: Watch-pattern overflow: >40 notifications in 60s "
+            "across all processes. Suppressing further watch_match events "
+            "for 120s.]",
+            "[IMPORTANT: Watch-pattern notifications resumed. 12 match "
+            "event(s) were suppressed during the flood.]",
+            "[ASYNC DELEGATION COMPLETE — deleg-1]\nA background subagent "
+            "you dispatched earlier has finished.",
+            "[ASYNC DELEGATION BATCH COMPLETE — deleg-2]\nA background "
+            "fan-out of 3 subagent(s) you dispatched earlier has finished.",
+        ],
+    )
+    def test_notification_openers_are_not_titleable(self, opener):
+        """A session whose very first persisted turn is one of these
+        notifications (no display_kind available to the raw-string callers)
+        must still not be titled from it."""
+        from agent.title_generator import is_titleable_user_message
+
+        assert is_titleable_user_message(opener) is False
+
+    def test_skips_watch_match_opening_message(self, tmp_path):
+        """End-to-end: maybe_auto_title must not name a session after a
+        watch_match notification that happens to be its opening turn."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        opener = (
+            '[IMPORTANT: Background process proc_1 matched watch pattern "ERROR".\n'
+            "Command: tail -f app.log\nMatched output:\nERROR: boom]"
+        )
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", opener, [])
+        assert db.get_session_title("sess-1") is None
+        mock_auto.assert_not_called()

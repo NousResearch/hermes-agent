@@ -3845,9 +3845,22 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
     _cmd = evt.get("command", "unknown")
+    # Subagent-owned watch events reach a gateway session anonymously without
+    # this — same "Started by subagent ..." provenance line the shared
+    # formatter in tools/process_registry.py already attaches. Computed here
+    # too (not delegated wholesale) so this branch keeps its own gateway-
+    # specific _redact_gateway_user_facing_secrets floor rather than silently
+    # swapping to the shared formatter's redactor.
+    from tools.process_registry import _delegation_attribution_line
+
+    _attribution = _delegation_attribution_line(evt)
 
     if evt_type == "watch_disabled":
-        return f"[IMPORTANT: {evt.get('message', '')}]"
+        text = f"[IMPORTANT: {evt.get('message', '')}"
+        if _attribution:
+            text += f"\n{_attribution}"
+        text += "]"
+        return text
 
     # Overflow events carry their human-readable summary in `message`,
     # like watch_disabled — see the shared formatter in
@@ -3857,12 +3870,23 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
 
     if evt_type == "watch_match":
         _pat = evt.get("pattern", "?")
-        _out = evt.get("output", "")
+        # The producer-side redaction in _check_watch_patterns respects
+        # security.redact_secrets (deliberately configurable). This event
+        # goes straight to the platform adapter like a completion
+        # notification does, so apply the same unconditional gateway floor
+        # here as defence in depth (matches the reasoning in
+        # _format_coalesced_process_completions / _run_process_watcher).
+        _out = _redact_gateway_user_facing_secrets(str(evt.get("output", "")))
+        _match_cmd = _redact_gateway_user_facing_secrets(str(_cmd))
         _sup = evt.get("suppressed", 0)
         text = (
             f"[IMPORTANT: Background process {_sid} matched "
             f"watch pattern \"{_pat}\".\n"
-            f"Command: {_cmd}\n"
+        )
+        if _attribution:
+            text += f"{_attribution}\n"
+        text += (
+            f"Command: {_match_cmd}\n"
             f"Matched output:\n{_out}"
         )
         if _sup:
@@ -24905,6 +24929,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         for evt in watch_events:
+            # Same spawning-session-boundary pre-flight completion/
+            # async_delegation events get in _deliver_completion_notification
+            # (#70300): a stamped parent_session_id that resolves to a
+            # permanently-gone session (explicit /new boundary) means this
+            # event's own conversation is dead, so route the notification
+            # nowhere rather than injecting it into whatever session now
+            # occupies the same session_key. Unstamped (legacy/global
+            # overflow) events have no single owning session and keep
+            # delivering unconditionally, matching completion's own
+            # unstamped-event fallback.
+            parent_session_id = str(evt.get("parent_session_id") or "").strip()
+            if parent_session_id:
+                verdict = await self._classify_completion_target(parent_session_id)
+                if verdict == "terminal":
+                    logger.warning(
+                        "Watch notification for process %s targets "
+                        "permanently-gone session %s (user boundary such as "
+                        "/new); dropping notification.",
+                        evt.get("session_id") or "<unknown>", parent_session_id,
+                    )
+                    continue
+                # "retry" is a narrow, transient uncertainty (session DB
+                # unavailable, or a compression rotation caught mid-flight).
+                # Watch events have no watcher to re-poll them later — unlike
+                # completion notifications, this is the only chance to
+                # deliver — so fail open and inject rather than losing the
+                # match outright.
             synth_text = _format_gateway_process_notification(evt)
             if not synth_text:
                 continue

@@ -150,6 +150,20 @@ _MACHINE_PREFIXES = (
     # actual question. Keep in sync with
     # tui_gateway.server._MODEL_SWITCH_MARKER_PREFIX.
     "[System: The active model for this chat has changed to ",
+    # Background-process and async-delegation notifications injected via
+    # gateway/run.py's _inject_watch_notification (display_kind is the
+    # primary recognizer for these — see _is_real_user_turn — but callers
+    # here only have the opening message's raw text, e.g. a session whose
+    # very first persisted turn is a notification with no prior human ask).
+    # Text formats: tools/process_registry.py's format_process_notification /
+    # gateway/run.py's _format_gateway_process_notification and
+    # _format_async_delegation.
+    "[IMPORTANT: Background process ",
+    "[IMPORTANT: Watch patterns disabled",
+    "[IMPORTANT: Watch-pattern overflow:",
+    "[IMPORTANT: Watch-pattern notifications resumed",
+    "[ASYNC DELEGATION COMPLETE",
+    "[ASYNC DELEGATION BATCH COMPLETE",
 )
 
 
@@ -669,6 +683,14 @@ def _is_real_user_turn(message: Any) -> bool:
     login" counts as the real question it is.
     """
     if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    # display_kind is the authoritative, structural marker for background-
+    # process/async-delegation notifications persisted via gateway/run.py's
+    # internal-turn stamping (#82888) — checked directly here since this
+    # function (unlike is_titleable_user_message) has the full message dict.
+    # Narrow to this one kind so model_switch's own dedicated _MACHINE_PREFIXES
+    # entry is unaffected.
+    if message.get("display_kind") == "internal_notification":
         return False
     content = message.get("content")
 

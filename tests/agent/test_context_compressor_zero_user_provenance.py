@@ -261,6 +261,41 @@ def test_real_task_wins_over_trailing_max_iterations_nudge(compressor):
             },
             id="watch_match",
         ),
+        pytest.param(
+            {
+                "type": "watch_disabled",
+                "session_id": "proc_server",
+                "message": (
+                    "Watch patterns disabled for process proc_server — 5 "
+                    "consecutive rate-limit windows triggered (min spacing "
+                    "30s). Falling back to notify_on_complete semantics; "
+                    "you'll get exactly one notification when the process "
+                    "exits."
+                ),
+            },
+            id="watch_disabled",
+        ),
+        pytest.param(
+            {
+                "type": "watch_overflow_tripped",
+                "message": (
+                    "Watch-pattern overflow: >40 notifications in 60s "
+                    "across all processes. Suppressing further watch_match "
+                    "events for 120s."
+                ),
+            },
+            id="watch_overflow_tripped",
+        ),
+        pytest.param(
+            {
+                "type": "watch_overflow_released",
+                "message": (
+                    "Watch-pattern notifications resumed. 12 match "
+                    "event(s) were suppressed during the flood."
+                ),
+            },
+            id="watch_overflow_released",
+        ),
     ],
 )
 def test_background_process_notifications_do_not_become_compaction_anchors(
@@ -282,6 +317,57 @@ def test_background_process_notifications_do_not_become_compaction_anchors(
         "Recent user focus:\n- Refactor the auth module and add tests."
     )
     assert compressor._find_last_user_message_idx(messages, head_end=0) == 0
+
+
+def test_internal_notification_display_kind_is_synthetic_regardless_of_text():
+    """gateway/run.py stamps display_kind='internal_notification' on these
+    rows at persist time (#82888). That structural marker must be recognized
+    on its own, independent of the text-prefix matching above — proven with
+    unrelated-looking content."""
+    tagged = {
+        "role": "user",
+        "content": "some future notification wording we haven't seen yet",
+        "display_kind": "internal_notification",
+    }
+    assert ContextCompressor._is_synthetic_compression_user_turn(tagged) is True
+
+    untagged = {
+        "role": "user",
+        "content": "some future notification wording we haven't seen yet",
+    }
+    assert ContextCompressor._is_synthetic_compression_user_turn(untagged) is False
+
+
+@pytest.mark.parametrize(
+    "notification_text",
+    [
+        pytest.param(
+            "[ASYNC DELEGATION COMPLETE — deleg-1]\nOriginal goal: fix the flaky "
+            "test\n\nResult: found the race condition in session setup.",
+            id="single",
+        ),
+        pytest.param(
+            "[ASYNC DELEGATION BATCH COMPLETE — deleg-2]\nA background fan-out "
+            "finished.\n\n--- ✓ TASK 1/1: fix the flaky test "
+            "(status=completed) ---\nfound the race condition in session setup.",
+            id="batch",
+        ),
+    ],
+)
+def test_async_delegation_completion_is_not_synthetic(notification_text):
+    """Unlike watch/background-process bookkeeping, an async-delegation
+    completion carries a real result (format_process_notification's own
+    docstring: "the complete result summary") and must remain eligible as a
+    compaction anchor — regression guard for the conflict this exact prefix
+    check caused with test_completion_survives_compaction_verbatim_after_blank_echo
+    (bc4824167d) the first time it was added."""
+    # Real production rows get display_kind stamped alongside the text
+    # (gateway/run.py, #82888); both must be tolerated.
+    for message in (
+        {"role": "user", "content": notification_text},
+        {"role": "user", "content": notification_text, "display_kind": "internal_notification"},
+    ):
+        assert ContextCompressor._is_synthetic_compression_user_turn(message) is False
 
 
 @pytest.mark.parametrize(

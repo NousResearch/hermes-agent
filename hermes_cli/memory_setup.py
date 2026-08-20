@@ -38,7 +38,7 @@ def _provider_pip_dependencies(provider_name: str, declared: list) -> list:
             cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
             mode = cfg.get("mode", "")
             # "local" is a legacy alias for "local_embedded"
-            if mode in {"local", "local_embedded"}:
+            if mode in {"local", "local_embedded", "local_external"}:
                 deps.append("hindsight-all")
         except Exception:
             pass

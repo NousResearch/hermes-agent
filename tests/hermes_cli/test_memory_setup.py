@@ -67,6 +67,17 @@ def test_write_env_vars_strips_line_separators_and_nul(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_hindsight_local_external_expands_to_hindsight_all(tmp_path, monkeypatch):
+    config_path = tmp_path / "hindsight" / "config.json"
+    config_path.parent.mkdir()
+    config_path.write_text("{\"mode\": \"local_external\"}", encoding="utf-8")
+    monkeypatch.setattr(memory_setup, "get_hermes_home", lambda: tmp_path)
+
+    dependencies = memory_setup._provider_pip_dependencies(
+        "hindsight", ["hindsight-client==0.6.1"]
+    )
+
+    assert dependencies == ["hindsight-client==0.6.1", "hindsight-all"]
 
 
 

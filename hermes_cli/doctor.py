@@ -2967,9 +2967,30 @@ def run_doctor(args):
             from plugins.memory.mem0 import _load_config as _load_mem0_config
             mem0_cfg = _load_mem0_config()
             mem0_key = mem0_cfg.get("api_key", "")
+            mem0_mode = mem0_cfg.get("mode", "platform")
             if mem0_key:
                 check_ok("Mem0 API key configured")
                 check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
+            elif mem0_mode == "oss":
+                _oss_cfg = mem0_cfg.get("oss") or {}
+                _oss_llm = (_oss_cfg.get("llm") or {}).get("provider", "?")
+                _oss_embedder = (_oss_cfg.get("embedder") or {}).get("provider", "?")
+                _oss_vector_store = (_oss_cfg.get("vector_store") or {}).get("provider", "?")
+                if _oss_cfg.get("vector_store"):
+                    check_ok(
+                        "Mem0 OSS (self-hosted) configured",
+                        f"llm={_oss_llm} embedder={_oss_embedder} "
+                        f"vector_store={_oss_vector_store} (no API key needed)",
+                    )
+                else:
+                    _fail_and_issue(
+                        "Mem0 OSS mode set but vector store not configured",
+                        "run: hermes memory setup",
+                        "Mem0 is in OSS mode but the OSS vector store is not configured",
+                        issues,
+                    )
+            elif mem0_cfg.get("host"):
+                check_ok("Mem0 self-hosted (HTTP) configured", f"host={mem0_cfg.get('host')}")
             else:
                 _fail_and_issue(
                     "Mem0 API key not set",

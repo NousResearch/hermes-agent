@@ -247,9 +247,9 @@ class TestDoctorMemoryProviderSection:
         (home / "config.yaml").write_text(yaml.dump(config))
         return home
 
-    def _run_doctor_and_capture(self, monkeypatch, tmp_path, provider=""):
+    def _run_doctor_and_capture(self, monkeypatch, tmp_path, provider="", home=None):
         """Run doctor and capture stdout."""
-        home = self._make_hermes_home(tmp_path, provider)
+        home = home or self._make_hermes_home(tmp_path, provider)
         monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
         monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
         monkeypatch.setattr(doctor_mod, "_DHH", str(home))
@@ -292,6 +292,41 @@ class TestDoctorMemoryProviderSection:
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
         assert "Memory Provider" in out
         assert "Built-in memory active" not in out
+
+    def test_mem0_oss_mode_without_api_key_shows_ok(self, monkeypatch, tmp_path):
+        # OSS (self-hosted) mode needs no API key — doctor must not flag it.
+        home = self._make_hermes_home(tmp_path, provider="mem0")
+        import json
+        (home / "mem0.json").write_text(json.dumps({
+            "mode": "oss",
+            "oss": {
+                "llm": {"provider": "ollama", "config": {"model": "qwen3:4b"}},
+                "embedder": {"provider": "ollama", "config": {"model": "nomic-embed-text"}},
+                "vector_store": {"provider": "qdrant", "config": {"path": str(tmp_path / "qdrant")}},
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0", home=home)
+        assert "Memory Provider" in out
+        assert "Mem0 OSS (self-hosted) configured" in out
+        assert "API key is missing" not in out
+
+    def test_mem0_oss_mode_without_vector_store_fails(self, monkeypatch, tmp_path):
+        # OSS mode with an incomplete config is still a real issue.
+        home = self._make_hermes_home(tmp_path, provider="mem0")
+        import json
+        (home / "mem0.json").write_text(json.dumps({"mode": "oss", "oss": {}}))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0", home=home)
+        assert "vector store not configured" in out
+
+    def test_mem0_platform_mode_without_api_key_still_fails(self, monkeypatch, tmp_path):
+        # Platform (cloud) mode without an API key must still be flagged.
+        home = self._make_hermes_home(tmp_path, provider="mem0")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0", home=home)
+        assert "Mem0 API key not set" in out
+        assert "API key is missing" in out
 
 
 def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkeypatch, tmp_path):

@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+"""fzf-based input history picker for Ctrl+R in the CLI.
+
+Reads from the prompt_toolkit FileHistory file (~/.hermes/.hermes_history),
+which is written synchronously on every input submission — no DB lag issues.
+
+On selection, the chosen text is returned for insertion into the input buffer.
+No relaunch needed — just a buffer.text assignment.
+
+Uses subprocess.call() with stdin from temp file so fzf gets direct /dev/tty
+access for its interactive TUI on all platforms.
+"""
+
+import os
+import shutil
+import subprocess
+import tempfile
+
+
+def _history_file_path():
+    """Resolve the .hermes_history path for the current profile."""
+    try:
+        from hermes_constants import get_hermes_home
+        return os.path.join(get_hermes_home(), ".hermes_history")
+    except Exception:
+        return os.path.expanduser("~/.hermes/.hermes_history")
+
+
+def parse_history(filepath, limit=2000):
+    """Parse prompt_toolkit FileHistory format into (timestamp, text) tuples.
+
+    Format:
+        # 2026-04-10 19:41:03.572755
+        +first line of input
+        +second line of input
+        <blank line>
+
+    Returns list of (timestamp_str, text) tuples, newest-first, deduplicated.
+    """
+    entries = []
+    current_ts = ""
+    current_lines = []
+
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if line.startswith("# "):
+                    if current_lines:
+                        entries.append((current_ts, "\n".join(current_lines)))
+                    current_ts = line[2:]
+                    current_lines = []
+                elif line.startswith("+"):
+                    current_lines.append(line[1:])
+                elif line == "":
+                    if current_lines:
+                        entries.append((current_ts, "\n".join(current_lines)))
+                    current_ts = ""
+                    current_lines = []
+            if current_lines:
+                entries.append((current_ts, "\n".join(current_lines)))
+    except FileNotFoundError:
+        return []
+
+    entries.reverse()
+
+    seen = set()
+    result = []
+    for ts, text in entries:
+        key = text.strip()
+        if key and key not in seen:
+            seen.add(key)
+            result.append((ts, key))
+        if len(result) >= limit:
+            break
+
+    return result
+
+
+def _format_ts(raw_ts):
+    """Format raw timestamp for display. '2026-04-10 19:41:03.572755' -> '04-10 19:41'"""
+    if not raw_ts:
+        return "??-?? ??:??"
+    try:
+        parts = raw_ts.split()
+        if len(parts) >= 2:
+            date_part = parts[0]
+            time_part = parts[1]
+            mm_dd = date_part[5:]
+            hh_mm = time_part[:5]
+            return f"{mm_dd} {hh_mm}"
+        return raw_ts[:11]
+    except Exception:
+        return raw_ts[:11]
+
+
+def fzf_history_picker(items):
+    """Launch fzf to search through past user inputs.
+
+    Parameters
+    ----------
+    items : list[(str, str)]
+        (timestamp, text) tuples, newest-first.
+
+    Returns
+    -------
+    str or None
+        The selected text, or None if cancelled / fzf unavailable.
+
+    Each entry is assigned an opaque integer ID that is written as the
+    first tab-delimited field in fzf's input.  ``--with-nth=2..`` hides
+    the ID from the display while ``--nth=2..`` restricts the search to
+    the visible text.  fzf's stdout always returns the **full** original
+    line, so we split on the first tab to recover the ID and map it
+    directly back to the entry — no prefix/heuristic matching, which
+    avoids collisions between distinct inputs that share a long common
+    prefix or differ only in whitespace collapsing.
+    """
+    if not items:
+        return None
+
+    if not shutil.which("fzf"):
+        return None
+
+    # Build an opaque-ID → original-text lookup table.
+    id_to_text = {}
+
+    # Write items to a temp file — fzf reads from this via stdin.
+    # stdout/stderr are NOT redirected so fzf can access /dev/tty
+    # directly for its interactive TUI.
+    fd, input_path = tempfile.mkstemp(suffix=".fzf-in")
+    os.close(fd)
+
+    try:
+        with open(input_path, "w", encoding="utf-8") as f:
+            for idx, (ts, text) in enumerate(items):
+                id_to_text[idx] = text
+                display = " ".join(text.split())
+                if len(display) > 200:
+                    display = display[:197] + "..."
+                # First field is the opaque ID; fzf hides it via --with-nth
+                # but still echoes the full line (including the ID) on stdout.
+                f.write(f"{idx}\t{_format_ts(ts)}  {display}\n")
+
+        fzf_cmd = [
+            "fzf",
+            "--ansi", "--no-multi",
+            "--height=60%", "--layout=reverse",
+            "--prompt=History> ",
+            "--preview-window=hidden",
+            "--bind=ctrl-y:accept",
+            "--header=Enter insert | Esc cancel",
+            "--exact",
+            "--tiebreak=begin,length",
+            "--delimiter=\t",
+            "--with-nth=2..",
+            # NOTE: --nth=2.. was removed because fzf 0.52.1 silently breaks
+            # matching (rc=1, zero results) when --with-nth and --nth are
+            # used together.  --with-nth=2.. alone hides the ID from display
+            # and fzf still won't search the hidden field in practice (the ID
+            # is a bare integer that won't collide with history text).
+        ]
+
+        # fzf uses stderr for its interactive TUI (/dev/tty),
+        # stdout for the selected result.  We must NOT redirect stderr.
+        with open(input_path, "r", encoding="utf-8") as f_in:
+            proc = subprocess.run(
+                fzf_cmd,
+                stdin=f_in,
+                stdout=subprocess.PIPE,
+                stderr=None,  # let fzf use the terminal for its UI
+                text=True,
+            )
+
+        if proc.returncode != 0:
+            import logging
+            logging.getLogger("hermes.fzf").debug(
+                "fzf_history_picker: fzf exited with returncode=%d, stdout=%r",
+                proc.returncode, proc.stdout[:200] if proc.stdout else None
+            )
+            return None
+
+        selected = proc.stdout.strip()
+        if not selected:
+            import logging
+            logging.getLogger("hermes.fzf").debug(
+                "fzf_history_picker: fzf stdout was empty after strip"
+            )
+            return None
+
+        # The first tab-delimited field is the opaque ID; everything
+        # after it is display-only.  Parse the ID and look up the
+        # original text directly — no prefix matching involved.
+        id_str, _, _rest = selected.partition("\t")
+        try:
+            entry_id = int(id_str)
+        except ValueError:
+            import logging
+            logging.getLogger("hermes.fzf").debug(
+                "fzf_history_picker: could not parse ID from %r", id_str[:50]
+            )
+            return None
+
+        if entry_id in id_to_text:
+            return id_to_text[entry_id]
+
+        import logging
+        logging.getLogger("hermes.fzf").debug(
+            "fzf_history_picker: ID %d not in lookup table (size=%d)",
+            entry_id, len(id_to_text)
+        )
+        return None
+
+    except Exception as e:
+        import logging
+        logging.getLogger("hermes.fzf").debug(
+            "fzf_history_picker: caught exception: %s: %s", type(e).__name__, e
+        )
+        return None
+
+    finally:
+        try:
+            os.unlink(input_path)
+        except OSError:
+            pass

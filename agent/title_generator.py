@@ -167,8 +167,22 @@ def _title_language() -> str:
         return ""
 
 
+# Mirror of utils.TRUTHY_STRINGS for the opposite side. `is_truthy_value`
+# answers "is this truthy?", which collapses "explicitly off" and "not a value
+# I recognise" into the same False — fine for an env var, wrong for a config
+# knob whose default is on (see _auto_title_enabled).
+_FALSY_STRINGS = frozenset({"0", "false", "no", "off"})
+
+
 def _auto_title_enabled() -> bool:
-    """Return whether automatic session title generation is enabled."""
+    """Return whether automatic session title generation is enabled.
+
+    Only a value that actually says "off" disables titling. An unrecognised
+    value keeps the documented default (on) and warns: ``enabled: ture`` is
+    YAML for the string "ture", so a user typo made while trying to *enable*
+    titling would otherwise turn it off silently, for as long as it goes
+    unnoticed.
+    """
     try:
         # Lazy imports, matching _title_language(): title_generator is imported
         # from agent code paths where a module-level hermes_cli import risks
@@ -178,7 +192,19 @@ def _auto_title_enabled() -> bool:
 
         config = load_config_readonly()
         title_config = (config.get("auxiliary") or {}).get("title_generation") or {}
-        return is_truthy_value(title_config.get("enabled"), default=True)
+        raw = title_config.get("enabled")
+        if isinstance(raw, str):
+            token = raw.strip().lower()
+            from utils import TRUTHY_STRINGS
+
+            if token not in TRUTHY_STRINGS and token not in _FALSY_STRINGS:
+                logger.warning(
+                    "Ignoring unrecognised auxiliary.title_generation.enabled=%r; "
+                    "auto-title stays on. Use true or false.",
+                    raw,
+                )
+                return True
+        return is_truthy_value(raw, default=True)
     except Exception:
         logger.debug("Failed to read title_generation.enabled", exc_info=True)
         return True

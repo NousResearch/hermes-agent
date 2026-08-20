@@ -29,6 +29,7 @@ SELF_PUBKEY = "9fd5c7ba6d3ef224da78f541e0fcb9c50f72cc63edb19aae76ac6a0474dfa860"
 # BIP-340 test vector 0 private key
 TEST_PRIVATE_KEY = "00" * 31 + "03"
 CHANNEL = "ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd"
+DM_CHANNEL = "6468cc16-a114-4f23-8b8c-02c1655cbf6b"
 
 
 def _make_adapter(extra=None):
@@ -102,6 +103,30 @@ class _FakeWebSocket:
 
     async def send(self, raw):
         self.sent.append(json.loads(raw))
+
+
+@pytest.mark.asyncio
+async def test_new_dm_is_discovered_and_subscribed_from_beginning():
+    adapter = _make_adapter()
+    adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 100, "seen": {}}
+    websocket = _FakeWebSocket()
+    subscriptions = {"hermes-buzz-0": CHANNEL}
+
+    async def discover(*, seed):
+        assert seed is False
+        adapter._channel_state[DM_CHANNEL] = {
+            "chat_type": "dm",
+            "last_ts": 0,
+            "seen": {},
+        }
+
+    adapter._discover_dms = discover
+    await adapter._discover_and_subscribe_dms(websocket, subscriptions)
+
+    assert subscriptions["hermes-buzz-dm-1"] == DM_CHANNEL
+    dm_request = next(item for item in websocket.sent if item[0] == "REQ" and item[1] == "hermes-buzz-dm-1")
+    assert dm_request[2]["#h"] == [DM_CHANNEL]
+    assert dm_request[2]["since"] == 0
 
 
 @pytest.mark.asyncio

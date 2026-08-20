@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from agent.skill_utils import is_excluded_skill_path
 
 REPO = Path(__file__).resolve().parent.parent.parent
 DOCS = REPO / "website" / "docs"
@@ -453,6 +454,8 @@ def discover_skills() -> list[tuple[dict[str, Any], dict[str, Any]]]:
     results: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for kind, source_dir in SKILL_SOURCES:
         for skill_md in sorted(source_dir.rglob("SKILL.md")):
+            if is_excluded_skill_path(skill_md):
+                continue
             meta = derive_skill_meta(skill_md, source_dir, kind)
             parsed = parse_skill_md(skill_md)
             results.append((meta, parsed))

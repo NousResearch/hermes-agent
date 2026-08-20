@@ -3761,14 +3761,33 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
     # ~500px is roughly half a viewport of travel.
     _SCROLL_PIXELS = 500
 
+    # Camofox's own default is also 500px per request, and the old loop issued
+    # five of them; keep that total travel in the single request below.
+    _CAMOFOX_SCROLL_NOTCHES = 5
+
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_scroll
-        # Camofox REST API doesn't support pixel args; use repeated calls
-        _SCROLL_REPEATS = 5
-        result = None
-        for _ in range(_SCROLL_REPEATS):
-            result = camofox_scroll(direction, task_id)
-        return result
+        # This used to be `for _ in range(5): result = camofox_scroll(...)`, on
+        # the belief that the camofox REST API took no pixel argument. It does --
+        # its POST /tabs/:id/scroll destructures `amount` -- so the loop bought
+        # nothing and cost three things:
+        #   * five HTTP round trips per tool call, each able to block for
+        #     camofox's full 30s handler timeout, so one "scroll down" could
+        #     take 150s;
+        #   * intermediate results were overwritten, so a failure anywhere but
+        #     the last iteration was reported as success, and a success after a
+        #     failure hid the failure;
+        #   * no early exit, so it kept scrolling after a request had already
+        #     failed.
+        # Observed in the wild: 79.5s of wall clock for one scroll, containing
+        # two 500s, one of them masked.
+        # The distance is preserved deliberately -- five wheel notches at
+        # camofox's 500px default -- so agents that scroll N times to reach
+        # content behave as before rather than suddenly needing five times as
+        # many calls.
+        return camofox_scroll(
+            direction, task_id, amount=_SCROLL_PIXELS * _CAMOFOX_SCROLL_NOTCHES
+        )
 
     effective_task_id = _last_session_key(task_id or "default")
 

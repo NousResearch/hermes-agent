@@ -28621,9 +28621,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
 
-def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
+        def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
             if not progress_queue or not _run_still_current():
+                return
+
+            # Todo checklist: on tool.completed, render todo results as an
+            # editable checklist in the progress message bubble.  Must run
+            # BEFORE the onboarding early-return below so it is not blocked
+            # by that handler's blanket return for tool.completed events.
+            if event_type == "tool.completed" and tool_name == "todo":
+                try:
+                    progress_queue.put(_render_todo_checklist(kwargs.get("result", "")))
+                except Exception:
+                    logger.debug("Failed to render todo checklist", exc_info=True)
                 return
 
             # First-touch onboarding: the first time a tool takes longer than
@@ -28632,6 +28643,9 @@ def progress_callback(event_type: str, tool_name: str = None, preview: str = Non
             # /verbose.  We only fire when (a) the user hasn't seen the hint
             # before and (b) /verbose is actually usable on this platform
             # (gateway gate must be open).  The CLI has its own trigger.
+            # NOTE: the outer return below drops ALL tool.completed events
+            # until the hint fires — non-todo tool.completed events are
+            # intentionally discarded during this window.
             if event_type == "tool.completed" and not long_tool_hint_fired[0]:
                 try:
                     duration = kwargs.get("duration") or 0
@@ -28653,16 +28667,6 @@ def progress_callback(event_type: str, tool_name: str = None, preview: str = Non
                             mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
                 except Exception as _hint_err:
                     logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
-                return
-
-
-            # Todo checklist: on tool.completed, render todo results as an
-            # editable checklist in the progress message bubble.
-            if event_type == "tool.completed" and tool_name == "todo":
-                try:
-                    progress_queue.put(_render_todo_checklist(kwargs.get("result", "")))
-                except Exception:
-                    logger.debug("Failed to render todo checklist", exc_info=True)
                 return
 
 
@@ -28740,7 +28744,6 @@ def progress_callback(event_type: str, tool_name: str = None, preview: str = Non
             repeat_count[0] = 0
             
             progress_queue.put(msg)
->>>>>> (feat(gateway): render todo tool results as editable Telegram checklist (#31001))
         
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.

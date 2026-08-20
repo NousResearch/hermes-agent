@@ -207,7 +207,12 @@ def test_empty_success_persists_adoption_and_acks_without_retry_or_replay(
     )
 
     assert result["completed"] is True
-    assert result["messages"][-1] == {"role": "assistant", "content": ""}
+    closing = result["messages"][-1]
+    assert isinstance(closing["timestamp"], float)  # upstream stamps the closing row
+    assert {k: v for k, v in closing.items() if k != "timestamp"} == {
+        "role": "assistant",
+        "content": "",
+    }
     assert db._conn.execute(
         "SELECT COUNT(*) FROM deferred_notification_adoptions WHERE event_id=?",
         (event_id,),
@@ -382,7 +387,12 @@ def test_iteration_limit_summary_exception_fallback_closes_and_adopts(
     try:
         assert result["completed"] is False
         assert result["final_response"] == fallback
-        assert result["messages"][-1] == {"role": "assistant", "content": fallback}
+        closing = result["messages"][-1]
+        assert isinstance(closing["timestamp"], float)  # upstream stamps the closing row
+        assert {k: v for k, v in closing.items() if k != "timestamp"} == {
+            "role": "assistant",
+            "content": fallback,
+        }
         assert _adopted_closing_message(db, event_id) == ("assistant", fallback)
     finally:
         db.close()

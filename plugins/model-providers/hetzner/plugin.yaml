@@ -1,0 +1,5 @@
+name: hetzner-provider
+kind: model-provider
+version: 1.0.0
+description: Hetzner Inference
+author: Nous Research

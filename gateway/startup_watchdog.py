@@ -21,6 +21,7 @@ from hermes_startup_watchdog import (  # noqa: F401
     disarm_startup_watchdog,
     get_startup_watchdog_dump_path,
     kick_startup_watchdog,
+    report_startup_progress,
     resolve_startup_watchdog_timeout,
     startup_watchdog_disabled,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "disarm_startup_watchdog",
     "get_startup_watchdog_dump_path",
     "kick_startup_watchdog",
+    "report_startup_progress",
     "resolve_startup_watchdog_timeout",
     "startup_watchdog_disabled",
 ]

@@ -141,6 +141,13 @@ class RelayMediaClient:
                     import json
 
                     body = json.loads(resp.read().decode("utf-8"))
+                    # A well-behaved connector returns a JSON object, but a
+                    # valid-JSON non-object (null, [], a string) would make
+                    # `.get` raise AttributeError — which escapes the except
+                    # below and breaks the best-effort contract. Treat any
+                    # non-object body as a failure.
+                    if not isinstance(body, dict):
+                        return None
                     media_id = body.get("id")
                     if not media_id:
                         return None

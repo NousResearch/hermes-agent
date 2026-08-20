@@ -626,6 +626,11 @@ class SessionManager:
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()
 
+        agent_cfg = config.get("agent")
+        if not isinstance(agent_cfg, dict):
+            agent_cfg = {}
+        max_iterations = agent_cfg.get("max_turns") or config.get("max_turns") or 500
+
         configured_mcp_servers = [
             name
             for name, cfg in (config.get("mcp_servers") or {}).items()
@@ -642,6 +647,7 @@ class SessionManager:
             "session_id": session_id,
             "session_db": self._get_db(),
             "model": model or default_model,
+            "max_iterations": max_iterations,
         }
 
         try:

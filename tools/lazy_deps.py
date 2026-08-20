@@ -108,6 +108,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "google-auth==2.55.1",
         "pyasn1==0.6.4",
     ),
+    # Claude-on-Vertex via AnthropicVertex SDK (anthropic[vertex] extra).
+    # Separate from provider.vertex so Gemini-only Vertex users don't pull
+    # the Anthropic SDK, and Claude-on-Vertex users get it on demand.
+    "provider.vertex.anthropic": ("anthropic[vertex]==0.87.0",),
     # Microsoft Foundry — Entra ID auth (managed identity, workload identity,
     # service principal, az login, VS Code, azd, PowerShell). Only loaded
     # when model.auth_mode=entra_id is selected; key-based azure-foundry

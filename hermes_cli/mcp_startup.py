@@ -76,15 +76,36 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
             home_override = get_hermes_home_override()
         except Exception:
             home_override = None
+        # Profile routing installs credentials in a ContextVar rather than
+        # process-global os.environ. Carry that scope into the bare discovery
+        # thread too: HERMES_HOME alone selects the right config.yaml, but
+        # `${MCP_API_KEY}` interpolation would otherwise see no profile secret
+        # and send the literal placeholder as the authorization header.
+        try:
+            from agent.secret_scope import current_secret_scope
+
+            secret_scope = current_secret_scope()
+            if secret_scope is not None:
+                secret_scope = dict(secret_scope)
+        except Exception:
+            secret_scope = None
 
         def _discover() -> None:
             token = None
+            secret_token = None
             try:
                 from hermes_constants import set_hermes_home_override
 
                 token = set_hermes_home_override(home_override)
             except Exception:
                 token = None
+            if secret_scope is not None:
+                try:
+                    from agent.secret_scope import set_secret_scope
+
+                    secret_token = set_secret_scope(secret_scope)
+                except Exception:
+                    secret_token = None
             try:
                 _discover_mcp_tools_without_interactive_oauth()
                 try:
@@ -104,6 +125,13 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
                         from hermes_constants import reset_hermes_home_override
 
                         reset_hermes_home_override(token)
+                    except Exception:
+                        pass
+                if secret_token is not None:
+                    try:
+                        from agent.secret_scope import reset_secret_scope
+
+                        reset_secret_scope(secret_token)
                     except Exception:
                         pass
                 with _mcp_discovery_lock:

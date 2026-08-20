@@ -146,6 +146,46 @@ def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
     assert state["active"] is False
 
 
+def test_background_mcp_discovery_propagates_profile_secret_scope(monkeypatch):
+    """A dashboard-profile discovery thread must retain that profile's secrets."""
+    from agent.secret_scope import current_secret_scope, reset_secret_scope, set_secret_scope
+
+    seen = []
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"url": "https://mcp.example.test/mcp"}}},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda: seen.append(dict(current_secret_scope() or {})),
+        ),
+    )
+
+    expected_scope = {"MCP_DEMO_TOKEN": "profile-only-secret"}
+    token = set_secret_scope(expected_scope)
+    try:
+        mcp_startup.start_background_mcp_discovery(
+            logger=types.SimpleNamespace(debug=lambda *_a, **_k: None),
+            thread_name="test-mcp-discovery",
+        )
+        assert mcp_startup._mcp_discovery_thread is not None
+        mcp_startup._mcp_discovery_thread.join(timeout=1.0)
+    finally:
+        reset_secret_scope(token)
+
+    assert seen == [expected_scope]
+
+
 def test_portable_only_mcp_configuration_opens_startup_gate(monkeypatch):
     monkeypatch.setitem(
         sys.modules,

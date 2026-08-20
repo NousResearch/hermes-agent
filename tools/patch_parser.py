@@ -30,6 +30,8 @@ Usage:
 
 import difflib
 import inspect
+import ntpath
+import posixpath
 import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Any
@@ -247,6 +249,59 @@ def _count_occurrences(text: str, pattern: str) -> int:
     return count
 
 
+def _effective_file_ops_cwd(file_ops: Any) -> str:
+    """Best-effort cwd for lexical patch-path normalization.
+
+    ShellFileOperations intentionally follows the live terminal cwd, not the
+    host process cwd.  The parser cannot ask remote backends to resolve paths,
+    but it can still catch aliases like ``file`` and ``./file`` before the
+    two-phase patch applier validates one path and partially writes another.
+    """
+    env = getattr(file_ops, 'env', None)
+    cwd = getattr(env, 'cwd', None) or getattr(file_ops, 'cwd', None)
+    if not isinstance(cwd, str) or not cwd:
+        return "/"
+    return cwd
+
+
+def _canonical_operation_path(path: str, file_ops: Any) -> str:
+    """Return a backend-agnostic lexical identity for a patch operation path."""
+    raw = path.strip()
+    if re.match(r'^[A-Za-z]:[\\/]', raw):
+        return ntpath.normcase(ntpath.normpath(raw))
+    if raw.startswith('\\\\'):
+        return ntpath.normcase(ntpath.normpath(raw))
+
+    cwd = _effective_file_ops_cwd(file_ops)
+    if raw.startswith('/'):
+        joined = raw
+    elif re.match(r'^[A-Za-z]:[\\/]', cwd):
+        return ntpath.normcase(ntpath.normpath(ntpath.join(cwd, raw)))
+    else:
+        joined = posixpath.join(cwd.replace('\\', '/'), raw)
+    return posixpath.normpath(joined)
+
+
+def _validate_duplicate_operation_paths(
+    operations: List[PatchOperation],
+    file_ops: Any,
+) -> List[str]:
+    """Reject separate patch operations that target the same normalized path."""
+    seen: dict[str, str] = {}
+    errors: List[str] = []
+    for op in operations:
+        canonical = _canonical_operation_path(op.file_path, file_ops)
+        previous = seen.get(canonical)
+        if previous is not None:
+            errors.append(
+                f"multiple operations target {canonical} "
+                f"({previous!r} and {op.file_path!r})"
+            )
+        else:
+            seen[canonical] = op.file_path
+    return errors
+
+
 def _validate_operations(
     operations: List[PatchOperation],
     file_ops: Any,
@@ -262,7 +317,7 @@ def _validate_operations(
     # Deferred import: breaks the patch_parser ↔ fuzzy_match circular dependency
     from tools.fuzzy_match import fuzzy_find_and_replace
 
-    errors: List[str] = []
+    errors: List[str] = _validate_duplicate_operation_paths(operations, file_ops)
     real_change_count = 0
 
     # Virtual filesystem overlay so inter-op state (notably a MOVE creating the

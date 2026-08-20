@@ -709,6 +709,26 @@ def build_turn_context(
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
 
+    # Give memory providers the full remainder of the turn prologue to recall
+    # against the current query. This hook must return immediately; providers
+    # collect only already-ready results at the existing prefetch boundary
+    # below, before api_content is finalized and persisted.
+    _early_prefetch_session_id = agent.session_id or ""
+    _prefetch_invalidated_by_idle_compression = False
+    if agent._memory_manager:
+        try:
+            _early_query = (
+                original_user_message if isinstance(original_user_message, str) else ""
+            )
+            if not is_trivial_prompt(_early_query):
+                agent._memory_manager.start_prefetch_all(
+                    _early_query,
+                    session_id=_early_prefetch_session_id,
+                    turn_number=agent._user_turn_count,
+                )
+        except Exception:
+            pass
+
     # Track memory nudge trigger (turn-based, checked here).
     should_review_memory = False
     if (agent._memory_nudge_interval > 0
@@ -847,6 +867,7 @@ def build_turn_context(
                 # must leave the turn's flush baseline and user-message index
                 # untouched.
                 if messages is not _idle_input:
+                    _prefetch_invalidated_by_idle_compression = True
                     conversation_history = conversation_history_after_compression(
                         agent, messages, conversation_history
                     )
@@ -1290,7 +1311,28 @@ def build_turn_context(
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
             if not is_trivial_prompt(_query):
-                ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
+                _prefetch_session_id = agent.session_id or ""
+                # Compression may invalidate the early launch, either by
+                # rotating the session or by rewinding it in place. Give the
+                # post-compression generation its own launch before the
+                # zero-wait collection point.
+                if (
+                    _prefetch_session_id != _early_prefetch_session_id
+                    or _prefetch_invalidated_by_idle_compression
+                    or _preflight_compressed
+                ):
+                    agent._memory_manager.start_prefetch_all(
+                        _query,
+                        session_id=_prefetch_session_id,
+                        turn_number=agent._user_turn_count,
+                    )
+                ext_prefetch_cache = (
+                    agent._memory_manager.prefetch_all(
+                        _query,
+                        session_id=_prefetch_session_id,
+                    )
+                    or ""
+                )
         except Exception:
             pass
         # Deterministic, model-independent recall indicator: when memory was

@@ -25,6 +25,7 @@ class FakeMemoryProvider(MemoryProvider):
         self.initialized = False
         self.synced_turns = []
         self.prefetch_queries = []
+        self.started_prefetches = []
         self.queued_prefetches = []
         self.turn_starts = []
         self.session_end_called = False
@@ -51,6 +52,9 @@ class FakeMemoryProvider(MemoryProvider):
     def prefetch(self, query, *, session_id=""):
         self.prefetch_queries.append(query)
         return self._prefetch_result
+
+    def start_prefetch(self, query, *, session_id="", turn_number=0):
+        self.started_prefetches.append((query, session_id, turn_number))
 
     def queue_prefetch(self, query, *, session_id=""):
         self.queued_prefetches.append(query)
@@ -152,6 +156,15 @@ class TestMemoryManager:
         assert mgr.get_all_tool_schemas() == []
         assert mgr.build_system_prompt() == ""
         assert mgr.prefetch_all("test") == ""
+
+    def test_start_prefetch_all_propagates_query_identity(self):
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("builtin")
+        mgr.add_provider(provider)
+
+        mgr.start_prefetch_all("current query", session_id="session-1", turn_number=7)
+
+        assert provider.started_prefetches == [("current query", "session-1", 7)]
 
     def test_add_provider(self):
         mgr = MemoryManager()

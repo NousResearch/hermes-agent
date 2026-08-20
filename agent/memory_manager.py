@@ -544,6 +544,31 @@ class MemoryManager:
                 )
         return "\n\n".join(parts)
 
+    def start_prefetch_all(
+        self,
+        query: str,
+        *,
+        session_id: str = "",
+        turn_number: int = 0,
+    ) -> None:
+        """Let providers start current-turn recall without delaying the turn."""
+        clean_query = self._strip_skill_scaffolding(query)
+        if not clean_query:
+            return
+        for provider in self._providers:
+            try:
+                provider.start_prefetch(
+                    clean_query,
+                    session_id=session_id,
+                    turn_number=turn_number,
+                )
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' start_prefetch failed (non-fatal): %s",
+                    provider.name,
+                    e,
+                )
+
     def _prefetch_provider(
         self, provider: MemoryProvider, query: str, *, session_id: str = ""
     ) -> str:

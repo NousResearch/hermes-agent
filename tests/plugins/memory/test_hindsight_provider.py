@@ -10,6 +10,7 @@ import os
 import re
 import stat
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -538,6 +539,253 @@ class TestPrefetch:
         p = provider_with_config(recall_sync=True)
         p.queue_prefetch("anything")
         assert p._prefetch_thread is None
+
+    def test_recall_async_injects_current_query_when_ready(self, provider_with_config):
+        p = provider_with_config(recall_async=True)
+        completed = threading.Event()
+
+        async def _recall(**kwargs):
+            completed.set()
+            return SimpleNamespace(
+                results=[SimpleNamespace(text=f"memory for {kwargs['query']}")]
+            )
+
+        p._client.arecall = AsyncMock(side_effect=_recall)
+
+        p.start_prefetch("current query", session_id="test-session", turn_number=1)
+        assert completed.wait(timeout=2.0)
+        p._prefetch_thread.join(timeout=2.0)
+
+        result = p.prefetch("current query", session_id="test-session")
+        assert "memory for current query" in result
+        p._client.arecall.assert_called_once()
+
+    def test_recall_async_single_flight_runs_latest_pending_query(self, provider_with_config):
+        p = provider_with_config(recall_async=True)
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_completed = threading.Event()
+        queries = []
+
+        async def _recall(**kwargs):
+            query = kwargs["query"]
+            queries.append(query)
+            if query == "first query":
+                first_started.set()
+                release_first.wait(timeout=2.0)
+            else:
+                second_completed.set()
+            return SimpleNamespace(results=[SimpleNamespace(text=f"memory for {query}")])
+
+        p._client.arecall = AsyncMock(side_effect=_recall)
+
+        p.start_prefetch("first query", session_id="test-session", turn_number=1)
+        assert first_started.wait(timeout=2.0)
+        p.start_prefetch("second query", session_id="test-session", turn_number=2)
+        release_first.set()
+
+        assert second_completed.wait(timeout=2.0)
+        p._prefetch_thread.join(timeout=2.0)
+        assert queries == ["first query", "second query"]
+
+    def test_recall_async_drops_ready_result_across_session_switch(self, provider_with_config):
+        p = provider_with_config(recall_async=True)
+        p.start_prefetch("old query", session_id="test-session", turn_number=1)
+        p._prefetch_thread.join(timeout=2.0)
+
+        p.on_session_switch("new-session")
+        p.on_session_switch("test-session")
+
+        assert p.prefetch("old query", session_id="test-session") == ""
+
+    def test_recall_async_queues_new_session_behind_stale_inflight(self, provider_with_config):
+        p = provider_with_config(recall_async=True)
+        old_started = threading.Event()
+        release_old = threading.Event()
+        new_completed = threading.Event()
+
+        async def _recall(**kwargs):
+            if kwargs["query"] == "old query":
+                old_started.set()
+                release_old.wait(timeout=2.0)
+            else:
+                new_completed.set()
+            return SimpleNamespace(results=[SimpleNamespace(text=kwargs["query"])])
+
+        p._client.arecall = AsyncMock(side_effect=_recall)
+        p.start_prefetch("old query", session_id="test-session", turn_number=1)
+        assert old_started.wait(timeout=2.0)
+        p._prefetch_thread.join = lambda timeout=None: None
+
+        p.on_session_switch("new-session")
+        p.start_prefetch("new query", session_id="new-session", turn_number=1)
+        assert not new_completed.is_set()
+        release_old.set()
+
+        assert new_completed.wait(timeout=2.0)
+
+    def test_recall_async_preserves_new_session_inflight_before_deferred_switch(
+        self, provider_with_config
+    ):
+        p = provider_with_config(recall_async=True)
+        recall_started = threading.Event()
+        release_recall = threading.Event()
+
+        async def _recall(**kwargs):
+            recall_started.set()
+            release_recall.wait(timeout=2.0)
+            return SimpleNamespace(results=[SimpleNamespace(text=kwargs["query"])])
+
+        p._client.arecall = AsyncMock(side_effect=_recall)
+        p.start_prefetch("new query", session_id="new-session", turn_number=1)
+        assert recall_started.wait(timeout=2.0)
+        worker = p._prefetch_thread
+        real_join = worker.join
+        worker.join = lambda timeout=None: None
+
+        p.on_session_switch("new-session")
+        release_recall.set()
+        real_join(timeout=2.0)
+
+        assert "new query" in p.prefetch("next query", session_id="new-session")
+
+    def test_recall_async_retries_inflight_after_same_session_compression(
+        self, provider_with_config
+    ):
+        p = provider_with_config(recall_async=True)
+        first_started = threading.Event()
+        release_first = threading.Event()
+        queries = []
+
+        async def _recall(**kwargs):
+            queries.append(kwargs["query"])
+            if len(queries) == 1:
+                first_started.set()
+                release_first.wait(timeout=2.0)
+            return SimpleNamespace(results=[SimpleNamespace(text=kwargs["query"])])
+
+        p._client.arecall = AsyncMock(side_effect=_recall)
+        p.start_prefetch("current query", session_id="test-session", turn_number=1)
+        assert first_started.wait(timeout=2.0)
+        worker = p._prefetch_thread
+        real_join = worker.join
+        worker.join = lambda timeout=None: None
+
+        p.on_session_switch("test-session", reason="compression")
+        p.start_prefetch("current query", session_id="test-session", turn_number=1)
+        release_first.set()
+        real_join(timeout=2.0)
+
+        assert queries == ["current query", "current query"]
+        assert "current query" in p.prefetch(
+            "current query", session_id="test-session"
+        )
+
+    def test_recall_async_drops_inflight_after_same_session_rewind(
+        self, provider_with_config
+    ):
+        p = provider_with_config(recall_async=True)
+        recall_started = threading.Event()
+        release_recall = threading.Event()
+        queries = []
+
+        async def _recall(**kwargs):
+            queries.append(kwargs["query"])
+            recall_started.set()
+            release_recall.wait(timeout=2.0)
+            return SimpleNamespace(results=[SimpleNamespace(text=kwargs["query"])])
+
+        p._client.arecall = AsyncMock(side_effect=_recall)
+        p.start_prefetch("removed query", session_id="test-session", turn_number=1)
+        assert recall_started.wait(timeout=2.0)
+        worker = p._prefetch_thread
+        real_join = worker.join
+        worker.join = lambda timeout=None: None
+
+        p.on_session_switch("test-session", rewound=True)
+        release_recall.set()
+        real_join(timeout=2.0)
+
+        assert queries == ["removed query"]
+        assert p.prefetch("next query", session_id="test-session") == ""
+
+    def test_recall_async_never_waits_and_carries_late_result(self, provider_with_config):
+        p = provider_with_config(recall_async=True)
+        recall_started = threading.Event()
+        release_recall = threading.Event()
+        collect_returned = threading.Event()
+        collected = []
+
+        async def _recall(**kwargs):
+            recall_started.set()
+            release_recall.wait(timeout=2.0)
+            return SimpleNamespace(results=[SimpleNamespace(text="late memory")])
+
+        p._client.arecall = AsyncMock(side_effect=_recall)
+        p.start_prefetch("slow query", session_id="test-session", turn_number=1)
+        assert recall_started.wait(timeout=2.0)
+
+        def _collect():
+            collected.append(p.prefetch("slow query", session_id="test-session"))
+            collect_returned.set()
+
+        collector = threading.Thread(target=_collect)
+        collector.start()
+        assert collect_returned.wait(timeout=0.5)
+        assert collected == [""]
+
+        release_recall.set()
+        p._prefetch_thread.join(timeout=2.0)
+        assert "late memory" in p.prefetch("next query", session_id="test-session")
+
+    def test_recall_sync_takes_precedence_over_recall_async(self, provider_with_config):
+        p = provider_with_config(recall_sync=True, recall_async=True)
+
+        p.start_prefetch("current query", session_id="test-session", turn_number=1)
+        assert p._prefetch_thread is None
+
+        result = p.prefetch("current query", session_id="test-session")
+        assert "Memory 1" in result
+        p._client.arecall.assert_called_once()
+
+    def test_recall_async_current_result_supersedes_older_fallback(self, provider_with_config):
+        p = provider_with_config(recall_async=True)
+
+        async def _recall(**kwargs):
+            return SimpleNamespace(
+                results=[SimpleNamespace(text=f"memory for {kwargs['query']}")]
+            )
+
+        p._client.arecall = AsyncMock(side_effect=_recall)
+        p.start_prefetch("old query", session_id="test-session", turn_number=1)
+        p._prefetch_thread.join(timeout=2.0)
+        p.start_prefetch("current query", session_id="test-session", turn_number=2)
+        p._prefetch_thread.join(timeout=2.0)
+
+        assert "memory for current query" in p.prefetch(
+            "current query", session_id="test-session"
+        )
+        assert p.prefetch("next query", session_id="test-session") == ""
+
+    def test_recall_async_repeated_query_prefers_current_turn(self, provider_with_config):
+        p = provider_with_config(recall_async=True)
+
+        async def _recall(**kwargs):
+            turn = p._client.arecall.await_count
+            return SimpleNamespace(
+                results=[SimpleNamespace(text=f"memory from turn {turn}")]
+            )
+
+        p._client.arecall = AsyncMock(side_effect=_recall)
+        p.start_prefetch("same query", session_id="test-session", turn_number=1)
+        p._prefetch_thread.join(timeout=2.0)
+        p.start_prefetch("same query", session_id="test-session", turn_number=2)
+        p._prefetch_thread.join(timeout=2.0)
+
+        result = p.prefetch("same query", session_id="test-session")
+        assert "memory from turn 2" in result
+        assert "memory from turn 1" not in result
+        assert p.prefetch("next query", session_id="test-session") == ""
 
     def test_async_default_ignores_current_query_and_reads_buffer(self, provider):
         # Default (recall_sync off): prefetch returns the buffered result and

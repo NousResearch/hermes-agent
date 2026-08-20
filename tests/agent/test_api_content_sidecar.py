@@ -246,6 +246,72 @@ def _stub_runtime_main():
 
 
 class TestPrologueStamping:
+    def test_starts_current_recall_before_collecting_ready_context(self):
+        agent = _FakeAgent()
+        calls = []
+        agent._memory_manager = types.SimpleNamespace(
+            start_prefetch_all=lambda query, **kwargs: calls.append(
+                ("start", query, kwargs)
+            ),
+            on_turn_start=lambda *args, **kwargs: calls.append(("turn", args, kwargs)),
+            prefetch_all=lambda query, **kwargs: calls.append(
+                ("collect", query, kwargs)
+            ) or "ready memory",
+            describe_recall=lambda: "",
+        )
+
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            ctx = _build(agent, user_message="current query")
+
+        assert calls[0] == (
+            "start",
+            "current query",
+            {"session_id": "sess-1", "turn_number": 1},
+        )
+        assert next(i for i, call in enumerate(calls) if call[0] == "start") < next(
+            i for i, call in enumerate(calls) if call[0] == "collect"
+        )
+        assert "ready memory" in ctx.ext_prefetch_cache
+
+    def test_restarts_current_recall_when_prologue_rotates_session(self):
+        agent = _FakeAgent()
+        calls = []
+        agent._memory_manager = types.SimpleNamespace(
+            start_prefetch_all=lambda query, **kwargs: calls.append(
+                ("start", query, kwargs)
+            ),
+            on_turn_start=lambda *args, **kwargs: None,
+            prefetch_all=lambda query, **kwargs: calls.append(
+                ("collect", query, kwargs)
+            ) or "",
+            describe_recall=lambda: "",
+        )
+
+        def _rotate_session(*_args, **_kwargs):
+            agent.session_id = "sess-2"
+            return []
+
+        with patch("hermes_cli.plugins.invoke_hook", side_effect=_rotate_session):
+            _build(agent, user_message="current query")
+
+        assert [call for call in calls if call[0] == "start"] == [
+            (
+                "start",
+                "current query",
+                {"session_id": "sess-1", "turn_number": 1},
+            ),
+            (
+                "start",
+                "current query",
+                {"session_id": "sess-2", "turn_number": 1},
+            ),
+        ]
+        assert calls[-1] == (
+            "collect",
+            "current query",
+            {"session_id": "sess-2"},
+        )
+
     def test_stamps_api_content_from_plugin_context(self):
         agent = _FakeAgent()
         with patch(

@@ -28,8 +28,9 @@ ARTICLE_OUTPUT = CE_DIR / "output" / "articles"
 sys.path.insert(0, str(CE_DIR))
 
 from postiz_bridge import check_publisher_readiness, queue_post
-from database import mark_published, get_draft, claim_for_enqueue, release_enqueue_claim
+from database import mark_published, get_draft
 from content_gate import gate_publish
+from publish_tracker import PublishTracker
 
 # Only publish personal accounts
 ACTIVE_BRANDS = {"sahil_twitter", "sahil_linkedin"}
@@ -39,6 +40,36 @@ PLATFORM_MAP = {
     "twitter": "twitter",
     "linkedin": "linkedin",
 }
+
+# Delivery attempt budget before a draft is dead-lettered and alerted.
+MAX_PUBLISH_ATTEMPTS = 3
+# Exponential backoff base/factor for scheduling retries.
+BACKOFF_BASE_MINUTES = 2
+BACKOFF_FACTOR = 2.0
+
+
+def _send_dead_letter_alert(alert: dict) -> None:
+    """Surface a dead-lettered delivery on the ops Discord channel (best-effort).
+
+    Reuses discord_digest._post so we stay on the same bot token and
+    rate-limit behaviour as the rest of the content engine. Never raises:
+    an alerting failure must not crash the publish cron.
+    """
+    channel = os.getenv("DISCORD_OPS_CHANNEL_ID", os.getenv("DISCORD_CONTENT_CHANNEL_ID", ""))
+    if not channel:
+        return
+    try:
+        from discord_digest import _post
+
+        lines = [
+            f"⚠️ **Publish dead-letter** · {alert['moved_at']}",
+            f"`{alert['draft_id']}` · `{alert['platform']}` · attempt `{alert['attempts']}`",
+            f"idempotency_key: `{alert['idempotency_key']}`",
+            f"error: {alert['error']}",
+        ]
+        _post(channel, "\n".join(lines))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def find_article_image(draft_id: str, brand: str) -> str | None:
@@ -130,6 +161,12 @@ def publish_approved_drafts(*, dry_run: bool = False) -> int:
         return 0
 
     published = 0
+    # Delivery tracker wired into the canonical enqueue path. It owns the
+    # idempotency key (draft_id + platform), attempt counting, exponential
+    # backoff retry scheduling, dead-letter queue and event log. The drafts
+    # enqueue claim is managed atomically inside tracker.claim() so a concurrent
+    # cron run or retry cannot double-enqueue the same draft+platform.
+    tracker = PublishTracker(alert_hook=_send_dead_letter_alert)
     for row in rows:
         draft = dict(row)
         draft_id = draft["id"]
@@ -143,9 +180,11 @@ def publish_approved_drafts(*, dry_run: bool = False) -> int:
             print(f"  Gate blocked: {draft_id} ({brand}/{platform}) — not approved")
             continue
 
-        # Idempotent claim: atomically mark this draft as "claiming" so
-        # a concurrent cron run or retry cannot double-enqueue it.
-        if not claim_for_enqueue(draft_id):
+        # Register the delivery row (idempotent by draft+platform) and atomically
+        # claim it, incrementing the attempt counter. If another cron run already
+        # claimed it or it's already enqueued/published, skip silently.
+        tracker.register(draft_id, platform, max_attempts=MAX_PUBLISH_ATTEMPTS)
+        if not tracker.claim(draft_id, platform):
             continue
 
         # Map platform to postiz bridge key
@@ -191,17 +230,39 @@ def publish_approved_drafts(*, dry_run: bool = False) -> int:
             )
 
             if postiz_id:
-                # Mark as published (also sets enqueue_state='enqueued')
+                # Durable enqueue + terminal published on the delivery tracker.
+                # mark_published also sets the drafts.enqueue_state='enqueued'.
+                tracker.mark_enqueued(draft_id, platform, postiz_id=postiz_id)
                 mark_published(draft_id, postiz_id)
+                tracker.mark_published(draft_id, platform)
                 published += 1
                 img_status = "with image" if media_path else "text-only"
                 print(f"  Published: {draft_id} ({brand}/{platform}) {img_status} -> Postiz:{postiz_id[:8]}")
             else:
-                release_enqueue_claim(draft_id)
-                print(f"  Failed: {draft_id} ({brand}/{platform}) — no integration or insert failed")
+                # queue_post returned None: no integration or manual-export fallback.
+                # Record the failure; the tracker schedules a retry with backoff and
+                # dead-letters when the budget is exhausted. The draft itself is
+                # released to 'pending' so a later run can retry it.
+                error = f"no integration or insert failed for {brand}/{bridge_platform}"
+                tracker.mark_failed(
+                    draft_id,
+                    platform,
+                    error,
+                    backoff_base_minutes=BACKOFF_BASE_MINUTES,
+                    backoff_factor=BACKOFF_FACTOR,
+                )
+                print(f"  Failed: {draft_id} ({brand}/{platform}) — {error}")
 
         except Exception as e:
-            release_enqueue_claim(draft_id)
+            # A transient failure (timeout / connection) is recorded and retried
+            # with backoff; never silently marks the post published.
+            tracker.mark_failed(
+                draft_id,
+                platform,
+                str(e),
+                backoff_base_minutes=BACKOFF_BASE_MINUTES,
+                backoff_factor=BACKOFF_FACTOR,
+            )
             print(f"  Error publishing {draft_id}: {e}")
 
     return published

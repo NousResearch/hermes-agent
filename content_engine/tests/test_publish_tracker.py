@@ -55,7 +55,7 @@ def test_claim_wins_and_increments_attempts(tracker):
 def test_failure_releases_claim_and_schedules_retry(tracker):
     tracker.register("draft-1", "twitter", max_attempts=3)
     tracker.claim("draft-1", "twitter")
-    tracker.mark_failed("draft-1", "twitter", error="postiz timeout", backoff_minutes=30)
+    tracker.mark_failed("draft-1", "twitter", error="postiz timeout", backoff_base_minutes=30)
     assert _enqueue_state(tracker.db_path, "draft-1") == "pending"
     st = tracker.status("draft-1")
     assert st["status"] == "failed"

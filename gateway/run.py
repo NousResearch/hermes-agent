@@ -1218,12 +1218,18 @@ def build_resume_recovery_note(
             "appear in the history — resume from the first step "
             "that has no recorded result."
         )
+    recovery_guard = (
+        "Do not blindly replay the same restart/shutdown intent: the lifecycle "
+        "command already present in history may have run. Inspect current state "
+        "before any retry. If there is a new target revision or configuration, "
+        "freshness evidence is missing, or health checks fail, create a new "
+        "restart intent; it is allowed to restart again when necessary and then "
+        "verify the new process and effective runtime."
+    )
     return (
         f"[System note: The previous turn was interrupted by "
         f"{reason_phrase}; the gateway is now back online. "
-        f"Any restart/shutdown command in the history has already "
-        f"run — do NOT re-execute or verify it. {resume_guidance} "
-        f"{tail_guidance}]"
+        f"{recovery_guard} {resume_guidance} {tail_guidance}]"
         + (f"\n\n{message}" if message else "")
     )
 

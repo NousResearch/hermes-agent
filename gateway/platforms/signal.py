@@ -279,6 +279,13 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             self.require_mention = os.getenv("SIGNAL_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
 
+        # DM filter — set via config.yaml: signal.allow_dms: false  (default: true)
+        _adms_cfg = extra.get("allow_dms")
+        if _adms_cfg is not None:
+            self.allow_dms = bool(_adms_cfg)
+        else:
+            self.allow_dms = True
+
         # DM allowlist — mirrors SIGNAL_ALLOWED_USERS checked by run.py.
         # Stored here so the reaction hooks can skip unauthorized senders
         # (reactions fire before run.py's auth gate, so without this check
@@ -612,6 +619,11 @@ class SignalAdapter(BasePlatformAdapter):
         # Build chat info
         chat_id = sender if not is_group else f"group:{group_id}"
         chat_type = "group" if is_group else "dm"
+
+        # DM filter — drop direct messages when allow_dms is false in config
+        if not is_group and not self.allow_dms:
+            logger.debug("Signal: ignoring DM (allow_dms=false)")
+            return
 
         # Extract text and render mentions
         text = data_message.get("message", "")

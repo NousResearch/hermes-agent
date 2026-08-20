@@ -726,3 +726,81 @@ class TestRegisterSessionMcpServers:
         with patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
+
+
+# ---------------------------------------------------------------------------
+# Per-session reasoning effort via ACP (feature parity with TUI Gateway)
+# ---------------------------------------------------------------------------
+
+
+class TestReasoningEffort:
+    @pytest.mark.asyncio
+    async def test_set_session_model_accepts_reasoning_effort(self, agent, mock_manager):
+        from acp.schema import SetSessionModelResponse
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.provider = "openrouter"
+        state.model = "current-model"
+
+        resp = await agent.set_session_model(
+            model_id="anthropic/claude-sonnet-4.5",
+            session_id=state.session_id,
+            reasoning_effort="high",
+        )
+
+        assert isinstance(resp, SetSessionModelResponse)
+        assert state.reasoning_config == {"enabled": True, "effort": "high"}
+
+    @pytest.mark.asyncio
+    async def test_set_session_model_accepts_camel_case_effort(self, agent, mock_manager):
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.provider = "openrouter"
+        state.model = "current-model"
+
+        resp = await agent.set_session_model(
+            model_id="anthropic/claude-sonnet-4.5",
+            session_id=state.session_id,
+            reasoningEffort="none",
+        )
+
+        assert resp is not None
+        assert state.reasoning_config == {"enabled": False}
+
+    @pytest.mark.asyncio
+    async def test_set_session_model_without_effort_keeps_existing_config(self, agent, mock_manager):
+        from acp.schema import SetSessionModelResponse
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.provider = "openrouter"
+        state.model = "current-model"
+        state.reasoning_config = {"enabled": True, "effort": "low"}
+
+        resp = await agent.set_session_model(
+            model_id="anthropic/claude-sonnet-4.5",
+            session_id=state.session_id,
+        )
+
+        assert isinstance(resp, SetSessionModelResponse)
+        assert state.reasoning_config == {"enabled": True, "effort": "low"}
+
+    @pytest.mark.asyncio
+    async def test_new_session_accepts_reasoning_effort(self, agent, mock_manager):
+        resp = await agent.new_session(cwd="/tmp", reasoning_effort="high")
+
+        assert resp is not None
+        state = mock_manager.get_session(resp.session_id)
+        assert state is not None
+        assert state.reasoning_config == {"enabled": True, "effort": "high"}
+
+    def test_parse_reasoning_effort_kwargs(self, agent):
+        from acp_adapter.server import HermesACPAgent
+
+        assert HermesACPAgent._parse_reasoning_effort_kwargs({}) is None
+        assert HermesACPAgent._parse_reasoning_effort_kwargs({"reasoning_effort": "high"}) == {
+            "enabled": True,
+            "effort": "high",
+        }
+        assert HermesACPAgent._parse_reasoning_effort_kwargs({"reasoningEffort": "none"}) == {
+            "enabled": False
+        }
+        assert HermesACPAgent._parse_reasoning_effort_kwargs({"reasoning_effort": "bogus"}) is None

@@ -181,6 +181,7 @@ class SessionState:
     runtime_lock: Any = field(default_factory=Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    reasoning_config: Any = None  # per-session reasoning override (dict or None)
 
 
 class SessionManager:
@@ -207,19 +208,22 @@ class SessionManager:
 
     # ---- public API ---------------------------------------------------------
 
-    def create_session(self, cwd: str = ".") -> SessionState:
+    def create_session(self, cwd: str = ".", reasoning_config: dict | None = None) -> SessionState:
         """Create a new session with a unique ID and a fresh AIAgent."""
         import threading
 
         cwd = _translate_acp_cwd(cwd)
         session_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=session_id, cwd=cwd)
+        agent = self._make_agent(
+            session_id=session_id, cwd=cwd, reasoning_config=reasoning_config
+        )
         state = SessionState(
             session_id=session_id,
             agent=agent,
             cwd=cwd,
             model=getattr(agent, "model", "") or "",
             cancel_event=threading.Event(),
+            reasoning_config=reasoning_config,
         )
         with self._lock:
             self._sessions[session_id] = state
@@ -264,6 +268,7 @@ class SessionManager:
             session_id=new_id,
             cwd=cwd,
             model=original.model or None,
+            reasoning_config=original.reasoning_config,
         )
         state = SessionState(
             session_id=new_id,
@@ -272,6 +277,7 @@ class SessionManager:
             model=getattr(agent, "model", original.model) or original.model,
             history=copy.deepcopy(original.history),
             cancel_event=threading.Event(),
+            reasoning_config=original.reasoning_config,
         )
         with self._lock:
             self._sessions[new_id] = state
@@ -433,6 +439,11 @@ class SessionManager:
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
+        if state.reasoning_config is not None:
+            try:
+                session_meta["reasoning_config"] = state.reasoning_config
+            except Exception:
+                logger.debug("Failed to serialize ACP session reasoning_config", exc_info=True)
         provider = getattr(state.agent, "provider", None)
         base_url = getattr(state.agent, "base_url", None)
         api_mode = getattr(state.agent, "api_mode", None)
@@ -452,7 +463,7 @@ class SessionManager:
                     session_id=state.session_id,
                     source="acp",
                     model=model_str,
-                    model_config={"cwd": state.cwd},
+                    model_config=session_meta,
                 )
             else:
                 # Update model_config (contains cwd) if changed.
@@ -532,6 +543,7 @@ class SessionManager:
         requested_provider = row.get("billing_provider")
         restored_base_url = row.get("billing_base_url")
         restored_api_mode = None
+        restored_reasoning_config = None
         mc = row.get("model_config")
         if mc:
             try:
@@ -541,6 +553,7 @@ class SessionManager:
                     requested_provider = meta.get("provider") or requested_provider
                     restored_base_url = meta.get("base_url") or restored_base_url
                     restored_api_mode = meta.get("api_mode") or restored_api_mode
+                    restored_reasoning_config = meta.get("reasoning_config") or restored_reasoning_config
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -567,6 +580,7 @@ class SessionManager:
                 requested_provider=requested_provider,
                 base_url=restored_base_url,
                 api_mode=restored_api_mode,
+                reasoning_config=restored_reasoning_config,
             )
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
@@ -579,6 +593,7 @@ class SessionManager:
             model=model or getattr(agent, "model", "") or "",
             history=history,
             cancel_event=threading.Event(),
+            reasoning_config=restored_reasoning_config,
         )
         with self._lock:
             self._sessions[session_id] = state
@@ -608,6 +623,7 @@ class SessionManager:
         requested_provider: str | None = None,
         base_url: str | None = None,
         api_mode: str | None = None,
+        reasoning_config: dict | None = None,
     ):
         if self._agent_factory is not None:
             return self._agent_factory()
@@ -643,6 +659,8 @@ class SessionManager:
             "session_db": self._get_db(),
             "model": model or default_model,
         }
+        if reasoning_config is not None:
+            kwargs["reasoning_config"] = reasoning_config
 
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)

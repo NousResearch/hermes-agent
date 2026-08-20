@@ -12,6 +12,7 @@
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
  *   POST /send-location  - Send location pin { chatId, latitude, longitude, name?, address? }
  *   POST /typing         - Send typing indicator { chatId }
+ *   POST /react          - React to a message { chatId, messageId, emoji, senderId?, fromMe? }
  *   GET  /chat/:id       - Get chat info
  *   GET  /health         - Health check
  *
@@ -33,6 +34,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { registerReactionRoute } from './reaction.js';
 import {
   buildPollPayload,
   createReconnectScheduler,
@@ -1035,6 +1037,14 @@ app.post('/send-location', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
+});
+
+// React to an existing message. The injected send function is the same
+// serialized, timeout-bounded path used by every other outbound send.
+registerReactionRoute(app, {
+  getSocket: () => sock,
+  getConnectionState: () => connectionState,
+  sendWithTimeout,
 });
 
 // Typing indicator

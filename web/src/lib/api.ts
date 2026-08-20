@@ -79,6 +79,12 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
   "/api/messaging/whatsapp/onboarding",
+  // Provider Logins OAuth. The backend handlers all accept ?profile= and open
+  // per-profile auth state (list/start/submit/poll/cancel/disconnect via
+  // _profile_scope); without scoping, the dashboard reads and mutates the
+  // launch/default profile's credentials even after the management profile is
+  // switched.
+  "/api/providers/oauth",
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",

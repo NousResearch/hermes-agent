@@ -3957,6 +3957,18 @@ class APIServerAdapter(BasePlatformAdapter):
         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
             if event_type == "reasoning.available":
                 _enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
+            elif event_type == "moa.reference":
+                # MoA fan-out: one labelled block per reference model, forwarded so
+                # an HTTP client sees the same progress the CLI/TUI already show.
+                _enqueue("moa.reference", {"message_id": message_id, "label": tool_name, "text": preview or "", "index": kwargs.get("moa_index"), "count": kwargs.get("moa_count")})
+            elif event_type == "moa.aggregating":
+                _enqueue("moa.aggregating", {"message_id": message_id, "aggregator": tool_name, "ref_count": kwargs.get("moa_ref_count")})
+            elif event_type == "moa.progress":
+                # Per-reference completion tick. ``refs_done``/``refs_total``
+                # count references ATTEMPTED, as ``count``/``ref_count`` do.
+                _enqueue("moa.progress", {"message_id": message_id, "label": tool_name or "", "refs_done": kwargs.get("moa_refs_done"), "refs_total": kwargs.get("moa_refs_total")})
+            elif event_type == "moa.phase":
+                _enqueue("moa.phase", {"message_id": message_id, "phase": kwargs.get("moa_phase"), "refs_done": kwargs.get("moa_refs_done"), "refs_total": kwargs.get("moa_refs_total"), "aggregator": tool_name or ""})
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
                 event_name = event_type.replace("tool.", "tool.")
                 _enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
@@ -6627,6 +6639,54 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": ts,
                     "text": preview or "",
                 })
+            elif event_type == "moa.reference":
+                # MoA fan-out: one event per reference model before the aggregator
+                # acts, mirroring the CLI/TUI so /v1/runs clients can show it too.
+                _push({
+                    "event": "moa.reference",
+                    "run_id": run_id,
+                    "timestamp": ts,
+                    "label": tool_name,
+                    "text": preview or "",
+                    "index": kwargs.get("moa_index"),
+                    "count": kwargs.get("moa_count"),
+                })
+            elif event_type == "moa.aggregating":
+                _push({
+                    "event": "moa.aggregating",
+                    "run_id": run_id,
+                    "timestamp": ts,
+                    "aggregator": tool_name,
+                    "ref_count": kwargs.get("moa_ref_count"),
+                })
+            elif event_type == "moa.progress":
+                # Fires as each reference completes, so a client can show
+                # "N/M refs done" during the fan-out rather than waiting for
+                # the content-bearing events. ``refs_done``/``refs_total``
+                # count references ATTEMPTED, matching ``count``/``ref_count``
+                # above — a reference that failed still advances them.
+                _push({
+                    "event": "moa.progress",
+                    "run_id": run_id,
+                    "timestamp": ts,
+                    "label": tool_name or "",
+                    "refs_done": kwargs.get("moa_refs_done"),
+                    "refs_total": kwargs.get("moa_refs_total"),
+                })
+            elif event_type == "moa.phase":
+                # Phase transition; currently only ``phase="aggregator"``,
+                # emitted once the fan-out is done. Clients that prefer one
+                # event family for phase tracking switch on ``phase`` instead
+                # of subscribing to ``moa.aggregating`` separately.
+                _push({
+                    "event": "moa.phase",
+                    "run_id": run_id,
+                    "timestamp": ts,
+                    "phase": kwargs.get("moa_phase"),
+                    "refs_done": kwargs.get("moa_refs_done"),
+                    "refs_total": kwargs.get("moa_refs_total"),
+                    "aggregator": tool_name or "",
+                })
             elif event_type in {"subagent.start", "subagent.complete"}:
                 event = {
                     "event": event_type,
@@ -6675,6 +6735,9 @@ class APIServerAdapter(BasePlatformAdapter):
             # not forwarded on the /v1/runs stream: they are high-volume UI
             # noise. Lifecycle boundaries (start/complete) still need to land
             # so clients can observe delegate_task timeouts and failures.
+            # The MoA family is forwarded whole — the four events above are
+            # every event ``moa_loop`` emits, and they are bounded by the
+            # reference count rather than by tool volume.
 
         return _callback
 

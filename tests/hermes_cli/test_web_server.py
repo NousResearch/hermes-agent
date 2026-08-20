@@ -4138,7 +4138,37 @@ class TestDashboardPluginManifestExtensions:
         assert entries[0]["tab"]["path"] == "/from-profile"
 
 
+    def test_plugin_cache_refreshes_when_manifests_change(self, tmp_path, monkeypatch):
+        """Installed, edited, and removed plugins appear without a restart."""
+        import json
+        import shutil
 
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli import web_server
+
+        web_server._dashboard_plugins_cache = None
+        web_server._dashboard_plugins_cache_fingerprint = None
+        initial = web_server._get_dashboard_plugins(force_rescan=True)
+        assert not any(p["name"] == "hot-plugin" for p in initial)
+
+        plug_dir = self._write_plugin(tmp_path, "hot-plugin", {
+            "name": "hot-plugin",
+            "label": "Hot",
+            "tab": {"path": "/hot"},
+        })
+        added = web_server._get_dashboard_plugins()
+        assert next(p for p in added if p["name"] == "hot-plugin")["label"] == "Hot"
+
+        manifest_file = plug_dir / "manifest.json"
+        manifest = json.loads(manifest_file.read_text())
+        manifest["label"] = "Hot Reloaded"
+        manifest_file.write_text(json.dumps(manifest))
+        updated = web_server._get_dashboard_plugins()
+        assert next(p for p in updated if p["name"] == "hot-plugin")["label"] == "Hot Reloaded"
+
+        shutil.rmtree(plug_dir.parent)
+        removed = web_server._get_dashboard_plugins()
+        assert not any(p["name"] == "hot-plugin" for p in removed)
 
 # ---------------------------------------------------------------------------
 # /api/pty WebSocket — terminal bridge for the dashboard "Chat" tab.

@@ -17898,17 +17898,8 @@ def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional
     return api_field
 
 
-def _discover_dashboard_plugins() -> list:
-    """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
-
-    Checks three plugin sources (same as hermes_cli.plugins):
-    1. User plugins:    ~/.hermes/plugins/<name>/dashboard/manifest.json
-    2. Bundled plugins: <repo>/plugins/<name>/dashboard/manifest.json  (memory/, etc.)
-    3. Project plugins: ./.hermes/plugins/  (only if HERMES_ENABLE_PROJECT_PLUGINS)
-    """
-    plugins = []
-    seen_names: set = set()
-
+def _dashboard_plugin_search_dirs() -> list[tuple[Path, str]]:
+    """Return dashboard plugin roots in discovery precedence order."""
     from hermes_cli.plugins import get_bundled_plugins_dir
     bundled_root = get_bundled_plugins_dir()
     # User dashboard plugins are a dashboard-owned asset (same category as
@@ -17948,12 +17939,59 @@ def _discover_dashboard_plugins() -> list:
     # ``hermes_cli/plugins.py`` and the documented user contract.
     if env_var_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
         search_dirs.append((Path.cwd() / ".hermes" / "plugins", "project"))
+    return search_dirs
 
-    for plugins_root, source in search_dirs:
+
+def _dashboard_plugins_fingerprint() -> tuple[tuple[str, int, int, int], ...]:
+    """Cheaply fingerprint every discoverable dashboard manifest.
+
+    The plugin list is cached because discovery also parses manifests.  The
+    cache still needs to notice plugins installed or updated after the
+    dashboard starts, so compare manifest path, nanosecond mtime and ctime, and
+    size on each read.  Ctime catches atomic replacements and same-size
+    rewrites even when a tool preserves mtime.  A set avoids duplicate entries
+    where a bundled plugin root is also visited through its parent directory.
+    """
+    manifests: set[tuple[str, int, int, int]] = set()
+    for plugins_root, _source in _dashboard_plugin_search_dirs():
         if not plugins_root.is_dir():
             continue
-        with os.scandir(plugins_root) as scan:
-            children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
+        try:
+            with os.scandir(plugins_root) as scan:
+                children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
+        except OSError:
+            continue
+        for child in children:
+            manifest_file = child / "dashboard" / "manifest.json"
+            try:
+                stat = manifest_file.stat()
+            except OSError:
+                continue
+            manifests.add(
+                (str(manifest_file), stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+            )
+    return tuple(sorted(manifests))
+
+
+def _discover_dashboard_plugins() -> list:
+    """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
+
+    Checks three plugin sources (same as hermes_cli.plugins):
+    1. User plugins:    ~/.hermes/plugins/<name>/dashboard/manifest.json
+    2. Bundled plugins: <repo>/plugins/<name>/dashboard/manifest.json  (memory/, etc.)
+    3. Project plugins: ./.hermes/plugins/  (only if HERMES_ENABLE_PROJECT_PLUGINS)
+    """
+    plugins = []
+    seen_names: set = set()
+
+    for plugins_root, source in _dashboard_plugin_search_dirs():
+        if not plugins_root.is_dir():
+            continue
+        try:
+            with os.scandir(plugins_root) as scan:
+                children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
+        except OSError:
+            continue
         for child in children:
             if not child.is_dir():
                 continue
@@ -18025,17 +18063,30 @@ def _discover_dashboard_plugins() -> list:
     return plugins
 
 
-# Cache discovered plugins per-process (refresh on explicit re-scan).
+# Cache parsed dashboard manifests per process, with a cheap fingerprint so new,
+# removed, and edited frontend extensions become visible without a restart.
+# Backend plugin API routers have a separate process-start mount lifecycle.
 _dashboard_plugins_cache: Optional[list] = None
+_dashboard_plugins_cache_fingerprint: Optional[
+    tuple[tuple[str, int, int, int], ...]
+] = None
 
 
 def _get_dashboard_plugins(force_rescan: bool = False) -> list:
-    global _dashboard_plugins_cache
-    if _dashboard_plugins_cache is None or force_rescan:
+    global _dashboard_plugins_cache, _dashboard_plugins_cache_fingerprint
+    fingerprint = _dashboard_plugins_fingerprint()
+    if (
+        _dashboard_plugins_cache is None
+        or force_rescan
+        or (
+            _dashboard_plugins_cache_fingerprint is not None
+            and fingerprint != _dashboard_plugins_cache_fingerprint
+        )
+    ):
         _dashboard_plugins_cache = _discover_dashboard_plugins()
-    elif _dashboard_plugins_cache:
-        if any(not Path(p["_dir"]).is_dir() for p in _dashboard_plugins_cache):
-            _dashboard_plugins_cache = _discover_dashboard_plugins()
+        # Pair the parsed result with the pre-read fingerprint. If a manifest
+        # changed during discovery, the next read will detect and rescan it.
+        _dashboard_plugins_cache_fingerprint = fingerprint
     return _dashboard_plugins_cache
 
 

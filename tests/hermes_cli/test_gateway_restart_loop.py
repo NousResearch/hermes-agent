@@ -419,6 +419,65 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
 
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            "--repo example/project pr review --help",
+            (
+                "--repo example/project pr review 42 --approve "
+                f"--match-head-commit {'a' * 40} "
+                "--asl-receipt /tmp/review-receipt.json"
+            ),
+        ],
+    )
+    def test_allows_extensionless_python_github_review_wrapper(
+        self, tmp_path, arguments
+    ):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        wrapper = tmp_path / "asl-gh-admin"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "from pathlib import Path\n"
+            f"CONTROL_ROOT = Path({str(tmp_path)!r})\n"
+            'IDENTITY_ROOT = CONTROL_ROOT / "github-identities"\n'
+            "print(IDENTITY_ROOT)\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o700)
+
+        result = contains_gateway_lifecycle_command_or_referenced_script(
+            f"{wrapper} {arguments}",
+            cwd=str(tmp_path),
+        )
+
+        assert result is False
+
+    def test_blocks_extensionless_python_wrapper_with_literal_lifecycle(
+        self, tmp_path
+    ):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        wrapper = tmp_path / "unsafe-python-wrapper"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os\n"
+            "os.system('hermes gateway restart')\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o700)
+
+        result = contains_gateway_lifecycle_command_or_referenced_script(
+            str(wrapper),
+            cwd=str(tmp_path),
+        )
+
+        assert result is True
+
     def test_launchctl_submit_parser_handles_shell_quoting(self, monkeypatch):
         import tools.terminal_tool as tt
 

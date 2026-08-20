@@ -105,6 +105,10 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
 
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
+_PYTHON_SHEBANG_PATTERN = re.compile(
+    r"^#![^\n]*\bpython(?:\d+(?:\.\d+)*)?\b",
+    re.IGNORECASE,
+)
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
 _CONTROL_CHARS = frozenset(";&|()")
@@ -555,6 +559,11 @@ def _sanitize_remote_script_text(text: Optional[str]) -> tuple[Optional[str], bo
     return text, False
 
 
+def _is_python_shebang_script(text: str) -> bool:
+    """Return True when an executable script declares a Python interpreter."""
+    return bool(_PYTHON_SHEBANG_PATTERN.search(text))
+
+
 def _contains_unsafe_gateway_action(
     command: str,
     *,
@@ -613,6 +622,14 @@ def _contains_unsafe_gateway_action(
             if unsafe:
                 return True
         if not script_text:
+            continue
+        # Executable Python scripts without a .py suffix are common CLI
+        # wrappers. Apply the full direct scan, but do not tokenize Python as
+        # POSIX shell and reinterpret syntax such as Path("/tmp") as an
+        # executable reference. Shell scripts still take the recursive path.
+        if _is_python_shebang_script(script_text):
+            if _direct_lifecycle_scan(script_text):
+                return True
             continue
         # Relative references inside a script resolve against that script's
         # directory, not the original command's cwd.

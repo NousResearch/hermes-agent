@@ -184,12 +184,27 @@ export function namingKit(doc: Document): NamingKit {
   const valueOf = (el: Element): string => {
     const control = el as HTMLInputElement
 
-    if (typeof control.value === 'string' && control.value) {
-      return clamp(control.value, 60)
+    // Tickable controls answer with their state, and are asked FIRST: a
+    // checkbox's `.value` is the string "on" unless the page sets one, so
+    // reading the value first made a ticked box and an empty one identical to
+    // the agent — the one thing about a checkbox worth reporting. Gated on the
+    // input's TYPE, not on `checked` being defined, which it is (as false) on
+    // every input including text fields.
+    const kind = (control.type || '').toLowerCase()
+
+    if (kind === 'checkbox' || kind === 'radio') {
+      return control.checked ? 'checked' : 'unchecked'
     }
 
-    if (control.checked !== undefined && (el.tagName === 'INPUT' || el.getAttribute('role') === 'checkbox')) {
-      return control.checked ? 'checked' : 'unchecked'
+    // The same control built out of a div, where the state lives in ARIA.
+    const role = el.getAttribute('role') || ''
+
+    if (role === 'checkbox' || role === 'radio' || role === 'switch') {
+      return el.getAttribute('aria-checked') === 'true' ? 'checked' : 'unchecked'
+    }
+
+    if (typeof control.value === 'string' && control.value) {
+      return clamp(control.value, 60)
     }
 
     return ''

@@ -121,18 +121,29 @@ describe('valueOf', () => {
     expect(naming().valueOf(input)).toBe('shoes')
   })
 
-  // FIXME(checkbox): a checkbox's `.value` is the string "on" unless the page
-  // sets one, and that branch is tested first — so both states read back the
-  // same and the agent cannot tell a ticked box from an empty one. Pinned as-is
-  // here so the extraction is provably behaviour-preserving; fixed next commit.
-  it('reports a checkbox as the value the DOM gives it', () => {
+  // The DOM hands back "on" for an unset checkbox value, so reading the value
+  // first made both states identical to the agent.
+  it('reports a checkbox as its state rather than the value the DOM invents', () => {
     const box = el('<input type="checkbox" />') as HTMLInputElement
 
-    expect(naming().valueOf(box)).toBe('on')
+    expect(naming().valueOf(box)).toBe('unchecked')
 
     box.checked = true
 
-    expect(naming().valueOf(box)).toBe('on')
+    expect(naming().valueOf(box)).toBe('checked')
+  })
+
+  it('still reports a checkbox state when the page did set a value', () => {
+    const box = el('<input type="checkbox" value="weekly" />') as HTMLInputElement
+    box.checked = true
+
+    expect(naming().valueOf(box)).toBe('checked')
+  })
+
+  it('leaves a radio group readable the same way', () => {
+    const radio = el('<input type="radio" name="plan" value="pro" />') as HTMLInputElement
+
+    expect(naming().valueOf(radio)).toBe('unchecked')
   })
 })
 

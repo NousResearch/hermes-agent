@@ -34,6 +34,35 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
     )
     memory_sub.add_parser("status", help="Show current memory provider config")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
+    memory_add = memory_sub.add_parser("add", help="Add an entry to built-in memory")
+    memory_add.add_argument("content", help="Entry text to add")
+    memory_add.add_argument(
+        "--target",
+        choices=["memory", "user"],
+        default="memory",
+        help="Built-in store to update (default: memory)",
+    )
+    memory_replace = memory_sub.add_parser(
+        "replace", help="Replace one built-in memory entry by unique text"
+    )
+    memory_replace.add_argument("old_text", help="Unique substring of the entry to replace")
+    memory_replace.add_argument("content", help="Replacement entry text")
+    memory_replace.add_argument(
+        "--target",
+        choices=["memory", "user"],
+        default="memory",
+        help="Built-in store to update (default: memory)",
+    )
+    memory_remove = memory_sub.add_parser(
+        "remove", help="Remove one built-in memory entry by unique text"
+    )
+    memory_remove.add_argument("old_text", help="Unique substring of the entry to remove")
+    memory_remove.add_argument(
+        "--target",
+        choices=["memory", "user"],
+        default="memory",
+        help="Built-in store to update (default: memory)",
+    )
     _reset_parser = memory_sub.add_parser(
         "reset",
         help="Erase all built-in memory (MEMORY.md and USER.md)",

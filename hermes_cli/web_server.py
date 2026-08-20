@@ -13049,7 +13049,7 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
     """Resolve the loopback URL of the gateway api_server's cron-fire route.
 
     Port resolution mirrors gateway/config.py's api_server load order for the
-    TARGET profile: ``platforms.api_server.extra.port`` in the profile's
+    LISTENER-OWNER profile: ``platforms.api_server.extra.port`` in the profile's
     config.yaml, then ``API_SERVER_PORT`` (process env for the active profile,
     the profile's own .env otherwise), then the adapter default 8642. The bind
     host is the adapter's loopback default — the dashboard and gateway share a
@@ -13064,24 +13064,41 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
     """
     import os as _os
 
+    multiplex = False
+    listener_profile = profile
+    listener_home = home
+    profile_cfg = None
+    try:
+        from gateway.config import load_gateway_config
+
+        with _config_profile_scope("default") as default_home:
+            multiplex = load_gateway_config().multiplex_profiles
+            if multiplex and profile != "default":
+                listener_profile = "default"
+                listener_home = default_home
+                profile_cfg = load_config()
+    except Exception:
+        pass
+
     port = 0
     try:
         # Profile-scoped read through the CANONICAL loader (managed-scope
         # overlay, ${ENV_VAR} expansion, profile pathing) — never a raw
         # yaml.safe_load of config.yaml (tests/hermes_cli/
         # test_config_read_guard.py). The HERMES_HOME override scopes
-        # get_config_path() to the TARGET profile, same pattern the
+        # get_config_path() to the LISTENER-OWNER profile, same pattern the
         # deprecated _fire_cron_job_for_profile used for its store scope.
         from hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )
 
-        token = set_hermes_home_override(str(home))
-        try:
-            profile_cfg = load_config()
-        finally:
-            reset_hermes_home_override(token)
+        if profile_cfg is None:
+            token = set_hermes_home_override(str(listener_home))
+            try:
+                profile_cfg = load_config()
+            finally:
+                reset_hermes_home_override(token)
         raw = cfg_get(
             profile_cfg, "platforms", "api_server", "extra", "port", default=None
         )
@@ -13092,8 +13109,8 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
     if not port:
         raw = (
             _os.getenv("API_SERVER_PORT", "")
-            if profile == _cron_default_profile()
-            else _profile_env_value(home, "API_SERVER_PORT")
+            if listener_profile == _cron_default_profile()
+            else _profile_env_value(listener_home, "API_SERVER_PORT")
         )
         try:
             port = int(raw) if raw else 0
@@ -13101,18 +13118,6 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
             port = 0
     if not port:
         port = 8642
-
-    multiplex = False
-    try:
-        cfg = load_config()
-        multiplex = bool(cfg_get(cfg, "gateway", "multiplex_profiles", default=False))
-        env_flag = _os.getenv("GATEWAY_MULTIPLEX_PROFILES", "").strip().lower()
-        if env_flag in {"1", "true", "yes", "on"}:
-            multiplex = True
-        elif env_flag in {"0", "false", "no", "off"}:
-            multiplex = False
-    except Exception:
-        pass
 
     if multiplex and profile != "default":
         return f"http://127.0.0.1:{port}/p/{profile}/api/cron/fire"

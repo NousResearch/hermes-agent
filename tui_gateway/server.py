@@ -10423,13 +10423,40 @@ def _wire_desktop_ui() -> None:
 _notification_pollers: list = []
 
 
+def _run_notification_poller_in_session_home(
+    stop_event: threading.Event, sid: str, session: dict
+) -> None:
+    """Run the poller bound to the profile that owns the session's durable state.
+
+    The poller claims and acknowledges delegation deliveries through
+    tools.async_delegation, whose _db_path() resolves get_hermes_home() — and
+    the HERMES_HOME override is a ContextVar, which a bare thread does not
+    inherit. Without this the poller marks events delivered in the LAUNCH
+    profile's state.db while the rows it is claiming live in the session's,
+    so a global-remote session re-delivers completions forever.
+
+    Anchored on _session_home(session) rather than on a snapshot of the
+    spawning thread's context (the propagate_context_to_thread idiom the
+    async-delegation worker uses for the same class of bug) because the spawn
+    sites do not all carry the session's override: compute_host resets it in
+    the finally that precedes its _init_session call, so a snapshot taken
+    there would capture the launch profile and reproduce the bug. The session
+    dict is authoritative on every path; read it here.
+    """
+    home_token = set_hermes_home_override(_session_home(session))
+    try:
+        _notification_poller_loop(stop_event, sid, session)
+    finally:
+        reset_hermes_home_override(home_token)
+
+
 def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     """Start the background notification poller for a TUI session."""
     _wire_agent_terminal_output()
     _wire_desktop_ui()
     stop = threading.Event()
     t = threading.Thread(
-        target=_notification_poller_loop,
+        target=_run_notification_poller_in_session_home,
         args=(stop, sid, session),
         daemon=True,
         # Stable, greppable name for debuggers and test teardowns.

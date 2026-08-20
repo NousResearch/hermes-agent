@@ -2063,6 +2063,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     detail=next_args.get("detail", "adaptive"),
                     db=session_db,
                     current_session_id=agent.session_id,
+                    profile=next_args.get("profile"),
                 )
             function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
                 agent,

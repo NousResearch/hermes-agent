@@ -111,6 +111,73 @@ def test_list_filters_tasks(monkeypatch, worker_env):
     assert tenant_ids == [c]
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        {},
+        {"assignee": None},
+        {"assignee": ""},
+        {"assignee": " \t "},
+        {"assignee": "none"},
+        {"assignee": "-"},
+        {"assignee": "null"},
+    ],
+    ids=["omitted", "none", "empty", "whitespace", "none-sentinel", "dash", "null"],
+)
+def test_list_empty_assignee_values_do_not_filter(monkeypatch, worker_env, args):
+    """Model-produced empty sentinels have the same meaning as omission."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        first = kb.create_task(conn, title="first", assignee="factory")
+        second = kb.create_task(conn, title="second", assignee="reviewer")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+
+    result = json.loads(kt._handle_list({**args, "status": "ready"}))
+
+    assert [task["id"] for task in result["tasks"]] == [first, second]
+
+
+def test_list_nonempty_assignee_remains_a_real_filter(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        factory = kb.create_task(conn, title="factory", assignee="factory")
+        kb.create_task(conn, title="reviewer", assignee="reviewer")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+
+    mixed_case = json.loads(
+        kt._handle_list({"assignee": "FaCtOrY", "status": "ready"})
+    )
+    missing = json.loads(
+        kt._handle_list({"assignee": "missing-profile", "status": "ready"})
+    )
+
+    assert [task["id"] for task in mixed_case["tasks"]] == [factory]
+    assert missing["tasks"] == []
+
+
+def test_empty_assignee_is_still_invalid_for_database_writes(worker_env):
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        with pytest.raises(ValueError, match="profile name cannot be empty"):
+            kb.create_task(conn, title="invalid", assignee="  ")
+    finally:
+        conn.close()
+
+
 def test_complete_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({

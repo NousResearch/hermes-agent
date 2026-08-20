@@ -15811,7 +15811,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         stream_tts_to_speaker,
                     )
                     _import_sounddevice()
-                    use_streaming_tts = check_tts_requirements()
+                    # speak_final_only: skip the streaming TTS feed entirely.
+                    # Streaming speaks every assistant message as it is
+                    # generated (including preliminary answers before tool
+                    # calls). When only the final answer should be spoken,
+                    # fall through to the non-streaming path below, which
+                    # speaks the turn's final response once, in full.
+                    from tools.tts_tool import should_stream_tts
+                    if should_stream_tts():
+                        use_streaming_tts = check_tts_requirements()
                 except Exception:
                     pass
 

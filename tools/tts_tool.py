@@ -3714,6 +3714,29 @@ def text_to_speech_tool(
 # ===========================================================================
 # Requirements check
 # ===========================================================================
+def should_stream_tts(voice_cfg=None) -> bool:
+    """Whether sentence-by-sentence streaming TTS should be used this turn.
+
+    Streaming speaks every assistant message as the agent generates it —
+    including preliminary answers emitted before tool calls. When the user
+    sets ``voice.speak_final_only``, only the turn's final response should
+    be spoken, so streaming must be skipped (the CLI's non-streaming path
+    speaks the final response once, in full).
+
+    ``voice_cfg`` is injectable for tests; when omitted it is read from the
+    active config (``voice:`` block). Config errors fall back to streaming
+    enabled — the existing default behaviour.
+    """
+    if voice_cfg is None:
+        try:
+            from hermes_cli.config import load_config
+            _raw = load_config().get("voice")
+            voice_cfg = _raw if isinstance(_raw, dict) else {}
+        except Exception:
+            voice_cfg = {}
+    return not voice_cfg.get("speak_final_only", False)
+
+
 def check_tts_requirements() -> bool:
     """Return whether the explicitly resolved TTS provider can run.
 

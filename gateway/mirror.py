@@ -107,9 +107,11 @@ def _find_session_id(
     DM session keys don't embed the chat_id (e.g. "agent:main:telegram:dm"),
     so we match on the persisted chat origin, not the key.
 
-    When *user_id* is provided, prefer exact sender matches. If multiple
-    same-chat candidates exist and none matches the user, return None instead
-    of guessing and contaminating another participant's session.
+    When *thread_id* is omitted (``None``), only non-threaded / parent-chat
+    sessions match so a bare chat delivery cannot land in a newer forum-topic
+    session. When *user_id* is provided, prefer exact sender matches. If
+    multiple same-chat candidates exist and none matches the user, return None
+    instead of guessing and contaminating another participant's session.
     """
     # Primary: state.db
     try:
@@ -158,6 +160,9 @@ def _find_session_id(
         origin_chat_id = str(origin.get("chat_id", ""))
         if origin_chat_id == str(chat_id):
             origin_thread_id = origin.get("thread_id")
+            # Bare (threadless) lookups must not match topic/thread sessions.
+            if thread_id is None and str(origin_thread_id or ""):
+                continue
             if thread_id is not None and str(origin_thread_id or "") != str(thread_id):
                 continue
             candidates.append(entry)

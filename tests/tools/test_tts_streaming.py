@@ -155,6 +155,111 @@ def test_openai_streamer_prefers_configured_api_key(monkeypatch):
     assert captured["client"]["api_key"] == "cfg-key"
 
 
+def test_openai_streamer_defaults_to_official_pcm_sample_rate():
+    assert ts.OpenAIStreamer({}, {}).sample_rate == 24000
+
+
+@pytest.mark.parametrize("pcm_sample_rate", [0, -1, True, 48000.5, "invalid"])
+def test_openai_resolver_falls_back_to_official_rate_for_invalid_sample_rate(
+    pcm_sample_rate, monkeypatch, caplog
+):
+    monkeypatch.setattr(ts.OpenAIStreamer, "available", staticmethod(lambda: True))
+
+    with caplog.at_level("WARNING", logger=ts.__name__):
+        streamer = ts.resolve_streaming_provider(
+            {
+                "provider": "openai",
+                "openai": {"pcm_sample_rate": pcm_sample_rate},
+            }
+        )
+
+    assert isinstance(streamer, ts.OpenAIStreamer)
+    assert streamer.sample_rate == 24000
+    assert "Invalid tts.openai.pcm_sample_rate" in caplog.text
+    assert "falling back to 24000 Hz" in caplog.text
+
+
+def test_openai_streamer_uses_configured_pcm_sample_rate_from_real_config(
+    tmp_path, monkeypatch
+):
+    from tools import tts_tool
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "tts:\n"
+        "  provider: openai\n"
+        "  openai:\n"
+        "    api_key: test-key\n"
+        "    pcm_sample_rate: 48000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        ts.OpenAIStreamer,
+        "stream",
+        lambda self, text: iter((b"\x01\x00" * 50,)),
+    )
+
+    sd, _out = _sd_mock()
+    q = _drain_queue(["Hello there, this is a full sentence."])
+    stop, done = threading.Event(), threading.Event()
+
+    with patch.object(tts_tool, "_import_sounddevice", return_value=sd):
+        tts_tool.stream_tts_to_speaker(q, stop, done)
+
+    sd.OutputStream.assert_called_once_with(
+        samplerate=48000,
+        channels=1,
+        dtype="int16",
+    )
+    assert done.is_set()
+
+
+def test_invalid_openai_pcm_sample_rate_keeps_streaming_at_official_rate(
+    tmp_path, monkeypatch, caplog
+):
+    from tools import tts_tool
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "tts:\n"
+        "  provider: openai\n"
+        "  openai:\n"
+        "    api_key: test-key\n"
+        "    pcm_sample_rate: invalid\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        ts.OpenAIStreamer,
+        "stream",
+        lambda self, text: iter((b"\x01\x00" * 50,)),
+    )
+    sync_tts = MagicMock()
+    monkeypatch.setattr(tts_tool, "text_to_speech_tool", sync_tts)
+
+    sd, _out = _sd_mock()
+    q = _drain_queue(["Hello there, this is a full sentence."])
+    stop, done = threading.Event(), threading.Event()
+
+    with (
+        caplog.at_level("WARNING", logger=ts.__name__),
+        patch.object(tts_tool, "_import_sounddevice", return_value=sd),
+    ):
+        tts_tool.stream_tts_to_speaker(q, stop, done)
+
+    sd.OutputStream.assert_called_once_with(
+        samplerate=24000,
+        channels=1,
+        dtype="int16",
+    )
+    sync_tts.assert_not_called()
+    assert "falling back to 24000 Hz" in caplog.text
+    assert done.is_set()
+
+
 # ── Dispatch: chunked streamer path ──────────────────────────────────────
 
 

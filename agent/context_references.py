@@ -578,10 +578,11 @@ def _parse_file_reference_value(value: str) -> tuple[str, int | None, int | None
 
 
 def _is_binary_file(path: Path) -> bool:
+    known_text_extension = path.name.lower().endswith(
+        (".py", ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".js", ".ts", ".astro")
+    )
     mime, _ = mimetypes.guess_type(path.name)
-    if mime and not mime.startswith("text/") and not any(
-        path.name.endswith(ext) for ext in (".py", ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".js", ".ts")
-    ):
+    if not known_text_extension and mime and not mime.startswith("text/"):
         return True
     chunk = path.read_bytes()[:4096]
     return b"\x00" in chunk

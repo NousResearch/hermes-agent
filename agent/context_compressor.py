@@ -35,6 +35,7 @@ from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
+    _last_assistant_index,
     get_model_context_length,
     estimate_messages_tokens_rough,
     estimate_tokens_rough,
@@ -1338,19 +1339,6 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
             // _CHARS_PER_TOKEN
         )
     return tokens
-
-
-def _last_assistant_index(messages: "List[Dict[str, Any]]") -> int:
-    """Index of the newest assistant message, or -1.
-
-    The one turn whose thinking fields every transport may still replay —
-    see ``_NEWEST_TURN_ONLY_BUDGET_KEYS``.
-    """
-    for i in range(len(messages) - 1, -1, -1):
-        msg = messages[i]
-        if isinstance(msg, dict) and msg.get("role") == "assistant":
-            return i
-    return -1
 
 
 def _content_text_for_contains(content: Any) -> str:

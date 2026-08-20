@@ -3268,6 +3268,21 @@ def estimate_tokens_rough(text: str) -> int:
     return dense + ((sparse + 3) // 4)
 
 
+def _last_assistant_index(messages: "List[Dict[str, Any]]") -> int:
+    """Index of the newest assistant message, or -1.
+
+    The one turn whose thinking fields every transport may still replay —
+    see ``_NEWEST_TURN_ONLY_BUDGET_KEYS``. Shared with ContextCompressor's
+    tail-budget walks so preflight and budget accounting always agree on
+    the same "newest" definition (#73624).
+    """
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            return i
+    return -1
+
+
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     """Rough token estimate for a message list (pre-flight only).
 
@@ -3284,7 +3299,26 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     """
     _IMAGE_TOKEN_COST = 1500
     total = 0
-    for msg in messages:
+    # Only the NEWEST assistant turn's thinking fields are replayed on the
+    # wire; every older turn's reasoning/reasoning_content is stripped or
+    # padded at send time (#73624). Charging stale thinking inflated rough
+    # preflight estimates by ~69% on reasoning-heavy sessions (deepseek:
+    # 376KB of thinking across 755 old assistant rows) and re-triggered
+    # compression every couple of turns while the real prompt sat far below
+    # the threshold. Mirror _estimate_msg_budget_tokens'
+    # charge_stale_thinking semantics so preflight and the tail-budget walk
+    # agree on the same transcript.
+    newest_asst_idx = _last_assistant_index(messages)
+    for idx, msg in enumerate(messages):
+        if (
+            idx != newest_asst_idx
+            and isinstance(msg, dict)
+            and ("reasoning" in msg or "reasoning_content" in msg)
+        ):
+            msg = {
+                k: v for k, v in msg.items()
+                if k not in ("reasoning", "reasoning_content")
+            }
         total += _estimate_message_tokens_cached(msg, _IMAGE_TOKEN_COST)
     return total
 

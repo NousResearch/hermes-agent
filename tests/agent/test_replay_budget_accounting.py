@@ -17,8 +17,8 @@ from agent.context_compressor import (
     _NEWEST_TURN_ONLY_BUDGET_KEYS,
     _REPLAY_BUDGET_KEYS,
     _estimate_msg_budget_tokens,
-    _last_assistant_index,
 )
+from agent.model_metadata import _last_assistant_index
 
 
 BIG_THINKING = "deliberation " * 400  # ~1.3K tokens of stale thinking text

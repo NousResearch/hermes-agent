@@ -162,6 +162,103 @@ class TestEstimateMessagesTokensRough:
         # Raw base64 would be ~100K tokens; the flat per-image model is ~1.5K.
         assert estimate_messages_tokens_rough([msg]) < 5_000
 
+    def test_stale_thinking_not_charged_but_newest_is(self):
+        """Only the NEWEST assistant turn's thinking is replayed on the wire.
+
+        Transports strip ``reasoning``/``reasoning_content`` from every older
+        assistant message before sending (#73624). The preflight estimator
+        must mirror that: charging 376KB of stale thinking across 755 old
+        assistant rows inflated rough estimates by ~69% on reasoning-heavy
+        sessions (deepseek), which re-triggered compression every couple of
+        turns even though the real prompt sat far below the threshold.
+        """
+        big_thinking = "思考内容" * 2000  # ~10K chars ≈ ~10K CJK tokens
+        old_asst = {"role": "assistant", "content": "回复",
+                    "reasoning_content": big_thinking, "reasoning": big_thinking}
+        old_asst_no_thinking = {"role": "assistant", "content": "回复"}
+        newest_asst = {"role": "assistant", "content": "最新回复",
+                       "reasoning_content": big_thinking, "reasoning": big_thinking}
+        newest_asst_no_thinking = {"role": "assistant", "content": "最新回复"}
+        user = {"role": "user", "content": "问题"}
+
+        # Old assistant thinking must NOT be charged: swapping the old turn's
+        # thinking for nothing changes the estimate by ~0.
+        with_old_thinking = estimate_messages_tokens_rough(
+            [user, old_asst, user, newest_asst_no_thinking]
+        )
+        without_old_thinking = estimate_messages_tokens_rough(
+            [user, old_asst_no_thinking, user, newest_asst_no_thinking]
+        )
+        assert abs(with_old_thinking - without_old_thinking) < 1_000, (
+            f"stale thinking charged: {with_old_thinking} vs {without_old_thinking}"
+        )
+
+        # Newest assistant thinking IS charged: swapping it out must drop the
+        # estimate by roughly the thinking size (~10K CJK chars ≈ ~10K tokens).
+        newest_charged = estimate_messages_tokens_rough(
+            [user, old_asst_no_thinking, user, newest_asst]
+        )
+        newest_not_charged = estimate_messages_tokens_rough(
+            [user, old_asst_no_thinking, user, newest_asst_no_thinking]
+        )
+        assert newest_charged - newest_not_charged > 5_000, (
+            f"newest thinking not charged: {newest_charged} vs {newest_not_charged}"
+        )
+
+    def test_stale_thinking_charge_matches_budget_walk_semantics(self):
+        """Rough estimator agrees with the tail-budget walk's
+        ``charge_stale_thinking=False`` on the same transcript.
+
+        Regression guard for the 2026-08-14 compression-loop incident:
+        preflight (rough) said ~527K, the tail walk (budget) said ~147K for
+        the same 1519-message session — 3.3x divergence driven entirely by
+        stale thinking fields. Both sides must exclude old thinking.
+        """
+        from agent.context_compressor import _estimate_msg_budget_tokens
+
+        msgs = [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1",
+             "reasoning_content": "旧思维链" * 500, "reasoning": "旧思维链" * 500},
+            {"role": "tool", "content": "t1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2",
+             "reasoning_content": "新思维链" * 500, "reasoning": "新思维链" * 500},
+        ]
+        # Old thinking must not inflate rough: replacing the old turn's
+        # thinking with nothing must be a no-op for the rough estimator.
+        msgs_no_old_thinking = [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "tool", "content": "t1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2",
+             "reasoning_content": "新思维链" * 500, "reasoning": "新思维链" * 500},
+        ]
+        rough_with = estimate_messages_tokens_rough(msgs)
+        rough_without = estimate_messages_tokens_rough(msgs_no_old_thinking)
+        assert abs(rough_with - rough_without) < 1_000, (
+            f"old thinking inflated rough: {rough_with} vs {rough_without}"
+        )
+        # Newest thinking still charged (rough side): stripping it must drop.
+        msgs_no_new_thinking = [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "tool", "content": "t1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+        ]
+        assert rough_without - estimate_messages_tokens_rough(msgs_no_new_thinking) > 2_000
+        # Budget walk with charge_stale_thinking=False for the old turn stays
+        # consistent with the rough estimator's exclusion of old thinking.
+        budget = sum(
+            _estimate_msg_budget_tokens(m, charge_stale_thinking=(i == 4))
+            for i, m in enumerate(msgs)
+        )
+        # Old thinking (≈2.5K CJK tokens each side) must not inflate rough.
+        assert abs(rough_with - budget) < 5_000, f"rough={rough_with} budget={budget}"
+
+
 
 
 class TestEstimateRequestTokensRough:

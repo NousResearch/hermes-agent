@@ -2734,6 +2734,16 @@ class QQAdapter(BasePlatformAdapter):
             timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
             allow_permanent=allow_permanent and not smart_denied,
         )
+        # Prepend contextual rationale (truncated) if available so the user
+        # sees the agent's reasoning before the approval card.
+        if contextual_reason:
+            _r = contextual_reason
+            if len(_r) > 1500:
+                _r = _r[:1497] + "..."
+            try:
+                await self.send(chat_id, _r, reply_to=msg_id)
+            except Exception as _rc_err:
+                logger.debug("[QQ] failed to send contextual rationale: %s", _rc_err)
         return await self.send_approval_request(
             chat_id, req, reply_to=msg_id,
         )

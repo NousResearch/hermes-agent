@@ -26,6 +26,11 @@ from typing import Dict, Optional
 
 import yaml
 
+# ``dotted_path`` is a stdlib-only leaf module — importing it keeps this
+# module's rule intact (managed_scope depends on nothing in hermes_cli.config;
+# config depends on managed_scope).
+from hermes_cli.dotted_path import join_dotted_key, normalize_dotted_key
+
 logger = logging.getLogger(__name__)
 
 # POSIX default. Other-platform locations are a deliberate v2 item; when added,
@@ -188,25 +193,60 @@ def _parse_env(f) -> Dict[str, str]:
     return out
 
 
-def _flatten_keys(d: dict, prefix: str = "") -> set:
+def _flatten_keys(d: dict, prefix: tuple = ()) -> set:
+    """Flatten a nested managed config into canonical dotted leaf keys.
+
+    Serialization goes through ``join_dotted_key``, so a segment that contains a
+    dot is quoted — which every real model id does, making
+    ``platforms.api_server.extra.model_routes."gpt-5.6-sol".model`` the only
+    spelling that addresses that leaf.  The previous plain ``f"{prefix}.{k}"``
+    join emitted a string that re-tokenizes to a *different* path (``gpt-5`` →
+    ``6-sol``), so ``is_key_managed`` never matched the CLI's key and
+    ``_strip_dotted_keys`` never found the leaf: a user ``config set`` of such a
+    managed key was neither refused nor stripped, persisted into config.yaml,
+    and was then silently overridden by the managed overlay on load.
+
+    A tree with no dot-bearing key serializes byte-for-byte as before.
+    """
     keys: set = set()
     for k, v in d.items():
-        dotted = f"{prefix}.{k}" if prefix else str(k)
+        path = prefix + (k,)
         if isinstance(v, dict) and v:
-            keys |= _flatten_keys(v, dotted)
+            keys |= _flatten_keys(v, path)
         else:
-            keys.add(dotted)
+            keys.add(join_dotted_key(path))
     return keys
 
 
 def managed_config_keys() -> set:
-    """Dotted leaf keys pinned by the managed config (e.g. {'model.default'})."""
+    """Dotted leaf keys pinned by the managed config (e.g. {'model.default'}).
+
+    Keys are in the canonical representation, so a dot-bearing segment comes
+    back quoted.  Callers that display these (``hermes config show``,
+    ``save_config``'s "not saved" note) therefore render the exact string the
+    user must type to address that key.
+    """
     return _flatten_keys(load_managed_config())
 
 
 def is_key_managed(dotted_key: str) -> bool:
-    """True if the exact dotted config key is pinned by the managed layer."""
-    return dotted_key in managed_config_keys()
+    """True if the exact dotted config key is pinned by the managed layer.
+
+    The argument is normalized into the canonical representation first, so the
+    CLI's spelling and the flattened managed key are compared in one form.  The
+    comparison itself stays exact set membership — this is a config-authority
+    check, never a prefix or fuzzy match.
+    """
+    try:
+        candidate = normalize_dotted_key(dotted_key)
+    except ValueError:
+        # Unterminated quote — unrepresentable, so it cannot equal any canonical
+        # key.  Fall back to the raw exact test: that is precisely the previous
+        # behaviour, and it keeps an authority check from gaining a new raise.
+        # The CLI validators reject a malformed key before it reaches here, so
+        # this is defence in depth rather than a live path.
+        candidate = dotted_key
+    return candidate in managed_config_keys()
 
 
 def is_env_managed(name: str) -> bool:

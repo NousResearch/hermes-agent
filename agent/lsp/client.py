@@ -524,8 +524,34 @@ class LSPClient:
             raise LSPProtocolError(f"send failed for {method!r}: {e}") from e
         try:
             return await fut
+        except asyncio.CancelledError:
+            # The caller abandoned this request — an ``asyncio.wait_for``
+            # timeout or an explicit task cancel (e.g. the pull/push race
+            # in ``wait_for_diagnostics``).  Without ``$/cancelRequest``
+            # the server keeps computing the answer, burning CPU and
+            # blocking queued requests behind it (rust-analyzer and
+            # tsserver both process sequentially per document).  Write
+            # the notification synchronously — no drain — because
+            # awaiting inside a cancelled task is unreliable.
+            self._notify_cancel_nowait(req_id)
+            raise
         finally:
             self._pending.pop(req_id, None)
+
+    def _notify_cancel_nowait(self, req_id: int) -> None:
+        """Best-effort ``$/cancelRequest`` without awaiting the transport.
+
+        Safe to call from a cancelled coroutine: the bytes go into the
+        transport buffer and flush on the event loop's schedule.
+        """
+        if self._proc is None or self._proc.stdin is None or self._proc.stdin.is_closing():
+            return
+        try:
+            self._proc.stdin.write(
+                encode_message(make_notification("$/cancelRequest", {"id": req_id}))
+            )
+        except (BrokenPipeError, ConnectionResetError, OSError, RuntimeError):
+            pass
 
     async def _send_request_with_retry(self, method: str, params: Any, *, timeout: float) -> Any:
         """Send a request, retrying on ``ContentModified`` (-32801).

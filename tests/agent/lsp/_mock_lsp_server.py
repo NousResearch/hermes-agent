@@ -25,6 +25,12 @@ Behaviour (all behaviours selectable via env var ``MOCK_LSP_SCRIPT``):
   ``didChange`` sleeps ``MOCK_LSP_PUSH_DELAY`` seconds (default 1.0)
   and then pushes EMPTY diagnostics.  Models a server that fixes
   the ghost if you actually wait for it.  Pull endpoint rejects.
+- ``"hang_pull"`` — same as ``clean`` but NEVER answers
+  ``textDocument/diagnostic`` (request left pending forever) and
+  records any ``$/cancelRequest`` notification it receives by
+  appending the cancelled id to the file named in env var
+  ``MOCK_LSP_TRACE``.  Models a wedged server so tests can assert
+  the client cancels abandoned requests.
 
 The script writes JSON-RPC framed messages to stdout and reads from
 stdin.  No third-party dependencies — uses only stdlib so it runs
@@ -158,7 +164,18 @@ def main():
             )
             continue
 
+        if msg.get("method") == "$/cancelRequest":
+            trace = os.environ.get("MOCK_LSP_TRACE")
+            if trace:
+                with open(trace, "a", encoding="utf-8") as fh:
+                    fh.write(f"{(msg.get('params') or {}).get('id')}\n")
+            continue
+
         if msg.get("method") == "textDocument/diagnostic":
+            if script == "hang_pull":
+                # Wedged server: never answer — the request stays
+                # pending until the client gives up.
+                continue
             if script in {"stale", "slow_push"}:
                 # These scripts model push-only servers so the ghost
                 # can't be papered over by the pull channel.

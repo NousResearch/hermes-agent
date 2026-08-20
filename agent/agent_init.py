@@ -41,6 +41,11 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.process_bootstrap import _install_safe_stdio
+from agent.session_write_policy import (
+    SessionWritePolicy,
+    coerce_session_write_policy,
+    policy_from_read_only_env,
+)
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
@@ -589,6 +594,7 @@ def init_agent(
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
     requested_provider: str = None,
+    session_write_policy: SessionWritePolicy | None = None,
 ):
     """
     Initialize the AI Agent.
@@ -660,6 +666,25 @@ def init_agent(
     agent._chat_type = chat_type
     agent._thread_id = thread_id
     agent._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
+    agent._session_write_policy_supplied = session_write_policy is not None
+    _effective_session_id = session_id or ""
+    if session_write_policy is not None:
+        agent.session_write_policy = coerce_session_write_policy(
+            session_write_policy,
+            session_id=_effective_session_id,
+            protected=True,
+        )
+    else:
+        agent.session_write_policy = (
+            policy_from_read_only_env(
+                session_id=_effective_session_id,
+                read_only_value=os.environ.get("HERMES_READ_ONLY_SESSION", ""),
+            )
+            or SessionWritePolicy.normal(
+                session_id=_effective_session_id,
+                origin="AIAgent.__init__",
+            )
+        )
     # Pluggable print function — CLI replaces this with _cprint so that
     # raw ANSI status lines are routed through prompt_toolkit's renderer
     # instead of going directly to stdout where patch_stdout's StdoutProxy
@@ -1621,6 +1646,63 @@ def init_agent(
         timestamp_str = agent.session_start.strftime("%Y%m%d_%H%M%S")
         short_uuid = uuid.uuid4().hex[:6]
         agent.session_id = f"{timestamp_str}_{short_uuid}"
+    if not getattr(agent, "_session_write_policy_supplied", False):
+        agent.session_write_policy = (
+            policy_from_read_only_env(
+                session_id=agent.session_id,
+                read_only_value=os.environ.get("HERMES_READ_ONLY_SESSION", ""),
+            )
+            or SessionWritePolicy.normal(
+                session_id=agent.session_id,
+                origin="AIAgent.__init__",
+            )
+        )
+
+    # PHASE 1 (P0 containment): capture an immutable SelfImprovementDecision
+    # ONCE at session start. The decision is the single source of truth for
+    # post-turn self-improvement authorization; downstream gates (L0 turn
+    # finalizer, L1 background_review, L3 tool boundaries) consult this
+    # decision, not a fresh os.environ sample.
+    if not getattr(agent, "_self_improvement_decision_captured", False):
+        try:
+            from agent.self_improvement_policy import (
+                Decision as _Phase1Decision,
+                evaluate as _phase1_policy_evaluate,
+                BACKGROUND_REVIEW_ORIGIN as _PHASE1_BG_ORIGIN,
+            )
+            _phase1_dec = _phase1_policy_evaluate(
+                environment_disabled=os.environ.get("HERMES_DISABLE_SELF_IMPROVEMENT", ""),
+                session_read_only=os.environ.get("HERMES_READ_ONLY_SESSION", ""),
+                operation_kind="background_review_spawn",
+                origin=_PHASE1_BG_ORIGIN,
+            )
+            agent._self_improvement_decision = _Phase1Decision(
+                result=_phase1_dec.result,
+                reason=_phase1_dec.reason,
+            )
+            agent._self_improvement_decision_captured = True
+        except Exception:
+            # Fail-closed: if we cannot form a decision, default to DENY.
+            try:
+                from agent.self_improvement_policy import Decision as _Phase1Decision2
+                agent._self_improvement_decision = _Phase1Decision2(
+                    result="DENY",
+                    reason="decision-capture-raised",
+                )
+            except Exception:
+                # Last-ditch fallback: a sentinel object with .allow=False.
+                class _FallbackDecision:
+                    result = "DENY"
+                    reason = "decision-capture-raised"
+                    @property
+                    def allow(self) -> bool:
+                        return False
+                agent._self_improvement_decision = _FallbackDecision()
+            agent._self_improvement_decision_captured = True
+
+        # Do not bind the self-improvement ContextVar during init: the
+        # captured decision is scoped per AIAgent.run_conversation execution
+        # so async/thread context is respected and reset is deterministic.
 
     # Expose session ID to tools (terminal, execute_code) so agents can
     # reference their own session for --resume commands, cross-session

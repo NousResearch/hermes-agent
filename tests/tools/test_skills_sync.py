@@ -230,6 +230,7 @@ class TestExternalDirsIndexing:
         stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]))
         return stack
 
     def test_shadowed_skill_skipped_and_not_manifested(self, tmp_path):
@@ -296,6 +297,7 @@ class TestRenamedBundledSkillRecovery:
         )
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]))
         return stack
 
     def _skill(self, root, rel, body="# Body\n", name="moved-skill"):
@@ -420,6 +422,7 @@ class TestSyncSkills:
         stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]))
         return stack
 
     def test_suppressed_builtin_not_reseeded(self, tmp_path):
@@ -555,6 +558,7 @@ class TestResetBundledSkill:
         stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]))
         return stack
 
     def test_reset_clears_stuck_user_modified_flag(self, tmp_path):
@@ -733,6 +737,7 @@ class TestNoBundledSkillsOptOut:
             stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
             stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
             stack.enter_context(patch("tools.skills_sync.HERMES_HOME", hermes_home))
+            stack.enter_context(patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]))
             return stack
 
         with _patches():
@@ -796,7 +801,8 @@ class TestOptOutToggleAndRemove:
              patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"), \
              patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
              patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
-             patch("tools.skills_sync.HERMES_HOME", home):
+             patch("tools.skills_sync.HERMES_HOME", home), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
             sync_skills(quiet=True)
             # User edits 'beta'
             (skills_dir / "beta" / "SKILL.md").write_text("---\nname: beta\n---\nEDITED\n")
@@ -816,6 +822,135 @@ class TestOptOutToggleAndRemove:
             assert "EDITED" in (skills_dir / "beta" / "SKILL.md").read_text()
             # non-bundled local skill never considered
             assert (skills_dir / "mine" / "SKILL.md").exists()
+
+
+    def test_remove_pristine_uses_delete_guard_across_final_validation_and_rmtree(self, tmp_path):
+        from contextlib import contextmanager
+        import tools.skills_sync as ss
+        from tools.skills_sync import sync_skills, remove_pristine_bundled_skills
+
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        active = {"guard": False}
+        events = []
+
+        @contextmanager
+        def fake_delete_guard(name, *, target, approved_existing_paths, mutation_paths, identity_names=()):
+            assert name == "alpha"
+            assert target == skills_dir / "alpha"
+            assert approved_existing_paths == [skills_dir / "alpha"]
+            assert mutation_paths == [skills_dir / "alpha"]
+            active["guard"] = True
+            events.append("enter")
+            try:
+                yield
+            finally:
+                active["guard"] = False
+                events.append("exit")
+
+        real_rmtree = ss._rmtree_writable
+
+        def checked_rmtree(path):
+            assert active["guard"] is True
+            events.append("rmtree")
+            return real_rmtree(path)
+
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+             patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
+            sync_skills(quiet=True)
+            # Keep this focused on one manifest entry so the fake guard can assert exact args.
+            manifest = _read_manifest()
+            _write_manifest({"alpha": manifest["alpha"]})
+            with patch("tools.skills_sync.live_skill_delete_guard", side_effect=fake_delete_guard), \
+                 patch("tools.skills_sync._rmtree_writable", side_effect=checked_rmtree):
+                result = remove_pristine_bundled_skills(dry_run=False)
+
+        assert result["removed"] == ["alpha"]
+        assert events == ["enter", "rmtree", "exit"]
+        assert not (skills_dir / "alpha").exists()
+
+    def test_remove_pristine_revalidates_changed_target_inside_delete_guard(self, tmp_path):
+        from contextlib import contextmanager
+        import tools.skills_sync as ss
+        from tools.skills_sync import sync_skills, remove_pristine_bundled_skills
+
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        @contextmanager
+        def replacing_delete_guard(*args, **kwargs):
+            target = skills_dir / "alpha"
+            ss._rmtree_writable(target)
+            target.mkdir()
+            (target / "SKILL.md").write_text("---\nname: alpha\n---\nCHANGED\n")
+            yield
+
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+             patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
+            sync_skills(quiet=True)
+            with patch("tools.skills_sync.live_skill_delete_guard", side_effect=replacing_delete_guard):
+                result = remove_pristine_bundled_skills(dry_run=False)
+            manifest_after = _read_manifest()
+
+        assert "alpha" not in result["removed"]
+        assert any(s["name"] == "alpha" and "content changed" in s["reason"] for s in result["skipped"])
+        assert (skills_dir / "alpha" / "SKILL.md").read_text().endswith("CHANGED\n")
+        assert "alpha" in manifest_after
+
+    def test_remove_pristine_unexpected_same_name_fails_closed(self, tmp_path):
+        from tools.skills_sync import sync_skills, remove_pristine_bundled_skills
+
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+             patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
+            sync_skills(quiet=True)
+            other = skills_dir / "category" / "alpha"
+            other.mkdir(parents=True)
+            (other / "SKILL.md").write_text("---\nname: alpha\n---\nother\n")
+            result = remove_pristine_bundled_skills(dry_run=False)
+
+        assert "alpha" not in result["removed"]
+        assert any(s["name"] == "alpha" and "delete guard refused" in s["reason"] for s in result["skipped"])
+        assert (skills_dir / "alpha" / "SKILL.md").exists()
+        assert other.exists()
+
+    def test_remove_pristine_delete_failure_preserves_target_and_manifest(self, tmp_path):
+        from tools.skills_sync import sync_skills, remove_pristine_bundled_skills
+
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        def fail_delete(_path):
+            raise PermissionError("busy")
+
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+             patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
+            sync_skills(quiet=True)
+            with patch("tools.skills_sync._rmtree_writable", side_effect=fail_delete):
+                result = remove_pristine_bundled_skills(dry_run=False)
+            manifest_after = _read_manifest()
+
+        assert result["removed"] == []
+        assert {s["name"] for s in result["skipped"]} == {"alpha", "beta"}
+        assert (skills_dir / "alpha" / "SKILL.md").exists()
+        assert "alpha" in manifest_after and "beta" in manifest_after
 
 
 class TestUpdateBackupRecovery:
@@ -844,6 +979,7 @@ class TestUpdateBackupRecovery:
         stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]))
         return stack
 
     def _seed_synced_copy(self, skills_dir, manifest_file, text="# Old v1"):
@@ -1002,3 +1138,264 @@ class TestCallTimeDirResolution:
                 ss._rmtree_writable(foreign)
         finally:
             reset_hermes_home_override(token)
+
+class TestA1HSkillPublicationGuards:
+    def _skill(self, root, rel, *, name=None, body="body\n"):
+        d = root / rel
+        d.mkdir(parents=True, exist_ok=True)
+        skill_name = name or d.name
+        (d / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\n{body}")
+        return d
+
+    def _patches(self, bundled, skills_dir, manifest_file):
+        from contextlib import ExitStack
+
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]))
+        return stack
+
+    def _guard_refusal(self, path):
+        from tools.skill_publish_guard import SkillMutationLockAcquireFailure
+
+        return SkillMutationLockAcquireFailure(
+            canonical_skill_path=path,
+            lock_path=path.parent / "guard.lock",
+            platform="test",
+            lock_failure_stage="lock_primitive_acquire",
+            cause=ValueError("unexpected same-name live state"),
+        )
+
+    def test_restore_official_optional_skill_guard_paths_for_multiple_matches(self, tmp_path):
+        from contextlib import contextmanager
+        import tools.skills_sync as ss
+
+        optional = tmp_path / "optional-skills"
+        src = self._skill(optional, "productivity/folder-skill", name="official-skill", body="# official\n")
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        dest = self._skill(skills_dir, "productivity/folder-skill", name="official-skill", body="# stale canonical\n")
+        moved_by_folder = self._skill(skills_dir, "old/folder-skill", name="folder-skill", body="# stale folder\n")
+        moved_by_frontmatter = self._skill(skills_dir, "misc/local-copy", name="official-skill", body="# stale alias\n")
+        calls = []
+
+        @contextmanager
+        def fake_repair_guard(name, *, target, approved_existing_paths, mutation_paths, identity_names=()):
+            calls.append({
+                "name": name,
+                "target": target,
+                "approved": list(approved_existing_paths),
+                "mutation": list(mutation_paths),
+                "identity_names": tuple(identity_names),
+            })
+            yield
+
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
+             patch("tools.skills_sync.live_skill_repair_guard", side_effect=fake_repair_guard):
+            result = ss.restore_official_optional_skill("official-skill", restore=True)
+
+        assert result["ok"] is True
+        assert len(calls) == 1
+        assert calls[0]["name"] == "official-skill"
+        assert calls[0]["target"] == dest
+        assert set(calls[0]["approved"]) == {dest, moved_by_folder, moved_by_frontmatter}
+        assert set(calls[0]["mutation"]) == {dest, moved_by_folder, moved_by_frontmatter}
+        assert set(calls[0]["identity_names"]) == {"folder-skill", "official-skill"}
+        assert (dest / "SKILL.md").read_text() == (src / "SKILL.md").read_text()
+
+    def test_restore_guard_refusal_fails_closed_without_partial_restore(self, tmp_path):
+        import tools.skills_sync as ss
+
+        optional = tmp_path / "optional-skills"
+        self._skill(optional, "productivity/guarded", name="guarded", body="# official\n")
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        dest = self._skill(skills_dir, "productivity/guarded", name="guarded", body="# user copy\n")
+
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
+             patch("tools.skills_sync.live_skill_repair_guard", side_effect=self._guard_refusal(dest)), \
+             pytest.raises(type(self._guard_refusal(dest))):
+            ss.restore_official_optional_skill("guarded", restore=True)
+
+        assert (dest / "SKILL.md").read_text().endswith("# user copy\n")
+        assert not (skills_dir / ".restore-backups").exists()
+
+    def test_sync_new_copy_guard_failure_does_not_publish_or_manifest(self, tmp_path):
+        bundled = tmp_path / "bundled"
+        self._skill(bundled, "category/new-skill", name="new-skill")
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        dest = skills_dir / "category" / "new-skill"
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+             patch("tools.skills_sync.live_skill_publish_guard", side_effect=self._guard_refusal(dest)), \
+             pytest.raises(type(self._guard_refusal(dest))):
+            sync_skills(quiet=True)
+
+        assert not dest.exists()
+        assert not manifest_file.exists()
+
+    def test_sync_update_repair_guard_spans_backup_copy_and_rollback(self, tmp_path):
+        from contextlib import contextmanager
+        import tools.skills_sync as ss
+
+        bundled = tmp_path / "bundled"
+        self._skill(bundled, "old-skill", name="old-skill", body="# upstream v2\n")
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        dest = self._skill(skills_dir, "old-skill", name="old-skill", body="# user v1\n")
+        manifest_file.write_text(f"old-skill:{_dir_hash(dest)}\n")
+        active = {"guard": False}
+        events = []
+
+        @contextmanager
+        def fake_repair_guard(name, *, target, approved_existing_paths, mutation_paths, identity_names=()):
+            assert name == "old-skill"
+            assert target == dest
+            assert set(approved_existing_paths) == {dest}
+            assert set(mutation_paths) == {dest, dest.with_suffix(".bak")}
+            active["guard"] = True
+            events.append("enter")
+            try:
+                yield
+            finally:
+                events.append("exit")
+                active["guard"] = False
+
+        real_move = ss.shutil.move
+
+        def checked_move(src, dst, *args, **kwargs):
+            assert active["guard"] is True
+            events.append(("move", Path(src), Path(dst)))
+            return real_move(src, dst, *args, **kwargs)
+
+        def partial_copy(src, dst, *args, **kwargs):
+            assert active["guard"] is True
+            Path(dst).mkdir(parents=True, exist_ok=True)
+            (Path(dst) / "PARTIAL").write_text("half")
+            raise OSError("copy failed")
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+             patch("tools.skills_sync.live_skill_repair_guard", side_effect=fake_repair_guard), \
+             patch("tools.skills_sync.shutil.move", side_effect=checked_move), \
+             patch("tools.skills_sync.shutil.copytree", side_effect=partial_copy):
+            result = sync_skills(quiet=True)
+
+        assert result["updated"] == []
+        assert (dest / "SKILL.md").read_text().endswith("# user v1\n")
+        assert not (dest / "PARTIAL").exists()
+        assert ("move", dest, dest.with_suffix(".bak")) in events
+        assert ("move", dest.with_suffix(".bak"), dest) in events
+
+    def test_recover_renamed_skill_guard_spans_candidate_to_canonical_move(self, tmp_path):
+        from contextlib import contextmanager
+        import tools.skills_sync as ss
+        from tools.skills_sync import _recover_renamed_skill
+
+        skills_dir = tmp_path / "user_skills"
+        old = self._skill(skills_dir, "oldcat/moved-skill", name="moved-skill")
+        origin_hash = _dir_hash(old)
+        dest = skills_dir / "newcat" / "moved-skill"
+        active = {"guard": False}
+        calls = []
+
+        @contextmanager
+        def fake_repair_guard(name, *, target, approved_existing_paths, mutation_paths, identity_names=()):
+            calls.append((name, target, list(approved_existing_paths), list(mutation_paths)))
+            active["guard"] = True
+            try:
+                yield
+            finally:
+                active["guard"] = False
+
+        real_move = ss.shutil.move
+
+        def checked_move(src, dst, *args, **kwargs):
+            assert active["guard"] is True
+            return real_move(src, dst, *args, **kwargs)
+
+        with patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.live_skill_repair_guard", side_effect=fake_repair_guard), \
+             patch("tools.skills_sync.shutil.move", side_effect=checked_move):
+            moved_from = _recover_renamed_skill(
+                "moved-skill", origin_hash, dest, {"moved-skill": [old]}, set(), True
+            )
+
+        assert moved_from == "oldcat/moved-skill"
+        assert calls == [("moved-skill", dest, [old], [old, dest])]
+        assert dest.exists()
+        assert not old.exists()
+
+    def test_reset_restore_guard_does_not_span_followup_sync(self, tmp_path):
+        from contextlib import contextmanager
+        import tools.skills_sync as ss
+
+        bundled = tmp_path / "bundled"
+        self._skill(bundled, "productivity/google-workspace", name="google-workspace")
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        dest = self._skill(skills_dir, "productivity/google-workspace", name="google-workspace", body="# user\n")
+        manifest_file.write_text("google-workspace:STALEHASH000000000000000000000000\n")
+        active = {"guard": False}
+        events = []
+
+        @contextmanager
+        def fake_repair_guard(name, *, target, approved_existing_paths, mutation_paths, identity_names=()):
+            assert name == "google-workspace"
+            assert target == dest
+            assert approved_existing_paths == [dest]
+            assert mutation_paths == [dest]
+            active["guard"] = True
+            events.append("guard-enter")
+            try:
+                yield
+            finally:
+                events.append("guard-exit")
+                active["guard"] = False
+
+        def fake_sync(quiet=False):
+            assert active["guard"] is False
+            events.append("sync-outside-guard")
+            return {"copied": ["google-workspace"]}
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+             patch("tools.skills_sync.live_skill_repair_guard", side_effect=fake_repair_guard), \
+             patch("tools.skills_sync.sync_skills", side_effect=fake_sync):
+            result = ss.reset_bundled_skill("google-workspace", restore=True)
+
+        assert result["ok"] is True
+        assert events == ["guard-enter", "guard-exit", "sync-outside-guard"]
+        assert not dest.exists()
+
+    def test_external_shadow_cleanup_approves_external_survivor_without_locking_it(self, tmp_path):
+        from contextlib import contextmanager
+
+        bundled = tmp_path / "bundled"
+        self._skill(bundled, "category/shadowed", name="shadowed")
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        local = self._skill(skills_dir, "category/shadowed", name="shadowed")
+        external = self._skill(tmp_path / "external", "category/shadowed", name="shadowed")
+        calls = []
+
+        @contextmanager
+        def fake_repair_guard(name, *, target, approved_existing_paths, mutation_paths, identity_names=()):
+            calls.append((name, target, list(approved_existing_paths), list(mutation_paths)))
+            yield
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+             patch("tools.skills_sync._build_external_skill_paths_by_name", return_value={"shadowed": [external]}), \
+             patch("tools.skills_sync.live_skill_repair_guard", side_effect=fake_repair_guard):
+            result = sync_skills(quiet=True)
+
+        assert "shadowed" in result["shadowed_by_external"]
+        assert calls == [("shadowed", local, [local, external], [local])]
+        assert not local.exists()
+        assert external.exists()

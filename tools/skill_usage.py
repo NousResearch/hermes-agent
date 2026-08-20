@@ -1158,6 +1158,11 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     way to lift a prune). Restoring clears any suppression entry so future
     updates may re-seed the built-in again.
     """
+    # Lazy-import the shared publication guard. Local import mirrors the pattern
+    # used by skill publication call sites that keep module import side effects
+    # stable for monkey-patching tests.
+    import tools.skill_publish_guard as _spg
+
     # Hub skills always have an external upstream owner — never shadow them.
     if is_hub_installed(skill_name):
         return False, (
@@ -1215,29 +1220,42 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
         _ledger = None  # type: ignore[assignment]
 
     try:
-        src.rename(dest)
-    except OSError:
-        import shutil
-        try:
-            shutil.move(str(src), str(dest))
-        except Exception as e:
-            return False, f"failed to restore: {e}"
+        with _spg.live_skill_publish_guard(
+            skill_name,
+            target=dest,
+            replacement_policy="new_only",
+        ):
+            try:
+                src.rename(dest)
+            except OSError:
+                import shutil
+                try:
+                    shutil.move(str(src), str(dest))
+                except Exception as e:
+                    return False, f"failed to restore: {e}"
 
-    # Restoring a pruned built-in lifts its suppression so updates can manage it.
-    remove_suppressed_name(skill_name)
+            # Restoring a pruned built-in lifts its suppression so updates can
+            # manage it. The usage sidecar lock used by set_state is intentionally
+            # separate from publication scope and preserved.
+            remove_suppressed_name(skill_name)
+            set_state(skill_name, STATE_ACTIVE)
 
-    set_state(skill_name, STATE_ACTIVE)
-    try:
-        if _ledger is not None:
-            _ledger.record_mutation(
-                "restore",
-                skill_name,
-                before=_ledger_before if _ledger_before is not None else [],
-                after_root=dest,
-            )
-    except Exception:
-        pass
-    return True, f"restored to {dest}"
+            # Preserve current-main curator audit-ledger telemetry.
+            try:
+                if _ledger is not None:
+                    _ledger.record_mutation(
+                        "restore",
+                        skill_name,
+                        before=_ledger_before if _ledger_before is not None else [],
+                        after_root=dest,
+                    )
+            except Exception:
+                pass
+            return True, f"restored to {dest}"
+    except _spg.SkillMutationLockAcquireFailure as e:
+        return False, f"restore could not acquire the publication lock: {e}"
+    # SkillMutationLockReleaseFailure is intentionally not caught; release
+    # failures indicate a corrupt publication-lock layer and must propagate.
 
 
 def _find_skill_dir(skill_name: str) -> Optional[Path]:

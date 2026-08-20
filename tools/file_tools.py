@@ -53,6 +53,79 @@ def _expand_tilde(path: str) -> str:
     return os.path.expanduser(path)
 
 
+def _session_policy_denial_json(
+    *,
+    operation_kind: str,
+    path: str | None,
+    task_id: str,
+    session_id: str | None,
+    origin: str,
+) -> str | None:
+    try:
+        from agent.session_write_policy import (
+            CapabilityGrant,
+            evaluate_session_write_policy,
+            get_current_session_write_policy,
+            policy_evaluation_failure_payload,
+        )
+
+        target = None
+        if path is not None:
+            try:
+                target = str(_resolve_path_for_task(path, task_id))
+            except Exception as e:
+                logger.debug("session write policy could not resolve file target: %s", e)
+                return json.dumps(
+                    policy_evaluation_failure_payload(
+                        operation_kind=operation_kind,
+                        session_id=session_id or task_id or "",
+                        target=_expand_tilde(path),
+                        error=e,
+                    ),
+                    ensure_ascii=False,
+                )
+        policy = get_current_session_write_policy(
+            protected=False,
+            session_id=session_id or task_id or "",
+        )
+        decision = evaluate_session_write_policy(
+            policy,
+            operation_kind=operation_kind,
+            origin=origin,
+            target_path=target,
+            capability=CapabilityGrant("filesystem", operation_kind),
+        )
+        if decision.denied:
+            return decision.denial_json()
+    except Exception as e:
+        logger.debug("session write policy file-wrapper check failed: %s", e)
+        try:
+            from agent.session_write_policy import policy_evaluation_failure_payload
+
+            return json.dumps(
+                policy_evaluation_failure_payload(
+                    operation_kind=operation_kind,
+                    session_id=session_id or task_id or "",
+                    target=_expand_tilde(path) if path else "",
+                    error=e,
+                ),
+                ensure_ascii=False,
+            )
+        except Exception:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "Session write policy evaluation failed; mutation denied",
+                    "policy_reason": "policy_evaluation_failed",
+                    "operation_kind": operation_kind,
+                    "session_id": session_id or task_id or "",
+                    "target": _expand_tilde(path) if path else "",
+                },
+                ensure_ascii=False,
+            )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Read-size guard: cap the character count returned to the model.
 # We're model-agnostic so we can't count tokens; characters are a safe proxy.
@@ -2230,6 +2303,16 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     Pass ``True`` after explicit user direction — same shape as ``force``
     on the terminal tool.
     """
+    policy_denial = _session_policy_denial_json(
+        operation_kind="file_write",
+        path=path,
+        task_id=task_id,
+        session_id=session_id,
+        origin="file_tool_write",
+    )
+    if policy_denial is not None:
+        return policy_denial
+
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
@@ -2321,6 +2404,17 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     targets under another profile's skills/plugins/cron/memories
     directory. Same shape as ``write_file``'s flag.
     """
+    if mode == "replace":
+        policy_denial = _session_policy_denial_json(
+            operation_kind="file_patch",
+            path=path,
+            task_id=task_id,
+            session_id=session_id,
+            origin="file_tool_patch_replace",
+        )
+        if policy_denial is not None:
+            return policy_denial
+
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
     # Paths whose CONTENT will be text-written (Update/Add + explicit path).
@@ -2360,6 +2454,20 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             _err = _reject_v4a_traversal(v4a_path)
             if _err:
                 return _err
+            _kind = "file_patch"
+            if _m.group(0).lstrip().startswith("*** Add"):
+                _kind = "file_create"
+            elif _m.group(0).lstrip().startswith("*** Delete"):
+                _kind = "file_delete"
+            policy_denial = _session_policy_denial_json(
+                operation_kind=_kind,
+                path=v4a_path,
+                task_id=task_id,
+                session_id=session_id,
+                origin="file_tool_patch",
+            )
+            if policy_denial is not None:
+                return policy_denial
             _paths_to_check.append(v4a_path)
             if _op in ("Update", "Add"):
                 _content_write_paths.append(v4a_path)
@@ -2372,6 +2480,16 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 _err = _reject_v4a_traversal(v4a_path)
                 if _err:
                     return _err
+                _kind = "file_delete" if v4a_path == _m.group(1).strip() else "file_write"
+                policy_denial = _session_policy_denial_json(
+                    operation_kind=_kind,
+                    path=v4a_path,
+                    task_id=task_id,
+                    session_id=session_id,
+                    origin="file_tool_patch",
+                )
+                if policy_denial is not None:
+                    return policy_denial
                 _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)

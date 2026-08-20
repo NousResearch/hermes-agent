@@ -556,6 +556,64 @@ class CopilotACPClient:
         return completion
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+        def _consult_pre_spawn_session_write_policy(argv, cwd) -> None:
+            try:
+                from agent.session_write_policy import (
+                    CallerType,
+                    PolicyDenied,
+                    SessionWritePolicyDecisionResult,
+                    pre_spawn_consult,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"acp_subprocess_blocked_by_session_write_policy "
+                    f"reason=policy_helpers_unavailable:{type(exc).__name__}"
+                ) from exc
+
+            try:
+                decision = pre_spawn_consult(
+                    caller_type=CallerType.DELEGATION,
+                    operation_kind="terminal_exec",
+                    argv=argv,
+                    raw_command=None,
+                    cwd=cwd,
+                    env_subset=None,
+                    target_path=None,
+                )
+            except PolicyDenied as exc:
+                raise RuntimeError(
+                    " ".join(
+                        [
+                            "acp_subprocess_blocked_by_session_write_policy",
+                            f"disposition={getattr(exc, 'disposition', '')}",
+                            f"reason={getattr(exc, 'reason', '')}",
+                        ]
+                    ).strip()
+                ) from None
+            except Exception as exc:
+                raise RuntimeError(
+                    f"acp_subprocess_blocked_by_session_write_policy "
+                    f"reason=acp_pre_spawn_policy_evaluation_failed:{type(exc).__name__}"
+                ) from None
+
+            result = getattr(decision, "result", None)
+            denied = bool(getattr(decision, "denied", False)) or result is SessionWritePolicyDecisionResult.DENY
+            if not denied and isinstance(result, str):
+                denied = result == SessionWritePolicyDecisionResult.DENY.value
+            if denied:
+                raise RuntimeError(
+                    " ".join(
+                        [
+                            "acp_subprocess_blocked_by_session_write_policy",
+                            f"disposition={getattr(decision, 'disposition', '') or 'DENY_POLICY'}",
+                            f"reason={getattr(decision, 'reason', '')}",
+                        ]
+                    ).strip()
+                )
+
+        argv = [self._acp_command, *self._acp_args]
+        _consult_pre_spawn_session_write_policy(argv, self._acp_cwd)
+
         # Fast-fail when the CLI doesn't support the ACP args we'd pass.
         # Without this guard, a CLI like Claude Code v2.x exits with
         # ``error: unknown option '--acp'`` immediately, then the parent
@@ -584,7 +642,7 @@ class CopilotACPClient:
             from hermes_cli._subprocess_compat import windows_hide_flags
 
             proc = subprocess.Popen(
-                [self._acp_command] + self._acp_args,
+                argv,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

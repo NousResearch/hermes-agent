@@ -794,14 +794,79 @@ def finalize_turn(
         and not getattr(agent, "skip_background_review", False)
         and (_should_review_memory or _should_review_skills)
     ):
+        # Session-write-policy barrier: when HERMES_READ_ONLY_SESSION
+        # (or a protected SessionWritePolicy of DENY_ALL) is active, skip
+        # the background-review fork — the same L1 enforcement lives in
+        # agent/background_review.py's spawn_background_review_thread, but
+        # this prefilter avoids paying the post-turn-context allocation cost
+        # when the review would have been denied anyway. The
+        # SKIP_BACKGROUND_REVIEW_THREAD sentinel inside background_review.py
+        # is the canonical skip mechanism; this prefilter is a fast path.
+        #
+        # PHASE 1 (P0 containment): the typed SelfImprovementDecision
+        # captured at session start is the SINGLE source of truth. The
+        # fast-path DENY_ALL prefilter is kept as a backstop for the
+        # session-write-policy seam, but the canonical check below uses
+        # ``agent._self_improvement_decision`` (immutable for the session)
+        # instead of re-sampling os.environ. Default-OFF invariant: when
+        # ``HERMES_DISABLE_SELF_IMPROVEMENT`` is unset/empty, the
+        # canonical decision is DENY_FALLBACK_DECISION and the review is
+        # denied.
+        _bg_review_allowed = True
+        _swp_blocks_review = False
         try:
-            agent._spawn_background_review(
-                messages_snapshot=list(messages),
-                review_memory=_should_review_memory,
-                review_skills=_should_review_skills,
+            from agent.session_write_policy import (
+                SessionWritePolicyMode,
+                get_current_session_write_policy,
             )
+            _swp_policy = get_current_session_write_policy(protected=False)
+            if _swp_policy.mode is SessionWritePolicyMode.DENY_ALL:
+                _swp_blocks_review = True
         except Exception:
-            pass  # Background review is best-effort
+            # If policy helpers are unavailable, let the canonical check
+            # in background_review.spawn_background_review_thread decide.
+            _swp_blocks_review = False
+        # PHASE 2: consult the captured SelfImprovementDecision.
+        try:
+            _phase1_dec = getattr(agent, "_self_improvement_decision", None)
+            if _phase1_dec is None:
+                _bg_review_allowed = False
+                import logging as _logging
+                _logging.getLogger("agent.conversation_loop").warning(
+                    "self_improvement_policy deny decision=DENY reason=%r "
+                    "operation_kind=background_review_spawn origin=background_review "
+                    "session_id=%s",
+                    "missing_self_improvement_decision",
+                    getattr(agent, "session_id", "") or "",
+                )
+            elif not _phase1_dec.allow:
+                _bg_review_allowed = False
+                import logging as _logging
+                _logging.getLogger("agent.conversation_loop").warning(
+                    "self_improvement_policy deny decision=DENY reason=%r "
+                    "operation_kind=background_review_spawn origin=background_review "
+                    "session_id=%s",
+                    _phase1_dec.reason or "decision_denies_spawn",
+                    getattr(agent, "session_id", "") or "",
+                )
+        except Exception:
+            # Fail-closed: never spawn a reviewer we cannot gate.
+            _bg_review_allowed = False
+            import logging as _logging
+            _logging.getLogger("agent.conversation_loop").exception(
+                "self_improvement_decision lookup raised; defaulting to deny background_review_spawn"
+            )
+        if not (not _swp_blocks_review and _bg_review_allowed):
+            pass  # Suppress the spawn below; both barriers held.
+        else:
+            try:
+                agent._spawn_background_review(
+                    messages_snapshot=list(messages),
+                    review_memory=_should_review_memory,
+                    review_skills=_should_review_skills,
+                )
+            except Exception:
+                pass  # Background review is best-effort
 
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in

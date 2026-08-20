@@ -25,6 +25,10 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.self_improvement_policy import (
+    BACKGROUND_REVIEW_ORIGIN as _POLICY_BG_REVIEW_ORIGIN,
+    evaluate as _policy_evaluate,
+)
 from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
@@ -1032,6 +1036,7 @@ def _run_review_in_thread(
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 skip_memory=True,
+                session_write_policy=getattr(agent, "session_write_policy", None),
                 **_fork_kwargs,
             )
             review_agent._memory_write_origin = "background_review"
@@ -1326,6 +1331,13 @@ def spawn_background_review_thread(
     owns the actual ``threading.Thread`` construction so test-level patches
     of ``run_agent.threading.Thread`` keep working.
 
+    L1 enforcement: if ``HERMES_DISABLE_SELF_IMPROVEMENT`` or
+    ``HERMES_READ_ONLY_SESSION`` denies the spawn, return the explicit
+    ``(SKIP_BACKGROUND_REVIEW_THREAD, prompt)`` sentinel so the caller
+    skips ``Thread(...)`` and the session closes normally. A single
+    structured log line records the denial (no prompt text, no secrets).
+    No retry.
+
     ``focus`` is optional user steering (the ``/refine [instructions]``
     path): appended to the chosen review prompt so the fork prioritizes what
     the user asked for while keeping the same guardrails. Automatic
@@ -1358,10 +1370,91 @@ def spawn_background_review_thread(
             f"{focus}"
         )
 
+    parent_policy = getattr(agent, "session_write_policy", None)
+
+    # PHASE 1 (P0 containment): consult the typed SelfImprovementDecision
+    # captured at session start, NOT a fresh os.environ sample. The decision
+    # is immutable for the lifetime of the session; environment drift after
+    # init CANNOT convert a DENY into an ALLOW. Failure path is fail-closed.
+    deny_reason = _policy_blocks_background_review_spawn(agent)
+    if deny_reason is not None:
+        _session_id = ""
+        try:
+            _session_id = getattr(agent, "session_id", "") or ""
+        except Exception:
+            pass
+        logger.warning(
+            "self_improvement_policy deny decision=DENY reason=%r "
+            "operation_kind=background_review_spawn origin=background_review "
+            "session_id=%s",
+            deny_reason,
+            _session_id,
+        )
+        return SKIP_BACKGROUND_REVIEW_THREAD, prompt
+
     def _target() -> None:
-        _run_review_in_thread(agent, messages_snapshot, prompt, task_cfg)
+        from agent.session_write_policy import (
+            SessionWritePolicy,
+            session_write_policy_scope,
+        )
+
+        if isinstance(parent_policy, SessionWritePolicy):
+            with session_write_policy_scope(parent_policy):
+                _run_review_in_thread(agent, messages_snapshot, prompt, task_cfg)
+        else:
+            _run_review_in_thread(agent, messages_snapshot, prompt, task_cfg)
 
     return _target, prompt
+
+
+def _policy_blocks_background_review_spawn(agent: Any) -> Optional[str]:
+    """Return the DENY reason string if the session must skip the spawn.
+
+    PHASE 1 (P0 containment): consults the typed SelfImprovementDecision
+    captured at session start. Does NOT re-sample os.environ. Never raises;
+    returns the audit-able reason on DENY, ``None`` on ALLOW.
+
+    This is the L1 backup: ``turn_finalizer`` already checks before
+    invoking ``_spawn_background_review``; this entry point is the
+    belt-and-suspenders for direct callers that bypass the finalizer.
+    """
+    try:
+        decision = getattr(agent, "_self_improvement_decision", None)
+        if decision is None:
+            return "missing_self_improvement_decision"
+        if not all(hasattr(decision, attr) for attr in ("allow", "result", "reason")):
+            return "invalid_self_improvement_decision"
+        if not decision.allow:
+            return decision.reason or "decision_denies_spawn"
+    except Exception:
+        # Fail-closed if the decision lookup itself can't run — never
+        # spawn a reviewer we cannot gate.
+        logger.exception("self_improvement_decision lookup raised; defaulting to DENY")
+        return "decision-lookup-raised"
+
+    try:
+        from agent.session_write_policy import (
+            SessionWritePolicy,
+            SessionWritePolicyMode,
+        )
+
+        policy = getattr(agent, "session_write_policy", None)
+        if not isinstance(policy, SessionWritePolicy):
+            return "missing_session_write_policy"
+        if policy.mode is SessionWritePolicyMode.DENY_ALL:
+            return "session_write_policy_deny_all"
+        if policy.is_protected:
+            return "session_write_policy_protected"
+    except Exception:
+        logger.exception(
+            "session_write_policy lookup raised; defaulting to DENY"
+        )
+        return "session_write_policy_lookup_raised"
+
+    return None
+
+
+SKIP_BACKGROUND_REVIEW_THREAD = object()
 
 
 __all__ = [
@@ -1371,6 +1464,7 @@ __all__ = [
     "is_background_review_enabled",
     "load_background_review_settings",
     "spawn_background_review_thread",
+    "SKIP_BACKGROUND_REVIEW_THREAD",
     "summarize_background_review_actions",
     "build_memory_write_metadata",
 ]

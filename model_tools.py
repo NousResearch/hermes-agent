@@ -1236,6 +1236,152 @@ def handle_function_call(
         function_args = {}
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
+    # ── Session write policy preflight ──────────────────────────────────
+    # Refuse protected mutations before any side effect. The preflight is
+    # side-effect-free: it only consults the active SessionWritePolicy from
+    # the ContextVar (bound by AIAgent.run_conversation) and returns a JSON
+    # error shape on DENY.
+    _session_write_policy = None
+    _protected_dispatch_tools = {"terminal", "write_file", "patch", "skill_manage", "memory"}
+    if function_name in _protected_dispatch_tools:
+        try:
+            from agent.session_write_policy import (
+                CapabilityGrant,
+                SessionWritePolicy,
+                SessionWritePolicyError,
+                evaluate_session_write_policy,
+                get_current_session_write_policy,
+                policy_evaluation_failure_payload,
+            )
+
+            _session_write_policy = get_current_session_write_policy(
+                session_id=session_id or "",
+                protected=False,
+            )
+            if isinstance(_session_write_policy, SessionWritePolicy):
+                _preflight_targets: list[tuple[str, str | None]] = []
+                if function_name == "terminal":
+                    _preflight_targets.append(("terminal_exec", None))
+                elif function_name == "write_file":
+                    _preflight_targets.append(("file_write", function_args.get("path")))
+                elif function_name == "patch":
+                    _mode = function_args.get("mode", "replace")
+                    if _mode == "replace":
+                        _preflight_targets.append(("file_patch", function_args.get("path")))
+                    elif _mode == "patch":
+                        _patch_text = function_args.get("patch") or ""
+                        try:
+                            from tools.patch_parser import OperationType, parse_v4a_patch
+
+                            _ops, _parse_error = parse_v4a_patch(_patch_text)
+                        except Exception as _parse_exc:
+                            return json.dumps(
+                                policy_evaluation_failure_payload(
+                                    operation_kind="file_patch",
+                                    session_id=session_id or "",
+                                    error=_parse_exc,
+                                ),
+                                ensure_ascii=False,
+                            )
+                        if _parse_error:
+                            return json.dumps(
+                                policy_evaluation_failure_payload(
+                                    operation_kind="file_patch",
+                                    session_id=session_id or "",
+                                    target=str(_parse_error),
+                                ),
+                                ensure_ascii=False,
+                            )
+                        for _op in _ops:
+                            _kind = "file_patch"
+                            if _op.operation is OperationType.ADD:
+                                _kind = "file_create"
+                            elif _op.operation is OperationType.DELETE:
+                                _kind = "file_delete"
+                            elif _op.operation is OperationType.MOVE:
+                                _kind = "file_delete"
+                            _preflight_targets.append((_kind, _op.file_path))
+                            if _op.operation is OperationType.MOVE and _op.new_path:
+                                _preflight_targets.append(("file_write", _op.new_path))
+                    else:
+                        _patch_text = function_args.get("patch") or ""
+                        _preflight_targets.append(("file_patch", None))
+                elif function_name == "skill_manage":
+                    _skill_map = {
+                        "create": "skill_create",
+                        "edit": "skill_edit",
+                        "patch": "skill_patch",
+                        "delete": "skill_delete",
+                        "write_file": "skill_write_file",
+                        "remove_file": "skill_remove_file",
+                    }
+                    _kind = _skill_map.get(str(function_args.get("action") or ""))
+                    if _kind:
+                        _preflight_targets.append((_kind, None))
+                elif function_name == "memory":
+                    if function_args.get("operations"):
+                        _preflight_targets.append(("memory_batch", None))
+                    else:
+                        _memory_map = {
+                            "add": "memory_add",
+                            "replace": "memory_replace",
+                            "remove": "memory_remove",
+                            "save": "memory_save",
+                        }
+                        _kind = _memory_map.get(str(function_args.get("action") or ""))
+                        if _kind:
+                            _preflight_targets.append((_kind, None))
+
+                for _operation_kind, _target_path in _preflight_targets:
+                    if (
+                        _target_path is None
+                        and _operation_kind != "terminal_exec"
+                        and getattr(_session_write_policy.mode, "value", _session_write_policy.mode) != "DENY_ALL"
+                    ):
+                        continue
+                    _decision = evaluate_session_write_policy(
+                        _session_write_policy,
+                        operation_kind=_operation_kind,
+                        origin="dispatch_preflight",
+                        target_path=_target_path,
+                        capability=CapabilityGrant("filesystem", _operation_kind),
+                    )
+                    if _decision.denied:
+                        return _decision.denial_json()
+        except SessionWritePolicyError as _policy_err:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Session write policy denied operation: {_policy_err}",
+                    "policy_reason": "target_canonicalization_failed",
+                    "operation_kind": function_name,
+                    "session_id": session_id or "",
+                },
+                ensure_ascii=False,
+            )
+        except Exception as _policy_err:
+            try:
+                from agent.session_write_policy import policy_evaluation_failure_payload
+            except Exception:
+                policy_evaluation_failure_payload = None
+            payload = (
+                policy_evaluation_failure_payload(
+                    operation_kind=function_name,
+                    session_id=session_id or "",
+                    error=_policy_err,
+                )
+                if policy_evaluation_failure_payload
+                else {
+                    "success": False,
+                    "error": "Session write policy evaluation failed; mutation denied",
+                    "policy_reason": "policy_evaluation_failed",
+                    "operation_kind": function_name,
+                    "session_id": session_id or "",
+                    "target": "",
+                }
+            )
+            return json.dumps(payload, ensure_ascii=False)
+
     # ── Tool Search bridge dispatch ──────────────────────────────────
     # tool_search and tool_describe are pure catalog reads — handle them
     # inline. tool_call is unwrapped to the underlying tool so that every

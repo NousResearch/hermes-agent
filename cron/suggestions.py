@@ -42,6 +42,32 @@ from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
+# L2 enforcement (post-turn READONLY gate): refuse suggestion writes
+# from the background-review origin when the captured self-improvement
+# Decision is DENY. Read paths of ``load_suggestions``/``list_pending``
+# stay unaffected.
+#
+# Authority contract (P0-1 / Block 2 repair, PR #90883 must-fix):
+#   * The primary DENY/ALLOW decision comes from the captured
+#     ``get_self_improvement_decision()`` ContextVar. The captured
+#     ``Decision`` is the frozen authority; env vars are sampled
+#     ONCE at canonical initialization and never re-read here.
+#   * The legacy ``evaluate(...)`` helper is retained ONLY as a
+#     secondary layer for operation_kind labelling / logging / auditing
+#     (``operation_kind="suggestions_write"`` vs ``skill_*``) and any
+#     background-review-specific semantics. It MUST NOT act as a second
+#     authority for self-improvement and MUST NOT override the captured
+#     Decision based on env state.
+from agent.self_improvement_decision_context import (
+    get_self_improvement_decision,
+)
+from agent.self_improvement_decision_context import DENY_FALLBACK_DECISION
+from agent.self_improvement_policy import (
+    BACKGROUND_REVIEW_ORIGIN as _POLICY_BG_REVIEW_ORIGIN,
+    evaluate as _policy_evaluate,
+)
+from tools.skill_provenance import is_background_review
+
 # Per-profile by design (issue #4707): suggestions live alongside the active
 # profile's cron store. Anchor on get_hermes_home() (profile home), not the
 # shared default root. See cron/jobs.py for the full rationale.
@@ -60,6 +86,98 @@ VALID_SOURCES = frozenset({"catalog", "blueprint", "usage", "integration"})
 _STATUS_PENDING = "pending"
 _STATUS_ACCEPTED = "accepted"
 _STATUS_DISMISSED = "dismissed"
+
+
+def _background_review_suggestions_guard(action: str, target: str = "") -> bool:
+    """Return True when a background-review suggestion mutation is denied.
+
+    P0-1 / Block 2 contract (PR #90883 must-fix):
+
+    The primary DENY/ALLOW decision comes from the captured
+    ``get_self_improvement_decision()`` ContextVar. The captured
+    ``Decision`` is the frozen authority bound at canonical
+    initialization; env vars ``HERMES_DISABLE_SELF_IMPROVEMENT`` and
+    ``HERMES_READ_ONLY_SESSION`` are sampled ONCE at canonical init and
+    MUST NOT be re-read here. A captured DENY is preserved even if the
+    process env is later mutated to look permissive.
+
+    The legacy ``evaluate(...)`` helper is retained ONLY as a
+    secondary layer for operation_kind labelling / logging / auditing
+    (``operation_kind="suggestions_write"`` vs ``skill_*``) and any
+    background-review-specific semantics. It MUST NOT act as a second
+    authority for self-improvement: a legacy ALLOW from env-derived
+    inputs cannot override a captured DENY.
+    """
+    provenance_failed = False
+    try:
+        if not is_background_review():
+            return False
+    except Exception:
+        provenance_failed = True
+
+    # Primary authority: the captured self-improvement Decision.
+    captured_decision = get_self_improvement_decision()
+    # ``get_self_improvement_decision`` never returns None; it returns
+    # a Decision-like object (or DENY_FALLBACK_DECISION on unset).
+    if captured_decision is None:
+        captured_decision = DENY_FALLBACK_DECISION
+    if not getattr(captured_decision, "allow", False):
+        # Captured DENY -> deny. Env state is irrelevant from here on.
+        _session_id = os.environ.get("HERMES_SESSION_ID", "") or ""
+        logger.warning(
+            "self_improvement_decision DENY bound at canonical init "
+            "operation_kind=suggestions_write origin=background_review "
+            "session_id=%s action=%s target=%s reason=%s provenance_failed=%s",
+            _session_id,
+            action,
+            target,
+            getattr(captured_decision, "reason", "deny"),
+            provenance_failed,
+        )
+        return True
+
+    # Secondary layer: keep the legacy evaluate for operation_kind
+    # labelling / auditing. Env is passed through as empty strings
+    # because the captured Decision is the only authority; any
+    # env-derived override is rejected by the primary check above.
+    try:
+        _legacy = _policy_evaluate(
+            environment_disabled="",
+            session_read_only="",
+            operation_kind="suggestions_write",
+            origin=_POLICY_BG_REVIEW_ORIGIN,
+            target_path=target or None,
+        )
+    except Exception:
+        # Legacy helper failure is non-authoritative; the captured
+        # Decision already authorised the mutation. Log and continue.
+        logger.debug(
+            "self_improvement_policy.evaluate raised in suggestions guard; "
+            "captured Decision is ALLOW, continuing",
+            exc_info=True,
+        )
+        return False
+
+    # The legacy layer must not contradict the captured ALLOW. If it
+    # does, log and refuse-to-deny so we never silently override the
+    # captured authority. The captured Decision is authoritative.
+    if _legacy.result != "ALLOW":
+        _session_id = os.environ.get("HERMES_SESSION_ID", "") or ""
+        logger.warning(
+            "captured ALLOW but legacy evaluate disagreement "
+            "decision=ALLOW legacy=%s reason=%r "
+            "operation_kind=suggestions_write origin=background_review "
+            "session_id=%s action=%s target=%s provenance_failed=%s",
+            _legacy.result,
+            _legacy.reason,
+            _session_id,
+            action,
+            target,
+            provenance_failed,
+        )
+        return False
+
+    return False
 
 
 def _secure_file(path: Path) -> None:
@@ -145,6 +263,9 @@ def add_suggestion(
     if not title.strip() or not dedup_key.strip():
         raise ValueError("title and dedup_key are required")
 
+    if _background_review_suggestions_guard("add", dedup_key):
+        return None
+
     with _suggestions_lock:
         suggestions = _load_raw().get("suggestions", [])
 
@@ -198,6 +319,8 @@ def get_suggestion(ref: str) -> Optional[Dict[str, Any]]:
 
 
 def _set_status(suggestion_id: str, status: str) -> bool:
+    if _background_review_suggestions_guard("set_status", suggestion_id):
+        return False
     with _suggestions_lock:
         suggestions = _load_raw().get("suggestions", [])
         changed = False
@@ -231,6 +354,8 @@ def accept_suggestion(ref: str, *, origin: Optional[Dict[str, Any]] = None) -> O
     s = get_suggestion(ref)
     if not s or s.get("status") != _STATUS_PENDING:
         return None
+    if _background_review_suggestions_guard("accept", str(s.get("id", ref))):
+        return None
 
     from cron.scheduler import (
         CronSchedulerRegistrationError,
@@ -260,6 +385,8 @@ def clear_resolved() -> int:
     their dedup_key (so they aren't re-offered). This only prunes ACCEPTED
     records, which have served their purpose once the job exists.
     """
+    if _background_review_suggestions_guard("clear_resolved"):
+        return 0
     with _suggestions_lock:
         suggestions = _load_raw().get("suggestions", [])
         kept = [s for s in suggestions if s.get("status") != _STATUS_ACCEPTED]

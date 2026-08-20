@@ -1,12 +1,16 @@
 """Tests for tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
 
 import json
+import shutil
 import time
+from pathlib import Path
 from typing import List, Optional
 from unittest.mock import patch, MagicMock
 
 import httpx
 import pytest
+
+from tools.skills_guard import content_hash
 
 from tools.skills_hub import (
     GitHubAuth,
@@ -1290,6 +1294,146 @@ class TestInstallPathSafety:
         assert (isolated_skills_dir / "bystander" / "SKILL.md").read_text() == "safe"
 
 
+    def test_uninstall_uses_delete_guard_across_rmtree_and_lock_update(self, tmp_path, isolated_skills_dir, patch_lock_file):
+        from contextlib import contextmanager
+        import tools.skills_hub as hub
+
+        lock_path = tmp_path / "lock.json"
+        patch_lock_file(lock_path)
+        target = isolated_skills_dir / "guarded"
+        target.mkdir()
+        (target / "SKILL.md").write_text("---\nname: guarded\n---\nbody\n")
+        lock = HubLockFile(path=lock_path)
+        lock.record_install(
+            name="guarded", source="github", identifier="repo/guarded",
+            trust_level="trusted", scan_verdict="pass", skill_hash=content_hash(target),
+            install_path="guarded", files=["SKILL.md"],
+        )
+        active = {"guard": False}
+        events = []
+
+        @contextmanager
+        def fake_delete_guard(name, *, target, approved_existing_paths, mutation_paths, identity_names=()):
+            assert name == "guarded"
+            assert target == isolated_skills_dir / "guarded"
+            assert approved_existing_paths == [isolated_skills_dir / "guarded"]
+            assert mutation_paths == [isolated_skills_dir / "guarded"]
+            events.append("enter")
+            active["guard"] = True
+            try:
+                yield
+            finally:
+                active["guard"] = False
+                events.append("exit")
+
+        real_rmtree = hub.shutil.rmtree
+
+        def checked_rmtree(path, *args, **kwargs):
+            assert active["guard"] is True
+            events.append("rmtree")
+            return real_rmtree(path, *args, **kwargs)
+
+        real_record = hub.HubLockFile.record_uninstall
+
+        def checked_record(self, name):
+            assert active["guard"] is True
+            events.append("record")
+            return real_record(self, name)
+
+        with patch("tools.skills_hub.live_skill_delete_guard", side_effect=fake_delete_guard), \
+             patch("tools.skills_hub.shutil.rmtree", side_effect=checked_rmtree), \
+             patch.object(hub.HubLockFile, "record_uninstall", checked_record):
+            ok, msg = hub.uninstall_skill("guarded")
+
+        assert ok is True
+        assert "Uninstalled" in msg
+        assert events == ["enter", "rmtree", "record", "exit"]
+        assert not target.exists()
+        assert lock.get_installed("guarded") is None
+
+    def test_uninstall_revalidates_replaced_target_inside_delete_guard(self, tmp_path, isolated_skills_dir, patch_lock_file):
+        from contextlib import contextmanager
+        import tools.skills_hub as hub
+
+        lock_path = tmp_path / "lock.json"
+        patch_lock_file(lock_path)
+        target = isolated_skills_dir / "replaced"
+        target.mkdir()
+        (target / "SKILL.md").write_text("---\nname: replaced\n---\noriginal\n")
+        lock = HubLockFile(path=lock_path)
+        lock.record_install(
+            name="replaced", source="github", identifier="repo/replaced",
+            trust_level="trusted", scan_verdict="pass", skill_hash=content_hash(target),
+            install_path="replaced", files=["SKILL.md"],
+        )
+
+        @contextmanager
+        def replacing_delete_guard(*args, **kwargs):
+            shutil.rmtree(target)
+            target.mkdir()
+            (target / "SKILL.md").write_text("---\nname: replaced\n---\nrepurposed\n")
+            yield
+
+        with patch("tools.skills_hub.live_skill_delete_guard", side_effect=replacing_delete_guard):
+            ok, msg = hub.uninstall_skill("replaced")
+
+        assert ok is False
+        assert "content hash changed" in msg
+        assert target.exists()
+        assert "repurposed" in (target / "SKILL.md").read_text()
+        assert lock.get_installed("replaced") is not None
+
+    def test_normal_uninstall_still_succeeds_with_real_delete_guard(self, tmp_path, isolated_skills_dir, patch_lock_file):
+        from tools.skills_hub import uninstall_skill
+
+        lock_path = tmp_path / "lock.json"
+        patch_lock_file(lock_path)
+        target = isolated_skills_dir / "normal"
+        target.mkdir()
+        (target / "SKILL.md").write_text("---\nname: normal\n---\nbody\n")
+        lock = HubLockFile(path=lock_path)
+        lock.record_install(
+            name="normal", source="github", identifier="repo/normal",
+            trust_level="trusted", scan_verdict="pass", skill_hash=content_hash(target),
+            install_path="normal", files=["SKILL.md"],
+        )
+
+        with patch("agent.skill_utils.get_all_skills_dirs", return_value=[isolated_skills_dir]):
+            ok, msg = uninstall_skill("normal")
+
+        assert ok is True
+        assert "Uninstalled" in msg
+        assert not target.exists()
+        assert lock.get_installed("normal") is None
+
+    def test_uninstall_unexpected_same_name_fails_closed_and_preserves_target(self, tmp_path, isolated_skills_dir, patch_lock_file):
+        from tools.skills_hub import uninstall_skill
+
+        lock_path = tmp_path / "lock.json"
+        patch_lock_file(lock_path)
+        target = isolated_skills_dir / "owned"
+        target.mkdir()
+        (target / "SKILL.md").write_text("---\nname: owned\n---\nbody\n")
+        other = isolated_skills_dir / "category" / "owned"
+        other.mkdir(parents=True)
+        (other / "SKILL.md").write_text("---\nname: owned\n---\nother\n")
+        lock = HubLockFile(path=lock_path)
+        lock.record_install(
+            name="owned", source="github", identifier="repo/owned",
+            trust_level="trusted", scan_verdict="pass", skill_hash=content_hash(target),
+            install_path="owned", files=["SKILL.md"],
+        )
+
+        with patch("agent.skill_utils.get_all_skills_dirs", return_value=[isolated_skills_dir]):
+            ok, msg = uninstall_skill("owned")
+
+        assert ok is False
+        assert "Refusing" in msg
+        assert target.exists()
+        assert other.exists()
+        assert lock.get_installed("owned") is not None
+
+
     def test_install_from_quarantine_rejects_symlinks(self, tmp_path):
         """Skill install must not follow symlinks that leak file contents
         from outside the quarantine directory."""
@@ -1654,6 +1798,117 @@ class TestInstallPathSafety:
         assert installed == skills_dir / "good-skill"
         assert installed.is_dir()
         record_installed.assert_called_once_with("good-skill")
+
+    def test_install_from_quarantine_guard_wraps_rmtree_and_move(self, tmp_path):
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+        from contextlib import contextmanager
+
+        skills_dir = tmp_path / "skills"
+        existing = skills_dir / "guarded-skill"
+        existing.mkdir(parents=True)
+        (existing / "SKILL.md").write_text("---\nname: guarded-skill\n---\nold\n")
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir(parents=True)
+        (q_dir / "SKILL.md").write_text("---\nname: guarded-skill\n---\nnew\n")
+        bundle = hub.SkillBundle(
+            name="guarded-skill",
+            files={"SKILL.md": "---\nname: guarded-skill\n---\nnew\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="guarded-skill",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+        events = []
+        active = {"guard": False}
+
+        @contextmanager
+        def fake_publish_guard(name, *, target, replacement_policy):
+            events.append(("enter", name, target, replacement_policy, existing.exists()))
+            active["guard"] = True
+            try:
+                yield
+            finally:
+                events.append(("exit", existing.exists(), q_dir.exists()))
+                active["guard"] = False
+
+        real_rmtree = hub.shutil.rmtree
+        real_move = hub.shutil.move
+
+        def checked_rmtree(path, *args, **kwargs):
+            assert active["guard"] is True
+            events.append(("rmtree", Path(path)))
+            return real_rmtree(path, *args, **kwargs)
+
+        def checked_move(src, dst, *args, **kwargs):
+            assert active["guard"] is True
+            events.append(("move", Path(src), Path(dst)))
+            return real_move(src, dst, *args, **kwargs)
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
+             patch.object(hub, "live_skill_publish_guard", side_effect=fake_publish_guard), \
+             patch.object(hub.shutil, "rmtree", side_effect=checked_rmtree), \
+             patch.object(hub.shutil, "move", side_effect=checked_move), \
+             patch("tools.skill_usage.record_installed"):
+            installed = hub.install_from_quarantine(q_dir, "guarded-skill", "", bundle, scan_result)
+
+        assert installed == existing
+        assert (existing / "SKILL.md").read_text().endswith("new\n")
+        assert events[0] == ("enter", "guarded-skill", existing, "replace_same_target", True)
+        assert ("rmtree", existing) in events
+        assert ("move", q_dir, existing) in events
+
+    def test_install_from_quarantine_guard_failure_preserves_source_and_target(self, tmp_path):
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+        from tools.skill_publish_guard import SkillMutationLockAcquireFailure
+
+        skills_dir = tmp_path / "skills"
+        existing = skills_dir / "blocked-skill"
+        existing.mkdir(parents=True)
+        (existing / "SKILL.md").write_text("---\nname: blocked-skill\n---\nold\n")
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir(parents=True)
+        (q_dir / "SKILL.md").write_text("---\nname: blocked-skill\n---\nnew\n")
+        bundle = hub.SkillBundle(
+            name="blocked-skill",
+            files={"SKILL.md": "---\nname: blocked-skill\n---\nnew\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="blocked-skill",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+        refusal = SkillMutationLockAcquireFailure(
+            canonical_skill_path=existing,
+            lock_path=tmp_path / "guard.lock",
+            platform="test",
+            lock_failure_stage="lock_primitive_acquire",
+            cause=ValueError("blocked"),
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
+             patch.object(hub, "live_skill_publish_guard", side_effect=refusal), \
+             patch("tools.skill_usage.record_installed") as record_installed, \
+             pytest.raises(SkillMutationLockAcquireFailure):
+            hub.install_from_quarantine(q_dir, "blocked-skill", "", bundle, scan_result)
+
+        assert (q_dir / "SKILL.md").read_text().endswith("new\n")
+        assert (existing / "SKILL.md").read_text().endswith("old\n")
+        record_installed.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

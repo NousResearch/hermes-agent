@@ -23,8 +23,10 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import contextvars
 import json
 import logging
+import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -32,6 +34,16 @@ from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_write_text
+
+# R1 MEMORY: ported donor surface for GR-4 (background-review self-improvement
+# guard + memory policy denial + persistence rollback semantics). The current
+# main contract keeps the session_write_policy enforcement elsewhere — this
+# module owns ONLY the typed self-improvement ContextVar guard and the
+# structured denial envelope expected by tests/tools/test_self_improvement_write_boundaries.py.
+from agent.self_improvement_policy import (
+    BACKGROUND_REVIEW_ORIGIN as _POLICY_BG_REVIEW_ORIGIN,
+)
+from tools.skill_provenance import is_background_review
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -143,6 +155,182 @@ def _read_failed_error(path: "Path") -> Dict[str, Any]:
             f"retry in a moment."
         ),
     }
+
+
+# ===========================================================================
+# R1 MEMORY (GR-4): ported donor helper surface for the background-review
+# self-improvement memory guard. The current-main contract keeps the
+# session_write_policy enforcement in _apply_write_gate / _apply_batch_write_gate
+# — these helpers are independent of that and exist ONLY so the typed
+# self-improvement ContextVar is consulted when (and only when) the active
+# origin is the background-review fork.
+# ===========================================================================
+
+_memory_policy_operation: "contextvars.ContextVar[str]" = contextvars.ContextVar(
+    "memory_policy_operation",
+    default="memory_save",
+)
+
+_MEMORY_ACTION_OPERATION_KIND = {
+    "add": "memory_add",
+    "replace": "memory_replace",
+    "remove": "memory_remove",
+    "batch": "memory_batch",
+    "save": "memory_save",
+}
+
+
+def _memory_action_for_operation(operation_kind: str) -> str:
+    return {
+        "memory_add": "add",
+        "memory_replace": "replace",
+        "memory_remove": "remove",
+        "memory_batch": "batch",
+        "memory_save": "save",
+    }.get(operation_kind, "save")
+
+
+def _memory_policy_denial(action: str, target: str, *, origin: str = "memory_tool") -> Optional[Dict[str, Any]]:
+    """Evaluate the canonical session_write_policy for a memory operation.
+
+    Returns a denial dict when the policy says no, ``None`` to fall through.
+    Fail-CLOSED: if the policy evaluator raises, returns the canonical
+    policy_evaluation_failure_payload so the mutation is denied — the
+    donor contract exercised by tests/tools/test_session_write_policy_fail_closed.py.
+    """
+    operation_kind = _MEMORY_ACTION_OPERATION_KIND.get(action, action)
+    try:
+        from agent.session_write_policy import (
+            CapabilityGrant,
+            evaluate_session_write_policy,
+            get_current_session_write_policy,
+            policy_evaluation_failure_payload,
+        )
+        path = MemoryStore._path_for(target)
+        policy = get_current_session_write_policy(protected=False)
+        decision = evaluate_session_write_policy(
+            policy,
+            operation_kind=operation_kind,
+            origin=origin,
+            target_path=path,
+            capability=CapabilityGrant("filesystem", operation_kind),
+        )
+        if getattr(decision, "denied", False):
+            try:
+                return decision.denial_payload()
+            except Exception:
+                return {
+                    "success": False,
+                    "error": "memory write denied by session_write_policy",
+                    "policy_reason": "session_write_policy_denied",
+                }
+        return None
+    except Exception as _policy_err:
+        try:
+            from agent.session_write_policy import policy_evaluation_failure_payload
+            return policy_evaluation_failure_payload(
+                operation_kind=operation_kind,
+                session_id="",
+                target=str(target or ""),
+                error=_policy_err,
+            )
+        except Exception:
+            return {
+                "success": False,
+                "error": "Session write policy evaluation failed; mutation denied",
+                "policy_reason": "policy_evaluation_failed",
+                "operation_kind": operation_kind,
+                "session_id": "",
+                "target": str(target or ""),
+            }
+
+
+def _set_memory_operation(action: str):
+    return _memory_policy_operation.set(_MEMORY_ACTION_OPERATION_KIND.get(action, "memory_save"))
+
+
+def _reset_memory_operation(token) -> None:
+    try:
+        _memory_policy_operation.reset(token)
+    except Exception:
+        pass
+
+
+def _background_review_self_improvement_memory_guard(
+    action: str,
+    target: str,
+) -> Optional[str]:
+    """L2 enforcement for the memory tool — refuse writes from background review.
+
+    Returns a JSON-encoded error string when the active write origin is
+    the background-review fork and the canonical self-improvement
+    policy denies; ``None`` to fall through. Foreground writes are never
+    consulted. Reads the typed SelfImprovementDecision ContextVar directly
+    so the guard is independent of prompt text. Never raises.
+    """
+    provenance_failed = False
+    try:
+        if not is_background_review():
+            return None
+    except Exception:
+        provenance_failed = True
+
+    try:
+        from agent.self_improvement_decision_context import (
+            get_self_improvement_decision as _phase2_memory_get_decision,
+        )
+        decision = _phase2_memory_get_decision()
+    except Exception:
+        logger.exception(
+            "self_improvement_policy ContextVar lookup raised in "
+            "memory guard; defaulting to deny"
+        )
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    f"Refusing background {action} to memory target "
+                    f"'{target}': self-improvement context lookup raised; "
+                    "defaulting to deny."
+                ),
+                "_self_improvement_guard": True,
+            },
+            ensure_ascii=False,
+        )
+
+    if getattr(decision, "allow", False):
+        return None
+
+    _session_id = ""
+    try:
+        _session_id = os.environ.get("HERMES_SESSION_ID", "") or ""
+    except Exception:
+        _session_id = ""
+    logger.warning(
+        "self_improvement_policy deny decision=DENY reason=%r "
+        "operation_kind=memory_write origin=background_review "
+        "session_id=%s target=%s action=%s",
+        getattr(decision, "reason", ""),
+        _session_id,
+        target,
+        action,
+    )
+    return json.dumps(
+        {
+            "success": False,
+            "error": (
+                f"Refusing background {action} to memory target '{target}': "
+                + (
+                    "self-improvement provenance probe failed; defaulting to deny. "
+                    if provenance_failed
+                    else ""
+                )
+                + f"{getattr(decision, 'reason', '')}"
+            ),
+            "_self_improvement_guard": True,
+        },
+        ensure_ascii=False,
+    )
 
 
 class MemoryStore:
@@ -362,8 +550,48 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
+        guard = _background_review_self_improvement_memory_guard("save", target)
+        if guard is not None:
+            payload = json.loads(guard)
+            raise PermissionError(payload.get("error", "memory write denied"))
+        action = _memory_action_for_operation(_memory_policy_operation.get())
+        denial = _memory_policy_denial(action, target, origin="memory_store_save")
+        if denial is not None:
+            raise PermissionError(denial.get("error", "memory write denied"))
         get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
+
+    def _persistence_failed(self, target: str, error: Exception) -> Dict[str, Any]:
+        return {
+            "success": False,
+            "error": "Memory persistence failed; mutation denied",
+            "policy_reason": "persistence_failed",
+            "target": target,
+        }
+
+    def _persist_candidate(self, target: str, entries: List[str], action: str) -> Optional[Dict[str, Any]]:
+        """Persist a candidate entry list with policy + guard checks. Returns
+        a failure dict on denial or persistence failure, ``None`` on success.
+
+        Caller is responsible for RAM rollback when a non-None result is
+        returned: ``self._set_entries(target, baseline_entries)``.
+        """
+        guard = _background_review_self_improvement_memory_guard(action, target)
+        if guard is not None:
+            return json.loads(guard)
+        denial = _memory_policy_denial(action, target, origin="memory_store_commit")
+        if denial is not None:
+            return denial
+        token = _set_memory_operation(action)
+        try:
+            get_memory_dir().mkdir(parents=True, exist_ok=True)
+            self._write_file(self._path_for(target), entries)
+        except Exception as e:
+            logger.debug("memory persistence failed: %s", e)
+            return self._persistence_failed(target, e)
+        finally:
+            _reset_memory_operation(token)
+        return None
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
@@ -389,6 +617,12 @@ class MemoryStore:
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
+        guard = _background_review_self_improvement_memory_guard("add", target)
+        if guard is not None:
+            return json.loads(guard)
+        denial = _memory_policy_denial("add", target, origin="memory_store_add")
+        if denial is not None:
+            return denial
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
@@ -414,7 +648,8 @@ class MemoryStore:
             if self._reload_target(target, skip_drift=True) is _READ_FAILED:
                 return _read_failed_error(self._path_for(target))
 
-            entries = self._entries_for(target)
+            baseline_entries = list(self._entries_for(target))
+            entries = list(baseline_entries)
             limit = self._char_limit(target)
 
             # Reject exact duplicates
@@ -440,14 +675,23 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries.append(content)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            candidate = entries + [content]
+            failure = self._persist_candidate(target, candidate, "add")
+            if failure is not None:
+                self._set_entries(target, baseline_entries)
+                return failure
+            self._set_entries(target, candidate)
 
         return self._success_response(target, "Entry added.")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
+        guard = _background_review_self_improvement_memory_guard("replace", target)
+        if guard is not None:
+            return json.loads(guard)
+        denial = _memory_policy_denial("replace", target, origin="memory_store_replace")
+        if denial is not None:
+            return denial
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
@@ -467,7 +711,8 @@ class MemoryStore:
             if bak:
                 return _drift_error(self._path_for(target), bak)
 
-            entries = self._entries_for(target)
+            baseline_entries = list(self._entries_for(target))
+            entries = list(baseline_entries)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
@@ -511,14 +756,24 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries[idx] = new_content
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            candidate = entries.copy()
+            candidate[idx] = new_content
+            failure = self._persist_candidate(target, candidate, "replace")
+            if failure is not None:
+                self._set_entries(target, baseline_entries)
+                return failure
+            self._set_entries(target, candidate)
 
         return self._success_response(target, "Entry replaced.")
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
+        guard = _background_review_self_improvement_memory_guard("remove", target)
+        if guard is not None:
+            return json.loads(guard)
+        denial = _memory_policy_denial("remove", target, origin="memory_store_remove")
+        if denial is not None:
+            return denial
         old_text = old_text.strip()
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
@@ -530,7 +785,8 @@ class MemoryStore:
             if bak:
                 return _drift_error(self._path_for(target), bak)
 
-            entries = self._entries_for(target)
+            baseline_entries = list(self._entries_for(target))
+            entries = list(baseline_entries)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
@@ -553,9 +809,13 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
-            entries.pop(idx)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            candidate = entries.copy()
+            candidate.pop(idx)
+            failure = self._persist_candidate(target, candidate, "remove")
+            if failure is not None:
+                self._set_entries(target, baseline_entries)
+                return failure
+            self._set_entries(target, candidate)
 
         return self._success_response(target, "Entry removed.")
 
@@ -572,6 +832,12 @@ class MemoryStore:
         the net result would exceed the char limit, NOTHING is written and an
         error is returned describing the first failure plus the live state.
         """
+        guard = _background_review_self_improvement_memory_guard("batch", target)
+        if guard is not None:
+            return json.loads(guard)
+        denial = _memory_policy_denial("batch", target, origin="memory_store_batch")
+        if denial is not None:
+            return denial
         if not operations:
             return {"success": False, "error": "operations list is empty."}
 
@@ -593,7 +859,8 @@ class MemoryStore:
                 return _drift_error(self._path_for(target), bak)
 
             # Work on a copy; only commit if the whole batch validates.
-            working: List[str] = list(self._entries_for(target))
+            baseline_entries: List[str] = list(self._entries_for(target))
+            working: List[str] = list(baseline_entries)
             limit = self._char_limit(target)
 
             for i, op in enumerate(operations):
@@ -663,8 +930,11 @@ class MemoryStore:
                 })
 
             # Commit.
+            failure = self._persist_candidate(target, working, "batch")
+            if failure is not None:
+                self._set_entries(target, baseline_entries)
+                return failure
             self._set_entries(target, working)
-            self.save_to_disk(target)
 
         return self._success_response(target, f"Applied {len(operations)} operation(s).")
 
@@ -1094,6 +1364,93 @@ def memory_tool(
 
     if target not in {"memory", "user"}:
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
+
+    # --- Self-improvement (L2) preflight ------------------------------
+    # Refuse autonomous background-review memory writes when the typed
+    # SelfImprovementDecision captured at session start denies the
+    # operation. The decision is read via the canonical ContextVar via
+    # _background_review_self_improvement_memory_guard(), which ONLY
+    # consults the ContextVar when is_background_review() is True — so
+    # ordinary foreground writes fall through unchanged and preserve
+    # current-main behaviors (missing replace content distinct error,
+    # batch add/remove atomicity, duplicate add no-op semantics). The
+    # Phase 2B session_write_policy consult below remains the belt-and-
+    # suspenders alongside the L2 guard.
+    _si_op_map = {
+        "add": "memory_add",
+        "replace": "memory_replace",
+        "remove": "memory_remove",
+        "batch": "memory_batch",
+        "save": "memory_save",
+    }
+    if operations:
+        _si_op = _si_op_map["batch"]
+    else:
+        _si_op = _si_op_map.get(str(action or ""), str(action or ""))
+    _bg_guard = _background_review_self_improvement_memory_guard(
+        str(action or ("batch" if operations else "")) or "save", target
+    )
+    if _bg_guard is not None:
+        return _bg_guard
+
+    # --- Session write policy preflight ---------------------------------
+    # Refuse the mutation before any side effect. NORMAL policies always
+    # allow; DENY_ALL policies (HERMES_READ_ONLY_SESSION / protected session)
+    # always deny; ALLOWLIST policies (not yet exposed in the modern
+    # context) are honored via the canonical capability grant.
+    _policy_op_map = {
+        "add": "memory_add",
+        "replace": "memory_replace",
+        "remove": "memory_remove",
+        "batch": "memory_batch",
+        "save": "memory_save",
+    }
+    _policy_target = MemoryStore._path_for(target) if "MemoryStore" in globals() else None
+    if operations:
+        _policy_op = _policy_op_map["batch"]
+    else:
+        _policy_op = _policy_op_map.get(str(action or ""), str(action or ""))
+    try:
+        from agent.session_write_policy import (
+            CapabilityGrant,
+            evaluate_session_write_policy,
+            get_current_session_write_policy,
+            policy_evaluation_failure_payload,
+        )
+        _policy = get_current_session_write_policy(protected=False)
+        _decision = evaluate_session_write_policy(
+            _policy,
+            operation_kind=_policy_op,
+            origin="memory_tool",
+            target_path=_policy_target,
+            capability=CapabilityGrant("filesystem", _policy_op),
+        )
+        if _decision.denied:
+            return json.dumps(_decision.denial_payload(), ensure_ascii=False)
+    except Exception as _policy_err:
+        try:
+            from agent.session_write_policy import policy_evaluation_failure_payload
+            return json.dumps(
+                policy_evaluation_failure_payload(
+                    operation_kind=_policy_op,
+                    session_id="",
+                    target=str(target or ""),
+                    error=_policy_err,
+                ),
+                ensure_ascii=False,
+            )
+        except Exception:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "Session write policy evaluation failed; mutation denied",
+                    "policy_reason": "policy_evaluation_failed",
+                    "operation_kind": _policy_op,
+                    "session_id": "",
+                    "target": str(target or ""),
+                },
+                ensure_ascii=False,
+            )
 
     # --- Batch path -------------------------------------------------------
     if operations:

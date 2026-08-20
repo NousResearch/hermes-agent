@@ -9992,9 +9992,9 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
             jsx('span', { className: 'font-medium text-foreground', children: group }),
             ' grouping from its ',
             String(members.length),
-            // New rooms title member sessions by roomId, legacy rooms by name —
-            // so the copy names the concept, not a literal session title.
-            ' bots and clears the shared room log. The bots themselves and their per-group sessions are kept.'
+// New rooms title member sessions by roomId, legacy rooms by name —
+// so the copy names the concept, not a literal session title.
+            ' bots and clears the shared room log. The bots themselves and their per-group sessions are kept.'  // preserve canonical local copy
           ]
         }),
         destructive: true,

@@ -18,6 +18,7 @@ never the child's intermediate tool calls or reasoning.
 """
 
 import enum
+import contextlib
 import contextvars
 import json
 import logging
@@ -1609,6 +1610,10 @@ def _build_child_agent(
     model on OpenRouter while the parent runs on Nous Portal).
     """
     from run_agent import AIAgent
+    from agent.session_write_policy import (
+        SessionWritePolicy,
+        get_current_session_write_policy,
+    )
     import uuid as _uuid
 
     # ── Role resolution ─────────────────────────────────────────────────
@@ -1896,6 +1901,13 @@ def _build_child_agent(
     child_optional_kwargs: Dict[str, Any] = {}
     if isinstance(child_max_tokens, int):
         child_optional_kwargs["max_tokens"] = child_max_tokens
+    parent_policy = getattr(parent_agent, "session_write_policy", None)
+    if not isinstance(parent_policy, SessionWritePolicy):
+        parent_policy = get_current_session_write_policy(
+            session_id=getattr(parent_agent, "session_id", "") or "",
+            protected=False,
+        )
+    child_policy = parent_policy.derive_child(None)
 
     # Each child gets a DEDICATED SessionDB connection instead of the parent's
     # live object. The parent's handle is owned by the parent's lifecycle
@@ -1973,6 +1985,7 @@ def _build_child_agent(
                 openrouter_min_coding_score=child_openrouter_min_coding_score,
                 tool_progress_callback=child_progress_cb,
                 iteration_budget=None,  # fresh budget per subagent
+                session_write_policy=child_policy,
                 **child_optional_kwargs,
             )
         except BaseException:
@@ -2786,8 +2799,21 @@ def _run_single_child(
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
+            from agent.session_write_policy import (
+                SessionWritePolicy,
+                session_write_policy_scope,
+            )
 
-            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            child_policy = getattr(child, "session_write_policy", None)
+            policy_scope = (
+                session_write_policy_scope(child_policy)
+                if isinstance(child_policy, SessionWritePolicy)
+                else contextlib.nullcontext()
+            )
+
+            with delegated_child_context(
+                str(getattr(child, "session_id", "") or "")
+            ), policy_scope:
                 return child.run_conversation(
                     user_message=goal,
                     task_id=child_task_id,

@@ -918,7 +918,50 @@ class ShellFileOperations(FileOperations):
 
         # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}
-    
+
+    def _policy_target_path(self, path: str) -> str:
+        raw = Path(path)
+        if raw.is_absolute():
+            return str(raw)
+        effective_cwd = getattr(self.env, "cwd", None) or self.cwd or os.getcwd()
+        return str(Path(effective_cwd) / raw)
+
+    def _session_write_decision(self, path: str, operation_kind: str, origin: str):
+        from agent.session_write_policy import (
+            CapabilityGrant,
+            evaluate_session_write_policy,
+            get_current_session_write_policy,
+        )
+
+        target = self._policy_target_path(path)
+        policy = get_current_session_write_policy(protected=False)
+        return evaluate_session_write_policy(
+            policy,
+            operation_kind=operation_kind,
+            origin=origin,
+            target_path=target,
+            capability=CapabilityGrant("filesystem", operation_kind),
+        )
+
+    def _policy_denied_write_result(self, decision) -> "WriteResult":
+        payload = decision.denial_payload()
+        return WriteResult(
+            error=payload["error"],
+            warning=(
+                f"policy_reason={payload['policy_reason']}; "
+                f"operation_kind={payload['operation_kind']}; "
+                f"session_id={payload['session_id']}; "
+                f"target={payload['target']}"
+            ),
+        )
+
+    def _policy_denied_patch_result(self, decision) -> "PatchResult":
+        payload = decision.denial_payload()
+        return PatchResult(
+            success=False,
+            error=payload["error"],
+        )
+
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
         """Execute command via terminal backend.
@@ -1191,6 +1234,9 @@ class ShellFileOperations(FileOperations):
         was swapped into place atomically. A non-zero exit means nothing was
         renamed and the original (if any) is intact.
         """
+        decision = self._session_write_decision(path, "file_write", "file_operations_atomic_write")
+        if decision.denied:
+            return ExecuteResult(stdout=decision.denial_payload()["error"], exit_code=1)
         q_path = self._escape_shell_arg(path)
         parent = os.path.dirname(path) or "."
         q_parent = self._escape_shell_arg(parent)
@@ -1852,6 +1898,9 @@ class ShellFileOperations(FileOperations):
 
     def _python_delete(self, path: str, recursive: bool) -> WriteResult:
         path = self._expand_path(path)
+        decision = self._session_write_decision(path, "file_delete", "file_operations_delete")
+        if decision.denied:
+            return self._policy_denied_write_result(decision)
         denied = get_write_denied_error(path, verb="Delete")
         if denied:
             return WriteResult(error=denied)
@@ -1898,6 +1947,10 @@ class ShellFileOperations(FileOperations):
         """Move a file via mv."""
         src = self._expand_path(src)
         dst = self._expand_path(dst)
+        for _path, _kind in ((src, "file_delete"), (dst, "file_write")):
+            decision = self._session_write_decision(_path, _kind, "file_operations_move")
+            if decision.denied:
+                return self._policy_denied_write_result(decision)
         for p in (src, dst):
             denied = get_write_denied_error(p, verb="Move")
             if denied:
@@ -1956,6 +2009,9 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+        decision = self._session_write_decision(path, "file_write", "file_operations_write")
+        if decision.denied:
+            return self._policy_denied_write_result(decision)
 
         # Block writes to sensitive paths
         denied = get_write_denied_error(path)
@@ -2202,6 +2258,9 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+        decision = self._session_write_decision(path, "file_patch", "file_operations_patch")
+        if decision.denied:
+            return self._policy_denied_patch_result(decision)
 
         # Block writes to sensitive paths
         denied = get_write_denied_error(path)
@@ -2354,11 +2413,25 @@ class ShellFileOperations(FileOperations):
         """
         # Import patch parser
         from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
-        
+
         operations, parse_error = parse_v4a_patch(patch_content)
         if parse_error:
             return PatchResult(error=f"Failed to parse patch: {parse_error}")
-        
+
+        for op in operations:
+            op_kind = "file_patch"
+            if getattr(op.operation, "value", "") == "add":
+                op_kind = "file_create"
+            elif getattr(op.operation, "value", "") == "delete":
+                op_kind = "file_delete"
+            decision = self._session_write_decision(op.file_path, op_kind, "file_operations_patch_v4a")
+            if decision.denied:
+                return self._policy_denied_patch_result(decision)
+            if getattr(op.operation, "value", "") == "move" and op.new_path:
+                decision = self._session_write_decision(op.new_path, "file_write", "file_operations_patch_v4a")
+                if decision.denied:
+                    return self._policy_denied_patch_result(decision)
+
         # Apply operations
         result = apply_v4a_operations(operations, self)
         return result

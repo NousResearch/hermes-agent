@@ -37,6 +37,11 @@ import yaml
 from tools.skills_guard import (
     ScanResult, content_hash, TRUSTED_REPOS,
 )
+from tools.skill_publish_guard import (
+    SkillMutationLockAcquireFailure,
+    live_skill_delete_guard,
+    live_skill_publish_guard,
+)
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 
@@ -3979,37 +3984,25 @@ def install_from_quarantine(
             )
         ancestor = ancestor.parent
 
-    if install_dir.exists():
-        if not install_dir.is_dir():
-            # A stray regular file at the install path. rmtree() on a file
-            # raises NotADirectoryError (an uncaught traceback at the CLI);
-            # refuse with the same actionable ValueError contract instead.
-            raise ValueError(
-                f"Refusing to install: '{install_dir.name}' already exists "
-                f"and is not a directory. Remove it or choose a different "
-                f"skill name."
-            )
-        # Guard against silent data loss when the install target collides with
-        # an existing category bucket (a directory that holds other skills).
-        # This was reported as GitHub issue #75983: installing a skill with
-        # --name matching an existing category directory caused rmtree to wipe
-        # all sibling skills.  A directory that directly contains SKILL.md is
-        # an existing skill installation and stays overwritable (hub-installed
-        # skills are additionally guarded by the lock-file check in
-        # do_install()).  But a directory that contains *other* skill
-        # directories is a category bucket and must NOT be silently deleted.
-        if not (install_dir / "SKILL.md").exists():
-            skill_dirs_in = _category_skill_dirs(install_dir)
-            if skill_dirs_in:
-                raise ValueError(
-                    f"Refusing to overwrite category directory '{install_dir}' "
-                    f"which contains {len(skill_dirs_in)} skill(s): "
-                    f"{', '.join(sorted(skill_dirs_in))}. "
-                    f"Use a different --name or install into a subcategory."
-                )
-        shutil.rmtree(install_dir)
+    # Reject symlinks inside the quarantined skill BEFORE the live
+    # publication guard runs. A malicious skill bundle could include a
+    # symlink pointing outside the skills tree; its target contents would
+    # then be copied into skills/ and leaked to the agent on the next
+    # skill_view call. This is a precondition check on the quarantine
+    # content, not a live-skill mutation, so it stays outside the guard.
+    for entry in quarantine_path.rglob("*"):
+        if not _is_path_redirect(entry):
+            continue
+        try:
+            rel = entry.relative_to(quarantine_resolved)
+        except ValueError:
+            rel = entry
+        raise ValueError(
+            f"Installed skill contains symlinks, which is not allowed: {rel}"
+        )
 
-    # Warn (but don't block) if SKILL.md is very large
+    # Warn (but don't block) if SKILL.md is very large — also a precondition
+    # check, kept outside the publication guard.
     skill_md = quarantine_path / "SKILL.md"
     if skill_md.exists():
         try:
@@ -4025,23 +4018,52 @@ def install_from_quarantine(
         except OSError:
             pass
 
-    # Reject symlinks inside the quarantined skill before moving it.
-    # A malicious skill bundle could include a symlink pointing outside the
-    # skills tree; its target contents would then be copied into skills/ and
-    # leaked to the agent on the next skill_view call.
-    for entry in quarantine_path.rglob("*"):
-        if not _is_path_redirect(entry):
-            continue
-        try:
-            rel = entry.relative_to(quarantine_resolved)
-        except ValueError:
-            rel = entry
-        raise ValueError(
-            f"Installed skill contains symlinks, which is not allowed: {rel}"
-        )
+    # The actual live publication/replacement mutation — rmtree of an
+    # existing same-target live skill followed by the move of the
+    # quarantine copy into the install_dir — must occur INSIDE the shared
+    # publication guard so the per-target mutation lock and the global
+    # normalized-name lock are held across both operations. Quarantine
+    # containment, install-path validation, category-bucket refusal, and
+    # symlink rejection are validated above (outside the guard) so a
+    # validation failure leaves the quarantine copy intact and the guard
+    # never has to undo half-applied validation work.
+    if install_dir.exists():
+        if not install_dir.is_dir():
+            # A stray regular file at the install path. rmtree() on a file
+            # raises NotADirectoryError (an uncaught traceback at the CLI);
+            # refuse with the same actionable ValueError contract instead.
+            raise ValueError(
+                f"Refusing to install: '{install_dir.name}' already exists "
+                f"and is not a directory. Remove it or choose a different "
+                f"skill name."
+            )
+        # Guard against silent data loss when the install target collides
+        # with an existing category bucket (a directory that holds other
+        # skills). This was reported as GitHub issue #75983: installing a
+        # skill with --name matching an existing category directory caused
+        # rmtree to wipe all sibling skills. A directory that directly
+        # contains SKILL.md is an existing skill installation and stays
+        # overwritable; a directory that contains *other* skill directories
+        # is a category bucket and must NOT be silently deleted.
+        if not (install_dir / "SKILL.md").exists():
+            skill_dirs_in = _category_skill_dirs(install_dir)
+            if skill_dirs_in:
+                raise ValueError(
+                    f"Refusing to overwrite category directory '{install_dir}' "
+                    f"which contains {len(skill_dirs_in)} skill(s): "
+                    f"{', '.join(sorted(skill_dirs_in))}. "
+                    f"Use a different --name or install into a subcategory."
+                )
 
-    install_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(quarantine_path), str(install_dir))
+    with live_skill_publish_guard(
+        safe_skill_name,
+        target=install_dir,
+        replacement_policy="replace_same_target",
+    ):
+        if install_dir.exists():
+            shutil.rmtree(install_dir)
+        install_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(quarantine_path), str(install_dir))
 
     # Record in lock file
     lock = HubLockFile()
@@ -4099,13 +4121,100 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     except ValueError as exc:
         return False, f"Refusing to uninstall '{skill_name}': {exc}"
 
-    if install_path.exists():
-        shutil.rmtree(install_path)
-
-    lock.record_uninstall(skill_name)
-    append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
+    expected_existed = install_path.exists()
+    try:
+        with live_skill_delete_guard(
+            skill_name,
+            target=install_path,
+            approved_existing_paths=[install_path] if expected_existed else [],
+            mutation_paths=[install_path],
+        ):
+            current_entry = lock.get_installed(skill_name)
+            ok, reason = _validate_hub_uninstall_current_object(
+                skill_name,
+                expected_entry=entry,
+                current_entry=current_entry,
+                expected_install_path=install_path,
+                expected_existed=expected_existed,
+            )
+            if not ok:
+                return False, f"Refusing to uninstall '{skill_name}': {reason}"
+            if install_path.exists():
+                shutil.rmtree(install_path)
+            lock.record_uninstall(skill_name)
+            append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
+    except SkillMutationLockAcquireFailure as exc:
+        return False, f"Refusing to uninstall '{skill_name}': {exc}"
 
     return True, f"Uninstalled '{skill_name}' from {entry['install_path']}"
+
+
+def _hub_skill_frontmatter_name(skill_dir: Path) -> str:
+    skill_md = skill_dir / "SKILL.md"
+    try:
+        content = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
+    except OSError:
+        return ""
+    in_frontmatter = False
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped == "---":
+            if in_frontmatter:
+                break
+            in_frontmatter = True
+            continue
+        if in_frontmatter and stripped.startswith("name:"):
+            return stripped.split(":", 1)[1].strip().strip("\"'")
+    return ""
+
+
+def _hub_installed_file_list(skill_dir: Path) -> List[str]:
+    files: List[str] = []
+    for fpath in sorted(skill_dir.rglob("*")):
+        if fpath.is_file():
+            files.append(fpath.relative_to(skill_dir).as_posix())
+    return files
+
+
+def _validate_hub_uninstall_current_object(
+    skill_name: str,
+    *,
+    expected_entry: dict,
+    current_entry: Optional[dict],
+    expected_install_path: Path,
+    expected_existed: bool,
+) -> Tuple[bool, str]:
+    """Revalidate hub provenance/content while the deletion guard is held."""
+    if current_entry != expected_entry:
+        return False, "hub lock entry changed during uninstall"
+    if current_entry is None:
+        return False, "hub lock entry disappeared during uninstall"
+    try:
+        current_install_path = _resolve_lock_install_path(
+            current_entry.get("install_path", ""), skill_name
+        )
+    except ValueError as exc:
+        return False, str(exc)
+    if current_install_path != expected_install_path:
+        return False, "hub install path changed during uninstall"
+    if not current_install_path.exists():
+        if expected_existed:
+            return False, "hub install target disappeared during uninstall"
+        return True, ""
+    if not current_install_path.is_dir():
+        return False, "hub install target is not a directory"
+    if not (current_install_path / "SKILL.md").is_file():
+        return False, "hub install target no longer contains SKILL.md"
+    frontmatter_name = _hub_skill_frontmatter_name(current_install_path)
+    if frontmatter_name and frontmatter_name != skill_name:
+        return False, "hub install target skill identity changed"
+    expected_hash = current_entry.get("content_hash")
+    if expected_hash and content_hash(current_install_path) != expected_hash:
+        return False, "hub install target content hash changed"
+    expected_files = current_entry.get("files")
+    if isinstance(expected_files, list) and sorted(expected_files) != _hub_installed_file_list(current_install_path):
+        return False, "hub install target file list changed"
+    return True, ""
 
 
 def bundle_content_hash(bundle: SkillBundle) -> str:

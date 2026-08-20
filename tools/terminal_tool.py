@@ -2657,6 +2657,96 @@ def terminal_tool(
                 "status": "error",
             }, ensure_ascii=False)
 
+        # Pre-spawn session-write-policy consult. Runs BEFORE _get_env_config()
+        # so a denied consult (DENY_ALL / ALLOWLIST-out-of-scope / unknown
+        # ``git`` mutation / PolicyDenied exception) short-circuits terminal
+        # execution without ever touching env config or environment creation.
+        def _consult_terminal_pre_spawn_policy(command, cwd, session_id):
+            try:
+                from agent.session_write_policy import (
+                    CallerType,
+                    PolicyDenied,
+                    pre_spawn_consult,
+                )
+            except Exception as exc:
+                return {
+                    "blocked": True,
+                    "error": f"Session write policy evaluation failed; terminal execution denied",
+                    "policy_reason": "policy_helpers_unavailable",
+                    "policy_exception": type(exc).__name__,
+                }
+
+            try:
+                decision = pre_spawn_consult(
+                    CallerType.TERMINAL_TOOL,
+                    operation_kind="terminal_exec",
+                    raw_command=command,
+                    cwd=cwd,
+                    env_subset=None,
+                )
+            except PolicyDenied as exc:
+                return {
+                    "blocked": True,
+                    "error": f"Session write policy denied terminal execution: {getattr(exc, 'reason', '') or getattr(exc, 'disposition', '') or 'policy_denied'}",
+                    "policy_reason": getattr(exc, "reason", None) or getattr(exc, "disposition", None) or "policy_denied",
+                    "disposition": getattr(exc, "disposition", None),
+                }
+            except Exception as exc:
+                logger.warning(
+                    "Session write policy pre-spawn consult failed closed: %s",
+                    type(exc).__name__,
+                )
+                return {
+                    "blocked": True,
+                    "error": "Session write policy evaluation failed; terminal execution denied",
+                    "policy_reason": "policy_evaluation_failed",
+                }
+
+            if getattr(decision, "denied", False):
+                return {
+                    "blocked": True,
+                    "error": f"Session write policy denied terminal execution: {getattr(decision, 'reason', 'policy_denied')}",
+                    "policy_reason": getattr(decision, "reason", "policy_denied"),
+                    "disposition": getattr(decision, "disposition", None),
+                }
+            return {"blocked": False}
+
+        _pre_spawn_session_id = session_id or task_id or ""
+        # Pre-spawn consult's ``cwd`` must be the live session cwd, not an
+        # empty string: ``git -C <path> ...`` is a *git* command that affects
+        # ``<path>``, and the resolver derives ``target_path`` from the path
+        # argument — so we must NOT rewrite cwd to ``<path>`` here. Pass the
+        # existing env's cwd as the fallback so the resolver sees the real
+        # parent directory of any ``git -C`` argument. If no env is live yet
+        # (first call) the ``default_cwd`` stays empty and the resolver falls
+        # back to ``os.getcwd()`` on its own.
+        _pre_spawn_existing_env = get_active_env(task_id or "default")
+        _pre_spawn_cwd = _resolve_command_cwd(
+            workdir=workdir,
+            default_cwd=(getattr(_pre_spawn_existing_env, "cwd", None) or ""),
+            session_key=_pre_spawn_session_id,
+        )
+        _pre_spawn_block = _consult_terminal_pre_spawn_policy(
+            command=command,
+            cwd=_pre_spawn_cwd,
+            session_id=_pre_spawn_session_id,
+        )
+        if _pre_spawn_block.get("blocked"):
+            payload = {
+                "output": "",
+                "exit_code": -1,
+                "error": _pre_spawn_block.get("error", "Session write policy denied terminal execution"),
+                "status": "blocked",
+                "success": False,
+                "policy_reason": _pre_spawn_block.get("policy_reason", "policy_denied"),
+                "operation_kind": "terminal_exec",
+                "session_id": _pre_spawn_session_id,
+                "target": _pre_spawn_block.get("target", _pre_spawn_cwd),
+            }
+            if "disposition" in _pre_spawn_block and _pre_spawn_block["disposition"] is not None:
+                payload["disposition"] = _pre_spawn_block["disposition"]
+            return json.dumps(payload, ensure_ascii=False)
+
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]

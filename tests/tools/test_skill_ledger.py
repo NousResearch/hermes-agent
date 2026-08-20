@@ -28,6 +28,14 @@ Original body.
 @pytest.fixture
 def ledger_env(tmp_path, monkeypatch):
     """Isolated HERMES_HOME + skills dir for skill_manage and the ledger."""
+    from agent.self_improvement_decision_context import (
+        self_improvement_decision_scope,
+    )
+    from agent.self_improvement_policy import Decision
+    from agent.session_write_policy import (
+        SessionWritePolicy,
+        session_write_policy_scope,
+    )
     from agent import skill_utils
     from tools import skill_ledger, skill_manager_tool, skill_usage
 
@@ -39,7 +47,27 @@ def ledger_env(tmp_path, monkeypatch):
     monkeypatch.setattr(skill_usage, "get_hermes_home", lambda: home)
     monkeypatch.setattr(skill_manager_tool, "SKILLS_DIR", skills_dir)
     monkeypatch.setattr(skill_utils, "get_all_skills_dirs", lambda: [skills_dir])
-    return {"home": home, "skills": skills_dir}
+    # #81937 treats an unset disable knob as fail-closed DENY.
+    # These tests intentionally exercise authorized foreground writes,
+    # so opt in explicitly for the duration of this fixture only.
+    monkeypatch.setenv("HERMES_DISABLE_SELF_IMPROVEMENT", "0")
+    monkeypatch.delenv("HERMES_READ_ONLY_SESSION", raising=False)
+
+    with (
+        self_improvement_decision_scope(
+            Decision(
+                result="ALLOW",
+                reason="skill_ledger_test_fixture",
+            )
+        ),
+        session_write_policy_scope(
+            SessionWritePolicy.normal(
+                session_id="skill-ledger-test",
+                origin="tests/tools/test_skill_ledger.py",
+            )
+        ),
+    ):
+        yield {"home": home, "skills": skills_dir}
 
 
 def _create(name="my-skill", content=VALID_SKILL_CONTENT):
@@ -162,52 +190,90 @@ def test_missing_blob_aborts_rollback_before_any_change(ledger_env):
 
 
 def test_ledger_entry_on_edit_and_delete(ledger_env):
+    """A fail-closed hard-delete refusal preserves live state and ledger truth."""
     from tools import skill_ledger
     from tools.skill_manager_tool import skill_manage
 
     assert _create()["success"] is True
+
     edited = json.loads(
         skill_manage(
             action="edit",
             name="my-skill",
-            content=VALID_SKILL_CONTENT.replace("Original body.", "Edited body."),
+            content=VALID_SKILL_CONTENT.replace(
+                "Original body.",
+                "Edited body.",
+            ),
         )
     )
     assert edited["success"] is True
+
+    skill_md = ledger_env["skills"] / "my-skill" / "SKILL.md"
+    edited_bytes = skill_md.read_bytes()
+
     deleted = json.loads(
-        skill_manage(action="delete", name="my-skill", absorbed_into="")
+        skill_manage(
+            action="delete",
+            name="my-skill",
+            absorbed_into="",
+        )
     )
-    assert deleted["success"] is True
 
-    actions = [r["action"] for r in skill_ledger.list_entries(skill="my-skill")]
-    assert actions == ["delete", "edit", "create"]  # newest first
+    assert deleted["success"] is False
+    assert deleted["policy_reason"] == "atomic_recursive_delete_unavailable"
+    assert (
+        deleted["rollback_failure_kind"]
+        == "identity_bound_recursive_delete_unavailable"
+    )
+    assert deleted["live_mutation_committed"] is False
+    assert deleted["safe_to_retry"] is False
 
-    delete_entry = skill_ledger.list_entries(skill="my-skill")[0]
-    # Delete intent recorded: explicit prune (absorbed_into="") + hard delete.
-    assert delete_entry["evidence"]["absorbed_into"] == ""
-    assert delete_entry["evidence"]["archived"] is False
-    # Before-state captured, after empty (skill gone).
-    assert delete_entry["before"]
-    assert delete_entry["after"] == []
+    assert skill_md.exists()
+    assert skill_md.read_bytes() == edited_bytes
+
+    actions = [
+        row["action"]
+        for row in skill_ledger.list_entries(skill="my-skill")
+    ]
+    assert actions == ["edit", "create"]
 
 
 def test_deleted_skill_recoverable_from_ledger(ledger_env):
-    """A foreground hard delete stays a hard delete — but the ledger entry
-    can restore the skill's files from blobs."""
+    """A refused hard delete preserves the skill and creates no false history."""
     from tools import skill_ledger
     from tools.skill_manager_tool import skill_manage
 
     assert _create()["success"] is True
+
     skill_md = ledger_env["skills"] / "my-skill" / "SKILL.md"
     original = skill_md.read_bytes()
 
-    assert json.loads(skill_manage(action="delete", name="my-skill"))["success"]
-    assert not skill_md.exists()
+    before = skill_ledger.list_entries(skill="my-skill")
+    before_ids = [row["id"] for row in before]
 
-    entry = skill_ledger.list_entries(skill="my-skill")[0]
-    ok, msg = skill_ledger.rollback_entry(entry["id"])
-    assert ok is True, msg
+    deleted = json.loads(
+        skill_manage(
+            action="delete",
+            name="my-skill",
+        )
+    )
+
+    assert deleted["success"] is False
+    assert deleted["policy_reason"] == "atomic_recursive_delete_unavailable"
+    assert (
+        deleted["rollback_failure_kind"]
+        == "identity_bound_recursive_delete_unavailable"
+    )
+    assert deleted["live_mutation_committed"] is False
+    assert deleted["safe_to_retry"] is False
+
+    assert skill_md.exists()
     assert skill_md.read_bytes() == original
+
+    after = skill_ledger.list_entries(skill="my-skill")
+
+    assert [row["id"] for row in after] == before_ids
+    assert all(row["action"] != "delete" for row in after)
 
 
 def test_archive_lands_in_ledger_with_curator_actor(ledger_env, monkeypatch):

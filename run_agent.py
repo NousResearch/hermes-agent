@@ -513,6 +513,7 @@ class AIAgent:
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
         requested_provider: str = None,
+        session_write_policy=None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         if tool_delay is not None:
@@ -603,6 +604,7 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            session_write_policy=session_write_policy,
         )
 
     def _get_session_db_for_recall(self):
@@ -1875,6 +1877,11 @@ class AIAgent:
         appended to the review prompt — e.g. "save the deploy workflow as a
         skill". The automatic post-turn triggers never set it.
         """
+        from agent.background_review import (
+            SKIP_BACKGROUND_REVIEW_THREAD,
+            spawn_background_review_thread,
+        )
+
         # A delegation subagent (``_delegate_depth > 0``) must not run the
         # automatic post-turn review. Subagents are ephemeral workers already
         # barred from writing shared MEMORY.md (``DELEGATE_BLOCKED_TOOLS``) and
@@ -1896,7 +1903,6 @@ class AIAgent:
             enabled, task_cfg = load_background_review_settings()
             if not enabled:
                 return
-        from agent.background_review import spawn_background_review_thread
         from tools.thread_context import propagate_context_to_thread
         target, _prompt = spawn_background_review_thread(
             self,
@@ -1906,6 +1912,8 @@ class AIAgent:
             focus=focus,
             task_cfg=task_cfg,
         )
+        if target is SKIP_BACKGROUND_REVIEW_THREAD:
+            return
         # Carry the active profile into the review thread so MEMORY.md / skill
         # review writes land in the right profile (#54937).
         t = threading.Thread(
@@ -8819,11 +8827,8 @@ class AIAgent:
             )
             from agent.auxiliary_client import scoped_runtime_main
 
-            # The outer token restores the caller's Context even though turn setup
-            # replaces the value with the live runtime after fallback restoration.
-            # Keep the scope local instead of storing ContextVar tokens on the agent,
-            # which may be observed from another thread.
-            with bind_subagent_parent(self), scoped_runtime_main({}):
+            def _run_scoped_turn_body():
+                nonlocal durable_turn_lease_turn_active
                 try:
                     if durable_turn_lease_thread is not None:
                         with durable_turn_lease_activity_lock:
@@ -8842,6 +8847,7 @@ class AIAgent:
                         persist_user_display_metadata=persist_user_display_metadata,
                         moa_config=moa_config,
                     )
+                    return result
                 finally:
                     # The lease remains held through relay/task finalization, but
                     # those post-loop steps must not receive a late refresh
@@ -8850,6 +8856,139 @@ class AIAgent:
                     # Interrupt clear is deferred to after thread join in the
                     # outer finally: a refresher firing between stop and join
                     # would otherwise set an interrupt that survives the clear.
+
+            # Session-write-policy scope: bind the policy bound at
+            # AIAgent.__init__ for the duration of the turn so every
+            # tool dispatch (file_tools, file_operations, memory_tool,
+            # skill_manager_tool, terminal_tool, etc.) consults the
+            # canonical policy from the ContextVar — fail closed on
+            # HERMES_READ_ONLY_SESSION / protected sessions before any
+            # side effect. The outer token restores the caller's Context
+            # even though turn setup replaces the value with the live
+            # runtime after fallback restoration.
+            #
+            # PHASE 2: also bind the typed SelfImprovementDecision
+            # captured at session start. The contextmanager uses
+            # try/finally/reset_self_improvement_decision so a raise
+            # inside the turn body cannot leak a stale ALLOW into
+            # subsequent operations. The decision is read by the L1
+            # background-review check, the L2 self-improvement tool
+            # guards, and the cron/suggestions guard. Default-OFF
+            # invariant: missing decision -> DENY_FALLBACK_DECISION.
+            #
+            # Block 1 repair (PR #90883 must-fix): the two import
+            # authorities are decoupled. A failure to import
+            # ``agent.session_write_policy`` (the policy that gates
+            # protected writes) MUST fail closed — never expose the
+            # turn body to a context where the policy ContextVar is
+            # unset and the gate collapses to ``SessionWritePolicy.normal``.
+            # A failure to import ``agent.self_improvement_decision_context``
+            # keeps the session_write_policy_scope active and substitutes
+            # DENY_FALLBACK_DECISION, so the L2/L3 self-improvement boundary
+            # remains fail-closed even if the decision context package is
+            # unavailable (partial install / package skew).
+            _swp_policy = None
+            _swp_scope = None
+            try:
+                from agent.session_write_policy import (
+                    SessionWritePolicy,
+                    session_write_policy_scope,
+                )
+
+                _swp_module_ok = True
+                _swp_policy = getattr(self, "session_write_policy", None)
+                _swp_scope = (
+                    session_write_policy_scope
+                    if isinstance(_swp_policy, SessionWritePolicy)
+                    else None
+                )
+            except ImportError:
+                _swp_module_ok = False
+
+            # Decision context is a separate import domain. A failure
+            # here does NOT loosen the session write policy: we substitute
+            # the fail-closed DENY_FALLBACK_DECISION so the L2/L3 self-
+            # improvement boundary stays closed.
+            try:
+                from agent.self_improvement_decision_context import (
+                    DENY_FALLBACK_DECISION,
+                    self_improvement_decision_scope,
+                )
+
+                _si_module_ok = True
+                _si_decision = getattr(self, "_self_improvement_decision", None)
+                if _si_decision is None or not hasattr(_si_decision, "allow"):
+                    _si_decision = DENY_FALLBACK_DECISION
+            except ImportError:
+                _si_module_ok = False
+                # Both the canonical DENY fallback and the scope helper
+                # come from the same module that just failed to import.
+                # Fall back to a hard-coded DENY stub so the L2/L3
+                # boundary stays fail-closed even when the decision
+                # context module is entirely unavailable.
+                try:
+                    from agent.self_improvement_decision_context import (  # noqa: F401
+                        DENY_FALLBACK_DECISION as _DENY_FALLBACK_DECISION,
+                    )
+                except ImportError:
+                    _DENY_FALLBACK_DECISION = None
+
+                _si_decision = _DENY_FALLBACK_DECISION
+                self_improvement_decision_scope = None
+
+            if not _swp_module_ok:
+                # Fail-closed: the session write policy primitive is the
+                # authority for protected writes. Without it the turn
+                # MUST NOT run. Reporting failure keeps the surrounding
+                # session coordinator state intact.
+                logger.error(
+                    "session_write_policy helpers unavailable; refusing to "
+                    "run turn body without the protected-write authority."
+                )
+                terminal = {"failed": True, "interrupted": False}
+                relay_outcome = "failed"
+                relay_runtime.SESSION_COORDINATOR.finish_logical_calls(
+                    relay_turn,
+                    outcome=relay_outcome,
+                )
+                if _relay_dialogue is not None:
+                    try:
+                        _relay_dialogue.transition("ready")
+                    except Exception:
+                        pass
+                return
+
+            if _swp_scope is not None and self_improvement_decision_scope is not None:
+                with (
+                    _swp_scope(_swp_policy),
+                    self_improvement_decision_scope(_si_decision),
+                    bind_subagent_parent(self),
+                    scoped_runtime_main({}),
+                ):
+                    result = _run_scoped_turn_body()
+            elif _swp_scope is not None:
+                # session_write_policy is available; only the decision
+                # context is unavailable. Keep the protected-write scope
+                # active and use DENY_FALLBACK_DECISION for the decision
+                # context (the L2/L3 boundary stays fail-closed).
+                with (
+                    _swp_scope(_swp_policy),
+                    bind_subagent_parent(self),
+                    scoped_runtime_main({}),
+                ):
+                    result = _run_scoped_turn_body()
+            elif self_improvement_decision_scope is not None:
+                # No protected policy to bind; the gate collapses to
+                # ``normal``. The decision context still fails closed.
+                with (
+                    self_improvement_decision_scope(_si_decision),
+                    bind_subagent_parent(self),
+                    scoped_runtime_main({}),
+                ):
+                    result = _run_scoped_turn_body()
+            else:
+                with bind_subagent_parent(self), scoped_runtime_main({}):
+                    result = _run_scoped_turn_body()
             terminal = result if isinstance(result, dict) else {}
             if terminal.get("interrupted") is True:
                 relay_outcome = "cancelled"

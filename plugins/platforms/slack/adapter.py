@@ -9100,6 +9100,35 @@ async def _standalone_upload_file(
     return {"success": True, "message_id": message_id, "raw": result}
 
 
+# ASCII digits only: Python's ``\d`` also matches Unicode decimal digits, so a
+# value like "١٧١٨٠٠٠٠٠٠.١٢٣٤٥٦" would pass and reach Slack (which rejects it)
+# instead of falling back to the channel root.
+_SLACK_THREAD_TS_RE = re.compile(r"^[0-9]+\.[0-9]+$")
+
+
+def _coerce_slack_thread_ts(thread_id):
+    """Return a valid Slack ``thread_ts`` or ``None``.
+
+    A Slack thread anchor is always a ``<seconds>.<microseconds>`` (dotted)
+    timestamp. A bare numeric id — e.g. a Telegram topic ``15900`` left in a
+    cron delivery target after a cross-platform migration — is not a valid
+    ``thread_ts``: ``chat.postMessage`` rejects it with ``invalid_thread_ts``
+    and the whole delivery fails while the job still reports ``ok`` (#86264).
+    Drop an unparseable anchor and post to the channel root instead of erroring.
+    """
+    if thread_id is None:
+        return None
+    ts = str(thread_id).strip()
+    if _SLACK_THREAD_TS_RE.fullmatch(ts):
+        return ts
+    logger.warning(
+        "[Slack] dropping invalid thread_ts %r (not a dotted Slack ts); "
+        "delivering to channel root instead",
+        thread_id,
+    )
+    return None
+
+
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -9130,6 +9159,11 @@ async def _standalone_send(
     ``chat.postMessage``.
     """
     del force_document  # signature parity with other standalone senders
+    # A cross-platform delivery target (Telegram topic, Discord thread, …) can
+    # leak a bare numeric id into ``thread_id``; Slack only accepts a dotted
+    # ``thread_ts``. Coerce here — the authoritative outbound sink — so every
+    # postMessage/upload path below fails open to the channel root (#86264).
+    thread_id = _coerce_slack_thread_ts(thread_id)
     # Profile-scoped read: under multiplex os.environ may hold ANOTHER
     # profile's bot token (first-writer-wins env bridges), so honor the
     # secret scope's verdict instead of reading the process env directly.

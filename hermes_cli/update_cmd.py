@@ -2639,6 +2639,11 @@ def _npm_lockfile_changed(hermes_root: Path) -> bool:
     # node_modules means the cache was recorded by another checkout.
     if not (_m().PROJECT_ROOT / "node_modules").is_dir():
         return True
+    # An interrupted or corrupted npm install may leave node_modules/ present
+    # but missing npm's hidden lockfile (.package-lock.json).  Treat that as
+    # "changed" so we force a reinstall instead of silently breaking the TUI.
+    if not (_m().PROJECT_ROOT / "node_modules" / ".package-lock.json").is_file():
+        return True
     # A matching lockfile hash over a tree whose web build toolchain never
     # landed must NOT skip the reinstall — otherwise every later `hermes
     # update` keeps rebuilding against a half-installed tree and serving a

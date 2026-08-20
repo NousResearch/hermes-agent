@@ -243,6 +243,27 @@ class TestMentionGating:
         await self._poll_with(adapter, _event("e1", content="hey @Chip can you help?", created_at=10))
         assert len(adapter._dispatched) == 1
 
+    @pytest.mark.asyncio
+    async def test_self_ptag_dispatches_after_profile_rename(self, adapter):
+        adapter._display_name = "Old Agent Name"
+        adapter.channels = [CHANNEL]
+        adapter._channel_meta[CHANNEL] = {
+            "channel_id": CHANNEL,
+            "name": "coordination",
+            "description": "Shared agent coordination",
+        }
+        event = _event("e1", content="@RenamedAgent can you help?", created_at=10)
+        event["tags"].append(["p", SELF_PUBKEY])
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [event])
+        cli.script("users", "get", [{"pubkey": SELF_PUBKEY, "display_name": "RenamedAgent"}])
+        adapter._run_cli = cli
+
+        await adapter._poll_channel(CHANNEL)
+
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
+        assert adapter._display_name == "RenamedAgent"
+
 
     @pytest.mark.asyncio
     async def test_allowlist_blocks_unauthorized(self, adapter):

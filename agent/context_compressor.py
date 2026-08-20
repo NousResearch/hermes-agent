@@ -7277,7 +7277,8 @@ This compaction should PRIORITISE preserving all information related to the focu
         else:
             # Deriving the auto focus topic scans recent user turns — only pay
             # for it when a summary will actually be generated.
-            summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
+            # Auto-focus only the summarized window; the protected tail stays verbatim.
+            summary_focus_topic = focus_topic or self._derive_auto_focus_topic(turns_to_summarize)
             try:
                 summary = self._generate_summary(
                     turns_to_summarize,

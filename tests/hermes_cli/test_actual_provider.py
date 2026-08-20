@@ -371,3 +371,26 @@ def test_actual_runtime_config_local_base_url_without_key(monkeypatch):
 
     assert resolved["api_key"] == ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
     assert resolved["api_mode"] == "codex_responses"
+
+
+def test_actual_agent_side_routing_requires_responses_api_for_any_model():
+    """The agent-side routing must also know Actual is Responses-only.
+
+    ``determine_api_mode`` covers the provider profile, but two agent paths
+    decide api_mode without consulting it: the init upgrade in
+    ``agent/agent_init.py`` and, more consequentially, fallback activation in
+    ``agent/chat_completion_helpers.py``, which rebuilds api_mode from
+    provider/base-url/model alone starting at ``chat_completions``.
+
+    Actual serves no chat-completions endpoint and its models are not
+    GPT-5.x, so the generic model heuristic never rescues them — the provider
+    branch is what keeps a fallback to Actual off ``/v1/chat/completions``.
+    """
+    from run_agent import AIAgent
+
+    requires = AIAgent._provider_model_requires_responses_api
+    for model in ("glm-5.2-nvfp4", "some-model", "kimi-k2"):
+        assert requires(model, provider="actual") is True, model
+
+    # The profile path and the agent path must agree about this provider.
+    assert determine_api_mode("actual", DEFAULT_ACTUAL_BASE_URL) == "codex_responses"

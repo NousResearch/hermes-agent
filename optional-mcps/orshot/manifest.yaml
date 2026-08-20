@@ -1,0 +1,96 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: orshot
+description: >-
+  Render on-brand images, PDFs, and video from reusable templates —
+  plus brand kit, template design, and automation workflows.
+source: https://orshot.com/agents/hermes
+
+# Orshot ships a hosted remote MCP server with native OAuth 2.1 + Dynamic
+# Client Registration over Streamable HTTP. Hermes's MCP client +
+# mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh —
+# nothing to install locally. The 401 carries a WWW-Authenticate header
+# pointing at /.well-known/oauth-protected-resource, so bare `auth: oauth`
+# is enough.
+transport:
+  type: http
+  url: https://mcp.orshot.com/mcp
+
+auth:
+  type: oauth
+  # No `provider:` — this is native MCP OAuth (case 1), not a third-party
+  # provider like Google. The MCP client triggers the browser flow on the
+  # first probe / first connect.
+
+# When Hermes sees these keywords in a request (or a mention of orshot.com),
+# it can proactively surface Orshot. Scoped to visual-generation intents that
+# Orshot is the clear fit for — kept specific to avoid false-positive suggests.
+suggest:
+  keywords:
+    - orshot
+    - og image
+    - social image
+    - image from template
+    - certificate pdf
+  hosts:
+    - orshot.com
+
+# Tool selection at install time:
+# Orshot exposes ~66 tools across rendering, template design, brand assets,
+# folders, dynamic URLs, workflows, social publishing, and workspace admin.
+# That is far more than most sessions need, so this entry pre-prunes to the
+# render + design + brand core. Destructive tools (delete_*), social
+# publishing, dynamic URL signing, and workspace administration are left
+# unchecked — users can add them from the install-time checklist or later
+# with `hermes mcp configure orshot`.
+tools:
+  default_enabled:
+    - orshot_auth_status
+    - orshot_list_studio_templates
+    - orshot_get_studio_template
+    - orshot_get_studio_template_modifications
+    - orshot_generate_image
+    - orshot_batch_render
+    - orshot_list_library_templates
+    - orshot_get_library_template_modifications
+    - orshot_generate_image_from_library
+    - orshot_get_brand_kit
+    - orshot_create_template_design
+    - orshot_update_template_design
+    - orshot_patch_template_elements
+    - orshot_list_workflows
+    - orshot_run_workflow
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with Orshot
+  (or run `hermes mcp login orshot`). Approve access, then restart the
+  session so tools load. A free account comes with render credits, so
+  you can generate real output without adding a card.
+
+  OAuth scopes the connection to one Orshot workspace — the templates,
+  brand kit, and credits the agent sees are that workspace's. Connect a
+  second entry under a different name if you work across workspaces.
+
+  Try it with:
+    render the launch template as an OG image and an Instagram story,
+    with the title "we just shipped"
+
+  Renders inherit the workspace brand kit (fonts, colors, logos), and one
+  design can be re-solved at any canvas size, so asking for several social
+  formats at once is a single call rather than one template per size.
+
+  Prefer a static key over the browser flow (headless boxes, shared
+  installs)? Drop `auth: oauth` and send a workspace API key instead:
+
+    mcp_servers:
+      orshot:
+        url: https://mcp.orshot.com/mcp
+        headers:
+          Authorization: "Bearer ${ORSHOT_API_KEY}"
+
+  Keys are created at https://orshot.com/dashboard under Settings → API Keys.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure orshot

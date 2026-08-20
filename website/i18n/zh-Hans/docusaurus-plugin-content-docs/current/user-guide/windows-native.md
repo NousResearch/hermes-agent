@@ -251,6 +251,7 @@ TELEGRAM_BOT_TOKEN=...
 | 变量                          | 效果                                                                                                                                |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `HERMES_GIT_BASH_PATH`        | 覆盖 bash.exe 的发现逻辑。可指向任意 bash——完整 Git-for-Windows、通过符号链接的 WSL bash、MSYS2、Cygwin。安装程序会自动设置此变量。 |
+| `HERMES_GIT_EXE_PATH`        | 覆盖 git.exe 的发现逻辑（用于桌面 Git 功能）。采用与 HERMES_GIT_BASH_PATH 相同的规则。 |
 | `HERMES_DISABLE_WINDOWS_UTF8` | 设为 `1` 可禁用 UTF-8 stdio 垫片，回退到区域设置代码页。用于排查编码 bug。                                                          |
 | `EDITOR` / `VISUAL`           | 用于 `/edit` 和 `Ctrl-X Ctrl-E` 的编辑器。如果两者均未设置，Hermes 默认使用 `notepad`。                                             |
 

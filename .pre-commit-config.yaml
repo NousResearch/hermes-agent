@@ -1,0 +1,198 @@
+# Pre-commit hooks for hermes-agent
+#
+# Install (one-time):
+#   uv tool install pre-commit          # or: brew install pre-commit / pipx install pre-commit
+#   pre-commit install                  # installs the git hook in .git/hooks/pre-commit
+#
+# Run on demand (matches CI):
+#   pre-commit run --all-files
+#   pre-commit run gitleaks --all-files
+#   pre-commit run ruff-check --all-files
+#
+# Run on a single file:
+#   pre-commit run --files path/to/file.py
+#
+# Update pinned hook versions:
+#   pre-commit autoupdate               # bumps `rev:` lines, then commit the diff
+#
+# -----------------------------------------------------------------------------
+# Hook inventory
+# -----------------------------------------------------------------------------
+#   1. pre-commit/pre-commit-hooks   — cheap, universal hygiene (whitespace, EOF,
+#                                       merge conflict markers, private-key blocks,
+#                                       large files, YAML/JSON/TOML syntax)
+#   2. astral-sh/ruff-pre-commit     — ruff (Python lint + format) using the same
+#                                       `pyproject.toml` rules CI enforces
+#   3. eslint                       — runs `npm run lint` in `ui-tui/` and `web/`
+#                                       (each has its own eslint.config and deps)
+#   4. gitleaks                     — secret/PAT/key detection, runs against staged
+#                                       and previously-committed content
+#
+# Why these three (and not also Black / mypy / prettier / etc.):
+#   - ruff already covers Python formatting + import sorting + lint
+#   - ty (Astral's type checker) is a separate, slow, advisory workflow in
+#     .github/workflows/lint.yml — not appropriate for the pre-commit hot path
+#   - prettier formatting on `ui-tui/` and `web/` is opt-in via their own
+#     `npm run fmt`; we don't force it pre-commit to keep PRs focused on logic
+#   - secret scanning (gitleaks) fills the gap that no other tool in the
+#     repo currently covers — see SECURITY.md for context on past incidents
+#
+# Skipping a hook on a specific commit:
+#   git commit --no-verify
+# ...but only do that for genuine emergencies. The hooks are all under 30s
+# for a normal changeset and a `--no-verify` will trip the
+# "Pre-commit Hooks" CI job below.
+
+# Minimum pre-commit version. 3.5+ is required for `additional_dependencies`
+# on local repos and several modern safety features (submodule: false default,
+# fail-fast semantics). Bump when we adopt newer hook versions that need it.
+minimum_pre_commit_version: "3.5.0"
+
+# Don't run on files inside vendored or generated trees. The pre-commit
+# framework also honours `.gitignore` by default, but we list the heavy
+# ones explicitly so the framework doesn't have to crawl them.
+exclude: |
+  (?x)^(
+      .*\.min\.(js|css)|
+      .*\.lock|
+      .*package-lock\.json|
+      .*uv\.lock|
+      .*flake\.lock|
+      hermes-*|
+      venv/.*|
+      .venv/.*|
+      node_modules/.*|
+      website/.*|
+      web/dist/.*|
+      web/src/i18n/.*\.po|
+      gateway/assets/.*|
+      ui-tui/dist/.*|
+      .*\.drawio\.svg
+  )$
+
+# We do NOT enable `fail_fast: true` — each hook should report independently
+# so contributors can fix all issues in one pass instead of being told about
+# them one round-trip at a time.
+
+repos:
+  # ---------------------------------------------------------------------------
+  # 1. Universal hygiene hooks
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        # Markdown allows two trailing spaces as a hard line break; keep them.
+        args: ["--markdown-linebreak-ext=md"]
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+        # Catch leftover `<<<<<<<` markers from botched rebase/merge resolution.
+      - id: check-added-large-files
+        # Block binaries and accidental log dumps from sneaking into git history.
+        args: ["--maxkb=500"]
+      - id: check-yaml
+        # Allow multi-document YAML (release notes, etc.). Symlinks (if any
+        # resolve to text) are fine; just don't barf on `.yaml.example` files.
+        args: ["--allow-multiple-documents", "--unsafe"]
+        exclude: |
+          (?x)^(
+              cli-config\.yaml\.example
+          )$
+      - id: check-json
+        exclude: |
+          (?x)^(
+              .*package-lock\.json|
+              .*\.ipynb
+          )$
+      - id: check-toml
+      - id: check-case-conflict
+        # Catch case-only renames on case-insensitive filesystems (macOS dev,
+        # Windows CI) that would silently drop the old file from history.
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+      - id: detect-private-key
+        # Catches accidental `-----BEGIN RSA/EC/OPENSSH PRIVATE KEY-----` blocks.
+        # Cheap and only fires on real matches; safe to leave on.
+      - id: mixed-line-ending
+        # Normalise to LF; CR/LF mostly comes from Windows editors and breaks
+        # grep/diff ergonomics in the terminal.
+        args: ["--fix=lf"]
+
+  # ---------------------------------------------------------------------------
+  # 2. Python: ruff (lint + format)
+  # ---------------------------------------------------------------------------
+  # We deliberately pin to a `rev` matching pyproject.toml's `dev` extra
+  # (currently `ruff==0.15.10`). Mismatch between local pre-commit and CI
+  # ruff causes "works on my machine" lint drift, which is exactly the
+  # class of bug this hook exists to prevent. Re-run `pre-commit autoupdate`
+  # when bumping the pin in pyproject.toml.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.15
+    hooks:
+      - id: ruff-check
+        # `ruff check` covers PLW1514 (the only rule currently enabled in
+        # pyproject.toml, but `--fix` also handles import sorting and the
+        # other small cleanups ruff knows about).
+        args: ["--fix"]
+        types_or: [python, pyi, jupyter]
+      - id: ruff-format
+        # Formatter. Reads its config from `[tool.ruff.format]` in
+        # pyproject.toml — currently unset, so ruff-format falls back to
+        # its Black-compatible defaults.
+        types_or: [python, pyi, jupyter]
+
+  # ---------------------------------------------------------------------------
+  # 3. JavaScript / TypeScript: ESLint
+  # ---------------------------------------------------------------------------
+  # Two workspaces in this repo ship TypeScript: `ui-tui/` (the Ink TUI) and
+  # `web/` (the dashboard SPA). Each has its own `eslint.config.*` and its
+  # own `node_modules/` (root has neither), so we shell out to `npm run lint`
+  # in each — the workspace handles its own `--fix` and config loading.
+  #
+  # We use a `local` repo (rev: local) because the hook runs an already-
+  # installed binary, not a tool pre-commit should fetch. pre-commit still
+  # tracks the hook definition so `pre-commit run eslint-ui-tui` works.
+  - repo: local
+    hooks:
+      - id: eslint-ui-tui
+        name: ESLint (ui-tui)
+        # Use the workspace's own lint script so the local `eslint.config.mjs`
+        # and its installed plugins are picked up automatically. The script
+        # already passes `--fix` via `npm run lint:fix` is the explicit version.
+        entry: bash -c 'cd ui-tui && npm run lint:fix -- --max-warnings=0'
+        language: system
+        # Only fire on files inside the ui-tui workspace.
+        files: ^ui-tui/(src|packages)/.*\.(ts|tsx|js|mjs|cjs)$
+        # Skip generated output and config files the config already ignores.
+        exclude: ^ui-tui/(dist|node_modules)/.*$
+        # `system` hooks are non-sandboxed; that matches what `npm run lint`
+        # needs (it shells out to a local node_modules binary). We do
+        # restrict the working tree by `files:` above.
+        pass_filenames: false
+        require_serial: false
+        # `additional_dependencies` is N/A for language: system hooks.
+
+      - id: eslint-web
+        name: ESLint (web)
+        entry: bash -c 'cd web && npm run lint -- --fix --max-warnings=0'
+        language: system
+        files: ^web/src/.*\.(ts|tsx|js|mjs|cjs)$
+        exclude: ^web/(dist|node_modules)/.*$
+        pass_filenames: false
+        require_serial: false
+
+  # ---------------------------------------------------------------------------
+  # 4. Secret scanning: gitleaks
+  # ---------------------------------------------------------------------------
+  # gitleaks is a regex + entropy-based scanner. Default rules catch
+  # AWS/GCP/Azure keys, GitHub PATs, OpenAI/Anthropic/HuggingFace tokens,
+  # Stripe keys, generic high-entropy strings, and the standard private-key
+  # headers (PEM blocks).
+  #
+  # We pin to a specific release tag (gitleaks ships semver tags). The
+  # `gitleaks` hook ships with sane defaults (`git --pre-commit --redact
+  # --staged --verbose`), so we don't need to override `args:` here.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

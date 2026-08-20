@@ -6,11 +6,19 @@ with EACCES. The resolver must detect the read-only install dir and mirror the
 bridge source into a writable HERMES_HOME location instead.
 """
 import importlib
+import typing
 from pathlib import Path
 
 import pytest
 
 from gateway.platforms import whatsapp_common
+
+
+def test_resolve_whatsapp_bridge_dir_type_hints_are_resolvable():
+    """Runtime introspection should resolve the public return annotation."""
+    hints = typing.get_type_hints(whatsapp_common.resolve_whatsapp_bridge_dir)
+
+    assert hints["return"] is Path
 
 
 def _seed_install_tree(install_bridge: Path) -> None:

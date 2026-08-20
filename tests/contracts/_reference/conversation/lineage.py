@@ -76,6 +76,30 @@ def _non_continuation(row: Mapping[str, Any], parent_id: str) -> bool:
     return row["source"] == "tool" or any(row["model_config"].get(marker) == parent_id for marker in _FORK_MARKERS)
 
 
+def _recovery_children(table, parent_id: str):
+    """Classify every direct child before lifecycle decisions; unlike display walks, never rank siblings."""
+    canonical = []
+    for row in table.values():
+        if row["parent_session_id"] != parent_id:
+            continue
+        config, source = row["model_config"], row["source"]
+        if not isinstance(config, Mapping) or not isinstance(source, str) or not source:
+            return None
+        if source == "tool":
+            continue
+        markers = [marker for marker in _FORK_MARKERS if marker in config]
+        if len(markers) > 1:
+            return None
+        if markers:
+            value = config[markers[0]]
+            if not isinstance(value, str) or not value:
+                return None
+            if value == parent_id:
+                continue
+        canonical.append(row)
+    return canonical
+
+
 def _descent_child(table: Mapping[str, dict[str, Any]], row: Mapping[str, Any]) -> bool:
     """A child a resume descends into: no fork marker at all, no legacy reset child of a reset-ended parent on the same routing key, not a tool row."""
     if row["source"] == "tool" or any(row["model_config"].get(marker) is not None for marker in _FORK_MARKERS):
@@ -143,6 +167,30 @@ class InMemoryLineageRepository:
                 break
             walked.append(child)
         return tuple(SessionId(sid) for sid in walked)
+
+    def live_compression_child(self, session_id: SessionId) -> Optional[SessionRecord]:
+        table = _sessions_table(self._backend, self._backend.scope)
+        current, seen = str(session_id), set()
+        while current and current not in seen:
+            seen.add(current)
+            parent = table.get(current)
+            if parent is None or parent["ended_at"] is None or parent["end_reason"] != END_REASON_COMPRESSION:
+                return None
+            children = _recovery_children(table, current)
+            if children is None or len(children) != 1:
+                return None
+            child = children[0]
+            child_id = child["session_id"]
+            if child_id in seen:
+                return None
+            if child["ended_at"] is None:
+                if child["end_reason"] is not None or _recovery_children(table, child_id) != []:
+                    return None
+                return self._backend.sessions.get(SessionId(child_id))
+            if child["end_reason"] != END_REASON_COMPRESSION:
+                return None
+            current = child_id
+        return None
 
     def tip(self, session_id: SessionId) -> SessionId:
         walked = self.chain(session_id)

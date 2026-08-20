@@ -13,7 +13,7 @@ from persistence.conversation.sessions import SessionRecord
 
 from .._backend import SQLiteStore, register_repository
 from ._store.compression import (
-    finalize_orphaned_compression_sessions, get_compression_chain, get_compression_fallback_streak,
+    finalize_orphaned_compression_sessions, find_live_compression_child, get_compression_chain, get_compression_fallback_streak,
     get_compression_ineffective_count, get_compression_lineage, get_compression_overload_streak,
     get_compression_recovery_deadline, get_compression_tip, get_tool_rotation_root, increment_compression_overload_streak,
     publish_compression_child, reopen_orphaned_compression_session, set_compression_fallback_streak,
@@ -28,6 +28,7 @@ from ._store.sessions import delegate_descendant_ids
 from ._store.stored_reads import session_current_segments, transcript_lineage_ids
 from ._errors import refusals
 from .messages import _message_dict, _stamp
+from .sessions import session_record
 
 __all__ = ["SQLiteLineageRepository"]
 
@@ -112,6 +113,12 @@ class SQLiteLineageRepository:
             set_compression_recovery_deadline(holder, session_id, deadline)
 
     # ── reads ─────────────────────────────────────────────────────────────────
+
+    def live_compression_child(self, session_id: SessionId) -> Optional[SessionRecord]:
+        holder = self._store.holder()
+        with refusals(holder, session_id):
+            row = find_live_compression_child(holder, session_id)
+        return session_record(row) if row is not None else None
 
     def tip(self, session_id: SessionId) -> SessionId:
         holder = self._store.holder()

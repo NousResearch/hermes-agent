@@ -92,6 +92,10 @@ class LineageRepository(Protocol):
         """Arm the anti-thrash recovery clock at ``deadline``; 0, ``None`` or an unparsable value disarms it."""
         ...
 
+    def live_compression_child(self, session_id: SessionId) -> Optional[SessionRecord]:
+        """The unique live canonical leaf downstream of a compression-ended session, or None. The complete walk and leaf check share one read snapshot, without a hop cap; cycles, ambiguous siblings (including closed ones), malformed metadata and inconsistent lifecycle states refuse recovery. Only validated parent-bound branch/delegate/reset and tool children are excluded. Unlike ``tip``, this is a conservative write-recovery read, not a preferred display projection."""
+        ...
+
     def tip(self, session_id: SessionId) -> SessionId:
         """The live end of the session's compression chain, preferring at each step a continuation that compressed again, then an open one, then the most recently active; the input when nothing continued it."""
         ...

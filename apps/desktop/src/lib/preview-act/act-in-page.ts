@@ -2,166 +2,86 @@
  * PREVIEW ACT ENGINE — the one function that performs an interaction inside a
  * page, so the agent can drive the in-app browser instead of only reading it.
  *
- * `elements` hands back a numbered inventory of what can be interacted with
- * (`@e1`, `@e2`, … — the same ref shape the browser_* tools use, so a model
- * that knows one knows the other) and parks the matching nodes on a holder.
- * Every other verb resolves its target from that holder, falling back to a raw
- * CSS selector.
+ * `elements` hands back an inventory of what can be interacted with, each under
+ * a durable handle that says what it is — `btn-sign-in`, `inp-email` — and
+ * parks the matching nodes on a holder. Every other verb resolves its target
+ * from that holder. Once the agent has a baseline for a page, later looks
+ * answer with a delta instead of the whole inventory (see `survey`).
  *
- * Injected into the preview webview as source (`actInPage.toString()`), so it
- * MUST stay self-contained: no imports, no closure references, no renderer
- * globals — everything arrives as a parameter. The structural types below
- * erase at compile time, so the stringified function stays plain JS.
+ * SELF-CONTAINMENT, and why the helpers arrive as an argument.
+ *
+ * The core is injected into the guest page as source, where module scope does
+ * not exist: a single free identifier is a ReferenceError on every call, which
+ * Electron reports only as "Script failed to execute". That much has always
+ * been true. The subtler half is that the renderer build MINIFIES, so an
+ * imported binding named here would be renamed to something the injected
+ * prelude never declared — and it would break in packaged builds only, staying
+ * green in dev and in tests. So the core names nothing it does not receive:
+ * `kit` carries the naming, visibility, and identity helpers, and
+ * `actEngineSource` is what assembles them into one injectable string.
+ *
+ * `actInPage` below is the ordinary in-process entry point. It is NOT
+ * stringified and is free to import.
  */
 
-/** One interactable node, as the agent sees it. */
-export interface PreviewElement {
-  /** Present and true only when the control is non-interactive right now. */
-  disabled?: boolean
-  /** Human-readable label (aria-label, text, placeholder, value …). */
-  label: string
-  /** Durable handle for as long as this page is open: 'btn-sign-in'. Legible on
-   *  purpose — see the ref-minting note in `actInPage`. */
-  ref: string
-  /** Explicit ARIA role, else the tag name. */
-  role: string
-  /** The element's `#id` or `[data-testid]`, when it has one. Absent otherwise
-   *  — address the element by its `ref`. */
-  selector?: string
-  /** Current value of a form control, truncated. */
-  value?: string
+import { identityKit } from './identity'
+import type { IdentityKit } from './identity'
+import { namingKit } from './naming'
+import type { NamingKit } from './naming'
+import type {
+  PreviewActAction,
+  PreviewActBinding,
+  PreviewActDelta,
+  PreviewActHolder,
+  PreviewActResult,
+  PreviewElement,
+  PreviewElementChange
+} from './types'
+import { visibilityKit } from './visibility'
+import type { VisibilityKit } from './visibility'
+
+export type {
+  PreviewActAction,
+  PreviewActBinding,
+  PreviewActDelta,
+  PreviewActHolder,
+  PreviewActResult,
+  PreviewElement,
+  PreviewElementChange
+} from './types'
+
+/** Everything the core needs that it cannot define for itself. */
+export interface ActKit {
+  identity: IdentityKit
+  naming: NamingKit
+  visibility: VisibilityKit
 }
 
-/** An element that is still itself but no longer reads the same.
- *
- *  Only the fields that actually moved are present. Role and selector are
- *  absent by construction rather than by omission: a change in either would
- *  mean this is a different element, which the re-bind ladder would have
- *  refused to match in the first place. */
-export interface PreviewElementChange {
-  /** Present only when the control's availability flipped. */
-  disabled?: boolean
-  label?: string
-  ref: string
-  value?: string
+/** Assemble the kits for one document. Used in-process; the guest page gets
+ *  the same three factories through `actEngineSource`. */
+export function buildActKit(doc: Document): ActKit {
+  const naming = namingKit(doc)
+
+  return { identity: identityKit(naming), naming, visibility: visibilityKit(doc, doc.defaultView) }
 }
 
-/** What changed on the page since the last look. Sent instead of the whole
- *  inventory once the agent has a baseline for the page — see `survey`. */
-export interface PreviewActDelta {
-  /** Elements seen for the first time, in full. */
-  added?: PreviewElement[]
-  /** Same handle, new label/value/disabled state — and nothing else. */
-  changed?: PreviewElementChange[]
-  /** Handles that are gone from the page. */
-  removed?: string[]
-  /** Handles whose element was destroyed and recreated by a re-render. The
-   *  handle still works; nothing about them needs re-reading. */
-  rebound?: string[]
-  /** How many handles were on the page and untouched. */
-  same?: number
-}
-
-/** A normalized action. `kind` is the verb; the rest is per-verb payload. */
-export interface PreviewActAction {
-  /** scroll distance in px. Defaults to ~90% of the viewport height. */
-  amount?: number
-  key?: string
-  /** `pin`/`unpin`/`hold` never reach the engine — they resolve their targets
-   *  through `locate`/`elements` and then talk to the overlay — but they arrive
-   *  on the same wire. */
-  kind:
-    | 'click'
-    | 'elements'
-    | 'hold'
-    | 'hover'
-    | 'locate'
-    | 'pin'
-    | 'press'
-    | 'scroll'
-    | 'strobe'
-    | 'type'
-    | 'unpin'
-  /** locate: also give the target keyboard focus, for a key press that must not
-   *  be preceded by a click (which would activate the control instead). */
-  focus?: boolean
-  /** elements: answer with the whole inventory rather than a delta. */
-  full?: boolean
-  /** Cap on the returned inventory. */
-  max?: number
-  ref?: string
-  selector?: string
-  /** type: press Enter (and submit the owning form) after entering text. */
-  submit?: boolean
-  text?: string
-  to?: 'bottom' | 'top'
-}
-
-export interface PreviewActResult {
-  /** What the action landed on, for the agent's own log. */
-  acted?: string
-  /** What moved since the last look. Present INSTEAD of `elements` once the
-   *  agent holds a baseline for this page. */
-  delta?: PreviewActDelta
-  /** The full inventory. Sent on the first look at a page, and again whenever
-   *  the page changed too much for a delta to be the cheaper answer. */
-  elements?: PreviewElement[]
-  error?: string
-  note?: string
-  /** Viewport centre of a located target, for aiming real pointer input at it. */
-  point?: { x: number; y: number }
-  success: boolean
-  title?: string
-  /** locate: whether the target actually takes typed text. */
-  typable?: boolean
-  /** Live document URL after the action — a change means it navigated. */
-  url?: string
-}
-
-/** One element the agent has a handle on, remembered across actions. */
-export interface PreviewActBinding {
-  el: Element
-  /** What it read as last time. Kept field by field rather than as one hash so
-   *  a change can be reported as only the part that moved. */
-  label: string
-  /** The accessible name at mint time, for re-finding this element after a
-   *  re-render destroys and recreates its node. */
-  name: string
-  /** Whether the control was unavailable last time. */
-  off: boolean
-  /** Nearest-landmark path plus position among same-role siblings. */
-  path: string
-  ref: string
-  role: string
-  /** `id` / `name` / `data-testid` / `aria-label`, if the page provides one.
-   *  The strongest re-bind signal there is, and the only one a rewrite of the
-   *  surrounding markup cannot disturb. */
-  stable: string
-  value: string
-}
-
-/** Where the surface keeps what it knows between actions (a window global in
- *  the preview page), so a handle still means something on the next call. */
-export interface PreviewActHolder {
-  /** Target of the action in flight, for the watch overlay to draw onto. */
-  aimed?: Element | null
-  /** Every handle minted on this page, live or not yet retired. */
-  book?: PreviewActBinding[]
-  /** Next disambiguating suffix per ref stem, so two "Edit" buttons become
-   *  `btn-edit` and `btn-edit-1`. Never rewound: a retired handle's name is
-   *  not handed to a different element later in the same page. */
-  coined?: Record<string, number>
-  /** The on-screen subset, for the overlay to outline. Diverges from `nodes` in
-   *  both directions: it drops what is below the fold, and it is not capped at
-   *  the inventory's size. */
-  field?: Element[]
-  nodes?: Element[]
-  /** URL the snapshot was taken on; a navigation retires every handle. */
-  url?: string
-}
-
-/** Run one action against `doc`, resolving refs through `holder`. Self-contained. */
+/** Run one action against `doc`, resolving refs through `holder`. */
 export function actInPage(doc: Document, holder: PreviewActHolder, action: PreviewActAction): PreviewActResult {
+  return actInPageCore(doc, holder, action, buildActKit(doc))
+}
+
+/** The injectable core. Everything it touches is a parameter — see the
+ *  self-containment note above. */
+export function actInPageCore(
+  doc: Document,
+  holder: PreviewActHolder,
+  action: PreviewActAction,
+  kit: ActKit
+): PreviewActResult {
+  const { anchorOf, labelOf, selectorFor, stableOf, valueOf } = kit.naming
+  const { affinity, coin, shifted } = kit.identity
+  const { onScreen, visible } = kit.visibility
+
   // Declared inside, not at module scope: this body is stringified and eval'd
   // in the guest page, where a module-level constant is simply not defined.
   const maxElements = 120
@@ -182,276 +102,6 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
   const still = !!(win && win.matchMedia && win.matchMedia('(prefers-reduced-motion: reduce)').matches)
   const glide: ScrollBehavior = still ? 'auto' : 'smooth'
 
-  const cssEscape = (value: string) =>
-    typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(value) : value.replace(/["\\]/g, '\\$&')
-
-  const clamp = (text: string, max: number) => (text.length > max ? text.slice(0, max - 1) + '…' : text)
-
-  const labelOf = (el: Element): string => {
-    const aria = el.getAttribute('aria-label')
-
-    if (aria) {
-      return clamp(aria, 80)
-    }
-
-    const labelledBy = el.getAttribute('aria-labelledby')
-    const labelled = labelledBy ? doc.getElementById(labelledBy) : null
-    const text = ((labelled || el).textContent || '').trim().replace(/\s+/g, ' ')
-
-    if (text) {
-      return clamp(text, 80)
-    }
-
-    for (const attr of ['placeholder', 'title', 'alt', 'name', 'value']) {
-      const value = el.getAttribute(attr)
-
-      if (value) {
-        return clamp(value, 80)
-      }
-    }
-
-    return ''
-  }
-
-  /** The strongest identity signal the page offers, if it offers one. Nothing a
-   *  re-render does to the surrounding markup disturbs these. */
-  const stableOf = (el: Element): string =>
-    el.id ||
-    el.getAttribute('data-testid') ||
-    el.getAttribute('name') ||
-    el.getAttribute('aria-label') ||
-    ''
-
-  /** Handle stems by role, so a handle says what it is before it says which
-   *  one. Anything unrecognised is `el`. */
-  const stemOf = (role: string): string => {
-    if (role === 'button' || role === 'summary') {
-      return 'btn'
-    }
-
-    if (role === 'a' || role === 'link') {
-      return 'lnk'
-    }
-
-    if (role === 'input:search' || role === 'searchbox') {
-      return 'srch'
-    }
-
-    if (role === 'input:checkbox' || role === 'checkbox') {
-      return 'chk'
-    }
-
-    if (role === 'input:radio' || role === 'radio') {
-      return 'rdo'
-    }
-
-    if (role === 'select' || role === 'combobox') {
-      return 'sel'
-    }
-
-    if (role === 'textarea') {
-      return 'txt'
-    }
-
-    if (role === 'switch') {
-      return 'sw'
-    }
-
-    if (role === 'tab' || role === 'menuitem' || role === 'option') {
-      return role === 'menuitem' ? 'mi' : role === 'option' ? 'opt' : 'tab'
-    }
-
-    // Every `input:*` that isn't one of the special cases above, plus the ARIA
-    // textbox. A date picker and an email field are both places text goes.
-    return role.indexOf('input') === 0 || role === 'textbox' ? 'inp' : 'el'
-  }
-
-  /** Lowercase, hyphenated, and short enough to read at a glance. */
-  const slug = (name: string): string => {
-    let out = ''
-    let dash = false
-
-    for (let i = 0; i < name.length && out.length < 24; i++) {
-      const ch = name[i]
-
-      if (/[a-zA-Z0-9]/.test(ch)) {
-        out += ch.toLowerCase()
-        dash = false
-      } else if (!dash && out) {
-        out += '-'
-        dash = true
-      }
-    }
-
-    return out.replace(/-+$/, '')
-  }
-
-  /** Where the element sits, coarsely: the nearest landmark plus its position
-   *  among same-role elements inside it. Deliberately NOT the CSS selector
-   *  below — a wrapper div appearing anywhere in the chain changes that string
-   *  completely, which is exactly the churn a re-bind has to see through. */
-  const anchorOf = (el: Element): string => {
-    const near = el.closest(
-      'main,nav,header,footer,aside,[role="main"],[role="navigation"],[role="banner"],' +
-        '[role="contentinfo"],[role="complementary"],[role="search"],form[aria-label],section[aria-label]'
-    )
-
-    if (!near) {
-      return 'root'
-    }
-
-    const named = near.getAttribute('aria-label') || ''
-
-    return near.tagName.toLowerCase() + (named ? '#' + slug(named) : '')
-  }
-
-  /** The element's own selector, when the page gives it one worth having.
-   *
-   *  Deliberately identity-only. This used to fall back to a chain of up to
-   *  eight `:nth-child` rungs, and on a real app shell that column was 74% of
-   *  the entire inventory — the single biggest thing the agent was paying for.
-   *  It bought nothing: nothing downstream reads it, a positional chain is
-   *  wrong the moment a sibling appears, and re-finding a node is what the
-   *  durable ref now does properly. An `#id` is short, stable, and the one
-   *  case where naming the node is genuinely useful to the model. */
-  const selectorFor = (el: Element): string => {
-    if (el.id) {
-      return '#' + cssEscape(el.id)
-    }
-
-    const testId = el.getAttribute('data-testid')
-
-    return testId ? '[data-testid="' + cssEscape(testId) + '"]' : ''
-  }
-
-  /** On screen right now, and worth drawing a box around. The field is strictly
-   *  viewport-bound: a mark past the fold is one nobody can see, it spends the
-   *  budget that should have gone to what IS on screen, and the ones parked far
-   *  off to the side were landing as stray labels in the corner. */
-  const onScreen = (el: Element): boolean => {
-    if (!win) {
-      return false
-    }
-
-    const box = el.getBoundingClientRect()
-
-    if (box.right <= 0 || box.bottom <= 0 || box.left >= win.innerWidth || box.top >= win.innerHeight) {
-      return false
-    }
-
-    // Page-sized wrappers. Outlining one draws a rectangle around the whole
-    // screen, which says nothing and frames everything inside it as if it
-    // mattered. Full-width banners are fine — it takes both dimensions.
-    return !(box.width >= win.innerWidth * 0.95 && box.height >= win.innerHeight * 0.9)
-  }
-
-  /** Painted at all, ancestors included. */
-  const shown = (el: Element): boolean => {
-    // Folds in display/visibility/opacity/content-visibility inherited from an
-    // ANCESTOR, which this element's own computed style does not report: inside
-    // a parent at opacity 0, every child still reads back opacity 1.
-    const seen = (el as Element & { checkVisibility?: (opts: object) => boolean }).checkVisibility
-
-    if (typeof seen === 'function' && !seen.call(el, { checkOpacity: true, checkVisibilityCSS: true })) {
-      return false
-    }
-
-    const style = win && win.getComputedStyle ? win.getComputedStyle(el) : null
-
-    if (style) {
-      if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
-        return false
-      }
-
-      // The screen-reader-only recipe, both spellings: the deprecated `clip` and
-      // the modern `clip-path: inset(50%)`. Neither exists for any purpose other
-      // than hiding something visually while keeping it focusable.
-      if ((style.clip && style.clip !== 'auto') || (style.clipPath || '').indexOf('inset(50%') !== -1) {
-        return false
-      }
-    }
-
-    return true
-  }
-
-  const visible = (el: Element): boolean => {
-    if (!shown(el)) {
-      return false
-    }
-
-    // Things the page itself declares are not for interacting with, neither of
-    // which shows up in a computed style or a bounding box: an aria-hidden
-    // subtree is invisible to every other assistive client, and `inert` cannot
-    // be clicked at all. Disabled controls are deliberately NOT filtered here —
-    // they stay in the inventory so the agent is told a button is disabled
-    // rather than hunting for one that appears not to exist.
-    if (el.closest('[aria-hidden="true"], [inert]')) {
-      return false
-    }
-
-    const rect = el.getBoundingClientRect()
-
-    // Below the fold is fine — we scroll to it. Off to the LEFT or ABOVE is the
-    // other half of the sr-only trick (`left: -9999px`, `top: -9999px`) and
-    // scrolling never brings those back.
-    if (rect.right <= 0 || rect.bottom <= 0) {
-      return false
-    }
-
-    // Bigger than the 1px box sr-only collapses to. Nothing a person can aim at
-    // is 2px across, and admitting those is what put the cursor in the corner:
-    // they cluster at the document origin, so they sort to the FRONT of the
-    // inventory and the agent reaches for one as @e1.
-    if (rect.width < 3 || rect.height < 3) {
-      return false
-    }
-
-    // Occlusion, and the last filter for a reason: everything above is cheap
-    // and this one forces layout. If the middle of the element is on screen,
-    // whatever the browser reports at that point has to BE this element — its
-    // own descendant (an icon inside a link) or the box it paints inside are
-    // fine, anything else means it is buried under a sticky header, a cookie
-    // wall, or a transparent layer the page put on top. Those are exactly the
-    // targets the agent aims at and then misses. Elements below the fold cannot
-    // be hit-tested from here, so they are taken on trust and land back in this
-    // function after the scroll.
-    const midX = rect.left + rect.width / 2
-    const midY = rect.top + rect.height / 2
-
-    const under = (doc as Document & { elementFromPoint?: (x: number, y: number) => Element | null })
-      .elementFromPoint
-
-    if (
-      typeof under === 'function' &&
-      win &&
-      midX >= 0 &&
-      midY >= 0 &&
-      midX < win.innerWidth &&
-      midY < win.innerHeight
-    ) {
-      const over = under.call(doc, midX, midY)
-
-      if (!over || !(over === el || el.contains(over) || over.contains(el))) {
-        return false
-      }
-    }
-
-    return true
-  }
-
-  const valueOf = (el: Element): string => {
-    const control = el as HTMLInputElement
-
-    if (typeof control.value === 'string' && control.value) {
-      return clamp(control.value, 60)
-    }
-
-    if (control.checked !== undefined && (el.tagName === 'INPUT' || el.getAttribute('role') === 'checkbox')) {
-      return control.checked ? 'checked' : 'unchecked'
-    }
-
-    return ''
-  }
 
   /** Walk the page and hand back what is interactable, in document order. The
    *  handles are assigned afterwards, by `survey`. */
@@ -534,97 +184,6 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
     return { elements, nodes }
   }
 
-  /** What moved on an element that kept its handle, or nothing if it held
-   *  still. Field by field, so a status line ticking over costs the agent one
-   *  short line instead of a re-run of everything already known about it. */
-  const shifted = (was: PreviewActBinding, entry: PreviewElement): PreviewElementChange | null => {
-    const off = !!entry.disabled
-    const value = entry.value || ''
-
-    if (was.label === entry.label && was.value === value && was.off === off) {
-      return null
-    }
-
-    const moved: PreviewElementChange = { ref: was.ref }
-
-    if (was.label !== entry.label) {
-      moved.label = entry.label
-    }
-
-    if (was.value !== value) {
-      moved.value = value
-    }
-
-    if (was.off !== off) {
-      moved.disabled = off
-    }
-
-    return moved
-  }
-
-  /** Do two labels share at least half their words? Tolerates the count badge
-   *  and the copy edit — "Inbox" against "Inbox (3)". */
-  const alike = (a: string, b: string): boolean => {
-    if (!a || !b) {
-      return false
-    }
-
-    const one = a.toLowerCase().split(/\s+/).filter(Boolean)
-    const two = b.toLowerCase().split(/\s+/).filter(Boolean)
-    const both = one.filter(word => two.indexOf(word) !== -1).length
-    const all = one.length + two.filter(word => one.indexOf(word) === -1).length
-
-    return all > 0 && both / all >= 0.5
-  }
-
-  /** How strongly a remembered element matches one just observed, 0 to 1.
-   *
-   *  Ported from anchortree's re-bind ladder (Apache-2.0), minus its geometry
-   *  rung: a centroid is only ever worth 0.1 there, it never reaches the 0.6
-   *  bar on its own, and carrying coordinates through the book to buy a
-   *  tie-break is not worth the measurement. */
-  const affinity = (was: PreviewActBinding, now: PreviewActBinding): number => {
-    // A button is not a link, however alike the rest of it reads.
-    if (was.role !== now.role) {
-      return 0
-    }
-
-    // Two elements that BOTH carry a stable attribute and disagree are the page
-    // telling us outright that they are different things.
-    if (was.stable && now.stable) {
-      return was.stable === now.stable ? 1 : 0
-    }
-
-    let score = 0
-
-    if (was.name && was.name === now.name) {
-      score += 0.6
-    } else if (alike(was.name, now.name)) {
-      score += 0.4
-    }
-
-    if (was.path && was.path === now.path) {
-      score += 0.3
-    }
-
-    return score
-  }
-
-  /** Mint a handle. Legible on purpose: the agent reads `btn-sign-in` in a
-   *  three-line delta on turn nine and knows what it is, where `@e42` would
-   *  send it back to an inventory twenty thousand tokens ago. Suffixes are
-   *  never rewound, so a retired handle's name is not later handed to a
-   *  different element on the same page. */
-  const coin = (role: string, name: string): string => {
-    const coined = holder.coined || (holder.coined = {})
-    const named = slug(name)
-    const stem = stemOf(role) + (named ? '-' + named : '')
-    const nth = coined[stem] || 0
-
-    coined[stem] = nth + 1
-
-    return nth ? stem + '-' + nth : stem
-  }
 
   /** Look at the page and say what is there — or, once there is something to
    *  compare against, only what moved.
@@ -644,6 +203,7 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
     }
 
     const book = holder.book || (holder.book = [])
+    const coined = holder.coined || (holder.coined = {})
     const seen = sight(max)
     const claimed: Record<string, boolean> = {}
     const kept: PreviewActBinding[] = []
@@ -678,6 +238,7 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
 
       if (!moved) {
         same++
+
         continue
       }
 
@@ -747,7 +308,7 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
         continue
       }
 
-      now.ref = coin(entry.role, now.name)
+      now.ref = coin(coined, entry.role, now.name)
       entry.ref = now.ref
       claimed[now.ref] = true
       kept.push(now)
@@ -1051,4 +612,23 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
   }
 
   return fail('Unknown action: ' + String(action.kind))
+}
+
+/** The engine as one injectable expression: `function (doc, holder, action)`.
+ *
+ *  The four factories are stringified together so the core's `kit` is built
+ *  inside the guest page, out of sources that travelled with it. This is the
+ *  ONLY supported way to get the engine's source — taking `.toString()` of any
+ *  one piece yields a function whose helpers are not defined, which fails at
+ *  call time rather than at injection. */
+export function actEngineSource(): string {
+  return `(function (doc, holder, action) {
+  var naming = (${namingKit.toString()})(doc);
+  var kit = {
+    naming: naming,
+    identity: (${identityKit.toString()})(naming),
+    visibility: (${visibilityKit.toString()})(doc, doc.defaultView)
+  };
+  return (${actInPageCore.toString()})(doc, holder, action, kit);
+})`
 }

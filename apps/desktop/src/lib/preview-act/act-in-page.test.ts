@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { actInPage, type PreviewActHolder } from './act-in-page'
+import { actEngineSource, actInPage, type PreviewActHolder } from './act-in-page'
 
 /** jsdom lays nothing out, so every rect is 0×0 and the engine's visibility
  *  check would reject the whole page. Give elements a plausible box, honouring
@@ -45,17 +45,24 @@ beforeEach(() => {
 })
 
 describe('self-containment', () => {
-  // The pane injects `actInPage.toString()` into the guest page, where module
-  // scope does not exist. A single free identifier (a module-level constant, an
-  // imported helper) is a ReferenceError on every call, and Electron reports it
-  // only as "Script failed to execute" — so evaluate the source the way the
-  // guest does and run a real action through it.
+  // The pane injects `actEngineSource()` into the guest page, where module
+  // scope does not exist. A single free identifier — a module-level constant,
+  // an imported helper, or a kit factory the assembler forgot to ship — is a
+  // ReferenceError on every call, and Electron reports it only as "Script
+  // failed to execute". Evaluating the bundle the way the guest does is the
+  // only way to catch that here: a plain import of these functions resolves
+  // the very names the guest would be missing.
+  //
+  // It is also the guard on the build. The renderer minifies, so an imported
+  // binding named inside the stringified core would be renamed to something
+  // the bundle never declares — green in dev and in this suite if the source
+  // were assembled any other way, broken only once packaged.
   it('runs after being stringified and eval’d with no module scope', () => {
     const page = document.createElement('div')
     page.innerHTML = '<button id="save">Save</button>'
     document.body.replaceChildren(page)
 
-    const injected = new Function('return (' + actInPage.toString() + ')')() as typeof actInPage
+    const injected = new Function('return ' + actEngineSource())() as typeof actInPage
     const holder: PreviewActHolder = {}
 
     const [save] = injected(document, holder, { kind: 'elements' }).elements!
@@ -315,6 +322,7 @@ describe('delta', () => {
       <a href="/help">Help</a>
       <a href="/terms">Terms</a>
     `)
+
     inventory(holder)
     ;(document.getElementById('q') as HTMLInputElement).value = 'shoes'
 
@@ -329,6 +337,7 @@ describe('delta', () => {
       <a href="/help">Help</a>
       <a href="/terms">Terms</a>
     `)
+
     inventory(holder)
     ;(document.getElementById('go') as HTMLButtonElement).disabled = false
 

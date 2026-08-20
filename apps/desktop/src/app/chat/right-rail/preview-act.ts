@@ -27,7 +27,7 @@
  * out of the boot path.
  */
 
-import { actInPage, type PreviewActAction, type PreviewActResult } from '@/lib/preview-act/act-in-page'
+import { actEngineSource, type PreviewActAction, type PreviewActResult } from '@/lib/preview-act/act-in-page'
 import { watchInPage } from '@/lib/preview-act/watch-in-page'
 
 import { clickAt, glideTo, pointerPlaced, pressKey, selectAll, typeText, wheelBy } from './preview-drive'
@@ -98,7 +98,7 @@ const preamble = () => `  var w = window;
   // tab to whichever build first touched it. The holder is the exception — it
   // carries the aimed element from the locate trip to the act trip.
   w.__hermesActHolder = w.__hermesActHolder || {};
-  w.__hermesAct = (${actInPage.toString()});
+  w.__hermesAct = ${actEngineSource()};
   w.__hermesWatch_fn = (${watchInPage.toString()});
   w.__hermesWatchTag = ${WATCH_TAG};
   var holder = w.__hermesActHolder;
@@ -452,6 +452,7 @@ async function driveScroll(
   action: PreviewActAction,
 ): Promise<PreviewActResult> {
   const far = action.amount ?? 0
+
   const trip = await runJson(
     run,
     buildScrollAnchorScript()
@@ -529,6 +530,7 @@ export async function actOnActivePreview(
           : typed.kind === 'pin'
             ? buildPinScript(typed, typed.text || '')
             : buildUnpinScript(typed)
+
     const trip = await runJson(run, mark)
 
     if (trip.kind === 'failed') {

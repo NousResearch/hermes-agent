@@ -959,7 +959,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                                     msg_type = MessageType.VIDEO
                             else:
                                 media_types.append("application/octet-stream")
-                                if msg_type == MessageType.TEXT:
+                                if msg_type in (MessageType.TEXT, MessageType.PHOTO):
                                     msg_type = MessageType.DOCUMENT
 
         msg_type_str = getattr(message, "message_type", "") or ""

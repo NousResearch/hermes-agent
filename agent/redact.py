@@ -405,8 +405,9 @@ _JWT_RE = re.compile(
 )
 
 # E.164 phone numbers: +<country><number>, 7-15 digits
-# Negative lookahead prevents matching hex strings or identifiers
-_SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
+# Negative lookahead prevents matching hex strings or identifiers.
+# Negative lookbehind for tel: preserves clickable tel: links (#82405).
+_SIGNAL_PHONE_RE = re.compile(r"(?<!tel:)(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 
 # URLs containing query strings — matches `scheme://...?...[# or end]`.
 # Used to scan text for URLs whose query params may contain secrets.

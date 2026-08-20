@@ -7628,6 +7628,43 @@ def _desktop_macos_has_valid_real_signature(app: Path) -> bool:
         return False
 
 
+def _desktop_macos_update_keychain_acl(app: Path) -> None:
+    """Update the 'Hermes Safe Storage' keychain item's ACL after re-signing.
+
+    Electron's ``safeStorage`` stores its encryption key in a Keychain item
+    named ``<productName> Safe Storage`` (here: "Hermes Safe Storage").  macOS
+    ties each keychain item's Access Control List to the Designated Requirement
+    of the app that created it.  When the self-updater rebuilds and re-signs
+    the bundle (ad-hoc or with a different identity), the new DR no longer
+    matches the stored ACL, so macOS re-prompts on every launch.
+
+    After re-signing, delete the existing keychain item so Electron recreates
+    it with the correct ACL for the newly-signed app on next launch.  The
+    trade-off: previously encrypted tokens become unreadable (the user
+    re-enters the gateway token once), but the keychain prompt stops appearing
+    on every launch.
+
+    If the item doesn't exist yet (first launch), this is a no-op.
+
+    Best-effort: never raises.
+    """
+    security = shutil.which("security")
+    if not security:
+        return
+    service_name = "Hermes Safe Storage"
+    # Chromium/Electron safeStorage uses "<appName> Key" as the account name.
+    account_name = "Hermes Key"
+    try:
+        result = subprocess.run(
+            [security, "delete-generic-password", "-s", service_name, "-a", account_name],
+            check=False, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print("  → Reset Hermes Safe Storage keychain entry for new signing identity")
+    except Exception:
+        pass  # Best-effort; the prompt is annoying but not fatal.
+
+
 def _desktop_macos_local_codesign(
     app: Path, *, desktop_dir: Path, identity: str = "-"
 ) -> bool:
@@ -7778,6 +7815,7 @@ def _desktop_macos_relaunchable_fixup(
         if _desktop_macos_local_codesign(app, desktop_dir=desktop_dir, identity=identity):
             label = "keychain identity" if identity != "-" else "stable ad-hoc identity"
             print(f"  → macOS desktop signed with {label}; TCC grants persist across rebuilds")
+            _desktop_macos_update_keychain_acl(app)
             return True
     except Exception as exc:
         if identity != "-":
@@ -7788,6 +7826,7 @@ def _desktop_macos_relaunchable_fixup(
         print(f"  (warning: stable macOS signing failed ({exc}); using legacy ad-hoc sign)")
     try:
         subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
+        _desktop_macos_update_keychain_acl(app)
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
     return False

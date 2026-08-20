@@ -3976,6 +3976,23 @@ def _ensure_skin_watcher() -> None:
 
     threading.Thread(target=_loop, name="hermes-change-watcher", daemon=True).start()
 
+    # #liveness-stale-end: heal de linhas órfãs não-chat (one-shots mortos que
+    # nunca fecharam a linha — cli/acp/cron/subagent com 24h+ sem atividade).
+    # Uma vez por processo, best-effort: uma falha nunca impede o startup.
+    try:
+        db = _get_db()
+        if db is not None:
+            from hermes_state import heal_orphan_sessions
+
+            healed = heal_orphan_sessions(db)
+            if healed:
+                logger.info(
+                    "orphan-heal: finalized %d stale non-chat session row(s)",
+                    healed,
+                )
+    except Exception:
+        pass
+
 
 def _resolve_model() -> str:
     env = (

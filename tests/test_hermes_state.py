@@ -5040,3 +5040,60 @@ class TestFts5SanitizerCharacterClass:
         # text; keep % intact there (pre-existing contract).
         sanitized = self._sanitize("完成50%")
         assert "%" in sanitized
+
+
+# =========================================================================
+# #liveness-stale-end — heal de órfãs não-chat
+# =========================================================================
+
+def test_list_open_sessions_with_stale_activity_filters_by_source_and_age(db):
+    """O SELECT do heal deve enxergar só linhas abertas, das fontes one-shot,
+    com atividade real ausente ou mais velha que a janela — chat-like e
+    linhas recentes ficam de fora."""
+    import hermes_state
+    now = time.time()
+    db.create_session("cli_old", "cli")
+    db.create_session("acp_old", "acp")
+    db.create_session("desktop_old", "desktop")
+    db.create_session("cli_fresh", "cli")
+    db.create_session("cli_no_stamp", "cli")
+    db.touch_session_activity("cli_old", ts=now - 48 * 3600, description="done")
+    db.touch_session_activity("acp_old", ts=now - 72 * 3600, description="done")
+    db.touch_session_activity("desktop_old", ts=now - 48 * 3600, description="done")
+    db.touch_session_activity("cli_fresh", ts=now - 600, description="working")
+
+    stale = db.list_open_sessions_with_stale_activity(
+        sources=("cli", "acp", "cron", "subagent"),
+        older_than=24 * 3600,
+        now=now,
+    )
+    ids = sorted(row["id"] for row in stale)
+    # cli_old (48h), acp_old (72h) e cli_no_stamp (sem stamp) são órfãs;
+    # desktop_old é chat-like (fora das fontes) e cli_fresh é recente.
+    assert ids == ["acp_old", "cli_no_stamp", "cli_old"]
+
+
+def test_heal_orphan_sessions_ends_only_non_chat_stale_rows(db):
+    """heal_orphan_sessions finaliza órfãs com 'orphan_heal' e preserva
+    chat-like e linhas recentes."""
+    import hermes_state
+    now = time.time()
+    db.create_session("cli_old", "cli")
+    db.create_session("acp_old", "acp")
+    db.create_session("desktop_old", "desktop")
+    db.create_session("cli_fresh", "cli")
+    db.touch_session_activity("cli_old", ts=now - 48 * 3600, description="done")
+    db.touch_session_activity("acp_old", ts=now - 72 * 3600, description="done")
+    db.touch_session_activity("desktop_old", ts=now - 48 * 3600, description="done")
+    db.touch_session_activity("cli_fresh", ts=now - 600, description="working")
+
+    healed = hermes_state.heal_orphan_sessions(db)
+    assert healed == 2
+
+    for sid in ("cli_old", "acp_old"):
+        row = db.get_session(sid)
+        assert row["ended_at"] is not None
+        assert row["end_reason"] == "orphan_heal"
+    for sid in ("desktop_old", "cli_fresh"):
+        row = db.get_session(sid)
+        assert row["ended_at"] is None

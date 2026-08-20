@@ -6826,6 +6826,34 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         self._execute_write(_do, patience_s=self._ACTIVITY_WRITE_PATIENCE_S)
 
+    def list_open_sessions_with_stale_activity(
+        self,
+        *,
+        sources: tuple[str, ...],
+        older_than: float,
+        now: float,
+    ) -> List[Dict[str, Any]]:
+        """Rows that look like orphaned one-shot sessions (#liveness-stale-end).
+
+        ``ended_at IS NULL`` AND ``source IN sources`` AND (no durable
+        activity stamp ever, OR the stamp is older than ``older_than``).
+        Chat-like surfaces (desktop/tui/gateway) are intentionally excluded
+        by the caller's ``sources`` — their rows stay open across idle
+        periods by design.
+        """
+        if not sources:
+            return []
+        placeholders = ",".join("?" for _ in sources)
+        cutoff = now - older_than
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, source, started_at, last_activity_at FROM sessions "
+                f"WHERE ended_at IS NULL AND source IN ({placeholders}) "
+                "AND (last_activity_at IS NULL OR last_activity_at < ?)",
+                (*sources, cutoff),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_session_activity(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Return the durable activity snapshot for *session_id*, or None."""
         if not session_id:
@@ -13084,3 +13112,41 @@ class AsyncSessionDB:
             return await asyncio.to_thread(attr, *args, **kwargs)
 
         return _offloaded
+
+
+# ---------------------------------------------------------------------------
+# #liveness-stale-end — heal de linhas órfãs não-chat
+# ---------------------------------------------------------------------------
+
+# Fontes one-shot cuja linha DEVE fechar quando o processo morre/termina.
+# Sessões chat-like (desktop/tui/gateway/messaging) ficam abertas por design
+# até reclaim/expiry e nunca entram no heal.
+ORPHAN_HEAL_SOURCES: tuple[str, ...] = ("cli", "acp", "cron", "subagent")
+
+# Idade mínima de inatividade (durable last_activity_at) para considerar a
+# linha órfã. 24h é conservador: qualquer retomada legítima (resume + primeiro
+# turno) reabre a linha de qualquer forma (methods_prompt._reopen_if_finalized).
+ORPHAN_HEAL_IDLE_S: float = 24 * 3600
+
+
+def heal_orphan_sessions(db: SessionDB, now: Optional[float] = None) -> int:
+    """Finalize non-chat rows with no real activity for ORPHAN_HEAL_IDLE_S.
+
+    Best-effort: a failed end_session for one row never aborts the sweep.
+    Returns the number of rows healed (#liveness-stale-end).
+    """
+    if now is None:
+        now = time.time()
+    stale = db.list_open_sessions_with_stale_activity(
+        sources=ORPHAN_HEAL_SOURCES,
+        older_than=ORPHAN_HEAL_IDLE_S,
+        now=now,
+    )
+    healed = 0
+    for row in stale:
+        try:
+            db.end_session(row["id"], "orphan_heal")
+            healed += 1
+        except Exception:
+            pass
+    return healed

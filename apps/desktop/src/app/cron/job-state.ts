@@ -19,6 +19,18 @@ export function jobState(job: CronJob): string {
   return state || (job.enabled === false ? 'disabled' : 'scheduled')
 }
 
+// Script-only (no-agent) jobs write no conversational run session. Their
+// persisted job timestamp is the authoritative execution record instead.
+export function noAgentRunTime(job: Pick<CronJob, 'last_run_at' | 'no_agent'>): null | number {
+  if (!job.no_agent || typeof job.last_run_at !== 'string') {
+    return null
+  }
+
+  const timestamp = Date.parse(job.last_run_at)
+
+  return Number.isNaN(timestamp) ? null : timestamp
+}
+
 // Human label for a job: name → first 60 of prompt → first 60 of script → id.
 // One source for the sidebar row and the Cron page so the two never drift.
 export function jobTitle(job: CronJob): string {

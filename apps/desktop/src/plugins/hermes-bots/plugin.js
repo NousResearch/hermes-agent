@@ -4149,6 +4149,24 @@ function createCanonicalChat(name) {
     const sid = res?.stored_session_id
     const runtime = res?.session_id
 
+    // session.create is intentionally lazy: its stored row does not exist until
+    // the first prompt. Mounting `sid` immediately therefore emits a noisy REST
+    // 404 ("Session not found"), and the turn-start auto-titler can win the race
+    // against the deferred `title: 'Bot Chat'` — under name-identity that is an
+    // identity outage: until the row is titled, the registry has no "Bot Chat"
+    // entry, so a second click during the intro turn mints a duplicate.
+    // session.title materializes the row now and records a user-authority title
+    // before either the open or kickoff, closing both the 404 race and the
+    // untitled window. Older gateways may not support the eager write; retain
+    // the kickoff-and-retry fallback below.
+    if (runtime) {
+      try {
+        await host.request('session.title', { session_id: runtime, title: CANONICAL_CHAT_TITLE })
+      } catch {
+        /* compatibility fallback: prompt.submit will persist the lazy row */
+      }
+    }
+
     // Mount the session view FIRST, then send the kickoff — submitting into
     // an unmounted session left the intro reply invisible until reopen.
     let opened = false

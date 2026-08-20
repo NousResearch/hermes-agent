@@ -19,6 +19,7 @@ Env vars::
 
     TAVILY_API_KEY=...           # https://app.tavily.com/home (required)
     TAVILY_BASE_URL=...          # optional override of https://api.tavily.com
+    TAVILY_AUTH_STYLE=...        # "header" (default) or "body" (legacy)
 """
 
 from __future__ import annotations
@@ -38,6 +39,12 @@ def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     Mirrors :func:`tools.web_tools._tavily_request`. Raises ``ValueError``
     when ``TAVILY_API_KEY`` is unset; the caller catches and surfaces as
     a typed error response.
+
+    Authentication follows Tavily's documented method: the key is sent as an
+    ``Authorization: Bearer <key>`` header. Set ``TAVILY_AUTH_STYLE=body`` to
+    fall back to the legacy in-body ``api_key`` field. Header auth is the
+    default because it lets the key be supplied by an upstream credential
+    proxy, which can rewrite request headers but not JSON request bodies.
     """
     import httpx
 
@@ -51,12 +58,17 @@ def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     base_url = get_provider_env("TAVILY_BASE_URL") or "https://api.tavily.com"
+    auth_style = (get_provider_env("TAVILY_AUTH_STYLE") or "header").strip().lower()
     payload = dict(payload)  # don't mutate caller's dict
-    payload["api_key"] = api_key
+    headers: Dict[str, str] = {}
+    if auth_style == "body":
+        payload["api_key"] = api_key
+    else:
+        headers["Authorization"] = f"Bearer {api_key}"
     url = f"{base_url}/{endpoint.lstrip('/')}"
     logger.info("Tavily %s request to %s", endpoint, url)
 
-    response = httpx.post(url, json=payload, timeout=60)
+    response = httpx.post(url, json=payload, headers=headers, timeout=60)
     response.raise_for_status()
     return response.json()
 

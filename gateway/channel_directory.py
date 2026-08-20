@@ -52,13 +52,19 @@ def _apply_channel_aliases(platforms: Dict[str, Any]) -> None:
 
     Renames matching entries in place; injects a placeholder entry for an
     aliased id that hasn't been discovered yet (so a freshly-created group is
-    addressable by name before its first message). Mutates *platforms*.
+    addressable by name before its first message).
+
+    Only overlays platforms already present in *platforms*. Creating keys via
+    ``setdefault`` would resurrect disconnected/decommissioned platforms into
+    list/resolve results and defeat the connected-only session-discovery guard.
+    Connected platforms still get an (possibly empty) list before this runs, so
+    pre-naming undiscovered chats keeps working. Mutates *platforms*.
     """
     aliases = _load_channel_aliases()
     for plat_name, id_map in aliases.items():
         if not isinstance(id_map, dict):
             continue
-        entries = platforms.setdefault(plat_name, [])
+        entries = platforms.get(plat_name)
         if not isinstance(entries, list):
             continue
         for chat_id, friendly in id_map.items():

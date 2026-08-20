@@ -28,6 +28,71 @@ from hermes_platform.host.facts import os_family
 GOOGLE_WORKSPACE_CREDENTIAL_FILES = ("google_token.json", "google_client_secret.json", "google_oauth_pending.json")
 
 
+# Shell startup files are execution-bearing user configuration. Keep this
+# inventory shared with the terminal approval detector so file writes and
+# shell commands cannot silently drift into different allowlists.
+SHELL_RC_RELATIVE_PATHS: tuple[str, ...] = (
+    ".bashrc",
+    ".bash_aliases",
+    ".profile",
+    ".bash_profile",
+    ".zshenv",
+    ".zshrc",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+    ".config/fish/config.fish",
+)
+SHELL_RC_ZSH_FILENAMES: tuple[str, ...] = (
+    ".zshenv",
+    ".zshrc",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+)
+
+
+def _resolve_configured_path(value: str, home: str) -> str:
+    """Resolve a path-valued shell environment variable against ``home``."""
+    expanded = os.path.expanduser(os.path.expandvars(value))
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(home, expanded)
+    return os.path.realpath(expanded)
+
+
+def build_shell_rc_approval_paths(home: str) -> set[str]:
+    """Return default and environment-relocated shell startup file paths."""
+    paths = {
+        os.path.realpath(os.path.join(home, relative))
+        for relative in SHELL_RC_RELATIVE_PATHS
+    }
+
+    zdotdir = os.getenv("ZDOTDIR")
+    if zdotdir:
+        zsh_dir = _resolve_configured_path(zdotdir, home)
+        paths.update(
+            os.path.join(zsh_dir, filename)
+            for filename in SHELL_RC_ZSH_FILENAMES
+        )
+
+    xdg_config_home = os.getenv("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        paths.add(
+            os.path.join(
+                _resolve_configured_path(xdg_config_home, home),
+                "fish",
+                "config.fish",
+            )
+        )
+
+    for variable in ("BASH_ENV", "ENV"):
+        configured = os.getenv(variable)
+        if configured:
+            paths.add(_resolve_configured_path(configured, home))
+
+    return {os.path.realpath(path) for path in paths}
+
+
 def _constants_path(getter_name: str) -> Path:
     """Call ``hermes_constants.<getter_name>()`` (local import avoids cycles); ``~/.hermes`` on any failure."""
     try:
@@ -339,7 +404,7 @@ def get_safe_write_roots() -> set[str]:
 # Login shell startup files: approval-gated for the file tools and, via
 # tools.approval_detection._SHELL_RC_FILES, for terminal writes. One inventory so the two
 # gates cannot drift apart (#85321).
-SHELL_RC_FILES: tuple[str, ...] = (".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile")
+SHELL_RC_FILES = SHELL_RC_RELATIVE_PATHS
 
 
 def _approval_paths_by_key(home: str) -> dict[str, str]:
@@ -350,7 +415,7 @@ def _approval_paths_by_key(home: str) -> dict[str, str]:
     Each class has its own key so an approve-always answer for ``~/.ssh/config`` never authorizes
     ``~/.bashrc`` (or vice versa)."""
     paths = {os.path.realpath(os.path.join(home, ".ssh", "config")): "ssh_config_write"}
-    paths.update({os.path.realpath(os.path.join(home, name)): "shell_rc_write" for name in SHELL_RC_FILES})
+    paths.update({path: "shell_rc_write" for path in build_shell_rc_approval_paths(home)})
     return paths
 
 

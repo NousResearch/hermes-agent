@@ -100,11 +100,15 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
         with open(path, encoding="utf-8") as f:
             parsed = parse(f)
     except Exception as exc:  # noqa: BLE001 — fail-open, but LOUD
+        # PyYAML's MarkedYAMLError embeds a snippet of the offending source
+        # line in str(exc) — log only the first line so a secret sitting on
+        # that line never reaches the log.
+        exc_summary = str(exc).split("\n", 1)[0]
         logger.warning(
             "managed scope: failed to parse %s: %s — IGNORING this managed file. "
             "Admin policy from this file is NOT being applied. Fix and restart.",
             path,
-            exc,
+            exc_summary,
         )
         return None
     with _CACHE_LOCK:

@@ -9569,6 +9569,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # /resume and `hermes sessions list` (gemini-cli#27770 port).
             self._discard_session_if_empty(old_session_id)
 
+        # Reap MCP stdio orphans left behind by the ending session's
+        # reconnects. Long-lived hosts (desktop backend, `hermes chat`
+        # loops) rotate sessions often without ever exiting the process, so
+        # nothing else sweeps ``_orphan_stdio_pids`` between rotations
+        # (#81880). Safe here: only PIDs already flagged as orphaned by
+        # ``_run_stdio``'s finally block are reaped, never an active server.
+        try:
+            from tools.mcp_tool import _kill_orphaned_mcp_children
+            _kill_orphaned_mcp_children()
+        except Exception:
+            pass
+
         self.session_start = datetime.now()
         timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
         short_uuid = uuid.uuid4().hex[:6]

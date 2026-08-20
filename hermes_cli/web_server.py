@@ -587,7 +587,9 @@ def _has_valid_session_token(request: Request) -> bool:
 # Routes that may also authenticate via a ``?token=`` query param, for download
 # links opened by the OS shell or a new browser tab where the session header
 # can't be set. Kept narrow — same query-token tradeoff as the /api/pty WS.
-_QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
+_QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset(
+    {"/api/files/download", "/api/ws", "/api/pty"}
+)
 
 
 def _has_valid_query_token(request: Request, path: str) -> bool:

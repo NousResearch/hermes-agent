@@ -592,7 +592,18 @@ def _(rid, params: dict) -> dict:
         # merge-updates AGENTS.md via write_file. Works on any backend.
         from hermes_cli.init_command import build_init_prompt_for_cwd
 
-        return _ok(rid, {"type": "send", "message": build_init_prompt_for_cwd(extra=arg)})
+        # Pin the project root to THIS session's real workspace. The desktop
+        # starts sessions from a sidebar project (session.create cwd), and the
+        # server process cwd is the launch dir — falling back to the process
+        # cwd would write AGENTS.md into the user's home instead of the repo.
+        session_cwd = (session or {}).get("cwd") or None
+        return _ok(
+            rid,
+            {
+                "type": "send",
+                "message": build_init_prompt_for_cwd(cwd=session_cwd, extra=arg)
+            },
+        )
     if name == "moa":
         # /moa is one-shot sugar only: run a single prompt through the default
         # MoA preset, then restore the prior model. To *switch* to a MoA preset

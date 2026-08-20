@@ -5286,6 +5286,10 @@ def run_job(
         # is set (mirrors startup), and the Bitwarden value-cache keeps the
         # forced re-pull off the network. load_hermes_dotenv also handles the
         # utf-8/latin-1 encoding fallback internally.
+        # Dotenv reload and tool-schema invalidation form one cache-coherence
+        # boundary. The schema cache is process-global and its key deliberately
+        # excludes env state, so keep this invalidation adjacent to the reload
+        # instead of treating it as a per-job detail that can drift away.
         from hermes_cli.env_loader import (
             load_hermes_dotenv,
             reset_secret_source_cache,

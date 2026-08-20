@@ -500,7 +500,10 @@ class TestSecurityScanGate:
             result = _security_scan_skill(tmp_path)
 
         assert result is not None
-        assert "Security scan blocked" in result
+        # Ask verdict now returns actionable findings, not a generic "blocked".
+        assert "Security scan flagged this skill" in result
+        assert "SKILL.md:1" in result
+        assert "curl $TOKEN" in result
 
     def test_guard_flag_handles_config_error(self):
         """If load_config raises, _guard_agent_created_enabled defaults to False (fail-safe off)."""

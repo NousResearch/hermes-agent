@@ -1076,6 +1076,157 @@ class TestOpenRouterPaidLaneGuard:
         assert not _is_free_model(None)
 
 
+class TestFreeOnlyGateHonoursCallerModel:
+    """Regression: the free_only gate must judge the model actually requested.
+
+    ``resolve_provider_client()`` used to drop its ``model`` argument on the
+    floor, so the gate evaluated ``auxiliary.openrouter_model`` (whose default
+    is the PAID ``google/gemini-3.6-flash``) even when the caller explicitly
+    asked for a ``:free`` SKU. Every such call was rejected, OpenRouter was
+    marked unhealthy as a bogus "payment / credit error", and the log blamed
+    missing credentials on a key that is present and funded.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_unhealthy(self):
+        from agent.auxiliary_client import _aux_unhealthy_until
+        _aux_unhealthy_until.clear()
+        yield
+        _aux_unhealthy_until.clear()
+
+    def test_explicit_free_model_passes_gate_despite_paid_config_default(
+        self, monkeypatch
+    ):
+        """Caller asks for a :free model → resolved, not skipped."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        free_sku = "nvidia/nemotron-3-ultra-550b-a55b:free"
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("hermes_cli.config.load_config_readonly",
+                   return_value={"auxiliary": {"free_only": True}}), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock(name="openrouter_client")
+            client, model = resolve_provider_client("openrouter", free_sku)
+
+        assert client is not None
+        assert model == free_sku
+
+    def test_paid_caller_model_still_blocked_by_gate(self, monkeypatch):
+        """The cost guard itself is intact: a PAID caller model is skipped."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("hermes_cli.config.load_config_readonly",
+                   return_value={"auxiliary": {"free_only": True}}), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = resolve_provider_client(
+                "openrouter", "google/gemini-3.6-flash"
+            )
+
+        assert client is None
+        assert model is None
+        mock_openai.assert_not_called()
+
+    def test_gate_rejection_is_not_reported_as_payment_error(
+        self, monkeypatch, caplog
+    ):
+        """A config-gate skip must not claim a payment/credit failure."""
+        import logging
+        from agent.auxiliary_client import _try_openrouter
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("hermes_cli.config.load_config_readonly",
+                   return_value={"auxiliary": {"free_only": True}}), \
+             patch("agent.auxiliary_client.OpenAI"):
+            with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+                _try_openrouter(model="google/gemini-3.6-flash")
+
+        messages = " ".join(r.getMessage() for r in caplog.records)
+        assert "payment / credit error" not in messages
+        assert "free_only" in messages
+
+    def test_unavailable_description_blames_the_gate_not_credentials(
+        self, monkeypatch
+    ):
+        """Diagnostic names the free_only gate while the key is present."""
+        from agent.auxiliary_client import _describe_openrouter_unavailable
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("hermes_cli.config.load_config_readonly",
+                   return_value={"auxiliary": {"free_only": True}}):
+            reason = _describe_openrouter_unavailable("google/gemini-3.6-flash")
+
+        assert "free_only" in reason
+        assert "credentials" not in reason.replace(
+            "credentials were never checked", ""
+        )
+
+
+class TestFreeOnlyGateE2EConfig:
+    """End-to-end: a real config.yaml on disk drives the free_only gate.
+
+    No config mocks here. We point HERMES_HOME at a temp dir with a real
+    ``config.yaml`` and let ``_aux_openrouter_settings()`` read it through
+    ``load_config_readonly()``, then resolve an OpenRouter client through
+    ``resolve_provider_client()``. Verifies the caller's ``:free`` model
+    actually reaches the gate (the regression) and that the gate is genuinely
+    armed from the file (a paid model is still rejected).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_home(self, tmp_path, monkeypatch):
+        from agent.auxiliary_client import _aux_unhealthy_until
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setattr(
+            "hermes_cli.config.get_hermes_home", lambda: tmp_path
+        )
+        _aux_unhealthy_until.clear()
+        yield
+        _aux_unhealthy_until.clear()
+
+    @staticmethod
+    def _write_config(hermes_home, **auxiliary):
+        body = "auxiliary:\n" + "".join(
+            f"  {key}: {str(value).lower()}\n"
+            for key, value in auxiliary.items()
+        )
+        (hermes_home / "config.yaml").write_text(body)
+
+    def test_explicit_free_model_resolves_through_real_config(self, tmp_path):
+        """Caller-set :free model is honored when free_only is really loaded."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        self._write_config(tmp_path, free_only=True)
+        free_sku = "nvidia/nemotron-3-ultra-550b-a55b:free"
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock(name="openrouter_client")
+            client, model = resolve_provider_client("openrouter", free_sku)
+
+        assert client is not None
+        assert model == free_sku
+
+    def test_real_config_free_only_still_blocks_paid_caller_model(self, tmp_path):
+        """free_only loaded from disk genuinely rejects a paid caller model."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        self._write_config(tmp_path, free_only=True)
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = resolve_provider_client(
+                "openrouter", "google/gemini-3.6-flash"
+            )
+
+        assert client is None
+        assert model is None
+        mock_openai.assert_not_called()
+
+
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 

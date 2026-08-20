@@ -132,3 +132,186 @@ def test_secondary_open_policy_fails_startup_guard(monkeypatch):
     assert violation is not None
     assert "wecom" in violation
     assert "open policy" in violation
+
+
+def _clear_whatsapp_auth_env(monkeypatch) -> None:
+    for key in (
+        "GATEWAY_ALLOW_ALL_USERS",
+        "WHATSAPP_ALLOW_ALL_USERS",
+        "WHATSAPP_DM_POLICY",
+        "WHATSAPP_GROUP_POLICY",
+        "WECOM_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_open_policy_violations_reports_every_offender(monkeypatch):
+    """The gate must surface all offenders, not short-circuit on the first."""
+    from gateway.run import _own_policy_open_violations
+
+    _clear_whatsapp_auth_env(monkeypatch)
+
+    cfg = GatewayConfig()
+    cfg.platforms = {
+        Platform.WHATSAPP: PlatformConfig(enabled=True, extra={"dm_policy": "open"}),
+        Platform.WECOM: PlatformConfig(enabled=True, extra={"group_policy": "open"}),
+        Platform.TELEGRAM: PlatformConfig(enabled=True),
+    }
+
+    offenders = {platform for platform, _ in _own_policy_open_violations(cfg)}
+    assert offenders == {Platform.WHATSAPP, Platform.WECOM}
+
+
+def _quarantine_runner(monkeypatch, platforms):
+    """Runner wired to exercise the real ``_quarantine_open_policy_platforms``.
+
+    Only the two collaborators the method reaches outside itself are stubbed —
+    the runtime-status writer and the clean-exit request — so the production
+    control flow, logging and config mutation all run for real.
+    """
+    from gateway.run import GatewayRunner
+
+    _clear_whatsapp_auth_env(monkeypatch)
+
+    cfg = GatewayConfig()
+    cfg.platforms = platforms
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = cfg
+    status_writes: list = []
+    clean_exits: list = []
+    runner._update_platform_runtime_status = (
+        lambda platform, **kw: status_writes.append((platform, kw))
+    )
+    runner._request_clean_exit = clean_exits.append
+    return runner, cfg, status_writes, clean_exits
+
+
+def test_open_policy_quarantines_offender_and_keeps_gateway_up(monkeypatch):
+    """A misconfigured platform is disabled; healthy ones keep serving.
+
+    Regression for the case where an enabled-but-unpaired WhatsApp aborted the
+    whole gateway, taking a perfectly healthy Telegram down with it.
+    """
+    runner, cfg, _writes, clean_exits = _quarantine_runner(
+        monkeypatch,
+        {
+            Platform.WHATSAPP: PlatformConfig(enabled=True, extra={"dm_policy": "open"}),
+            Platform.TELEGRAM: PlatformConfig(enabled=True),
+        },
+    )
+
+    assert runner._quarantine_open_policy_platforms() is False
+    assert cfg.platforms[Platform.WHATSAPP].enabled is False
+    assert cfg.platforms[Platform.TELEGRAM].enabled is True
+    assert clean_exits == []
+
+
+def test_open_policy_quarantine_aborts_when_nothing_left_to_serve(monkeypatch):
+    """With every enabled platform quarantined, startup must still refuse."""
+    runner, cfg, _writes, clean_exits = _quarantine_runner(
+        monkeypatch,
+        {
+            Platform.WHATSAPP: PlatformConfig(enabled=True, extra={"dm_policy": "open"}),
+            Platform.WECOM: PlatformConfig(enabled=True, extra={"group_policy": "open"}),
+        },
+    )
+
+    assert runner._quarantine_open_policy_platforms() is True
+    assert not any(pc.enabled for pc in cfg.platforms.values())
+    assert len(clean_exits) == 1
+    assert "open policy without allow-all opt-in" in clean_exits[0]
+
+
+def test_open_policy_quarantine_noop_without_violations(monkeypatch):
+    """A compliant config must not touch platforms or request an exit."""
+    runner, cfg, writes, clean_exits = _quarantine_runner(
+        monkeypatch,
+        {
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True, extra={"dm_policy": "allowlist"}
+            ),
+            Platform.TELEGRAM: PlatformConfig(enabled=True),
+        },
+    )
+
+    assert runner._quarantine_open_policy_platforms() is False
+    assert all(pc.enabled for pc in cfg.platforms.values())
+    assert writes == []
+    assert clean_exits == []
+
+
+def test_open_policy_opt_in_keeps_platform_enabled(monkeypatch):
+    """The platform allow-all flag still suppresses the gate entirely."""
+    from gateway.run import _own_policy_open_violations
+
+    _clear_whatsapp_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOW_ALL_USERS", "true")
+
+    cfg = GatewayConfig()
+    cfg.platforms = {
+        Platform.WHATSAPP: PlatformConfig(enabled=True, extra={"dm_policy": "open"}),
+    }
+
+    assert _own_policy_open_violations(cfg) == []
+
+
+def test_open_policy_quarantine_records_platform_runtime_status(monkeypatch):
+    """Quarantining a platform must stamp its runtime status, not leave it stale.
+
+    Without this the status file keeps the platform's last reported state, so a
+    previously-connected adapter still reads "connected" after being disabled.
+    """
+    runner, _cfg, writes, _exits = _quarantine_runner(
+        monkeypatch,
+        {
+            Platform.WHATSAPP: PlatformConfig(enabled=True, extra={"dm_policy": "open"}),
+            Platform.TELEGRAM: PlatformConfig(enabled=True),
+        },
+    )
+
+    runner._quarantine_open_policy_platforms()
+
+    assert len(writes) == 1
+    name, kwargs = writes[0]
+    assert name == "whatsapp"
+    assert kwargs["platform_state"] == "disabled"
+    assert kwargs["error_code"] == "open_policy_no_opt_in"
+
+
+def test_quarantine_state_is_known_to_health_monitor_and_dashboard():
+    """The state written must survive both consumers unchanged.
+
+    ``_bounded_state`` rewrites anything outside ``_KNOWN_PLATFORM_STATES`` to
+    ``"unknown"``, which would silently erase the reason a platform is down;
+    the dashboard separately needs it classified as not-serving.
+    """
+    from agent.monitoring.gateway_health import (
+        _FATAL_PLATFORM_STATES,
+        _KNOWN_PLATFORM_STATES,
+        _RUNNING_PLATFORM_STATES,
+    )
+    from hermes_cli.web_server import _PLATFORM_DEAD_STATES
+
+    assert "disabled" in _KNOWN_PLATFORM_STATES
+    assert "disabled" in _PLATFORM_DEAD_STATES
+    # Not "up", and not an error-severity alert for a deliberate config choice.
+    assert "disabled" not in _RUNNING_PLATFORM_STATES
+    assert "disabled" not in _FATAL_PLATFORM_STATES
+
+
+def test_open_policy_all_platforms_offending_leaves_nothing_enabled(monkeypatch):
+    """When every platform fails the gate, nothing remains to serve."""
+    from gateway.run import _own_policy_open_violations
+
+    _clear_whatsapp_auth_env(monkeypatch)
+
+    cfg = GatewayConfig()
+    cfg.platforms = {
+        Platform.WHATSAPP: PlatformConfig(enabled=True, extra={"dm_policy": "open"}),
+    }
+
+    for platform, _ in _own_policy_open_violations(cfg):
+        cfg.platforms[platform].enabled = False
+
+    assert not any(pc.enabled for pc in cfg.platforms.values())

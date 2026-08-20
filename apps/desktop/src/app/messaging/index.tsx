@@ -128,9 +128,10 @@ function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
   const { t } = useI18n()
   const m = t.messaging
-  // Shared settings "Applies to" scope: configure another profile's gateway
-  // platforms/pairing without switching the whole app (null → active profile).
-  const scopeProfile = useStore($settingsScopeOverride)
+  // Shared settings "Applies to" scope. At this layer `null` means "follow
+  // the active profile", while the API helpers use `undefined` for that
+  // contract; passing null would deliberately target the primary profile.
+  const scopeProfile = useStore($settingsScopeOverride) ?? undefined
   // Both save/toggle toasts offer the same one-click restart.
   const restartGatewayAction = { label: t.commandCenter.restartGateway, onClick: () => void runGatewayRestart() }
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)

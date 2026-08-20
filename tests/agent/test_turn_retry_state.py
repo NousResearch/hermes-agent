@@ -21,6 +21,7 @@ EXPECTED_FIELDS = {
     "copilot_auth_retry_attempted",
     "copilot_stale_cred_retry_attempted",
     "vertex_auth_retry_attempted",
+    "generic_auth_retry_attempted",
     "thinking_sig_retry_attempted",
     "invalid_encrypted_content_retry_attempted",
     "native_compaction_reject_retry_attempted",

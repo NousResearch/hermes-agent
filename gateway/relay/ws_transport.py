@@ -795,7 +795,18 @@ class WebSocketRelayTransport:
             await self._send(frame)
             return await asyncio.wait_for(fut, timeout=self._outbound_timeout_s)
         except asyncio.TimeoutError:
-            return {"success": False, "error": "relay outbound timed out"}
+            # AMBIGUOUS by contract (PR 85796 review): the frame reached the
+            # wire — only the acknowledgement is missing. The connector may
+            # well have applied it (draft frame appended, stream sealed).
+            # Consumers that need to distinguish "connector rejected this"
+            # from "outcome unknown" key on this flag; the fail-fast paths
+            # above (closing / not connected) never sent anything and are
+            # definite non-delivery, so they stay unmarked.
+            return {
+                "success": False,
+                "error": "relay outbound timed out",
+                "ambiguous": True,
+            }
         finally:
             self._pending.pop(request_id, None)
 

@@ -20069,6 +20069,61 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 # Main Entry Point
 # ============================================================================
 
+# Failure reasons returned by ``agent.conversation_loop`` that indicate the
+# model provider rejected the request and retrying the same task will not
+# help. These should terminate the kanban worker with ``kanban_block`` rather
+# than burning the card's run budget.
+# NOTE: ``billing`` is intentionally excluded — it already has a dedicated
+# rate-limit exit path that releases the card back to ``ready`` without
+# incrementing its failure counter, which is correct for quota windows.
+_KANBAN_NONRETRYABLE_MODEL_REASONS = frozenset(
+    {
+        "auth",
+        "auth_permanent",
+        "model_not_found",
+        "provider_policy_blocked",
+        "content_policy_blocked",
+        "format_error",
+    }
+)
+
+
+def _is_nonretryable_model_client_error(result: object) -> bool:
+    """Return True if ``run_conversation`` returned a terminal model-client error."""
+    if not isinstance(result, dict) or not result.get("failed"):
+        return False
+    return result.get("failure_reason") in _KANBAN_NONRETRYABLE_MODEL_REASONS
+
+
+def _kanban_model_error_block_reason(result: dict, cli: "HermesCLI") -> str:
+    """Build the canonical ``model-error: <provider> <status> <type> — …`` reason."""
+    provider = getattr(cli.agent, "provider", None) or result.get("provider") or "unknown"
+    status_code = result.get("status_code") or "?"
+    error_type = result.get("failure_reason") or result.get("error_type") or "model_client_error"
+    summary = (result.get("error") or "model provider returned a non-retryable client error").replace("\\n", " ")
+    if len(summary) > 200:
+        summary = summary[:197] + "..."
+    return f"model-error: {provider} {status_code} {error_type} — {summary}"
+
+
+def _block_kanban_task_for_model_error(cli: "HermesCLI", result: dict) -> None:
+    """Move the current kanban task to ``blocked`` after a non-retryable model error."""
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if not task_id:
+        return
+    from hermes_cli import kanban_db as _kb
+
+    reason = _kanban_model_error_block_reason(result, cli)
+    conn = _kb.connect()
+    try:
+        _kb.block_task(conn, task_id, reason=reason)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     """Drive a kanban goal_mode worker through the Ralph-style goal loop.
 
@@ -20491,7 +20546,7 @@ def main(
         # first so the final debug trace isn't lost; SIGALRM deadman guards
         # the flush against any rare blocking-I/O case (the reporter measured
         # flush in <1ms; the alarm is a failsafe, not the common path).
-        if os.environ.get("HERMES_KANBAN_TASK"):
+        if (os.environ.get("HERMES_KANBAN_TASK") or "").strip():
             try:
                 import signal as _sig_mod
                 if hasattr(_sig_mod, "SIGALRM"):
@@ -20727,7 +20782,7 @@ def main(
                         _exit_code = 0
                         if isinstance(result, dict) and result.get("failed"):
                             _exit_code = 1
-                            if os.environ.get("HERMES_KANBAN_TASK") and result.get(
+                            if (os.environ.get("HERMES_KANBAN_TASK") or "").strip() and result.get(
                                 "failure_reason"
                             ) in ("rate_limit", "billing"):
                                 try:
@@ -20737,6 +20792,15 @@ def main(
                                     _exit_code = _RL_CODE
                                 except Exception:
                                     _exit_code = 1
+                            elif (os.environ.get("HERMES_KANBAN_TASK") or "").strip() and _is_nonretryable_model_client_error(result):
+                                # A non-retryable model-client error (e.g. 403
+                                # access_terminated_error) means the provider
+                                # has refused the request. Block the card with the
+                                # original error text preserved and exit cleanly
+                                # so the dispatcher records ``outcome=blocked``
+                                # instead of ``protocol_violation``.
+                                _block_kanban_task_for_model_error(cli, result)
+                                sys.exit(0)
                         sys.exit(_exit_code)
 
                 # Exit with error code if credentials or agent init fails

@@ -2054,6 +2054,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             cache_scope_id=_cache_scope_id,
             provider_profile=_profile,
             ollama_num_ctx=agent._ollama_num_ctx,
+            suppress_tools=getattr(agent, "_suppress_tools", False),
             # Context forwarded to profile hooks:
             provider_preferences=_prefs or None,
             openrouter_min_coding_score=agent.openrouter_min_coding_score,
@@ -2096,6 +2097,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         is_lmstudio=_is_lmstudio,
         is_custom_provider=agent.provider == "custom",
         ollama_num_ctx=agent._ollama_num_ctx,
+        suppress_tools=getattr(agent, "_suppress_tools", False),
         provider_preferences=_prefs or None,
         openrouter_min_coding_score=agent.openrouter_min_coding_score,
         qwen_prepare_fn=agent._qwen_prepare_chat_messages if _is_qwen else None,

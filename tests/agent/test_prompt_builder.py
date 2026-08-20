@@ -427,6 +427,24 @@ class TestBuildNousSubscriptionPrompt:
 
         assert prompt == ""
 
+    def test_empty_toolset_returns_empty_prompt(self, monkeypatch):
+        """#79639: with no relevant tools available — including the empty set
+        (suppressed via model.tools: false) — the Nous capability block must
+        not render. A tool list that claims Nous-managed tools are usable when
+        none are loaded is misleading. Uses the real function path with the
+        feature flag on so the empty-set gate is actually exercised."""
+        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
+
+        prompt = build_nous_subscription_prompt(set())
+        assert prompt == ""
+
+    def test_no_relevant_tools_returns_empty_prompt(self, monkeypatch):
+        """Tools exist but none are Nous-managed → no block."""
+        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
+
+        prompt = build_nous_subscription_prompt({"read_file", "search_files"})
+        assert prompt == ""
+
 
 # =========================================================================
 # Context files prompt builder

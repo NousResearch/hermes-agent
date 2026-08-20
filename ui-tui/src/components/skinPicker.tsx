@@ -14,6 +14,7 @@ import { chipRowProps, clampOverlayWidth } from './overlayPrimitives.js'
 const VISIBLE = 12
 const MIN_WIDTH = 48
 const MAX_WIDTH = 100
+export const SKIN_PREVIEW_DEBOUNCE_MS = 120
 
 export interface SkinOption {
   description?: string
@@ -82,18 +83,20 @@ export function SkinPicker({ gw, maxWidth, onClose, t }: SkinPickerProps) {
     }
 
     let current = true
+    const timer = setTimeout(() => {
+      const preview =
+        selected.name === options.active
+          ? Promise.resolve(options.active_skin)
+          : gw.request<GatewaySkin>('skin.preview', { name: selected.name })
 
-    const preview =
-      selected.name === options.active
-        ? Promise.resolve(options.active_skin)
-        : gw.request<GatewaySkin>('skin.preview', { name: selected.name })
-
-    preview
-      .then(skin => current && applySkinPreview(skin))
-      .catch((error: unknown) => current && setErr(rpcErrorMessage(error)))
+      preview
+        .then(skin => current && applySkinPreview(skin))
+        .catch((error: unknown) => current && setErr(rpcErrorMessage(error)))
+    }, SKIN_PREVIEW_DEBOUNCE_MS)
 
     return () => {
       current = false
+      clearTimeout(timer)
     }
   }, [gw, options, selected])
 

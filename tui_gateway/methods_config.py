@@ -348,7 +348,9 @@ def _(rid, params: dict) -> dict:
         from hermes_cli.skin_engine import list_skins
 
         active_skin = resolve_skin()
-        active = str(active_skin.get("name") or "default")
+        if not active_skin:
+            return _err(rid, 5020, "could not resolve active skin")
+        active = str(active_skin["name"])
         return _ok(
             rid,
             {

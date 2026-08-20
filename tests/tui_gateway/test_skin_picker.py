@@ -50,3 +50,13 @@ def test_skin_preview_rejects_unknown_names(tmp_path, monkeypatch):
     response = server._methods["skin.preview"]("skin-preview", {"name": "missing"})
 
     assert response["error"]["code"] == 4002
+
+
+def test_skin_options_rejects_an_empty_active_skin_payload(monkeypatch):
+    handler = server._methods["skin.options"]
+    monkeypatch.setitem(handler.__globals__, "resolve_skin", lambda _name=None: {})
+
+    response = handler("skin-options", {})
+
+    assert response["error"]["code"] == 5020
+    assert "could not resolve active skin" in response["error"]["message"]

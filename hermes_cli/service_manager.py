@@ -572,7 +572,7 @@ class GatewayNotRegisteredError(S6Error):
             f"no such gateway {profile!r}: register it with "
             f"`hermes profile create {profile}` first, or pass "
             "an existing profile name via `-p <name>`",
-            service=f"gateway-{profile}",
+            service=f"{S6_SERVICE_PREFIX}{profile}",
         )
 
 

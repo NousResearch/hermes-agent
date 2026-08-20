@@ -390,17 +390,40 @@ def list_agent_created_skill_names() -> List[str]:
     return sorted(set(names))
 
 
+def _is_archive_timestamp(value: str) -> bool:
+    """Recognize timestamps written by archive_skill and legacy curator moves."""
+    if len(value) == 14 and value.isdigit():
+        return True
+    return (
+        len(value) == 15
+        and value[8] == "-"
+        and value[:8].isdigit()
+        and value[9:].isdigit()
+    )
+
+
+def _archived_skill_name(path: Path) -> str:
+    """Return the canonical skill name represented by an archive directory."""
+    declared_name = _read_skill_name(path / "SKILL.md", fallback="")
+    if declared_name:
+        return declared_name
+    stem, separator, suffix = path.name.rpartition("-")
+    if separator and stem and _is_archive_timestamp(suffix):
+        return stem
+    return path.name
+
+
 def list_archived_skill_names() -> List[str]:
     """Enumerate skills in ``~/.hermes/skills/.archive/``.
 
-    Archive layout is flat (``.archive/<skill>/``) as set by ``archive_skill``,
-    so the directory name is the skill name. Used by ``hermes curator
-    list-archived`` to help users pass a name to ``hermes curator restore``.
+    Collision timestamps are directory disambiguators, not part of the skill
+    name. Return canonical names so every result can be passed directly to
+    ``hermes curator restore``.
     """
     archive_root = _archive_dir()
     if not archive_root.exists():
         return []
-    return sorted({p.name for p in archive_root.iterdir() if p.is_dir()})
+    return sorted({_archived_skill_name(p) for p in archive_root.iterdir() if p.is_dir()})
 
 
 def _read_skill_name(skill_md: Path, fallback: str) -> str:
@@ -1181,20 +1204,18 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     candidates = [p for p in archive_root.rglob("*") if p.is_dir() and p.name == skill_name]
     if not candidates:
         # A name collision makes archive_skill() disambiguate by appending its
-        # UTC timestamp ("<skill>-YYYYMMDDHHMMSS", a 14-digit suffix), so only
-        # that exact shape is another copy of THIS skill. A bare
+        # UTC timestamp ("<skill>-YYYYMMDDHHMMSS"). Older curator moves used
+        # "<skill>-YYYYMMDD-HHMMSS"; accept both strict timestamp shapes. A bare
         # startswith(f"{skill_name}-") also swallows unrelated sibling skills —
         # restoring "git" would otherwise pull an archived "git-helpers" out of
-        # the archive and rename it to "git", destroying the sibling's only
-        # copy. Require the suffix to be the timestamp archive_skill writes.
+        # the archive and rename it to "git", destroying the sibling's only copy.
         prefix = f"{skill_name}-"
         candidates = sorted(
             [
                 p for p in archive_root.rglob("*")
                 if p.is_dir()
                 and p.name.startswith(prefix)
-                and len(p.name) - len(prefix) == 14
-                and p.name[len(prefix):].isdigit()
+                and _is_archive_timestamp(p.name[len(prefix):])
             ],
             reverse=True,
         )

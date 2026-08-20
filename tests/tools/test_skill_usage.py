@@ -393,6 +393,38 @@ def test_is_agent_created(skills_home):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("timestamp", ["20260727000000", "20260727-000000"])
+def test_archived_skill_names_round_trip_timestamped_directories(
+    skills_home,
+    timestamp,
+):
+    from tools.skill_usage import list_archived_skill_names, restore_skill
+
+    skills_dir = skills_home / "skills"
+    archive_dir = skills_dir / ".archive"
+    archived_skill = _write_skill(archive_dir, "airtable")
+    archived_skill.rename(archive_dir / f"airtable-{timestamp}")
+
+    assert list_archived_skill_names() == ["airtable"]
+
+    ok, _message = restore_skill("airtable")
+
+    assert ok is True
+    assert (skills_dir / "airtable" / "SKILL.md").exists()
+
+
+def test_restore_does_not_match_timestamp_like_sibling_name(skills_home):
+    from tools.skill_usage import restore_skill
+
+    archive_dir = skills_home / "skills" / ".archive"
+    _write_skill(archive_dir, "git-helpers-20260727000000")
+
+    ok, message = restore_skill("git")
+
+    assert ok is False
+    assert message == "skill 'git' not found in archive"
+
+
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------

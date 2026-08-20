@@ -1185,6 +1185,7 @@ platform_toolsets:
 #
 # discord:
 #   require_mention: true            # Require @mention in server channels (default: true)
+#   bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
 #   auto_thread: true                # Auto-create thread on @mention (default: true)
 #   free_response_channels: ""       # Channel IDs where no mention is needed
 #   reactions: true                  # Show processing reactions (default: true)

@@ -216,6 +216,59 @@ class TestCmdUpdateTermuxUvBootstrap:
         mock_run.assert_not_called()
 
 
+class TestUpdateManagedPythonEnvIsolation:
+    """Regression for the uv-env isolation fix (third-party UV_PYTHON_INSTALL_DIR
+    must not hijack the update's pip install).
+
+    The update path builds uv_env via managed_python_env() (drops
+    VIRTUAL_ENV/PYTHONPATH/UV_PYTHON, pins UV_MANAGED_PYTHON=1 + UV_NO_CONFIG=1,
+    forces UV_PYTHON_INSTALL_DIR to .hermes-runtime/python), then re-points
+    VIRTUAL_ENV at this install's venv. These tests lock that contract in.
+    """
+
+    def test_managed_env_drops_third_party_uv_install_dir(self):
+        from hermes_cli.managed_uv import managed_python_env
+
+        poisoned = {
+            "UV_PYTHON_INSTALL_DIR": r"C:\WorkBuddy\python",
+            "UV_PYTHON": r"C:\WorkBuddy\python\python.exe",
+            "UV_SYSTEM_PYTHON": "1",
+            "UV_NO_MANAGED_PYTHON": "1",
+            "VIRTUAL_ENV": r"C:\Some\Other\venv",
+            "PYTHONPATH": r"C:\Some\site-packages",
+        }
+        env = managed_python_env()
+
+        # Third-party UV_PYTHON_INSTALL_DIR must not survive into the env.
+        assert env.get("UV_PYTHON_INSTALL_DIR", "") != r"C:\WorkBuddy\python"
+        assert "WorkBuddy" not in env.get("UV_PYTHON_INSTALL_DIR", "")
+        # Managed pins are set; the hijack guards are explicitly cleared.
+        assert env.get("UV_MANAGED_PYTHON") == "1"
+        assert env.get("UV_NO_CONFIG") == "1"
+        assert env.get("UV_PYTHON") is None
+        assert env.get("UV_SYSTEM_PYTHON") is None
+        assert env.get("UV_NO_MANAGED_PYTHON") is None
+        assert env.get("VIRTUAL_ENV") is None
+        assert env.get("PYTHONPATH") is None
+        # Sanity: the poisoned values did exist on input (guards the test itself).
+        assert poisoned["UV_PYTHON_INSTALL_DIR"].startswith("C:\\WorkBuddy")
+
+    def test_update_uv_env_points_venv_and_runtime_store(self):
+        """The update's final uv_env must carry VIRTUAL_ENV=this venv while the
+        managed store path is still the UV_PYTHON_INSTALL_DIR."""
+        from hermes_cli import main as hm
+        from hermes_cli.managed_uv import managed_python_env
+
+        uv_env = managed_python_env()
+        uv_env["VIRTUAL_ENV"] = str(PROJECT_ROOT / "venv")
+
+        assert uv_env["VIRTUAL_ENV"] == str(PROJECT_ROOT / "venv")
+        # Managed store stays the install-scoped runtime dir, not a third-party one.
+        assert ".hermes-runtime" in uv_env.get("UV_PYTHON_INSTALL_DIR", "")
+        assert uv_env.get("UV_MANAGED_PYTHON") == "1"
+        assert uv_env.get("UV_NO_CONFIG") == "1"
+
+
 class TestCmdUpdateBranchFallback:
     """cmd_update falls back to main when current branch has no remote counterpart."""
 

@@ -60,6 +60,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
 | `hermes project` | Manage named, multi-folder workspaces (projects). Anchors desktop session grouping and, when bound to a kanban board, gives tasks a deterministic worktree + branch convention. State is per-profile. |
+| `hermes contacts` | Manage the profile-scoped contact and purpose-specific outbound-route registry. Resolution is non-sending and does not grant messaging authority. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
 | `hermes doctor` | Diagnose config and dependency issues. |
@@ -772,6 +773,27 @@ Projects are human-named workspaces that can span multiple folders / repos. They
 | `archive` | Archive a project (recoverable). |
 | `restore` | Restore an archived project. |
 | `bind-board` | Bind a kanban board to this project. |
+
+## `hermes contacts`
+
+```bash
+hermes contacts <init|path|validate|list|show|resolve>
+```
+
+Manage the active profile's owner-readable contact and outbound-route registry at `$HERMES_HOME/contacts.yaml`. Contact identity, generated channel reachability, platform authorization, and route preference remain separate concerns.
+
+| Subcommand | Description |
+|------------|-------------|
+| `init` | Create an empty v1 registry with deny-by-default policy (`0600` on POSIX). Never overwrites an existing registry. |
+| `path` | Print the active registry path. |
+| `validate` | Validate schema, contact/name uniqueness, route keys, route states, and boolean sendability flags. |
+| `list` (alias `ls`) | List contacts and route metadata without endpoint values. Add `--show-destinations` to reveal them. |
+| `show <contact>` | Show one exact ID, display-name, or alias match. Endpoint values remain hidden unless requested. |
+| `resolve <contact>` | Resolve one `--purpose` or explicit `--route` without sending. Add `--show-destination` only when preparing an authorized action. |
+
+The resolver reports explicit failure states for unknown or ambiguous contacts, missing or ambiguous routes, stale/unverified endpoints, stale channel-directory caches, and directory mismatches. Any gateway or plugin platform present in the generated directory is supported dynamically; email requires a separate account-specific check. Every result records `send_performed: false`; successful resolution still records `authorization_check: required`.
+
+See [Contact Route Registry](../user-guide/messaging/contact-route-registry.md) for the schema and safety model.
 
 ## `hermes webhook`
 

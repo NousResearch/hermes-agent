@@ -419,10 +419,12 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 "with {'type': %r}",
                 path, node, node,
             )
-            return {"type": node} if node != "object" else {
-                "type": "object",
-                "properties": {},
-            }
+            if node == "object":
+                return {"type": "object", "properties": {}}
+            if node == "array":
+                # Gemini rejects array schemas without `items` (#71804)
+                return {"type": "array", "items": {}}
+            return {"type": node}
         # Any other stray string is not a schema — drop it by replacing with
         # a permissive object schema rather than propagate something the
         # backend will reject.
@@ -525,6 +527,13 @@ def _sanitize_node(node: Any, path: str) -> Any:
     # llama.cpp's grammar generator can't constrain a free-form object.
     if out.get("type") == "object" and not isinstance(out.get("properties"), dict):
         out["properties"] = {}
+
+    # Array nodes without items: inject permissive items schema.
+    # Gemini strictly validates function declarations and rejects array
+    # schemas missing the `items` keyword (#71804).  An empty `items: {}`
+    # is accepted by all backends as "any element type".
+    if out.get("type") == "array" and "items" not in out:
+        out["items"] = {}
 
     # Prune ``required`` entries that don't exist in properties (defense
     # against malformed MCP schemas; also caught upstream for MCP tools, but

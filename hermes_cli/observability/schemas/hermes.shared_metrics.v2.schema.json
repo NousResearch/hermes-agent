@@ -58,7 +58,7 @@
         },
         "install_method": {
           "type": "string",
-          "enum": ["apt", "docker", "git", "homebrew", "nixos", "pip", "unknown"]
+          "enum": ["apt", "docker", "git", "home-manager", "homebrew", "nixos", "pip", "unknown"]
         },
         "os_family": {
           "type": "string",

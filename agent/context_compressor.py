@@ -1885,6 +1885,7 @@ class ContextCompressor(ContextEngine):
         self._cooldown_persist_failed = False
         self._last_summary_error = None
         self._last_compress_aborted = False
+        self._last_compress_refused_would_grow = False
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
@@ -2167,6 +2168,7 @@ class ContextCompressor(ContextEngine):
         self._summary_failure_cooldown_until = 0.0
         self._cooldown_persist_failed = False
         self._last_compress_aborted = False
+        self._last_compress_refused_would_grow = False
         self._context_probed = False
         self._context_probe_persistable = False
         self.last_real_prompt_tokens = 0
@@ -6927,6 +6929,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._last_compress_refused_would_grow = False
         self._last_compression_made_progress = False
         # NOTE: do NOT reset _last_summary_auth_failure or
         # _last_summary_network_failure here.  These flags are set by

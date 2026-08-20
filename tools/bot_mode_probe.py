@@ -137,11 +137,12 @@ def _peer_paragraph(root: Path) -> str:
     listed = ", ".join(f"`{p}`" for p in peers)
     return (
         "\n\nTeammates on OTHER machines: this install also has peer gateways "
-        f"registered ({listed}). Message an agent on a peer the same way, via "
-        "`hermes peer dm` (same terminal-tool pattern: background=true, "
-        "notify_on_complete=true; the reply prints on stdout when it completes):\n"
+        f"registered ({listed}). Message an agent on a peer the same way — write "
+        "the message to a temp file first, then pipe it on stdin (same terminal-"
+        "tool pattern: background=true, notify_on_complete=true; the reply prints "
+        "on stdout when it completes):\n"
         "```\n"
-        'hermes peer dm <peer>/<agent-name> "Message from 🤖 <you> (@<you>): your message"\n'
+        "hermes peer dm <peer>/<agent-name> < /tmp/dm.txt\n"
         "```\n"
         "Use `<peer>` alone for the peer's main agent. Run `hermes peer list` "
         "for the live peer list."
@@ -168,13 +169,15 @@ def _build_section(home: Path) -> str:
     return (
         f"{_PROTOCOL_HEADING}\n"
         "This install runs Bot Mode: each Hermes profile is an agent teammate with "
-        'one canonical "Bot Chat" conversation. To message a teammate, run on the '
-        "terminal tool (background=true, notify_on_complete=true), then finish your "
+        'one canonical "Bot Chat" conversation. To message a teammate: write the '
+        "message to a temp file with the file tool FIRST (never inline it into the "
+        "command — quotes truncate it and $( ) would execute), then run on the "
+        "terminal tool (background=true, notify_on_complete=true) and finish your "
         "turn — the reply arrives later as a new message:\n"
         "```\n"
-        f'hermes -p <agent-name> chat --in ~ -c "Bot Chat" --create-if-missing -Q -q "Message from 🤖 {handle} (@{handle}): your message"\n'
+        f'hermes -p <agent-name> chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file /tmp/dm.txt\n'
         "```\n"
-        f'Always open with the "Message from 🤖 {handle} (@{handle}):" prefix so they '
+        f'The file must open with the "Message from 🤖 {handle} (@{handle}):" prefix so they '
         "know who is talking. When YOU receive a message with that prefix, you are "
         "being messaged by a teammate agent — address them (not the user) and reply "
         "concisely. When the user says \"ask <name>\" or \"tell <name> ...\", that is a "

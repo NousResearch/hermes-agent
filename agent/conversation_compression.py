@@ -3395,6 +3395,17 @@ def compress_context(
                         f"{_rough_in:,}",
                         f"{_rough_out:,}",
                     )
+                    # Flag the refusal on the compressor state so manual
+                    # /compress feedback can report it honestly. Without this,
+                    # the CLI compared the returned list against its pre-call
+                    # snapshot, saw a difference (durable-snapshot adoption can
+                    # legitimately change the count), and printed
+                    # "✅ Compressed: 8 → 14 messages" directly under the
+                    # refusal warning (Aug 2026 full-surface CLI QA sweep).
+                    try:
+                        agent.context_compressor._last_compress_refused_would_grow = True
+                    except Exception:
+                        pass
                     try:
                         agent._emit_warning(
                             "⚠️ Compression refused: the generated summary "

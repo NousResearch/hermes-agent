@@ -9,17 +9,9 @@ import {
   setNewChatWorkspaceTarget
 } from '@/store/session'
 
+import { deferred } from '../../test/deferred'
+
 import { startWorkspaceSession } from './workspace-session-target'
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-
-  const promise = new Promise<T>(done => {
-    resolve = done
-  })
-
-  return { promise, resolve }
-}
 
 describe('startWorkspaceSession', () => {
   afterEach(() => {

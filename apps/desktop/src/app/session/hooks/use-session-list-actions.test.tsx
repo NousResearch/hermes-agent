@@ -18,6 +18,8 @@ import {
   setSessionsLoading
 } from '@/store/session'
 
+import { deferred } from '../../../test/deferred'
+
 import { useSessionListActions } from './use-session-list-actions'
 
 // Sidebar refresh hygiene: a content-identical refresh (turn complete,
@@ -60,6 +62,7 @@ const sidebar = (
 const listSidebarSessions = vi.fn()
 const listAllProfileSessions = vi.fn()
 const getCronJobs = vi.fn()
+const gatewayScope = vi.hoisted(() => ({ epoch: 0 }))
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -67,21 +70,17 @@ interface Deferred<T> {
 }
 
 /** Create a promise whose completion order the stale-response tests control. */
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void
-
-  const promise = new Promise<T>(done => {
-    resolve = done
-  })
-
-  return { promise, resolve }
-}
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getCronJobs: (...args: unknown[]) => getCronJobs(...args),
   listAllProfileSessions: (...args: unknown[]) => listAllProfileSessions(...args),
   listSidebarSessions: (...args: unknown[]) => listSidebarSessions(...args)
+}))
+
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  gatewayActivationEpoch: () => gatewayScope.epoch
 }))
 
 // The refresh only reads the optimistic tombstone set; stub it so we don't pull
@@ -93,6 +92,7 @@ vi.mock('@/store/projects', () => ({
 }))
 
 beforeEach(() => {
+  gatewayScope.epoch = 0
   getCronJobs.mockReset()
   getCronJobs.mockResolvedValue([])
   listSidebarSessions.mockReset()
@@ -249,6 +249,33 @@ describe('refreshSessions identity + loading hygiene', () => {
     off()
     expect(loadingStates).toEqual([false, true, false])
   })
+
+  it('clears initial loading after a failed source activation advances the gateway epoch', async () => {
+    const pending = deferred<SidebarSessionsResponse>()
+    listSidebarSessions.mockReturnValue(pending.promise)
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    let refresh!: Promise<void>
+
+    act(() => {
+      refresh = result.current.refreshSessions()
+    })
+
+    expect($sessionsLoading.get()).toBe(true)
+
+    // A source dial owns a new activation epoch even when it fails and leaves
+    // the previous source active. Its in-flight session response is stale, but
+    // it still owns the initial loading state and must release that state.
+    gatewayScope.epoch += 1
+
+    await act(async () => {
+      pending.resolve(sidebar({ sessions: [row('stale')] }))
+      await refresh
+    })
+
+    expect($sessions.get()).toEqual([])
+    expect($sessionsLoading.get()).toBe(false)
+  })
 })
 
 describe('refreshSessions batches slices into one request', () => {
@@ -390,6 +417,31 @@ describe('refreshSessions batches slices into one request', () => {
     expect($sessions.get().map(session => session.id)).toEqual(['personal-session'])
     expect($cronSessions.get().map(session => session.id)).toEqual(['personal-cron'])
     expect($messagingSessions.get().map(session => session.id)).toEqual(['personal-signal'])
+  })
+
+  it('ignores an in-flight response after the source changes with the same profile', async () => {
+    const work = deferred<SidebarSessionsResponse>()
+    const personal = deferred<SidebarSessionsResponse>()
+
+    listSidebarSessions.mockReturnValueOnce(work.promise).mockReturnValueOnce(personal.promise)
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+    const workRefresh = result.current.refreshSessions()
+
+    gatewayScope.epoch += 1
+    const personalRefresh = result.current.refreshSessions()
+
+    await act(async () => {
+      personal.resolve(
+        sidebar({ sessions: [row('personal-session')] }, [], [row('personal-chat', { source: 'telegram' })])
+      )
+      await personalRefresh
+
+      work.resolve(sidebar({ sessions: [row('work-session')] }, [], [row('work-chat', { source: 'signal' })]))
+      await workRefresh
+    })
+
+    expect($sessions.get().map(session => session.id)).toEqual(['personal-session'])
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['personal-chat'])
   })
 
   it('scopes the cron-jobs fetch to the active profile', async () => {

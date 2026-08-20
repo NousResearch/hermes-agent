@@ -95,7 +95,7 @@ Bots message each other with attribution, and you can hand work off from any cha
 
 - **@mentions** — type `@researcher have a look at this` in any chat and the active Bot hands the message off, waits for the reply, and reports back. Mention names are validated against the live roster, so an email address or an unknown `@` passes through untouched.
 - **@mentions across machines** — mentioning a Bot that lives on another registered connection (use its `@name-device` handle when names collide) delivers over the Connections registry in the background: the active Bot stays on this device, the desktop routes the message to the recipient's machine, and the reply is relayed back attributed to that agent. Your window's gateway never switches.
-- **Direct messages** — a Bot reaches a teammate's Bot Chat through the standard CLI: `hermes -p <bot> chat --in ~ -c "Bot Chat" --create-if-missing -Q -q "Message from 🤖 <sender> (@<sender>): ..."`. The receiving Bot sees the message the next time it runs and knows how to reply, because the messaging protocol is part of its Bot Chat system prompt.
+- **Direct messages** — a Bot reaches a teammate's Bot Chat through the standard CLI: it writes the message to a temp file (opening with the `Message from 🤖 <sender> (@<sender>):` prefix), then runs `hermes -p <bot> chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file <file>`. The file transport means nothing is shell-interpreted — quotes, `$(...)`, and backticks in the message arrive verbatim. The receiving Bot sees the message the next time it runs and knows how to reply, because the messaging protocol is part of its Bot Chat system prompt.
 
 The backend teaches each Bot's canonical Bot Chat session the messaging protocol automatically at prompt-build time — including when a teammate opens it headlessly from the CLI. Only the canonical Bot Chat gets the protocol section; your regular sessions and your SOUL.md stay untouched. This is controlled by `agent.bot_mode_protocol` in `config.yaml` (default: on):
 
@@ -115,8 +115,8 @@ Bots on one machine can message Bots on **another machine's gateway** without an
 ```bash
 hermes peer add spark --url http://spark.lan:8377 --key <API_SERVER_KEY>
 hermes peer list
-hermes peer dm spark "Message from 🤖 dixie (@dixie): disk status?"
-hermes peer dm spark/researcher "..."   # named profile on a multiplexed peer
+hermes peer dm spark < /tmp/dm.txt        # message body from a file (nothing shell-interpreted)
+hermes peer dm spark/researcher < /tmp/dm.txt   # named profile on a multiplexed peer
 ```
 
 `hermes peer dm` delivers into the remote agent's canonical Bot Chat over the peer's existing API server, runs one agent turn there, and prints the reply on stdout — the exact cross-machine twin of the local `hermes -p <bot> chat` command.

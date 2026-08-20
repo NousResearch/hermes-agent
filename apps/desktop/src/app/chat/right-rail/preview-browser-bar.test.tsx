@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { normalizePreviewAddress, PreviewBrowserBar } from './preview-browser-bar'
@@ -12,6 +12,7 @@ const baseProps = {
   onBack: vi.fn(),
   onForward: vi.fn(),
   onNavigate: vi.fn(),
+  onOpenExternal: vi.fn(),
   onReload: vi.fn(),
   onToggleConsole: vi.fn(),
   onToggleDevTools: vi.fn(),
@@ -22,9 +23,16 @@ function address(rendered: ReturnType<typeof render>) {
   return rendered.getByRole('textbox', { name: 'Address' }) as HTMLInputElement
 }
 
+const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+
+function installBridge(writeClipboard: ReturnType<typeof vi.fn>) {
+  desktopWindow.hermesDesktop = { writeClipboard } as unknown as Window['hermesDesktop']
+}
+
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  delete desktopWindow.hermesDesktop
 })
 
 describe('normalizePreviewAddress', () => {
@@ -77,6 +85,8 @@ describe('PreviewBrowserBar', () => {
     expect(rendered.getByRole('button', { name: 'Back' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Forward' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Reload page' })).toBeTruthy()
+    expect(rendered.getByRole('button', { name: 'Copy URL' })).toBeTruthy()
+    expect(rendered.getByRole('button', { name: 'Open in browser' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Show preview console' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Open preview DevTools' })).toBeTruthy()
     expect(address(rendered)).toBeTruthy()
@@ -99,7 +109,8 @@ describe('PreviewBrowserBar', () => {
   it.each([
     ['Back', 'onBack'],
     ['Forward', 'onForward'],
-    ['Reload page', 'onReload']
+    ['Reload page', 'onReload'],
+    ['Open in browser', 'onOpenExternal']
   ] as const)('fires %s', (label, handler) => {
     const spy = vi.fn()
     const rendered = render(<PreviewBrowserBar {...baseProps} canGoBack canGoForward {...{ [handler]: spy }} />)
@@ -226,5 +237,40 @@ describe('PreviewBrowserBar', () => {
     rerender(<PreviewBrowserBar {...baseProps} />)
 
     expect(container.querySelector('.codicon-refresh')?.className).not.toContain('codicon-modifier-spin')
+  })
+
+  it('copies the live address from the copy-URL button', async () => {
+    const writeClipboard = vi.fn().mockResolvedValue(undefined)
+
+    installBridge(writeClipboard)
+    render(<PreviewBrowserBar {...baseProps} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy URL' }))
+
+    await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('https://example.com'))
+  })
+
+  it('copies the new address after the page navigates', async () => {
+    const writeClipboard = vi.fn().mockResolvedValue(undefined)
+
+    installBridge(writeClipboard)
+    const rendered = render(<PreviewBrowserBar {...baseProps} />)
+
+    rendered.rerender(<PreviewBrowserBar {...baseProps} url="https://example.com/next" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy URL' }))
+
+    await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('https://example.com/next'))
+  })
+
+  it('renders the copy control inside the address field wrapper, not as a bar glyph', () => {
+    render(<PreviewBrowserBar {...baseProps} />)
+
+    const copyButton = screen.getByRole('button', { name: 'Copy URL' })
+    const address = screen.getByRole('textbox', { name: 'Address' })
+
+    // Same positioned wrapper as the field = visually inside it, like the
+    // code-block copy icon (inline appearance, overlay on the field's edge).
+    expect(copyButton.parentElement?.contains(address)).toBe(true)
+    expect(copyButton.className).toContain('absolute')
   })
 })

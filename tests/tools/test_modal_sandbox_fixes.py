@@ -391,10 +391,19 @@ class TestDockerHostBindApproval:
         config permanently allowlists e.g. "delete in root path" the guard
         under test silently approves and the assertions flip. CI never has
         such an allowlist, making this a local-only flake.
+
+        Same import-time freeze applies to ``_YOLO_MODE_FROZEN``: it reads
+        HERMES_YOLO_MODE off the environment when the module is imported at
+        collection time, before conftest's per-test env blanking runs. A test
+        run launched from a --yolo Hermes session (or any shell exporting
+        HERMES_YOLO_MODE=1) freezes True and every guard auto-approves.
+        Reset it explicitly so the tests exercise the guard, not the bypass.
         """
         import tools.approval as A
         monkeypatch.setattr(A, "_permanent_approved", set())
         monkeypatch.setattr(A, "_session_approved", {})
+        monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
 
     def test_host_bound_docker_requires_approval(self, monkeypatch):
         """Host-bound Docker dangerous command escalates instead of bypassing."""

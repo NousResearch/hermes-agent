@@ -46,6 +46,7 @@ vi.mock('@/store/session', () => ({
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
 
 const {
+  activeGateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
   disposeSecondariesForConnection,
@@ -87,6 +88,29 @@ afterEach(() => {
 })
 
 describe('disposeSecondariesForConnection', () => {
+  it('keeps the previous source socket alive when another source becomes foreground', async () => {
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
+    )
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'default')
+    const homelab = gatewayMocks.instances[0]
+
+    await ensureGatewayForAgent('office', 'default')
+
+    expect(gatewayMocks.instances).toHaveLength(2)
+    expect(homelab.close).not.toHaveBeenCalled()
+    expect(homelab.connectionState).toBe('open')
+
+    // Returning to the first source reuses its live socket. A source switch is
+    // only a foreground routing change; it must never interrupt backend work.
+    await ensureGatewayForAgent('homelab', 'default')
+    expect(gatewayMocks.instances).toHaveLength(2)
+    expect(activeGateway()).toBe(homelab)
+  })
+
   it('closes and evicts every secondary scoped to the removed connection', async () => {
     const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
       descriptorFor(connectionId, profile)

@@ -807,11 +807,24 @@ class WebSocketRelayTransport:
             bot_id = self._bot_id_for(platform)
             if bot_id:
                 frame["botId"] = bot_id
+        frame_sent = False
         try:
             await self._send(frame)
+            frame_sent = True
             return await asyncio.wait_for(fut, timeout=self._outbound_timeout_s)
         except asyncio.TimeoutError:
-            return {"success": False, "error": "relay outbound timed out"}
+            # AMBIGUOUS by contract (PR 85796 review): the frame reached the
+            # wire — only the acknowledgement is missing. The connector may
+            # well have applied it (draft frame appended, stream sealed).
+            # Consumers that need to distinguish "connector rejected this"
+            # from "outcome unknown" key on this flag; the fail-fast paths
+            # above (closing / not connected) never sent anything and are
+            # definite non-delivery, so they stay unmarked.
+            return {
+                "success": False,
+                "error": "relay outbound timed out",
+                "ambiguous": True,
+            }
         except Exception as exc:  # noqa: BLE001 - a dead socket is a failed send, not a raise
             # No `is None` check can close the window where the socket dies
             # BETWEEN the liveness guard above and the actual write — the
@@ -820,8 +833,20 @@ class WebSocketRelayTransport:
             # result dict (RelayAdapter.send consumes it with no try).
             # Report it like every other failed send. CancelledError is a
             # BaseException, so cancellation still propagates.
+            #
+            # Ambiguity contract (PR 85796): a raise from the WRITE means the
+            # frame never reached the wire — definite non-delivery, no flag.
+            # A failure surfaced by the FUTURE (e.g. disconnect() failing
+            # pending mid-flight) means the frame WAS sent and only the
+            # outcome is unknown — mark it ambiguous like the timeout above.
             logger.debug("relay %s send failed", frame_type, exc_info=True)
-            return {"success": False, "error": f"relay send failed: {exc}"}
+            result: Dict[str, Any] = {
+                "success": False,
+                "error": f"relay send failed: {exc}",
+            }
+            if frame_sent:
+                result["ambiguous"] = True
+            return result
         finally:
             self._pending.pop(request_id, None)
 

@@ -434,6 +434,7 @@ host.state.awaitingResponse // ReadableAtom<boolean>  true until the first assis
 host.state.busy             // ReadableAtom<boolean>  focused chat is working after a send
 host.state.busyBySession    // ReadableAtom<Record<string, boolean>>  runtime id → mid-turn
 host.state.focusedSessionId // ReadableAtom<string | null>  (runtime id of the FOCUSED session — tile-aware; prefer for session.* RPC)
+host.state.focusedSessionProfile // ReadableAtom<string>  (owner profile of the focused chat — prefer over `profile` for per-bot/profile readouts)
 host.state.focusedStoredSessionId // ReadableAtom<string | null>  (durable id — navigation / session-list matching)
 host.state.focusedUsage     // ReadableAtom<UsageStats | null>  (live streamed usage of the focused session, no RPC needed)
 host.state.cwd              // ReadableAtom<string>
@@ -687,6 +688,21 @@ backend, the remote box's `~/.hermes/plugins` is not reachable as a filesystem �
 only locally installed packages contribute a desktop half (same rule as the
 standalone door).
 :::
+
+### Distributing with an install link {#install-link}
+
+Ship your plugin repo (agent half, desktop half, or both) and link to it with
+the `hermes://` scheme — a plain anchor on your website or README:
+
+```html
+<a href="hermes://plugin/install?repo=owner/repo&enable=1">Install in Hermes</a>
+```
+
+The user gets a confirmation dialog (repo id, source links, a probe of what
+the repo ships) and picks components before anything is installed — deep links
+never auto-install. `force=1` replaces an existing install; dev builds use
+`hermes-dev://`. Full link reference:
+[One-click install links](/user-guide/features/plugins#one-click-install-links-desktop).
 
 ### The Python side
 

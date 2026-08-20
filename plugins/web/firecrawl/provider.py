@@ -48,7 +48,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, NoReturn, Optional, TYPE_CHECKING
 
 from agent.web_search_provider import WebSearchProvider
 from tools.url_safety import is_safe_url
@@ -168,11 +168,22 @@ def _has_direct_firecrawl_config() -> bool:
 
 
 def check_firecrawl_api_key() -> bool:
-    """Return True when Firecrawl backend (direct or gateway) is usable.
+    """Return True when the Firecrawl backend selected via `hermes tools`
+    (or, on a never-configured install, either route) is usable.
 
     Re-exported by :mod:`tools.web_tools` for backward compatibility with
     existing tests and the ``hermes tools`` setup flow.
     """
+    from tools.tool_backend_helpers import (
+        NOUS_MANAGED_PROVIDER,
+        read_selection,
+    )
+
+    selected = read_selection("web")
+    if selected == NOUS_MANAGED_PROVIDER:
+        return _is_tool_gateway_ready()
+    if selected is not None:
+        return _has_direct_firecrawl_config()
     return _has_direct_firecrawl_config() or _is_tool_gateway_ready()
 
 
@@ -188,7 +199,7 @@ def _firecrawl_backend_help_suffix() -> str:
     )
 
 
-def _raise_web_backend_configuration_error() -> None:
+def _raise_web_backend_configuration_error() -> "NoReturn":
     """Raise a clear error for unsupported web backend configuration."""
     import tools.web_tools as _wt
 
@@ -212,46 +223,95 @@ def _raise_web_backend_configuration_error() -> None:
 def _get_firecrawl_client() -> Any:
     """Get or create the cached Firecrawl client.
 
-    When ``web.use_gateway`` is set in config, the managed Tool Gateway is
-    preferred even if direct Firecrawl credentials are present. Otherwise
-    direct Firecrawl takes precedence when explicitly configured.
+    Strict selection semantics (switch on the stored ``web`` selection):
+    - ``"nous"`` (or legacy ``use_gateway: true``) → managed Tool Gateway
+      ONLY; unavailable is a selection-naming error (a present
+      FIRECRAWL_API_KEY does not reroute).
+    - any other stored web backend → direct Firecrawl ONLY; missing config
+      is a selection-naming error — never a silent managed fallback billed
+      to Nous.
+    - never-configured web section → legacy behavior: direct config when
+      present, else the managed gateway.
 
-    Raises ValueError when neither path is usable.
+    Raises ValueError when the resolved path is unusable.
 
     The cached client is stored on :mod:`tools.web_tools` (as
     ``_firecrawl_client`` and ``_firecrawl_client_config``) rather than on
     this plugin module so that unit tests that reset the cache via
     ``tools.web_tools._firecrawl_client = None`` keep working. Helper
-    functions (``prefers_gateway``, ``resolve_managed_tool_gateway``,
-    ``_read_nous_access_token``, ``Firecrawl``) are also looked up via
-    :mod:`tools.web_tools` for the same reason — see
-    :func:`_is_tool_gateway_ready`.
+    functions (``resolve_managed_tool_gateway``, ``_read_nous_access_token``,
+    ``Firecrawl``) are also looked up via :mod:`tools.web_tools` for the same
+    reason — see :func:`_is_tool_gateway_ready`.
     """
     import tools.web_tools as _wt
+    from tools.tool_backend_helpers import (
+        NOUS_MANAGED_PROVIDER,
+        read_selection,
+        selection_error,
+        selection_exists,
+    )
+
+    selected = read_selection("web")
 
     direct_config = _get_direct_firecrawl_config()
-    if direct_config is not None and not _wt.prefers_gateway("web"):
-        kwargs, client_config = direct_config
-    else:
+
+    def _managed_kwargs():
         managed_gateway = _wt.resolve_managed_tool_gateway(
             "firecrawl", token_reader=_wt._read_nous_access_token
         )
         if managed_gateway is None:
+            return None
+        kwargs = {
+            "api_key": managed_gateway.nous_user_token,
+            "api_url": managed_gateway.gateway_origin,
+        }
+        return kwargs, (
+            "tool-gateway",
+            kwargs["api_url"],
+            managed_gateway.nous_user_token,
+        )
+
+    if selected == NOUS_MANAGED_PROVIDER:
+        managed = _managed_kwargs()
+        if managed is None:
+            logger.error(
+                "Firecrawl client initialization failed: the Nous "
+                "Subscription web selection is stored but the tool gateway "
+                "is unavailable."
+            )
+            raise ValueError(selection_error(
+                "web",
+                NOUS_MANAGED_PROVIDER,
+                "the Nous Tool Gateway is not available (not entitled or "
+                "unreachable)",
+            ))
+        kwargs, client_config = managed
+    elif selected is not None or selection_exists("web"):
+        # Stored vendor selection (or per-capability web keys routing to
+        # firecrawl): direct Firecrawl only.
+        if direct_config is None:
+            logger.error(
+                "Firecrawl client initialization failed: direct Firecrawl "
+                "selected but FIRECRAWL_API_KEY/FIRECRAWL_API_URL is not set."
+            )
+            raise ValueError(selection_error(
+                "web",
+                selected or "firecrawl",
+                "neither FIRECRAWL_API_KEY nor FIRECRAWL_API_URL is set",
+            ))
+        kwargs, client_config = direct_config
+    elif direct_config is not None:
+        kwargs, client_config = direct_config
+    else:
+        # Never-configured web section: legacy managed fallback.
+        managed = _managed_kwargs()
+        if managed is None:
             logger.error(
                 "Firecrawl client initialization failed: "
                 "missing direct config and tool-gateway auth."
             )
             _raise_web_backend_configuration_error()
-
-        kwargs = {
-            "api_key": managed_gateway.nous_user_token,
-            "api_url": managed_gateway.gateway_origin,
-        }
-        client_config = (
-            "tool-gateway",
-            kwargs["api_url"],
-            managed_gateway.nous_user_token,
-        )
+        kwargs, client_config = managed
 
     cached = getattr(_wt, "_firecrawl_client", None)
     cached_config = getattr(_wt, "_firecrawl_client_config", None)

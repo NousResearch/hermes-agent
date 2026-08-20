@@ -25,6 +25,7 @@ test('the Bots pane center-docks into the sessions zone as an enforced invariant
 
 test('routines registration is a reusable disposer-returning function', () => {
   assert.match(source, /const registerRoutinesPane = \(\) =>\s*\n\s*ctx\.register\(\{\s*\n\s*id: 'routines'/)
+  assert.match(source, /dock: \{ pane: 'workspace', pos: 'right', enforce: true \}/)
 })
 
 test('routines pane rides Bots visibility via feature-detected host.paneVisibility', () => {

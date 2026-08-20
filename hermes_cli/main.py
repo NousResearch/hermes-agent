@@ -67,6 +67,7 @@ except ModuleNotFoundError:
 # visible console when this process is windowless (pythonw gateway + every
 # kanban worker).  No-op on POSIX; never raises.
 from hermes_cli._subprocess_compat import suppress_platform_ver_console
+from hermes_cli.cli_output import line_input
 
 suppress_platform_ver_console()
 
@@ -179,6 +180,7 @@ def _run_and_exit_oneshot(
     model: object = None,
     provider: object = None,
     toolsets: object = None,
+    skills: object = None,
     usage_file: object = None,
 ) -> None:
     try:
@@ -189,6 +191,7 @@ def _run_and_exit_oneshot(
             model=model,
             provider=provider,
             toolsets=toolsets,
+            skills=skills,
             usage_file=usage_file,
         )
     except KeyboardInterrupt:
@@ -3111,22 +3114,50 @@ def cmd_chat(args):
         except Exception:
             pass
 
-    # Sync bundled skills on every CLI launch. Runs in a background daemon
-    # thread: the sync is idempotent, hash-gated (unchanged skills are
+    # Sync bundled skills on every CLI launch. Normally runs in a background
+    # daemon thread: the sync is idempotent, hash-gated (unchanged skills are
     # skipped), and nothing on the banner path depends on it, yet the scan
     # alone costs ~120-170ms of rglob/hashing on the startup path. Skill
     # loading happens at agent init (first message), by which point the
-    # sync has long finished; a same-instant race would only matter in the
-    # rare launch right after `hermes update` changed a bundled skill.
+    # sync has long finished.
+    #
+    # FIRST RUN is the exception: with an empty ~/.hermes/skills the banner
+    # prefetch races the background sync, caches an empty skills index, and
+    # the very first launch greets the user with "No skills installed ·
+    # 0 skills" while 69 bundled skills land milliseconds later (full-surface
+    # CLI QA sweep, Aug 2026). Run the sync in the foreground exactly once —
+    # only when the skills dir has no SKILL.md yet — so the first impression
+    # matches reality; every later launch keeps the background path.
+    def _skills_dir_is_unseeded() -> bool:
+        try:
+            from hermes_cli.config import get_hermes_home
+            skills_dir = Path(get_hermes_home()) / "skills"
+            if not skills_dir.is_dir():
+                return True
+            return next(skills_dir.rglob("SKILL.md"), None) is None
+        except Exception:
+            return False
+
     def _skills_sync_bg() -> None:
         try:
             _sync_bundled_skills_for_startup()
         except Exception:
             pass
 
-    threading.Thread(
-        target=_skills_sync_bg, name="bundled-skills-sync", daemon=True
-    ).start()
+    if _skills_dir_is_unseeded():
+        _skills_sync_bg()
+        # The banner prefetch thread (started above) may have scanned the
+        # still-empty dir and cached an empty skills index — drop it so the
+        # banner recomputes against the freshly seeded tree.
+        try:
+            import hermes_cli.banner as _banner_mod
+            _banner_mod._available_skills_cache = None
+        except Exception:
+            pass
+    else:
+        threading.Thread(
+            target=_skills_sync_bg, name="bundled-skills-sync", daemon=True
+        ).start()
 
     # --yolo: bypass all dangerous command approvals.
     # Also set in main() before _prepare_agent_startup() — that is the
@@ -3179,6 +3210,31 @@ def cmd_chat(args):
     # Import and run the CLI
     from cli import main as cli_main
 
+    # --query-file: read the single query from a file (or stdin via '-') so
+    # callers never have to shell-quote message bodies. This is the transport
+    # the Bot Mode DM protocol uses — interpolating arbitrary text into a
+    # double-quoted shell argument truncates on quotes and executes $(...)
+    # (see tools/bot_mode_probe.py).
+    _qfile = getattr(args, "query_file", None)
+    if _qfile:
+        if args.query:
+            # argparse's mutually-exclusive group catches the normal CLI path;
+            # this guards programmatic callers that fill the namespace directly.
+            print("Error: -q/--query and --query-file are mutually exclusive", file=sys.stderr)
+            sys.exit(2)
+        try:
+            if _qfile == "-":
+                args.query = sys.stdin.read()
+            else:
+                with open(_qfile, "r", encoding="utf-8", errors="replace") as _fh:
+                    args.query = _fh.read()
+        except OSError as _e:
+            print(f"Error: cannot read --query-file {_qfile}: {_e}", file=sys.stderr)
+            sys.exit(2)
+        if not (args.query or "").strip():
+            print(f"Error: --query-file {_qfile} is empty", file=sys.stderr)
+            sys.exit(2)
+
     # Build kwargs from args
     kwargs = {
         "model": args.model,
@@ -3195,6 +3251,7 @@ def cmd_chat(args):
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
         "max_turns": getattr(args, "max_turns", None),
+        "run_budget": getattr(args, "run_budget", None),
         "ignore_rules": getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False) or getattr(args, "safe_mode", False),
         "compact": getattr(args, "compact", False),
@@ -3312,11 +3369,11 @@ def cmd_whatsapp(args):
             response = "n"
         if response.lower() in {"y", "yes"}:
             if wa_mode == "bot":
-                phone = input(
+                phone = line_input(
                     "  Phone numbers that can message the bot (comma-separated): "
                 ).strip()
             else:
-                phone = input("  Your phone number (e.g. 15551234567): ").strip()
+                phone = line_input("  Your phone number (e.g. 15551234567): ").strip()
             if phone:
                 save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
                 print(f"  ✓ Updated to: {phone}")
@@ -3324,11 +3381,11 @@ def cmd_whatsapp(args):
         print()
         if wa_mode == "bot":
             print("  Who should be allowed to message the bot?")
-            phone = input(
+            phone = line_input(
                 "  Phone numbers (comma-separated, or * for anyone): "
             ).strip()
         else:
-            phone = input("  Your phone number (e.g. 15551234567): ").strip()
+            phone = line_input("  Your phone number (e.g. 15551234567): ").strip()
         if phone:
             save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
             print(f"  ✓ Allowed users set: {phone}")
@@ -4382,7 +4439,7 @@ def _aux_flow_provider_model(
         print(f"No curated model list for {provider_slug}.")
         print("Enter a model slug manually (blank = use provider default):")
         try:
-            val = input("Model: ").strip()
+            val = line_input("Model: ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return
@@ -4423,7 +4480,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
         url_prompt = (
             f"Base URL [{current_base_url}]: " if current_base_url else "Base URL: "
         )
-        url = input(url_prompt).strip()
+        url = line_input(url_prompt).strip()
     except (KeyboardInterrupt, EOFError):
         print()
         return
@@ -4437,7 +4494,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
             if current_model
             else "Model slug (optional): "
         )
-        model = input(model_prompt).strip()
+        model = line_input(model_prompt).strip()
     except (KeyboardInterrupt, EOFError):
         print()
         return
@@ -8716,38 +8773,144 @@ def _recover_core_update_marker_locked() -> None:
             print(f"    {sys.executable} -m pip install -e '.[all]'")
 
 
-def _windows_running_hermes_launcher_locked() -> bool:
-    """True when a venv ``hermes*.exe`` shim is this process or an ancestor.
+def _norm_exe_path(path) -> str:
+    """Case-folded resolved path, for comparing executables on Windows."""
+    try:
+        return str(Path(path).resolve()).lower()
+    except OSError:
+        return str(path).lower()
 
-    Best-effort: returns False when psutil is unavailable or inspection fails.
+
+def _windows_shim_in_process_chain() -> Path | None:
+    """The venv console shim this process runs from or under, if any.
+
+    ``venv\\Scripts\\hermes.exe`` is a launcher that runs the interpreter with
+    the shim itself as its script, and that keeps the shim open — without
+    ``FILE_SHARE_DELETE`` — for the whole process lifetime. So every
+    ``hermes ...`` command holds its own shim, and an editable install run
+    from one can never rewrite it (#88838, #89599).
+
+    Two independent probes, because either can come up empty. Process
+    ancestry finds the launcher when it is a separate parent process, but
+    needs psutil. This process's own launch paths (``sys.argv[0]``,
+    ``__main__.__file__``, the module spec origin) cover the rest — the
+    runpy/zipapp launch puts ``<shim>\\__main__.py`` there, which a plain
+    argv[0] check misses.
+
+    Candidates are intersected with the project venv's own shims, so a
+    ``hermes.exe`` belonging to some other install never matches.
     """
     if not _is_windows():
-        return False
+        return None
     scripts_dir = _venv_scripts_dir()
     if scripts_dir is None:
-        return False
-    shims = _hermes_exe_shims(scripts_dir)
+        return None
+    shims = {_norm_exe_path(shim): shim for shim in _hermes_exe_shims(scripts_dir)}
     if not shims:
-        return False
-    shim_set: set[str] = set()
-    for shim in shims:
-        try:
-            shim_set.add(str(shim.resolve()).lower())
-        except OSError:
-            shim_set.add(str(shim).lower())
+        return None
+
+    def _match(candidate) -> Path | None:
+        path = Path(candidate)
+        if path.name.lower() == "__main__.py":
+            path = path.parent
+        return shims.get(_norm_exe_path(path))
+
+    candidates: list[str] = list(sys.argv[:1])
+    main_mod = sys.modules.get("__main__")
+    for attr in (getattr(main_mod, "__file__", None),
+                 getattr(getattr(main_mod, "__spec__", None), "origin", None)):
+        if attr:
+            candidates.append(attr)
+    for candidate in candidates:
+        matched = _match(candidate)
+        if matched is not None:
+            return matched
+
     try:
         import psutil
 
         me = psutil.Process()
         for proc in [me] + list(me.parents()):
             try:
-                exe_norm = str(Path(proc.exe()).resolve()).lower()
+                matched = _match(proc.exe())
             except Exception:
                 continue
-            if exe_norm in shim_set:
-                return True
+            if matched is not None:
+                return matched
     except Exception:
+        return None
+    return None
+
+
+def _windows_running_hermes_launcher_locked() -> bool:
+    """True when a venv ``hermes*.exe`` shim is this process or an ancestor.
+
+    Best-effort: returns False when psutil is unavailable or inspection fails.
+    """
+    return _windows_shim_in_process_chain() is not None
+
+
+# Set on the re-exec'd child so it can never spawn another one.
+_UPDATE_REEXEC_ENV = "HERMES_UPDATE_REEXEC"
+
+
+def _reexec_update_off_windows_shim() -> bool:
+    """Hand this update to the venv interpreter, off the console shim.
+
+    Returns True when a child was spawned and the caller must return at once,
+    so this process exits and releases the shim before the child reaches
+    ``pip install -e .``. Returns False to continue in-process.
+
+    The child is spawned, not waited on — this process exiting IS the fix, so
+    the shell sees the spawn's status rather than the update's. The update
+    prints its own result, and ``--gateway`` writes the true exit code to
+    ``.update_exit_code`` for the gateway watcher before restarting.
+
+    It also runs unattended, with stdin closed. The child inherits the
+    console, so left alone ``sys.stdin.isatty()`` still reports a terminal and
+    the update asks its local-changes question — but this process has already
+    exited and the shell has taken the console back, so the prompt cannot be
+    answered and the update hangs forever. Closing stdin makes the update take
+    the same path it takes for the gateway and Desktop: honour
+    ``updates.non_interactive_local_changes`` (stash by default, nothing lost)
+    and keep going.
+
+    Anything that stops the hand-off (no venv python, spawn refused) falls
+    through to the old in-process behaviour with the manual command printed,
+    so a broken venv still gets whatever the update can do rather than a
+    dead end.
+    """
+    if os.environ.get(_UPDATE_REEXEC_ENV) == "1":
         return False
+    shim = _windows_shim_in_process_chain()
+    if shim is None:
+        return False
+
+    from hermes_constants import venv_python_path
+
+    python_exe = venv_python_path(shim.parent.parent, windows=True)
+    cmd = [str(python_exe), "-m", "hermes_cli.main", *sys.argv[1:]]
+    if python_exe.is_file():
+        try:
+            subprocess.Popen(
+                cmd,
+                env={**os.environ, _UPDATE_REEXEC_ENV: "1"},
+                stdin=subprocess.DEVNULL,
+            )
+            print(
+                f"→ Windows: {shim.name} cannot replace itself while it runs; "
+                "continuing the update under the venv Python."
+            )
+            print(
+                "  It runs unattended from here — progress prints below and "
+                "this shell returns right away."
+            )
+            return True
+        except OSError as exc:
+            logger.debug("Update re-exec via %s failed: %s", python_exe, exc)
+    print(f"  ⚠ Could not re-run the update off {shim.name}. If the install")
+    print("    fails to replace it, run this from a fresh shell instead:")
+    print(f"    {subprocess.list2cmdline(cmd)}")
     return False
 
 
@@ -8760,7 +8923,10 @@ def _default_venv_install_target() -> tuple[list[str], dict[str, str] | None]:
     except Exception:
         uv_bin = None
     if uv_bin:
-        env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        from hermes_constants import project_venv_dir
+
+        venv_dir = project_venv_dir(PROJECT_ROOT) or PROJECT_ROOT / "venv"
+        env = {**os.environ, "VIRTUAL_ENV": str(venv_dir)}
         if _is_termux_env(env):
             env.pop("PYTHONPATH", None)
             env.pop("PYTHONHOME", None)
@@ -8813,10 +8979,11 @@ def _is_windows() -> bool:
 
 def _venv_scripts_dir() -> Path | None:
     """Return the venv Scripts directory if we're running inside the project venv."""
-    venv_dir = PROJECT_ROOT / "venv"
-    if not venv_dir.is_dir():
+    from hermes_constants import project_venv_dir, venv_bin_dir
+
+    venv_dir = project_venv_dir(PROJECT_ROOT)
+    if venv_dir is None:
         return None
-    from hermes_constants import venv_bin_dir
 
     scripts = venv_bin_dir(venv_dir, windows=_is_windows())
     return scripts if scripts.is_dir() else None
@@ -8861,19 +9028,15 @@ def _quarantine_running_hermes_exe(
 
     1. Retry up to ``max_attempts`` times with exponential backoff
        (100/250/500/1000 ms). Handles the AV-scanner case.
-    2. If all retries fail, schedule the .exe for replacement on next
-       reboot via ``MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)``. This still
-       lets uv create a fresh shim at the original path (Windows will keep
-       the old file's content under a new name until the reboot), so the
-       update can complete; the user just needs to reboot to fully unload
-       the stale image.
-    3. Print a clear warning naming the most likely culprit (running
-       Hermes Desktop / gateway / REPL) and pointing to ``--force``.
+    2. If all retries fail, print a clear warning naming the most likely
+       culprit (running Hermes Desktop / gateway / REPL).
+
+    The updater's own launcher is no longer one of those culprits: an update
+    started from ``hermes.exe`` re-runs itself under the venv Python before
+    reaching here (``_reexec_update_off_windows_shim``).
 
     Returns the list of (original, quarantined) pairs so the caller can roll
-    back if the install itself fails before uv writes a replacement. Pairs
-    where we used ``MOVEFILE_DELAY_UNTIL_REBOOT`` are NOT returned — they
-    are already deferred and roll-back is meaningless.
+    back if the install itself fails before uv writes a replacement.
     """
     moved: list[tuple[Path, Path]] = []
     if not _is_windows():
@@ -8909,27 +9072,13 @@ def _quarantine_running_hermes_exe(
         if last_exc is None:
             continue
 
-        # All in-process renames failed. Try MoveFileEx with
-        # MOVEFILE_DELAY_UNTIL_REBOOT as a last resort. This succeeds in the
-        # exact case where the inline rename failed (another process holds
-        # the handle without share-delete), at the cost of requiring a
-        # reboot to fully reclaim the old .exe.
-        scheduled = _schedule_replace_on_reboot(shim, target)
-        if scheduled:
-            print(
-                f"  ⚠ {shim.name} is locked by another process; scheduled "
-                f"replacement on next reboot."
-            )
-            print(
-                "    The new shim was written at the same path, but a "
-                "reboot is needed to fully unload the old one."
-            )
-            # Do NOT append to ``moved``: we don't want roll-back to undo a
-            # reboot-deferred operation.
-            continue
-
-        # Truly couldn't budge the .exe. Print an actionable warning and let
-        # uv try its luck — sometimes uv's own retry handling pulls through.
+        # Every rename failed. Deferring one to next boot via
+        # MOVEFILE_DELAY_UNTIL_REBOOT used to be the fallback here, but it
+        # cannot help: it needs elevation we don't have, and when it does
+        # land it frees nothing for the install running right now while
+        # queueing an operation that will move a later, freshly repaired shim
+        # aside at next boot. Report and let uv try its luck instead —
+        # sometimes its own retry handling pulls through.
         print(
             f"  ⚠ Could not quarantine {shim.name} ({last_exc.__class__.__name__}: "
             f"another process is holding it open)."
@@ -8942,39 +9091,78 @@ def _quarantine_running_hermes_exe(
     return moved
 
 
-def _schedule_replace_on_reboot(shim: Path, quarantine_target: Path) -> bool:
-    """Schedule ``shim`` -> ``quarantine_target`` via PendingFileRenameOperations.
+_PENDING_RENAME_KEY = r"SYSTEM\CurrentControlSet\Control\Session Manager"
+_PENDING_RENAME_VALUE = "PendingFileRenameOperations"
 
-    Uses Win32 ``MoveFileExW`` with ``MOVEFILE_REPLACE_EXISTING |
-    MOVEFILE_DELAY_UNTIL_REBOOT``. The OS persists the rename in
-    ``HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\
-    PendingFileRenameOperations`` and applies it before any user-mode code
-    runs on next boot — at which point no process can hold the .exe.
 
-    Returns ``True`` if the schedule call succeeded, ``False`` otherwise
-    (non-Windows, ctypes failure, lack of privilege, etc.). Never raises.
+def _filter_pending_shim_renames(
+    entries: list[str], shims: list[Path]
+) -> tuple[list[str], int]:
+    """Drop shim-quarantine pairs from a PendingFileRenameOperations value.
+
+    The value is a flat REG_MULTI_SZ of (source, target) pairs, and other
+    installers share it, so only pairs matching our own
+    ``<shim>`` -> ``<shim>.old.<stamp>`` naming are removed. Returns the
+    entries to keep and how many pairs were dropped.
+    """
+    import ntpath
+
+    def _norm(value: str) -> str:
+        path = str(value).lstrip("!")
+        if path.startswith("\\??\\"):
+            path = path[4:]
+        return ntpath.normcase(ntpath.normpath(path))
+
+    shim_paths = {_norm(str(shim)) for shim in shims}
+    kept: list[str] = []
+    removed = 0
+    for index in range(0, len(entries) - 1, 2):
+        source, target = entries[index], entries[index + 1]
+        source_norm = _norm(source)
+        if source_norm in shim_paths and _norm(target).startswith(f"{source_norm}.old."):
+            removed += 1
+        else:
+            kept.extend((source, target))
+    if len(entries) % 2:
+        kept.append(entries[-1])
+    return kept, removed
+
+
+def _cleanup_pending_shim_renames(scripts_dir: Path) -> int:
+    """Drop reboot renames older Hermes versions queued for our shims.
+
+    Hermes used to fall back to ``MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)``
+    when the quarantine rename failed. Those entries outlive the update that
+    queued them, so at the next boot they move away whatever now sits at the
+    shim path — including a shim a later repair just wrote. Needs elevation
+    to remove (same as it needed to create); a no-op otherwise.
     """
     if not _is_windows():
-        return False
+        return 0
     try:
-        import ctypes
-        from ctypes import wintypes
+        import winreg
 
-        MOVEFILE_REPLACE_EXISTING = 0x1
-        MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
-
-        MoveFileExW = ctypes.windll.kernel32.MoveFileExW
-        MoveFileExW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
-        MoveFileExW.restype = wintypes.BOOL
-
-        ok = MoveFileExW(
-            str(shim),
-            str(quarantine_target),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_DELAY_UNTIL_REBOOT,
-        )
-        return bool(ok)
-    except Exception:
-        return False
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            _PENDING_RENAME_KEY,
+            0,
+            winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
+        ) as key:
+            entries, value_type = winreg.QueryValueEx(key, _PENDING_RENAME_VALUE)
+            if value_type != winreg.REG_MULTI_SZ or not isinstance(entries, list):
+                return 0
+            kept, removed = _filter_pending_shim_renames(
+                entries, _hermes_exe_shims(scripts_dir)
+            )
+            if not removed:
+                return 0
+            if kept:
+                winreg.SetValueEx(key, _PENDING_RENAME_VALUE, 0, winreg.REG_MULTI_SZ, kept)
+            else:
+                winreg.DeleteValue(key, _PENDING_RENAME_VALUE)
+            return removed
+    except (OSError, ValueError):
+        return 0
 
 
 def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
@@ -9027,7 +9215,7 @@ def _run_quarantined_install(
 
 
 def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
-    """Sweep ``hermes.exe.old.*`` left by prior updates.
+    """Sweep ``hermes.exe.old.*`` and stale reboot renames left by prior updates.
 
     Called early on every hermes invocation. The .old files are unlocked once
     their owning process exited, so deletion succeeds the next run. Silent
@@ -9039,6 +9227,7 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
         scripts_dir = _venv_scripts_dir()
     if scripts_dir is None:
         return
+    _cleanup_pending_shim_renames(scripts_dir)
     try:
         for stale in scripts_dir.glob("*.exe.old.*"):
             try:
@@ -9905,6 +10094,7 @@ def cmd_update(args):
         detect_install_method,
         format_docker_update_message,
         is_managed,
+        is_nix_install_method,
         managed_error,
         recommended_update_command_for_method,
     )
@@ -9924,7 +10114,7 @@ def cmd_update(args):
         print(format_docker_update_message())
         sys.exit(1)
 
-    if install_method in {"nix", "nixos", "apt"}:
+    if is_nix_install_method(install_method) or install_method == "apt":
         print(recommended_update_command_for_method(install_method))
         sys.exit(1)
 
@@ -9936,6 +10126,14 @@ def cmd_update(args):
             branch=branch,
             branch_explicit=bool(getattr(args, "branch", None)),
         )
+        return
+
+    # Windows: an update launched through venv\Scripts\hermes.exe holds that
+    # shim open for its whole run, and the dependency sync has to replace it.
+    # Hand off to the venv interpreter before anything else — in particular
+    # before the update lock, so the child claims the marker itself instead of
+    # adopting one this process is about to release.
+    if _reexec_update_off_windows_shim():
         return
 
     gateway_mode = getattr(args, "gateway", False)
@@ -10849,7 +11047,7 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
 
     print()
     try:
-        username = input("  Username [admin]: ").strip() or "admin"
+        username = line_input("  Username [admin]: ").strip() or "admin"
         password = getpass.getpass("  Password: ")
         confirm = getpass.getpass("  Confirm password: ")
     except (EOFError, KeyboardInterrupt):
@@ -11777,6 +11975,7 @@ def _try_fast_chat_launch() -> bool:
             model=getattr(args, "model", None),
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
+            skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
         )
 
@@ -11834,6 +12033,7 @@ def _try_termux_fast_cli_launch() -> bool:
             model=getattr(args, "model", None),
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
+            skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
         )
 
@@ -13712,6 +13912,7 @@ def main():
             model=getattr(args, "model", None),
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
+            skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
         )
 

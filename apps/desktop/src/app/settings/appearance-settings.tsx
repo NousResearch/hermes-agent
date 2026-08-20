@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
+import { useDebounced } from '@/app/hooks/use-debounced'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
@@ -15,6 +16,7 @@ import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
+import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
@@ -24,18 +26,22 @@ import {
   $translucency,
   beginTranslucencyPeek,
   endTranslucencyPeek,
-  GLASS_MATERIALS,
+  GLASS_IS_WINDOWS,
   GLASS_SCOPES,
   GLASS_SUPPORTED,
+  glassMaterialForPicker,
+  glassMaterialsFor,
   pulseTranslucencyPeek,
   resetTranslucencyPeek,
   setTranslucency,
+  setTranslucencyFade,
   setTranslucencyMaterial,
   setTranslucencyMode,
   setTranslucencyScope,
   TRANSLUCENCY_MAX,
   TRANSLUCENCY_MIN,
-  TRANSLUCENCY_STEP
+  TRANSLUCENCY_STEP,
+  TRANSLUCENCY_SUPPORTED
 } from '@/store/translucency'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
@@ -100,18 +106,6 @@ type UiScalePreset = (typeof UI_SCALE_PRESETS)[number]
 
 function matchUiScalePreset(percent: number): UiScalePreset | null {
   return UI_SCALE_PRESETS.find(preset => Number(preset) === percent) ?? null
-}
-
-function useDebounced<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value)
-
-  useEffect(() => {
-    const handle = setTimeout(() => setDebounced(value), delayMs)
-
-    return () => clearTimeout(handle)
-  }, [value, delayMs])
-
-  return debounced
 }
 
 const compactNumber = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
@@ -280,6 +274,71 @@ const SLIDER_STEP_KEYS = new Set([
   'PageUp'
 ])
 
+interface TranslucencySliderProps {
+  label: string
+  onChange: (value: number) => void
+  value: number
+}
+
+/**
+ * One 0–100 lever, used up to twice: Clear's window opacity, and under Glass
+ * the tint plus an optional native fade.
+ *
+ * Peek while the hand is on it — the overlay (scrim + near-opaque card) ghosts
+ * so the window behind IS the live preview. The pointer pair covers
+ * mouse/touch drags; the keyboard path pulses per step instead, and blur ends
+ * any residual hold.
+ */
+function TranslucencySlider({ label, onChange, value }: TranslucencySliderProps) {
+  return (
+    <>
+      <input
+        aria-label={label}
+        className="h-1 w-40 cursor-pointer appearance-none rounded-full bg-(--ui-stroke-tertiary)"
+        max={TRANSLUCENCY_MAX}
+        min={TRANSLUCENCY_MIN}
+        onBlur={endTranslucencyPeek}
+        onChange={event => {
+          triggerHaptic('selection')
+          onChange(Number(event.target.value))
+        }}
+        onKeyDown={event => {
+          if (SLIDER_STEP_KEYS.has(event.key)) {
+            pulseTranslucencyPeek()
+          }
+        }}
+        onLostPointerCapture={endTranslucencyPeek}
+        onPointerDown={beginTranslucencyPeek}
+        onPointerUp={endTranslucencyPeek}
+        step={TRANSLUCENCY_STEP}
+        style={{ accentColor: 'var(--dt-primary)' }}
+        type="range"
+        value={value}
+      />
+      <span className="w-9 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
+        {value}%
+      </span>
+    </>
+  )
+}
+
+interface GlassRowProps {
+  children: React.ReactNode
+  label: string
+}
+
+/** A labelled control in the Glass sub-panel: tint, fade, frost, area. */
+function GlassRow({ children, label }: GlassRowProps) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="w-12 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+        {label}
+      </span>
+      {children}
+    </div>
+  )
+}
+
 export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
@@ -291,8 +350,10 @@ export function AppearanceSettings() {
   const embedAllowed = useStore($embedAllowed)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
   const translucency = useStore($translucency)
+  const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const reactionsEnabled = useStore($reactionsEnabled)
   const backdrop = useStore($backdrop)
+  const introSplash = useStore($introSplash)
   const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
@@ -522,94 +583,89 @@ export function AppearanceSettings() {
             title={a.sessionDensityTitle}
           />
 
-          <ListRow
-            action={
-              <div
-                className="flex items-center gap-3"
-                // Arms the peek for the overlay this row lives in — the
-                // ghosting rules in styles.css scope to it, so no other
-                // overlay pays for an opacity transition it never uses.
-                data-translucency-peek-scope=""
-              >
-                {GLASS_SUPPORTED && (
-                  <SegmentedControl
-                    onChange={pickTranslucency(setTranslucencyMode)}
-                    options={[
-                      { id: 'clear' as const, label: a.translucencyModeClear },
-                      { id: 'glass' as const, label: a.translucencyModeGlass }
-                    ]}
-                    value={translucency.mode}
-                  />
-                )}
-                <input
-                  aria-label={a.translucencyTitle}
-                  className="h-1 w-40 cursor-pointer appearance-none rounded-full bg-(--ui-stroke-tertiary)"
-                  max={TRANSLUCENCY_MAX}
-                  min={TRANSLUCENCY_MIN}
-                  // Peek while the hand is on the slider: the overlay (scrim +
-                  // near-opaque card) ghosts so the window behind IS the live
-                  // preview. Pointer pair covers mouse/touch drags; the
-                  // keyboard path pulses per step instead (blur ends any
-                  // residual hold).
-                  onBlur={endTranslucencyPeek}
-                  onChange={event => {
-                    triggerHaptic('selection')
-                    setTranslucency(Number(event.target.value))
-                  }}
-                  onKeyDown={event => {
-                    if (SLIDER_STEP_KEYS.has(event.key)) {
-                      pulseTranslucencyPeek()
-                    }
-                  }}
-                  onLostPointerCapture={endTranslucencyPeek}
-                  onPointerDown={beginTranslucencyPeek}
-                  onPointerUp={endTranslucencyPeek}
-                  step={TRANSLUCENCY_STEP}
-                  style={{ accentColor: 'var(--dt-primary)' }}
-                  type="range"
-                  value={translucency.intensity}
-                />
-                <span className="w-9 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
-                  {translucency.intensity}%
-                </span>
-              </div>
-            }
-            below={
-              translucency.mode === 'glass' && GLASS_SUPPORTED ? (
-                <div className="mt-3 flex flex-col gap-2.5">
-                  <div className="flex items-center gap-3">
-                    <span className="w-12 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                      {a.translucencyFrostTitle}
-                    </span>
+          {/* Linux has neither half of this setting (see TRANSLUCENCY_SUPPORTED),
+              so the row is absent there rather than offering a dead lever. */}
+          {TRANSLUCENCY_SUPPORTED && (
+            <ListRow
+              action={
+                <div
+                  className="flex items-center gap-3"
+                  // Arms the peek for the overlay this row lives in — the
+                  // ghosting rules in styles.css scope to it, so no other
+                  // overlay pays for an opacity transition it never uses.
+                  data-translucency-peek-scope=""
+                >
+                  {GLASS_SUPPORTED && (
                     <SegmentedControl
-                      onChange={pickTranslucency(setTranslucencyMaterial)}
-                      options={GLASS_MATERIALS.map(material => ({
-                        id: material,
-                        label: a.translucencyFrost[material]
-                      }))}
-                      value={translucency.material}
+                      onChange={pickTranslucency(setTranslucencyMode)}
+                      options={[
+                        { id: 'clear' as const, label: a.translucencyModeClear },
+                        { id: 'glass' as const, label: a.translucencyModeGlass }
+                      ]}
+                      value={translucency.mode}
                     />
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="w-12 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                      {a.translucencyScopeTitle}
-                    </span>
-                    <SegmentedControl
-                      onChange={pickTranslucency(setTranslucencyScope)}
-                      options={GLASS_SCOPES.map(scope => ({
-                        id: scope,
-                        label: a.translucencyScope[scope]
-                      }))}
-                      value={translucency.scope}
+                  )}
+                  {/* Clear has one lever and it belongs beside the mode. Glass
+                      has four controls, so they move into the labelled panel
+                      below rather than crowding this line with an unlabelled
+                      slider that means something different. */}
+                  {!glassMode && (
+                    <TranslucencySlider
+                      label={a.translucencyTitle}
+                      onChange={setTranslucency}
+                      value={translucency.intensity}
                     />
-                  </div>
+                  )}
                 </div>
-              ) : undefined
-            }
-            description={translucency.mode === 'glass' ? a.translucencyGlassDesc : a.translucencyDesc}
-            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.translucency)}
-            title={a.translucencyTitle}
-          />
+              }
+              below={
+                glassMode ? (
+                  <div className="mt-3 flex flex-col gap-2.5" data-translucency-peek-scope="">
+                    <GlassRow label={a.translucencyTintTitle}>
+                      <TranslucencySlider
+                        label={a.translucencyTintTitle}
+                        onChange={setTranslucency}
+                        value={translucency.intensity}
+                      />
+                    </GlassRow>
+                    <GlassRow label={a.translucencyFadeTitle}>
+                      <TranslucencySlider
+                        label={a.translucencyFadeTitle}
+                        onChange={setTranslucencyFade}
+                        value={translucency.fade}
+                      />
+                    </GlassRow>
+                    <GlassRow label={a.translucencyFrostTitle}>
+                      <SegmentedControl
+                        onChange={pickTranslucency(setTranslucencyMaterial)}
+                        // Windows renders four rungs as three backdrops, so it
+                        // is offered three; a frost saved on a Mac highlights
+                        // the rung that renders the same backdrop here.
+                        options={glassMaterialsFor(GLASS_IS_WINDOWS).map(material => ({
+                          id: material,
+                          label: a.translucencyFrost[material]
+                        }))}
+                        value={glassMaterialForPicker(translucency.material, GLASS_IS_WINDOWS)}
+                      />
+                    </GlassRow>
+                    <GlassRow label={a.translucencyScopeTitle}>
+                      <SegmentedControl
+                        onChange={pickTranslucency(setTranslucencyScope)}
+                        options={GLASS_SCOPES.map(scope => ({
+                          id: scope,
+                          label: a.translucencyScope[scope]
+                        }))}
+                        value={translucency.scope}
+                      />
+                    </GlassRow>
+                  </div>
+                ) : undefined
+              }
+              description={glassMode ? a.translucencyGlassDesc : a.translucencyDesc}
+              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.translucency)}
+              title={a.translucencyTitle}
+            />
+          )}
 
           <ListRow
             action={
@@ -628,6 +684,25 @@ export function AppearanceSettings() {
             description={a.backdropDesc}
             id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.backdrop)}
             title={a.backdropTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setIntroSplash(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={introSplash ? 'on' : 'off'}
+              />
+            }
+            description={a.introSplashDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.introSplash)}
+            title={a.introSplashTitle}
           />
 
           <ToggleRow

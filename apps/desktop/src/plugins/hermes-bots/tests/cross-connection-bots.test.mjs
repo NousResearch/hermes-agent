@@ -162,3 +162,16 @@ test('source contract: group chat turns route through requestForBot on the membe
   // Room records persist remote member descriptors.
   assert.match(pluginSource, /members: Array\.isArray\(room\.members\) \? room\.members : \[\]/)
 })
+
+test('regression: host.connections() result is normalized for BOTH SDK shapes before the picker gate', () => {
+  // Current SDKs return the registry ROWS from host.connections() (the
+  // documented contract); desktops that predate the SDK-side unwrap resolve
+  // the raw IPC payload — the registry OBJECT ({version, primary,
+  // connections: [...]}). The picker gate (Array.isArray(connections) &&
+  // length > 1) needs rows either way, so the plugin must accept both
+  // shapes. Pinning one shape only reopens #89823 on the other.
+  assert.match(
+    pluginSource,
+    /setConnections\(Array\.isArray\(value\) \? value : Array\.isArray\(value\?\.connections\) \? value\.connections : \[\]\)/
+  )
+})

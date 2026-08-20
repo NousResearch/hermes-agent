@@ -76,10 +76,14 @@ def _glm_5_2_reasoning_effort(reasoning_config: dict | None) -> str | None:
     if not effort or effort == "none":
         return None
 
-    if effort in {"xhigh", "max", "ultra"}:
-        return "max"
-    # low / medium / minimal / high all clamp to GLM-5.2's minimum: high.
-    return "high"
+    # GLM-5.2's two-level vocabulary (high = its minimum thinking level,
+    # max = top tier) is declared in agent.reasoning_effort; xhigh rounds up
+    # to max. Everything at or below high clamps to high — GLM cannot think
+    # less than that.
+    from agent.reasoning_effort import GLM52_EFFORTS, GLM52_OVERRIDES, clamp_effort
+
+    clamped = clamp_effort(effort, GLM52_EFFORTS, GLM52_OVERRIDES)
+    return clamped if clamped in GLM52_EFFORTS else "high"
 
 
 class ZaiProfile(ProviderProfile):

@@ -57,6 +57,14 @@ describe('goal store', () => {
     expect($goalsBySession.get().s1).toBeUndefined()
   })
 
+  it('clears immediately on /goal clear output', () => {
+    applyGoalStatusText('s1', '⊙ Goal set (20-turn budget): ship another feature')
+    applyGoalStatusText('s1', '⏸ Goal paused — 20/20 turns used. Use /goal resume to keep going.')
+    applyGoalStatusText('s1', '✓ Goal cleared.')
+
+    expect($goalsBySession.get().s1).toBeUndefined()
+  })
+
   it('cancels pending done clears when replacing a goal', () => {
     vi.useFakeTimers()
 

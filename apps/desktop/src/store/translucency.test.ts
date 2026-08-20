@@ -59,6 +59,7 @@ describe('window translucency lever', () => {
   it('starts off, with glass pre-selected on macOS', () => {
     expect(initialTranslucency).toEqual({
       intensity: TRANSLUCENCY_MIN,
+      fade: TRANSLUCENCY_MIN,
       mode: GLASS_SUPPORTED ? 'glass' : 'clear',
       material: DEFAULT_GLASS_MATERIAL,
       scope: DEFAULT_GLASS_SCOPE
@@ -122,6 +123,7 @@ describe('window translucency lever', () => {
         op: 'write',
         value: JSON.stringify({
           intensity: 23,
+          fade: 0,
           mode: 'clear',
           material: DEFAULT_GLASS_MATERIAL,
           scope: DEFAULT_GLASS_SCOPE
@@ -150,6 +152,7 @@ describe('window translucency lever', () => {
       expect(calls).toHaveLength(5)
       expect(calls.at(-1)).toEqual({
         intensity: 40,
+        fade: 0,
         mode: 'clear',
         material: DEFAULT_GLASS_MATERIAL,
         scope: DEFAULT_GLASS_SCOPE
@@ -191,7 +194,7 @@ describe('glass mode', () => {
     setTranslucency(TRANSLUCENCY_MIN)
   })
 
-  it('rejects glass off macOS and applies it on macOS', () => {
+  it('rejects glass when the platform cannot back it', () => {
     setTranslucency(50)
     setTranslucencyMode('glass')
 
@@ -397,6 +400,28 @@ describe('glass is confined to chat windows', () => {
     // The mode is still the user's choice — only the page rewrite is withheld.
     expect($translucency.get().mode).toBe('glass')
     expect(document.documentElement.hasAttribute('data-hermes-glass')).toBe(false)
+  })
+
+  // The HUD paints its band from the app's field mix, so it needs the setting
+  // and the tint number even though its surfaces must not be rewritten. The
+  // two flags are what keep those separable: keying the band off
+  // `data-hermes-glass` would silently never match.
+  it('still publishes the live setting and the tint to a special-purpose window', () => {
+    setSearch('?win=hud')
+    setTranslucency(60)
+    setTranslucencyMode('glass')
+
+    expect(document.documentElement.hasAttribute('data-hermes-glass-on')).toBe(true)
+    expect(document.documentElement.style.getPropertyValue('--translucency-glass-keep')).toBe('40%')
+  })
+
+  it('withdraws both flags when glass is switched off', () => {
+    setSearch('?win=hud')
+    setTranslucency(60)
+    setTranslucencyMode('glass')
+    setTranslucencyMode('clear')
+
+    expect(document.documentElement.hasAttribute('data-hermes-glass-on')).toBe(false)
     expect(document.documentElement.style.getPropertyValue('--translucency-glass-keep')).toBe('')
   })
 

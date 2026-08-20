@@ -36,6 +36,40 @@ def test_prompt_model_selection_requires_expensive_confirmation(monkeypatch, cap
     assert "EXPENSIVE MODEL WARNING" in out
 
 
+def test_prompt_model_selection_uses_line_editor_for_custom_model(monkeypatch):
+    from hermes_cli.auth import _prompt_model_selection
+
+    monkeypatch.setattr(
+        "hermes_cli.curses_ui.curses_radiolist",
+        lambda _title, choices, **_kwargs: len(choices) - 2,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.cli_output.line_input",
+        lambda prompt_text: (
+            "vendor/edited-model" if prompt_text == "Enter model name: " else ""
+        ),
+    )
+
+    assert _prompt_model_selection(["vendor/default-model"]) == "vendor/edited-model"
+
+
+def test_prompt_model_selection_fallback_uses_line_editor_for_custom_model(
+    monkeypatch,
+):
+    from hermes_cli.auth import _prompt_model_selection
+
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _raise_menu)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "2")
+    monkeypatch.setattr(
+        "hermes_cli.cli_output.line_input",
+        lambda prompt_text: (
+            "vendor/edited-model" if prompt_text == "Enter model name: " else ""
+        ),
+    )
+
+    assert _prompt_model_selection(["vendor/default-model"]) == "vendor/edited-model"
+
+
 def test_remove_custom_provider_falls_back_on_menu_runtime_error(tmp_path, monkeypatch):
     from hermes_cli.main import _remove_custom_provider
 
@@ -58,5 +92,3 @@ def test_remove_custom_provider_falls_back_on_menu_runtime_error(tmp_path, monke
     assert reloaded["custom_providers"] == [
         {"name": "Local B", "base_url": "http://localhost:8002/v1"},
     ]
-
-

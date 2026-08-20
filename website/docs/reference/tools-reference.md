@@ -8,7 +8,7 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts (current registry):** ~83 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 2 terminal tools (`terminal`, `process`), 7 desktop-GUI tools (`read_terminal`, `close_terminal`, `open_preview`, `read_preview`, `read_window_below`, `focus_pane`, `react_to_message` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 12 kanban tools (registered when the kanban dispatcher spawns the agent), 3 project tools (desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo`, `computer_use`, `x_search`).
+**Quick counts (current registry):** ~84 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 2 terminal tools (`terminal`, `process`), 9 desktop-GUI tools (`read_terminal`, `close_terminal`, `open_preview`, `close_preview`, `read_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `tour` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 12 kanban tools (registered when the kanban dispatcher spawns the agent), 3 project tools (desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo`, `computer_use`, `x_search`).
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp__<server>__` (e.g., `mcp__github__create_issue` for the `github` MCP server). See [MCP Integration](/user-guide/features/mcp) for configuration.
@@ -43,6 +43,18 @@ These two tools live in the `browser` toolset but only register when a Chrome De
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `clarify` | Ask the user a question when you need clarification, feedback, or a decision before proceeding. Supports three modes: 1. **Single-select multiple choice** — up to 4 choices; the user picks one or types their own answer via a 5th 'Other' option. 2. **Multi-select multiple choice** — `multi_select=true` renders checkboxes and returns a list of selected choices. 3. **Open-ended** — no choices; the user types a free-form response. Choices are ordered best-first, so the first one is labelled `(Recommended)` on every surface and is the default highlight; the label is presentation only and is stripped from the answer the agent reads. On the classic CLI multi-select uses Space-to-toggle checkboxes; on messaging platforms without native checkbox UIs the user replies with comma/space-separated numbers (e.g. "1, 3") or the option text. | — |
+
+### Asking multiple questions at once
+
+The `clarify` tool also accepts a `questions` array (2–5 independent questions, each with its own `choices` and `multi_select`) so the agent can batch several clarification needs into a single prompt instead of asking sequentially. The result is a `responses` array in the same order, with each question's `id` (when supplied) echoed back.
+
+Per-surface behavior:
+
+- **Desktop** shows every question on one card. Picks and typed answers stage locally, and one **Confirm and continue** button (enabled once every question has an answer) submits the whole batch. Staged answers stay editable until that confirm. Skip cancels the whole batch.
+- **TUI and CLI** show a compact status list (`✓` answered / `▸` active / `·` pending) with only the active question's choices expanded. Enter locks the active answer and jumps to the next unanswered question; Tab moves between questions to answer in any order; Esc cancels the batch.
+- **Messaging platforms** (Telegram, Discord, …) fall back to asking the questions one at a time through the existing single-question prompt. If the user stops responding, the remaining questions are not sent.
+
+If the prompt times out part-way, answers the user already locked are kept: the tool result carries them plus `"timed_out": true`, with the unanswered entries left blank, so the agent can distinguish a deliberate skip from an absent user.
 
 ## `code_execution` toolset
 
@@ -185,10 +197,58 @@ messaging, and cron sessions.
 | `read_terminal` | Read what's currently shown in the in-app terminal pane of the Hermes desktop GUI (the embedded shell beside this chat). | — |
 | `close_terminal` | Close the read-only terminal tab for a background process in the Hermes desktop GUI. Does NOT kill the process — only drops the tab/view; use process(action='kill') to stop it. | — |
 | `open_preview` | Open a web URL, localhost dev-server URL, or file path in the preview pane beside the chat in the Hermes desktop app. | — |
+| `close_preview` | Close the preview pane beside the chat, or one tab inside it. Omit `url` to close the whole pane; pass a URL or file path to close that tab. | — |
 | `read_preview` | Read what's currently shown in the preview pane of the Hermes desktop GUI — the in-app Browser's page text (URL + title + rendered text, pageable with `start`/`count`), or a file/artifact tab's identity. | — |
 | `read_window_below` | Identify the OS window directly underneath the Hermes desktop window — app name, title, bounds (metadata only, never pixels). On macOS, other apps' titles appear only when Screen Recording is already granted; the tool never prompts for it. | — |
 | `focus_pane` | Reveal and focus a pane in the Hermes desktop app (chat, files, terminal, review, sessions). | — |
 | `react_to_message` | React to a message with a single emoji, iMessage-tapback style. Opt-in via Settings → Appearance (`display.message_reactions`). | — |
+| `tour` | Give a live guided tour: dim the screen, highlight an element, and attach a narrated popover (driver.js). Works on the Hermes app's own UI and on any page open in the preview pane; `targets` discovers what's on screen, `show` narrates step-by-step, `start` hands the user Next/Prev controls. | — |
+
+### Tours
+
+The `tour` tool discovers its own targets — call `action='targets'` and it returns every addressable element on screen with a selector, a label, and a `stable` flag. Stable selectors key off identity (`data-tour`, `id`, `data-testid`, `aria-label`) and survive a re-render; positional `nth-child` paths don't, so stable ones sort first and should be preferred.
+
+To give an element a durable handle of your own, mark it up:
+
+```html
+<div data-tour="composer">…</div>
+```
+
+Handles are applied at the **primitive**, not the call site, so one edit names every instance. The ones that already exist:
+
+| Handle | What it names |
+|---|---|
+| `overlay-nav` | the left nav of any route overlay (settings, cron, profiles, agents) |
+| `nav-<id>` | one row in that nav — `nav-models`, `nav-appearance`, … |
+| `field-<schemaKey>` | one settings row, by its config key — `field-model`, `field-provider`, … |
+| `page-tabs` | the filter tabs on any `PageSearchShell` page (artifacts, skills, …) |
+| `artifact-card` | an artifact card in the grid |
+
+When adding a surface, tag its shared primitive the same way rather than tagging screens one by one — that keeps the tour vocabulary small and stops selectors from rotting.
+
+The same engine backs curated (non-agent) tours in the desktop app, so a feature can ship its own walkthrough:
+
+```ts
+import { startTour, showTourStep, stopTour } from '@/lib/tour'
+
+startTour([
+  { selector: '[data-tour="composer"]', title: 'Composer', text: 'Type here.' },
+  { selector: '[data-tour="files"]', title: 'Files', text: 'Browse your project.' }
+])
+```
+
+A step can also move the app to where its target lives, and the tour puts things back when it ends:
+
+```ts
+startTour([
+  { navigate: '/artifacts', selector: '[data-tour="page-tabs"]', title: 'Filters', text: '…' },
+  { pane: 'sessions', selector: '[data-slot="sidebar"]', title: 'Sessions', text: '…' }
+])
+```
+
+`navigate` takes a route path and `pane` a desktop pane name. Both run as the step is entered, targets that mount late are waited for, and closing the tour — by any route, including Esc — returns to wherever it started.
+
+Pass `'preview'` as the second argument to run against the page in the preview pane instead of the app.
 
 ## `todo` toolset
 

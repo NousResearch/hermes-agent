@@ -61,15 +61,19 @@ function load(turnScript) {
             running: false
           }
         }
-        if (method === 'image.attach_bytes') {
+        if (method === 'image.attach_bytes' || method === 'pdf.attach' || method === 'file.attach') {
           const session = resolveSession(null, params.session_id)
           attaches.push({
+            method,
             profile: session ? session.profile : null,
             runtime: params.session_id,
-            filename: params.filename,
-            data: params.content_base64,
+            filename: params.filename || params.name,
+            data: params.content_base64 || params.data_url,
             order: calls.length // how many prompt.submits happened before this attach
           })
+          if (method === 'file.attach') {
+            return { attached: true, ref_text: `@file:attachments/${params.name || 'attachment'}` }
+          }
           return { attached: true }
         }
         if (method === 'prompt.submit') {
@@ -205,4 +209,52 @@ test('an invalid attachment is skipped and the member turn still runs text-only'
 
   assert.equal(gc.attaches.length, 0) // invalid image skipped, no attach attempted
   assert.equal(gc.calls.length, 2) // both turns still ran
+})
+
+const PDF = { name: 'spec.pdf', data: 'data:application/pdf;base64,JVBERi0=', kind: 'pdf' }
+const DOC = { name: 'notes.txt', data: 'data:text/plain;base64,aGVsbG8=', kind: 'file' }
+
+test('PDFs route through pdf.attach and files through file.attach, per member', async () => {
+  const gc = load(() => '(pass)')
+
+  gc.sendToGroupChat('Mixed', MEMBERS, 'review these', null, [IMG, PDF, DOC])
+  await drain(gc, 'Mixed')
+
+  // 3 attachments × 2 members, each via its own RPC.
+  assert.equal(gc.attaches.length, 6)
+  const byMethod = {}
+  for (const a of gc.attaches) {
+    byMethod[a.method] = (byMethod[a.method] || 0) + 1
+  }
+  assert.deepEqual(byMethod, { 'image.attach_bytes': 2, 'pdf.attach': 2, 'file.attach': 2 })
+
+  const pdfAttach = gc.attaches.find(a => a.method === 'pdf.attach')
+  assert.equal(pdfAttach.filename, 'spec.pdf')
+  assert.equal(pdfAttach.data, PDF.data)
+})
+
+test('file.attach ref_text is appended to the member turn prompt', async () => {
+  const gc = load(() => '(pass)')
+
+  gc.sendToGroupChat('Refs', MEMBERS, 'read the notes', null, [DOC])
+  await drain(gc, 'Refs')
+
+  assert.equal(gc.calls.length, 2)
+  for (const call of gc.calls) {
+    assert.ok(call.prompt.includes('Attached files staged in your session workspace:'), 'prompt carries the staging note')
+    assert.ok(call.prompt.includes('notes.txt → @file:attachments/notes.txt'), 'prompt carries the @file: ref')
+  }
+})
+
+test('formatGroupChatLine labels PDFs and files distinctly', () => {
+  const gc = load(() => '(pass)')
+
+  const line = gc.formatGroupChatLine(
+    { from: { kind: 'user', name: 'You' }, text: 'here', images: [PDF, DOC, IMG] },
+    'research'
+  )
+  assert.equal(
+    line,
+    'You (user): here [attached PDF: spec.pdf] [attached file: notes.txt] [attached image: screenshot.png]'
+  )
 })

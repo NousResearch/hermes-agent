@@ -2044,6 +2044,57 @@ class TestTransientTransportRetry:
         assert primary.chat.completions.create.call_count == 1
         assert fb_client.chat.completions.create.call_count == 1
 
+    @pytest.mark.asyncio
+    async def test_vision_can_skip_same_provider_retry_on_timeout(self):
+        """Profile config can fast-fail a timed-out vision request to fallback."""
+        class _Timeout(Exception):
+            pass
+        _Timeout.__name__ = "APITimeoutError"
+
+        primary = MagicMock()
+        primary.base_url = "https://openrouter.ai/api/v1"
+        primary.chat.completions.create = AsyncMock(
+            side_effect=_Timeout("Request timed out.")
+        )
+        fallback = MagicMock()
+        async_fallback = MagicMock()
+        expected = {"fallback": True}
+        config = {
+            "auxiliary": {
+                "vision": {"retry_on_timeout": False},
+            }
+        }
+
+        p1, p2, p3 = self._patches(primary)
+        with (
+            p1, p2, p3,
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                return_value=("openrouter", primary, "some-model"),
+            ),
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(fallback, "fb-model", "configured-fallback"),
+            ),
+            patch(
+                "agent.auxiliary_client._to_async_client",
+                return_value=(async_fallback, "fb-model"),
+            ),
+            patch(
+                "agent.auxiliary_client._call_fallback_candidate_async",
+                new=AsyncMock(return_value=expected),
+            ),
+        ):
+            result = await async_call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "inspect image"}],
+            )
+
+        assert result == expected
+        assert primary.chat.completions.create.call_count == 1
+
     def test_timeout_forwards_failed_model_to_configured_chain(self):
         """A timeout is model-specific, so call_llm must forward the failed
         model to the configured chain (failed_model=<model>, not None). This

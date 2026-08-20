@@ -10303,6 +10303,23 @@ async def _async_call_llm_impl(
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
+            # Vision calls often fan out across several rendered PDF pages.
+            # Retrying a full-budget timeout on the same provider multiplies
+            # latency without improving the result; allow profile config to
+            # skip that duplicate attempt and go straight to fallback.
+            if task == "vision" and _is_timeout_error(transient_err):
+                try:
+                    from hermes_cli.config import cfg_get, load_config
+                    _vision_cfg = cfg_get(load_config(), "auxiliary", "vision", default={})
+                    if isinstance(_vision_cfg, dict) and _vision_cfg.get("retry_on_timeout") is False:
+                        logger.info(
+                            "Auxiliary vision: timeout on configured fast-fail path; "
+                            "skipping same-provider retry: %s",
+                            transient_err,
+                        )
+                        raise
+                except ImportError:
+                    pass
             # See call_llm(): compression is on the critical preflight path,
             # so skip the same-provider retry on a full-budget timeout and
             # fall straight through to fallback (issue #54465).

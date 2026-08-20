@@ -1747,45 +1747,29 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        # Curated picker first: platforms.feishu.extra.model_picker lists the
-        # admin's chosen (label, model, provider) entries — when configured it
-        # replaces the full provider catalog so the dropdown stays short and
-        # relevant (e.g. 3 curated models instead of every GPT variant).
-        curated = (self.config.extra or {}).get("model_picker", {})
-        use_curated = bool((metadata or {}).get("curated_model_picker"))
+        # Flatten providers into (label, model_id, provider_slug), deduped.
         model_entries: List[tuple] = []
-        if use_curated and isinstance(curated, dict) and curated.get("enabled") and curated.get("models"):
-            for entry in curated["models"]:
-                if not isinstance(entry, dict):
+        seen: set = set()
+        for provider in providers or []:
+            if not isinstance(provider, dict):
+                continue
+            slug = str(provider.get("slug") or "")
+            name = str(provider.get("name") or slug or "unknown")
+            for model in provider.get("models", []) or []:
+                if isinstance(model, dict):
+                    mid = str(model.get("model") or model.get("id") or "").strip()
+                else:
+                    mid = str(model or "").strip()
+                if not mid:
                     continue
-                mid = str(entry.get("model") or "").strip()
-                slug = str(entry.get("provider") or "").strip()
-                label = str(entry.get("label") or mid).strip()
-                if mid and slug:
-                    model_entries.append((label or mid, mid, slug))
-        if not model_entries:
-            # Flatten providers into (label, model_id, provider_slug), deduped.
-            seen: set = set()
-            for provider in providers or []:
-                if not isinstance(provider, dict):
+                key = (slug, mid)
+                if key in seen:
                     continue
-                slug = str(provider.get("slug") or "")
-                name = str(provider.get("name") or slug or "unknown")
-                for model in provider.get("models", []) or []:
-                    if isinstance(model, dict):
-                        mid = str(model.get("model") or model.get("id") or "").strip()
-                    else:
-                        mid = str(model or "").strip()
-                    if not mid:
-                        continue
-                    key = (slug, mid)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    # Show the FULL model id (including any "cc/" or "ais-prod/"
-                    # prefix) so aliased models are visually distinguishable
-                    # instead of collapsed to their last path segment.
-                    model_entries.append((f"{name} · {mid}", mid, slug))
+                seen.add(key)
+                # Show the FULL model id (including any "cc/" or "ais-prod/"
+                # prefix) so aliased models are visually distinguishable
+                # instead of collapsed to their last path segment.
+                model_entries.append((f"{name} · {mid}", mid, slug))
 
         if not model_entries:
             return SendResult(success=False, error="No models available")

@@ -784,8 +784,8 @@ class TestFeishuModelPicker:
         card = json.loads(mock_send.call_args[1]["payload"])
         options = card["elements"][1]["actions"][0]["options"]
         labels = [o["text"]["content"] for o in options]
-        # Curated three only — no full GPT catalog.
-        assert labels == ["GPT-5.6 Terra", "DeepSeek V4 Pro 0813", "GLM 5.3"]
+        assert len(labels) == 5
+        assert "cc-switch gpt · gpt-5.6" in labels
 
     @pytest.mark.asyncio
     async def test_send_model_picker_sends_dropdown_and_records_state(self):

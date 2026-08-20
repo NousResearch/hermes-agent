@@ -1154,6 +1154,12 @@ def test_create_in_worker_inherits_parent_session_id(worker_env, monkeypatch):
         conn.close()
 
     monkeypatch.setenv("HERMES_SESSION_ID", ephemeral_worker_session)
+    from tools import async_delegation
+    monkeypatch.setattr(
+        async_delegation,
+        "_current_origin_session_id",
+        lambda: "api-origin-session-999",
+    )
 
     from tools import kanban_tools as kt
     out = kt._handle_create({

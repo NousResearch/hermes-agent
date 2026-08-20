@@ -12672,10 +12672,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """
         from hermes_cli.colors import Colors as _Colors
         from tools.approval import (
+            _YOLO_MODE_FROZEN,
             disable_session_yolo,
             enable_session_yolo,
             is_session_yolo_enabled,
         )
+
+        # Process-level YOLO (--yolo flag / HERMES_YOLO_MODE at startup) is
+        # frozen into tools.approval at import time and cannot be disabled by
+        # the session toggle. Before this guard, /yolo printed "YOLO mode OFF —
+        # dangerous commands will require approval" while every command kept
+        # auto-approving (the frozen flag short-circuits the approval gate
+        # ahead of the session check) — a false safety claim. Say the truth
+        # instead of toggling a bypass that has no effect.
+        if _YOLO_MODE_FROZEN:
+            _cprint(
+                f"  ⚡ YOLO is {_Colors.BOLD}{_Colors.RED}locked ON{_Colors.RESET}"
+                " for this process (started with --yolo / HERMES_YOLO_MODE)."
+                " /yolo cannot disable it — restart without the flag to"
+                " re-enable approvals."
+            )
+            return
 
         session_key = self.session_id or "default"
         # ``getattr`` guard: tests exercise this method unbound against a

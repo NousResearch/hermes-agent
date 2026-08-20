@@ -85,6 +85,31 @@ class TestV1Regression:
 
 
 class TestV2Parsing:
+    def test_orchestrator_runtime_fields_parse(self, hermes_home):
+        plugin_dir = _write_plugin(
+            hermes_home / "plugins",
+            "dispatcher",
+            manifest_extra={
+                "manifest_version": 2,
+                "type": "orchestrator",
+                "auto_dispatches": True,
+                "spawns_workers": True,
+            },
+        )
+        (plugin_dir / "SKILL.md").write_text(
+            "# Dispatcher operations\n",
+            encoding="utf-8",
+        )
+        _enable(hermes_home, ["dispatcher"])
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        manifest = mgr._plugins["dispatcher"].manifest
+        assert manifest.plugin_type == "orchestrator"
+        assert manifest.auto_dispatches is True
+        assert manifest.spawns_workers is True
+
     def test_v2_fields_parse(self, hermes_home):
         _write_plugin(
             hermes_home / "plugins", "modern",

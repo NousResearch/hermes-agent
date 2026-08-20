@@ -9980,18 +9980,38 @@ def _collect_kanban_notifications(session: dict) -> list:
 
     ``kanban_create`` auto-subscribes TUI/desktop sessions with
     ``platform="tui"`` and ``chat_id=HERMES_SESSION_KEY`` (see
-    tools/kanban_tools.py ``_maybe_auto_subscribe``). The gateway notifier
-    can't deliver those — there is no "tui" messaging adapter — so this
-    poller is the delivery path for them (issue #59890). Uses the same
-    atomic cursor-claim (``claim_unseen_events_for_sub``) as the gateway
-    notifier, so a subscription is delivered exactly once even if a gateway
-    and a TUI poll the same board DB.
+    tools/kanban_tools.py ``_maybe_auto_subscribe``). When the session
+    lacks ``HERMES_SESSION_KEY`` but has a persistent desktop/tui source,
+    the subscription is written with ``chat_id=HERMES_SESSION_ID`` instead.
+    This poller matches both, so a completion notification reaches the
+    creating session even when the subscription was keyed on session_id.
+
+    The gateway notifier can't deliver those -- there is no "tui" messaging
+    adapter -- so this poller is the delivery path for them (issue #59890).
+    Uses the same atomic cursor-claim (``claim_unseen_events_for_sub``) as
+    the gateway notifier, so a subscription is delivered exactly once even
+    if a gateway and a TUI poll the same board DB.
+
+    Desktop topology: the desktop app launches ``hermes serve`` which
+    starts the same web_server that the dashboard uses. Every WS session
+    goes through ``_init_session`` (line ~7017), which calls
+    ``_start_notification_poller`` -- so the poller IS running in the
+    desktop topology. There is no "headless backend without poller" case.
 
     Returns the list of formatted notification texts (may be empty).
     """
     session_key = str(session.get("session_key") or "")
     if not session_key or session.get("_finalized"):
         return []
+    # The agent's durable session_id may differ from session_key (e.g. after
+    # compression or when the subscription was created via the session_id
+    # fallback path). Match subscriptions keyed on either identity.
+    agent = session.get("agent")
+    session_id = str(getattr(agent, "session_id", "") or "")
+    # Identities this poller will claim subscriptions for.
+    chat_identities: set[str] = {session_key}
+    if session_id and session_id != session_key:
+        chat_identities.add(session_id)
     try:
         from hermes_cli import kanban_db as _kb
     except Exception:
@@ -10024,17 +10044,26 @@ def _collect_kanban_notifications(session: dict) -> list:
         # A poller runs per live TUI/Desktop session. Avoid opening this board
         # writable unless it has a subscription owned by this exact session;
         # subscriptions for gateways or other sessions are not actionable here.
-        try:
-            if _kb.count_notify_subs(
-                board=slug,
-                platform="tui",
-                chat_id=session_key,
-            ) == 0:
+        # Check all identities this session owns.
+        has_sub = False
+        for cid in chat_identities:
+            try:
+                if _kb.count_notify_subs(
+                    board=slug,
+                    platform="tui",
+                    chat_id=cid,
+                ) > 0:
+                    has_sub = True
+                    break
+            except Exception:
+                # Preserve delivery if the read-only probe cannot inspect a
+                # locked, corrupt, or otherwise unusual database. Continue
+                # to the next identity instead of breaking -- a persistently
+                # failing probe for one identity must not skip probing the
+                # remaining identities (which may succeed).
                 continue
-        except Exception:
-            # Preserve delivery if the read-only probe cannot inspect a
-            # locked, corrupt, or otherwise unusual database.
-            pass
+        if not has_sub:
+            continue
         try:
             conn = _kb.connect(board=slug)
         except Exception:
@@ -10047,7 +10076,7 @@ def _collect_kanban_notifications(session: dict) -> list:
             for sub in subs:
                 if (sub.get("platform") or "").lower() != "tui":
                     continue
-                if sub.get("chat_id") != session_key:
+                if sub.get("chat_id") not in chat_identities:
                     continue
                 _old, _new, events = _kb.claim_unseen_events_for_sub(
                     conn,

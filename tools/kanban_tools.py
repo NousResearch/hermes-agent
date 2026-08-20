@@ -48,6 +48,14 @@ logger = logging.getLogger(__name__)
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
 
+# Session sources that have a persistent notification channel (the TUI
+# notification poller in tui_gateway/server.py). Used by
+# _maybe_auto_subscribe to decide whether to fall back to
+# HERMES_SESSION_ID when HERMES_SESSION_KEY is absent. New persistent
+# sources must be registered here -- an unknown source is logged and
+# skipped to avoid silently auto-subscribing ephemeral sessions.
+_PERSISTENT_SESSION_SOURCES = frozenset({"desktop", "tui"})
+
 
 def _profile_has_kanban_toolset() -> bool:
     # Uses load_config() which has mtime-based caching, so this adds
@@ -1541,21 +1549,68 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             # as a "tui" subscription so the TUI notification poller
             # (tui_gateway/server.py) can pick it up.
             #
-            # HERMES_SESSION_ID is intentionally NOT a fallback here:
+            # HERMES_SESSION_ID is intentionally NOT a blanket fallback:
             # it is set by ACP / the agent subprocess for telemetry
             # regardless of whether the parent is a TUI or a CLI, so
             # treating it as a notification target would auto-subscribe
             # every CLI invocation, which is exactly the over-eager
-            # behaviour that got #19718 reverted upstream. The TUI
-            # poller keys on HERMES_SESSION_KEY.
+            # behaviour that got #19718 reverted upstream.
+            #
+            # However, the desktop app's agent subprocess is NOT a CLI
+            # invocation. When HERMES_SESSION_KEY is absent but
+            # HERMES_SESSION_SOURCE identifies the caller as a persistent
+            # desktop or TUI session, fall back to HERMES_SESSION_ID as
+            # the subscription chat_id. The TUI notification poller matches
+            # by both session_key and session_id, so the subscription is
+            # still deliverable.
             session_key = (
                 get_session_env("HERMES_SESSION_KEY", "")
                 or os.environ.get("HERMES_SESSION_KEY", "")
             )
-            if not session_key:
-                return False  # CLI / cron / test — no persistent channel
-            platform = "tui"
-            chat_id = session_key
+            if session_key:
+                platform = "tui"
+                chat_id = session_key
+            else:
+                session_source = (
+                    get_session_env("HERMES_SESSION_SOURCE", "")
+                    or os.environ.get("HERMES_SESSION_SOURCE", "")
+                )
+                # Allow-set: only persistent desktop/TUI sessions have a
+                # live notification channel (the TUI poller). CLI, cron,
+                # and test sources are ephemeral -- auto-subscribing them
+                # is the over-eager behaviour that got #19718 reverted.
+                # New sources that need auto-subscribe must be added here.
+                if session_source not in _PERSISTENT_SESSION_SOURCES:
+                    if session_source:
+                        logger.info(
+                            "kanban auto-subscribe: SESSION_SOURCE=%r is not in "
+                            "the persistent-source allow-set %r; skipping",
+                            session_source,
+                            sorted(_PERSISTENT_SESSION_SOURCES),
+                        )
+                    return False
+                # HERMES_SESSION_ID here equals agent.session_id on the
+                # poller's session dict at delivery time. The invariant:
+                #   1. AIAgent.__init__ sets agent.session_id (from arg or
+                #      generated), then calls set_current_session_id() which
+                #      writes the same value to both the HERMES_SESSION_ID
+                #      ContextVar and os.environ["HERMES_SESSION_ID"].
+                #   2. The TUI gateway's subprocess-env bridge reads
+                #      agent.session_id and passes it to set_session_vars(),
+                #      so the agent subprocess inherits the same id.
+                #   3. _collect_kanban_notifications reads
+                #      getattr(agent, "session_id", "") -- the same object.
+                # So the chat_id written here is the same string the poller
+                # compares against. If either side changes its id derivation,
+                # this invariant breaks and notifications are silently lost.
+                session_id = (
+                    get_session_env("HERMES_SESSION_ID", "")
+                    or os.environ.get("HERMES_SESSION_ID", "")
+                )
+                if not session_id:
+                    return False  # source says persistent but no session id
+                platform = "tui"
+                chat_id = session_id
         is_gateway_session = platform != "tui"
         chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "") or None
         delivery_mode = "notify+wake" if is_gateway_session else None

@@ -34,12 +34,13 @@ DEFAULT = {
     "uv_lock": True,
     "npm_lock": True,
     "installer": True,
+    "rust": True,
     "mcp_catalog": False,
     "ci_review": True,
 }
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, installer=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None, nix=None, docker=None) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, installer=False, rust=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None, nix=None, docker=None) -> dict[str, bool]:
     # python_prod tracks python except for tests-only diffs; default it to
     # python so the majority of cases don't need to spell it out.
     #
@@ -61,6 +62,7 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
         "uv_lock": uv_lock,
         "npm_lock": npm_lock,
         "installer": installer,
+        "rust": rust,
         "mcp_catalog": mcp_catalog,
         "ci_review": ci_review,
     }
@@ -132,6 +134,26 @@ CASES = {
         _lanes(python=True, installer=True),
     ),
     "python source alone → no installer lane": (["run_agent.py"], _lanes(python=True, scan=True)),
+    # `.rs` lives under apps/, so it matches `frontend` too. That lane builds
+    # TypeScript and cannot notice a Rust error — before `rust` existed it was
+    # the ONLY lane a Rust change ran, and the crate's tests never executed.
+    "rust source → rust": (
+        ["apps/bootstrap-installer/src-tauri/src/powershell.rs"],
+        _lanes(frontend=True, rust=True),
+    ),
+    "cargo lockfile → rust": (
+        ["apps/bootstrap-installer/src-tauri/Cargo.lock"],
+        _lanes(frontend=True, rust=True),
+    ),
+    # Non-.rs files in the crate still change what cargo builds.
+    "tauri config → rust": (
+        ["apps/bootstrap-installer/src-tauri/tauri.conf.json"],
+        _lanes(frontend=True, rust=True),
+    ),
+    "ts source alone → no rust lane": (
+        ["apps/bootstrap-installer/src/main.tsx"],
+        _lanes(frontend=True),
+    ),
     # Unknown top-level file keeps Python on rather than risk a silent skip.
     "unknown toplevel → python": (["Makefile"], _lanes(python=True)),
     "mixed docs+python → python": (["README.md", "agent/x.py"], _lanes(python=True, scan=True)),

@@ -2950,6 +2950,11 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # recognize stubs after reasoning fields are stripped.
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
 
+        # Same safety net as the main loop: reconcile tool->user adjacency for
+        # the active destination (Mistral, #20154). Runs after the drop pass,
+        # which can merge users and expose a new adjacency.
+        agent._reapply_tool_role_policy_for_provider(api_messages)
+
         # Strip all remaining underscore-prefixed scaffolding keys before the
         # wire. The summary path calls chat.completions.create() directly,
         # bypassing the transport's universal underscore-key sweeper.

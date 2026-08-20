@@ -3987,6 +3987,47 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     )
 
 
+def reapply_tool_role_policy_for_provider(agent, api_messages: list) -> int:
+    """Reconcile ``tool`` → ``user`` adjacency against the *current* provider.
+
+    Mistral answers HTTP 400 "Unexpected role 'user' after role 'tool'" when a
+    user turn directly follows a tool result (#20154), which strands every
+    subsequent request in the session once the shape is in history. The shape
+    is legitimate — the user redirected before the model got its continuation
+    turn — so ``repair_message_sequence`` keeps it in the stored transcript and
+    the repair happens here instead, on the per-call copy.
+
+    Like ``reapply_reasoning_echo_for_provider``, this runs at the top of every
+    retry attempt and reconciles in BOTH directions: ``api_messages`` is built
+    once for the primary provider and a mid-conversation fallback can switch
+    destinations either way. Falling back Mistral → OpenAI must therefore
+    remove the bridge again, or the lenient provider receives a synthetic turn
+    it never needed (and a moved prompt prefix).
+
+    Returns the number of bridging assistant turns inserted or removed.
+    """
+    from agent.message_sanitization import (
+        apply_tool_role_policy,
+        requires_assistant_after_tool,
+    )
+
+    strict = requires_assistant_after_tool(
+        agent.provider,
+        agent.model,
+        getattr(agent, "_base_url_lower", agent.base_url),
+    )
+    changed = apply_tool_role_policy(api_messages, strict)
+    if changed:
+        logger.debug(
+            "Reconciled %d tool->user bridge turn(s) for the active "
+            "destination (strict=%s, model=%s)",
+            changed,
+            strict,
+            agent.model,
+        )
+    return changed
+
+
 def _iter_httpx_pool_objects(http_client: Any):
     """Yield httpcore pool objects reachable from an httpx client.
 

@@ -2479,7 +2479,16 @@ class TestMultiTargetDeliveryContinuesOnFailure:
             fail_future.result.side_effect = ConnectionError("SMTP connection refused")
             ok_future = MagicMock()
             ok_future.result.return_value = {"success": True}
-            mock_pool.submit.side_effect = [fail_future, ok_future]
+            submitted = iter((fail_future, ok_future))
+
+            def submit_without_running(_runner, coro):
+                # The mocked executor never owns/runs the coroutine. Close it
+                # here, exactly as a rejected real submission must, so the
+                # regression test cannot hide an unawaited-coroutine warning.
+                coro.close()
+                return next(submitted)
+
+            mock_pool.submit.side_effect = submit_without_running
 
             result = _deliver_result(job, "Report content")
 
@@ -2508,7 +2517,11 @@ class TestMultiTargetDeliveryContinuesOnFailure:
 
             fail_future = MagicMock()
             fail_future.result.side_effect = ConnectionError("connection refused")
-            mock_pool.submit.return_value = fail_future
+            def submit_without_running(_runner, coro):
+                coro.close()
+                return fail_future
+
+            mock_pool.submit.side_effect = submit_without_running
 
             result = _deliver_result(job, "Report content")
 

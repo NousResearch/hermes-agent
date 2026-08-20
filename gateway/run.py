@@ -13038,6 +13038,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self.delivery_router.adapters = self.adapters
         self._wire_teams_pipeline_runtime()
 
+        # Wire peer adapters into API server for /api/weixin/send proxy
+        if Platform.API_SERVER in self.adapters:
+            self.adapters[Platform.API_SERVER]._peer_adapters = self.adapters
+            import weakref
+            self.adapters[Platform.API_SERVER]._runner_ref = weakref.ref(self)
+
         self._running = True
         self._install_plugin_message_injector()
         self._update_runtime_status("running")

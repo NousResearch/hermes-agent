@@ -242,6 +242,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             extra.get("health_path", "/health")
         )
 
+        # Optional stale message filter
+        filter_stale = extra.get("filter_stale_messages_seconds")
+        self.filter_stale_messages_seconds: Optional[int] = (
+            int(filter_stale) if filter_stale is not None else None
+        )
+
         # Graph API
         self._api_version: str = str(extra.get("api_version", DEFAULT_API_VERSION))
 
@@ -1622,6 +1628,20 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             wamid,
                         )
                         continue
+                    max_age_seconds = getattr(self, "filter_stale_messages_seconds", None)
+                    if max_age_seconds is not None and max_age_seconds > 0:
+                        raw_ts = raw_message.get("timestamp")
+                        if raw_ts:
+                            try:
+                                age = time.time() - int(raw_ts)
+                                if age > max_age_seconds:
+                                    logger.info(
+                                        "[whatsapp_cloud] skipping stale message %s (%d s old > %d s max)",
+                                        wamid, int(age), max_age_seconds,
+                                    )
+                                    continue
+                            except (ValueError, TypeError):
+                                pass
                     try:
                         event = await self._build_message_event_from_cloud(
                             raw_message, contacts_by_waid, metadata

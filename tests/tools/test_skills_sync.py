@@ -1052,6 +1052,61 @@ class TestRestoreOfficialOptionalSkill:
         assert result["ok"] is True
         assert (existing / "SKILL.md").read_text() == "# Verified\n"
 
+    def test_restore_reports_backup_when_publish_cleanup_blocks_rollback(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_guard as guard
+        import tools.skills_hub as hub
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Official\n")
+        skills_dir = tmp_path / "skills"
+        existing = skills_dir / "devops" / "demo"
+        existing.mkdir(parents=True)
+        (existing / "SKILL.md").write_text("# Existing modified\n")
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(
+            ss,
+            "_optional_root_identity",
+            lambda _path: "git:NousResearch/hermes-agent@" + "a" * 40,
+        )
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda *_args: {"SKILL.md": b"# Verified\n"},
+        )
+        original_hash = guard.full_content_hash
+
+        def _mismatch_after_publish(path):
+            path = Path(path)
+            if path == existing and (path / "SKILL.md").read_text() == "# Verified\n":
+                return "post-publish-mismatch"
+            return original_hash(path)
+
+        monkeypatch.setattr(guard, "full_content_hash", _mismatch_after_publish)
+        monkeypatch.setattr(
+            hub,
+            "_rmtree_bound",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("sharing violation")
+            ),
+        )
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is False
+        assert "rollback incomplete" in result["message"].lower()
+        assert result["backed_up"] == ["devops/demo"]
+        backup_dir = Path(result["backup_dir"])
+        assert (backup_dir / "devops" / "demo" / "SKILL.md").read_text() == (
+            "# Existing modified\n"
+        )
+
     def test_restore_rejects_unverified_optional_override(self, monkeypatch, tmp_path):
         import tools.skills_sync as ss
 

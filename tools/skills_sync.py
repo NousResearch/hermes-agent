@@ -689,17 +689,39 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                                 raise
                         restored.append(folder_name)
             except (OSError, TimeoutError, ValueError):
-                for original, backup, _rel in reversed(moved):
-                    if backup.exists() and not original.exists():
+                rollback_failures: List[str] = []
+                available_backups: List[str] = []
+                for original, backup, rel in reversed(moved):
+                    if not backup.exists():
+                        continue
+                    if original.exists():
+                        rollback_failures.append(rel)
+                        available_backups.append(rel)
+                        continue
+                    try:
                         _restore_from_backup(backup, original)
+                    except (OSError, ValueError):
+                        rollback_failures.append(rel)
+                        available_backups.append(rel)
                 if stage_context is not None:
                     stage_context.cleanup()
+                reported_backups = list(
+                    dict.fromkeys([*backed_up, *available_backups])
+                )
+                if rollback_failures:
+                    message = (
+                        f"Official restore rollback incomplete for: {folder_name}; "
+                        "the previous version remains in the backup directory."
+                    )
+                else:
+                    message = f"Official restore rolled back for: {folder_name}"
                 return {
                     "ok": False,
-                    "message": f"Official restore rolled back for: {folder_name}",
+                    "message": message,
                     "restored": restored,
                     "backfilled": [],
-                    "backed_up": backed_up,
+                    "backed_up": reported_backups,
+                    "backup_dir": str(backup_root) if reported_backups else "",
                 }
             else:
                 backed_up.extend(rel for _original, _backup, rel in moved)

@@ -11,8 +11,10 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  normalizeAdvertisedAuthProviders,
   oauthGuardMayHardFail,
   oauthSessionIsLive,
+  oauthTicketFailureAuthMessage,
   resolveGatedDownloadAuth,
   resolveJsonBody,
   resolveOauthRestAuth,
@@ -130,6 +132,28 @@ test('oauthGuardMayHardFail keeps the strict guard when the list is unusable', (
   assert.equal(oauthGuardMayHardFail(undefined), true)
   assert.equal(oauthGuardMayHardFail('nonsense' as any), true)
   assert.equal(oauthGuardMayHardFail([{ supportsPassword: true }]), true)
+})
+
+
+test('oauthGuardMayHardFail treats status-shaped string basic as password-only', () => {
+  assert.equal(oauthGuardMayHardFail(['basic'] as any), false)
+  assert.equal(oauthGuardMayHardFail([' basic '] as any), false)
+})
+
+test('oauthGuardMayHardFail keeps the strict guard for string oauth providers', () => {
+  assert.equal(oauthGuardMayHardFail(['nous'] as any), true)
+  assert.equal(oauthGuardMayHardFail(['nous', 'basic'] as any), true)
+})
+
+test('normalizeAdvertisedAuthProviders maps snake_case supports_password', () => {
+  assert.deepEqual(normalizeAdvertisedAuthProviders([{ name: 'basic', supports_password: true }]), [
+    { name: 'basic', supportsPassword: true }
+  ])
+})
+
+test('oauthTicketFailureAuthMessage is expired only with a decryptable native session', () => {
+  assert.match(oauthTicketFailureAuthMessage(true), /session has expired/)
+  assert.match(oauthTicketFailureAuthMessage(false), /not signed in/)
 })
 
 // --- 6. gated download auth (guards the Files-panel 401 on cookieless native) ---

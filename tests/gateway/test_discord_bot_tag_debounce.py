@@ -59,6 +59,14 @@ def test_disabling_text_batching_disables_bot_tag_debounce():
     ) is False
 
 
+def test_uninitialized_debounce_state_is_treated_as_disabled():
+    adapter = object.__new__(DiscordAdapter)
+
+    assert adapter._is_bot_tag_debounce_continuation(
+        _message(author_id=1, channel_id=10)
+    ) is False
+
+
 def test_mentions_mode_admits_unmentioned_chunk_during_debounce():
     adapter = _adapter()
     own_user = SimpleNamespace(id=99)

@@ -6732,14 +6732,17 @@ class DiscordAdapter(BasePlatformAdapter):
     def _is_bot_tag_debounce_continuation(self, message: Any) -> bool:
         """Return whether an unmentioned chunk belongs to a recent bot tag."""
         if (
-            self._text_batch_delay_seconds <= 0
+            getattr(self, "_text_batch_delay_seconds", 0) <= 0
             or not getattr(getattr(message, "author", None), "bot", False)
         ):
             return False
         key = self._bot_tag_debounce_key(message)
-        deadline = self._bot_tag_debounce_until.get(key, 0.0)
+        debounce_until = getattr(self, "_bot_tag_debounce_until", None)
+        if not debounce_until:
+            return False
+        deadline = debounce_until.get(key, 0.0)
         if deadline <= time.monotonic():
-            self._bot_tag_debounce_until.pop(key, None)
+            debounce_until.pop(key, None)
             return False
         return True
 

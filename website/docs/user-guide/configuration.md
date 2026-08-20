@@ -2272,9 +2272,14 @@ web:
   extract_backend: "firecrawl"
 
   # Keyless free-tier fallback (default: true). With no backend configured
-  # and no API keys present, web tools fall back to Parallel's / Exa's
-  # public anonymous endpoints (rate-limited). Set false to disable.
+  # and no API keys present, web tools rotate across the Exa/Parallel/
+  # Tavily/Firecrawl/Keenable free tiers. Set false to disable.
   keyless_fallback: true
+
+  # One-shot keyless rescue (default: true). When the chosen/keyed backend
+  # fails a call, that single call retries on the keyless ring; the next
+  # call attempts the chosen backend again (never sticky).
+  keyless_rescue: true
 
   # Pin Exa/Parallel to a tier (set by the hermes tools Free/Paid rows).
   # free = always the anonymous endpoint; paid = always the keyed SDK path;

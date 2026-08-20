@@ -3641,6 +3641,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
 
     if (scriptHandoff) {
       const updateStartedAt = Math.floor(Date.now() / 1000)
+
       // A bare detached+hidden powershell spawn silently dies before -File
       // processing (console-subsystem init failure — see
       // wrapHandoffForDetachedConsole). Route through `cmd start` so the

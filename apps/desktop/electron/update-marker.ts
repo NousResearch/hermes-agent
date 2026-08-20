@@ -144,11 +144,13 @@ export function writeUpdateMarker(
   const file = markerPath(hermesHome)
   const nowMs = now()
   const owner = readLiveUpdateMarker(hermesHome, { kill, maxAgeMs, now: () => nowMs })
-  const acquiredAt = typeof startedAt === 'number' && Number.isInteger(startedAt)
-    ? startedAt
-    : owner
-      ? Math.floor((nowMs - owner.ageMs) / 1000)
-      : Math.floor(nowMs / 1000)
+
+  const acquiredAt =
+    typeof startedAt === 'number' && Number.isInteger(startedAt)
+      ? startedAt
+      : owner
+        ? Math.floor((nowMs - owner.ageMs) / 1000)
+        : Math.floor(nowMs / 1000)
 
   try {
     fs.writeFileSync(file, `${pid}\n${acquiredAt}\n`, 'utf8')

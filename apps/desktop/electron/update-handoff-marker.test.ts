@@ -26,21 +26,22 @@ function markerStartedAt(home: string): number {
 
 function runPosix(installRoot: string, startedAt?: string) {
   const env = { ...process.env }
+
   if (startedAt === undefined) {
     delete env.HERMES_UPDATE_STARTED_AT
   } else {
     env.HERMES_UPDATE_STARTED_AT = startedAt
   }
 
-  return spawnSync(
-    '/bin/bash',
-    [POSIX_SCRIPT, '--daemonized', '--install-root', installRoot, '--self-test-marker'],
-    { env, encoding: 'utf8' }
-  )
+  return spawnSync('/bin/bash', [POSIX_SCRIPT, '--daemonized', '--install-root', installRoot, '--self-test-marker'], {
+    env,
+    encoding: 'utf8'
+  })
 }
 
 function runWindows(installRoot: string, startedAt?: string) {
   const env = { ...process.env }
+
   if (startedAt === undefined) {
     delete env.HERMES_UPDATE_STARTED_AT
   } else {

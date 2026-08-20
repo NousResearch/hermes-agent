@@ -4,11 +4,12 @@
 
 
 
-## Related Issue
+## Related Issue / Plan
 
-<!-- Link the issue this PR addresses. If no issue exists, consider creating one first. -->
+<!-- Link the issue this PR addresses. If no issue exists, consider creating one first. For multi-step work, link the docs/plans entry too. -->
 
 Fixes #
+Plan: `docs/plans/YYYY-MM-DD-short-name.md` <!-- or N/A -->
 
 ## Type of Change
 
@@ -26,15 +27,15 @@ Fixes #
 
 <!-- List the specific changes. Include file paths for code changes. -->
 
-- 
+-
 
 ## How to Test
 
 <!-- Steps to verify this change works. For bugs: reproduction steps + proof that the fix works. -->
 
-1. 
-2. 
-3. 
+1.
+2.
+3.
 
 ## Checklist
 
@@ -46,6 +47,7 @@ Fixes #
 - [ ] My commit messages follow [Conventional Commits](https://www.conventionalcommits.org/) (`fix(scope):`, `feat(scope):`, etc.)
 - [ ] I searched for [existing PRs](https://github.com/NousResearch/hermes-agent/pulls) to make sure this isn't a duplicate
 - [ ] My PR contains **only** changes related to this fix/feature (no unrelated commits)
+- [ ] I followed `docs/GITHUB_STANDARD.md` for issue/plan/branch/PR hygiene — or N/A
 - [ ] I've run `pytest tests/ -q` and all tests pass
 - [ ] I've added tests for my changes (required for bug fixes, strongly encouraged for features)
 - [ ] I've tested on my platform: <!-- e.g. Ubuntu 24.04, macOS 15.2, Windows 11 -->

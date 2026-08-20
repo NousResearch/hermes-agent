@@ -1591,6 +1591,86 @@ def _save_jobs_unlocked(
         raise
 
 
+def _guard_against_prompt_collapsed_to_name(
+    jobs: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Reject a silent prompt -> name collapse on agent-type jobs.
+
+    Compares each incoming job's prompt against its own PRIOR on-disk
+    value (by id). A name is not a prompt: no legitimate write path
+    intentionally shrinks an agent job's prompt down to exactly its own
+    name field. If that shape appears -- the prior prompt existed, was
+    materially different from the name, and the incoming prompt now
+    equals the name exactly -- restore the prior prompt and log a
+    warning instead of persisting the collapse (issue #82990).
+
+    Read-only against disk (via ``_peek_jobs_unlocked``, itself
+    repair-free); returns a list, leaving the input unmodified. No-op
+    when the disk read is empty/unreadable, so this never blocks a
+    fresh install or degrades the existing failure mode for a genuinely
+    corrupt store -- that's ``restore_cron_jobs_if_emptied``'s job.
+    """
+    disk_jobs = _peek_jobs_unlocked()
+    if not disk_jobs:
+        return jobs
+
+    disk_by_id = {
+        str(dj["id"]): dj
+        for dj in disk_jobs
+        if isinstance(dj, dict) and dj.get("id")
+    }
+    if not disk_by_id:
+        return jobs
+
+    guarded: List[Dict[str, Any]] = []
+    for job in jobs:
+        if not isinstance(job, dict) or not job.get("id"):
+            guarded.append(job)
+            continue
+
+        prior = disk_by_id.get(str(job["id"]))
+        if not prior:
+            guarded.append(job)
+            continue
+
+        # Only agent-type jobs have a meaningful prompt to protect --
+        # no_agent (script) jobs' prompt is expected to stay "".
+        if job.get("no_agent") or prior.get("no_agent"):
+            guarded.append(job)
+            continue
+
+        incoming_prompt = _coerce_job_text(job.get("prompt")).strip()
+        incoming_name = _coerce_job_text(job.get("name")).strip()
+        prior_prompt = _coerce_job_text(prior.get("prompt")).strip()
+
+        collapsed = (
+            incoming_prompt
+            and incoming_name
+            and incoming_prompt == incoming_name
+            and prior_prompt
+            and prior_prompt != incoming_prompt
+            # A short existing prompt that already matched its name is a
+            # legitimate, if unusual, user configuration -- only guard
+            # against a genuine SHRINK from a materially longer prompt.
+            and len(prior_prompt) > len(incoming_name) + 10
+        )
+        if collapsed:
+            logger.warning(
+                "cron job %s: rejecting prompt collapse to bare name "
+                "(%d chars -> %d chars); restoring prior prompt "
+                "(issue #82990)",
+                job["id"],
+                len(prior_prompt),
+                len(incoming_prompt),
+            )
+            job = dict(job)
+            job["prompt"] = prior.get("prompt")
+
+        guarded.append(job)
+
+    return guarded
+
+
 def save_jobs(
     jobs: List[Dict[str, Any]],
     *,
@@ -1603,6 +1683,8 @@ def save_jobs(
     (shrink-merge guard against concurrent-create clobber, #80624).
     """
     with _jobs_lock():
+        if not replace:
+            jobs = _guard_against_prompt_collapsed_to_name(jobs)
         _save_jobs_unlocked(jobs, removed_ids=removed_ids, replace=replace)
 
 

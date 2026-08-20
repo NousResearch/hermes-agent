@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -308,6 +309,81 @@ class TestPayload:
         payload = json.loads(body)
         assert isinstance(payload["extra"]["weird"], str)
 
+    def test_session_fields_default_to_null(self):
+        """Additive fields always serialize, null when the call site has
+        nothing to thread — receivers can rely on the keys existing."""
+        body = outbound_webhooks._serialize_payload(
+            "on_session_end", {"session_id": "s"}, "did_1"
+        )
+        payload = json.loads(body)
+        assert payload["parent_session_id"] is None
+        assert payload["session_title"] is None
+
+    def test_session_fields_promoted_out_of_extra(self):
+        body = outbound_webhooks._serialize_payload(
+            "subagent_stop",
+            {
+                "parent_session_id": "parent_1",
+                "session_title": "Fix the login bug",
+                "child_status": "completed",
+            },
+            "did_2",
+        )
+        payload = json.loads(body)
+        assert payload["parent_session_id"] == "parent_1"
+        assert payload["session_title"] == "Fix the login bug"
+        # Promoted keys must not ALSO leak into extra.
+        assert "parent_session_id" not in payload["extra"]
+        assert "session_title" not in payload["extra"]
+        assert payload["extra"]["child_status"] == "completed"
+        # The legacy session_id fallback (parent id for subagent events) is
+        # unchanged.
+        assert payload["session_id"] == "parent_1"
+
+
+# ── host label ──────────────────────────────────────────────────────────────
+
+
+class TestHostLabel:
+    def test_default_is_short_hostname(self):
+        outbound_webhooks.register_from_config(
+            _cfg({"url": "https://example.com", "events": ["on_session_end"]})
+        )
+        payload = json.loads(
+            outbound_webhooks._serialize_payload("on_session_end", {}, "d")
+        )
+        assert payload["host"] == socket.gethostname().split(".")[0]
+
+    def test_config_override_wins(self):
+        cfg = {
+            "hooks": {
+                "outbound_host_label": "build-runner-1",
+                "outbound": [
+                    {"url": "https://example.com", "events": ["on_session_end"]}
+                ],
+            }
+        }
+        outbound_webhooks.register_from_config(cfg)
+        payload = json.loads(
+            outbound_webhooks._serialize_payload("on_session_end", {}, "d")
+        )
+        assert payload["host"] == "build-runner-1"
+
+    def test_blank_override_falls_back_to_hostname(self):
+        cfg = {
+            "hooks": {
+                "outbound_host_label": "   ",
+                "outbound": [
+                    {"url": "https://example.com", "events": ["on_session_end"]}
+                ],
+            }
+        }
+        outbound_webhooks.register_from_config(cfg)
+        payload = json.loads(
+            outbound_webhooks._serialize_payload("on_session_end", {}, "d")
+        )
+        assert payload["host"] == socket.gethostname().split(".")[0]
+
 
 # ── registration ──────────────────────────────────────────────────────────
 
@@ -465,6 +541,29 @@ class TestDelivery:
         # (no GET to /redirected), no retry (misconfiguration, not transient).
         assert [c["method"] for c in http_server.captured] == ["POST"]
         assert http_server.captured[0]["path"] == "/hook"
+
+    def test_delivery_includes_host_label_and_session_fields(self, http_server):
+        cfg = {
+            "hooks": {
+                "outbound_host_label": "mini",
+                "outbound": [{"url": _url(http_server), "events": ["on_session_end"]}],
+            }
+        }
+        outbound_webhooks.register_from_config(cfg)
+
+        from hermes_cli.plugins import get_plugin_manager
+
+        get_plugin_manager().invoke_hook(
+            "on_session_end",
+            session_id="sess_host",
+            session_title="Nightly build",
+        )
+        assert outbound_webhooks.flush()
+
+        payload = json.loads(http_server.captured[0]["body"])
+        assert payload["host"] == "mini"
+        assert payload["session_title"] == "Nightly build"
+        assert payload["parent_session_id"] is None
 
     def test_delivery_id_matches_header_and_body(self, http_server):
         """The X-Hermes-Delivery header and the signed body's delivery_id

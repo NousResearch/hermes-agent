@@ -411,3 +411,109 @@ class TestTerminalIntegration:
         assert "OPENAI_API_KEY" not in child_env
         assert "ANTHROPIC_API_KEY" not in child_env
         assert child_env["PATH"] == "/usr/bin"
+
+
+class TestBundledPlatformTerminalPassthrough:
+    """Bundled platform manifests may mark env vars ``terminal_passthrough``.
+
+    Those exact vars (e.g. the Buzz CLI credentials) must pass through the
+    TERMINAL sanitizers so platform CLIs invoked by the agent inherit their
+    auth (#76243), while remaining stripped from execute_code and generic
+    subprocess spawns.
+    """
+
+    def test_buzz_cli_vars_are_terminal_passthrough(self):
+        from tools.env_passthrough import is_terminal_env_passthrough
+
+        for var in ("BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY", "BUZZ_AUTH_TAG"):
+            assert is_terminal_env_passthrough(var), (
+                f"{var} should be terminal-passthrough per bundled manifest"
+            )
+
+    def test_buzz_cli_vars_stay_stripped_from_generic_spawns(self):
+        # The generic (non-terminal) check must NOT report them as allowed —
+        # execute_code and generic subprocesses keep scrubbing them.
+        for var in ("BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY", "BUZZ_AUTH_TAG"):
+            assert not is_env_passthrough(var), (
+                f"{var} must not leak into execute_code / generic spawns"
+            )
+
+    def test_terminal_sanitizer_keeps_buzz_vars(self):
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        env = {
+            "BUZZ_PRIVATE_KEY": "nsec-secret",
+            "BUZZ_RELAY_URL": "https://relay.example",
+            "BUZZ_AUTH_TAG": '["x","y","z","sig"]',
+            "PATH": "/usr/bin",
+            "HOME": "/home/user",
+        }
+        # Foreground terminal run env
+        result = _make_run_env(env)
+        assert result["BUZZ_PRIVATE_KEY"] == "nsec-secret"
+        assert result["BUZZ_RELAY_URL"] == "https://relay.example"
+        assert result["BUZZ_AUTH_TAG"] == '["x","y","z","sig"]'
+
+        # Background/PTY terminal spawn (terminal_scope=True)
+        result_bg = _sanitize_subprocess_env(env, terminal_scope=True)
+        assert result_bg["BUZZ_PRIVATE_KEY"] == "nsec-secret"
+        assert result_bg["BUZZ_RELAY_URL"] == "https://relay.example"
+
+        # execute_code / generic spawn (terminal_scope=False default) strips them
+        result_gen = _sanitize_subprocess_env(env)
+        assert "BUZZ_PRIVATE_KEY" not in result_gen
+        assert "BUZZ_RELAY_URL" not in result_gen
+        assert "BUZZ_AUTH_TAG" not in result_gen
+
+    def test_generic_sanitizer_still_strips_buzz_without_scope(self, monkeypatch):
+        from tools.environments.local import _sanitize_subprocess_env
+
+        # Even if a skill/config registered one of the vars as generic
+        # passthrough, the blocklist refusal in register_env_passthrough
+        # keeps it out of execute_code (GHSA-rhgp-j443-p4rf).
+        register_env_passthrough(["BUZZ_PRIVATE_KEY"])
+        assert not is_env_passthrough("BUZZ_PRIVATE_KEY")
+
+        env = {"BUZZ_PRIVATE_KEY": "nsec-secret", "PATH": "/usr/bin"}
+        result = _sanitize_subprocess_env(env)
+        assert "BUZZ_PRIVATE_KEY" not in result
+
+    def test_execute_code_child_env_still_scrubs_buzz(self):
+        from tools.code_execution_tool import _scrub_child_env
+
+        child_env = _scrub_child_env(
+            {
+                "BUZZ_PRIVATE_KEY": "nsec-secret",
+                "BUZZ_RELAY_URL": "https://relay.example",
+                "PATH": "/usr/bin",
+            },
+            is_passthrough=is_env_passthrough,
+            is_windows=False,
+        )
+        assert "BUZZ_PRIVATE_KEY" not in child_env
+        assert "BUZZ_RELAY_URL" not in child_env
+        assert child_env["PATH"] == "/usr/bin"
+
+
+class TestConfigPassthroughTypeValidation:
+    def test_scalar_config_warns_and_is_ignored(self, tmp_path, monkeypatch, caplog):
+        """A JSON-looking quoted scalar must warn instead of silently producing
+        an empty allowlist (#76243)."""
+        config = {
+            "terminal": {
+                "env_passthrough": '["BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY"]'
+            }
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(config))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _ep_mod._config_passthrough = None
+
+        import logging
+        with caplog.at_level(logging.WARNING, logger="tools.env_passthrough"):
+            assert not is_env_passthrough("BUZZ_RELAY_URL")
+            assert not is_env_passthrough("BUZZ_PRIVATE_KEY")
+        assert any("env_passthrough" in r.message and "must be a YAML list" in r.message
+                   for r in caplog.records), (
+            "scalar terminal.env_passthrough should emit a warning"
+        )

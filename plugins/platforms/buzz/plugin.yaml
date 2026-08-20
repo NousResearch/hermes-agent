@@ -16,10 +16,17 @@ requires_env:
     description: "Base URL of the Buzz community relay (e.g. https://mycommunity.communities.buzz.xyz)"
     prompt: "Buzz relay URL"
     password: false
+    # The buzz CLI launched by the agent's terminal tool must inherit this
+    # relay URL, the private key, and the NIP-OA auth tag to publish replies
+    # (Buzz Desktop managed-runtime contract).  ``terminal_passthrough``
+    # scopes the passthrough to terminal-spawned subprocesses ONLY — these
+    # vars stay stripped from execute_code and generic subprocesses.
+    terminal_passthrough: true
   - name: BUZZ_PRIVATE_KEY
     description: "Nostr private key for the agent's Buzz identity (nsec or hex) — the only Buzz secret"
     prompt: "Nostr private key (nsec or hex)"
     password: true
+    terminal_passthrough: true
 optional_env:
   - name: BUZZ_TRANSPORT
     description: "Inbound transport: auto (WebSocket w/ poll fallback, default), websocket, or poll"
@@ -29,6 +36,7 @@ optional_env:
     description: "Optional NIP-OA owner-attestation auth tag JSON for NIP-42 WebSocket auth"
     prompt: "NIP-OA auth tag JSON (or empty)"
     password: false
+    terminal_passthrough: true
   - name: BUZZ_CHANNELS
     description: "Comma-separated channel UUIDs to watch (default: all joined channels)"
     prompt: "Channel UUIDs (comma-separated)"

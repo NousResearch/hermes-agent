@@ -131,7 +131,9 @@ def test_closed_shared_client_is_recreated_before_request(monkeypatch):
 
     assert result == {"ok": "fresh-request-client"}
     assert agent.client is replacement_shared
-    assert stale_shared.close_calls >= 1
+    # Lazy recovery retires the shared client without hard-closing it from
+    # the requesting thread; another thread may still be unwinding it.
+    assert stale_shared.close_calls == 0
     assert replacement_shared.close_calls == 0
     assert len(factory.calls) == 2
 
@@ -208,7 +210,9 @@ def test_streaming_call_recreates_closed_shared_client_before_request(monkeypatc
 
     assert response.choices[0].message.content == "Hello world"
     assert agent.client is replacement_shared
-    assert stale_shared.close_calls >= 1
+    # Lazy recovery retires the shared client without hard-closing it from
+    # the requesting thread; another thread may still be unwinding it.
+    assert stale_shared.close_calls == 0
     # The clean stream's wire client is cached for reuse across sequential
     # calls (not closed at request end); teardown really closes it.
     assert request_client.close_calls == 0

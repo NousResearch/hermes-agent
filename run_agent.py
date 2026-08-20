@@ -5279,7 +5279,12 @@ class AIAgent:
             reason,
             self._client_log_context(),
         )
-        self._close_openai_client(old_client, reason=f"replace:{reason}", shared=True)
+        # #70773: same ownership hazard as _replace_primary_openai_client —
+        # this method can run on any thread that happens to need the shared
+        # client next, not necessarily the one owning old_client's in-flight
+        # FDs. Retire (FD-safe shutdown, release deferred to GC) instead of
+        # a hard close() here too.
+        self._retire_shared_openai_client(old_client, reason=f"replace:{reason}")
         return new_client
 
     def _cleanup_dead_connections(self) -> bool:

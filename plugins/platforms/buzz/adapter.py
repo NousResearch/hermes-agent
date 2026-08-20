@@ -25,6 +25,7 @@ Configuration in config.yaml::
             cli_path: ""               # path to the buzz binary (default: PATH, then ~/bin/buzz)
             credentials_file: ""       # JSON file holding the nsec (fallback for BUZZ_PRIVATE_KEY)
             allowed_users: []          # empty = allow all; entries are hex pubkeys or npubs
+            free_response_channels: [] # channel UUIDs that do not require an @mention
 
 Or via environment variables (overrides config.yaml):
     BUZZ_RELAY_URL, BUZZ_CHANNELS, BUZZ_HOME_CHANNEL, BUZZ_POLL_INTERVAL,
@@ -392,6 +393,21 @@ class BuzzAdapter(BasePlatformAdapter):
             _rm_cfg = _rm_raw
         self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
 
+        # Profile-scoped channel exemptions from the global mention gate. This
+        # mirrors the cross-platform ``free_response_channels`` vocabulary used
+        # by Discord and Slack. It changes relevance only: channel discovery,
+        # membership, allowed-user, and self-echo gates remain independent.
+        raw_free_response = extra.get("free_response_channels", [])
+        if isinstance(raw_free_response, (list, tuple, set)):
+            free_response_values = raw_free_response
+        else:
+            free_response_values = str(raw_free_response).split(",")
+        self.free_response_channels: set[str] = {
+            str(channel_id).strip()
+            for channel_id in free_response_values
+            if str(channel_id).strip()
+        }
+
         # Inbound transport: "auto" (WebSocket with poll fallback, default),
         # "websocket" (require WS; fail connect when it can't authenticate),
         # or "poll" (CLI polling only). Env (BUZZ_TRANSPORT) overrides
@@ -510,8 +526,14 @@ class BuzzAdapter(BasePlatformAdapter):
         except ImportError:
             self._lock_key = None  # status module not available (e.g. tests)
 
+        # Start the membership cursor before taking the joined-channel
+        # snapshot. A join racing with startup is then present either in the
+        # snapshot or in the membership subscription's inclusive overlap.
+        if self.transport in ("auto", "websocket"):
+            self._membership_since = int(time.time())
+
         # Map channel ids to names and pick the watch set.
-        code, out, err = await self._run_cli(["channels", "list"])
+        code, out, err = await self._run_cli(["channels", "list", "--member"])
         if code != 0:
             message = _cli_error_message(err, code)
             logger.error("Buzz: failed to list channels — %s", message)
@@ -743,7 +765,8 @@ class BuzzAdapter(BasePlatformAdapter):
             logger.info("Buzz: WebSocket transport unavailable (%s); falling back to polling", e)
             return False
         self._ws_ready = asyncio.Event()
-        self._membership_since = int(time.time())
+        if not self._membership_since:
+            self._membership_since = int(time.time())
         self._ws_task = asyncio.create_task(self._websocket_loop())
         try:
             await asyncio.wait_for(self._ws_ready.wait(), timeout=_WS_AUTH_TIMEOUT + 5)
@@ -823,14 +846,11 @@ class BuzzAdapter(BasePlatformAdapter):
         return subscriptions
 
     async def _handle_membership_event(self, websocket, subscriptions: Dict[str, Optional[str]], event: dict) -> None:
-        """A membership event p-tagged to us: rediscover conversations and
-        subscribe to any new ones (fresh DMs dispatch from their beginning)."""
-        self._membership_since = max(self._membership_since, int(event.get("created_at") or 0))
-        before = set(self._channel_state)
-        await self._discover_dms(seed=False)
-        for channel_id in self._channel_state:
-            if channel_id in before:
-                continue
+        """Rediscover and subscribe after a membership event p-tagged to us."""
+        event_since = max(int(event.get("created_at") or 0), 0)
+        discovered = await self._discover_conversations(since=event_since)
+        self._membership_since = max(self._membership_since, event_since)
+        for channel_id in discovered:
             subscription_id = f"hermes-buzz-dm-{len(subscriptions)}"
             subscriptions[subscription_id] = channel_id
             await self._send_channel_subscription(websocket, subscription_id, channel_id)
@@ -908,7 +928,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 self._poll_count += 1
                 try:
                     if self._poll_count % _DM_DISCOVERY_EVERY == 0:
-                        await self._discover_dms(seed=False)
+                        await self._discover_conversations(since=int(time.time()))
                     for channel_id in list(self._channel_state):
                         await self._poll_channel(channel_id)
                 except asyncio.CancelledError:
@@ -918,9 +938,15 @@ class BuzzAdapter(BasePlatformAdapter):
         except asyncio.CancelledError:
             raise
 
-    async def _seed_channel(self, channel_id: str, chat_type: str) -> None:
+    async def _seed_channel(self, channel_id: str, chat_type: str, *, floor_ts: int = 0) -> None:
         """Initialize a channel's high-water mark from its newest events."""
-        state = {"chat_type": chat_type, "last_ts": 0, "seen": OrderedDict()}
+        floor_ts = max(int(floor_ts), 0)
+        state = {
+            "chat_type": chat_type,
+            "last_ts": floor_ts,
+            "not_before_ts": floor_ts,
+            "seen": OrderedDict(),
+        }
         self._channel_state[channel_id] = state
         code, out, err = await self._run_cli(
             ["messages", "get", "--channel", channel_id, "--limit", str(_FETCH_LIMIT)]
@@ -931,7 +957,7 @@ class BuzzAdapter(BasePlatformAdapter):
             )
             # Fall back to "now" so a transiently unreadable channel does not
             # replay its whole history once it becomes readable.
-            state["last_ts"] = int(time.time())
+            state["last_ts"] = max(state["last_ts"], int(time.time()))
             return
         for event in _parse_json_list(out):
             event_id = event.get("id")
@@ -945,10 +971,38 @@ class BuzzAdapter(BasePlatformAdapter):
             self._maybe_latch_dm(channel_id, state, event)
         self._trim_seen(state)
 
-    async def _discover_dms(self, *, seed: bool) -> None:
-        """Watch DM conversations.  New ones found mid-run dispatch from their
-        beginning (a fresh conversation has no history worth suppressing);
-        ones present at startup are seeded like channels.
+    async def _discover_conversations(self, *, since: int) -> List[str]:
+        """Discover joined channels and DMs, seeding each before delivery."""
+        before = set(self._channel_state)
+        if not await self._discover_joined_channels(since=since):
+            raise ConnectionError("Buzz joined-channel discovery failed")
+        await self._discover_dms(seed=True, floor_ts=since)
+        return [channel_id for channel_id in self._channel_state if channel_id not in before]
+
+    async def _discover_joined_channels(self, *, since: int) -> bool:
+        """Watch newly joined channels when no explicit allowlist is set."""
+        if self.channels:
+            return True
+        code, out, err = await self._run_cli(["channels", "list", "--member"])
+        if code != 0:
+            logger.warning(
+                "Buzz: failed to rediscover joined channels — %s",
+                _cli_error_message(err, code),
+            )
+            return False
+        for channel in _parse_json_list(out):
+            channel_id = str(channel.get("channel_id") or "")
+            if not channel_id:
+                continue
+            self._channel_meta[channel_id] = channel
+            self._channel_names[channel_id] = str(channel.get("name") or channel_id)
+            if channel_id in self._channel_state:
+                continue
+            await self._seed_channel(channel_id, chat_type="group", floor_ts=since)
+        return True
+
+    async def _discover_dms(self, *, seed: bool, floor_ts: int = 0) -> None:
+        """Watch DM conversations, optionally seeding history before delivery.
 
         ``dms list`` is only a best-effort source: on some hosted relays it
         returns ``[]`` even when DM conversations exist (#68871).  Those DMs
@@ -965,9 +1019,14 @@ class BuzzAdapter(BasePlatformAdapter):
                 if not dm_id or dm_id in self._channel_state:
                     continue
                 if seed:
-                    await self._seed_channel(dm_id, chat_type="dm")
+                    await self._seed_channel(dm_id, chat_type="dm", floor_ts=floor_ts)
                 else:
-                    self._channel_state[dm_id] = {"chat_type": "dm", "last_ts": 0, "seen": OrderedDict()}
+                    self._channel_state[dm_id] = {
+                        "chat_type": "dm",
+                        "last_ts": floor_ts,
+                        "not_before_ts": floor_ts,
+                        "seen": OrderedDict(),
+                    }
                 self._channel_names.setdefault(dm_id, "DM")
 
         code, out, _err = await self._run_cli(["channels", "list"])
@@ -982,9 +1041,14 @@ class BuzzAdapter(BasePlatformAdapter):
             if ch_id in self._channel_state or not self._may_reclassify_as_dm(ch_id):
                 continue
             if seed:
-                await self._seed_channel(ch_id, chat_type="group")
+                await self._seed_channel(ch_id, chat_type="group", floor_ts=floor_ts)
             else:
-                self._channel_state[ch_id] = {"chat_type": "group", "last_ts": 0, "seen": OrderedDict()}
+                self._channel_state[ch_id] = {
+                    "chat_type": "group",
+                    "last_ts": floor_ts,
+                    "not_before_ts": floor_ts,
+                    "seen": OrderedDict(),
+                }
 
     async def _poll_channel(self, channel_id: str) -> None:
         state = self._channel_state.get(channel_id)
@@ -1009,6 +1073,8 @@ class BuzzAdapter(BasePlatformAdapter):
         """De-dupe, filter, and dispatch a single ``messages get`` event."""
         event_id = str(event.get("id") or "")
         created_at = int(event.get("created_at") or 0)
+        if created_at < int(state.get("not_before_ts") or 0):
+            return
         if not event_id or event_id in state["seen"]:
             return
         state["seen"][event_id] = None
@@ -1030,10 +1096,15 @@ class BuzzAdapter(BasePlatformAdapter):
         self._maybe_latch_dm(channel_id, state, event)
 
         is_dm = state["chat_type"] == "dm"
-        # In shared channels, respond only when addressed — unless
-        # require_mention is disabled, in which case respond to every message.
-        # DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_mentioned(content):
+        # In shared channels, respond only when addressed unless mention gating
+        # is globally disabled or this exact channel is explicitly exempted.
+        # DMs always dispatch. Relevance never bypasses author authorization.
+        if (
+            not is_dm
+            and self.require_mention
+            and channel_id not in self.free_response_channels
+            and not self._is_mentioned(content)
+        ):
             return
 
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /

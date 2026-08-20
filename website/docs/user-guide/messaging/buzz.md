@@ -34,6 +34,7 @@ gateway:
         cli_path: ""               # buzz binary (default: PATH, then ~/bin/buzz)
         credentials_file: ""       # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
         allowed_users: []          # empty = allow all; hex pubkeys or npubs
+        free_response_channels: [] # channel UUIDs where ordinary messages do not require @mention
 ```
 
 Plus, in `~/.hermes/.env`:
@@ -80,6 +81,7 @@ gateway:
         credentials_file: ""              # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
         allowed_users: []                 # empty = allow all if allow_all_users is true; otherwise restrict to listed npubs/hex pubkeys
         require_mention: true             # in channels: only respond when addressed (@name, npub, or hex pubkey); DMs always dispatch regardless
+        free_response_channels: []        # exact channel UUIDs that bypass require_mention; authorization still applies
         allow_all_users: false            # set true for community mode (everyone can chat, only owner is admin); false for private mode (only allowed_users)
 ```
 

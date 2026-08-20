@@ -243,6 +243,84 @@ class TestMentionGating:
         await self._poll_with(adapter, _event("e1", content="hey @Chip can you help?", created_at=10))
         assert len(adapter._dispatched) == 1
 
+    @pytest.mark.asyncio
+    async def test_free_response_channel_dispatches_without_mention(self):
+        adapter = _make_adapter({"free_response_channels": [CHANNEL]})
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        await self._poll_with(adapter, _event("e1", content="ordinary owner message", created_at=10))
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
+
+    @pytest.mark.asyncio
+    async def test_dm_dispatches_without_mention(self, adapter):
+        adapter._channel_state[CHANNEL]["chat_type"] = "dm"
+        await self._poll_with(adapter, _event("e1", content="ordinary DM", created_at=10))
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
+
+    @pytest.mark.asyncio
+    async def test_self_echo_stays_suppressed_in_free_response_channel(self):
+        adapter = _make_adapter({"free_response_channels": [CHANNEL]})
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        await self._poll_with(
+            adapter,
+            _event("e1", pubkey=SELF_PUBKEY, content="agent echo", created_at=10),
+        )
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_other_channel_still_requires_mention(self):
+        other_channel = "12c81eb7-3a12-47c1-b8af-c66f1c74ca8b"
+        adapter = _make_adapter({"free_response_channels": [CHANNEL]})
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        state = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        adapter._channel_state[other_channel] = state
+        await adapter._handle_event(
+            other_channel,
+            state,
+            _tagged_event("e1", other_channel, content="ordinary shared-room message"),
+        )
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_free_response_channel_preserves_author_allowlist(self):
+        adapter = _make_adapter({
+            "free_response_channels": [CHANNEL],
+            "allowed_users": ["b" * 64],
+        })
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        state = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        adapter._channel_state[CHANNEL] = state
+        await adapter._handle_event(
+            CHANNEL,
+            state,
+            _event("e1", content="ordinary unauthorized message"),
+        )
+        assert adapter._dispatched == []
 
     @pytest.mark.asyncio
     async def test_allowlist_blocks_unauthorized(self, adapter):
@@ -379,6 +457,200 @@ class TestDmClassification:
         assert a._may_reclassify_as_dm(DM_CHANNEL) is True
         assert CHANNEL not in a._channel_state
         assert a._may_reclassify_as_dm(CHANNEL) is False
+
+
+# ── Dynamic joined-channel discovery ─────────────────────────────────────
+
+
+class TestChannelDiscovery:
+
+    @pytest.mark.asyncio
+    async def test_poll_discovery_seeds_new_joined_channel_without_replay(self):
+        new_channel = "4764ae67-7cd8-4f3e-967d-7dd93986b11a"
+        adapter = _make_adapter({"free_response_channels": [new_channel]})
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        cli = _ScriptedCli()
+        cli.script("channels", "list", [
+            {"channel_id": new_channel, "name": "project", "description": "Project"},
+        ])
+        cli.script("messages", "get", [
+            _tagged_event("old", new_channel, content="old history", created_at=1500),
+        ])
+        cli.script("dms", "list", [])
+        adapter._run_cli = cli
+
+        discovered = await adapter._discover_conversations(since=2000)
+        assert discovered == [new_channel]
+        assert adapter._channel_state[new_channel]["not_before_ts"] == 2000
+        assert adapter._dispatched == []
+
+        await adapter._handle_event(
+            new_channel,
+            adapter._channel_state[new_channel],
+            _tagged_event("older-unseen", new_channel, content="older history", created_at=1600),
+        )
+        assert adapter._dispatched == []
+
+        await adapter._handle_event(
+            new_channel,
+            adapter._channel_state[new_channel],
+            _tagged_event("new", new_channel, content="new live message", created_at=2001),
+        )
+        assert [d["message_id"] for d in adapter._dispatched] == ["new"]
+
+    @pytest.mark.asyncio
+    async def test_dynamic_dm_discovery_seeds_existing_history(self):
+        adapter = _make_adapter()
+        adapter._dispatched = []
+        cli = _ScriptedCli()
+        cli.script("channels", "list", [])
+        cli.script("dms", "list", [{"dm_id": DM_CHANNEL}])
+        cli.script("messages", "get", [
+            _tagged_event(
+                "old-dm",
+                DM_CHANNEL,
+                content="old direct history",
+                created_at=1500,
+                p=SELF_PUBKEY,
+            ),
+        ])
+        adapter._run_cli = cli
+
+        discovered = await adapter._discover_conversations(since=2000)
+        assert discovered == [DM_CHANNEL]
+        state = adapter._channel_state[DM_CHANNEL]
+        assert state["chat_type"] == "dm"
+        assert state["not_before_ts"] == 2000
+        assert "old-dm" in state["seen"]
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_connect_lists_only_joined_channels(self, monkeypatch):
+        import gateway.status as gateway_status
+
+        monkeypatch.setattr(
+            gateway_status, "acquire_scoped_lock", lambda platform, key: True
+        )
+        monkeypatch.setattr(_buzz_mod, "_resolve_private_key", lambda extra=None: "nsec1test")
+        monkeypatch.setattr(_buzz_mod.time, "time", lambda: 1000)
+        adapter = _make_adapter()
+        adapter.cli_path = "/fake/buzz"
+        adapter._start_websocket = AsyncMock(return_value=False)
+        unjoined_channel = "12c81eb7-3a12-47c1-b8af-c66f1c74ca8b"
+        cli = _ScriptedCli()
+        cli.script(
+            "users", "get",
+            [{"pubkey": SELF_PUBKEY, "display_name": "Chip"}],
+        )
+        cli.script("messages", "get", [])
+        cli.script("dms", "list", [])
+        membership_cursors = []
+
+        async def run_cli(args, *, input_text=None):
+            if args == ["channels", "list", "--member"]:
+                membership_cursors.append(adapter._membership_since)
+                return 0, json.dumps([
+                    {"channel_id": CHANNEL, "name": "general", "description": "General"},
+                ]), ""
+            if args == ["channels", "list"]:
+                return 0, json.dumps([
+                    {"channel_id": CHANNEL, "name": "general", "description": "General"},
+                    {"channel_id": unjoined_channel, "name": "other", "description": "Other"},
+                ]), ""
+            return await cli(args, input_text=input_text)
+
+        adapter._run_cli = run_cli
+
+        try:
+            assert await adapter.connect() is True
+        finally:
+            await adapter.disconnect()
+
+        assert membership_cursors == [1000]
+        assert unjoined_channel not in adapter._channel_state
+
+    @pytest.mark.asyncio
+    async def test_membership_event_subscribes_to_new_joined_channel(self):
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group", "last_ts": 100, "seen": {},
+        }
+        new_channel = "4764ae67-7cd8-4f3e-967d-7dd93986b11a"
+        cli = _ScriptedCli()
+        cli.script("channels", "list", [
+            {"channel_id": CHANNEL, "name": "general", "description": "General"},
+            {"channel_id": new_channel, "name": "project", "description": "Project"},
+        ])
+        cli.script("dms", "list", [])
+        adapter._run_cli = cli
+        websocket = AsyncMock()
+        subscriptions = {"hermes-buzz-0": CHANNEL}
+
+        await adapter._handle_membership_event(
+            websocket,
+            subscriptions,
+            {"created_at": 1234, "kind": _buzz_mod._WS_MEMBERSHIP_KIND},
+        )
+
+        assert new_channel in adapter._channel_state
+        assert adapter._channel_state[new_channel]["chat_type"] == "group"
+        assert adapter._channel_state[new_channel]["last_ts"] == 1234
+        assert new_channel in subscriptions.values()
+        assert (["channels", "list", "--member"], None) in cli.calls
+        request = json.loads(websocket.send.await_args.args[0])
+        assert request[2]["#h"] == [new_channel]
+        assert request[2]["since"] == 1233
+
+    @pytest.mark.asyncio
+    async def test_membership_event_respects_explicit_channel_allowlist(self):
+        adapter = _make_adapter({"channels": [CHANNEL]})
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group", "last_ts": 100, "seen": {},
+        }
+        new_channel = "4764ae67-7cd8-4f3e-967d-7dd93986b11a"
+        cli = _ScriptedCli()
+        cli.script("channels", "list", [
+            {"channel_id": new_channel, "name": "project", "description": "Project"},
+        ])
+        cli.script("dms", "list", [])
+        adapter._run_cli = cli
+        websocket = AsyncMock()
+        subscriptions = {"hermes-buzz-0": CHANNEL}
+
+        await adapter._handle_membership_event(
+            websocket,
+            subscriptions,
+            {"created_at": 1234, "kind": _buzz_mod._WS_MEMBERSHIP_KIND},
+        )
+
+        assert new_channel not in adapter._channel_state
+        assert new_channel not in subscriptions.values()
+        websocket.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_membership_event_retries_after_joined_channel_discovery_failure(self):
+        adapter = _make_adapter()
+        adapter._membership_since = 100
+        cli = _ScriptedCli()
+        cli.script("channels", "list", [], code=2, stderr="temporary failure")
+        adapter._run_cli = cli
+        websocket = AsyncMock()
+
+        with pytest.raises(ConnectionError, match="joined-channel discovery failed"):
+            await adapter._handle_membership_event(
+                websocket,
+                {"hermes-buzz-0": CHANNEL},
+                {"created_at": 1234, "kind": _buzz_mod._WS_MEMBERSHIP_KIND},
+            )
+
+        assert adapter._membership_since == 100
+        websocket.send.assert_not_awaited()
 
 
 # ── Sending ───────────────────────────────────────────────────────────────

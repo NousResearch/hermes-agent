@@ -21912,6 +21912,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             guild_id = self._get_guild_id(event)
             play_in_voice_channel = getattr(adapter, "play_in_voice_channel", None)
             is_in_voice_channel = getattr(adapter, "is_in_voice_channel", None)
+            play_tts = getattr(adapter, "play_tts", None)
             send_voice = getattr(adapter, "send_voice", None)
             in_voice_channel = bool(
                 guild_id
@@ -21921,7 +21922,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             reply_anchor = self._reply_anchor_for_event(event)
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
-            if not in_voice_channel and callable(send_voice):
+            if not in_voice_channel and (callable(play_tts) or callable(send_voice)):
                 # Mark the auto voice reply as notify-worthy.  Mirrors the
                 # final-text path in gateway/platforms/base.py which sets
                 # ``notify=True`` so platform adapters that gate push
@@ -21938,6 +21939,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if in_voice_channel:
                     play_voice = cast(Callable[..., Awaitable[Any]], play_in_voice_channel)
                     await play_voice(guild_id, actual_path)
+                elif callable(play_tts):
+                    play_tts_call = cast(Callable[..., Awaitable[Any]], play_tts)
+                    await play_tts_call(
+                        chat_id=event.source.chat_id,
+                        audio_path=actual_path,
+                        reply_to=reply_anchor,
+                        metadata=thread_meta,
+                    )
                 elif callable(send_voice):
                     send_voice_call = cast(Callable[..., Awaitable[Any]], send_voice)
                     send_kwargs: Dict[str, Any] = {

@@ -1,0 +1,38 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: huggingface
+description: Search and read Hub models, datasets, and Spaces; generate images via Hugging Face.
+source: https://github.com/huggingface/hf-mcp-server
+
+# Hugging Face runs an official remote MCP server (hf.co/mcp) as a stateless
+# Streamable HTTP service — nothing to install locally. Appending `?login`
+# triggers the OAuth authorization flow so the agent acts as your authenticated
+# Hub account (selected tools + Spaces from huggingface.co/settings/mcp). Hermes's
+# MCP client + mcp_oauth_manager handle PKCE, token exchange, and refresh.
+transport:
+  type: http
+  url: https://huggingface.co/mcp?login
+
+auth:
+  type: oauth
+  # OAuth is the recommended path (scoped, expiring tokens) over a static
+  # HF_TOKEN bearer header. The `?login` suffix on the URL is what tells the
+  # server to negotiate OAuth rather than serve the anonymous tool set.
+
+# Tool selection at install time:
+# The HF MCP exposes Hub search/read tools plus an image generator and any
+# Gradio apps you enable. We leave `default_enabled` unset so the install-time
+# checklist starts with everything pre-checked — users prune what they don't
+# want, and can curate the authoritative set at huggingface.co/settings/mcp.
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with Hugging
+  Face. After auth, restart your Hermes session so the tools are loaded.
+
+  Authenticated users curate their tool + Gradio-app set at:
+    https://huggingface.co/settings/mcp
+
+  Re-run the local tool checklist any time with:
+    hermes mcp configure huggingface

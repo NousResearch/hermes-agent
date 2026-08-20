@@ -614,9 +614,7 @@ export function AppContextMenu() {
       // `mergeProps(slotProps, childProps)` so the child's `data-slot` wins
       // (status bar footer is `data-slot="statusbar"`). The marker is stamped
       // after `{...props}` on ContextMenuTrigger and is not overwritten.
-      if (
-        element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)
-      ) {
+      if (element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)) {
         return
       }
 

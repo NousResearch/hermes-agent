@@ -19,11 +19,7 @@ export const HERMES_CONTEXT_MENU_TRIGGER_ATTR = 'data-hermes-context-menu-trigge
 
 function ContextMenuTrigger({ ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Trigger>) {
   return (
-    <ContextMenuPrimitive.Trigger
-      data-slot="context-menu-trigger"
-      {...props}
-      data-hermes-context-menu-trigger=""
-    />
+    <ContextMenuPrimitive.Trigger data-slot="context-menu-trigger" {...props} data-hermes-context-menu-trigger="" />
   )
 }
 

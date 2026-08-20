@@ -133,3 +133,36 @@ def test_no_pending_approval_does_not_consume_conversational_yes():
     _clear_approval_state()
 
 
+@pytest.mark.parametrize(
+    ("reply", "expected_result"),
+    [
+        ("1", "once"),
+        ("2", "session"),
+        ("3", "always"),
+        ("4", "deny"),
+        ("s", "session"),
+        ("a", "always"),
+    ],
+)
+def test_numeric_short_approval_scopes(reply, expected_result):
+    """Numeric/short aliases (1/2/3/4, s/a) map to the right approval scope.
+
+    Messaging users (WeCom/WeChat, SMS) approve from a phone where typing
+    "/approve always" is slow; a single character must express the full
+    scope matrix."""
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+
+    handled = asyncio.run(
+        runner._handle_active_session_busy_message(_make_event(reply), session_key)
+    )
+
+    assert handled is True
+    assert entry.event.is_set()
+    assert entry.result == expected_result
+    adapter._send_with_retry.assert_awaited()
+    _clear_approval_state()
+
+
+

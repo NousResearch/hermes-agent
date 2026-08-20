@@ -135,4 +135,39 @@ class TestApprovalTextFallbackContract:
         assert "approve session" not in text
         assert "approve always" not in text
 
+    def test_full_prompt_advertises_all_shortcuts(self):
+        from gateway.run import _format_exec_approval_fallback
+
+        text = _format_exec_approval_fallback(
+            "rm -rf /tmp/test", "dangerous deletion", "/",
+        )
+        assert "Shortcuts:" in text
+        assert "`1`/`y`" in text
+        assert "`2`/`s`" in text
+        assert "`3`/`a`" in text
+        assert "`4`/`n`" in text
+
+    def test_smart_deny_shortcuts_omit_session_and_always(self):
+        from gateway.run import _format_exec_approval_fallback
+
+        text = _format_exec_approval_fallback(
+            "rm -rf /", "dangerous deletion", "/",
+            allow_permanent=False, smart_denied=True,
+        )
+        assert "Shortcuts:" in text
+        assert "`1`/`y`" in text
+        assert "`4`/`n`" in text
+        assert "`2`/`s`" not in text
+        assert "`3`/`a`" not in text
+
+    def test_no_permanent_shortcut_when_permanent_disallowed(self):
+        from gateway.run import _format_exec_approval_fallback
+
+        text = _format_exec_approval_fallback(
+            "rm -rf /", "dangerous deletion", "/",
+            allow_session=True, allow_permanent=False,
+        )
+        assert "`2`/`s`" in text
+        assert "`3`/`a`" not in text
+
 

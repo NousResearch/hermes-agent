@@ -62,6 +62,8 @@ _AZURE_OPENAI_PROBE_API_VERSIONS = (
 # Default Azure Anthropic ``api-version``.  Matches the value used by
 # ``agent/anthropic_adapter.py`` when building the Anthropic client.
 _AZURE_ANTHROPIC_API_VERSION = "2025-04-15"
+_AZURE_DETECT_JSON_BODY_MAX_BYTES = 1024 * 1024
+_AZURE_DETECT_ERROR_BODY_MAX_BYTES = 64 * 1024
 
 
 @dataclass
@@ -147,6 +149,13 @@ def _apply_auth_headers(req: urllib_request.Request,
         req.add_header("Authorization", f"Bearer {token}")
 
 
+def _read_limited_response_body(resp: Any, limit: int, *, label: str) -> bytes:
+    body = resp.read(limit + 1)
+    if len(body) > limit:
+        raise ValueError(f"{label} exceeded {limit} bytes")
+    return body
+
+
 def _http_get_json(url: str,
                    api_key: Any,
                    timeout: float = 6.0,
@@ -161,8 +170,12 @@ def _http_get_json(url: str,
     req.add_header("User-Agent", "hermes-agent/azure-detect")
     try:
         with open_credentialed_url(req, timeout=timeout) as resp:
-            body = resp.read()
             try:
+                body = _read_limited_response_body(
+                    resp,
+                    _AZURE_DETECT_JSON_BODY_MAX_BYTES,
+                    label="Azure detection JSON response body",
+                )
                 return resp.status, json.loads(body.decode("utf-8", errors="replace"))
             except Exception:
                 return resp.status, None
@@ -278,7 +291,11 @@ def _probe_anthropic_messages(base_url: str,
     except HTTPError as exc:
         # 4xx with an Anthropic-shaped error body = Anthropic endpoint.
         try:
-            body = exc.read().decode("utf-8", errors="replace")
+            body = _read_limited_response_body(
+                exc,
+                _AZURE_DETECT_ERROR_BODY_MAX_BYTES,
+                label="Azure Anthropic probe error response body",
+            ).decode("utf-8", errors="replace")
             lowered = body.lower()
             if "anthropic" in lowered or '"type"' in lowered and '"error"' in lowered:
                 return True

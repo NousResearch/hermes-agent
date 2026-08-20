@@ -37,27 +37,76 @@ media/images/script/Scene1_Intro.png  (from -s flag)
 
 ## Stitching with ffmpeg
 
+**CRITICAL: Always re-encode when stitching Manim scenes. Never use `-c copy` for the concat step.**
+
+Manim's partial movie files embed non-monotonic DTS timestamps. Copying streams directly causes `ffmpeg` to silently truncate the video stream (you'll see a 74s output when you expected 104s). The fix is always to re-encode:
+
 ```bash
+# Step 1: Add silent audio track to each scene (required for concat with mixed audio)
+for scene in Scene1 Scene2 Scene3; do
+  ffmpeg -y -i "media/videos/script/480p15/${scene}.mp4" \
+    -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 \
+    -c:v copy -c:a aac -shortest \
+    "media/videos/script/480p15/${scene}_s.mp4" 2>/dev/null
+done
+
+# Step 2: Stitch with re-encode (NOT -c copy)
 cat > concat.txt << 'EOF'
-file 'media/videos/script/480p15/Scene1_Intro.mp4'
-file 'media/videos/script/480p15/Scene2_Core.mp4'
+file 'media/videos/script/480p15/Scene1_s.mp4'
+file 'media/videos/script/480p15/Scene2_s.mp4'
 EOF
-ffmpeg -y -f concat -safe 0 -i concat.txt -c copy final.mp4
+ffmpeg -y -f concat -safe 0 -i concat.txt \
+  -vf "fps=15" -c:v libx264 -preset fast -crf 22 -c:a aac \
+  stitched.mp4
 ```
+
+**Verifying duration:** After stitching, always check both format and video stream duration separately — they can disagree when timestamps are broken:
+```bash
+ffprobe -i stitched.mp4 -show_entries format=duration -v quiet -of csv="p=0"          # format duration
+ffprobe -i stitched.mp4 -select_streams v:0 -show_entries stream=duration -v quiet -of csv="p=0"  # video stream
+```
+If they differ, the concat had timestamp issues. Re-encode.
+
+## Tail Pad (when voiceover is longer than video)
+
+When the voiceover duration exceeds the stitched video duration, extend with a freeze-frame tail:
+
+```bash
+# Grab last frame of stitched video
+ffmpeg -y -sseof -0.1 -i stitched.mp4 -update 1 -vframes 1 last_frame.png 2>/dev/null
+
+# Create freeze-frame tail at matching fps (e.g., 15fps for -ql renders)
+ffmpeg -y -loop 1 -i last_frame.png \
+  -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 \
+  -t 40 -c:v libx264 -r 15 -pix_fmt yuv420p -c:a aac -ar 44100 \
+  tail_pad.mp4
+
+# Concat scenes + tail, re-encode
+cat > concat_full.txt << 'EOF'
+file 'stitched.mp4'
+file 'tail_pad.mp4'
+EOF
+ffmpeg -y -f concat -safe 0 -i concat_full.txt \
+  -vf "fps=15" -c:v libx264 -preset fast -crf 22 -c:a aac \
+  full_video.mp4
+```
+
+**Tail pad fps must match scene fps** (15 for `-ql`, 30 for `-qm`, 60 for `-qh`). Mismatched fps causes the tail to be silently dropped during concat.
 
 ## Add Voiceover
 
 ```bash
-# Mux narration
-ffmpeg -y -i final.mp4 -i narration.mp3 -c:v copy -c:a aac -b:a 192k -shortest final_narrated.mp4
-
-# Concat per-scene audio first
-cat > audio_concat.txt << 'EOF'
-file 'audio/scene1.mp3'
-file 'audio/scene2.mp3'
-EOF
-ffmpeg -y -f concat -safe 0 -i audio_concat.txt -c copy full_narration.mp3
+# Mux voiceover onto final video (works with .ogg, .mp3, .wav)
+# Use -t to set explicit duration (voiceover length in seconds) rather than -shortest
+# -shortest clips to video end if video is shorter than audio
+AUDIO_DUR=$(ffprobe -i voiceover.ogg -show_entries format=duration -v quiet -of csv="p=0")
+ffmpeg -y -i full_video.mp4 -i voiceover.ogg \
+  -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 \
+  -t "$AUDIO_DUR" \
+  final_with_audio.mp4
 ```
+
+**Note:** `text_to_speech` tool outputs `.ogg` regardless of requested extension. ffmpeg handles `.ogg` input fine with the `-c:a aac` output flag.
 
 ## Add Background Music
 
@@ -95,7 +144,6 @@ manim -ql --resolution 1080,1080 script.py Scene  # 1:1 square
 ## manim.cfg — Project Configuration
 
 Create `manim.cfg` in the project directory for per-project defaults:
-
 ```ini
 [CLI]
 quality = low_quality
@@ -114,7 +162,6 @@ This eliminates repetitive CLI flags and `self.camera.background_color` in every
 ## Sections — Chapter Markers
 
 Mark sections within a scene for organized output:
-
 ```python
 class LongVideo(Scene):
     def construct(self):
@@ -136,7 +183,6 @@ This outputs separate video files per section — useful for long videos where y
 The official `manim-voiceover` plugin integrates TTS directly into scene code, auto-syncing animation duration to voiceover length. This is significantly cleaner than the manual ffmpeg muxing approach above.
 
 ### Installation
-
 ```bash
 pip install "manim-voiceover[elevenlabs]"
 # Or for free/local TTS:
@@ -145,7 +191,6 @@ pip install "manim-voiceover[azure]"   # Azure Cognitive Services
 ```
 
 ### Usage
-
 ```python
 from manim import *
 from manim_voiceover import VoiceoverScene
@@ -158,7 +203,6 @@ class NarratedScene(VoiceoverScene):
             model_id="eleven_multilingual_v2"
         ))
 
-        # Voiceover auto-controls scene duration
         with self.voiceover(text="Here is a circle being drawn.") as tracker:
             self.play(Create(Circle()), run_time=tracker.duration)
 
@@ -175,7 +219,6 @@ class NarratedScene(VoiceoverScene):
 - Works with: ElevenLabs, Azure, Google TTS, pyttsx3 (offline), and custom services
 
 ### Bookmarks for Precise Sync
-
 ```python
 with self.voiceover(text='This is a <bookmark mark="circle"/>circle.') as tracker:
     self.wait_until_bookmark("circle")

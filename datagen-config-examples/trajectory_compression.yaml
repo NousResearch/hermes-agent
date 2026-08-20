@@ -20,6 +20,11 @@ compression:
   # This is factored into calculations when determining what to compress
   summary_target_tokens: 750
 
+  # Optionally compact JSON-array tool results into a TOON-style table before
+  # deciding whether expensive summary compression is needed.
+  toon_encode_tool_results: false
+  toon_min_rows: 2
+
 # Protected turns that should NEVER be compressed
 protected_turns:
   # Always protect the first system message (tool definitions)

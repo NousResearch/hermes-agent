@@ -67,6 +67,52 @@ def _make_background_cli_stub():
 
 
 class TestCliApprovalUi:
+    def test_approval_callback_starts_on_deny(self):
+        cli = _make_cli_stub()
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback(
+                "git reset --hard HEAD~1",
+                "destructive git reset",
+            )
+
+        thread = threading.Thread(target=_run_callback, daemon=True)
+        thread.start()
+
+        deadline = time.time() + 2
+        while cli._approval_state is None and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert cli._approval_state is not None
+        assert cli._approval_state["choices"][cli._approval_state["selected"]] == "deny"
+
+        cli._approval_state["response_queue"].put("deny")
+        thread.join(timeout=2)
+        assert result["value"] == "deny"
+
+    def test_approval_callback_starts_on_deny_without_permanent_allow(self):
+        cli = _make_cli_stub()
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback(
+                "git clean -fd", "destructive cleanup", allow_permanent=False,
+            )
+
+        thread = threading.Thread(target=_run_callback, daemon=True)
+        thread.start()
+        deadline = time.time() + 2
+        while cli._approval_state is None and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert cli._approval_state is not None
+        assert cli._approval_state["choices"][cli._approval_state["selected"]] == "deny"
+        cli._approval_state["response_queue"].put("deny")
+        thread.join(timeout=2)
+        assert result["value"] == "deny"
+
+
     def test_smart_denied_callback_offers_only_once_and_deny(self):
         cli = _make_cli_stub()
         result = {}

@@ -15257,7 +15257,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     allow_permanent=allow_permanent,
                     smart_denied=smart_denied,
                 ),
-                "selected": 0,
+                # Start on the fail-closed choice. Enter must never approve
+                # a dangerous command before the user explicitly navigates to
+                # an affirmative option. The deny index depends on which
+                # optional approval choices are available.
+                "selected": self._approval_choices(
+                    command,
+                    allow_permanent=allow_permanent,
+                    smart_denied=smart_denied,
+                ).index("deny"),
                 "response_queue": response_queue,
             }
             self._approval_deadline = _time.monotonic() + timeout

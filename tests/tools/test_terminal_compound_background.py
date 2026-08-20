@@ -30,6 +30,54 @@ class TestRewrites:
         cmd = "A && B &\nfalse || C &"
         assert rewrite(cmd) == "A && { B & }\nfalse || { C & }"
 
+    def test_multiple_rewrites_on_one_line(self):
+        # Two mid-command rewrites in a single line, applied back-to-front,
+        # must both stay bash-valid ('A && B & C && D & E' backgrounds two
+        # compounds and runs E in the foreground).
+        cmd = "A && B & C && D & E"
+        assert rewrite(cmd) == "A && { B & }; C && { D & }; E"
+
+
+class TestMidCommandBackground:
+    """``A && B & C``: the backgrounded compound is followed by another
+    statement. The rewritten brace group needs a ``;`` separator — otherwise
+    ``A && { B & }C`` is a syntax error and the whole line dies."""
+
+    def test_background_compound_then_statement(self):
+        assert rewrite("A && B & C") == "A && { B & }; C"
+
+    def test_background_compound_then_chain(self):
+        assert rewrite("A && B & C && D") == "A && { B & }; C && D"
+
+    def test_realistic_server_pattern(self):
+        cmd = "sleep 1 && python3 -m http.server & echo started"
+        assert rewrite(cmd) == "sleep 1 && { python3 -m http.server & }; echo started"
+
+    def test_trailing_background_keeps_exact_shape(self):
+        # The documented tail case must stay byte-identical.
+        assert rewrite("A && B &") == "A && { B & }"
+        assert rewrite("A && B &  ") == "A && { B & }  "
+
+    def test_rewritten_output_is_valid_bash(self):
+        import shutil
+        import subprocess
+
+        if shutil.which("bash") is None:
+            import pytest
+
+            pytest.skip("bash required")
+        for cmd in (
+            "sleep 1 && python3 -m http.server & echo started",
+            "A && B & C && D",
+            "npm run build && node server.js & echo up",
+            "A && B & (echo c)",
+        ):
+            out = rewrite(cmd)
+            probe = subprocess.run(
+                ["bash", "-n", "-c", out], capture_output=True, text=True
+            )
+            assert probe.returncode == 0, f"invalid syntax: {out!r}: {probe.stderr}"
+
 
 class TestPreserved:
     """Commands that DON'T have the bug MUST pass through unchanged."""

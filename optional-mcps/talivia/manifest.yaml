@@ -1,0 +1,39 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: talivia
+description: Install and verify revenue-first website analytics and connect traffic to payment attribution from Hermes Agent.
+source: https://github.com/talivia-group/agent
+
+# Talivia ships a hosted remote MCP server with native OAuth over HTTP.
+# Hermes handles discovery, browser OAuth, token exchange, and refresh.
+transport:
+  type: http
+  url: https://talivia.com/mcp
+
+auth:
+  type: oauth
+
+tools:
+  default_enabled:
+    - talivia_account_status
+    - talivia_websites_list
+    - talivia_websites_create
+    - talivia_tracking_snippet_get
+    - talivia_framework_install_plan_get
+    - talivia_setup_status_get
+    - talivia_tracker_verify
+    - talivia_payment_connect_start
+    - talivia_payment_status_get
+    - talivia_checkout_attribution_guide_get
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with Talivia.
+  After authentication, restart your Hermes session so the Talivia tools are loaded.
+
+  Talivia can install a tracker, verify live events, connect payment attribution,
+  and explain which referrers, campaigns, pages, and customer journeys become revenue.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure talivia

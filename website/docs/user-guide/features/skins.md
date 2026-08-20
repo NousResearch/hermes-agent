@@ -41,6 +41,9 @@ display:
 | `poseidon` | Ocean-god theme — deep blue and seafoam | `Poseidon Agent` | Deep blue to seafoam gradient. Ocean-themed spinners ("charting currents", "sounding the depth"). Trident ASCII art banner. |
 | `sisyphus` | Sisyphean theme — austere grayscale with persistence | `Sisyphus Agent` | Light grays with stark contrast. Boulder-themed spinners ("pushing uphill", "resetting the boulder", "enduring the loop"). Boulder-and-hill ASCII art banner. |
 | `charizard` | Volcanic theme — burnt orange and ember | `Charizard Agent` | Warm burnt orange to ember gradient. Fire-themed spinners ("banking into the draft", "measuring burn"). Dragon-silhouette ASCII art banner. |
+| `forest-teal` | Living studio — mint-teal on deep forest, calm and low-glare | `Hermes Agent` | Deep forest background, mint-teal accents, sage text, and restrained low-glare status surfaces. |
+
+![Forest-teal CLI/TUI hero](/img/docs/forest-teal-cli.png)
 
 ## Complete list of configurable keys
 

@@ -335,15 +335,23 @@ def _path_from_file_uri(uri: str) -> Path | None:
 
 
 def _decode_text_bytes(data: bytes, mime_type: str | None) -> str | None:
-    """Decode resource bytes if they are probably text; return None for binary."""
+    """Decode resource bytes if they are probably text; return None for binary.
+
+    Decoded text is newline-normalized (CRLF and bare CR become LF): editors
+    on Windows send CRLF attachments, and leaving the CR in place embeds
+    stray carriage returns into prompt context and diffs downstream.
+    """
     if b"\x00" in data and not _is_text_resource(mime_type):
         return None
     for encoding in ("utf-8-sig", "utf-8", "latin-1"):
         try:
-            return data.decode(encoding)
+            text = data.decode(encoding)
+            break
         except UnicodeDecodeError:
             continue
-    return data.decode("utf-8", errors="replace")
+    else:
+        text = data.decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _format_resource_text(

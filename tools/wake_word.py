@@ -37,7 +37,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -656,12 +656,108 @@ def _ensure_sherpa_model(root: Optional[Path] = None) -> Path:
     return target
 
 
+def _sherpa_token_vocab(tokens_path: Path) -> Set[str]:
+    """Token vocabulary from a sherpa KWS ``tokens.txt`` (first column per line)."""
+    vocab: Set[str] = set()
+    for line in tokens_path.read_text(encoding="utf-8").splitlines():
+        parts = line.split()
+        if parts:
+            vocab.add(parts[0])
+    return vocab
+
+
+def _phrase_to_pinyin_phonemes(phrase: str, tokens_path: Path) -> List[str]:
+    """Romanize a Chinese wake phrase into 声母/韵母 phonemes for sherpa's
+    wenetspeech KWS model, which is pinyin-modeled rather than BPE.
+
+    Characters the model cannot express (Latin text, missing phonemes) are
+    skipped; a fully-unrepresentable phrase yields ``[]`` so callers can drop
+    it. Example: ``你好妮妮`` -> ``n ǐ h ǎo n ī n ī``.
+    """
+    try:
+        from pypinyin import Style, pinyin
+    except ImportError:
+        logger.warning("wake word: pypinyin missing; cannot use Chinese phrase %r", phrase)
+        return []
+
+    import unicodedata
+
+    vocab = _sherpa_token_vocab(tokens_path)
+    initials = pinyin(phrase, style=Style.INITIALS)
+    # Toned whole syllables (nǐ, wén, huì) carry the tone mark on the correct
+    # vowel, which pypinyin's bare-final styles often misplace (úen, ueì).
+    # The wenetspeech vocabulary spells initials + finals separately
+    # (n ǐ, w én, h uì), so we split each syllable after its initial.
+    syllables = pinyin(phrase, style=Style.TONE)
+    out: List[str] = []
+    for init, syl in zip(initials, syllables):
+        i = unicodedata.normalize("NFC", init[0]) if init else ""
+        s = unicodedata.normalize("NFC", syl[0]) if syl else ""
+        if i and s.startswith(i):
+            # pypinyin passes non-Chinese text through as one opaque "syllable"
+            # (INITIALS == TONE == the raw string); only emit a real initial.
+            if i in vocab:
+                out.append(i)
+            rest = s[len(i):]
+        elif len(s) > 1 and s[0] in ("w", "y") and s[0] in vocab:
+            # Zero-initial syllable with a w/y semi-vowel onset (wén → w én).
+            out.append(s[0])
+            rest = s[1:]
+        else:
+            # Zero-initial syllable spelled as a bare final (ài, ér).
+            rest = s
+        if rest in vocab:
+            out.append(rest)
+        elif "ü" in rest:
+            # wenetspeech writes ü as plain u in some finals (üé → ué)
+            # while keeping it for others (üè). Try the u-form.
+            alt = rest.replace("ü", "u")
+            if alt in vocab:
+                out.append(alt)
+    return out
+
+
+def _tokenize_sherpa_phrase(phrase: str, model_dir: Path, use_bpe: bool) -> List[str]:
+    """Tokenize one wake phrase for the sherpa KWS model in ``model_dir``.
+
+    BPE models (GigaSpeech) are tokenized with sherpa's ``text2token`` and
+    cover Latin-script phrases only; pinyin models (wenetspeech) carry no
+    ``bpe.model`` and romanize Chinese to phonemes. Unrepresentable phrases
+    return ``[]`` so the caller can skip them.
+    """
+    if use_bpe:
+        if not phrase.isascii():
+            # CJK text cannot be expressed in the English BPE vocab; skip it
+            # rather than let text2token emit garbage tokens.
+            return []
+        try:
+            from sherpa_onnx import text2token
+
+            return [str(t) for t in text2token(
+                [phrase.upper()],
+                tokens=str(model_dir / "tokens.txt"),
+                tokens_type="bpe",
+                bpe_model=str(model_dir / "bpe.model"),
+            )[0]]
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("wake word: BPE tokenization failed for %r: %s", phrase, e)
+            return []
+    return _phrase_to_pinyin_phonemes(phrase, model_dir / "tokens.txt")
+
+
 class _SherpaKwsEngine(_Engine):
     """sherpa-onnx open-vocabulary keyword spotting — any typed phrase, zero training.
 
-    The configured ``wake_word.phrase`` is BPE-tokenized at runtime against the
+    The configured ``wake_word.phrase`` is tokenized at runtime against the
     model's vocabulary, so "hey hermes", "hey coder", or any other phrase works
     immediately. Here ``phrase`` is DETECTION config, not a cosmetic label.
+
+    Two model families are supported, selected by model directory:
+      * BPE models (default ``sherpa-onnx-kws-zipformer-gigaspeech``) cover
+        Latin-script phrases via sherpa's ``text2token``;
+      * pinyin models (``sherpa-onnx-kws-zipformer-wenetspeech``, point
+        ``wake_word.sherpa.model_dir`` at the unpacked dir) cover Chinese
+        phrases, romanized to 声母/韵母 phonemes at runtime.
     """
 
     # sherpa's streaming zipformer consumes arbitrary chunk sizes; 1280
@@ -674,7 +770,6 @@ class _SherpaKwsEngine(_Engine):
         lazy_deps.ensure("wake.sherpa", prompt=False)
 
         import sherpa_onnx
-        from sherpa_onnx import text2token
 
         sub = cfg.get("sherpa") if isinstance(cfg.get("sherpa"), dict) else {}
         model_dir = str(sub.get("model_dir") or "").strip()
@@ -693,25 +788,31 @@ class _SherpaKwsEngine(_Engine):
             for prof, p in enrolled_profile_phrases().items():
                 phrase_map.setdefault(p.strip(), prof)
 
-        phrases = list(phrase_map)
-        # Runtime tokenization of the arbitrary phrases — the open-vocab core.
-        tokens = text2token(
-            [p.upper() for p in phrases],
-            tokens=str(d / "tokens.txt"),
-            tokens_type="bpe",
-            bpe_model=str(d / "bpe.model"),
-        )
         import tempfile
 
+        # Model language family: GigaSpeech (English) is BPE-tokenized via
+        # text2token; wenetspeech (Chinese) is pinyin-modeled and carries no
+        # bpe.model — phrases are romanized to 声母/韵母 phonemes instead.
+        use_bpe = (d / "bpe.model").exists()
+
         # sherpa keyword entries reject spaces in the @display-name; underscore
-        # them and map display → profile for match routing.
+        # them and map display → profile for match routing. Phrases the model
+        # cannot represent are skipped so one bad phrase can't kill the listener.
         self._display_to_profile: Dict[str, str] = {}
         kw = tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", prefix="hermes-kws-", delete=False, encoding="utf-8"
         )
-        for p, toks in zip(phrases, tokens):
+        for p, prof in phrase_map.items():
+            toks = _tokenize_sherpa_phrase(p, d, use_bpe)
+            if not toks:
+                logger.warning(
+                    "wake word: skipping phrase %r — not representable in %s sherpa model",
+                    p,
+                    "BPE" if use_bpe else "pinyin",
+                )
+                continue
             display = p.upper().replace(" ", "_")
-            self._display_to_profile[display] = phrase_map[p]
+            self._display_to_profile[display] = prof
             kw.write(" ".join(toks) + f" @{display}\n")
         kw.close()
         self._keywords_file = kw.name

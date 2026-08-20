@@ -781,3 +781,62 @@ def test_feed_audio_rejects_wrong_owner(monkeypatch, tmp_path):
     ww.start_listening(lambda: None, owner=owner, config={}, external_audio=True)
     assert ww.feed_audio(owner=object(), pcm_int16=b"\x00\x00") is False
     assert ww.stop_listening(owner=owner) is True
+
+
+# ── Sherpa pinyin (Chinese wake phrases) tokenization ────────────────────
+
+
+def _write_tokens(tmp_path, phonemes):
+    """Write a minimal sherpa KWS ``tokens.txt`` (token + id per line)."""
+    p = tmp_path / "tokens.txt"
+    p.write_text(
+        "\n".join(f"{t} {i}" for i, t in enumerate(phonemes)) + "\n",
+        encoding="utf-8",
+    )
+    return p
+
+
+def test_pinyin_phonemes_renders_chinese(tmp_path):
+    pytest.importorskip("pypinyin")
+    tokens = _write_tokens(tmp_path, ["n", "ǐ", "h", "ǎo", "ī", "uàn", "y"])
+    assert ww._phrase_to_pinyin_phonemes("你好妮妮", tokens) == [
+        "n", "ǐ", "h", "ǎo", "n", "ī", "n", "ī",
+    ]
+    # 媛 (yuàn) is a zero-initial syllable whose y semi-vowel the vocabulary
+    # spells as an initial: y uàn.
+    assert ww._phrase_to_pinyin_phonemes("你好媛媛", tokens) == [
+        "n", "ǐ", "h", "ǎo", "y", "uàn", "y", "uàn",
+    ]
+
+
+def test_pinyin_phonemes_falls_back_u_for_umlaut(tmp_path):
+    pytest.importorskip("pypinyin")
+    tokens = _write_tokens(tmp_path, ["x", "iǎo", "t", "óng", "ué"])
+    # 学 (xué) is romanized üé by pypinyin; wenetspeech writes it ué.
+    assert ww._phrase_to_pinyin_phonemes("小学", tokens) == [
+        "x", "iǎo", "x", "ué",
+    ]
+
+
+def test_pinyin_phonemes_skips_unrepresentable(tmp_path):
+    pytest.importorskip("pypinyin")
+    tokens = _write_tokens(tmp_path, ["n", "ǐ", "h", "ǎo"])
+    # 妮's ī is missing from the vocab → only its initial survives.
+    assert ww._phrase_to_pinyin_phonemes("你好妮妮", tokens) == [
+        "n", "ǐ", "h", "ǎo", "n", "n",
+    ]
+
+
+def test_pinyin_phonemes_skips_latin(tmp_path):
+    pytest.importorskip("pypinyin")
+    tokens = _write_tokens(tmp_path, ["n", "ǐ", "h", "ǎo"])
+    # Latin text cannot be expressed in the pinyin phoneme vocab.
+    assert ww._phrase_to_pinyin_phonemes("HELLO", tokens) == []
+
+
+def test_sherpa_bpe_skips_non_ascii(tmp_path):
+    # CJK phrases are skipped on the English BPE model instead of being fed
+    # to text2token, which would emit garbage tokens.
+    (tmp_path / "bpe.model").write_text("", encoding="utf-8")
+    _write_tokens(tmp_path, ["▁", "HE", "LL"])
+    assert ww._tokenize_sherpa_phrase("你好妮妮", tmp_path, use_bpe=True) == []

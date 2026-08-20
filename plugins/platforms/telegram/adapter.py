@@ -7116,11 +7116,22 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await query.answer(text=label)
 
-                # Edit message to show decision, remove buttons
+                # Edit message to show decision, remove buttons. Preserve the
+                # original approval body (command + reason) so shared chats
+                # keep an audit trail of WHAT was approved — replacing the
+                # whole card with just the decision loses the request context
+                # (parity with Discord/Slack/Teams, which keep the body and
+                # only append the outcome). Plain-text edit, mirroring the
+                # gmail-triage callback: query.message.text is the rendered
+                # plain text of the HTML prompt, so re-sending it with a parse
+                # mode would corrupt it.
+                original_text = str(getattr(query.message, "text", None) or "") if query.message else ""
+                appended = (
+                    f"{original_text}\n\n— {edit_text}" if original_text else edit_text
+                )
                 try:
                     await query.edit_message_text(
-                        text=self.format_message(edit_text),
-                        parse_mode=ParseMode.MARKDOWN_V2,
+                        text=appended,
                         reply_markup=None,
                     )
                 except Exception:
@@ -7168,10 +7179,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await query.answer(text=label)
 
+                # Preserve the original prompt body and append the decision —
+                # same audit-trail contract as the exec-approval edit above.
+                _sc_original = str(getattr(query.message, "text", None) or "") if query.message else ""
+                _sc_edit = (
+                    f"{_sc_original}\n\n— {label} by {user_display}"
+                    if _sc_original else f"{label} by {user_display}"
+                )
                 try:
                     await query.edit_message_text(
-                        text=self.format_message(f"{label} by {user_display}"),
-                        parse_mode=ParseMode.MARKDOWN_V2,
+                        text=_sc_edit,
                         reply_markup=None,
                     )
                 except Exception:

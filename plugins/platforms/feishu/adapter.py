@@ -2121,6 +2121,10 @@ class FeishuAdapter(BasePlatformAdapter):
                     "session_key": session_key,
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
+                    # Original request body — preserved on the resolved card
+                    # so shared chats keep an audit trail of WHAT was
+                    # approved (parity with Slack/Discord/Teams).
+                    "body": self._format_exec_approval(command, description, smart_denied),
                 }
             return result
         except Exception as exc:
@@ -2196,22 +2200,31 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     @staticmethod
-    def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
-        """Build raw card JSON for a resolved approval action."""
+    def _build_resolved_approval_card(*, choice: str, user_name: str, body: str = "") -> Dict[str, Any]:
+        """Build raw card JSON for a resolved approval action.
+
+        ``body`` is the original request markdown (command + reason). It is
+        kept on the resolved card so the chat retains WHAT was approved —
+        the decision alone loses the audit trail.
+        """
         icon = "❌" if choice == "deny" else "✅"
         label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
+        elements: List[Dict[str, Any]] = []
+        if body:
+            elements.append({"tag": "markdown", "content": body})
+        elements.append(
+            {
+                "tag": "markdown",
+                "content": f"{icon} **{label}** by {user_name}",
+            }
+        )
         return {
             "config": {"wide_screen_mode": True},
             "header": {
                 "title": {"content": f"{icon} {label}", "tag": "plain_text"},
                 "template": "red" if choice == "deny" else "green",
             },
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": f"{icon} **{label}** by {user_name}",
-                },
-            ],
+            "elements": elements,
         }
 
     @staticmethod
@@ -2830,7 +2843,11 @@ class FeishuAdapter(BasePlatformAdapter):
         if CallBackCard is not None:
             card = CallBackCard()
             card.type = "raw"
-            card.data = self._build_resolved_approval_card(choice=choice, user_name=user_name)
+            card.data = self._build_resolved_approval_card(
+                choice=choice,
+                user_name=user_name,
+                body=str(state.get("body", "") or ""),
+            )
             response.card = card
         return response
 

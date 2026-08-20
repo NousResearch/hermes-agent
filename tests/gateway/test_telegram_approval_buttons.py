@@ -241,7 +241,15 @@ class TestTelegramApprovalCallback:
 
 
     @pytest.mark.asyncio
-    async def test_approval_callback_escapes_dynamic_user_name(self):
+    async def test_approval_callback_preserves_original_body(self):
+        """Resolving an approval must keep the original request text.
+
+        The edit appends the decision under the original command + reason
+        (audit trail in shared chats) instead of replacing the whole
+        message with just the outcome. Plain-text edit — the rendered
+        message text must not be re-parsed as MarkdownV2.
+        Ported from qwibitai/nanoclaw#3143.
+        """
         adapter = _make_adapter()
         adapter._approval_state[3] = "agent:main:telegram:group:12345:99"
 
@@ -249,6 +257,11 @@ class TestTelegramApprovalCallback:
         query.data = "ea:once:3"
         query.message = MagicMock()
         query.message.chat_id = 12345
+        query.message.text = (
+            "⚠️ Command Approval Required\n"
+            "rm -rf /tmp/scratch\n"
+            "Reason: cleanup"
+        )
         query.from_user = MagicMock()
         query.from_user.first_name = "Alice_Bob"
         query.answer = AsyncMock()
@@ -264,9 +277,44 @@ class TestTelegramApprovalCallback:
                 await adapter._handle_callback_query(update, context)
 
         edit_kwargs = query.edit_message_text.call_args[1]
-        assert "MARKDOWN_V2" in repr(edit_kwargs["parse_mode"])
-        assert "Alice\\_Bob" in edit_kwargs["text"]
-        assert "Approved once" in edit_kwargs["text"]
+        # Original request body survives the resolution edit.
+        assert "rm -rf /tmp/scratch" in edit_kwargs["text"]
+        assert "Reason: cleanup" in edit_kwargs["text"]
+        # Decision + actor appended after the body.
+        assert "Approved once by Alice_Bob" in edit_kwargs["text"]
+        assert edit_kwargs["text"].index("rm -rf") < edit_kwargs["text"].index("Approved once")
+        # Plain-text edit: no parse mode, buttons removed.
+        assert "parse_mode" not in edit_kwargs
+        assert edit_kwargs["reply_markup"] is None
+
+    @pytest.mark.asyncio
+    async def test_expired_approval_edit_keeps_original_body(self):
+        """A stale tap (count == 0) also keeps the request text visible."""
+        adapter = _make_adapter()
+        adapter._approval_state[4] = "agent:main:telegram:group:12345:99"
+
+        query = AsyncMock()
+        query.data = "ea:once:4"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.text = "⚠️ Command Approval Required\nsudo reboot"
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Alice"
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=0):
+                await adapter._handle_callback_query(update, context)
+
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert "sudo reboot" in edit_kwargs["text"]
+        assert "Approval expired" in edit_kwargs["text"]
 
 
     @pytest.mark.asyncio

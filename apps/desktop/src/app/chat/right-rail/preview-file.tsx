@@ -108,7 +108,7 @@ export function PreviewEmptyState({
 
   return (
     <div
-      className="absolute inset-x-0 top-0 z-10 grid place-items-center bg-background px-8 py-10 text-center bottom-(--preview-error-bottom)"
+      className="fade-in absolute inset-x-0 top-0 z-10 grid place-items-center bg-background px-8 py-10 text-center bottom-(--preview-error-bottom)"
       style={{ '--preview-error-bottom': `${consoleHeight}px` } as CSSProperties}
     >
       <div className="grid max-w-sm justify-items-center gap-5">

@@ -557,4 +557,40 @@ describe('PreviewPane console state', () => {
       profile: 'macmini'
     })
   })
+
+  it('fades in the preview load error after a webview failure', async () => {
+    let rendered!: ReturnType<typeof render>
+
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          setTitlebarToolGroup={vi.fn()}
+          target={{
+            kind: 'url',
+            label: 'Preview',
+            source: 'http://localhost:5174',
+            url: 'http://localhost:5174'
+          }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview')
+
+    expect(webview).toBeInstanceOf(HTMLElement)
+
+    act(() => {
+      webview?.dispatchEvent(
+        Object.assign(new Event('did-fail-load'), {
+          errorCode: -105,
+          errorDescription: 'Connection refused',
+          validatedURL: 'http://localhost:5174'
+        })
+      )
+    })
+
+    const loadError = rendered.container.querySelector('.fade-in')
+
+    expect(loadError?.textContent).toContain('Connection refused')
+  })
 })

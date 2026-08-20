@@ -1,0 +1,57 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: zephex
+description: >-
+  Developer intelligence for AI agents — AST code search, project context,
+  architecture maps, and live npm supply-chain audits. Stdio bridge via npx;
+  no local repo clone.
+source: https://github.com/zephexMCP/agent-skills
+
+# Dynamic stdio launch from the public npm package. Omit `install` so Hermes
+# never clones a repository (closed-source server stays private).
+transport:
+  type: stdio
+  command: npx
+  args:
+    - "-y"
+    - "zephex"
+
+auth:
+  type: api_key
+  env:
+    - name: ZEPHEX_API_KEY
+      prompt: "Zephex API key (get yours at https://zephex.dev/connect/hermes)"
+      required: true
+      secret: true
+
+# All ten Zephex tools pre-enabled at install. Users can prune via
+# `hermes mcp configure zephex` after the first successful probe.
+tools:
+  default_enabled:
+    - audit_headers
+    - audit_package
+    - check_package
+    - explain_architecture
+    - find_code
+    - get_project_context
+    - keep_thinking
+    - read_code
+    - scope_task
+    - Zephex_dev_info
+
+post_install: |
+  Alternative one-liner (same stdio transport):
+    npx -y zephex setup --hermes --api-key YOUR_KEY
+
+  Zephex reads ZEPHEX_API_KEY from ~/.hermes/.env (catalog install) or from
+  the env block in config.yaml (CLI setup). Start a new Hermes session, then:
+    hermes mcp test zephex
+
+  For code tools, run Hermes from your project directory or pass an absolute
+  path / github:owner/repo in your prompt.
+
+  Get or rotate keys: https://zephex.dev/connect/hermes

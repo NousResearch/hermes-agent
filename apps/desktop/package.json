@@ -237,7 +237,8 @@
         "CFBundleName": "Hermes",
         "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
         "NSCameraUsageDescription": "Hermes uses the camera when a plugin or feature you enable requests it.",
-        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
+        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations.",
+        "NSScreenCaptureUsageDescription": "Hermes captures the screen when you ask the agent to screenshot or record it."
       },
       "gatekeeperAssess": false,
       "hardenedRuntime": true,

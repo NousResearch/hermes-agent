@@ -2069,7 +2069,7 @@ class TestSystemdCgroupIsolation:
         assert "--" in argv, "systemd-run argv must use -- to separate command"
         sep_idx = argv.index("--")
         assert "/bin/bash" in argv[sep_idx:]
-        assert "set +m; echo hello" in argv[sep_idx:]
+        assert "command cd -- /tmp || exit 126; set +m; echo hello" in argv[sep_idx:]
         # systemd-run --scope gives the worker a new cgroup but NOT a new
         # session (#70716 regression: start_new_session was False, so the
         # worker kept the parent's session + controlling terminal → SIGTTIN/
@@ -2104,7 +2104,7 @@ class TestSystemdCgroupIsolation:
 
         argv = captured["argv"]
         # No systemd-run wrapping — direct shell invocation.
-        assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
+        assert argv == ["/bin/bash", "-lic", "command cd -- /tmp || exit 126; set +m; echo hello"], argv
         assert captured["start_new_session"] is True
 
     def test_falls_back_when_not_under_supervisor(self, registry, monkeypatch):
@@ -2130,7 +2130,7 @@ class TestSystemdCgroupIsolation:
             registry.spawn_local("echo hello", cwd="/tmp")
 
         argv = captured["argv"]
-        assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
+        assert argv == ["/bin/bash", "-lic", "command cd -- /tmp || exit 126; set +m; echo hello"], argv
         assert captured["start_new_session"] is True
 
     @pytest.mark.parametrize("use_pty", [False, True])
@@ -2162,7 +2162,7 @@ class TestSystemdCgroupIsolation:
             ):
                 session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
             assert pty_spawn.call_args.args[0] == [
-                "/bin/bash", "-lic", "set +m; codex",
+                "/bin/bash", "-lic", "command cd -- /tmp || exit 126; set +m; codex",
             ]
         else:
             fake_popen, captured = self._fake_popen_capture()
@@ -2173,7 +2173,7 @@ class TestSystemdCgroupIsolation:
             ):
                 session = registry.spawn_local("echo hello", cwd="/tmp")
             assert captured["argv"] == [
-                "/bin/bash", "-lic", "set +m; echo hello",
+                "/bin/bash", "-lic", "command cd -- /tmp || exit 126; set +m; echo hello",
             ]
             assert captured["start_new_session"] is True
 
@@ -2213,7 +2213,7 @@ class TestSystemdCgroupIsolation:
             ):
                 session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
             assert pty_spawn.call_args.args[0] == [
-                "/bin/bash", "-lic", "set +m; codex",
+                "/bin/bash", "-lic", "command cd -- /tmp || exit 126; set +m; codex",
             ]
         else:
             fake_popen, captured = self._fake_popen_capture()
@@ -2224,7 +2224,7 @@ class TestSystemdCgroupIsolation:
             ):
                 session = registry.spawn_local("echo hello", cwd="/tmp")
             assert captured["argv"] == [
-                "/bin/bash", "-lic", "set +m; echo hello",
+                "/bin/bash", "-lic", "command cd -- /tmp || exit 126; set +m; echo hello",
             ]
             assert captured["start_new_session"] is True
 
@@ -2294,7 +2294,7 @@ class TestSystemdCgroupIsolation:
         assert "--scope" in argv
         assert "--unit" in argv
         assert "--" in argv
-        assert argv[-3:] == ["/bin/bash", "-lic", "set +m; codex"]
+        assert argv[-3:] == ["/bin/bash", "-lic", "command cd -- /tmp || exit 126; set +m; codex"]
         assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
 
     @pytest.mark.platforms("linux")

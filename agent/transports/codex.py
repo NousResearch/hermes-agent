@@ -206,6 +206,17 @@ def _is_azure_foundry_responses(params: Dict[str, Any]) -> bool:
     )
 
 
+def _supports_actual_plaintext_reasoning(params: Dict[str, Any]) -> bool:
+    """Return True for Actual's plaintext Responses reasoning extension."""
+    from utils import base_url_hostname
+
+    provider = str(params.get("provider") or "").strip().lower()
+    return (
+        provider == "actual"
+        or base_url_hostname(str(params.get("base_url") or "")) == "api.actual.inc"
+    )
+
+
 def _is_post_tool_replay(messages: Optional[List[Dict[str, Any]]]) -> bool:
     """Return True when ``messages`` end on a tool result awaiting a follow-up.
 
@@ -303,6 +314,7 @@ class ResponsesApiTransport(ProviderTransport):
     # response are stamped with the endpoint that minted them. Plain class
     # attribute default; mutated on the instance, not the class.
     _last_issuer_kind: Optional[str] = None
+    _last_allow_plaintext_reasoning: bool = False
 
     @property
     def api_mode(self) -> str:
@@ -323,6 +335,8 @@ class ResponsesApiTransport(ProviderTransport):
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
         issuer = self._resolve_issuer_kind(kwargs)
         self._last_issuer_kind = issuer
+        allow_plaintext_reasoning = _supports_actual_plaintext_reasoning(kwargs)
+        self._last_allow_plaintext_reasoning = allow_plaintext_reasoning
         return _chat_messages_to_responses_input(
             messages,
             is_xai_responses=kwargs.get("is_xai_responses") is True,
@@ -330,6 +344,7 @@ class ResponsesApiTransport(ProviderTransport):
             replay_encrypted_reasoning=bool(
                 kwargs.get("replay_encrypted_reasoning", True)
             ),
+            replay_plaintext_reasoning=allow_plaintext_reasoning,
             current_issuer_kind=issuer,
             native_compaction_eligible=_native_compaction_active(
                 kwargs.get("context_management")
@@ -428,6 +443,8 @@ class ResponsesApiTransport(ProviderTransport):
         # dropped before the API rejects them.
         issuer_kind = self._resolve_issuer_kind(params)
         self._last_issuer_kind = issuer_kind
+        allow_plaintext_reasoning = _supports_actual_plaintext_reasoning(params)
+        self._last_allow_plaintext_reasoning = allow_plaintext_reasoning
 
         # Resolve reasoning effort
         reasoning_effort = "medium"
@@ -519,6 +536,7 @@ class ResponsesApiTransport(ProviderTransport):
                 is_xai_responses=is_xai_responses,
                 is_github_responses=is_github_responses,
                 replay_encrypted_reasoning=replay_encrypted_reasoning,
+                replay_plaintext_reasoning=allow_plaintext_reasoning,
                 current_issuer_kind=issuer_kind,
                 native_compaction_eligible=native_compaction_active,
             ),
@@ -792,20 +810,27 @@ class ResponsesApiTransport(ProviderTransport):
         allow_stream: bool = False,
         is_github_responses: bool = False,
         sanitize_harmony_tokens: bool = False,
+        allow_plaintext_reasoning: Optional[bool] = None,
     ) -> dict:
         """Validate and sanitize Codex API kwargs before the call.
 
         Normalizes input items, strips unsupported fields, validates structure.
         ``sanitize_harmony_tokens`` is enabled only for the ChatGPT Codex
         backend, which rejects literal reserved Harmony wire tokens in text.
+        ``allow_plaintext_reasoning`` defaults to the capability resolved by
+        the matching build_kwargs call, and is True only for Actual.
         """
         from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+
+        if allow_plaintext_reasoning is None:
+            allow_plaintext_reasoning = self._last_allow_plaintext_reasoning
 
         normalized = _preflight_codex_api_kwargs(
             api_kwargs,
             allow_stream=allow_stream,
             is_github_responses=is_github_responses,
             sanitize_harmony_tokens=sanitize_harmony_tokens,
+            allow_plaintext_reasoning=bool(allow_plaintext_reasoning),
         )
         if "prompt_cache_key" in normalized:
             bounded = _bounded_prompt_cache_key(normalized["prompt_cache_key"])

@@ -1080,12 +1080,9 @@ def _handle_comment(args: dict, **kw) -> str:
     delegated_err = _reject_delegated_child_mutation("kanban_comment")
     if delegated_err:
         return delegated_err
-    tid = args.get("task_id")
+    tid = _default_task_id(args.get("task_id"))
     if not tid:
-        return tool_error(
-            "task_id is required (use the current task id if that's what "
-            "you mean — pulls from env but kept explicit here)"
-        )
+        return tool_error("task_id is required (or set HERMES_KANBAN_TASK in the env)")
     body = args.get("body")
     if not body or not str(body).strip():
         return tool_error("body is required")
@@ -2019,8 +2016,9 @@ KANBAN_COMMENT_SCHEMA = {
             "task_id": {
                 "type": "string",
                 "description": (
-                    "Task id. Required (may be your own task or "
-                    "another's — comment threads are per-task)."
+                    "Task id. If omitted, defaults to HERMES_KANBAN_TASK "
+                    "from the env (may be your own task or another's — "
+                    "comment threads are per-task)."
                 ),
             },
             "body": {
@@ -2029,7 +2027,7 @@ KANBAN_COMMENT_SCHEMA = {
             },
             "board": _board_schema_prop(),
         },
-        "required": ["task_id", "body"],
+        "required": ["body"],
     },
 }
 

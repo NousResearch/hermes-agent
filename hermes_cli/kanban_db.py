@@ -10762,6 +10762,9 @@ def _default_spawn(
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
+    # Export the physical path so symlinked workspace roots agree with Git's
+    # worktree registry and exact-path developer tools.
+    workspace = os.path.realpath(workspace)
     env["HERMES_KANBAN_WORKSPACE"] = workspace
     # Tag the worker's session so it lands in state.db as `kanban`, not as an
     # untitled `cli` row. A worker is a dispatcher-owned run whose transcript is

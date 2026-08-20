@@ -13,6 +13,7 @@ Pinning ``TERMINAL_CWD`` to the workspace fixes both.
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 
@@ -71,9 +72,9 @@ def test_terminal_cwd_pinned_to_workspace(monkeypatch, tmp_path):
 
     captured = _capture_spawn_env(kb, monkeypatch, str(workspace))
 
-    assert captured["env"]["TERMINAL_CWD"] == str(workspace)
-    # The subprocess cwd and TERMINAL_CWD must agree — both anchor the workspace.
-    assert captured["cwd"] == str(workspace)
-    assert captured["env"]["HERMES_KANBAN_WORKSPACE"] == str(workspace)
+    assert captured["env"]["TERMINAL_CWD"] == os.path.realpath(workspace)
+    # The subprocess cwd and exported path identify the same physical workspace.
+    assert os.path.realpath(captured["cwd"]) == os.path.realpath(workspace)
+    assert captured["env"]["HERMES_KANBAN_WORKSPACE"] == os.path.realpath(workspace)
 
 

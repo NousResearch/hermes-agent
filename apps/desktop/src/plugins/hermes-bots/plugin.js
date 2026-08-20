@@ -3817,12 +3817,25 @@ function groupChatNames(metaByName, rooms) {
   const names = new Set(knownGroups(metaByName))
 
   for (const [name, room] of Object.entries(rooms || {})) {
+    if (room?.tombstone) {
+      continue
+    }
+
     if ((Array.isArray(room?.members) && room.members.length) || (Array.isArray(room?.log) && room.log.length)) {
       names.add(name)
     }
   }
 
   return [...names]
+}
+
+/** Names of REAL rooms in the atom — disband tombstones excluded. Feeds the
+ *  create/rename collision sets so a just-disbanded name is immediately
+ *  reusable even while an in-flight drive's tombstone still holds its key. */
+function liveGroupChatNames() {
+  return Object.entries($groupChats.get())
+    .filter(([, room]) => !room?.tombstone)
+    .map(([name]) => name)
 }
 
 /** Millisecond timestamp of a room's newest log entry (0 for a silent room) —
@@ -4126,6 +4139,14 @@ function updateGroupChat(group, mutate) {
     const durable = {}
 
     for (const [name, room] of Object.entries(all)) {
+      // Disband tombstones are runtime-only coordination state (they hold the
+      // epoch bump for an in-flight drive). Persisting one would resurrect
+      // the room as an empty record on the next load AND keep its name
+      // "taken" for same-name recreates.
+      if (room.tombstone) {
+        continue
+      }
+
       durable[name] = {
         log: room.log,
         watermarks: room.watermarks,
@@ -4166,9 +4187,12 @@ async function disbandGroupChat(group, members) {
 
   delete all[group]
   // Keep a runtime-only tombstone while a drive may still be mid-turn; it
-  // carries no log and is never persisted, so it can't rehydrate.
+  // carries no log and is flagged so persistence and name-dedup skip it —
+  // updateGroupChat writes the WHOLE atom map, so an unflagged tombstone
+  // would be persisted by the next unrelated room write and its name would
+  // count as taken, suffixing a same-name recreate to "<name> 2" forever.
   if (prior.running) {
-    all[group] = { log: [], watermarks: {}, sessions: {}, epoch: (prior.epoch || 0) + 1, running: false }
+    all[group] = { log: [], watermarks: {}, sessions: {}, epoch: (prior.epoch || 0) + 1, running: false, tombstone: true }
   }
 
   $groupChats.set(all)
@@ -4254,8 +4278,9 @@ async function renameGroupChat(oldName, newName, members) {
   }
 
   // Renames are explicit user intent: reject a collision honestly instead of
-  // silently suffixing like creation does.
-  const taken = new Set(Object.keys($groupChats.get()))
+  // silently suffixing like creation does. Disband tombstones don't hold
+  // their name — the room is gone, only its epoch survives briefly.
+  const taken = new Set(liveGroupChatNames())
 
   for (const meta of Object.values($botMeta.get() || {})) {
     for (const existing of botGroups(meta)) {
@@ -8626,7 +8651,7 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
     // roomId: member sessions are titled by that roomId, so a
     // disbanded-and-recreated group with the SAME display name still gets
     // new sessions instead of resuming the old room's by title.
-    const taken = new Set(Object.keys($groupChats.get()))
+    const taken = new Set(liveGroupChatNames())
 
     for (const meta of Object.values($botMeta.get() || {})) {
       for (const existing of botGroups(meta)) {

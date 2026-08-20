@@ -124,7 +124,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, disbandGroupChat, updateGroupChat, ensureGroupChatSession, uniqueGroupChatName, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, disbandGroupChat, updateGroupChat, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -635,8 +635,23 @@ test('disband: a running room leaves an epoch-bumped empty tombstone so in-fligh
   assert.equal(tomb.log.length, 0)
   assert.equal(tomb.running, false)
   assert.equal(tomb.epoch, 4, 'epoch bumped so the loop bails at its member boundary')
+  assert.equal(tomb.tombstone, true, 'flagged so persistence and name-dedup skip it')
   const durable = gc.storageWrites.get('group-chats')
   assert.ok(!durable || !('Live' in (durable || {})), 'tombstone is never persisted')
+
+  // Regression (#90028 live E2E): updateGroupChat persists the WHOLE atom
+  // map — an unrelated room write while the tombstone lingers must not
+  // smuggle the tombstone into durable storage, and the disbanded name must
+  // be immediately reusable (uniqueGroupChatName would suffix it otherwise).
+  gc.updateGroupChat('Other', room => {
+    room.log.push({ at: Date.now(), from: { kind: 'user' }, text: 'x', thread: 't' })
+    return room
+  })
+  const durable2 = gc.storageWrites.get('group-chats')
+  assert.ok(durable2 && 'Other' in durable2, 'real room persists')
+  assert.ok(!('Live' in durable2), 'tombstone excluded from later whole-map writes')
+  assert.equal(gc.uniqueGroupChatName('Live', new Set(gc.liveGroupChatNames())), 'Live',
+    'disbanded name is immediately reusable — tombstone does not hold it')
 })
 
 test('source contract: workspace header offers disband behind a ConfirmDialog', () => {
@@ -848,7 +863,7 @@ test('source contract: the working line names the member on turn', () => {
 })
 
 test('source contract: creating a group with a taken name mints a fresh room, never reopens the old log', () => {
-  assert.match(pluginSource, /const taken = new Set\(Object\.keys\(\$groupChats\.get\(\)\)\)/)
+  assert.match(pluginSource, /const taken = new Set\(liveGroupChatNames\(\)\)/)
   assert.match(pluginSource, /const groupName = uniqueGroupChatName\(base, taken\)/)
   assert.match(pluginSource, /const roomId = mintGroupRoomId\(\)/)
   assert.match(pluginSource, /room\.roomId = roomId/)

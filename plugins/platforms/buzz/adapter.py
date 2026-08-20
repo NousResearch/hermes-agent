@@ -355,6 +355,8 @@ class BuzzAdapter(BasePlatformAdapter):
     """
 
     def __init__(self, config, **kwargs):
+        self._free_response_channels: set = set()
+        self._inline_reply_channels: set = set()
         platform = Platform("buzz")
         super().__init__(config=config, platform=platform)
 
@@ -391,6 +393,38 @@ class BuzzAdapter(BasePlatformAdapter):
         else:
             _rm_cfg = _rm_raw
         self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
+
+        # free_response_channels: channel UUIDs where the agent responds to
+        # every message without requiring an @mention (mirrors Chatto/Discord's
+        # free_response_channels). Env (BUZZ_FREE_RESPONSE_CHANNELS) overrides
+        # config.yaml; comma-separated UUIDs.
+        _fr_env = os.getenv("BUZZ_FREE_RESPONSE_CHANNELS", "").strip()
+        if _fr_env:
+            self._free_response_channels = set(
+                c.strip() for c in _fr_env.split(",") if c.strip()
+            )
+        else:
+            self._free_response_channels = set(
+                str(c).strip()
+                for c in extra.get("free_response_channels", [])
+                if str(c).strip()
+            )
+
+        # inline_reply_channels: channel UUIDs where replies are sent as
+        # fresh top-level messages instead of threaded replies anchored to the
+        # triggering event (no --reply-to). Env (BUZZ_INLINE_REPLY_CHANNELS)
+        # overrides config.yaml; comma-separated UUIDs.
+        _ir_env = os.getenv("BUZZ_INLINE_REPLY_CHANNELS", "").strip()
+        if _ir_env:
+            self._inline_reply_channels = set(
+                c.strip() for c in _ir_env.split(",") if c.strip()
+            )
+        else:
+            self._inline_reply_channels = set(
+                str(c).strip()
+                for c in extra.get("inline_reply_channels", [])
+                if str(c).strip()
+            )
 
         # Inbound transport: "auto" (WebSocket with poll fallback, default),
         # "websocket" (require WS; fail connect when it can't authenticate),
@@ -610,7 +644,9 @@ class BuzzAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
         reply_target = reply_to or (metadata or {}).get("thread_id")
-        if reply_target:
+        # inline_reply_channels send a fresh top-level message instead of a
+        # threaded reply (no reply anchor).
+        if reply_target and str(chat_id) not in self._inline_reply_channels:
             args += ["--reply-to", str(reply_target)]
         code, out, err = await self._run_cli(args, input_text=content)
         if code != 0:
@@ -1032,8 +1068,14 @@ class BuzzAdapter(BasePlatformAdapter):
         is_dm = state["chat_type"] == "dm"
         # In shared channels, respond only when addressed — unless
         # require_mention is disabled, in which case respond to every message.
+        # free_response_channels also bypass the gate (like Discord/Chatto).
         # DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_mentioned(content):
+        if (
+            not is_dm
+            and self.require_mention
+            and channel_id not in self._free_response_channels
+            and not self._is_mentioned(content)
+        ):
             return
 
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
@@ -1316,6 +1358,15 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
         os.environ["BUZZ_ALLOW_ALL_USERS"] = str(extra["allow_all_users"]).lower()
     if "require_mention" in extra and not os.getenv("BUZZ_REQUIRE_MENTION"):
         os.environ["BUZZ_REQUIRE_MENTION"] = str(extra["require_mention"]).lower()
+    for src_key, env_key in (
+        ("free_response_channels", "BUZZ_FREE_RESPONSE_CHANNELS"),
+        ("inline_reply_channels", "BUZZ_INLINE_REPLY_CHANNELS"),
+    ):
+        val = extra.get(src_key)
+        if val is not None and not os.getenv(env_key):
+            if isinstance(val, (list, tuple)):
+                val = ",".join(str(c) for c in val)
+            os.environ[env_key] = str(val)
     return None
 
 

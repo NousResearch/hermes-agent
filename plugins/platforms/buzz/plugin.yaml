@@ -45,6 +45,14 @@ optional_env:
     description: "Allow any community member to talk to the agent (true/false)"
     prompt: "Allow all users? (true/false)"
     password: false
+  - name: BUZZ_FREE_RESPONSE_CHANNELS
+    description: "Comma-separated channel UUIDs where the agent responds without an @mention (like free_response_channels on Discord/Chatto)"
+    prompt: "Free-response channel UUIDs (comma-separated)"
+    password: false
+  - name: BUZZ_INLINE_REPLY_CHANNELS
+    description: "Comma-separated channel UUIDs where replies are sent as fresh top-level messages instead of threaded replies"
+    prompt: "Inline-reply channel UUIDs (comma-separated)"
+    password: false
   - name: BUZZ_POLL_INTERVAL
     description: "Seconds between inbound poll sweeps (default: 4)"
     prompt: "Poll interval seconds"

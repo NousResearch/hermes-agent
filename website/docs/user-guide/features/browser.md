@@ -476,6 +476,31 @@ AGENT_BROWSER_ENGINE=auto
 AGENT_BROWSER_ARGS=--no-sandbox
 ```
 
+#### Preserve Chromium sandbox in containers
+
+Hermes normally adds `--no-sandbox` when it detects root, Docker, or an
+AppArmor policy that blocks unprivileged user namespaces. This protects the
+default path from startup failures, but it is not appropriate when a
+non-root container has a working Chromium sandbox.
+
+Set the explicit opt-in below:
+
+```bash
+AGENT_BROWSER_FORCE_SANDBOX=1
+```
+
+With this setting Hermes starts the discovered Chromium binary itself with a
+unique profile, loopback-only remote debugging, and no sandbox-bypass flags.
+`agent-browser` then connects through that CDP endpoint, avoiding its own
+Docker auto-detection. Hermes creates one Chromium process per browser
+session and reaps it during session cleanup.
+
+The setting is fail-closed: it requires non-root execution and working user
+namespaces/AppArmor/seccomp support. If Chromium cannot publish its CDP
+endpoint, Hermes returns an actionable error and never retries with
+`--no-sandbox` or `--no-zygote-sandbox`. Do not combine it with those flags or
+with user-supplied remote-debugging/profile flags.
+
 ### Install agent-browser CLI
 
 You don't need to install anything — `agent-browser` resolves automatically via

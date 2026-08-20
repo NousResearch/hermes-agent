@@ -115,6 +115,7 @@ def _lazy_call_llm(*args, **kwargs):
 # means a compromised transitive dependency could read every Hermes secret
 # straight out of process.env.  Strip by default, then re-add only the
 # browser-backend keys the worker legitimately needs.
+CHROMIUM_SANDBOX_FORCE_ENV = "AGENT_BROWSER_FORCE_SANDBOX"
 _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
     "BROWSERBASE_API_KEY",
     "BROWSERBASE_PROJECT_ID",
@@ -122,6 +123,7 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
     "FIRECRAWL_API_KEY",
     "FIRECRAWL_API_URL",
     "FIRECRAWL_BROWSER_TTL",
+    CHROMIUM_SANDBOX_FORCE_ENV,
 )
 
 
@@ -297,6 +299,34 @@ MAX_STORED_SNAPSHOT_CHARS = 2_000_000
 # Commands that legitimately return empty stdout (e.g. close, record).
 _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})
 
+# Explicit opt-in for keeping Chromium's user-namespace sandbox in container
+# environments.  ``agent-browser`` 0.26 detects ``/.dockerenv`` inside its
+# native launcher and adds ``--no-sandbox`` independently of Hermes, so the
+# opt-in uses a Hermes-owned Chromium process connected over CDP.
+_SANDBOX_CDP_STARTUP_TIMEOUT = 15.0
+_SANDBOX_BYPASS_FLAGS = frozenset({
+    "--no-sandbox",
+    "--no-zygote-sandbox",
+    "--disable-gpu-sandbox",
+    "--disable-namespace-sandbox",
+    "--disable-seccomp-filter-sandbox",
+    "--disable-setuid-sandbox",
+    "--single-process",
+    "--in-process-gpu",
+})
+_SANDBOX_CONTROL_FLAGS = frozenset({
+    "--remote-debugging-address",
+    "--remote-debugging-pipe",
+    "--remote-debugging-port",
+    "--user-data-dir",
+})
+_SANDBOX_LAUNCHER_ENV_VARS = (
+    "CHROMIUM_FLAGS",
+    "CHROME_FLAGS",
+    "CHROME_USER_FLAGS",
+    "CHROMIUM_USER_FLAGS",
+)
+
 _cached_command_timeout: Optional[int] = None
 _command_timeout_resolved = False
 
@@ -360,8 +390,16 @@ def _get_open_command_timeout(*, first_open: bool = False) -> int:
     return max(base, floor)
 
 
+def _chromium_sandbox_requested(env: Optional[dict[str, str]] = None) -> bool:
+    """Return True when the operator explicitly requires Chromium sandboxing."""
+    source = os.environ if env is None else env
+    return is_truthy_value(source.get(CHROMIUM_SANDBOX_FORCE_ENV), default=False)
+
+
 def _needs_chromium_sandbox_bypass() -> bool:
     """Return True when Chromium needs --no-sandbox to start reliably."""
+    if _chromium_sandbox_requested():
+        return False
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         return True
     if _running_in_docker():
@@ -374,6 +412,239 @@ def _needs_chromium_sandbox_bypass() -> bool:
     except OSError:
         pass
     return False
+
+
+def _sandbox_chromium_args(env: dict[str, str]) -> list[str]:
+    """Return user Chromium flags after enforcing sandbox-owned controls."""
+    flags: list[str] = []
+    for key in ("AGENT_BROWSER_ARGS", "AGENT_BROWSER_CHROME_FLAGS"):
+        raw = str(env.get(key, "")).strip()
+        if raw:
+            flags.extend(
+                part.strip()
+                for part in re.split(r"[,\r\n]+", raw)
+                if part.strip()
+            )
+
+    unsafe: list[str] = []
+    for flag in flags:
+        name = flag.split("=", 1)[0].lower()
+        if name in _SANDBOX_BYPASS_FLAGS or name in _SANDBOX_CONTROL_FLAGS:
+            unsafe.append(flag)
+    if unsafe:
+        raise ValueError(
+            f"{CHROMIUM_SANDBOX_FORCE_ENV}=1 rejects unsafe Chromium flags: "
+            + ", ".join(sorted(set(unsafe)))
+        )
+
+    names = {flag.split("=", 1)[0].lower() for flag in flags}
+    if "--disable-dev-shm-usage" not in names:
+        flags.append("--disable-dev-shm-usage")
+    return flags
+
+
+def _sandbox_chromium_env(env: dict[str, str]) -> dict[str, str]:
+    """Remove inherited launcher flags from the sandboxed Chromium child."""
+    child_env = dict(env)
+    for key in _SANDBOX_LAUNCHER_ENV_VARS:
+        child_env.pop(key, None)
+    return child_env
+
+
+def _build_sandboxed_chromium_command(
+    executable: str,
+    profile_dir: str,
+    *,
+    headed: bool,
+    extra_args: list[str],
+) -> list[str]:
+    """Build Chromium argv with CDP bound to loopback and no bypass flags."""
+    command = [executable, *extra_args]
+    if not headed:
+        command.append("--headless=new")
+    command.extend(
+        [
+            "--no-first-run",
+            "--no-default-browser-check",
+            f"--user-data-dir={profile_dir}",
+            "--remote-debugging-address=127.0.0.1",
+            "--remote-debugging-port=0",
+        ]
+    )
+    return command
+
+
+def _read_sandbox_cdp_url(profile_dir: str) -> Optional[str]:
+    """Read loopback WebSocket endpoint published by Chromium."""
+    active_port = os.path.join(profile_dir, "DevToolsActivePort")
+    try:
+        lines = Path(active_port).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    if len(lines) < 2:
+        return None
+    try:
+        port = int(lines[0].strip())
+    except ValueError:
+        return None
+    browser_path = lines[1].strip()
+    if not (1 <= port <= 65535) or not browser_path.startswith("/"):
+        return None
+    return f"ws://127.0.0.1:{port}{browser_path}"
+
+
+def _stop_sandboxed_chromium(process: Any) -> None:
+    """Terminate a Hermes-owned Chromium process without leaking children."""
+    if process is None:
+        return
+    try:
+        if process.poll() is None:
+            process.terminate()
+    except (OSError, AttributeError):
+        pass
+    try:
+        process.wait(timeout=5)
+    except (OSError, AttributeError, subprocess.TimeoutExpired):
+        try:
+            process.kill()
+        except (OSError, AttributeError):
+            pass
+        try:
+            process.wait(timeout=2)
+        except (OSError, AttributeError, subprocess.TimeoutExpired):
+            pass
+
+
+def _launch_sandboxed_chromium(
+    executable: str,
+    profile_dir: str,
+    browser_env: dict[str, str],
+    *,
+    headed: bool,
+) -> tuple[subprocess.Popen, str]:
+    """Launch Chromium with its sandbox and return its loopback CDP URL."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        raise RuntimeError(
+            f"{CHROMIUM_SANDBOX_FORCE_ENV}=1 requires Hermes to run as a "
+            "non-root user; Chromium sandbox cannot initialize as root."
+        )
+
+    os.makedirs(profile_dir, mode=0o700, exist_ok=True)
+    try:
+        os.unlink(os.path.join(profile_dir, "DevToolsActivePort"))
+    except FileNotFoundError:
+        pass
+    chromium_env = _sandbox_chromium_env(browser_env)
+    command = _build_sandboxed_chromium_command(
+        executable,
+        profile_dir,
+        headed=headed,
+        extra_args=_sandbox_chromium_args(chromium_env),
+    )
+    popen_extra: dict[str, Any] = {}
+    if os.name == "nt":
+        popen_extra["creationflags"] = windows_hide_flags()
+        popen_extra["close_fds"] = True
+
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=chromium_env,
+            **popen_extra,
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not start sandboxed Chromium at {executable!r}: {exc}"
+        ) from exc
+
+    deadline = time.monotonic() + _SANDBOX_CDP_STARTUP_TIMEOUT
+    try:
+        while time.monotonic() < deadline:
+            cdp_url = _read_sandbox_cdp_url(profile_dir)
+            if cdp_url:
+                logger.info(
+                    "browser: Chromium sandbox preserved; using loopback CDP for %s",
+                    profile_dir,
+                )
+                return process, cdp_url
+            if process.poll() is not None:
+                raise RuntimeError(
+                    "Chromium exited before publishing its sandboxed CDP endpoint "
+                    f"(exit code {process.returncode}). Verify user namespaces, "
+                    "AppArmor, seccomp, and system browser libraries."
+                )
+            time.sleep(0.05)
+    except Exception:
+        _stop_sandboxed_chromium(process)
+        raise
+
+    _stop_sandboxed_chromium(process)
+    raise RuntimeError(
+        "Chromium did not publish a sandboxed CDP endpoint within "
+        f"{_SANDBOX_CDP_STARTUP_TIMEOUT:g}s. Verify user namespaces, AppArmor, "
+        "seccomp, and system browser libraries; no --no-sandbox fallback was tried."
+    )
+
+
+def _ensure_sandboxed_chromium(
+    task_id: str,
+    session_info: Dict[str, Any],
+    task_socket_dir: str,
+    browser_env: dict[str, str],
+    *,
+    headed: bool,
+) -> str:
+    """Start one sandboxed Chromium per local session and cache its CDP URL."""
+    with _cleanup_lock:
+        launch_lock = session_info.get("_sandbox_launch_lock")
+        if launch_lock is None:
+            launch_lock = threading.Lock()
+            session_info["_sandbox_launch_lock"] = launch_lock
+
+    with launch_lock:
+        cdp_url = session_info.get("sandbox_cdp_url")
+        process = session_info.get("sandbox_chromium_process")
+        if cdp_url and process is not None:
+            try:
+                if process.poll() is None:
+                    return cdp_url
+            except (OSError, AttributeError):
+                pass
+
+        executable = _find_chromium_executable()
+        if not executable:
+            raise RuntimeError(
+                f"{CHROMIUM_SANDBOX_FORCE_ENV}=1 requires a discoverable Chromium "
+                "executable. Set AGENT_BROWSER_EXECUTABLE_PATH or install the "
+                "bundled Playwright Chromium."
+            )
+
+        profile_dir = session_info.get("sandbox_profile_dir") or os.path.join(
+            task_socket_dir, "chromium-profile"
+        )
+        try:
+            process, cdp_url = _launch_sandboxed_chromium(
+                executable,
+                profile_dir,
+                browser_env,
+                headed=headed,
+            )
+        except Exception:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+            raise
+
+        session_info["sandbox_profile_dir"] = profile_dir
+        session_info["sandbox_chromium_process"] = process
+        session_info["sandbox_cdp_url"] = cdp_url
+        logger.debug(
+            "browser: sandboxed Chromium ready for task=%s endpoint=%s",
+            task_id,
+            _sanitize_url_for_logs(cdp_url),
+        )
+        return cdp_url
 
 
 def _read_command_output_files(stdout_path: str, stderr_path: str) -> tuple[str, str]:
@@ -415,10 +686,23 @@ def _format_browser_timeout_error(
     combined = f"{stderr}\n{stdout}".lower()
     hints: list[str] = []
     if "sandbox" in combined:
+        if _chromium_sandbox_requested():
+            hints.append(
+                "Sandbox-preserving mode failed. Run Hermes as a non-root user "
+                "and verify user namespaces, AppArmor, seccomp, and Chromium "
+                "system libraries; no --no-sandbox retry was attempted."
+            )
+        else:
+            hints.append(
+                "Chromium sandbox launch failed. Set AGENT_BROWSER_ARGS="
+                "'--no-sandbox,--disable-dev-shm-usage' in your environment, "
+                "or run: npx agent-browser install --with-deps"
+            )
+    elif _chromium_sandbox_requested() and command == "open" and _is_local_mode():
         hints.append(
-            "Chromium sandbox launch failed. Set AGENT_BROWSER_ARGS="
-            "'--no-sandbox,--disable-dev-shm-usage' in your environment, "
-            "or run: npx agent-browser install --with-deps"
+            "Sandbox-preserving mode could not connect to Chromium. Run Hermes "
+            "as non-root and verify user namespaces, AppArmor, seccomp, and "
+            "Chromium system libraries; no --no-sandbox retry was attempted."
         )
     elif command == "open" and _is_local_mode():
         if _running_in_docker():
@@ -2872,6 +3156,17 @@ def _run_browser_command(
     if engine != "auto" and not _is_camofox_mode() and not session_info.get("cdp_url"):
         backend_args += ["--engine", engine]
 
+    preserve_sandbox = (
+        _chromium_sandbox_requested()
+        and not session_info.get("cdp_url")
+        and engine != "lightpanda"
+        and not _is_camofox_mode()
+    )
+    sandbox_cdp_url = session_info.get("sandbox_cdp_url")
+    if preserve_sandbox and command == "close" and not sandbox_cdp_url:
+        # Do not make a close-only cleanup call launch an insecure daemon.
+        return {"success": True, "data": {}}
+
     # Keep concrete executable paths intact, even when they contain spaces.
     # Only the synthetic npx fallback needs to expand into multiple argv items.
     # Resolve via the same PATH + extended-PATH cascade _find_agent_browser
@@ -2920,6 +3215,22 @@ def _run_browser_command(
             idle_ms = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
             browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = idle_ms
 
+        if preserve_sandbox and command != "close" and not sandbox_cdp_url:
+            sandbox_cdp_url = _ensure_sandboxed_chromium(
+                task_id,
+                session_info,
+                task_socket_dir,
+                browser_env,
+                headed=_is_headed_mode(),
+            )
+            # agent-browser must connect to Hermes-owned Chromium. Its native
+            # local launcher is the second source of automatic --no-sandbox.
+            backend_args = ["--cdp", sandbox_cdp_url]
+            cmd_parts = cmd_prefix + backend_args + ["--json", command] + args
+        elif sandbox_cdp_url:
+            backend_args = ["--cdp", sandbox_cdp_url]
+            cmd_parts = cmd_prefix + backend_args + ["--json", command] + args
+
         # Inject --no-sandbox when needed (issue #15765):
         # - Running as root: Chromium always refuses to start without it
         # - Ubuntu 23.10+ / AppArmor systems: unprivileged user namespaces
@@ -2928,7 +3239,7 @@ def _run_browser_command(
         # Honour either the legacy AGENT_BROWSER_CHROME_FLAGS (never consumed by
         # agent-browser itself, but documented in older notes) or the real
         # AGENT_BROWSER_ARGS — if the user pre-sets either, don't overwrite it.
-        if (
+        if not preserve_sandbox and (
             "AGENT_BROWSER_ARGS" not in browser_env
             and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
         ):
@@ -4986,6 +5297,15 @@ def _cleanup_single_browser_session(task_id: str) -> None:
             except Exception as e:
                 logger.warning("agent-browser close failed for task %s: %s", task_id, e)
 
+        # Sandbox-preserving mode owns Chromium outside agent-browser's daemon.
+        # Close the CDP client first, then reap the browser process and profile.
+        sandbox_process = session_info.get("sandbox_chromium_process")
+        if sandbox_process is not None:
+            _stop_sandboxed_chromium(sandbox_process)
+        sandbox_profile = session_info.get("sandbox_profile_dir")
+        if sandbox_profile:
+            shutil.rmtree(sandbox_profile, ignore_errors=True)
+
         # Now remove from tracking under lock
         with _cleanup_lock:
             _active_sessions.pop(task_id, None)
@@ -5094,6 +5414,73 @@ def _chromium_search_roots() -> List[str]:
         )
         roots.append(os.path.join(local, "ms-playwright"))
     return roots
+
+
+def _find_chromium_executable() -> Optional[str]:
+    """Resolve the concrete Chromium binary used by sandbox-preserving mode."""
+    explicit = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
+    if explicit:
+        if os.path.isfile(explicit):
+            return explicit
+        resolved = shutil.which(explicit)
+        if resolved:
+            return resolved
+
+    for name in ("google-chrome", "chromium", "chromium-browser", "chrome"):
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
+
+    binary_names = {
+        "chrome",
+        "chrome.exe",
+        "chromium",
+        "chromium.exe",
+        "chrome-headless-shell",
+        "chrome-headless-shell.exe",
+        "Chromium",
+    }
+    cache_prefixes = ("chromium-", "chromium_headless_shell-")
+    relative_candidates = (
+        ("chrome-linux", "chrome"),
+        ("chrome-linux64", "chrome"),
+        ("chrome-headless-shell-linux", "chrome-headless-shell"),
+        ("chrome-headless-shell-linux64", "chrome-headless-shell"),
+        ("chrome-win", "chrome.exe"),
+        ("chrome-win64", "chrome.exe"),
+        ("chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium"),
+    )
+    for root in _chromium_search_roots():
+        if not root or not os.path.isdir(root):
+            continue
+        try:
+            entries = sorted(os.scandir(root), key=lambda entry: entry.name)
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_dir() or not entry.name.startswith(cache_prefixes):
+                continue
+            for relative in relative_candidates:
+                candidate = os.path.join(entry.path, *relative)
+                if os.path.isfile(candidate) and (
+                    os.name == "nt" or os.access(candidate, os.X_OK)
+                ):
+                    return candidate
+            # Keep fallback scan bounded to the Playwright browser directory.
+            try:
+                for current, directories, files in os.walk(entry.path):
+                    depth = current[len(entry.path):].count(os.sep)
+                    if depth >= 4:
+                        directories[:] = []
+                    for filename in sorted(files):
+                        if filename not in binary_names:
+                            continue
+                        candidate = os.path.join(current, filename)
+                        if os.name == "nt" or os.access(candidate, os.X_OK):
+                            return candidate
+            except OSError:
+                continue
+    return None
 
 
 def _chromium_installed() -> bool:

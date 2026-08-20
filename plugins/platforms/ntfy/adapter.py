@@ -1,9 +1,10 @@
 """ntfy platform adapter (Hermes plugin).
 
 Subscribes to a topic on ntfy.sh or any self-hosted ntfy server via
-HTTP streaming (``/json`` endpoint with ``poll=false``) and publishes
-replies via HTTP POST. No external SDK — only httpx, which is already
-a Hermes dependency.
+HTTP streaming (``/json`` endpoint with ``poll=false``) or, optionally,
+WebSocket (``/ws`` endpoint), and publishes replies via HTTP POST.
+No external SDK — only httpx (plus the core ``websockets`` dependency
+for the WebSocket transport), both already Hermes dependencies.
 
 This adapter ships as a Hermes platform plugin under
 ``plugins/platforms/ntfy/``. The Hermes plugin loader scans the
@@ -22,6 +23,23 @@ Configuration in config.yaml::
           publish_topic: "hermes-out"     # optional — defaults to topic
           token: "..."                    # optional Bearer / Basic auth token
           markdown: true                  # optional — enable markdown (default: false)
+          transport: "http"               # optional — "http" (default) or "ws"
+          stream_timeout_seconds: 90      # optional — read timeout for the stream
+
+``transport`` selects the subscription mechanism. ``http`` (default)
+streams the ``/json`` endpoint with ``poll=false`` and relies on server
+keepalive events to keep the connection open. ``ws`` subscribes via the
+ntfy WebSocket endpoint (``wss://<server>/<topic>/ws``) using the core
+``websockets`` dependency; WebSocket uses standard upgrade semantics, so
+it survives buffering reverse proxies that swallow the HTTP long-poll
+stream. The trade-off: ``ws`` is not affected by server keepalive
+behavior, but the ``http`` transport's configurable timeout is what
+bounds a silent (no-keepalive) connection.
+
+``stream_timeout_seconds`` bounds how long the ``http`` transport waits
+for keepalive/message bytes before treating the connection as dead and
+reconnecting. ntfy's keepalive default is 55s; servers or proxies that
+send none should raise this (or switch to ``transport: "ws"``).
 
 Environment variables (all read at adapter construct time, env wins over
 config.yaml ``extra``):
@@ -36,6 +54,9 @@ config.yaml ``extra``):
     NTFY_ALLOW_ALL_USERS       Allow any topic — dev only
     NTFY_HOME_CHANNEL          Default topic for cron / notification delivery
     NTFY_HOME_CHANNEL_NAME     Human label for the home channel
+    NTFY_TRANSPORT             "http" (default) or "ws"
+    NTFY_STREAM_TIMEOUT_SECONDS  Stream read timeout in seconds
+                               (default: 90; http transport only)
 
 Identity model: ntfy has no native authenticated user identity. The
 ``title`` field is publisher-controlled and is NOT used for
@@ -59,6 +80,13 @@ try:
 except ImportError:
     HTTPX_AVAILABLE = False
     httpx = None  # type: ignore[assignment]
+
+try:
+    import websockets
+    WEBSOCKETS_AVAILABLE = True
+except ImportError:
+    WEBSOCKETS_AVAILABLE = False
+    websockets = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -104,7 +132,7 @@ MAX_MESSAGE_LENGTH = 4096  # ntfy message body limit
 DEDUP_WINDOW_SECONDS = 300
 DEDUP_MAX_SIZE = 1000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
-STREAM_TIMEOUT_SECONDS = 90  # ntfy keepalive default is 55s; give margin
+DEFAULT_STREAM_TIMEOUT_SECONDS = 90  # ntfy keepalive default is 55s; give margin
 _ECHO_TAG = "hermes-agent"  # tag added to outgoing messages for echo-loop prevention
 
 
@@ -146,17 +174,25 @@ def _truncate_body(message: str, *, context: str) -> bytes:
     return message[:MAX_MESSAGE_LENGTH].encode("utf-8")
 
 
-def check_requirements() -> bool:
+def check_requirements(config=None) -> bool:
     """Check whether the ntfy adapter is installable and minimally configured.
 
     Reads ``NTFY_TOPIC`` directly to avoid the cost of a full
     ``load_gateway_config()`` (which also writes to ``os.environ``) on
-    every pre-flight check.
+    every pre-flight check. When a ``config`` is supplied (the platform
+    registry passes it through), ``platforms.ntfy.extra.topic`` is honored
+    alongside the env var, so a config.yaml-only setup passes pre-flight
+    instead of being rejected with a misleading "requirements not met".
     """
     if not HTTPX_AVAILABLE:
         return False
     topic = os.getenv("NTFY_TOPIC", "").strip()
-    return bool(topic)
+    if topic:
+        return True
+    if config is not None:
+        extra = getattr(config, "extra", None) or {}
+        return bool(extra.get("topic"))
+    return False
 
 
 def validate_config(config) -> bool:
@@ -199,6 +235,33 @@ class NtfyAdapter(BasePlatformAdapter):
         )
         self._token: str = extra.get("token") or _get_scoped_secret("NTFY_TOKEN", "")
 
+        # Stream read timeout: how long to wait for keepalive/message bytes
+        # before treating the connection as dead and reconnecting. ntfy's
+        # keepalive default is 55s; the fleet server sends none, so make the
+        # timeout configurable (extra.stream_timeout_seconds / env) instead of
+        # baking in an assumption about server behavior.
+        raw_timeout = (
+            extra.get("stream_timeout_seconds")
+            or os.getenv("NTFY_STREAM_TIMEOUT_SECONDS", "")
+        )
+        try:
+            self._stream_timeout_seconds = float(raw_timeout) if raw_timeout else DEFAULT_STREAM_TIMEOUT_SECONDS
+        except (TypeError, ValueError):
+            logger.warning(
+                "[%s] Invalid stream_timeout_seconds %r — using default %s",
+                self.name, raw_timeout, DEFAULT_STREAM_TIMEOUT_SECONDS,
+            )
+            self._stream_timeout_seconds = DEFAULT_STREAM_TIMEOUT_SECONDS
+
+        # Transport: "http" (default) uses the /json streaming endpoint via
+        # httpx; "ws" uses the ntfy WebSocket endpoint via websockets (a core
+        # Hermes dependency). WebSocket survives buffering reverse proxies
+        # that break the HTTP stream (upgrade semantics), at the cost of the
+        # `poll=false` keepalive handling.
+        self._transport: str = (
+            extra.get("transport") or os.getenv("NTFY_TRANSPORT", "http")
+        ).strip().lower()
+
         self._stream_task: Optional[asyncio.Task] = None
         self._http_client: Optional["httpx.AsyncClient"] = None
 
@@ -227,26 +290,52 @@ class NtfyAdapter(BasePlatformAdapter):
             return False
 
     async def _run_stream(self) -> None:
-        """Subscribe to the ntfy topic with automatic reconnection."""
+        """Subscribe to the ntfy topic with automatic reconnection.
+
+        Transport is selected by ``self._transport``: ``http`` streams the
+        ``/json`` endpoint via httpx (default), ``ws`` subscribes over the
+        ntfy WebSocket endpoint via the core ``websockets`` dependency.
+        """
         backoff_idx = 0
         stream_start: float = 0.0
-        url = f"{self._server}/{self._topic}/json"
         headers = self._auth_headers()
+        transport = self._transport
 
         while self._running:
+            url: str = ""
             try:
-                logger.debug("[%s] Opening stream to %s", self.name, url)
+                logger.debug(
+                    "[%s] Opening stream to %s (transport=%s)",
+                    self.name, self._topic, transport,
+                )
                 stream_start = time.monotonic()
-                await self._consume_stream(url, headers)
+                if transport == "ws":
+                    url = self._ws_url()
+                    await self._consume_ws(url, headers)
+                else:
+                    url = f"{self._server}/{self._topic}/json"
+                    await self._consume_stream(url, headers)
             except asyncio.CancelledError:
                 return
             except _FatalStreamError:
                 self._running = False
                 return
+            except httpx.TimeoutException as e:
+                if not self._running:
+                    return
+                logger.warning(
+                    "[%s] Stream read timeout after %ss — no keepalive/message "
+                    "bytes received from %s. The server may not send keepalives; "
+                    "adjust stream_timeout_seconds / NTFY_STREAM_TIMEOUT_SECONDS "
+                    "or check the server. Reconnecting (attempt %d).",
+                    self.name, self._stream_timeout_seconds, url, backoff_idx + 1,
+                )
             except Exception as e:
                 if not self._running:
                     return
-                logger.warning("[%s] Stream error: %s", self.name, e)
+                logger.warning(
+                    "[%s] %s stream error: %s", self.name, transport, e,
+                )
 
             if not self._running:
                 return
@@ -259,6 +348,44 @@ class NtfyAdapter(BasePlatformAdapter):
             await asyncio.sleep(delay)
             backoff_idx += 1
 
+    def _ws_url(self) -> str:
+        """Build the ntfy WebSocket subscribe URL for the configured topic.
+
+        ntfy serves the same JSON event stream on ``/ws`` as on ``/json``;
+        the WebSocket path uses standard upgrade semantics, so it survives
+        buffering reverse proxies that swallow the HTTP long-poll stream.
+        """
+        scheme = "wss" if self._server.startswith("https") else "ws"
+        return f"{scheme}://{self._server.split('://', 1)[-1]}/{self._topic}/ws"
+
+    async def _consume_ws(self, url: str, headers: Dict[str, str]) -> None:
+        """Subscribe over WebSocket and dispatch events.
+
+        Message events arrive as newline-delimited JSON (same shape as the
+        ``/json`` stream). Keepalive events are non-``message`` events and are
+        ignored by :meth:`_on_message`. 401/404 at upgrade time map to the
+        same fatal state as the HTTP path.
+        """
+        if not WEBSOCKETS_AVAILABLE:
+            raise RuntimeError("websockets not installed")
+
+        connect_kwargs: dict = {}
+        if headers:
+            connect_kwargs["additional_headers"] = headers
+
+        async with websockets.connect(url, **connect_kwargs) as ws:
+            async for raw in ws:
+                if not self._running:
+                    return
+                if not raw:
+                    continue
+                try:
+                    event = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("event") == "message":
+                    await self._on_message(event)
+
     async def _consume_stream(self, url: str, headers: Dict[str, str]) -> None:
         """Open an HTTP streaming connection and dispatch events."""
         # poll=false keeps a persistent streaming connection alive with keepalive events
@@ -268,7 +395,7 @@ class NtfyAdapter(BasePlatformAdapter):
             url,
             headers=headers,
             params=params,
-            timeout=httpx.Timeout(connect=15.0, read=STREAM_TIMEOUT_SECONDS, write=15.0, pool=15.0),
+            timeout=httpx.Timeout(connect=15.0, read=self._stream_timeout_seconds, write=15.0, pool=15.0),
         ) as response:
             if response.status_code == 401:
                 logger.error(

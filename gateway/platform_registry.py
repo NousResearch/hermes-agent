@@ -79,7 +79,7 @@ class PlatformEntry:
     # status displays (``hermes setup``, ``hermes status``, the dashboard
     # readiness probe) and the config enablement pass, none of which may
     # trigger a pip install.  Put install logic in ``ensure_deps_fn`` instead.
-    check_fn: Callable[[], bool]
+    check_fn: Callable[..., bool]
 
     # Optional: given a PlatformConfig, is it properly configured?
     # If None, the registry skips config validation and lets the adapter
@@ -631,7 +631,14 @@ class PlatformRegistry:
 
         deps_ok = False
         try:
-            deps_ok = bool(entry.check_fn())
+            # Pass config through so check_fn implementations that honor
+            # config.yaml (e.g. ntfy's extra.topic) aren't limited to env
+            # vars. check_fn implementations that take no args still work:
+            # a TypeError here falls through to the no-arg call below.
+            try:
+                deps_ok = bool(entry.check_fn(config))
+            except TypeError:
+                deps_ok = bool(entry.check_fn())
         except Exception as e:
             logger.warning(
                 "Platform '%s' check_fn raised: %s", entry.label, e

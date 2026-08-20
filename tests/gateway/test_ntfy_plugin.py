@@ -32,6 +32,7 @@ register = _ntfy.register
 _env_enablement = _ntfy._env_enablement
 _standalone_send = _ntfy._standalone_send
 DEFAULT_SERVER = _ntfy.DEFAULT_SERVER
+DEFAULT_STREAM_TIMEOUT_SECONDS = _ntfy.DEFAULT_STREAM_TIMEOUT_SECONDS
 DEDUP_WINDOW_SECONDS = _ntfy.DEDUP_WINDOW_SECONDS
 DEDUP_MAX_SIZE = _ntfy.DEDUP_MAX_SIZE
 MAX_MESSAGE_LENGTH = _ntfy.MAX_MESSAGE_LENGTH
@@ -67,6 +68,27 @@ class TestNtfyRequirements:
         monkeypatch.setenv("NTFY_TOPIC", "hermes-test")
         monkeypatch.setattr(_ntfy, "HTTPX_AVAILABLE", False)
         assert check_requirements() is False
+
+    def test_env_topic_still_works_without_config(self, monkeypatch):
+        monkeypatch.setenv("NTFY_TOPIC", "env-topic")
+        monkeypatch.delenv("NTFY_STREAM_TIMEOUT_SECONDS", raising=False)
+        assert check_requirements() is True
+        # Explicit None config must not break the env-only path
+        assert check_requirements(None) is True
+
+    def test_config_topic_satisfies_check_without_env(self, monkeypatch):
+        """config.yaml extra.topic alone must pass pre-flight (#...): the
+        registry runs check_fn before validate_config, and check_fn used to
+        read NTFY_TOPIC only, rejecting config-only setups with a misleading
+        'requirements not met'."""
+        monkeypatch.delenv("NTFY_TOPIC", raising=False)
+        config = PlatformConfig(enabled=True, extra={"topic": "cfg-topic"})
+        assert check_requirements(config) is True
+
+    def test_config_without_topic_still_fails(self, monkeypatch):
+        monkeypatch.delenv("NTFY_TOPIC", raising=False)
+        config = PlatformConfig(enabled=True, extra={})
+        assert check_requirements(config) is False
 
 
     def test_is_connected_from_extra(self, monkeypatch):
@@ -104,6 +126,97 @@ class TestNtfyAdapterInit:
         config = PlatformConfig(enabled=True, extra={"topic": "t"})
         adapter = NtfyAdapter(config)
         assert adapter._token == "env-token"
+
+
+# ---------------------------------------------------------------------------
+# 3b. Configurable stream timeout + transport selection
+# ---------------------------------------------------------------------------
+
+
+class TestStreamTimeoutAndTransport:
+
+    def test_default_timeout(self):
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        assert adapter._stream_timeout_seconds == DEFAULT_STREAM_TIMEOUT_SECONDS
+
+    def test_timeout_from_extra(self):
+        adapter = NtfyAdapter(PlatformConfig(
+            enabled=True, extra={"topic": "t", "stream_timeout_seconds": 30},
+        ))
+        assert adapter._stream_timeout_seconds == 30.0
+
+    def test_timeout_from_env(self, monkeypatch):
+        monkeypatch.setenv("NTFY_STREAM_TIMEOUT_SECONDS", "45")
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        assert adapter._stream_timeout_seconds == 45.0
+
+    def test_invalid_timeout_falls_back(self, monkeypatch):
+        monkeypatch.setenv("NTFY_STREAM_TIMEOUT_SECONDS", "not-a-number")
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        assert adapter._stream_timeout_seconds == DEFAULT_STREAM_TIMEOUT_SECONDS
+
+    def test_transport_defaults_to_http(self, monkeypatch):
+        monkeypatch.delenv("NTFY_TRANSPORT", raising=False)
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        assert adapter._transport == "http"
+
+    def test_transport_from_extra(self):
+        adapter = NtfyAdapter(PlatformConfig(
+            enabled=True, extra={"topic": "t", "transport": "ws"},
+        ))
+        assert adapter._transport == "ws"
+
+    def test_transport_from_env(self, monkeypatch):
+        monkeypatch.setenv("NTFY_TRANSPORT", "WS")
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        assert adapter._transport == "ws"
+
+    def test_ws_url_https(self):
+        adapter = NtfyAdapter(PlatformConfig(
+            enabled=True,
+            extra={"topic": "alerts", "server": "https://ntfy.oryx-herring.ts.net"},
+        ))
+        assert adapter._ws_url() == "wss://ntfy.oryx-herring.ts.net/alerts/ws"
+
+    def test_ws_url_http(self):
+        adapter = NtfyAdapter(PlatformConfig(
+            enabled=True, extra={"topic": "t", "server": "http://localhost:8090"},
+        ))
+        assert adapter._ws_url() == "ws://localhost:8090/t/ws"
+
+    def test_run_stream_routes_to_ws(self):
+        adapter = NtfyAdapter(PlatformConfig(
+            enabled=True, extra={"topic": "t", "transport": "ws"},
+        ))
+        with patch.object(adapter, "_consume_ws", new_callable=AsyncMock) as mock_ws:
+            with patch.object(adapter, "_consume_stream", new_callable=AsyncMock) as mock_http:
+                adapter._running = True
+                adapter._stream_task = None
+                # _consume_ws raises immediately -> reconnect loop sleeps; use
+                # a short backoff and stop after the first reconnect.
+                mock_ws.side_effect = Exception("ws down")
+                async def _stop_soon():
+                    await asyncio.sleep(0.05)
+                    adapter._running = False
+                loop = asyncio.get_event_loop()
+                loop.create_task(_stop_soon())
+                _run(adapter._run_stream())
+        mock_ws.assert_awaited()
+        mock_http.assert_not_awaited()
+
+    def test_run_stream_http_does_not_call_ws(self):
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        with patch.object(adapter, "_consume_stream", new_callable=AsyncMock) as mock_http:
+            with patch.object(adapter, "_consume_ws", new_callable=AsyncMock) as mock_ws:
+                adapter._running = True
+                async def _stop_soon():
+                    await asyncio.sleep(0.05)
+                    adapter._running = False
+                loop = asyncio.get_event_loop()
+                loop.create_task(_stop_soon())
+                _run(adapter._run_stream())
+        mock_http.assert_awaited()
+        mock_ws.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

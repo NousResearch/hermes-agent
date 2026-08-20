@@ -443,21 +443,50 @@ async def loop_heartbeat_forever(
 ) -> None:
     """Rewrite the loop heartbeat file on a cadence until cancelled / gated off.
 
-    Runs as an asyncio task on the gateway loop — if the loop freezes, this
-    task stops and the file mtime/updated_at goes stale for external monitors.
+    Runs as an asyncio task on the gateway loop — if the loop freezes, this task
+    stops and the file mtime/updated_at goes stale for external monitors. That
+    property is load-bearing and is preserved below: the write is still
+    *initiated* by the loop, so a frozen loop still lets the file age.
+
+    The write itself is handed to a thread, because it is not free. It ends in
+    ``atomic_json_write`` -> ``os.fsync``, and on a filesystem that stalls, that
+    fsync blocks whatever thread runs it. Doing it inline meant the loop-liveness
+    watchdog's own heartbeat could block the loop it exists to monitor: the probe
+    times out at ``DEFAULT_LOOP_WATCHDOG_TIMEOUT_S`` (10s) and gives up after
+    ``DEFAULT_LOOP_WATCHDOG_MAX_STRIKES`` (3), a ~90-120s budget, while a WSL2
+    VHDX under io pressure was measured stalling a trivial stat-and-fsync probe
+    at p99 31s and max 112s. So the watchdog killed the loop for being
+    unresponsive at the moment it was blocked inside the watchdog's own write.
+
+    Awaited, not fire-and-forget: an unawaited task would keep the file fresh
+    while the loop was wedged, which is exactly the signal the docstring above
+    promises. And a single in-flight write at a time, so a 112s stall cannot pile
+    up one queued thread per interval behind it.
     """
     try:
         interval = max(float(interval_s), 1.0)
     except (TypeError, ValueError):
         interval = DEFAULT_HEARTBEAT_INTERVAL_S
 
+    async def _write_off_loop() -> None:
+        # write_loop_heartbeat never raises, so a failure here is an executor
+        # problem (shutdown, saturation) and must not kill the heartbeat task.
+        try:
+            await asyncio.to_thread(
+                write_loop_heartbeat, start_time=start_time, home=home
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Loop heartbeat write failed off-loop", exc_info=True)
+
     # Immediate first write so monitors see a fresh file as soon as the
     # gateway is running, not after the first interval.
-    write_loop_heartbeat(start_time=start_time, home=home)
+    await _write_off_loop()
     while True:
         if should_continue is not None and not should_continue():
             return
         await asyncio.sleep(interval)
         if should_continue is not None and not should_continue():
             return
-        write_loop_heartbeat(start_time=start_time, home=home)
+        await _write_off_loop()

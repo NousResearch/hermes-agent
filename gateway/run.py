@@ -850,6 +850,22 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
+
+    # Buzz-specific: agent-internal telemetry is posted as chat messages on
+    # Buzz and treated as noise by users. Suppress compaction-complete status
+    # (which is not matched by _TELEGRAM_NOISY_STATUS_RE) and self-improvement
+    # review summaries (which bypass this function entirely via the direct
+    # background_review_callback path in _deliver_bg_review_message, but catch
+    # any fallback status_callback routes here too). Non-Buzz platforms are
+    # unchanged — COMPACTION_DONE_STATUS remains deliverable on Telegram et al
+    # per test_compression_progress_notices.py.#69546.
+    if _gateway_platform_value(platform) == "buzz" and re.search(
+        r"(Context compaction complete|Self-improvement review)",
+        text,
+        re.IGNORECASE,
+    ):
+        return None
+
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         # Opt-in #52995: `compression.progress_notices: true` lets ROUTINE
         # compression progress statuses through to chat platforms. The
@@ -5802,6 +5818,15 @@ class TurnRunner:
 
         def _deliver_bg_review_message(message: str) -> None:
             if not ctx._status_adapter or not ctx._run_still_current():
+                return
+            # Buzz-specific: suppress self-improvement review noise from chat.
+            # This path bypasses _prepare_gateway_status_message entirely, so
+            # the filter must be applied here as well (#t_cc3338cf).
+            if _gateway_platform_value(ctx.source.platform) == "buzz" and re.search(
+                r"Self-improvement review",
+                message,
+                re.IGNORECASE,
+            ):
                 return
             safe_schedule_threadsafe(
                 ctx._status_adapter.send(

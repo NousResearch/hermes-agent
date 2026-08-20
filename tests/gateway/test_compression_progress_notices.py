@@ -97,6 +97,56 @@ def test_compaction_completion_notice_reaches_chat(monkeypatch, platform, enable
     )
 
 
+def test_compaction_completion_suppressed_on_buzz(monkeypatch):
+    """Buzz suppresses COMPACTION_DONE_STATUS — it's unwanted telemetry noise.
+
+    Unlike Telegram/Discord/Slack where COMPACTION_DONE_STATUS is intentionally
+    deliverable, Buzz users reported compaction-complete status appearing as
+    unwanted chat messages (#t_cc3338cf). The Buzz-specific gate in
+    _prepare_gateway_status_message must return None for this message.
+    """
+    for enabled in (True, False):
+        monkeypatch.setattr(
+            gateway_run,
+            "_load_gateway_config",
+            lambda e=enabled: {"compression": {"progress_notices": e}},
+        )
+        assert (
+            _prepare_gateway_status_message("buzz", "compacted", COMPACTION_DONE_STATUS)
+            is None
+        ), f"COMPACTION_DONE_STATUS should be suppressed on Buzz (progress_notices={enabled})"
+
+
+def test_bg_review_self_improvement_suppressed_on_buzz():
+    """Buzz suppresses 'Self-improvement review' background review messages.
+
+    The background_review_callback path bypasses _prepare_gateway_status_message
+    and sends directly via _deliver_bg_review_message. The filter in that path
+    must suppress messages matching 'Self-improvement review'. This test
+    validates the filter logic via _prepare_gateway_status_message as well,
+    which also handles it as a fallback.
+    """
+    review_message = "💾 Self-improvement review: Updated memory with user context"
+    other_messages = [
+        "💾 Skill 'prospect-scanner' created.",
+        "💾 Memory updated: user prefers concise responses",
+    ]
+    assert (
+        _prepare_gateway_status_message("buzz", "lifecycle", review_message)
+        is None
+    )
+    for msg in other_messages:
+        assert (
+            _prepare_gateway_status_message("buzz", "lifecycle", msg)
+            is not None
+        ), f"non-review message should not be suppressed on Buzz: {msg}"
+    # Non-Buzz platforms must keep the review visible
+    assert (
+        _prepare_gateway_status_message("telegram", "lifecycle", review_message)
+        is not None
+    ), "Self-improvement review must remain deliverable on non-Buzz platforms"
+
+
 def test_enabled_gate_does_not_leak_to_raw_platforms(progress_notices_enabled):
     """Programmatic surfaces keep raw text regardless of the gate."""
     message = ROUTINE_COMPRESSION_STATUS_SAMPLES[0]

@@ -4030,6 +4030,28 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     return True
 
 
+def _should_continue_goal_after_turn(agent_result, final_text) -> bool:
+    """Return True only when a standing goal may be continued after this turn.
+
+    A continuation must be gated on *real* progress. ``final_text`` alone is not
+    enough: ``_normalize_empty_agent_response()`` deliberately returns non-empty,
+    user-facing text for ``failed``/``partial``/interrupted/errored results, so a
+    provider failure still yields a non-empty final response. Feeding that to the
+    goal judge makes it answer "continue", which re-enqueues the same synthetic
+    ``[Continuing toward your standing goal]`` prompt and loops on the failure.
+
+    Require non-empty text *and* the same success semantics used by
+    ``_should_clear_resume_pending_after_turn`` so only genuinely completed turns
+    advance the goal. Non-dict results (bare string replies) are treated as
+    successful, matching the legacy text-only behaviour.
+    """
+    if not str(final_text or "").strip():
+        return False
+    if not isinstance(agent_result, dict):
+        return True
+    return _should_clear_resume_pending_after_turn(agent_result)
+
+
 def _preserve_queued_followup_history_offset(
     current_result: dict,
     followup_result: dict,
@@ -21367,9 +21389,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("post-turn session resolution failed: %s", exc)
             return
 
-        # Empty interrupted/errored responses must not drive /goal, but an
-        # in-flight /loop tick still needs to be released and rescheduled.
-        if final_text.strip():
+        # A standing /goal may only continue after a genuinely successful turn.
+        # A provider failure is normalized into non-empty user-facing text, so
+        # gating on text alone would let the goal judge answer "continue" and
+        # loop on the error; require real success semantics. The /loop tick
+        # below still runs on every path so an in-flight tick is released and
+        # rescheduled even when the goal is held back.
+        if _should_continue_goal_after_turn(agent_result, final_text):
             try:
                 await self._post_turn_goal_continuation(
                     session_entry=session_entry,

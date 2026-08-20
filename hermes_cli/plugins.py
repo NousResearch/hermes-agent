@@ -1601,6 +1601,26 @@ class PluginContext:
             )
         return self._subagent_lifecycle
 
+    # -- parent-session awareness ------------------------------------------
+
+    @property
+    def active_parent_session_id(self) -> Optional[str]:
+        """Return the active host-owned parent session id, if available.
+
+        The task-local subagent parent is authoritative.  Interactive CLI
+        state is only a fallback while the agent is idle; non-interactive
+        contexts without a bound parent return ``None``.
+        """
+        from agent.subagent_lifecycle import get_active_subagent_parent
+
+        parent = get_active_subagent_parent()
+        if parent is not None:
+            return getattr(parent, "session_id", None)
+
+        cli = self._manager._cli_ref
+        agent = getattr(cli, "agent", None) if cli is not None else None
+        return getattr(agent, "session_id", None)
+
     # -- profile awareness --------------------------------------------------
 
     @property

@@ -1226,10 +1226,11 @@ def register(ctx):
 
 This is the public, stable interface for tool dispatch from plugin commands. Plugins should not reach into `ctx._cli_ref.agent` or similar private state.
 
-### Act from inside a hook (profile + tools)
+### Act from inside a hook (profile + tools + parent session)
 
-`ctx._cli_ref` is only populated in an **interactive CLI** session. It is `None` in the gateway, in non-interactive `hermes chat -q` runs, and in **kanban-spawned worker sessions** — so any plugin logic that reaches through `_cli_ref` silently no-ops in exactly those contexts. Two stable, session-agnostic APIs cover what hooks actually need:
+`ctx._cli_ref` is only populated in an **interactive CLI** session. It is `None` in the gateway, in non-interactive `hermes chat -q` runs, and in **kanban-spawned worker sessions** — so any plugin logic that reaches through `_cli_ref` silently no-ops in exactly those contexts. Three stable, session-agnostic APIs cover what hooks actually need:
 
+- **`ctx.active_parent_session_id`** — the read-only active parent session id. Hermes first resolves the task-local parent bound to the current agent turn, then falls back to the interactive CLI agent while idle; it returns `None` when neither exists. Task-local bindings remain isolated across copied execution contexts, and this property never consults process environment variables.
 - **`ctx.profile_name`** — the active profile name (e.g. `"default"`, or the assignee profile in a kanban worker). Derived from `HERMES_HOME`, so it works everywhere with no `_cli_ref` dependency.
 - **`ctx.dispatch_tool(name, args)`** — invoke any registered tool (built-in or plugin), including the `kanban_*` tools, `delegate_task`, `terminal`, `read_file`, etc. Works from hook callbacks regardless of which process the hook fires in.
 

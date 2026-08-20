@@ -2048,6 +2048,66 @@ class TestPluginDebugLogging:
             plugins_mod.logger.handlers = original_handlers
 
 
+class TestPluginContextActiveParentSessionId:
+    """ctx.active_parent_session_id resolves the current host-owned session."""
+
+    def _ctx(self, manager=None):
+        manager = manager or PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        return PluginContext(manifest, manager)
+
+    def test_bound_parent_session_id(self):
+        from agent.subagent_lifecycle import bind_subagent_parent
+
+        ctx = self._ctx()
+        parent = types.SimpleNamespace(session_id="bound-session")
+
+        with bind_subagent_parent(parent):
+            assert ctx.active_parent_session_id == "bound-session"
+
+    def test_task_local_parent_outranks_cli_fallback(self):
+        from agent.subagent_lifecycle import bind_subagent_parent
+
+        manager = PluginManager()
+        manager._cli_ref = types.SimpleNamespace(
+            agent=types.SimpleNamespace(session_id="cli-session")
+        )
+        ctx = self._ctx(manager)
+
+        with bind_subagent_parent(
+            types.SimpleNamespace(session_id="task-local-session")
+        ):
+            assert ctx.active_parent_session_id == "task-local-session"
+
+    def test_idle_cli_session_is_fallback(self):
+        manager = PluginManager()
+        manager._cli_ref = types.SimpleNamespace(
+            agent=types.SimpleNamespace(session_id="cli-session")
+        )
+
+        assert self._ctx(manager).active_parent_session_id == "cli-session"
+
+    def test_no_parent_session_returns_none(self):
+        assert self._ctx().active_parent_session_id is None
+
+    def test_copied_contexts_keep_parent_sessions_isolated(self):
+        import contextvars
+
+        from agent.subagent_lifecycle import bind_subagent_parent
+
+        ctx = self._ctx()
+        first_context = contextvars.copy_context()
+        second_context = contextvars.copy_context()
+
+        def resolve(session_id):
+            with bind_subagent_parent(types.SimpleNamespace(session_id=session_id)):
+                return ctx.active_parent_session_id
+
+        assert first_context.run(resolve, "first-session") == "first-session"
+        assert second_context.run(resolve, "second-session") == "second-session"
+        assert ctx.active_parent_session_id is None
+
+
 class TestPluginContextProfileName:
     """ctx.profile_name resolves from HERMES_HOME in every context."""
 

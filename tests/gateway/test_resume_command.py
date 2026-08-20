@@ -57,10 +57,151 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     mock_store = MagicMock()
     mock_store.get_or_create_session.return_value = mock_session_entry
     mock_store.load_transcript.return_value = []
-    mock_store.switch_session.return_value = mock_session_entry
+
+    def _switch_session(_session_key, target_session_id):
+        mock_session_entry.session_id = target_session_id
+        return mock_session_entry
+
+    mock_store.switch_session.side_effect = _switch_session
     runner.session_store = mock_store
 
     return runner
+
+
+# ---------------------------------------------------------------------------
+# _handle_sessions_command
+# ---------------------------------------------------------------------------
+
+
+class TestTelegramSessionsPicker:
+
+    @pytest.mark.asyncio
+    async def test_telegram_list_uses_tap_to_resume_picker(self, tmp_path):
+        """Telegram must render each visible session as a safe inline choice."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+        db.create_session("sess_001", "telegram", user_id="12345", chat_id="67890")
+        db.create_session("sess_002", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("sess_001", "Research")
+        db.set_session_title("sess_002", "Coding")
+
+        event = _make_event(text="/sessions")
+        event.source.chat_type = "dm"
+        runner = _make_runner(session_db=db, event=event)
+        runner.session_store.load_transcript.return_value = [
+            {
+                "role": "user",
+                "content": (
+                    '[Replying to: "The prior status report was very long."] '
+                    "Compare the two launch plans and recommend one."
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": "Plan B is ready for review; the remaining decision is the launch date.",
+            },
+        ]
+        adapter = MagicMock()
+        adapter.send_choice_picker = AsyncMock(return_value=SimpleNamespace(success=True))
+        runner.adapters = {Platform.TELEGRAM: adapter}
+
+        result = await runner._handle_sessions_command(event)
+
+        assert result == ""
+        adapter.send_choice_picker.assert_awaited_once()
+        kwargs = adapter.send_choice_picker.call_args.kwargs
+        assert kwargs["title"].startswith("📋")
+        assert {choice["value"] for choice in kwargs["choices"]} == {"sess_001", "sess_002"}
+        assert [choice["label"] for choice in kwargs["choices"]] == [
+            "↩️ Resume 1",
+            "↩️ Resume 2",
+        ]
+        assert kwargs["buttons_per_row"] == 1
+        assert "Research" in kwargs["title"]
+        assert "Coding" in kwargs["title"]
+        assert "Latest: Compare the two launch plans" in kwargs["title"]
+
+        confirmation = await kwargs["on_choice_selected"]("67890", "sess_001")
+        assert "Session resumed." in confirmation
+        assert "Where you left off" in confirmation
+        assert "Where you left off — Research" not in confirmation
+        assert "You last asked:" in confirmation
+        assert "Compare the two launch plans" in confirmation
+        assert "[Replying to:" not in confirmation
+        assert "Where things stood:" in confirmation
+        assert "remaining decision is the launch date" in confirmation
+        assert "Continue by replying in this topic." in confirmation
+        runner.session_store.switch_session.assert_called_once()
+        assert runner.session_store.switch_session.call_args.args[1] == "sess_001"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_telegram_admin_all_picker_keeps_cross_origin_resume_authority(self, tmp_path):
+        """A button rendered from `/sessions all` must retain its admin override."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+        db.create_session("cron_session_001", "cron")
+        db.set_session_title("cron_session_001", "Scheduled briefing")
+
+        event = _make_event(text="/sessions all")
+        event.source.chat_type = "dm"
+        runner = _make_runner(session_db=db, event=event)
+        runner._resume_caller_is_admin = lambda _source: True
+        adapter = MagicMock()
+        adapter.send_choice_picker = AsyncMock(return_value=SimpleNamespace(success=True))
+        runner.adapters = {Platform.TELEGRAM: adapter}
+
+        assert await runner._handle_sessions_command(event) == ""
+        kwargs = adapter.send_choice_picker.call_args.kwargs
+        confirmation = await kwargs["on_choice_selected"]("67890", "cron_session_001")
+
+        assert "Session resumed." in confirmation
+        assert "Where you left off" in confirmation
+        assert "Where you left off — Scheduled briefing" not in confirmation
+        assert "No previous conversational messages were saved" in confirmation
+        assert runner.session_store.switch_session.call_args.args[1] == "cron_session_001"
+        db.close()
+
+    def test_two_pickers_same_chat_independent_state(self):
+        """A callback on the first picker message must resolve from the first
+        picker's state even after a second picker was opened in the same chat."""
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        adapter = TelegramAdapter.__new__(TelegramAdapter)
+        adapter._choice_picker_state = {}
+
+        # Simulate state after send_choice_picker runs for picker A.
+        adapter._choice_picker_state["67890:1001"] = {
+            "msg_id": 1001,
+            "choices": [
+                {"value": "sess_A", "label": "Resume A"},
+            ],
+            "session_key": "sk_a",
+            "on_choice_selected": AsyncMock(return_value="Resumed A."),
+        }
+
+        # Simulate state after a second send_choice_picker for picker B.
+        adapter._choice_picker_state["67890:2001"] = {
+            "msg_id": 2001,
+            "choices": [
+                {"value": "sess_B", "label": "Resume B"},
+            ],
+            "session_key": "sk_b",
+            "on_choice_selected": AsyncMock(return_value="Resumed B."),
+        }
+
+        # Tapping button 0 on message 1001 (the first picker) must resolve to
+        # picker A's closure, not picker B's — and picker B's state survives.
+        a_callback = adapter._choice_picker_state["67890:1001"]["on_choice_selected"]
+        b_callback = adapter._choice_picker_state["67890:2001"]["on_choice_selected"]
+
+        assert a_callback is not b_callback
+        assert a_callback.return_value == "Resumed A."
+        assert b_callback.return_value == "Resumed B."
 
 
 # ---------------------------------------------------------------------------

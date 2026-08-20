@@ -282,6 +282,47 @@ const recentlySentIds = createOutboundIdTracker(512);
 const recentlyProcessedPollUpdates = createOutboundIdTracker(512);
 const messageStore = createBoundedMessageStore(512);
 
+// Resolve mention ids -> display names so the agent can tell who was tagged.
+// Group metadata is a network round-trip, so cache per-chat with a short TTL:
+// membership changes rarely, and a stale name is far less harmful than
+// re-fetching metadata on every mention in a busy group.
+const MENTION_NAME_TTL_MS = 5 * 60 * 1000;
+const mentionNameCache = new Map();
+
+function cacheMentionNames(chatId, names) {
+  mentionNameCache.set(chatId, { names, expires: Date.now() + MENTION_NAME_TTL_MS });
+  // Bound the cache the same way the message store is bounded.
+  if (mentionNameCache.size > 64) {
+    const oldest = mentionNameCache.keys().next().value;
+    mentionNameCache.delete(oldest);
+  }
+}
+
+async function resolveMentionNames(mentionedIds, chatId) {
+  if (!chatId || !chatId.endsWith('@g.us') || !sock) return {};
+  let entry = mentionNameCache.get(chatId);
+  if (!entry || entry.expires < Date.now()) {
+    const metadata = await sock.groupMetadata(chatId);
+    const names = {};
+    for (const participant of metadata?.participants || []) {
+      // Prefer the group-scoped display name, then the contact notify name.
+      const label = participant.name || participant.notify || participant.subject || '';
+      for (const id of [participant.id, participant.jid, participant.lid]) {
+        const bare = normalizeWhatsAppId(id || '').split('@')[0];
+        if (bare && label) names[bare] = label;
+      }
+    }
+    entry = { names, expires: Date.now() + MENTION_NAME_TTL_MS };
+    cacheMentionNames(chatId, names);
+  }
+  const out = {};
+  for (const id of mentionedIds) {
+    const bare = String(id).split('@')[0];
+    if (entry.names[bare]) out[bare] = entry.names[bare];
+  }
+  return out;
+}
+
 function normalizePollUpdateOptions(aggregation, pollUpdateMessage, meId) {
   const selected = [];
   for (const option of aggregation || []) {
@@ -367,6 +408,7 @@ function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
     },
     mediaUrls: [],
     mentionedIds: [],
+    mentionedNames: {},
     quotedMessageId: pollId,
     quotedParticipant: '',
     quotedRemoteJid: chatId,
@@ -732,6 +774,7 @@ async function startSocket() {
           document: DOCUMENT_CACHE_DIR,
           audio: AUDIO_CACHE_DIR,
         },
+        resolveMentionNames,
       });
       event.fromOwner = fromOwner;
 

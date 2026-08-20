@@ -334,6 +334,41 @@ class WhatsAppBehaviorMixin:
             )
         return compiled
 
+    # Mention rendering ---------------------------------------------------
+    # WhatsApp bodies carry mentions as bare numeric ids (``@<lid>`` /
+    # ``@<phone>``); the human-readable identity never appears inline. These
+    # power _clean_bot_mention_text's symmetric rewrite.
+    _MENTION_TOKEN_RE = re.compile(r"@(\d{5,})\b")
+    _MENTION_SELF_LABEL = "@you"
+    _MENTION_OTHER_SUFFIX = " (another person)"
+
+    def _mention_name_map(self, data: Dict[str, Any]) -> Dict[str, str]:
+        """Map bare mention id -> display name, from bridge-supplied metadata.
+
+        The bridge may provide ``mentionedNames`` (id -> pushName/subject).
+        Falls back to the sender's own name so a self-referential tag in a DM
+        still resolves. Unknown ids are simply absent — the caller renders
+        those as an explicit "another person" instead of guessing.
+        """
+        mapping: Dict[str, str] = {}
+        raw = data.get("mentionedNames")
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                bare = self._normalize_whatsapp_id(key).split("@", 1)[0]
+                name = str(value or "").strip()
+                if bare and name:
+                    mapping[bare] = name
+        sender_id = self._normalize_whatsapp_id(data.get("senderId")).split("@", 1)[0]
+        sender_name = str(data.get("senderName") or "").strip()
+        if sender_id and sender_name and sender_id not in mapping:
+            mapping[sender_id] = sender_name
+        return mapping
+
+    def _lookup_mention_name(
+        self, bare_id: str, names: Dict[str, str]
+    ) -> Optional[str]:
+        return names.get(bare_id)
+
     def _bot_ids_from_message(self, data: Dict[str, Any]) -> set[str]:
         bot_ids = set()
         for candidate in data.get("botIds") or []:
@@ -375,17 +410,53 @@ class WhatsAppBehaviorMixin:
         return any(pattern.search(body) for pattern in self._mention_patterns)
 
     def _clean_bot_mention_text(self, text: str, data: Dict[str, Any]) -> str:
+        """Rewrite raw ``@<jid-or-lid>`` mention tokens into readable labels.
+
+        WhatsApp puts opaque numeric ids in the message body (``@142348...``)
+        and carries the real identities out-of-band in ``mentionedIds``. The
+        agent only ever sees the body, so it has to guess who a number is.
+
+        This used to strip *only the bot's own* mention and leave everyone
+        else's raw id in place, which inverted the signal: a message addressed
+        to the bot lost its marker entirely, while a message addressed to
+        another person kept a bare number that reads like "someone tagged
+        someone — possibly me". Confirmed in production: replies fired on 7/7
+        messages tagging other people and stayed silent on the one tagging the
+        bot.
+
+        Now every mention is resolved symmetrically — the bot becomes an
+        explicit self-marker and humans keep their display names — so
+        "addressed to me" and "addressed to someone else" are distinguishable
+        without guessing.
+        """
         if not text:
             return text
+
         bot_ids = self._bot_ids_from_message(data)
-        cleaned = text
-        for bot_id in bot_ids:
-            bare_id = bot_id.split("@", 1)[0]
-            if bare_id:
-                cleaned = re.sub(
-                    rf"@{re.escape(bare_id)}\b[,:\-]*\s*", "", cleaned
-                )
+        bot_bare = {bid.split("@", 1)[0] for bid in bot_ids if bid}
+        bot_bare.discard("")
+        names = self._mention_name_map(data)
+
+        def _label_for(bare_id: str) -> Optional[str]:
+            if bare_id in bot_bare:
+                return self._MENTION_SELF_LABEL
+            name = self._lookup_mention_name(bare_id, names)
+            if name:
+                return f"@{name}"
+            return None
+
+        def _replace(match: "re.Match[str]") -> str:
+            bare_id = match.group(1)
+            label = _label_for(bare_id)
+            if label is None:
+                # Unknown participant: keep the id but mark it as another
+                # person so it can never be mistaken for a self-mention.
+                return f"@{bare_id}{self._MENTION_OTHER_SUFFIX}"
+            return label
+
+        cleaned = self._MENTION_TOKEN_RE.sub(_replace, text)
         return cleaned.strip() or text
+
 
     def _should_process_message(self, data: Dict[str, Any]) -> bool:
         chat_id_raw = str(data.get("chatId") or "")

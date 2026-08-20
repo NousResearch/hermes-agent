@@ -13,9 +13,16 @@ call is mocked — we never actually shell out during unit tests.
 from __future__ import annotations
 
 
+import sys
+
 import pytest
 
 import tools.lazy_deps as ld
+
+
+def _is_pip_version_probe(cmd):
+    """Recognize the exact pip availability probe, not an arbitrary flag."""
+    return list(cmd) == [sys.executable, "-m", "pip", "--version"]
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +415,18 @@ class TestActiveFeatures:
         )
         assert "platform.slack" in ld.active_features()
 
+    @pytest.mark.parametrize("installed", ["aiosqlite", "asyncpg"])
+    def test_shared_matrix_dependency_does_not_activate_feature(
+        self, monkeypatch, installed
+    ):
+        """A transitive database driver is not proof that Matrix was enabled."""
+        monkeypatch.setattr(
+            ld,
+            "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == installed,
+        )
+        assert "platform.matrix" not in ld.active_features()
+
 
 class TestRefreshActiveFeatures:
     def test_no_active_features_returns_empty(self, monkeypatch):
@@ -487,8 +506,9 @@ class TestRefreshActiveFeatures:
         )
 
         assert ld.restore_features([]) == {}
+
+    @pytest.mark.windows_only
     def test_windows_matrix_ensure_fails_before_pip(self, monkeypatch):
-        monkeypatch.setattr(ld.sys, "platform", "win32")
         monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
         monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
         monkeypatch.setattr(
@@ -500,10 +520,10 @@ class TestRefreshActiveFeatures:
         with pytest.raises(ld.FeatureUnavailable, match="unsupported on Windows"):
             ld.ensure("platform.matrix", prompt=False)
 
+    @pytest.mark.windows_only
     def test_windows_matrix_already_satisfied_still_works(self, monkeypatch):
         # Do not break users who already have a working Matrix dependency set;
         # only the impossible Windows install/refresh path should be blocked.
-        monkeypatch.setattr(ld.sys, "platform", "win32")
         monkeypatch.setattr(ld, "_is_satisfied", lambda spec: True)
         monkeypatch.setattr(
             ld,
@@ -776,7 +796,7 @@ class TestVenvPipInstall:
         from types import SimpleNamespace
 
         def fake_run(cmd, **kw):
-            if "--version" in cmd:
+            if _is_pip_version_probe(cmd):
                 return SimpleNamespace(returncode=0, stdout="pip 24.0", stderr="")
             return SimpleNamespace(returncode=0, stdout="pip ok", stderr="")
 
@@ -790,7 +810,7 @@ class TestVenvPipInstall:
         from types import SimpleNamespace
 
         def fake_run(cmd, **kw):
-            if "--version" in cmd:
+            if _is_pip_version_probe(cmd):
                 return SimpleNamespace(returncode=1, stdout="", stderr="no pip")
             if "ensurepip" in cmd:
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -806,7 +826,7 @@ class TestVenvPipInstall:
         from types import SimpleNamespace
 
         def fake_run(cmd, **kw):
-            if "--version" in cmd:
+            if _is_pip_version_probe(cmd):
                 raise subprocess.TimeoutExpired(cmd=cmd, timeout=15)
             if "ensurepip" in cmd:
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -822,7 +842,7 @@ class TestVenvPipInstall:
         from types import SimpleNamespace
 
         def fake_run(cmd, **kw):
-            if "--version" in cmd:
+            if _is_pip_version_probe(cmd):
                 return SimpleNamespace(returncode=1, stdout="", stderr="no pip")
             if "ensurepip" in cmd:
                 raise subprocess.CalledProcessError(1, cmd, stderr="ensurepip fail")
@@ -839,7 +859,7 @@ class TestVenvPipInstall:
         from types import SimpleNamespace
 
         def fake_run(cmd, **kw):
-            if "--version" in cmd:
+            if _is_pip_version_probe(cmd):
                 return SimpleNamespace(returncode=1, stdout="", stderr="no pip")
             if "ensurepip" in cmd:
                 raise subprocess.TimeoutExpired(cmd=cmd, timeout=120)
@@ -855,7 +875,7 @@ class TestVenvPipInstall:
         from types import SimpleNamespace
 
         def fake_run(cmd, **kw):
-            if "--version" in cmd:
+            if _is_pip_version_probe(cmd):
                 return SimpleNamespace(returncode=0, stdout="pip 24.0", stderr="")
             return SimpleNamespace(returncode=1, stdout="", stderr="pip fail")
 
@@ -870,7 +890,7 @@ class TestVenvPipInstall:
         from types import SimpleNamespace
 
         def fake_run(cmd, **kw):
-            if "--version" in cmd:
+            if _is_pip_version_probe(cmd):
                 return SimpleNamespace(returncode=0, stdout="pip 24.0", stderr="")
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=300)
 
@@ -884,7 +904,7 @@ class TestVenvPipInstall:
         from types import SimpleNamespace
 
         def fake_run(cmd, **kw):
-            if "--version" in cmd:
+            if _is_pip_version_probe(cmd):
                 return SimpleNamespace(returncode=0, stdout="pip 24.0", stderr="")
             raise OSError("disk full")
 

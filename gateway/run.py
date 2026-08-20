@@ -18159,7 +18159,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
+            reply_to_text = event.reply_to_text or ""
+            reply_snippet = reply_to_text[:500]
+            if len(reply_to_text) > 500:
+                # Mark the cut explicitly. A silently truncated quote is
+                # indistinguishable from a short original, and agents have
+                # misdiagnosed it as a truncated *outbound* delivery (then
+                # redundantly re-sent the "missing" remainder). Marker style
+                # follows the existing "...[N more chars]" convention in
+                # gateway/platforms/api_server.py.
+                reply_snippet += f"...[{len(reply_to_text) - 500} more chars]"
             if getattr(event, "reply_to_is_own_message", False):
                 message_text = (
                     f'[Replying to your previous message: "{reply_snippet}"]\n\n'

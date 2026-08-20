@@ -99,3 +99,58 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.endswith("What's the best time to go?")
 
 
+@pytest.mark.asyncio
+async def test_reply_snippet_marks_truncation_when_quote_exceeds_500_chars():
+    """A truncated quote must carry an explicit marker.
+
+    Silent truncation is indistinguishable from a short original; agents
+    have misdiagnosed it as a truncated *outbound* delivery and redundantly
+    re-sent the "missing" remainder. The marker follows the existing
+    "...[N more chars]" convention used elsewhere in the codebase.
+    """
+    runner = _make_runner()
+    source = _source()
+    quoted = "x" * 600
+    event = MessageEvent(
+        text="continue",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text=quoted,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert result.startswith(f'[Replying to: "{"x" * 500}...[100 more chars]"]')
+    assert result.endswith("continue")
+
+
+@pytest.mark.asyncio
+async def test_reply_snippet_unmarked_when_quote_within_500_chars():
+    """Boundary: a quote of exactly 500 chars is NOT truncated, so it must
+    not gain a spurious marker."""
+    runner = _make_runner()
+    source = _source()
+    quoted = "y" * 500
+    event = MessageEvent(
+        text="continue",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text=quoted,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert result.startswith(f'[Replying to: "{quoted}"]')
+    assert "more chars" not in result
+
+

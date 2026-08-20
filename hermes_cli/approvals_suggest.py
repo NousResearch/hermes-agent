@@ -184,6 +184,10 @@ def _iter_terminal_calls(
                     args = json.loads(fn.get("arguments") or "{}")
                 except (TypeError, ValueError):
                     continue
+                if not isinstance(args, dict):
+                    # arguments field can parse as a list or scalar for some
+                    # tool-call shapes; nothing to mine in that case.
+                    continue
                 command = args.get("command")
                 if isinstance(command, str) and command.strip():
                     yield (call.get("id") or "", command)

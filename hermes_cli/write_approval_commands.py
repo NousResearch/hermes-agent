@@ -34,11 +34,23 @@ def _fmt_pending_list(subsystem: str) -> str:
     records = wa.list_pending(subsystem)
     if not records:
         return f"No pending {subsystem} writes."
+    # Newest first: list_pending() returns oldest-first, so a user's just-staged
+    # records were the ones pushed furthest from the top of an ever-growing list.
+    records = records[::-1]
+    # Bound the rendered list. The queue can grow unboundedly from the
+    # background curator (dozens of rows), and every record is one line — an
+    # uncapped dump is impractical to act on and on non-chunking platforms the
+    # tail (the newest, most-actionable records) gets truncated entirely.
+    MAX_RENDERED = 20
+    shown = records[:MAX_RENDERED]
+    hidden = len(records) - len(shown)
     lines = [f"Pending {subsystem} writes ({len(records)}):"]
-    for r in records:
+    for r in shown:
         origin = r.get("origin", "foreground")
         tag = " [auto]" if origin == "background_review" else ""
         lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
+    if hidden:
+        lines.append(f"  … and {hidden} more — see the dashboard or pending files to review them all")
     where = "/{s} approve <id>".format(s=subsystem)
     lines.append("")
     lines.append(f"Apply: {where}   Reject: /{subsystem} reject <id>")

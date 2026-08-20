@@ -485,9 +485,10 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer + reset the flush timer; real text joining a buffered attachment promotes it to TEXT and inherits the quote context."""
-        existing = self._pending_text_batches.get(self._text_batch_key(event))
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
         super()._enqueue_text_event(event)  # merge text/media + restart the flush timer
-        if existing is not None and event.text and event.text.strip():
+        if existing is not None and self._pending_text_batches.get(key) is existing and event.text and event.text.strip():
             existing.message_type = MessageType.TEXT
             if event.reply_to_text and not existing.reply_to_text:
                 existing.reply_to_text = event.reply_to_text

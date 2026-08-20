@@ -431,7 +431,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn
+from gateway.platforms.helpers import dispatch_flushed_text_batch, fence_state_after, flush_pending_if_author_changed, typing_metadata_for_turn
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
@@ -2418,8 +2418,9 @@ class BasePlatformAdapter(ABC):
         return resolved if isinstance(resolved, str) and resolved.strip() else None
 
     # ── Inbound text batching. Chat clients split one long message into several inbound
-    # chunks; ``_enqueue_text_event`` merges chunks per session key and ``_flush_text_batch``
-    # dispatches after a quiet period (longer when the last chunk sits near the platform's
+    # chunks; ``_enqueue_text_event`` merges one author's chunks per session key (a message from
+    # another author flushes the batch first) and ``_flush_text_batch`` dispatches after a
+    # quiet period (longer when the last chunk sits near the platform's
     # split point, i.e. a continuation is almost certain). Adapters set the delay attrs and
     # ``_SPLIT_THRESHOLD``; ``_text_batch_delay_for`` / ``_pop_text_batch`` /
     # ``_dispatch_text_batch`` are the override seams for platform-specific policy.
@@ -2478,8 +2479,7 @@ class BasePlatformAdapter(ABC):
         if self._drop_unresolved(event):
             return
         key = self._text_batch_key(event)
-        existing = self._pending_text_batches.get(key)
-        if existing is None:
+        if (existing := flush_pending_if_author_changed(self, key, event)) is None:
             existing = self._pending_text_batches[key] = event
         else:
             if event.text:
@@ -2508,9 +2508,8 @@ class BasePlatformAdapter(ABC):
 
     async def _flush_text_batch_now(self, key: str) -> None:
         """Dispatch the pending batch for ``key`` immediately (no quiet period)."""
-        event = self._pop_text_batch(key)
-        if event is not None:
-            await self._dispatch_text_batch(event)
+        if (event := self._pop_text_batch(key)) is not None:
+            await dispatch_flushed_text_batch(self, key, event)
 
     async def _flush_text_batch(self, key: str) -> None:
         """Wait for the quiet period, then dispatch the batch for ``key``.
@@ -2532,7 +2531,7 @@ class BasePlatformAdapter(ABC):
             if event is None:
                 return
             logger.info("[%s] Flushing text batch %s (%d chars)", self.name, key, len(event.text or ""))
-            await asyncio.shield(self._dispatch_text_batch(event))
+            await asyncio.shield(dispatch_flushed_text_batch(self, key, event))
         except asyncio.CancelledError:
             pass
         finally:

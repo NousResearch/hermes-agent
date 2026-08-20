@@ -1,5 +1,4 @@
 {
-  "_comment": "AnimateDiff text-to-video at 16 frames. Required: comfyui-animatediff-evolved + comfyui-videohelpersuite custom nodes; SD1.5 checkpoint; AnimateDiff motion module (e.g. mm_sd_v15_v2.ckpt in models/animatediff_models/). Outputs a webp animation.",
   "3": {
     "class_type": "KSampler",
     "_meta": {"title": "KSampler"},

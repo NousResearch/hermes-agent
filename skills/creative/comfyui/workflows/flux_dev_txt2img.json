@@ -1,5 +1,4 @@
 {
-  "_comment": "Flux Dev text-to-image using the modern sampler chain (BasicScheduler/Guider/SamplerCustomAdvanced). Required: flux1-dev.safetensors (UNET), t5xxl_fp16.safetensors + clip_l.safetensors (CLIP), ae.safetensors (VAE).",
   "6": {
     "class_type": "CLIPTextEncode",
     "_meta": {"title": "Prompt"},

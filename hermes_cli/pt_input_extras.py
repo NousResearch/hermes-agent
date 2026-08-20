@@ -25,6 +25,11 @@ def _lock_variants(modifier: int) -> tuple[int, ...]:
     return tuple(modifier + off for off in _LOCK_BIT_OFFSETS)
 
 
+def _lock_twins(modifier: int) -> tuple[int, ...]:
+    """Return only the lock twins of ``modifier`` (never the base value)."""
+    return tuple(modifier + off for off in _LOCK_BIT_OFFSETS[1:])
+
+
 def _clear_vt100_prefix_cache() -> None:
     """Drop prompt_toolkit's memoized "is this a prefix of a longer match?"
     answers after mutating ``ANSI_SEQUENCES``.
@@ -50,6 +55,7 @@ def install_shift_enter_alias() -> int:
 
     Sequences mapped:
       - "\\x1b[13;2u"     — Kitty keyboard protocol / CSI-u, modifier=2 (Shift)
+        (plus its CapsLock/NumLock lock twins via ``_lock_variants``)
       - "\\x1b[27;2;13~"  — xterm modifyOtherKeys=2, modifier=2 (Shift)
       - "\\x1b[27;2;13u"  — alternate ordering some emitters use
 
@@ -93,10 +99,13 @@ def install_ctrl_enter_alias() -> int:
 
     Sequences mapped:
       - "\\x1b[13;5u"     — Kitty keyboard protocol / CSI-u, modifier=5 (Ctrl)
+        (plus its CapsLock/NumLock lock twins via ``_lock_variants``)
       - "\\x1b[27;5;13~"  — xterm modifyOtherKeys=2, modifier=5 (Ctrl)
       - "\\x1b[27;5;13u"  — alternate ordering some emitters use
 
-    Stock prompt_toolkit doesn't map any of these. Without this alias,
+    Stock prompt_toolkit maps only the tilde form ``\\x1b[27;5;13~`` (to
+    plain ``Keys.ControlM``, which this deliberately overwrites — same
+    bug-fix rationale as install_shift_enter_alias). Without this alias,
     Kitty/mintty/xterm-with-modifyOtherKeys users over SSH never get a
     Ctrl+Enter newline — the keystroke arrives as a raw CSI sequence that
     falls through to the default character-insert handler. See #22379.
@@ -133,7 +142,8 @@ def install_cmd_backspace_alias() -> int:
     literal insertion.
 
     Cmd+Backspace → ``Keys.ControlU`` (kill backward to start of line).
-    Codepoint 127 with modifier 9 (super) / 10 (super+shift):
+    Codepoint 127 with modifier 9 (super) / 10 (super+shift), each with
+    its CapsLock/NumLock lock twins via ``_lock_variants``:
       - ``\\x1b[127;9u`` / ``\\x1b[127;10u``  — Kitty CSI-u
       - ``\\x1b[27;9;127~``                   — xterm modifyOtherKeys
 
@@ -274,10 +284,14 @@ def install_modify_other_keys_aliases() -> int:
     # the CSI-u form needs them.
     def _install_paired(modifier: int, mapping: dict) -> None:
         """Install both modifyOtherKeys (ESC[27;N;CP~) and CSI-u (ESC[CP;Nu)
-        mappings for the given modifier and codepoint→key mapping."""
+        mappings for the given modifier and codepoint→key mapping.
+
+        The tilde form is skipped for modifier 1 ("no modifier") — xterm
+        never emits modifier-1 tilde sequences.
+        """
         nonlocal changed
         for codepoint, key_val in mapping.items():
-            seqs = [f"\x1b[27;{modifier};{codepoint}~"]
+            seqs = [] if modifier == 1 else [f"\x1b[27;{modifier};{codepoint}~"]
             for mod in _lock_variants(modifier):
                 seqs.append(f"\x1b[{codepoint};{mod}u")
             for seq in seqs:
@@ -353,9 +367,9 @@ def install_modify_other_keys_aliases() -> int:
     # how a lone Esc keypress arrives with a lock on. Lock bits (caps/num)
     # get the same variant treatment as _install_paired.
     for seq in ["\x1b[27u"] + [
-        f"\x1b[27;{m + lock_bits}u"
+        f"\x1b[27;{mod}u"
         for m in range(1, 17)
-        for lock_bits in _LOCK_BIT_OFFSETS
+        for mod in _lock_variants(m)
     ]:
         if seq not in ANSI_SEQUENCES:
             ANSI_SEQUENCES[seq] = Keys.Escape
@@ -405,27 +419,28 @@ def install_modify_other_keys_aliases() -> int:
     # the base modifier (stock prompt_toolkit entries included), so every
     # modifier the terminal can report keeps working under a lock.
     for m in range(1, 17):
-        for lock in _LOCK_BIT_OFFSETS[1:]:
-            # CSI-letter navigation: Up/Down/Right/Left/End/Home + F1-F4
-            for trailer in "ABCDFHPQRS":
-                base_seq = f"\x1b[1;{m}{trailer}" if m > 1 else f"\x1b[{trailer}"
-                key = ANSI_SEQUENCES.get(base_seq)
-                if key is None and m == 1:
-                    # Plain F1-F4 live in the table as SS3 (ESC O P) forms.
-                    key = ANSI_SEQUENCES.get(f"\x1bO{trailer}")
-                if key is None:
-                    continue
-                seq = f"\x1b[1;{m + lock}{trailer}"
+        # CSI-letter navigation: Up/Down/Right/Left/End/Home + F1-F4
+        for trailer in "ABCDFHPQRS":
+            base_seq = f"\x1b[1;{m}{trailer}" if m > 1 else f"\x1b[{trailer}"
+            key = ANSI_SEQUENCES.get(base_seq)
+            if key is None and m == 1:
+                # Plain F1-F4 live in the table as SS3 (ESC O P) forms.
+                key = ANSI_SEQUENCES.get(f"\x1bO{trailer}")
+            if key is None:
+                continue
+            for mod in _lock_twins(m):
+                seq = f"\x1b[1;{mod}{trailer}"
                 if seq not in ANSI_SEQUENCES:
                     ANSI_SEQUENCES[seq] = key
                     changed += 1
-            # CSI-tilde navigation: Insert/Delete/PageUp/PageDown/Home/End
-            for num in (1, 2, 3, 4, 5, 6, 7, 8):
-                base_seq = f"\x1b[{num};{m}~" if m > 1 else f"\x1b[{num}~"
-                key = ANSI_SEQUENCES.get(base_seq)
-                if key is None:
-                    continue
-                seq = f"\x1b[{num};{m + lock}~"
+        # CSI-tilde navigation: Insert/Delete/PageUp/PageDown/Home/End
+        for num in (1, 2, 3, 4, 5, 6, 7, 8):
+            base_seq = f"\x1b[{num};{m}~" if m > 1 else f"\x1b[{num}~"
+            key = ANSI_SEQUENCES.get(base_seq)
+            if key is None:
+                continue
+            for mod in _lock_twins(m):
+                seq = f"\x1b[{num};{mod}~"
                 if seq not in ANSI_SEQUENCES:
                     ANSI_SEQUENCES[seq] = key
                     changed += 1
@@ -465,7 +480,7 @@ def install_modify_other_keys_aliases() -> int:
             ANSI_SEQUENCES[seq] = key_val
             changed += 1
         # Lock twins: with a lock on these arrive as ESC[<code>;129u etc.
-        for mod in _lock_variants(1)[1:]:
+        for mod in _lock_twins(1):
             seq = f"\x1b[{code};{mod}u"
             if seq not in ANSI_SEQUENCES:
                 ANSI_SEQUENCES[seq] = key_val

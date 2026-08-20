@@ -21,6 +21,7 @@ matching entirely. These tests pin the whole class, plus the regression
 contract that real turn-finals still absorb into their stream.
 """
 
+import asyncio
 import json
 
 import pytest
@@ -87,6 +88,44 @@ async def _open_turn_draft(a, chat_id="D01", draft_id=7):
 
 class TestPromptAckDoesNotSealDraft:
     @pytest.mark.asyncio
+    async def test_prompt_response_handler_does_not_block_on_ack_send(self):
+        """Live finding round 2 (rc.4): _consume_prompt_response runs ON the
+        transport read loop (inbound frame -> _handle_frame -> _inbound).
+        Awaiting the ack send there is a self-deadlock: the outbound_result
+        that resolves the send's future arrives on the SAME read loop, which
+        is blocked inside the handler. Every tap wedged the transport for
+        the full outbound timeout — draft appends starved (frozen stream),
+        a second approval card's ack couldn't be read (send timed out,
+        'possibly-delivered'), and the seal timed out ambiguous (plain-send
+        duplicate). The handler must RETURN without awaiting ack delivery;
+        the ack is best-effort and rides a background task."""
+        a = _adapter()
+        gate = asyncio.Event()
+        orig = a._transport.send_outbound
+
+        async def gated_send(frame, platform=None):
+            if frame.get("op") == "send":
+                await gate.wait()  # simulate outbound_result not readable yet
+            return await orig(frame, platform=platform)
+
+        a._transport.send_outbound = gated_send
+        prompt_id = a._mint_prompt(
+            "exec_approval", {"session_key": "sess-dl", "chat_id": "D01"}
+        )
+        # Pre-fix this hangs until the gate opens (deadlock shape) and the
+        # wait_for trips. Post-fix it returns promptly.
+        consumed = await asyncio.wait_for(
+            a._consume_prompt_response(FakeEvent(prompt_id, "once")),
+            timeout=1.0,
+        )
+        assert consumed is True
+        # Release the gate; the background ack must still go out.
+        gate.set()
+        await asyncio.sleep(0.05)
+        ack_frames = [f for f, _ in a._transport.frames if f["op"] == "send"]
+        assert ack_frames, "background ack was never sent"
+
+    @pytest.mark.asyncio
     async def test_approval_ack_leaves_open_draft_untouched(self):
         """The exact live failure: exec-approval tap resolves while the
         turn's draft stream is open; the ack must go out as its own plain
@@ -104,6 +143,8 @@ class TestPromptAckDoesNotSealDraft:
             FakeEvent(prompt_id, "once")
         )
         assert consumed is True
+        # The ack rides a background task now (deadlock fix): yield so it runs.
+        await asyncio.sleep(0.05)
 
         # The draft interception must still be armed for the real turn-final.
         assert draft_key in a._open_draft_by_chat, (

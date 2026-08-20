@@ -107,6 +107,9 @@ class RelayAdapter(BasePlatformAdapter):
         # per-chat keying collided three concurrent turns: merged task
         # cards, clobbered seal state, 3x duplicate finals).
         self._open_draft_by_chat: Dict[str, int] = {}
+        # Strong refs for in-flight fire-and-forget lifecycle acks (asyncio
+        # holds tasks weakly; unreferenced tasks can be GC'd mid-flight).
+        self._lifecycle_ack_tasks: set = set()
         # Draft keys whose post-seal tombstone swallow has been logged once
         # (observability for the hijacked-live-stream class; bounded FIFO
         # like the sibling caches).
@@ -2954,8 +2957,11 @@ class RelayAdapter(BasePlatformAdapter):
                 # Acknowledge in-channel (the connector's prompt message can't
                 # be edited cross-platform yet — edit support varies; a short
                 # confirmation preserves the audit trail the native edit gives).
-                await self.send(
-                    chat_id, label, metadata=self._prompt_reply_metadata(event)
+                # Fire-and-forget: we are ON the read loop here (see
+                # _send_lifecycle_ack) — awaiting the send self-deadlocks the
+                # transport for the full outbound timeout.
+                self._send_lifecycle_ack(
+                    chat_id, label, self._prompt_reply_metadata(event)
                 )
                 if count:
                     self.resume_typing_for_chat(chat_id)
@@ -2973,14 +2979,15 @@ class RelayAdapter(BasePlatformAdapter):
                     "always": "🔒 Always approve",
                     "cancel": "❌ Cancelled",
                 }.get(choice, "Resolved")
-                await self.send(
-                    chat_id, label, metadata=self._prompt_reply_metadata(event)
+                # Fire-and-forget (read-loop context — see _send_lifecycle_ack).
+                self._send_lifecycle_ack(
+                    chat_id, label, self._prompt_reply_metadata(event)
                 )
                 if result_text:
-                    await self.send(
+                    self._send_lifecycle_ack(
                         chat_id,
                         str(result_text),
-                        metadata=self._prompt_reply_metadata(event),
+                        self._prompt_reply_metadata(event),
                     )
             elif kind == "clarify":
                 from tools.clarify_gateway import (
@@ -2991,10 +2998,10 @@ class RelayAdapter(BasePlatformAdapter):
                 clarify_id = str(state.get("clarify_id") or "")
                 if option_id == "other":
                     mark_awaiting_text(clarify_id)
-                    await self.send(
+                    self._send_lifecycle_ack(
                         chat_id,
                         "✏️ Type your answer:",
-                        metadata=self._prompt_reply_metadata(event),
+                        self._prompt_reply_metadata(event),
                     )
                 else:
                     choices = state.get("choices") or []
@@ -3004,10 +3011,10 @@ class RelayAdapter(BasePlatformAdapter):
                         idx = -1
                     if 0 <= idx < len(choices):
                         resolve_gateway_clarify(clarify_id, str(choices[idx]))
-                        await self.send(
+                        self._send_lifecycle_ack(
                             chat_id,
                             f"✅ {choices[idx]}",
-                            metadata=self._prompt_reply_metadata(event),
+                            self._prompt_reply_metadata(event),
                         )
                     else:
                         # Unmappable option: flip to text capture so the user
@@ -3019,6 +3026,40 @@ class RelayAdapter(BasePlatformAdapter):
             logger.warning("relay prompt_response resolution failed", exc_info=True)
         return True
 
+    def _send_lifecycle_ack(
+        self, chat_id: str, text: str, metadata: Dict[str, Any]
+    ) -> None:
+        """Fire-and-forget a prompt-lifecycle ack from read-loop context.
+
+        Live finding round 2 (rc.4): _consume_prompt_response executes ON
+        the transport read loop (inbound frame -> _handle_frame -> the
+        _inbound handler). ``await self.send(...)`` there is a
+        SELF-DEADLOCK: send() blocks on an outbound_result future that only
+        the read loop can resolve — and the read loop is blocked inside
+        this very handler. Every button tap wedged the transport for the
+        full outbound timeout: draft appends starved (the observed frozen
+        stream right after approving), sibling approval-card sends timed
+        out into 'possibly-delivered' ambiguity, and the turn's seal timed
+        out ambiguous -> plain-send fallback (the duplicate final).
+
+        Acks are cosmetic by contract (the audit trail), so they ride a
+        background task: the handler returns immediately, the read loop
+        keeps consuming, and the ack's own result frame resolves normally.
+        Failures are logged at debug — an undelivered ack must never break
+        the reader or the turn. The task ref is retained (asyncio only
+        weakly references tasks) and dropped on completion.
+        """
+
+        async def _ack() -> None:
+            try:
+                await self.send(chat_id, text, metadata=metadata)
+            except Exception:  # noqa: BLE001 - ack is best-effort
+                logger.debug("relay lifecycle ack failed", exc_info=True)
+
+        task = asyncio.create_task(_ack(), name="relay-lifecycle-ack")
+        self._lifecycle_ack_tasks.add(task)
+        task.add_done_callback(self._lifecycle_ack_tasks.discard)
+
     async def _notify_prompt_expired(self, event) -> None:
         """Tell the presser their prompt is no longer waiting.
 
@@ -3029,15 +3070,14 @@ class RelayAdapter(BasePlatformAdapter):
         chat_id = str(getattr(event.source, "chat_id", "") or "")
         if not chat_id:
             return
-        try:
-            await self.send(
-                chat_id,
-                "⌛ That prompt is no longer waiting for an answer. "
-                "Send your reply as a normal message.",
-                metadata=self._prompt_reply_metadata(event),
-            )
-        except Exception:  # noqa: BLE001 - notification is best-effort
-            logger.debug("relay expired-prompt notice failed", exc_info=True)
+        # Fire-and-forget (read-loop context — see _send_lifecycle_ack):
+        # _notify_prompt_expired is called from _consume_prompt_response too.
+        self._send_lifecycle_ack(
+            chat_id,
+            "⌛ That prompt is no longer waiting for an answer. "
+            "Send your reply as a normal message.",
+            self._prompt_reply_metadata(event),
+        )
 
     def _prompt_reply_metadata(self, event) -> Dict[str, Any]:
         """Thread/topic metadata so prompt acks land where the prompt lives.

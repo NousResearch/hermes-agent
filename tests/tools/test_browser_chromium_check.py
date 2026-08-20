@@ -13,6 +13,13 @@ import pytest
 from tools import browser_tool as bt
 
 
+def _make_executable(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
 @pytest.fixture(autouse=True)
 def _reset_chromium_cache():
     bt._cached_chromium_installed = None
@@ -45,13 +52,62 @@ class TestChromiumInstalled:
 
         assert bt._chromium_installed() is True
 
+    def test_true_when_chromium_dir_present(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+        _make_executable(tmp_path / "chromium-1208" / "chrome-linux" / "chrome")
+        assert bt._chromium_installed() is True
+
+    def test_true_when_headless_shell_present(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+        _make_executable(
+            tmp_path
+            / "chromium_headless_shell-1208"
+            / "chrome-linux"
+            / "headless_shell"
+        )
+        assert bt._chromium_installed() is True
+
+    def test_false_when_playwright_dir_has_no_executable(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+        (tmp_path / "chromium_headless_shell-1208").mkdir()
+        monkeypatch.setattr(
+            bt.shutil,
+            "which",
+            lambda name: None,
+        )
+
+        assert bt._chromium_installed() is False
+
+    def test_finds_headless_shell_executable(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+        executable = _make_executable(
+            tmp_path
+            / "chromium_headless_shell-1208"
+            / "chrome-linux"
+            / "headless_shell"
+        )
+
+        assert bt._playwright_chromium_executable() == str(executable)
+
+    def test_finds_new_playwright_headless_shell_layout(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+        executable = _make_executable(
+            tmp_path
+            / "chromium_headless_shell-1234"
+            / "chrome-headless-shell-linux64"
+            / "chrome-headless-shell"
+        )
+
+        assert bt._playwright_chromium_executable() == str(executable)
 
     def test_result_cached(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
-        (tmp_path / "chromium-1208").mkdir()
+        executable = _make_executable(
+            tmp_path / "chromium-1208" / "chrome-linux" / "chrome"
+        )
         assert bt._chromium_installed() is True
         # Delete after first call — cached True should still return True.
-        (tmp_path / "chromium-1208").rmdir()
+        executable.unlink()
         assert bt._chromium_installed() is True
 
 
@@ -63,7 +119,7 @@ class TestCheckBrowserRequirementsChromium:
         monkeypatch.setattr(bt, "_requires_real_termux_browser_install", lambda _: False)
         monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
-        (tmp_path / "chromium-1208").mkdir()
+        _make_executable(tmp_path / "chromium-1208" / "chrome-linux" / "chrome")
 
         assert bt.check_browser_requirements() is True
 
@@ -81,5 +137,3 @@ class TestRunBrowserCommandChromiumGuard:
     """Verify _run_browser_command fails fast (no timeout hang) when
     Chromium is missing in local mode.
     """
-
-

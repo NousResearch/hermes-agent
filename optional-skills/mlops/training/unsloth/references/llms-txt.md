@@ -1761,7 +1761,7 @@ With Unsloth's new RL improvements, you NEVER have to worry about tuning or sett
 
 ## :interrobang:Why does RL use so much memory?
 
-GRPO (and many RL variants) rely heavily on generation which is primarily powered by vLLM. But this comes comes with a steep cost since it requires constant **GPU memory for weights, activations, and the KV Cache**.
+GRPO (and many RL variants) rely heavily on generation which is primarily powered by vLLM. But this comes with a steep cost since it requires constant **GPU memory for weights, activations, and the KV Cache**.
 
 {% columns %}
 {% column width="41.66666666666667%" %}
@@ -9287,7 +9287,7 @@ training_args = GRPOConfig(
 
 Overall, Unsloth now with VLM vLLM fast inference enables for both 90% reduced memory usage but also 1.5-2x faster speed with GRPO and GSPO!
 
-If you'd like to read more about reinforcement learning, check out out RL guide:
+If you'd like to read more about reinforcement learning, check out our RL guide:
 
 [reinforcement-learning-rl-guide](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide "mention")
 

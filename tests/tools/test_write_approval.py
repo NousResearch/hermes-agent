@@ -78,6 +78,57 @@ def test_memory_gate_off_allows_write(hermes_home):
     assert wa.pending_count("memory") == 0
 
 
+def _break_write_approval_import(monkeypatch):
+    """Simulate ``from tools import write_approval`` raising ImportError.
+
+    Poisoning ``sys.modules['tools.write_approval']`` alone is not enough:
+    once the real module has been imported anywhere in the process (e.g. by
+    an earlier test in this file), Python caches it as an attribute on the
+    parent ``tools`` package, and ``from tools import write_approval``
+    resolves straight from that attribute without re-touching
+    ``sys.modules`` at all. Both must be cleared to force a real (re-)import
+    attempt, which then hits the poisoned ``sys.modules`` entry and raises.
+    """
+    import sys
+    import tools as tools_pkg
+
+    monkeypatch.delattr(tools_pkg, "write_approval", raising=False)
+    monkeypatch.setitem(sys.modules, "tools.write_approval", None)
+
+
+def test_memory_gate_import_failure_fails_closed(hermes_home, monkeypatch):
+    """If ``tools.write_approval`` can't be imported, the single-op gate must
+    refuse the write (fail closed) rather than silently letting an unattended
+    write through, regardless of the configured write_approval setting."""
+    from tools.memory_tool import memory_tool, MemoryStore
+
+    _break_write_approval_import(monkeypatch)
+
+    store = MemoryStore(); store.load_from_disk()
+    r = json.loads(memory_tool("add", "user", "should not be written", store=store))
+
+    assert r["success"] is False
+    assert store.user_entries == []
+
+
+def test_memory_batch_gate_import_failure_fails_closed(hermes_home, monkeypatch):
+    """Same fail-closed requirement for the batch ('operations=[...]') path,
+    which has its own independent gate (_apply_batch_write_gate)."""
+    from tools.memory_tool import memory_tool, MemoryStore
+
+    _break_write_approval_import(monkeypatch)
+
+    store = MemoryStore(); store.load_from_disk()
+    r = json.loads(memory_tool(
+        target="user",
+        operations=[{"action": "add", "content": "should not be written"}],
+        store=store,
+    ))
+
+    assert r["success"] is False
+    assert store.user_entries == []
+
+
 def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, capsys):
     """#46783: ``/memory approve`` from a context with no live agent (e.g. the
     Desktop GUI) passed ``memory_store=None`` into the shared handler, which

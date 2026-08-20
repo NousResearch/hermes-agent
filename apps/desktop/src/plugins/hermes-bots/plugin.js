@@ -62,7 +62,7 @@ import {
   useQuery,
   useValue
 } from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const { McpTab, ToolsetConfigPanel } = sdk
@@ -4969,8 +4969,56 @@ async function runGroupChatRounds(group, members, thread) {
         r.turn = null
         return r
       })
+
+      // #89545: the loop's harvest pass only ran at the top of each round of
+      // an ACTIVE loop — a member whose turn timed out after the final round
+      // stayed stranded until the user's NEXT send. Poll for the late reply
+      // in the background (bounded) so long work is late, never lost.
+      // (window feature-detect: the engine also runs under node in tests.)
+      const strandedLeft = Object.keys(($groupChats.get()[group] || {}).stranded || {})
+
+      if (strandedLeft.length && typeof window !== 'undefined') {
+        void harvestStrandedUntilSettled(group, members, thread)
+      }
     }
   }
+}
+
+/** Bounded background harvest for members whose replies outlived the turn
+ *  loop. Polls every 5s for up to 5 minutes; stops early when nothing is
+ *  stranded, a new loop takes the room over (it harvests on its own), or the
+ *  room record disappears (disband). */
+async function harvestStrandedUntilSettled(group, members, thread) {
+  const HARVEST_INTERVAL_MS = 5000
+  const HARVEST_MAX_TRIES = 60
+
+  for (let attempt = 0; attempt < HARVEST_MAX_TRIES; attempt++) {
+    await new Promise(resolve => window.setTimeout(resolve, HARVEST_INTERVAL_MS))
+
+    const room = $groupChats.get()[group]
+
+    if (!room || room.running) {
+      return
+    }
+
+    const stranded = room.stranded || {}
+
+    if (!Object.keys(stranded).length) {
+      return
+    }
+
+    for (const member of members) {
+      if (Object.prototype.hasOwnProperty.call(stranded, groupMemberKey(member))) {
+        try {
+          await harvestStrandedGroupReply(group, member)
+        } catch {
+          // Best-effort: the next tick retries; the bound stops runaways.
+        }
+      }
+    }
+  }
+
+  recordGroupActivity(group, { kind: 'failed', member: null, thread })
 }
 
 /** User send into a group room. `thread` continues that thread (its reply
@@ -8892,7 +8940,7 @@ function mentionTokenAt(text, caret) {
  *  the strings parseGroupChatMentions resolves. Keyboard: Up/Down navigate,
  *  Enter/Tab insert (Enter falls through to submit when the popover is
  *  closed), Escape dismisses. */
-function GroupMentionInput({ members, onChange, value, ...inputProps }) {
+function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...inputProps }) {
   const allMeta = useValue($botMeta)
   const inputRef = useRef(null)
   const [token, setToken] = useState(null)
@@ -8995,32 +9043,55 @@ function GroupMentionInput({ members, onChange, value, ...inputProps }) {
             )
           })
         : null,
-      jsx(Input, {
+      jsx(Textarea, {
         ...inputProps,
         ref: inputRef,
         value,
+        rows: 1,
+        // Multi-line room prompts (#89884): the composer was a single-line
+        // Input whose form submitted on every Enter — newlines were
+        // impossible. Enter (no Shift) still submits via onSubmitDraft;
+        // Shift+Enter falls through to the textarea's native newline.
+        className: cn('max-h-40 min-h-9 resize-none', inputProps.className),
         onChange: event => {
           onChange(event.target.value)
           refreshToken(event.target)
         },
         onClick: event => refreshToken(event.target),
         onKeyDown: event => {
-          if (!open) {
-            return
+          if (open) {
+            if (event.key === 'ArrowDown') {
+              event.preventDefault()
+              setSelected((active + 1) % options.length)
+
+              return
+            }
+
+            if (event.key === 'ArrowUp') {
+              event.preventDefault()
+              setSelected((active - 1 + options.length) % options.length)
+
+              return
+            }
+
+            if (event.key === 'Enter' || event.key === 'Tab') {
+              event.preventDefault()
+              insert(options[active].handle)
+
+              return
+            }
+
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              setToken(null)
+
+              return
+            }
           }
 
-          if (event.key === 'ArrowDown') {
+          if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault()
-            setSelected((active + 1) % options.length)
-          } else if (event.key === 'ArrowUp') {
-            event.preventDefault()
-            setSelected((active - 1 + options.length) % options.length)
-          } else if (event.key === 'Enter' || event.key === 'Tab') {
-            event.preventDefault()
-            insert(options[active].handle)
-          } else if (event.key === 'Escape') {
-            event.preventDefault()
-            setToken(null)
+            onSubmitDraft?.()
           }
         },
         onBlur: () => setToken(null)
@@ -9197,7 +9268,7 @@ function GroupClarifyCard({ entry, members }) {
   })
 }
 
-function GroupChatWorkspace({ group, members, onBack }) {
+function GroupChatWorkspace({ group, members, onBack, visible = true }) {
   const rooms = useValue($groupChats)
   const allMeta = useValue($botMeta)
   const room = rooms[group] || { log: [], running: false }
@@ -9220,6 +9291,55 @@ function GroupChatWorkspace({ group, members, onBack }) {
   // composer, otherwise the reply box of that thread. Data URLs, already
   // downscaled — they ride the send into every responding member's session.
   const [pendingImages, setPendingImages] = useState({})
+
+  // Scroll anchoring (#89835): rooms used to open at scroll position 0 and
+  // stay there while replies streamed in. Scroll the bottom sentinel into
+  // view on mount and whenever the log grows — but only when the user is
+  // already near the bottom, so reading history is never yanked away.
+  const bottomSentinelRef = useRef(null)
+  const stickToBottomRef = useRef(true)
+
+  useEffect(() => {
+    const sentinel = bottomSentinelRef.current
+
+    if (!sentinel) {
+      return
+    }
+
+    const viewport = sentinel.closest('[data-slot="scroll-area-viewport"]')
+
+    if (viewport) {
+      const onScroll = () => {
+        stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 80
+      }
+
+      viewport.addEventListener('scroll', onScroll, { passive: true })
+
+      return () => viewport.removeEventListener('scroll', onScroll)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (stickToBottomRef.current) {
+      bottomSentinelRef.current?.scrollIntoView({ block: 'end' })
+    }
+  }, [room.log.length, room.running])
+
+  // Retained-pane reopen (#89835 follow-up): a hot-mounted room pane stays
+  // mounted while another workspace tab is active, so returning to it never
+  // remounts and the mount-time anchor doesn't rerun. Re-anchor on the
+  // hidden → visible edge — an explicit reopen, so it overrides a stale
+  // read-position and mirrors what a fresh open does.
+  const wasVisibleRef = useRef(visible)
+
+  useEffect(() => {
+    if (visible && !wasVisibleRef.current) {
+      stickToBottomRef.current = true
+      bottomSentinelRef.current?.scrollIntoView({ block: 'end' })
+    }
+
+    wasVisibleRef.current = visible
+  }, [visible])
 
   const imagesFor = thread => pendingImages[thread ?? 'main'] || []
 
@@ -9733,6 +9853,7 @@ function GroupChatWorkspace({ group, members, onBack }) {
                     members,
                     value: replyDrafts[id] || '',
                     onChange: text => setReplyDrafts(prev => ({ ...prev, [id]: text })),
+                    onSubmitDraft: () => submitReply(id),
                     onPaste: event => pasteImages(id, event)
                   }),
                   attachButton(id),
@@ -9814,7 +9935,11 @@ function GroupChatWorkspace({ group, members, onBack }) {
                       ? `${groupSpeakerLabel(room.turn)} is thinking…`
                       : 'The room is working…'
                 }, 'working')
-              : null
+              : null,
+            // Scroll anchor (#89835): rooms opened at scroll position 0, mid-
+            // history. The effect below scrolls this sentinel into view on
+            // mount and on log growth — unless the user has scrolled up.
+            jsx('div', { ref: bottomSentinelRef, 'aria-hidden': true }, 'bottom-sentinel')
           ]
         })
       }),
@@ -9837,6 +9962,7 @@ function GroupChatWorkspace({ group, members, onBack }) {
                   members,
                   value: draft,
                   onChange: setDraft,
+                  onSubmitDraft: submit,
                   onPaste: event => pasteImages(null, event)
                 }),
                 attachButton(null),
@@ -9939,15 +10065,25 @@ function closeGroupChatMainTab(group) {
 
 /** Main-window wrapper: seats the member roster reactively (live roster +
  *  bot meta + the room's stored cross-connection descriptors) so the room
- *  keeps working as members change while the tab is open. */
+ *  keeps working as members change while the tab is open. Also subscribes to
+ *  this pane's visibility (feature-detected host.paneVisibility): retained
+ *  panes stay mounted while hidden, so the workspace needs the hidden →
+ *  visible edge to re-anchor its log to the bottom (#89835 follow-up). */
 function GroupChatMainView({ group }) {
   const allMeta = useValue($botMeta)
   // Subscribe: membership changes ride bot meta AND the room record.
   useValue($groupChats)
   const roster = useValue($lastRoster)
   const members = groupChatMemberBots(group, roster, allMeta)
+  // Older SDKs have no paneVisibility: fall back to an always-visible atom so
+  // the hook order stays stable and behavior matches the previous build.
+  const $visible = useMemo(
+    () => (typeof host.paneVisibility === 'function' ? host.paneVisibility(`plugin-workspace:${ID}:group:${slugify(group)}`) : atom(true)),
+    [group]
+  )
+  const visible = useValue($visible)
 
-  return jsx(GroupChatWorkspace, { group, members, onBack: () => closeGroupChatMainTab(group) })
+  return jsx(GroupChatWorkspace, { group, members, visible, onBack: () => closeGroupChatMainTab(group) })
 }
 
 /** Open a group chat the Discord way: a tab taking over the MAIN chat window
@@ -9999,7 +10135,7 @@ function openGroupChat(group) {
  *  (markdown flattened), relative time of the last activity, and the
  *  needs-you badge on the row itself. Sorts into the same recency ordering
  *  as bot rows; clicking opens the room in the main chat window. */
-function GroupRow({ active, group, members, needsYou, onOpen }) {
+function GroupRow({ active, group, members, needsYou, onOpen, onDisband }) {
   const rooms = useValue($groupChats)
   const allMeta = useValue($botMeta)
   const room = rooms[group] || { log: [] }
@@ -10015,7 +10151,7 @@ function GroupRow({ active, group, members, needsYou, onOpen }) {
     : 'No messages yet — say hi to the room'
   const faces = members.slice(0, 3)
 
-  return jsxs('button', {
+  const row = jsxs('button', {
     type: 'button',
     onClick: () => {
       haptic('tap')
@@ -10104,6 +10240,26 @@ function GroupRow({ active, group, members, needsYou, onOpen }) {
       })
     ]
   })
+
+  return jsxs(ContextMenu, {
+    children: [
+      jsx(ContextMenuTrigger, { asChild: true, children: row }),
+      jsxs(ContextMenuContent, {
+        children: [
+          jsx(ContextMenuItem, {
+            onSelect: () => onOpen(group),
+            children: 'Open Group Chat'
+          }),
+          jsx(ContextMenuSeparator, {}),
+          jsx(ContextMenuItem, {
+            className: 'text-destructive focus:text-destructive',
+            onSelect: () => onDisband({ name: group, members }),
+            children: 'Delete Group'
+          })
+        ]
+      })
+    ]
+  })
 }
 
 function BotsPane() {
@@ -10115,6 +10271,7 @@ function BotsPane() {
   const [groupCreateOpen, setGroupCreateOpen] = useState(false)
   const [editing, setEditing] = useState(null)
   const [deleting, setDeleting] = useState(null)
+  const [deletingGroup, setDeletingGroup] = useState(null)
   const [grouping, setGrouping] = useState(null)
   const [query, setQuery] = useState('')
   const activityToasts = useValue($activityToasts)
@@ -10452,7 +10609,8 @@ function BotsPane() {
                               group: row.name,
                               members: row.members,
                               needsYou: Boolean(groupNeedsYou[row.name]),
-                              onOpen: openGroupChat
+                              onOpen: openGroupChat,
+                              onDisband: setDeletingGroup
                             },
                             `group:${row.name}`
                           )
@@ -10526,6 +10684,23 @@ function BotsPane() {
           await deleteBot(deleting)
           await refetch()
           host.notify({ kind: 'success', message: `Deleted profile ${name}` })
+        }
+      }),
+      jsx(ConfirmDialog, {
+        open: Boolean(deletingGroup),
+        title: 'Delete group chat?',
+        description: deletingGroup
+          ? `This removes “${deletingGroup.name}” from its bots and clears the shared room log. The bots and their individual chats are kept.`
+          : null,
+        destructive: true,
+        confirmLabel: 'Delete Group',
+        busyLabel: 'Deleting…',
+        doneLabel: 'Deleted',
+        onClose: () => setDeletingGroup(null),
+        onConfirm: async () => {
+          if (!deletingGroup) return
+          await disbandGroupChat(deletingGroup.name, deletingGroup.members)
+          host.notify({ kind: 'success', message: `Deleted group “${deletingGroup.name}”` })
         }
       })
     ]

@@ -302,6 +302,25 @@ class TestMcpTest:
         assert "Connected" in out
         assert "Tools discovered: 2" in out
 
+    def test_connection_failure_exits_nonzero(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "broken": {"command": "missing-mcp-server"},
+        })
+
+        def mock_probe(name, config, **kw):
+            raise ConnectionError("connection refused")
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_mcp_test(_make_args(name="broken"))
+
+        assert exc_info.value.code == 1
+        assert "Connection failed" in capsys.readouterr().out
+
     def test_probe_uses_configured_connect_timeout(self, monkeypatch):
         """OAuth-capable probes must not hard-code a short 30s timeout."""
         import asyncio

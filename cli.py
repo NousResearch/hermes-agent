@@ -15615,6 +15615,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # this to True. Early returns (credential refresh failure, etc.)
         # leave it False, which is correct — those aren't user interrupts.
         self._last_turn_interrupted = False
+        # Preserve the raw turn outcome for single-query callers. ``chat()``
+        # renders an empty failed result as an ``Error: ...`` string for humans,
+        # so its return value alone cannot distinguish a model reply from a
+        # backend abort that produced no assistant message.
+        self._last_turn_result = None
 
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
@@ -16152,6 +16157,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             time.sleep(0.15)
 
             # Update history with full conversation
+            self._last_turn_result = result
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
 
             # If auto-compression fired mid-turn, the agent created a new
@@ -20761,8 +20767,27 @@ def main(
                 # Surface security advisories before the agent runs — short
                 # banner, doesn't depend on the welcome banner being shown.
                 cli._show_security_advisories()
-                cli.chat(query, images=single_query_images or None)
+                _single_query_response = cli.chat(
+                    query, images=single_query_images or None
+                )
                 cli._print_exit_summary(clear_screen=False)
+                _single_query_result = getattr(cli, "_last_turn_result", None)
+                _single_query_messages = (
+                    _single_query_result.get("messages", [])
+                    if isinstance(_single_query_result, dict)
+                    else []
+                )
+                _has_assistant_result = any(
+                    isinstance(message, dict)
+                    and message.get("role") == "assistant"
+                    and (message.get("content") or message.get("tool_calls"))
+                    for message in _single_query_messages
+                )
+                if not (_single_query_response or "").strip() or (
+                    isinstance(_single_query_result, dict)
+                    and not _has_assistant_result
+                ):
+                    sys.exit(1)
         finally:
             _finalize_single_query(cli)
         return

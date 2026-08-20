@@ -133,6 +133,55 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
     ]
 
 
+def test_human_single_query_main_propagates_failed_turn_exit_code(monkeypatch):
+    calls = []
+
+    import cli as cli_mod
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.console = SimpleNamespace(print=lambda *_args, **_kwargs: None)
+            self.session_id = "failed-query-session"
+            self.agent = SimpleNamespace(
+                session_id="failed-query-session",
+                platform="cli",
+            )
+            self._last_turn_result = None
+
+        def _claim_active_session(self, surface, *, stderr=False):
+            return True
+
+        def _show_security_advisories(self):
+            pass
+
+        def chat(self, query, images=None):
+            self._last_turn_result = {
+                "final_response": "Billing or credits exhausted: HTTP 402",
+                "messages": [
+                    {"role": "user", "content": "Return exactly OK"},
+                ],
+                "error": "HTTP 402 payment required",
+            }
+            return "Error: HTTP 402 payment required"
+
+        def _print_exit_summary(self, clear_screen=True):
+            calls.append("summary")
+
+    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli_mod.atexit, "register", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_finalize_single_query",
+        lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.main(query="Return exactly OK", quiet=False, toolsets="terminal")
+
+    assert exc_info.value.code == 1
+    assert calls == ["summary", ("finalize", "failed-query-session")]
+
+
 def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatch):
     calls = []
 

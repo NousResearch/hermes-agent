@@ -1408,3 +1408,79 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         conn.close()
 
 
+
+
+# ---------------------------------------------------------------------------
+# Parentless dependency blocks must converge, not silently respawn-loop
+# ---------------------------------------------------------------------------
+
+class TestParentlessDependencyLoopBreaker:
+    def _mk_running(self, conn, tid):
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, created_at) "
+            "VALUES (?, 'x', 'running', 1)",
+            (tid,),
+        )
+        conn.commit()
+
+    def test_parentless_dependency_converges_to_triage(self, kanban_home):
+        """With no open parent there is nothing for recompute_ready to gate
+        on: the todo shortcut re-promotes immediately and the worker loops
+        block -> todo -> ready -> respawn with nobody notified. The second
+        parentless dependency block must trip the existing loop breaker."""
+        conn = kb.connect()
+        try:
+            self._mk_running(conn, "t_loop")
+            assert kb.block_task(conn, "t_loop", reason="external thing",
+                                 kind="dependency") is True
+            row = conn.execute(
+                "SELECT status, block_recurrences FROM tasks WHERE id='t_loop'"
+            ).fetchone()
+            assert (row["status"], row["block_recurrences"]) == ("todo", 1)
+
+            conn.execute("UPDATE tasks SET status='running' WHERE id='t_loop'")
+            conn.commit()
+            assert kb.block_task(conn, "t_loop", reason="external thing",
+                                 kind="dependency") is True
+            row = conn.execute(
+                "SELECT status FROM tasks WHERE id='t_loop'"
+            ).fetchone()
+            assert row["status"] == "triage"
+            event = conn.execute(
+                "SELECT kind FROM task_events WHERE task_id='t_loop' "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+            assert event == "block_loop_detected"
+        finally:
+            conn.close()
+
+    def test_parent_gated_dependency_never_escalates(self, kanban_home):
+        """A wait gated by a real open parent is self-resolving; any number of
+        sequential waits must keep the recurrence counter at zero."""
+        conn = kb.connect()
+        try:
+            self._mk_running(conn, "t_parent")
+            self._mk_running(conn, "t_wait")
+            conn.execute(
+                "INSERT INTO task_links (parent_id, child_id) "
+                "VALUES ('t_parent', 't_wait')"
+            )
+            conn.commit()
+            for _ in range(4):
+                assert kb.block_task(conn, "t_wait", reason="waiting",
+                                     kind="dependency") is True
+                conn.execute(
+                    "UPDATE tasks SET status='running' WHERE id='t_wait'"
+                )
+                conn.commit()
+            row = conn.execute(
+                "SELECT block_recurrences FROM tasks WHERE id='t_wait'"
+            ).fetchone()
+            assert row["block_recurrences"] == 0
+            loops = conn.execute(
+                "SELECT COUNT(*) FROM task_events WHERE task_id='t_wait' "
+                "AND kind='block_loop_detected'"
+            ).fetchone()[0]
+            assert loops == 0
+        finally:
+            conn.close()

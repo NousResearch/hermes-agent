@@ -56,9 +56,17 @@ intentional, bounded construct.
 
 from __future__ import annotations
 
+import re
 from typing import Tuple
 
 __all__ = ["StreamingThinkScrubber"]
+
+# Tag markup stripped by reasoning(); matches every variant the scrubber
+# recognizes (open, close, self-closing, case-insensitive).
+_THINK_TAG_RE = re.compile(
+    r"<\s*/?\s*(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\s*>",
+    re.IGNORECASE,
+)
 
 
 class StreamingThinkScrubber:
@@ -96,12 +104,14 @@ class StreamingThinkScrubber:
         self._in_block: bool = False
         self._buf: str = ""
         self._last_emitted_ended_newline: bool = True
+        self._reasoning_parts: list[str] = []
 
     def reset(self) -> None:
         """Reset all state.  Call at the top of every new turn."""
         self._in_block = False
         self._buf = ""
         self._last_emitted_ended_newline = True
+        self._reasoning_parts = []
 
     def feed(self, text: str) -> str:
         """Feed one delta; return the scrubbed visible portion.
@@ -124,11 +134,18 @@ class StreamingThinkScrubber:
                 )
                 if close_idx == -1:
                     # No close yet — hold back a potential partial
-                    # close-tag prefix; discard everything else.
+                    # close-tag prefix; collect everything else as
+                    # reasoning (#89647).
                     held = self._max_partial_suffix(buf, self._CLOSE_TAGS)
+                    discard = buf[:-held] if held else buf
+                    if discard:
+                        self._reasoning_parts.append(discard)
                     self._buf = buf[-held:] if held else ""
                     return "".join(out)
-                # Found close: discard block content + tag, continue.
+                # Found close: collect block content as reasoning, then
+                # continue scanning after the close tag (#89647).
+                if buf[:close_idx]:
+                    self._reasoning_parts.append(buf[:close_idx])
                 buf = buf[close_idx + close_len:]
                 self._in_block = False
             else:
@@ -150,6 +167,10 @@ class StreamingThinkScrubber:
                     open_idx == -1 or pair[0] <= open_idx
                 ):
                     start_idx, end_idx = pair
+                    # Collect the stripped pair (tags removed later by
+                    # reasoning()) so inline reasoning is not lost (#89647).
+                    if end_idx > start_idx:
+                        self._reasoning_parts.append(buf[start_idx:end_idx])
                     preceding = buf[:start_idx]
                     if preceding:
                         preceding = self._strip_orphan_close_tags(preceding)
@@ -217,6 +238,8 @@ class StreamingThinkScrubber:
         visible reply.
         """
         if self._in_block:
+            if self._buf:
+                self._reasoning_parts.append(self._buf)
             self._buf = ""
             self._in_block = False
             # Next feed() is a new stream — start-of-stream is a boundary.
@@ -231,6 +254,25 @@ class StreamingThinkScrubber:
         if not tail:
             return ""
         return self._strip_orphan_close_tags(tail)
+
+    def reasoning(self) -> str:
+        """Return reasoning text stripped from streamed content so far.
+
+        Collects everything the scrubber suppressed (block content and
+        closed pairs) and removes the tag markup. Empty when no
+        reasoning blocks were seen — callers can use this to populate
+        a structured ``reasoning_content`` field for providers (e.g.
+        MiniMax-M3) that inline reasoning instead of returning a
+        reasoning delta (#89647).
+        """
+        if not self._reasoning_parts:
+            return ""
+        cleaned: list[str] = []
+        for part in self._reasoning_parts:
+            text = _THINK_TAG_RE.sub("", part).strip()
+            if text:
+                cleaned.append(text)
+        return "\n".join(cleaned)
 
     # ── internal helpers ───────────────────────────────────────────────
 

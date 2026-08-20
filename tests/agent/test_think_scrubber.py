@@ -189,3 +189,36 @@ class TestRealisticStreaming:
         s = StreamingThinkScrubber()
         deltas = ["Hello ", "world ", "how ", "are ", "you?"]
         assert _drive(s, deltas) == "Hello world how are you?"
+
+
+class TestReasoningCollection:
+    """The scrubber collects stripped reasoning for structured fields (#89647)."""
+
+    def test_collects_split_block_across_deltas(self) -> None:
+        s = StreamingThinkScrubber()
+        visible = _drive(s, ["<think>", "Let me check", " their config", "</think>", "Done."])
+        assert visible == "Done."
+        assert s.reasoning() == "Let me check\ntheir config"
+
+    def test_collects_closed_pair_in_single_delta(self) -> None:
+        s = StreamingThinkScrubber()
+        visible = _drive(s, ["<think>inline reasoning</think>Hello"])
+        assert visible == "Hello"
+        assert s.reasoning() == "inline reasoning"
+
+    def test_empty_when_no_reasoning(self) -> None:
+        s = StreamingThinkScrubber()
+        _drive(s, ["Just visible text"])
+        assert s.reasoning() == ""
+
+    def test_strips_tag_markup_from_collected_text(self) -> None:
+        s = StreamingThinkScrubber()
+        _drive(s, ["<thinking>plan</thinking>ok"])
+        assert s.reasoning() == "plan"
+
+    def test_reset_clears_collected_reasoning(self) -> None:
+        s = StreamingThinkScrubber()
+        _drive(s, ["<think>a</think>x"])
+        assert s.reasoning() == "a"
+        s.reset()
+        assert s.reasoning() == ""

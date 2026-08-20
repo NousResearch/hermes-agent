@@ -607,6 +607,67 @@ def current_board_path() -> Path:
     return kanban_home() / "kanban" / "current"
 
 
+def _read_project_slug(marker: Path) -> str:
+    """Extract the top-level ``slug:`` value from a ``.project.yaml`` file."""
+    try:
+        for line in marker.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line[:1].isspace():
+                continue  # nested block — not a top-level key
+            if line.startswith("slug:"):
+                return line[len("slug:"):].strip().strip("'\"")
+    except OSError:
+        pass
+    return ""
+
+
+def _project_board_from_cwd() -> str:
+    """Map the current working directory's project to a linked board slug.
+
+    The kanban tools resolve the active board from env pins and the
+    ``kanban/current`` file only — never from the project folder. This
+    fallback closes that gap for ad-hoc sessions: when no board has been
+    pinned, a session started inside a project folder resolves to the
+    project-linked board (if one exists) instead of silently falling back
+    to ``default``. That silent fallback is what produced the recurring
+    ``task <id> not found`` error when a board task id was referenced from
+    a session running inside the project.
+
+    Resolution:
+      1. Walk up from ``cwd`` to the nearest ``.project.yaml``.
+      2. If a board whose slug equals the project slug exists, use it.
+      3. Else scan boards for one whose ``default_workdir`` points at the
+         project root (covers slug-mismatch project links).
+
+    Returns ``""`` when no project marker or no linked board is found.
+    """
+    try:
+        start = Path(os.getcwd()).resolve()
+    except OSError:
+        return ""
+    for d in (start, *start.parents):
+        marker = d / ".project.yaml"
+        if not marker.is_file():
+            continue
+        slug = _read_project_slug(marker)
+        if slug:
+            try:
+                normed = _normalize_board_slug(slug)
+            except ValueError:
+                normed = None
+            if normed and board_exists(normed):
+                return normed
+            # No board of the same name — match on default_workdir so
+            # slug-mismatched project links still resolve.
+            proj_root = str(d)
+            for meta in list_boards():
+                wd = (meta.get("default_workdir") or "").strip()
+                if wd and str(Path(wd).expanduser().resolve()) == proj_root:
+                    return meta.get("slug") or ""
+        # The nearest project marker wins even if it has no linked board.
+        break
+    return ""
+
+
 def get_current_board() -> str:
     """Return the active board slug, honouring the resolution chain.
 
@@ -616,7 +677,11 @@ def get_current_board() -> str:
        spawn, or manually for ad-hoc overrides).
     2. ``<root>/kanban/current`` on disk (set by ``hermes kanban boards
        switch``), but only when that board still exists.
-    3. ``DEFAULT_BOARD`` (``"default"``).
+    3. Project-context fallback (:func:`_project_board_from_cwd`) — when
+       the process runs inside a project folder with a linked board, that
+       board is used so ad-hoc sessions see the project's tasks instead of
+       silently hitting the ``default`` board.
+    4. ``DEFAULT_BOARD`` (``"default"``).
 
     A malformed or stale slug at any step falls through to the next layer
     with a best-effort warning — the dispatcher must never crash because a
@@ -652,6 +717,9 @@ def get_current_board() -> str:
                     pass
     except OSError:
         pass
+    project = _project_board_from_cwd()
+    if project:
+        return project
     return DEFAULT_BOARD
 
 

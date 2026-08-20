@@ -2916,7 +2916,15 @@ DEFAULT_CONFIG = {
         # producing ~/.hermes/sessions/sessions.json entirely.
         "write_sessions_json": True,
 
-        # Scale-to-zero idle detection (Phase 0). The gateway watches for idle
+          # Whether independent per-profile gateways are allowed to start.
+          # When False (default when multiplex_profiles is on), only the default
+          # profile's multiplexed gateway may run; any attempt to start a
+          # named-profile gateway (via CLI or dashboard) returns a hard error
+          # instead of launching a separate process. Set to true to revert to
+          # the legacy behaviour where each profile can run its own gateway.
+          "allow_per_profile_gateways": False,
+
+          # Scale-to-zero idle detection (Phase 0). The gateway watches for idle
         # and, when an instance is opted in via the NAS "Labs" toggle (carried as
         # the HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent
         # AND a wakeUrl is registered, drives the relay transport dormant so the

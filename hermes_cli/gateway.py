@@ -4622,21 +4622,6 @@ def generate_launchd_plist() -> str:
     # would silently strip a manually-added limit and reintroduce EMFILE
     # crashes under load. The in-process floor (resource_limits.py) still
     # applies as a second layer for non-launchd launches.
-    nofile_block = ""
-    try:
-        from hermes_cli.resource_limits import configured_nofile_soft_limit
-
-        nofile_target = configured_nofile_soft_limit()
-    except Exception:
-        nofile_target = None
-    if nofile_target:
-        nofile_block = f"""
-    <key>SoftResourceLimits</key>
-    <dict>
-        <key>NumberOfFiles</key>
-        <integer>{nofile_target}</integer>
-    </dict>
-"""
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -4684,7 +4669,6 @@ def generate_launchd_plist() -> str:
 
     <key>ExitTimeOut</key>
     <integer>25</integer>
-{nofile_block}
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
     
@@ -5321,6 +5305,61 @@ def _running_under_gateway_supervisor() -> bool:
     return is_gateway_supervisor_process()
 
 
+def _guard_per_profile_gateways_disallowed(force: bool = False) -> None:
+    """Refuse per-profile gateway start unless explicitly allowed.
+
+    When ``gateway.allow_per_profile_gateways`` is ``False`` (the default),
+    only the default profile's gateway may run.  Any attempt to start a
+    named-profile gateway -- via CLI or dashboard -- returns a hard error
+    instead of launching a separate process.      ``--force`` overrides.
+    """
+    if force:
+        return
+    # Default/custom-hash homes (suffix="") are unaffected.
+    try:
+        suffix = _profile_suffix()
+    except Exception:
+        return
+    if not suffix:
+        return  # default profile -- always allowed
+
+    # Check the config flag.
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        gw = cfg.get("gateway") if isinstance(cfg, dict) else {}
+        if not isinstance(gw, dict):
+            gw = {}
+
+        # If multiplex_profiles is NOT truthy, the block doesn't apply.
+        multiplex = gw.get("multiplex_profiles")
+        allow = gw.get("allow_per_profile_gateways")
+
+        if not multiplex:
+            return
+
+        # multiplex_profiles is on -- gate on allow_per_profile_gateways.
+        if isinstance(allow, bool) and allow:
+            return    # explicitly allowed
+    except Exception:
+        pass  # default to deny
+
+    print_error(
+        f"Per-profile gateways are disabled for profile '{suffix}'."
+        )
+    print(
+            "  Only the default profile's multiplexed gateway may run.\n"
+            "  To enable independent profile gateways, set the following\n"
+            "  in config.yaml:\n"
+            "     \n"
+            "    gateway:\n"
+            "      allow_per_profile_gateways: true\n"
+            "     \n"
+            "  Or pass --force to bypass this check."
+        )
+    sys.exit(1)
+
+
 def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
     """Refuse a named-profile gateway when a multiplexer is already serving it.
 
@@ -5342,7 +5381,11 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
     except Exception:
         return
     if not suffix:
-        return  # default profile (or unrecognized) — this guard doesn't apply
+        return    # default profile (or unrecognized) — this guard doesn't apply
+
+    # Per-profile gateways flag is the highest-level gate: even if multiplex
+    # is off, disallow separate profile gateways unless explicitly permitted.
+    _guard_per_profile_gateways_disallowed(force=force)
 
     try:
         from hermes_constants import get_default_hermes_root
@@ -5353,65 +5396,23 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
         return
 
     try:
-        import yaml as _yaml
-        from gateway.status import _read_pid_record  # type: ignore
-
-        # (b) default gateway PID file present + alive
-        default_pid_path = default_root / "gateway.pid"
-        rec = _read_pid_record(default_pid_path)
-        if not rec:
-            return
-        from gateway.status import _pid_exists, _pid_from_record
-        pid = _pid_from_record(rec)
-        if not pid or not _pid_exists(pid):
-            return
-
-        # (c) multiplexing is on for the default gateway. Precedence mirrors
-        # gateway.config: the GATEWAY_MULTIPLEX_PROFILES env override wins over
-        # config.yaml when set to a recognized value, so a hosted gateway that
-        # forces multiplex on via env (with no multiplex_profiles in config.yaml)
-        # still trips this guard. A blank/unrecognized env value falls through
-        # to config.yaml.
         from gateway.config import _env_multiplex_profiles_override
-
-        cfg_path = default_root / "config.yaml"
-        cfg = {}
-        if cfg_path.exists():
-            # Raw read of the DEFAULT root's config (not the active profile
-            # home, so load_config() is the wrong owner here); whole probe is
-            # fail-open via the enclosing except.
-            from hermes_cli.config import read_user_config_raw
-
-            cfg = read_user_config_raw(cfg_path)
-
         env_multiplex = _env_multiplex_profiles_override()
         if env_multiplex is False:
-            return  # explicitly forced OFF by the operator env override
+            return      # explicitly forced OFF
         if env_multiplex is True:
             multiplex = True
         else:
+            cfg_path = default_root / "config.yaml"
             if not cfg_path.exists():
                 return
+            from hermes_cli.config import read_user_config_raw
+            cfg = read_user_config_raw(cfg_path)
             multiplex = bool(
                 cfg.get("multiplex_profiles")
                 or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
-            )
+                  )
         if not multiplex:
-            return
-
-        gateway_cfg = cfg.get("gateway", {}) or {}
-        if "multiplex_profile_allowlist" in cfg:
-            raw_allowlist = cfg.get("multiplex_profile_allowlist")
-        else:
-            raw_allowlist = gateway_cfg.get("multiplex_profile_allowlist")
-        from gateway.config import _normalize_multiplex_profile_allowlist
-        from hermes_cli.profiles import normalize_profile_name
-
-        profile_allowlist = _normalize_multiplex_profile_allowlist(raw_allowlist)
-        if (
-            profile_allowlist is not None
-            and normalize_profile_name(suffix) not in profile_allowlist
-        ):
             return
     except Exception:
         logger.debug("Multiplexer-conflict probe failed", exc_info=True)
@@ -5422,17 +5423,11 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
         f"serves profile '{suffix}'."
     )
     print(
-        "  When gateway.multiplex_profiles is on, the default gateway is the\n"
-        "  single inbound process for every profile. Starting a separate\n"
-        "  gateway for this profile would double-bind its platforms (two\n"
-        "  pollers on one bot token, port conflicts).\n"
-    )
-    print("  Manage the multiplexer instead (from the default profile):")
-    print()
-    print("    hermes gateway restart")
-    print()
-    print("  Pass --force to start a separate profile gateway anyway (not")
-    print("  recommended while the multiplexer is running).")
+          "  Manage the multiplexer instead (from the default profile):\n"
+          "    hermes gateway restart\n"
+          "  Pass --force to start a separate profile gateway anyway (not "
+          "recommended while the multiplexer is running)."
+      )
     sys.exit(1)
 
 

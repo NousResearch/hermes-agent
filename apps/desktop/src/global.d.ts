@@ -415,6 +415,11 @@ declare global {
         write: (id: string, data: string) => Promise<boolean>
       }
       reachPreviewUrl?: (url: string) => Promise<string>
+      setActiveConnectionRoute?: (route: {
+        connectionId?: null | string
+        profile?: string
+        registryScoped?: boolean
+      } | null) => void
       onClosePreviewRequested?: (callback: () => void) => () => void
       onPreviewNav?: (callback: (command: 'back' | 'forward' | 'reload') => void) => () => void
       onOpenFolderRequested?: (callback: () => void) => () => void

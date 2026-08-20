@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { resolveTerminalConnection } from './connection-apply'
+import {
+  resolveTerminalConnection,
+  resolveTerminalConnectionForSender
+} from './connection-apply'
 
 const ssh = {
   host: 'registry-box.test',
@@ -57,4 +60,20 @@ test('terminal start re-reads the SSH target after backend startup', async () =>
 
   assert.equal(resolved, target)
   assert.equal(resolved?.scope, 'connection:registry-ssh')
+})
+
+test('keeps terminal routing isolated by renderer sender id', async () => {
+  const targets = new Map([
+    [11, { ssh, scope: 'conn:source-b::worker' }],
+    [22, null]
+  ])
+
+  const getTarget = (webContentsId: number) => targets.get(webContentsId) ?? null
+  const ensureBackend = async (_webContentsId: number) => undefined
+
+  const windowB = await resolveTerminalConnectionForSender(11, getTarget, ensureBackend)
+  const windowC = await resolveTerminalConnectionForSender(22, getTarget, ensureBackend)
+
+  assert.equal(windowB?.scope, 'conn:source-b::worker')
+  assert.equal(windowC, null)
 })

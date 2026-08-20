@@ -523,9 +523,15 @@ def show_status(args):
         
         print(f"  {name:<12}  {check_mark(has_token)} {status}")
 
-    # Plugin-registered platforms
+    # Plugin-registered platforms.  Plugin adapters register themselves during
+    # plugin discovery, so status must trigger discovery before reading the
+    # platform registry; otherwise this section only ever sees built-ins that
+    # were imported elsewhere in the process.
     try:
+        from hermes_cli.plugins import discover_plugins
         from gateway.platform_registry import platform_registry
+
+        discover_plugins()
         for entry in platform_registry.plugin_entries():
             # Per-entry guard: one raising probe must not abort the listing
             # of every remaining plugin platform (matches the other three

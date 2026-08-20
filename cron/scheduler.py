@@ -5736,6 +5736,29 @@ def run_job(
         # builds the proper failure tuple. (issue #17855)
         turn_exit_reason = str(result.get("turn_exit_reason") or "")
         final_response_text = (result.get("final_response") or "").strip()
+        if turn_exit_reason == "guardrail_halt":
+            _guardrail_metadata = result.get("guardrail") or result.get("guardrail_metadata") or {}
+            if not isinstance(_guardrail_metadata, dict):
+                _guardrail_metadata = {}
+            _guardrail_code = (
+                result.get("guardrail_code")
+                or _guardrail_metadata.get("code")
+                or _guardrail_metadata.get("guardrail_code")
+            )
+            _guardrail_tool = (
+                result.get("guardrail_tool")
+                or result.get("guardrail_tool_name")
+                or _guardrail_metadata.get("tool_name")
+                or _guardrail_metadata.get("tool")
+            )
+            _guardrail_details = ["guardrail_halt"]
+            if _guardrail_code:
+                _guardrail_details.append(f"code={_guardrail_code}")
+            if _guardrail_tool:
+                _guardrail_details.append(f"tool={_guardrail_tool}")
+            raise RuntimeError(
+                "Agent run halted by guardrail: " + ", ".join(_guardrail_details)
+            )
         max_iteration_summary = (
             result.get("failed") is not True
             and result.get("completed") is False

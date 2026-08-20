@@ -34,7 +34,7 @@ Substrate facts (verified May 2026):
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Optional
+from typing import Any, Optional
 
 
 # ─── Public types ───────────────────────────────────────────────────────
@@ -402,14 +402,51 @@ def format_aux_picker_entries(
     return entries
 
 
+def _reasoning_catalog_reader(slug: str):
+    """Per-model reasoning-capability reader for aggregators that publish one.
+
+    Cache-only — building the picker payload must never block on HTTP. A cold
+    cache warms in the background so the next open is accurate; until then the
+    model reports no restriction and the UI offers the full scale.
+    """
+    try:
+        from hermes_cli.models import (
+            nous_model_reasoning_capabilities,
+            openrouter_model_reasoning_capabilities,
+            warm_nous_reasoning_caps_async,
+            warm_openrouter_reasoning_caps_async,
+        )
+    except Exception:
+        return None
+
+    if slug == "nous":
+        warm_nous_reasoning_caps_async()
+        return nous_model_reasoning_capabilities
+    if slug == "openrouter":
+        warm_openrouter_reasoning_caps_async()
+        return openrouter_model_reasoning_capabilities
+    return None
+
+
 def _apply_capabilities(rows: list[dict]) -> None:
-    """Attach a ``{model: {fast, reasoning}}`` map to each provider row.
+    """Attach a ``{model: {fast, reasoning, ...}}`` map to each provider row.
 
     `fast` mirrors ``model_supports_fast_mode`` (the same gate the runtime
     enforces). `reasoning` comes from the models.dev catalog when known and
     defaults to True otherwise — the effort dial is broadly accepted and a
     no-op on models that ignore it, whereas hiding it from a capable-but-
     uncatalogued model is the worse failure.
+
+    Aggregators that publish per-model reasoning detail add
+    `can_disable_reasoning`, False on reasoning-mandatory routes whose upstream
+    answers a disable with HTTP 400. Omitted when the catalog doesn't say,
+    which the UI reads as "no restriction known".
+
+    The catalog's `supported_efforts` list is deliberately NOT forwarded: it
+    under-reports. The Portal accepts and honors levels a route doesn't
+    advertise (``z-ai/glm-5.3`` publishes ``max, high, low`` yet serves
+    ``minimal`` at its lowest thinking), so filtering the picker by that list
+    would hide levels that demonstrably work.
     """
     from hermes_cli.models import model_supports_fast_mode
 
@@ -420,7 +457,8 @@ def _apply_capabilities(rows: list[dict]) -> None:
 
     for row in rows:
         slug = row.get("slug") or ""
-        caps: dict[str, dict[str, bool]] = {}
+        caps: dict[str, dict[str, Any]] = {}
+        read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
 
         for model in row.get("models") or []:
             reasoning = True
@@ -432,10 +470,20 @@ def _apply_capabilities(rows: list[dict]) -> None:
                 except Exception:
                     reasoning = True
 
-            caps[model] = {
+            entry: dict[str, Any] = {
                 "fast": bool(model_supports_fast_mode(model)),
                 "reasoning": reasoning,
             }
+
+            if reasoning and read_reasoning_catalog is not None:
+                try:
+                    detail = read_reasoning_catalog(model)
+                except Exception:
+                    detail = None
+                if detail:
+                    entry["can_disable_reasoning"] = not detail.get("mandatory")
+
+            caps[model] = entry
 
         row["capabilities"] = caps
 

@@ -72,6 +72,19 @@ def _doctor_runtime(plugin_path: Path):
     from hermes_cli.plugins import PluginManager
     from tools.registry import registry
 
+    # Model-provider plugins register into the providers registry at import
+    # time rather than through register(ctx), so Doctor has to snapshot and
+    # restore that registry too, exactly as it does for the tool registry
+    # below. The snapshot reads the module's dicts directly: calling
+    # list_providers() would trigger _discover_providers() and import every
+    # bundled provider, which both pollutes the comparison and defeats the
+    # point of the temporary HERMES_HOME.
+    import providers as providers_module
+
+    providers_registry_before = dict(providers_module._REGISTRY)
+    providers_aliases_before = dict(providers_module._ALIASES)
+    providers_cache_before = providers_module._PROVIDER_LIST_CACHE
+
     entries_before = {entry.name: entry for entry in registry._snapshot_entries()}
     policy_before = dict(registry._plugin_override_policy)
     modules_before = {
@@ -91,6 +104,47 @@ def _doctor_runtime(plugin_path: Path):
                 f"Expected one plugin manifest, discovered {len(manifests)} under {copied}"
             )
         manifest = manifests[0]
+
+        if manifest.kind == "model-provider":
+            # These plugins are never passed to _load_plugin in real discovery
+            # (hermes_cli/plugins.py skips them so providers/ owns their
+            # lifecycle), so validating one that way would fail every correct
+            # plugin on the missing register(ctx) that the contract does not
+            # ask for. Import through the same namespaced loader and assert
+            # the contract that does apply: the module must put at least one
+            # ProviderProfile in the registry.
+            # Observe the register_provider() calls rather than diffing the
+            # registry: the provider being validated may already be present
+            # from the host process's own discovery, in which case a diff
+            # reports nothing and a working plugin looks broken.
+            recorded: list[str] = []
+            real_register_provider = providers_module.register_provider
+
+            def _recording_register_provider(profile, *args, **kwargs):
+                recorded.append(str(getattr(profile, "name", "") or profile))
+                return real_register_provider(profile, *args, **kwargs)
+
+            with patch.object(
+                providers_module, "register_provider", _recording_register_provider
+            ):
+                manager._load_directory_module(
+                    manifest, module_name=manager._policy_module_name(manifest)
+                )
+            registered_providers = tuple(sorted(set(recorded)))
+            if not registered_providers:
+                raise _DoctorLoadError(
+                    "model-provider plugin registered no ProviderProfile; call "
+                    "providers.register_provider(profile) at module level"
+                )
+            yield SimpleNamespace(
+                manifest=manifest,
+                manager=manager,
+                registered_tools=(),
+                registered_hooks=(),
+                registered_providers=registered_providers,
+            )
+            return
+
         manager._load_plugin(manifest)
         loaded = manager._plugins.get(manifest.key or manifest.name)
         if loaded is None:
@@ -104,8 +158,14 @@ def _doctor_runtime(plugin_path: Path):
             manager=manager,
             registered_tools=tuple(sorted(loaded.tools_registered)),
             registered_hooks=tuple(loaded.hooks_registered),
+            registered_providers=(),
         )
     finally:
+        providers_module._REGISTRY.clear()
+        providers_module._REGISTRY.update(providers_registry_before)
+        providers_module._ALIASES.clear()
+        providers_module._ALIASES.update(providers_aliases_before)
+        providers_module._PROVIDER_LIST_CACHE = providers_cache_before
         entries_after = {entry.name: entry for entry in registry._snapshot_entries()}
         changed_names = {
             name
@@ -146,6 +206,7 @@ class DoctorReport:
     findings: list[DoctorFinding] = field(default_factory=list)
     registered_tools: tuple[str, ...] = ()
     registered_hooks: tuple[str, ...] = ()
+    registered_providers: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -171,10 +232,13 @@ class DoctorReport:
             lines.append(
                 "  OK: runtime discovery, manifest parsing, import, and registration passed"
             )
-        lines.append(
+        registrations = (
             f"  registrations: {len(self.registered_tools)} tool(s), "
             f"{len(self.registered_hooks)} hook(s)"
         )
+        if self.registered_providers:
+            registrations += f", {len(self.registered_providers)} provider(s)"
+        lines.append(registrations)
         return "\n".join(lines)
 
 
@@ -306,6 +370,21 @@ def doctor_plugin(target: str | os.PathLike[str] | None = None) -> DoctorReport:
             report.manifest = host.manifest
             report.registered_tools = host.registered_tools
             report.registered_hooks = host.registered_hooks
+            report.registered_providers = host.registered_providers
+
+            if host.manifest.kind == "model-provider":
+                # No register(ctx) runs, so there are no hooks or tools to
+                # check for drift. Declaring either is a manifest mistake
+                # rather than a load failure.
+                for field_name in ("provides_hooks", "provides_tools"):
+                    if getattr(host.manifest, field_name, None):
+                        report.warning(
+                            f"model-provider plugin declares {field_name}, which is "
+                            "never registered; providers/ discovery imports the module "
+                            "without calling register(ctx)"
+                        )
+                _check_manifest_v2(report, host.manifest)
+                return report
 
             from hermes_cli.plugins import VALID_HOOKS
 

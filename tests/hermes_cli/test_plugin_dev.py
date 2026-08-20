@@ -134,3 +134,88 @@ def test_doctor_blocks_live_network(tmp_path: Path) -> None:
     report = doctor_plugin(plugin)
     assert report.ok is False
     assert "network access is disabled while Plugin Doctor runs" in report.format_text()
+
+
+_PROVIDER_PLUGIN = (
+    "from providers import register_provider\n"
+    "from providers.base import ProviderProfile\n\n"
+    "register_provider(\n"
+    "    ProviderProfile(\n"
+    "        name='{name}',\n"
+    "        display_name='Demo Provider',\n"
+    "        env_vars=('DEMO_API_KEY',),\n"
+    "        base_url='https://api.demo.example.com/v1',\n"
+    "        auth_type='api_key',\n"
+    "    )\n"
+    ")\n"
+)
+
+
+def _write_provider_plugin(root: Path, name: str, *, manifest_extra: str = "", body: str | None = None) -> Path:
+    plugin = root / name
+    plugin.mkdir()
+    (plugin / "plugin.yaml").write_text(
+        f"name: {name}\nkind: model-provider\nversion: 0.1.0\n{manifest_extra}",
+        encoding="utf-8",
+    )
+    (plugin / "__init__.py").write_text(
+        _PROVIDER_PLUGIN.format(name=name) if body is None else body,
+        encoding="utf-8",
+    )
+    return plugin
+
+
+def test_doctor_accepts_model_provider_plugin(tmp_path: Path) -> None:
+    """A model-provider plugin registers at import and has no register(ctx).
+
+    Validating one through the standalone path fails it on a function the
+    contract never asks for, which is what happens to every bundled provider.
+    """
+    from hermes_cli.plugin_dev import doctor_plugin
+
+    plugin = _write_provider_plugin(tmp_path, "demo-provider")
+
+    report = doctor_plugin(plugin)
+    assert report.ok, report.format_text()
+    assert report.manifest is not None
+    assert report.manifest.kind == "model-provider"
+    assert report.registered_providers == ("demo-provider",)
+    assert "1 provider(s)" in report.format_text()
+
+
+def test_doctor_rejects_model_provider_that_registers_nothing(tmp_path: Path) -> None:
+    from hermes_cli.plugin_dev import doctor_plugin
+
+    plugin = _write_provider_plugin(
+        tmp_path, "empty-provider", body="# registers nothing\n"
+    )
+
+    report = doctor_plugin(plugin)
+    assert report.ok is False
+    messages = "\n".join(f.message for f in report.findings)
+    assert "registered no ProviderProfile" in messages
+
+
+def test_doctor_warns_when_model_provider_declares_tools(tmp_path: Path) -> None:
+    from hermes_cli.plugin_dev import doctor_plugin
+
+    plugin = _write_provider_plugin(
+        tmp_path, "declares-tools", manifest_extra="provides_tools:\n  - something\n"
+    )
+
+    report = doctor_plugin(plugin)
+    assert report.ok, report.format_text()
+    warnings = [f.message for f in report.findings if f.level == "warning"]
+    assert any("provides_tools" in message for message in warnings)
+
+
+def test_doctor_restores_provider_registry(tmp_path: Path) -> None:
+    import providers
+
+    from hermes_cli.plugin_dev import doctor_plugin
+
+    plugin = _write_provider_plugin(tmp_path, "restore-provider")
+
+    report = doctor_plugin(plugin)
+    assert report.ok, report.format_text()
+    assert "restore-provider" not in providers._REGISTRY

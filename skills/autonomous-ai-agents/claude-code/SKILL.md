@@ -45,6 +45,19 @@ terminal(command="claude -p 'Add error handling to all API calls in src/' --allo
 - Piped input processing (`cat file | claude -p "analyze this"`)
 - Any task where you don't need multi-turn conversation
 
+
+> ✅ **PREFERRED permission flag: `--permission-mode bypassPermissions`**
+>
+> Use `--permission-mode bypassPermissions` instead of `--dangerously-skip-permissions`. It bypasses all confirmation dialogs at the flag level — no dialog appears, no PTY needed, no `Down+Enter` dance. Clean for automation.
+>
+> ```bash
+> # ✅ Clean — no dialog, no PTY
+> claude --permission-mode bypassPermissions --print 'Your task'
+>
+> # ❌ Fragile — triggers dialog that defaults to "No, exit", needs PTY + Down+Enter
+> claude --dangerously-skip-permissions 'task'
+> ```
+
 **Print mode skips ALL interactive dialogs** — no workspace trust prompt, no permission confirmations. This makes it ideal for automation.
 
 ### Mode 2: Interactive PTY via tmux — Multi-Turn Sessions
@@ -351,6 +364,15 @@ mcp__<server>__<tool>   # Specific MCP tool
   }
 }
 ```
+
+> ⚠️ **`defaultMode` must be at the top level** — placing it inside the `permissions` object is silently ignored (no error, no effect). This is a common misconfiguration.
+>
+> ```json
+> {
+>   "defaultMode": "bypassPermissions",
+>   "permissions": { ... }
+> }
+> ```
 
 ### Memory Files (CLAUDE.md) Hierarchy
 1. **Global:** `~/.claude/CLAUDE.md` — applies to all projects
@@ -716,6 +738,35 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 10. **Start new sessions for distinct tasks** — sessions last 5 hours; fresh context is more efficient.
 11. **Use `--no-session-persistence`** in CI to avoid accumulating saved sessions on disk.
 
+## VS Code Extension — Permission Behavior & Hard Limits
+
+The VS Code extension has **fundamentally different permission behavior** from the CLI — understand this before debugging.
+
+### What works
+- Settings file: `.claude/settings.local.json` (dot prefix, project root — `claude/` without dot is NOT read)
+- `Shift+Tab` cycles: Normal → Auto-accept edits only
+- `permissions.allow` list is respected for most tools
+
+### What does NOT work (extension hard limits)
+- **`defaultMode: "bypassPermissions"`** — silently ignored everywhere in the file (top-level or inside `permissions`). CLI-only flag.
+- **`"*"` wildcard** — unreliable in extension context; dialogs may persist even with full wildcard
+- **Bypass mode** — the extension has NO bypass mode at all. Anthropic intentionally restricts this.
+- **PowerShell dialogs** — persist even with `["Bash", "Bash(powershell *)", "*"]` in allow list and correct file path. This is intentional by Anthropic. **No settings combination removes these dialogs in the VS Code extension.**
+
+**Only real bypass: use CLI**
+```bash
+claude --dangerously-skip-permissions
+# or (preferred)
+claude --permission-mode bypassPermissions
+```
+
+### Debugging checklist (before concluding it's the extension)
+1. File at `.claude/settings.local.json` (with dot, project root)?
+2. `Ctrl+Shift+P → Reload Window` after every settings change?
+3. Try `["Bash", "Bash(powershell *)", "Read", "Write", "Edit"]` explicitly
+4. If still failing after above → it's the extension limit, not your config
+
+
 ## Pitfalls & Gotchas
 
 1. **Interactive mode REQUIRES tmux** — Claude Code is a full TUI app. Using `pty=true` alone in Hermes terminal works but tmux gives you `capture-pane` for monitoring and `send-keys` for input, which is essential for orchestration.
@@ -730,6 +781,7 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 10. **Slash commands (like `/commit`) only work in interactive mode** — in `-p` mode, describe the task in natural language instead.
 11. **`--bare` skips OAuth** — requires `ANTHROPIC_API_KEY` env var or an `apiKeyHelper` in settings.
 12. **Context degradation is real** — AI output quality measurably degrades above 70% context window usage. Monitor with `/context` and proactively `/compact`.
+13. **`git init` defaults to `master` branch** — modern convention (and GitHub default) is `main`. When initializing any Claude Code project repo or `~/.claude` dotfiles, always use `git init -b main`. If you've already pushed the wrong branch: `git checkout -b main --track origin/main` then `git branch -D master`.
 
 ## Rules for Hermes Agents
 
@@ -743,3 +795,4 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 8. **Report results to user** — after completion, summarize what Claude did and what changed
 9. **Don't kill slow sessions** — Claude may be doing multi-step work; check progress instead
 10. **Use `--allowedTools`** — restrict capabilities to what the task actually needs
+11. **Use `/yolo` in interactive sessions for long autonomous tasks** — enables session-level bypass permissions (equivalent to `--dangerously-skip-permissions`), so all tool calls execute without confirmation prompts for the duration of the session.

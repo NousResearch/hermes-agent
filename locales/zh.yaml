@@ -186,6 +186,9 @@ gateway:
   profile:
     header:                "👤 **配置文件：** `{profile}`"
     home:                  "📂 **主目录：** `{home}`"
+    picker_title:           "👤 **配置文件：** `{current}`
+
+为此聊天/话题选择配置文件："
 
   reasoning:
     level_default:             "medium（默认）"

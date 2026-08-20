@@ -186,6 +186,9 @@ gateway:
   profile:
     header:                "👤 **Profil:** `{profile}`"
     home:                  "📂 **Ana dizin:** `{home}`"
+    picker_title:           "👤 **Profil:** `{current}`
+
+Bu sohbet/thread için profil seçin:"
 
   reasoning:
     level_default:             "medium (varsayılan)"

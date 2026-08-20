@@ -186,6 +186,9 @@ gateway:
   profile:
     header:                "👤 **プロファイル:** `{profile}`"
     home:                  "📂 **ホーム:** `{home}`"
+    picker_title:           "👤 **プロフィール:** `{current}`
+
+このチャット/スレッドのプロフィールを選択:"
 
   reasoning:
     level_default:             "medium (デフォルト)"

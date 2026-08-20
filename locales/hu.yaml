@@ -186,6 +186,9 @@ gateway:
   profile:
     header:                "👤 **Profil:** `{profile}`"
     home:                  "📂 **Kezdőkönyvtár:** `{home}`"
+    picker_title:           "👤 **Profil:** `{current}`
+
+Válassza ki a profilt ehhez a csevegéshez/szálhoz:"
 
   reasoning:
     level_default:             "medium (alapértelmezett)"

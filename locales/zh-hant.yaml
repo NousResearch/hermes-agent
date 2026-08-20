@@ -186,6 +186,9 @@ gateway:
   profile:
     header:                "👤 **設定檔：** `{profile}`"
     home:                  "📂 **主目錄：** `{home}`"
+    picker_title:           "👤 **設定檔：** `{current}`
+
+請選擇此聊天/話題的設定檔："
 
   reasoning:
     level_default:             "medium（預設）"

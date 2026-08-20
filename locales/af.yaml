@@ -186,6 +186,9 @@ gateway:
   profile:
     header:                "👤 **Profiel:** `{profile}`"
     home:                  "📂 **Tuiste:** `{home}`"
+    picker_title:           "👤 **Profiel:** `{current}`
+
+Kies die profiel vir hierdie geselsie/draad:"
 
   reasoning:
     level_default:             "medium (verstek)"

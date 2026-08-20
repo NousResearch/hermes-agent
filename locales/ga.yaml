@@ -190,6 +190,9 @@ gateway:
   profile:
     header:                "👤 **Próifíl:** `{profile}`"
     home:                  "📂 **Baile:** `{home}`"
+    picker_title:           "👤 **Próifíl:** `{current}`
+
+Roghnaigh an próifíl don chomhrá/snáithe seo:"
 
   reasoning:
     level_default:             "medium (réamhshocraithe)"

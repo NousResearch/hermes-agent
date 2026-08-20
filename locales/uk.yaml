@@ -186,6 +186,9 @@ gateway:
   profile:
     header:                "👤 **Профіль:** `{profile}`"
     home:                  "📂 **Домашня тека:** `{home}`"
+    picker_title:           "👤 **Профіль:** `{current}`
+
+Оберіть профіль для цього чату/треду:"
 
   reasoning:
     level_default:             "medium (за замовчуванням)"

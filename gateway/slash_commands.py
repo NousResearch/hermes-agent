@@ -4801,12 +4801,25 @@ class GatewaySlashCommandsMixin:
         async def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
             widen = allow_all and self._resume_caller_is_admin(source)
-            sessions = await self._session_db.list_sessions_rich(
+            from hermes_cli.session_listing import query_session_listing
+            current_entry = await self.async_session_store.get_or_create_session(source)
+            # Use the same over-fetching listing helper as /sessions so the
+            # numbered /resume list matches /sessions exactly: unnamed/empty
+            # sessions near the top of the recent window no longer squeeze
+            # titled sessions out of the limit-10 fetch (they consumed the
+            # window, making /resume <N> indexes disagree with /sessions).
+            sessions = await asyncio.to_thread(
+                query_session_listing,
+                getattr(self._session_db, "_db", self._session_db),
                 source=user_source,
                 session_key=None if widen else session_key,
+                current_session_id=current_entry.session_id,
+                include_all_sources=widen,
+                include_unnamed=False,
                 limit=10,
+                exclude_sources=["tool"],
             )
-            return [s for s in sessions if s.get("title")][:10]
+            return sessions
 
         if not name:
             # List recent titled sessions for this user/platform

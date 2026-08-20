@@ -262,6 +262,24 @@ class TestGeneratedSystemdUnits:
 
         assert "SoftResourceLimits" not in plist
 
+    def test_system_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_get_restart_drain_timeout",
+            lambda: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+        )
+        unit = gateway_cli.generate_systemd_unit(system=True)
+
+        assert "ExecStart=" in unit
+        assert "ExecStop=" not in unit
+        assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
+        assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
+        # TimeoutStopSec must exceed the default drain_timeout (60s) so
+        # systemd doesn't SIGKILL the cgroup before post-interrupt cleanup
+        # (tool subprocess kill, adapter disconnect) runs — issue #8202.
+        assert self._expected_timeout_stop_sec() in unit
+        assert f"LimitNOFILE={gateway_cli.GATEWAY_SERVICE_NOFILE_LIMIT}" in unit
+        assert "WantedBy=multi-user.target" in unit
 
 
 class TestGatewayStopCleanup:

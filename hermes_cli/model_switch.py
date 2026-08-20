@@ -1497,6 +1497,7 @@ def switch_model(
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     resolved_alias = ""
+    request_overrides: dict = {}
     new_model = raw_input.strip()
     target_provider = current_provider
     resolved_moa_preset = False

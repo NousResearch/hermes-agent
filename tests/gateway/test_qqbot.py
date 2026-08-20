@@ -67,6 +67,85 @@ class TestQQAdapterInit:
         assert adapter._markdown_support is True
 
 
+class TestQQGroupSenderAttribution:
+    @staticmethod
+    def _attachment_result():
+        return {
+            "image_urls": [],
+            "image_media_types": [],
+            "voice_transcripts": [],
+            "attachment_info": "",
+        }
+
+    def _make(self, identity_path, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        from gateway.platforms.qqbot.identity import QQIdentityStore
+
+        adapter = QQAdapter(
+            _make_config(
+                app_id="a",
+                client_secret="b",
+                group_policy="allowlist",
+                group_allow_from=["group-1"],
+                **extra,
+            )
+        )
+        adapter._identity_store = QQIdentityStore(identity_path)
+        adapter._process_attachments = mock.AsyncMock(return_value=self._attachment_result())
+        adapter._process_quoted_context = mock.AsyncMock(
+            return_value={"quote_block": "", "image_urls": [], "image_media_types": []}
+        )
+        adapter.handle_message = mock.AsyncMock()
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_group_message_uses_event_native_username(self, tmp_path):
+        adapter = self._make(tmp_path / "identities.json")
+
+        await adapter._handle_group_message(
+            {"group_openid": "group-1"},
+            "msg-1",
+            "hello",
+            {"member_openid": "member-1", "username": "Alice"},
+            "",
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.user_id == "member-1"
+        assert event.source.user_name.startswith("QQ sender id=")
+        assert "群昵称=Alice" in event.source.user_name
+
+    @pytest.mark.asyncio
+    async def test_group_message_falls_back_to_stable_member_label(self, tmp_path):
+        adapter = self._make(tmp_path / "identities.json")
+
+        await adapter._handle_group_message(
+            {"group_openid": "group-1"},
+            "msg-1",
+            "hello",
+            {"member_openid": "member-2"},
+            "",
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.user_name.startswith("QQ sender id=")
+        assert "群昵称=" not in event.source.user_name
+
+    @pytest.mark.asyncio
+    async def test_group_message_includes_event_group_nickname(self, tmp_path):
+        adapter = self._make(tmp_path / "identities.json")
+        await adapter._handle_group_message(
+            {"group_openid": "group-1"},
+            "msg-1",
+            "hello",
+            {"member_openid": "member-1", "username": "Alice Group"},
+            "",
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert "群昵称=Alice Group" in event.source.user_name
+
+
 # ---------------------------------------------------------------------------
 # _coerce_list
 # ---------------------------------------------------------------------------

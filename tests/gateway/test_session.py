@@ -17,12 +17,88 @@ from gateway.session import (
     build_session_key,
     canonical_whatsapp_identifier,
     neutralize_untrusted_inline_text,
+    resolve_session_isolation,
 )
 
 # Legacy name preserved for these tests; product renamed the function to
 # canonical_whatsapp_identifier.  Keep the tests referencing the old name
 # working without duplicating the suite.
 normalize_whatsapp_identifier = canonical_whatsapp_identifier
+
+
+def test_resolve_session_isolation_prefers_platform_override():
+    config = GatewayConfig(
+        platforms={
+            Platform.QQBOT: PlatformConfig(
+                enabled=True,
+                extra={
+                    "group_sessions_per_user": False,
+                    "thread_sessions_per_user": True,
+                },
+            ),
+            Platform.FEISHU: PlatformConfig(enabled=True),
+        },
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    )
+
+    qq_source = SessionSource(
+        platform=Platform.QQBOT,
+        chat_id="qq-group",
+        chat_type="group",
+        user_id="member-1",
+    )
+    feishu_source = replace(qq_source, platform=Platform.FEISHU)
+
+    assert resolve_session_isolation(config, qq_source) == (False, True)
+    assert resolve_session_isolation(config, feishu_source) == (True, False)
+
+
+def test_session_context_uses_platform_group_override():
+    config = GatewayConfig(
+        platforms={
+            Platform.QQBOT: PlatformConfig(
+                enabled=True,
+                extra={"group_sessions_per_user": False},
+            ),
+        },
+        group_sessions_per_user=True,
+    )
+    source = SessionSource(
+        platform=Platform.QQBOT,
+        chat_id="qq-group",
+        chat_type="group",
+        user_id="member-1",
+        user_name="Alice",
+    )
+
+    context = build_session_context(source, config)
+
+    assert context.shared_multi_user_session is True
+
+
+def test_session_store_uses_platform_group_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.QQBOT: PlatformConfig(
+                enabled=True,
+                extra={"group_sessions_per_user": False},
+            ),
+        },
+        group_sessions_per_user=True,
+    )
+    store = SessionStore(tmp_path / "sessions", config)
+    alice = SessionSource(
+        platform=Platform.QQBOT,
+        chat_id="qq-group",
+        chat_type="group",
+        user_id="member-1",
+    )
+    bob = replace(alice, user_id="member-2")
+
+    assert store._generate_session_key(alice) == store._generate_session_key(bob)
+    assert store._generate_session_key(alice) == "agent:main:qqbot:group:qq-group"
 
 
 class TestSessionSourceRoundtrip:

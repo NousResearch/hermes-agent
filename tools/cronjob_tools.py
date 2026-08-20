@@ -1624,6 +1624,11 @@ action='run' fires the job immediately in the BACKGROUND (like delegate_task): t
 To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained.
+Keep scheduling cadence OUT of the prompt: timing lives only in the 'schedule' field. When a
+user request mixes timing with work ("every morning at 9, check X"), put the timing in
+'schedule' and write the prompt to describe only the work to perform ("Check X and report
+...") — the run-time agent fires at the scheduled moment and must not re-read cadence
+language as an instruction to wait, re-schedule, or verify the time.
 If skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
 On update, passing skills=[] clears attached skills.
 
@@ -1645,7 +1650,7 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
             },
             "prompt": {
                 "type": "string",
-                "description": "For create: the full self-contained prompt. If skills are also provided, this becomes the task instruction paired with those skills. For run: optional transient context appended to the stored prompt for that single fire only (never persisted)."
+                "description": "For create: the full self-contained prompt describing WHAT to do. Never repeat scheduling cadence here — timing belongs exclusively in 'schedule'. If skills are also provided, this becomes the task instruction paired with those skills. For run: optional transient context appended to the stored prompt for that single fire only (never persisted)."
             },
             "schedule": {
                 "type": "string",

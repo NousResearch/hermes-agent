@@ -21,6 +21,7 @@ import {
   peekCachedSlashCompletion
 } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
+import { $gateway } from '@/store/gateway'
 import { $sessions } from '@/store/session'
 
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
@@ -72,10 +73,17 @@ export function useSlashCompletions(options: {
   const { gateway, skinThemes, activeSkin } = options
   const enabled = Boolean(gateway)
   const epoch = useStore($slashCompletionsEpoch)
+  // Live active gateway: profile switches SWAP the gateway object
+  // (store/gateway.ts activeGateway()), so a mount-time prop is stale for
+  // sessions that outlive a switch. Subscribing recreates the fetcher on swap.
+  const currentGateway = useStore($gateway)
 
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
-      if (!gateway) {
+      // Prefer the LIVE active gateway; fall back to the mount-time prop.
+      const gw = currentGateway ?? gateway
+
+      if (!gw) {
         return { items: [], query }
       }
 
@@ -143,7 +151,7 @@ export function useSlashCompletions(options: {
       try {
         if (!query) {
           const catalog = filterDesktopCommandsCatalog(
-            await cachedSlashCompletion('catalog', () => gateway.request<CommandsCatalogLike>('commands.catalog'))
+            await cachedSlashCompletion('catalog', () => gw.request<CommandsCatalogLike>('commands.catalog'))
           )
 
           // Prefer the categorized layout so the popover renders section headers
@@ -184,7 +192,7 @@ export function useSlashCompletions(options: {
         }
 
         const result = await cachedSlashCompletion(`slash:${text.toLowerCase()}`, () =>
-          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', { text })
+          gw.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', { text })
         )
 
         // Arg-completion items (replace_from > 1) carry just the arg stub —
@@ -249,7 +257,7 @@ export function useSlashCompletions(options: {
         return { items: [], query }
       }
     },
-    [gateway, skinThemes, activeSkin]
+    [gateway, currentGateway, skinThemes, activeSkin]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {

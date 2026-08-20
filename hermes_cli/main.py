@@ -12786,6 +12786,13 @@ def main():
     build_verify_parser(subparsers, cmd_verify=cmd_verify)
 
     # =========================================================================
+    # vertical-agent command — scaffold constrained vertical agents
+    # =========================================================================
+    from hermes_cli.vertical_agent_kit import build_vertical_agent_parser
+
+    build_vertical_agent_parser(subparsers)
+
+    # =========================================================================
     # security command — on-demand supply-chain audit
     # =========================================================================
     # security command  (parser built in hermes_cli/subcommands/security.py)

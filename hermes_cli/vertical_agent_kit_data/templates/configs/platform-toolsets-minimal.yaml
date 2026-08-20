@@ -1,0 +1,13 @@
+# Minimal example platform toolset.
+# Remove tools you do not need. Add narrowly.
+
+toolset:
+  name: minimal-vertical
+  helpers:
+    - knowledge_lookup
+    - structured_search
+  generic_tools:
+    - execute_code: disabled_by_default
+  policy:
+    helper_first: true
+    require_reason_for_generic_fallback: true

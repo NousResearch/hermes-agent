@@ -1,0 +1,9 @@
+display:
+  style: clean
+  show_reasoning_summary: false
+  show_sources_when_available: true
+  show_scope_warnings: true
+  ui_policy:
+    thin_shell: true
+    agent_decides: true
+    ui_renders: true

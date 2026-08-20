@@ -1,0 +1,22 @@
+profile:
+  description: Hermes research specialist
+
+skills:
+  required:
+    - source-collection
+    - evidence-synthesis
+    - citation-briefing
+
+platform_toolsets:
+  cli: [web, terminal, file, skills, todo, vision, session_search]
+
+agent:
+  disabled_toolsets:
+    - image_gen
+    - tts
+    - cronjob
+
+code_execution:
+  mode: strict
+  timeout: 300
+  max_tool_calls: 50

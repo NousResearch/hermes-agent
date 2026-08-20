@@ -1,0 +1,22 @@
+profile:
+  description: Hermes support specialist
+
+skills:
+  required:
+    - article-retrieval
+    - ticket-triage
+    - escalation-routing
+
+platform_toolsets:
+  cli: [web, terminal, file, skills, todo]
+
+agent:
+  disabled_toolsets:
+    - image_gen
+    - tts
+    - browser
+
+code_execution:
+  mode: strict
+  timeout: 300
+  max_tool_calls: 50

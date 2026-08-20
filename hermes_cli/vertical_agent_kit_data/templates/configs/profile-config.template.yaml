@@ -1,0 +1,25 @@
+# Example profile config. Adapt field names to your Hermes version.
+
+profile:
+  name: example-vertical-agent
+  description: Focused Hermes profile for one domain job.
+
+files:
+  soul: ./SOUL.md
+  operations: ./OPERATIONS.md
+  display: ./display.yaml
+
+memory:
+  user_memory_path: HERMES_HOME/memories/USER.md
+
+defaults:
+  helper_first: true
+  refuse_out_of_scope: true
+  thin_ui_shell: true
+
+skills:
+  install_only_required: true
+  required: []
+
+platform_toolset:
+  path: ./platform_toolset.yaml

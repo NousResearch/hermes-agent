@@ -1,0 +1,17 @@
+vertical: support
+recommended_skills:
+  - article-retrieval
+  - ticket-triage
+  - escalation-routing
+  - policy-check
+optional_skills:
+  - sentiment-triage
+  - incident-comms-drafting
+review_notes:
+  - Placeholder skill names only; replace with the actual Hermes capabilities your environment exposes.
+  - Review identity, scope, installed skills, and external skill directories before deciding anything is missing.
+  - Keep the list small so support scope stays clear and evidence-first.
+placeholder_review_patterns:
+  - "Review Hermes docs for external skill directories and skills hub/search/install behavior"
+  - "Check whether article-retrieval already exists in installed or shared skill directories"
+  - "Check whether ticket-triage and escalation-routing are already available before adding anything"

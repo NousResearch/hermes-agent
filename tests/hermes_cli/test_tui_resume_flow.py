@@ -256,6 +256,118 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
 
 
 
+def test_launch_tui_satisfies_checkpoints_from_config_yaml(monkeypatch, main_mod):
+    """config.yaml checkpoints.enabled should be honored by _launch_tui
+    (regression test for #87010 — the TUI previously only honored the
+    explicit --checkpoints CLI flag)."""
+    captured = {}
+
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+
+    def fake_call(argv, cwd=None, env=None):
+        captured["env"] = env
+        return 1
+
+    monkeypatch.setattr(main_mod.subprocess, "call", fake_call)
+
+    import cli as cli_module
+
+    monkeypatch.setattr(cli_module, "CLI_CONFIG", {"checkpoints": {"enabled": True}})
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert captured["env"]["HERMES_TUI_CHECKPOINTS"] == "1"
+
+
+def test_launch_tui_checkpoints_cli_flag_overrides_config_off(
+    monkeypatch, main_mod
+):
+    """Explicit --checkpoints=True should still set the env var even when
+    config.yaml has checkpoints.enabled=False."""
+    captured = {}
+
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+
+    def fake_call(argv, cwd=None, env=None):
+        captured["env"] = env
+        return 1
+
+    monkeypatch.setattr(main_mod.subprocess, "call", fake_call)
+
+    import cli as cli_module
+
+    monkeypatch.setattr(cli_module, "CLI_CONFIG", {"checkpoints": {"enabled": False}})
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(checkpoints=True)
+
+    assert captured["env"]["HERMES_TUI_CHECKPOINTS"] == "1"
+
+
+def test_launch_tui_no_checkpoints_when_config_disabled(monkeypatch, main_mod):
+    """When neither the flag nor the config enables checkpoints, the env var
+    must be absent so the TUI child does not silently create checkpoints."""
+    captured = {}
+
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+
+    def fake_call(argv, cwd=None, env=None):
+        captured["env"] = env
+        return 1
+
+    monkeypatch.setattr(main_mod.subprocess, "call", fake_call)
+
+    import cli as cli_module
+
+    monkeypatch.setattr(
+        cli_module, "CLI_CONFIG", {"checkpoints": {"enabled": False}}
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert "HERMES_TUI_CHECKPOINTS" not in captured["env"]
+
+
+def test_launch_tui_checkpoints_accepts_top_level_bool(monkeypatch, main_mod):
+    """`checkpoints: true` (bare bool, not a dict) should also be honored."""
+    captured = {}
+
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+
+    def fake_call(argv, cwd=None, env=None):
+        captured["env"] = env
+        return 1
+
+    monkeypatch.setattr(main_mod.subprocess, "call", fake_call)
+
+    import cli as cli_module
+
+    monkeypatch.setattr(cli_module, "CLI_CONFIG", {"checkpoints": True})
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert captured["env"]["HERMES_TUI_CHECKPOINTS"] == "1"
+
+
 def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path):
     tui_dir = tmp_path / "ui-tui"
     tsx = tui_dir / "node_modules" / ".bin" / "tsx"

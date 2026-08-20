@@ -2765,8 +2765,23 @@ def _launch_tui(
         env["HERMES_TUI_QUERY"] = query
     if image:
         env["HERMES_TUI_IMAGE"] = image
+    # TUI checkpoints: CLI flag > config.yaml (mirrors cli.py:4899 and
+    # gateway/run.py:_checkpoint_agent_kwargs — see fix for #87010).
     if checkpoints:
         env["HERMES_TUI_CHECKPOINTS"] = "1"
+    else:
+        try:
+            from cli import CLI_CONFIG
+            cp_cfg = CLI_CONFIG.get("checkpoints", {})
+            if isinstance(cp_cfg, bool):
+                cp_cfg = {"enabled": cp_cfg}
+            if isinstance(cp_cfg, dict) and cp_cfg.get("enabled", False):
+                env["HERMES_TUI_CHECKPOINTS"] = "1"
+        except Exception:
+            logger.debug(
+                "Failed to read checkpoints.enabled from CLI_CONFIG for TUI launch",
+                exc_info=True,
+            )
     if pass_session_id:
         env["HERMES_TUI_PASS_SESSION_ID"] = "1"
     if max_turns is not None:

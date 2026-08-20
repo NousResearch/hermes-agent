@@ -90,12 +90,29 @@ Each messaging platform bot needs specific permissions to receive messages. If d
 
 ### Check 4: Response wrapping
 
-By default, cron responses are wrapped with a header and footer (`cron.wrap_response: true` in `config.yaml`). Some platforms or integrations may not handle this well. To disable:
+By default, cron responses are wrapped with a header and footer that identifies the job and provides management instructions:
+
+```
+Cronjob Response: Job Name
+(job_id: abc123def456)
+-------------
+
+<output>
+
+To stop or manage this job, send me a new message (e.g. "stop reminder Job Name").
+```
+
+This header helps recipients understand where the output came from — but it may not be desired for structured output (briefs, reports, data exports) or integration with external systems. To disable the wrapper and deliver the raw output:
 
 ```yaml
 cron:
   wrap_response: false
 ```
+
+With wrapping disabled, the agent's final response is delivered exactly as-is, with no headers or metadata. This is useful for:
+- Structured outputs that need clean formatting (daily briefs, reports, dashboards)
+- Integration with downstream processors or external systems
+- Platforms where the header clutters the user experience
 
 ---
 

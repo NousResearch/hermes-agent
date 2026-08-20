@@ -7789,36 +7789,6 @@ def _coerce_seed_history(value: Any) -> list[dict]:
     return history
 
 
-def _content_display_text(content: Any) -> str:
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, (int, float)):
-        return str(content)
-    if isinstance(content, list):
-        parts = []
-        for part in content:
-            text = _content_display_text(part).strip()
-            if text:
-                parts.append(text)
-        return "\n".join(parts)
-    if isinstance(content, dict):
-        kind = content.get("type")
-        if kind in {"text", "input_text", "output_text"}:
-            return str(content.get("text") or content.get("content") or "")
-        if kind in {"image_url", "input_image", "image"}:
-            return "[image]"
-        if kind in {"input_audio", "audio"}:
-            return "[audio]"
-        if kind:
-            return f"[{kind}]"
-        if "text" in content:
-            return str(content.get("text") or "")
-        return "[structured content]"
-    return str(content)
-
-
 def _inflight_text(value: Any) -> str:
     return _content_display_text(value).strip()
 

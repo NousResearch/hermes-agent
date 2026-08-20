@@ -3,14 +3,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { actInPage, type PreviewActHolder } from './act-in-page'
 
 /** jsdom lays nothing out, so every rect is 0×0 and the engine's visibility
- *  check would reject the whole page. Give elements a plausible box and let
+ *  check would reject the whole page. Give elements a plausible box, honouring
+ *  an explicit width/height so a test can lay out a 1px one, and let
  *  `display: none` (which jsdom DOES compute) carry the hiding. */
 function layOutTheDocument() {
   vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
-    const hidden = getComputedStyle(this).display === 'none'
-    const size = hidden ? 0 : 40
+    const style = getComputedStyle(this)
+    const width = style.display === 'none' ? 0 : parseFloat(style.width) || 40
+    const height = style.display === 'none' ? 0 : parseFloat(style.height) || 40
+    const left = parseFloat(style.left) || 0
 
-    return { bottom: size, height: size, left: 0, right: size, top: 0, width: size, x: 0, y: 0 } as DOMRect
+    return { bottom: height, height, left, right: left + width, top: 0, width, x: left, y: 0 } as DOMRect
   })
 }
 
@@ -29,6 +32,33 @@ beforeEach(() => {
   vi.restoreAllMocks()
   layOutTheDocument()
   Element.prototype.scrollIntoView = vi.fn()
+  // jsdom has no hit-testing at all, so the engine skips the occlusion check
+  // here by default. Tests that stand one in must not leak it into the next.
+  delete (document as Document & { elementFromPoint?: unknown }).elementFromPoint
+})
+
+describe('self-containment', () => {
+  // The pane injects `actInPage.toString()` into the guest page, where module
+  // scope does not exist. A single free identifier (a module-level constant, an
+  // imported helper) is a ReferenceError on every call, and Electron reports it
+  // only as "Script failed to execute" — so evaluate the source the way the
+  // guest does and run a real action through it.
+  it('runs after being stringified and eval’d with no module scope', () => {
+    const page = document.createElement('div')
+    page.innerHTML = '<button id="save">Save</button>'
+    document.body.replaceChildren(page)
+
+    const injected = new Function('return (' + actInPage.toString() + ')')() as typeof actInPage
+    const holder: PreviewActHolder = {}
+
+    expect(injected(document, holder, { kind: 'elements' }).elements?.[0].label).toBe('Save')
+
+    const clicked = vi.fn()
+    document.getElementById('save')!.addEventListener('click', clicked)
+
+    expect(injected(document, holder, { kind: 'click', ref: '@e1' }).success).toBe(true)
+    expect(clicked).toHaveBeenCalledOnce()
+  })
 })
 
 describe('elements', () => {
@@ -71,6 +101,82 @@ describe('elements', () => {
     `)
 
     expect(inventory(holder).elements?.map(e => e.label)).toEqual(['Real'])
+  })
+
+  // The screen-reader-only recipe is a 1px box parked at the document origin,
+  // and it passed a `width >= 1` check. Skip links and CSS-only menu toggles are
+  // built this way and come FIRST in the document, so they landed on @e1 — the
+  // agent would aim at one and the pointer would fly to the top-left corner and
+  // click nothing.
+  it('skips the visually-hidden controls that sit at the document origin', () => {
+    const holder = page(`
+      <a href="#content" style="width: 1px; height: 1px; clip: rect(0, 0, 0, 0)">Jump to content</a>
+      <input aria-label="Toggle sidebar" style="width: 1px; height: 1px" type="checkbox" />
+      <a href="#main" style="clip-path: inset(50%)">Skip navigation</a>
+      <button id="real">Search</button>
+    `)
+
+    expect(inventory(holder).elements?.map(e => e.label)).toEqual(['Search'])
+  })
+
+  it('skips a control parked off the left edge, which no scroll brings back', () => {
+    const holder = page(`
+      <button style="position: absolute; left: -9999px">Hidden</button>
+      <button id="real">Search</button>
+    `)
+
+    expect(inventory(holder).elements?.map(e => e.label)).toEqual(['Search'])
+  })
+
+  // Wikipedia and friends are full of these: decorative chrome and collapsed
+  // menus that are perfectly solid boxes as far as layout is concerned, but
+  // that the page has already declared are not for anyone to interact with.
+  it('skips controls the page marked aria-hidden or inert', () => {
+    const holder = page(`
+      <div aria-hidden="true"><button>Decoration</button></div>
+      <div inert><button>Collapsed menu</button></div>
+      <button id="real">Search</button>
+    `)
+
+    expect(inventory(holder).elements?.map(e => e.label)).toEqual(['Search'])
+  })
+
+  it('skips a control buried under another layer, which would take the click instead', () => {
+    const holder = page(`
+      <button style="left: 100px">Accept cookies</button>
+      <button id="real" style="left: 300px">Search</button>
+    `)
+    const wall = document.createElement('div')
+    document.body.append(wall)
+
+    // Stand in for the hit-testing jsdom does not do: every element reports
+    // itself except the buried one, which reports the sheet lying over it.
+    document.elementFromPoint = (x: number) => (x === 120 ? wall : document.getElementById('real'))
+
+    expect(inventory(holder).elements?.map(e => e.label)).toEqual(['Search'])
+  })
+
+  it('keeps a control whose own child is what the hit test lands on', () => {
+    const holder = page('<a href="/home" id="real"><svg id="icon"></svg> Home</a>')
+
+    document.elementFromPoint = () => document.getElementById('icon')
+
+    expect(inventory(holder).elements?.map(e => e.label)).toEqual(['Home'])
+  })
+
+  // The overlay draws far more than the agent is told about, so the two lists
+  // are collected separately: the field is every visible control, the inventory
+  // is the describable subset that refs point into.
+  it('parks the whole interactive field for the overlay, not just the inventory', () => {
+    const holder = page(`
+      <button id="named">Search</button>
+      <button id="mystery"></button>
+      <button id="gone" style="display: none">Gone</button>
+    `)
+
+    expect(inventory(holder).elements?.map(e => e.label)).toEqual(['Search'])
+    expect(holder.nodes).toEqual([document.getElementById('named')])
+    expect(holder.field).toEqual([document.getElementById('named'), document.getElementById('mystery')])
   })
 
   it('prefers an identity selector so the agent can re-find the node later', () => {
@@ -288,7 +394,23 @@ describe('scroll', () => {
     const result = actInPage(document, holder, { kind: 'scroll' })
 
     expect(result.success).toBe(true)
-    expect(scrollBy).toHaveBeenCalledWith({ behavior: 'auto', top: Math.round(window.innerHeight * 0.9) })
+    expect(scrollBy).toHaveBeenCalledWith({ behavior: 'smooth', top: Math.round(window.innerHeight * 0.9) })
+  })
+
+  it('drops the animation for a reader who asked for reduced motion', () => {
+    const holder = page('<p>long page</p>')
+    const scrollBy = vi.spyOn(window, 'scrollBy').mockImplementation(() => {})
+
+    // Passing 'smooth' explicitly overrides the OS preference, so the engine has
+    // to opt back out itself rather than leaving it to the browser.
+    vi.stubGlobal('matchMedia', () => ({ matches: true }))
+
+    actInPage(document, holder, { kind: 'scroll' })
+    vi.unstubAllGlobals()
+
+    const [options] = scrollBy.mock.calls[0] as unknown as [ScrollToOptions]
+
+    expect(options.behavior).toBe('auto')
   })
 
   it('jumps to the bottom', () => {
@@ -312,7 +434,7 @@ describe('scroll', () => {
 
     const result = actInPage(document, holder, { amount: 200, kind: 'scroll', ref: '@e1' })
 
-    expect(list.scrollBy).toHaveBeenCalledWith({ behavior: 'auto', top: 200 })
+    expect(list.scrollBy).toHaveBeenCalledWith({ behavior: 'smooth', top: 200 })
     expect(pageScroll).not.toHaveBeenCalled()
     expect(result.acted).toContain('Results')
   })

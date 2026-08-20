@@ -11,6 +11,34 @@ import { setMessages } from '@/store/session'
 
 import type { GatewayEventContext } from './types'
 
+/** The preview engine, loaded on demand so ~25KB of page-injectable source stays
+ *  off the boot path.
+ *
+ *  In dev that lazy chunk is also a trap. The browser caches a dynamic import by
+ *  URL for the life of the page, so this bridge would hand every action to
+ *  whichever build of the engine loaded first, and no edit to it — or to the
+ *  overlay whose source it stringifies into the page — would reach the guest
+ *  until the whole window reloaded. Asking for a fresh copy is more reliable
+ *  than trusting hot-update propagation to reach a module nothing statically
+ *  imports; the dev server stamps the dependency URLs it has invalidated, so a
+ *  fresh engine pulls a fresh overlay down with it.
+ *
+ *  The literal path is what a bare specifier can't be here, and it has to track
+ *  this module's real location — hence the fall back to the static import, which
+ *  is also the only branch production keeps, `import.meta.hot` being stripped
+ *  there along with everything it guards. */
+const loadPreviewEngine = () => {
+  const stable = () => import('@/app/chat/right-rail/preview-act')
+
+  if (!import.meta.hot) {
+    return stable().then(mod => mod.actOnActivePreview)
+  }
+
+  return import(/* @vite-ignore */ '/src/app/chat/right-rail/preview-act.ts?hot=' + Date.now())
+    .catch(stable)
+    .then(mod => mod.actOnActivePreview as Awaited<ReturnType<typeof stable>>['actOnActivePreview'])
+}
+
 /** Desktop-surface bridge events: read-back requests the agent blocks on
  *  (terminal/preview/window), agent terminal streaming, pane reveal, and
  *  message reactions. */
@@ -57,7 +85,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'preview.act.request') {
-    // act_preview tool: click/type/scroll/press inside the guest page, or
+    // drive_preview tool: click/type/scroll/press inside the guest page, or
     // drive the pane's history. Dynamic import keeps the injected engine off
     // the boot path. Active session only: a background turn must never reach
     // into the page the user is working in (desktop AGENTS.md: offer, don't
@@ -72,9 +100,9 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
         })
 
       if (isActiveEvent) {
-        void import('@/app/chat/right-rail/preview-act')
-          .then(({ actOnActivePreview }) =>
-            actOnActivePreview({
+        void loadPreviewEngine()
+          .then(run =>
+            run({
               amount: payload?.amount,
               key: payload?.key,
               kind: payload?.action ?? '',

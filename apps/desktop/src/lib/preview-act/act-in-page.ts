@@ -35,7 +35,24 @@ export interface PreviewActAction {
   /** scroll distance in px. Defaults to ~90% of the viewport height. */
   amount?: number
   key?: string
-  kind: 'click' | 'elements' | 'press' | 'scroll' | 'type'
+  /** `pin`/`unpin`/`hold` never reach the engine — they resolve their targets
+   *  through `locate`/`elements` and then talk to the overlay — but they arrive
+   *  on the same wire. */
+  kind:
+    | 'click'
+    | 'elements'
+    | 'hold'
+    | 'hover'
+    | 'locate'
+    | 'pin'
+    | 'press'
+    | 'scroll'
+    | 'strobe'
+    | 'type'
+    | 'unpin'
+  /** locate: also give the target keyboard focus, for a key press that must not
+   *  be preceded by a click (which would activate the control instead). */
+  focus?: boolean
   /** Cap on the returned inventory. */
   max?: number
   ref?: string
@@ -52,8 +69,12 @@ export interface PreviewActResult {
   elements?: PreviewElement[]
   error?: string
   note?: string
+  /** Viewport centre of a located target, for aiming real pointer input at it. */
+  point?: { x: number; y: number }
   success: boolean
   title?: string
+  /** locate: whether the target actually takes typed text. */
+  typable?: boolean
   /** Live document URL after the action — a change means it navigated. */
   url?: string
 }
@@ -61,17 +82,33 @@ export interface PreviewActResult {
 /** Where the surface keeps the last snapshot between actions (a window global
  *  in the preview page), so '@e5' still means something on the next call. */
 export interface PreviewActHolder {
+  /** Target of the action in flight, for the watch overlay to draw onto. */
+  aimed?: Element | null
+  /** The on-screen subset, for the overlay to outline. Diverges from `nodes` in
+   *  both directions: it drops what is below the fold, and it is not capped at
+   *  the inventory's size. */
+  field?: Element[]
   nodes?: Element[]
   /** URL the snapshot was taken on; a navigation invalidates every ref. */
   url?: string
 }
 
-const ACT_MAX_ELEMENTS = 120
-
 /** Run one action against `doc`, resolving refs through `holder`. Self-contained. */
 export function actInPage(doc: Document, holder: PreviewActHolder, action: PreviewActAction): PreviewActResult {
+  // Declared inside, not at module scope: this body is stringified and eval'd
+  // in the guest page, where a module-level constant is simply not defined.
+  const maxElements = 120
+  // How many nodes the OVERLAY may draw, as opposed to how many the agent gets
+  // told about. Far higher, because an extra mark costs one rect read where an
+  // extra inventory row costs tokens on every single call.
+  const maxMarks = 600
   const win = doc.defaultView
   const here = doc.location ? doc.location.href : ''
+
+  // Passing 'smooth' explicitly OVERRIDES the user's OS-level reduce-motion
+  // setting, so ask before animating over someone who opted out.
+  const still = !!(win && win.matchMedia && win.matchMedia('(prefers-reduced-motion: reduce)').matches)
+  const glide: ScrollBehavior = still ? 'auto' : 'smooth'
 
   const cssEscape = (value: string) =>
     typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(value) : value.replace(/["\\]/g, '\\$&')
@@ -137,17 +174,118 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
     return path.join(' > ')
   }
 
-  const visible = (el: Element): boolean => {
+  /** On screen right now, and worth drawing a box around. The field is strictly
+   *  viewport-bound: a mark past the fold is one nobody can see, it spends the
+   *  budget that should have gone to what IS on screen, and the ones parked far
+   *  off to the side were landing as stray labels in the corner. */
+  const onScreen = (el: Element): boolean => {
+    if (!win) {
+      return false
+    }
+
+    const box = el.getBoundingClientRect()
+
+    if (box.right <= 0 || box.bottom <= 0 || box.left >= win.innerWidth || box.top >= win.innerHeight) {
+      return false
+    }
+
+    // Page-sized wrappers. Outlining one draws a rectangle around the whole
+    // screen, which says nothing and frames everything inside it as if it
+    // mattered. Full-width banners are fine — it takes both dimensions.
+    return !(box.width >= win.innerWidth * 0.95 && box.height >= win.innerHeight * 0.9)
+  }
+
+  /** Painted at all, ancestors included. */
+  const shown = (el: Element): boolean => {
+    // Folds in display/visibility/opacity/content-visibility inherited from an
+    // ANCESTOR, which this element's own computed style does not report: inside
+    // a parent at opacity 0, every child still reads back opacity 1.
+    const seen = (el as Element & { checkVisibility?: (opts: object) => boolean }).checkVisibility
+
+    if (typeof seen === 'function' && !seen.call(el, { checkOpacity: true, checkVisibilityCSS: true })) {
+      return false
+    }
+
     const style = win && win.getComputedStyle ? win.getComputedStyle(el) : null
 
-    if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) {
+    if (style) {
+      if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+        return false
+      }
+
+      // The screen-reader-only recipe, both spellings: the deprecated `clip` and
+      // the modern `clip-path: inset(50%)`. Neither exists for any purpose other
+      // than hiding something visually while keeping it focusable.
+      if ((style.clip && style.clip !== 'auto') || (style.clipPath || '').indexOf('inset(50%') !== -1) {
+        return false
+      }
+    }
+
+    return true
+  }
+
+  const visible = (el: Element): boolean => {
+    if (!shown(el)) {
+      return false
+    }
+
+    // Things the page itself declares are not for interacting with, neither of
+    // which shows up in a computed style or a bounding box: an aria-hidden
+    // subtree is invisible to every other assistive client, and `inert` cannot
+    // be clicked at all. Disabled controls are deliberately NOT filtered here —
+    // they stay in the inventory so the agent is told a button is disabled
+    // rather than hunting for one that appears not to exist.
+    if (el.closest('[aria-hidden="true"], [inert]')) {
       return false
     }
 
     const rect = el.getBoundingClientRect()
 
-    // Off-screen is fine (we scroll to it); collapsed to nothing is not.
-    return rect.width >= 1 && rect.height >= 1
+    // Below the fold is fine — we scroll to it. Off to the LEFT or ABOVE is the
+    // other half of the sr-only trick (`left: -9999px`, `top: -9999px`) and
+    // scrolling never brings those back.
+    if (rect.right <= 0 || rect.bottom <= 0) {
+      return false
+    }
+
+    // Bigger than the 1px box sr-only collapses to. Nothing a person can aim at
+    // is 2px across, and admitting those is what put the cursor in the corner:
+    // they cluster at the document origin, so they sort to the FRONT of the
+    // inventory and the agent reaches for one as @e1.
+    if (rect.width < 3 || rect.height < 3) {
+      return false
+    }
+
+    // Occlusion, and the last filter for a reason: everything above is cheap
+    // and this one forces layout. If the middle of the element is on screen,
+    // whatever the browser reports at that point has to BE this element — its
+    // own descendant (an icon inside a link) or the box it paints inside are
+    // fine, anything else means it is buried under a sticky header, a cookie
+    // wall, or a transparent layer the page put on top. Those are exactly the
+    // targets the agent aims at and then misses. Elements below the fold cannot
+    // be hit-tested from here, so they are taken on trust and land back in this
+    // function after the scroll.
+    const midX = rect.left + rect.width / 2
+    const midY = rect.top + rect.height / 2
+    const under = (doc as Document & { elementFromPoint?: (x: number, y: number) => Element | null })
+      .elementFromPoint
+
+    if (
+      typeof under === 'function' &&
+      win &&
+      midX >= 0 &&
+      midY >= 0 &&
+      midX < win.innerWidth &&
+      midY < win.innerHeight
+    ) {
+      const over = under.call(doc, midX, midY)
+
+      if (!over || !(over === el || el.contains(over) || over.contains(el))) {
+        return false
+      }
+    }
+
+    return true
   }
 
   const valueOf = (el: Element): string => {
@@ -166,6 +304,7 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
 
   const collect = (max: number): PreviewElement[] => {
     const nodes: Element[] = []
+    const field: Element[] = []
     const elements: PreviewElement[] = []
 
     const candidates = doc.querySelectorAll(
@@ -177,7 +316,22 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
     )
 
     for (const el of candidates) {
-      if (elements.length >= max || nodes.indexOf(el) !== -1 || !visible(el)) {
+      if (elements.length >= max && field.length >= maxMarks) {
+        break
+      }
+
+      if (!visible(el)) {
+        continue
+      }
+
+      // Drawable from here on. The two lists diverge deliberately: the field is
+      // what is on screen to be outlined, the inventory is what the agent can
+      // name and reach — which includes things below the fold it will scroll to.
+      if (field.length < maxMarks && onScreen(el)) {
+        field.push(el)
+      }
+
+      if (elements.length >= max) {
         continue
       }
 
@@ -212,6 +366,7 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
     }
 
     holder.nodes = nodes
+    holder.field = field
     holder.url = here
 
     return elements
@@ -279,7 +434,7 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
   }
 
   if (action.kind === 'elements') {
-    const elements = collect(Math.max(1, Math.min(action.max || ACT_MAX_ELEMENTS, ACT_MAX_ELEMENTS)))
+    const elements = collect(Math.max(1, Math.min(action.max || maxElements, maxElements)))
 
     return answer({
       elements,
@@ -300,9 +455,9 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
     const by = action.to === 'top' ? -1e7 : action.to === 'bottom' ? 1e7 : (action.amount ?? page)
 
     if (scroller) {
-      scroller.scrollBy({ behavior: 'auto', top: by })
+      scroller.scrollBy({ behavior: glide, top: by })
     } else if (win) {
-      win.scrollBy({ behavior: 'auto', top: by })
+      win.scrollBy({ behavior: glide, top: by })
     }
 
     return answer({ acted: scroller ? 'scrolled ' + describe(scroller) : 'scrolled the page', success: true })
@@ -316,12 +471,63 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
 
   const el = target.el as HTMLElement
 
-  if ((el as HTMLInputElement).disabled) {
-    return fail(describe(el) + ' is disabled.')
+  // Park the target where the watch overlay can find it, before anything can
+  // fail — a ring around the thing that turned out to be disabled is exactly
+  // the feedback someone watching wants.
+  holder.aimed = el
+
+  // 'locate' is the look-before-you-act half of an action: it brings the target
+  // on screen and names it, so the overlay has something to draw while the real
+  // verb is still a beat away.
+  if (action.kind === 'locate') {
+    if (el.scrollIntoView) {
+      el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'nearest' })
+    }
+
+    if (action.focus) {
+      el.focus()
+    }
+
+    const spot = pointAt(el)
+    const tag = el.tagName
+
+    return answer({
+      acted: 'looking at ' + describe(el),
+      point: { x: spot.clientX, y: spot.clientY },
+      success: true,
+      // Real typing starts with a triple-click to clear the field. On anything
+      // that is not a field that gesture selects the paragraph under it
+      // instead, which is how the agent ended up highlighting whole pages.
+      typable: tag === 'TEXTAREA' || tag === 'INPUT' || el.isContentEditable === true
+    })
   }
 
+  // Instant, unlike the `scroll` verb above. Getting a target on screen is
+  // plumbing for the click that follows, not something anyone asked to watch —
+  // and every millisecond of it is time the caller spends waiting for the page
+  // to stop moving before it can aim real input at a fixed coordinate.
   if (el.scrollIntoView) {
-    el.scrollIntoView({ block: 'center', inline: 'nearest' })
+    el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'nearest' })
+  }
+
+  // Hovering a disabled control is allowed — a disabled button with a tooltip
+  // explaining WHY is exactly the thing worth hovering.
+  if (action.kind === 'hover') {
+    const init = { bubbles: true, cancelable: true, ...pointAt(el) }
+
+    if (typeof PointerEvent === 'function') {
+      el.dispatchEvent(new PointerEvent('pointerover', init))
+      el.dispatchEvent(new PointerEvent('pointermove', init))
+    }
+
+    el.dispatchEvent(new MouseEvent('mouseover', init))
+    el.dispatchEvent(new MouseEvent('mousemove', init))
+
+    return answer({ acted: 'hovered over ' + describe(el), success: true })
+  }
+
+  if ((el as HTMLInputElement).disabled) {
+    return fail(describe(el) + ' is disabled.')
   }
 
   if (action.kind === 'click') {

@@ -2232,25 +2232,48 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
     messaging_cwd = os.environ.get("MESSAGING_CWD")
     terminal_cwd_env = os.environ.get("TERMINAL_CWD")
 
+    if not messaging_cwd and not terminal_cwd_env:
+        return
+
+    from hermes_constants import get_hermes_home
+    from hermes_cli.env_loader import _env_keys_defined_in_dotenv
+
+    env_path = get_hermes_home() / ".env"
+    if not env_path.exists():
+        return
+
+    dotenv_keys = _env_keys_defined_in_dotenv(env_path)
+    if not dotenv_keys:
+        return
+
+    # Only warn if the variable is actually defined in .env
+    # (avoid false-positive warnings when TERMINAL_CWD is populated by CLI/runtime process).
+    has_messaging_cwd = bool(messaging_cwd and "MESSAGING_CWD" in dotenv_keys)
+
     if config is None:
         try:
             config = load_config()
         except Exception:
             return
 
-    terminal_cfg = config.get("terminal", {})
+    terminal_cfg = config.get("terminal", {}) if isinstance(config, dict) else {}
     config_cwd = terminal_cfg.get("cwd", ".") if isinstance(terminal_cfg, dict) else "."
     # Only warn if config.yaml doesn't have an explicit path
     config_has_explicit_cwd = config_cwd not in {".", "auto", "cwd", ""}
 
+    has_terminal_cwd = bool(
+        terminal_cwd_env
+        and not config_has_explicit_cwd
+        and "TERMINAL_CWD" in dotenv_keys
+    )
+
     lines: list[str] = []
-    if messaging_cwd:
+    if has_messaging_cwd:
         lines.append(
             f"  \033[33m⚠\033[0m MESSAGING_CWD={messaging_cwd} found in .env — "
             f"this is deprecated."
         )
-    if terminal_cwd_env and not config_has_explicit_cwd:
-        # TERMINAL_CWD in env but not from config bridge — likely from .env
+    if has_terminal_cwd:
         lines.append(
             f"  \033[33m⚠\033[0m TERMINAL_CWD={terminal_cwd_env} found in .env — "
             f"this is deprecated."

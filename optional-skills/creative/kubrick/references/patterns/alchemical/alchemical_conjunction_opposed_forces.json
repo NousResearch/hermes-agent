@@ -1,0 +1,23 @@
+{
+  "pattern_id": "alchemical_conjunction_opposed_forces",
+  "title": "Conjunction / Opposed Forces Form a Third State",
+  "version": "0.11.1",
+  "domain": "alchemical",
+  "source_tier": "PRIMARY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"European alchemical tradition","title":"Coniunctio and conjunction operations","date":"medieval to early modern","cultural_context":"European alchemy"}],
+  "observed_structure": ["two forces remain visibly distinct before contact", "their interaction produces a third operative state rather than simple compromise", "the union changes subsequent behavior and material arrangement"],
+  "dramatic_operations": ["reconcile incompatible functions", "convert opposition into a new agency", "bind without erasing difference"],
+  "transformation_grammars": ["conjunction", "opposition-to-third-state"],
+  "cinematic_affordances": ["separate blocking lines converge at one site", "contrasting sound or light systems create a shared rhythm", "two props exchange function after contact", "parallel edits terminate in one consequential frame"],
+  "applicable_genres": ["drama", "romance", "science fiction", "thriller"],
+  "applicable_formats": ["feature", "pilot", "short", "single-frame"],
+  "cultural_scope": ["European alchemical source; translate only as observable relation and state change"],
+  "misuse_risks": ["generic sacred marriage imagery", "merger without consequence", "binary essentialism"],
+  "mutation_requirements": {"required":true,"variables":["distance","contact site","shared rhythm","ownership","post-union function"]},
+  "transferable_structure": "distinct opposed forces interact and produce a third state with new causal capacity",
+  "non_transferable_surface": "alchemical wedding tableaux, crowns, robes, or explicit hermaphroditic iconography",
+  "production_cost": {"location_dependency":0.2,"prop_dependency":0.4,"lighting_dependency":0.5,"VFX_dependency":0.1},
+  "lexicon_links": ["conjunction", "coniunctio", "syzygy", "rebis"],
+  "confidence": 0.84
+}

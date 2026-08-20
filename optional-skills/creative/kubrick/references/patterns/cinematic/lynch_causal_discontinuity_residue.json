@@ -1,0 +1,23 @@
+{
+  "pattern_id": "lynch_causal_discontinuity_residue",
+  "title": "Causal Discontinuity / Residue Bridges the Break",
+  "version": "0.11.2",
+  "domain": "cinematic",
+  "source_tier": "PRIMARY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"David Lynch","title":"Lost Highway; Mulholland Drive; Twin Peaks","date":"1990-2001","cultural_context":"American surrealist cinema and television"}],
+  "observed_structure": ["identity or setting changes across a formal break", "one material, sonic, or behavioral residue survives the discontinuity", "the surviving residue supplies causal pressure without fully explaining the transformation"],
+  "dramatic_operations": ["destabilize identity continuity", "preserve causality through residue", "make contradiction behaviorally active"],
+  "transformation_grammars": ["discontinuity-with-residue", "identity-phase-shift"],
+  "cinematic_affordances": ["hard transition with one retained sound", "changed performer preserving a gesture", "new location containing an old object trace", "light or electrical rhythm surviving scene replacement"],
+  "applicable_genres": ["mystery", "horror", "drama", "psychological thriller"],
+  "applicable_formats": ["feature", "pilot", "episode", "short"],
+  "cultural_scope": ["film-derived formal pattern; cite Lynch and do not imitate specific iconography"],
+  "misuse_risks": ["random dream logic", "cryptic dialogue replacing causality", "surface copying of red curtains or electrical imagery"],
+  "mutation_requirements": {"required":true,"variables":["retained residue","identity carrier","location state","sound continuity","causal consequence"]},
+  "transferable_structure": "a discontinuity changes identity or world state while a persistent residue carries unresolved causal pressure across the break",
+  "non_transferable_surface": "red rooms, zigzag floors, mystery boxes, blue keys, or direct recreations of Lynch imagery",
+  "production_cost": {"location_dependency":0.5,"prop_dependency":0.4,"lighting_dependency":0.5,"VFX_dependency":0.2},
+  "lexicon_links": ["doppelganger", "choronzon", "residue", "oneiric_logic"],
+  "confidence": 0.81
+}

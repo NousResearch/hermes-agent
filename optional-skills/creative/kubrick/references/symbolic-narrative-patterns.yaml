@@ -1,0 +1,57 @@
+# Symbolic Narrative Pattern System
+# Provenance-linked patterns for translating symbolic systems into narrative, cinematic, and dramatic structures.
+
+SymbolicNarrativePattern:
+  pattern_id: string  # e.g., "alchemical_conjunction_binding"
+  name: string
+  source_family: string  # e.g., "Western Alchemy", "Jungian Psychology", "Shinto Liminality"
+  source_records: list
+    # Each: {author, title, date, edition, cultural_context, source_family, source_tier: PRIMARY|EARLY_COMMENTARY|SCHOLARLY|..., reliability_context, contested_interpretations, access_status, provenance}
+  historical_context: string
+  cultural_scope: list  # e.g., ["European medieval", "cross-cultural liminal"]
+
+  observed_structure:
+    agents: list
+    objects: list
+    spatial_relation: string
+    temporal_relation: string
+    sequence: list
+    transformation: string
+    cost: string
+    residue: string
+
+  candidate_functions:
+    narrative: list
+    psychological: list
+    social: list
+    ritual: list
+    archetypal: list
+
+  cinematic_affordances:
+    composition: list
+    blocking: list
+    camera: list
+    editing: list
+    sound: list
+    production_design: list
+    performance: list
+
+  mutation_rules:
+    inversion: string
+    fragmentation: string
+    transfer: string
+    absence: string
+    recurrence: string
+    contamination: string
+    integration: string
+
+  misuse_risks:
+    cliché: string
+    tradition_flattening: string
+    overstatement: string
+    cultural_sensitivity: string
+    visual_literalism: string
+
+  provenance: string  # Full chain
+  confidence: float  # 0-1
+  authority_status: PRIMARY | DERIVED | CONTESTED | SPECULATIVE

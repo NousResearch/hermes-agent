@@ -1,0 +1,36 @@
+manifest_version: 0.11.2
+batch_id: hermes-corpus-wave1-batch2
+runtime: standalone-hermes
+patterns:
+  - id: alchemical_conjunction_opposed_forces
+    path: references/patterns/alchemical/alchemical_conjunction_opposed_forces.json
+    routes: [opposed_forces, third_state, union_without_erasure]
+  - id: alchemical_distillation_iterative_refinement
+    path: references/patterns/alchemical/alchemical_distillation_iterative_refinement.json
+    routes: [iterative_refinement, compression, signal_preservation]
+  - id: alchemical_coagulation_embodied_consequence
+    path: references/patterns/alchemical/alchemical_coagulation_embodied_consequence.json
+    routes: [embodied_insight, irreversible_action, material_consequence]
+  - id: resnais_temporal_recurrence_substitution
+    path: references/patterns/cinematic/resnais_temporal_recurrence_substitution.json
+    routes: [memory_revision, temporal_substitution, recurrence_with_changed_evidence]
+  - id: soviet_montage_collision_thesis
+    path: references/patterns/cinematic/soviet_montage_collision_thesis.json
+    routes: [collision_montage, systemic_relation, third_meaning]
+  - id: sonic_silence_withdrawal_revelation
+    path: references/patterns/sound-rhythmic/sonic_silence_withdrawal_revelation.json
+    routes: [removed_ambience, revelation, environmental_authority]
+  - id: indian_tala_accent_displacement
+    path: references/patterns/sound-rhythmic/indian_tala_accent_displacement.json
+    routes: [cyclical_pressure, displaced_emphasis, delayed_return]
+selection_policy:
+  primary_limit: 1
+  supporting_limit: 2
+  minimum_confidence: 0.55
+  fail_closed: NOT_COMPUTABLE
+guards:
+  observed_structure_required: true
+  mutation_required: true
+  provenance_required: true
+  latent_surface_default: true
+  tradition_boundary_required_for_non_western_sources: true

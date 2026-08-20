@@ -1,0 +1,89 @@
+schema_version: "1.0.0"
+project:
+  name: Example Project
+  artifact_type: application
+  version: "0.1.0"
+  audience: Define the intended audience.
+  platform: Define the target platform.
+authority:
+  status: PROPOSED
+  generated_by: kubrick
+  source_revision: NOT_COMPUTABLE
+observed_inputs:
+  - source: README.md
+    kind: document
+    provenance: OBSERVED
+    revision: NOT_COMPUTABLE
+design_intent:
+  premise: State what the project is and what it enables.
+  governing_tension: State the primary force the design must continuously negotiate.
+  intended_transformation: State how the user, system, or audience should change.
+  non_goals:
+    - State what the project deliberately does not attempt.
+pillars:
+  - id: pillar_one
+    statement: State a governing design principle.
+    test: Define an observable pass/fail test.
+    provenance: INFERRED
+invariants:
+  - id: invariant_one
+    rule: State a property that must remain true across revisions.
+    verification: Define how the property is checked.
+    severity: critical
+experience:
+  user_state: Describe the intended user state.
+  core_loop:
+    - Observe
+    - Decide
+    - Act
+    - Receive feedback
+  emotional_arc:
+    - Orientation
+    - Tension
+    - Resolution
+  failure_experience: Define what failure should communicate and preserve.
+  success_experience: Define what success should communicate and unlock.
+systems:
+  - id: core_system
+    purpose: Define the system's responsibility.
+    inputs: [user intent]
+    outputs: [observable state change]
+    constraints: [deterministic behavior]
+    dependencies: []
+design_languages:
+  visual:
+    principles: [Define visual hierarchy and material logic.]
+    motifs: []
+    avoid: [Decorative elements without functional purpose.]
+  interaction:
+    principles: [Make state, available action, and consequence legible.]
+    motifs: []
+    avoid: [Hidden irreversible actions.]
+  audio:
+    principles: [Use sound to communicate state and pressure.]
+    motifs: []
+    avoid: [Constant undifferentiated intensity.]
+  narrative:
+    principles: [Preserve causality, agency, and transformation.]
+    motifs: []
+    avoid: [Exposition that replaces observable action.]
+  motion:
+    principles: [Motion must reveal state change or affordance.]
+    motifs: []
+    avoid: [Animation without informational or emotional function.]
+continuity_contract:
+  locked_facts:
+    - Identify facts that may not change silently.
+  mutable_variables:
+    - Identify dimensions permitted to evolve.
+  prohibited_drift:
+    - Identify unacceptable changes in identity, behavior, tone, or function.
+  revision_protocol: Every material change emits a revision delta naming preserved intent, changed constraints, and downstream effects.
+risks:
+  - risk: State a credible design risk.
+    signal: State the earliest observable indicator.
+    mitigation: State the bounded response.
+open_questions:
+  - question: State a question that cannot yet be resolved from available evidence.
+    blocking: false
+    resolution_owner: operator

@@ -195,6 +195,13 @@ const $selectedBot = atom('default')
  *  the socket happened to be homed on. */
 const $focusedBotProfile = host.state.focusedSessionProfile || host.state.profile
 
+/** Profile that owns the chat currently on screen. Bot Mode opens another
+ *  profile's session without moving the gateway socket, so mention filtering
+ *  and sender identity must follow focus rather than host.state.profile. */
+function focusedMentionProfile() {
+  return String($focusedBotProfile.get?.() || '').trim() || 'default'
+}
+
 /** Optional secondary navigation inside the Bots pane (group-chat rooms). */
 
 /** Group-chat rooms: { [group]: { log: [{from:{kind,name},text,at}], watermarks:{[member]:idx}, epoch, running } }.
@@ -10786,7 +10793,7 @@ export default {
             return []
           }
 
-          const active = (host.state.profile.get() || 'default').trim() || 'default'
+          const active = focusedMentionProfile()
           const q = (query || '').toLowerCase()
           const items = []
           const live = {
@@ -11087,7 +11094,7 @@ export default {
           }
 
           const live = {
-            name: (host.state.profile.get() || 'default').trim() || 'default',
+            name: focusedMentionProfile(),
             connectionId: String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local')
           }
           const cached = cachedUnionRoster()

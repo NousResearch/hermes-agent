@@ -2984,7 +2984,18 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
     import wave
 
     piper_config = tts_config.get("piper") or {} if isinstance(tts_config, dict) else {}
-    voice_name = piper_config.get("voice") or DEFAULT_PIPER_VOICE
+    # Provider-specific key wins; the shared top-level ``tts.voice`` (the key
+    # the plugin-provider dispatch path reads) is honored as a fallback, so
+    # users switching between plugin and built-in backends keep their voice
+    # instead of silently rendering the provider default (#79459).
+    voice_name = (
+        piper_config.get("voice")
+        or (tts_config.get("voice") if isinstance(tts_config, dict) else None)
+        or DEFAULT_PIPER_VOICE
+    )
+    if not isinstance(voice_name, str) or not voice_name.strip():
+        voice_name = DEFAULT_PIPER_VOICE
+    logger.info("[Piper] Voice requested: %s", voice_name)
     download_dir = Path(piper_config.get("voices_dir") or _get_piper_voices_dir()).expanduser()
     download_dir.mkdir(parents=True, exist_ok=True)
     use_cuda = bool(piper_config.get("use_cuda", False))
@@ -3080,6 +3091,123 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
 # Module-level cache for KittenTTS model instance
 _kittentts_model_cache: Dict[str, Any] = {}
 
+# Install hint shared by KittenTTS error paths: the GitHub wheel resolves
+# Hugging Face repo ids internally, the legacy PyPI releases (0.1.x) do not.
+_KITTENTTS_WHEEL_HINT = (
+    "pip install https://github.com/KittenML/KittenTTS/releases/download/"
+    "0.8.1/kittentts-0.8.1-py3-none-any.whl"
+)
+
+
+def _resolve_kittentts_model_files(
+    model_name: str,
+) -> Optional[Tuple[str, Optional[str], Dict[str, str]]]:
+    """Resolve a Hugging Face repo id to cached local (model, voices, aliases).
+
+    Returns None when *model_name* is not a repo id, ``huggingface_hub`` is
+    unavailable, or the repo layout doesn't expose a ``config.json`` with a
+    ``model_file`` entry (as the 0.8-era KittenML repos do). Callers treat
+    None as "resolution not possible" and surface the original error.
+
+    The third element carries the repo's ``voice_aliases`` mapping (e.g.
+    ``{"Jasper": "expr-voice-2-m"}``) so callers can normalize alias names
+    for legacy libraries that only accept raw voice names.
+    """
+    if not isinstance(model_name, str) or "/" not in model_name:
+        return None
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        return None
+    try:
+        config_path = hf_hub_download(repo_id=model_name, filename="config.json")
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        model_file = config.get("model_file")
+        if not model_file:
+            return None
+        local_model = hf_hub_download(repo_id=model_name, filename=str(model_file))
+        voices_file = config.get("voices")
+        local_voices = (
+            hf_hub_download(repo_id=model_name, filename=str(voices_file))
+            if voices_file
+            else None
+        )
+        raw_aliases = config.get("voice_aliases")
+        aliases = (
+            {k: str(v) for k, v in raw_aliases.items() if isinstance(k, str) and v}
+            if isinstance(raw_aliases, dict)
+            else {}
+        )
+        return str(local_model), (str(local_voices) if local_voices else None), aliases
+    except Exception as exc:
+        logger.warning(
+            "[KittenTTS] Hugging Face resolution failed for '%s': %s",
+            model_name, exc,
+        )
+        return None
+
+
+def _construct_kittentts_model(KittenTTS, model_name: str) -> Tuple[Any, Dict[str, str]]:
+    """Construct a KittenTTS model across library generations.
+
+    Newer releases (>=0.8) resolve Hugging Face repo ids internally and
+    understand alias voice names natively, so they come back with an empty
+    alias map. The legacy PyPI releases (0.1.x) treat the constructor
+    argument as a local file path and fail with ``NO_SUCHFILE`` on repo ids
+    (#79459); for those the repo is resolved to cached local files via
+    ``huggingface_hub`` and explicit paths are passed instead, together with
+    the repo's ``voice_aliases`` mapping so alias names can be normalized to
+    the raw voice names the legacy ``generate()`` accepts.
+    """
+    try:
+        return KittenTTS(model_name), {}
+    except Exception as first_exc:
+        resolved = _resolve_kittentts_model_files(model_name)
+        if resolved is None:
+            raise RuntimeError(
+                f"KittenTTS could not load model '{model_name}': {first_exc}. "
+                "Older kittentts releases (PyPI 0.1.x) cannot resolve Hugging "
+                f"Face repo ids — upgrade with: {_KITTENTTS_WHEEL_HINT}"
+            ) from first_exc
+        local_model, local_voices, aliases = resolved
+        logger.info("[KittenTTS] Resolved '%s' -> %s", model_name, local_model)
+        try:
+            return KittenTTS(model_path=local_model, voices_path=local_voices), aliases
+        except Exception as second_exc:
+            raise RuntimeError(
+                f"KittenTTS failed to load the locally resolved model for "
+                f"'{model_name}' ({local_model}): {second_exc}. Your kittentts "
+                "version may be too old for this model — upgrade with: "
+                f"{_KITTENTTS_WHEEL_HINT}"
+            ) from second_exc
+
+
+def _kittentts_voice_table(model) -> Optional[List[str]]:
+    """Best-effort enumeration of the voices the loaded model accepts.
+
+    Newer libraries expose ``model.model.all_voice_names`` plus
+    ``voice_aliases``; the legacy 0.1.x releases expose
+    ``model.available_voices``. Returns None when no table can be
+    determined — voice validation is then skipped rather than guessed.
+    """
+    names: set = set()
+    try:
+        inner = getattr(model, "model", None)
+        if inner is not None:
+            all_names = getattr(inner, "all_voice_names", None)
+            if isinstance(all_names, (list, tuple)):
+                names.update(all_names)
+            aliases = getattr(inner, "voice_aliases", None)
+            if isinstance(aliases, dict):
+                names.update(aliases.keys())
+        legacy = getattr(model, "available_voices", None)
+        if isinstance(legacy, (list, tuple)):
+            names.update(legacy)
+    except Exception:
+        return None
+    return sorted(names) or None
+
 
 def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """Generate speech using KittenTTS local ONNX model.
@@ -3096,23 +3224,67 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
         Path to the saved audio file.
     """
     KittenTTS = _import_kittentts()
-    kt_config = tts_config.get("kittentts", {})
-    model_name = kt_config.get("model", DEFAULT_KITTENTTS_MODEL)
-    voice = kt_config.get("voice", DEFAULT_KITTENTTS_VOICE)
+    kt_config = tts_config.get("kittentts", {}) if isinstance(tts_config, dict) else {}
+    if not isinstance(kt_config, dict):
+        kt_config = {}
+    model_name = kt_config.get("model") or DEFAULT_KITTENTTS_MODEL
+    # Provider-specific key wins; the shared top-level ``tts.voice`` is the
+    # fallback (same contract as the plugin-provider dispatch path), so a
+    # voice configured once survives a switch to this built-in backend
+    # instead of silently rendering the default (#79459).
+    voice = (
+        kt_config.get("voice")
+        or (tts_config.get("voice") if isinstance(tts_config, dict) else None)
+        or DEFAULT_KITTENTTS_VOICE
+    )
+    if not isinstance(voice, str) or not voice.strip():
+        voice = DEFAULT_KITTENTTS_VOICE
     speed = kt_config.get("speed", 1.0)
     clean_text = kt_config.get("clean_text", True)
 
-    # Use cached model instance if available
+    # Use cached model instance if available. The loader also returns the
+    # repo voice-alias map (non-empty only on the legacy HF-resolution
+    # path), so alias names can be normalized before validation.
     def _load_kittentts_model():
         logger.info("[KittenTTS] Loading model: %s", model_name)
-        m = KittenTTS(model_name)
+        m, alias_map = _construct_kittentts_model(KittenTTS, model_name)
         logger.info("[KittenTTS] Model loaded successfully")
-        return m
+        return m, alias_map
 
-    model = _tts_cache_get_or_load(_kittentts_model_cache, model_name, _load_kittentts_model)
+    model, alias_map = _tts_cache_get_or_load(
+        _kittentts_model_cache, model_name, _load_kittentts_model
+    )
 
-    # Generate audio (returns numpy array at 24kHz)
-    audio = model.generate(text, voice=voice, speed=speed, clean_text=clean_text)
+    # Newer libraries resolve alias names (Jasper, Luna, ...) internally;
+    # the legacy 0.1.x generate() only accepts raw voice names, so map the
+    # alias through the repo metadata carried by the HF resolution. This
+    # keeps the documented no-config default (Jasper) working on the very
+    # legacy package this fallback exists for.
+    if alias_map and voice in alias_map:
+        logger.info("[KittenTTS] Voice alias '%s' -> '%s'", voice, alias_map[voice])
+        voice = alias_map[voice]
+
+    # Unknown voices must fail loudly with the list of valid choices —
+    # never silently render a different voice (#79459). Validation is
+    # skipped when the library exposes no voice table.
+    voice_table = _kittentts_voice_table(model)
+    if voice_table and voice not in voice_table:
+        raise RuntimeError(
+            f"KittenTTS voice '{voice}' is not available in model "
+            f"'{model_name}'. Available voices: {', '.join(voice_table)}"
+        )
+
+    # Generate audio (returns numpy array at 24kHz). ``clean_text`` only
+    # exists on newer kittentts releases; the legacy 0.1.x generate()
+    # signature is (text, voice, speed), so retry without the kwarg when
+    # the library rejects it.
+    try:
+        audio = model.generate(text, voice=voice, speed=speed, clean_text=clean_text)
+    except TypeError as exc:
+        if "clean_text" not in str(exc):
+            raise
+        logger.info("[KittenTTS] generate() has no clean_text parameter — omitted")
+        audio = model.generate(text, voice=voice, speed=speed)
 
     # Save as WAV
     import soundfile as sf

@@ -379,18 +379,30 @@ def _match_peers_by_capability(capability: str) -> list[tuple[str, dict]]:
     return matches
 
 
-def _call_peer_sync(agent_name: str, peer_entry: dict, message: str, context_id: str = "") -> tuple[str, str]:
-    """Call a single peer synchronously. Returns (agent_name, reply_text)."""
+def _call_peer_sync(agent_name: str, peer_entry: dict, message: str, context_id: str = "") -> tuple[str, str, str]:
+    """Call a single peer synchronously. Returns (agent_name, reply_text, state)."""
     try:
         peer = {
             "url": peer_entry.get("url", ""),
             "auth": peer_entry.get("auth", {}) or {},
             "timeout": int(peer_entry.get("timeout", _DEFAULT_TIMEOUT)),
         }
-        reply, _ctx, _state = _send_task(agent_name, peer, message, context_id)
-        return (agent_name, reply or "(no reply)")
+        reply, _ctx, state = _send_task(agent_name, peer, message, context_id)
+        return (agent_name, reply or "(no reply)", state)
     except Exception as e:
-        return (agent_name, f"Error: {e}")
+        return (agent_name, f"Error: {e}", protocol.STATE_FAILED)
+
+
+def _orchestrate_success(reply: str, state: str) -> bool:
+    """A peer only succeeded when the A2A task completed, or legacy peers omit state."""
+    return not reply.startswith("Error:") and state in ("", protocol.STATE_COMPLETED)
+
+
+def _orchestrate_display(reply: str, state: str) -> str:
+    """Make non-completed task states visible in fan-out output."""
+    if state and state != protocol.STATE_COMPLETED:
+        return f"[{_short_state(state)}] {reply}"
+    return reply
 
 
 def a2a_orchestrate(args: dict, **_: Any) -> str:
@@ -430,7 +442,7 @@ def a2a_orchestrate(args: dict, **_: Any) -> str:
         mode = "all"
 
     # Fan-out
-    results: list[tuple[str, str]] = []
+    results: list[tuple[str, str, str]] = []
     with ThreadPoolExecutor(max_workers=min(len(matches), _ORCHESTRATE_MAX_WORKERS)) as pool:
         futures = {
             pool.submit(_call_peer_sync, name, entry, message, context_id): name
@@ -439,23 +451,24 @@ def a2a_orchestrate(args: dict, **_: Any) -> str:
         for fut in as_completed(futures):
             name = futures[fut]
             try:
-                results.append(fut.result())
-                if mode == "first" and not results[-1][1].startswith("Error:"):
-                    # Got a good reply; cancel peers that haven't started yet.
+                result = fut.result()
+                results.append(result)
+                if mode == "first" and _orchestrate_success(result[1], result[2]):
+                    # Got a completed peer task; cancel peers that haven't started yet.
                     for f in futures:
                         f.cancel()
                     break
             except Exception as e:
-                results.append((name, f"Error: {e}"))
+                results.append((name, f"Error: {e}", protocol.STATE_FAILED))
 
     # Sort results by peer name for deterministic output
     results.sort(key=lambda r: r[0])
-    successes = [(name, reply) for name, reply in results if not reply.startswith("Error:")]
+    successes = [(name, reply, state) for name, reply, state in results if _orchestrate_success(reply, state)]
 
     def _all_failed() -> str:
         lines = ["All peers failed:"]
-        for name, reply in results:
-            lines.append(f"  {name}: {reply}")
+        for name, reply, state in results:
+            lines.append(f"  {name}: {_orchestrate_display(reply, state)}")
         return "\n".join(lines)
 
     if mode == "best":
@@ -466,13 +479,13 @@ def a2a_orchestrate(args: dict, **_: Any) -> str:
     elif mode == "first":
         if not successes:
             return _all_failed()
-        name, reply = successes[0]
+        name, reply, _state = successes[0]
         return f"[first: {name}]\n{reply}"
     else:  # mode == "all"
         lines = [f"Orchestrated '{capability}' to {len(matches)} peer(s):"]
-        for name, reply in results:
+        for name, reply, state in results:
             lines.append(f"\n--- {name} ---")
-            lines.append(reply)
+            lines.append(_orchestrate_display(reply, state))
         return "\n".join(lines)
 
 

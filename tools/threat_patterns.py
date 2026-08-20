@@ -131,7 +131,27 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (r'(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}\.hermes/(config\.yaml|SOUL\.md)', "hermes_config_mod", "strict"),
 
     # ── Hardcoded secrets ────────────────────────────────────────────
-    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}', "hardcoded_secret", "strict"),
+    # Match with or without quotes — memory writes sometimes omit quotes
+    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*(?:["\']?)[A-Za-z0-9+/=_-]{20,}', "hardcoded_secret", "strict"),
+
+    # ── URLs (strict — memory writes should not contain URLs) ────────
+    (r'https?://\S+', "url_block", "strict"),
+
+    # ── Sensitive file paths (strict) ────────────────────────────────
+    # .env files — match .env followed by space, slash, backslash, end, or dot
+    (r'(?:^|[/\\]|\s)\.env(?:\.[a-zA-Z]+)?(?:\s|$|[/\\])', "sensitive_path_env", "strict"),
+    # .ssh directory and contents
+    (r'(?:^|[/\\])\.ssh(?:[/\\]|$)', "sensitive_path_ssh", "strict"),
+    # .npmrc, .pypirc, .netrc, .pgpass, credentials files — match mid-path too
+    (r'[/\\]\.(?:npmrc|pypirc|netrc|pgpass)(?:\s|$|[/\\])', "sensitive_path_cred", "strict"),
+    (r'[/\\]credentials(?:\.[a-zA-Z]+)?(?:\s|$|[/\\])', "sensitive_path_cred_file", "strict"),
+    (r'[/\\]AppData(?:[/\\]|$)', "sensitive_path_appdata", "strict"),
+    # Sensitive path segments — exact match only (no substring false positives).
+    # Matches /secrets/ or /secret/ but NOT /secret-santa/.
+    # Negative lookahead excludes common compound words (secret-santa, token-spec, etc.)
+    (r'[/\\](?:secrets?|credentials?|apikeys?|private[_-]?keys?)[/\\](?!.*[-_](?:santa|spec|management|store|rotation))', "sensitive_path_keyword", "strict"),
+    # Sensitive filenames anywhere in path
+    (r'[/\\](?:private_key|api_key|secret_key|access_token)\s*\.[a-zA-Z]+(?:\s|$|[/\\])', "sensitive_path_file", "strict"),
 ]
 
 # Invisible / bidirectional unicode characters used in injection attacks.
@@ -255,13 +275,62 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     return findings
 
 
+def _check_structural_content(content: str) -> Optional[str]:
+    """Structured detection for content that regex cannot reliably catch.
+
+    Checks:
+    - Large code blocks (>10 lines inside ``` fences)
+    - Large log/text dumps (>=15 lines with Traceback or ERROR or File ")
+
+    Returns error string if blocked, None if clean.
+    """
+    lines = content.split("\n")
+
+    # ── Large code block detection ──
+    in_fence = False
+    fence_line_count = 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if not in_fence:
+                in_fence = True
+                fence_line_count = 0
+            else:
+                in_fence = False
+                if fence_line_count > 10:
+                    return "Blocked: content contains a large code block (>10 lines inside ``` fences). Write a summary instead."
+        elif in_fence:
+            fence_line_count += 1
+
+    # ── Large log/text dump detection ──
+    if len(lines) >= 15:
+        trace_count = 0
+        error_count = 0
+        file_ref_count = 0
+        for line in lines:
+            if "Traceback" in line:
+                trace_count += 1
+            if "ERROR" in line.upper():
+                error_count += 1
+            if 'File "' in line:
+                file_ref_count += 1
+        # Lower threshold for log dump: many Traceback OR moderate error density
+        if trace_count >= 2 or (file_ref_count >= 3 and error_count >= 1):
+            return "Blocked: content appears to be a log/traceback dump (>=15 lines with error patterns). Write a summary instead."
+
+    return None
+
+
 def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:
     """Return a human-readable error string for the first threat found, or None.
 
-    Convenience wrapper used by paths that block on the first hit
-    (memory tool writes, skills install) where the caller just needs a
-    yes/no + a message.
+    Runs structural checks first (code blocks, log dumps), then regex patterns.
     """
+    # Structural checks run before regex
+    structural_error = _check_structural_content(content)
+    if structural_error:
+        return structural_error
+
     findings = scan_for_threats(content, scope=scope)
     if not findings:
         return None
@@ -269,6 +338,20 @@ def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:
     if pid.startswith("invisible_unicode_"):
         codepoint = pid.replace("invisible_unicode_", "")
         return f"Blocked: content contains invisible unicode character {codepoint} (possible injection)."
+    # Map pattern IDs to user-friendly categories
+    category_map = {
+        "url_block": "URLs are not allowed in memory. Record the description, not the link.",
+        "sensitive_path_env": "Sensitive file path (.env) detected. Do not store paths to secret files.",
+        "sensitive_path_ssh": "Sensitive file path (.ssh) detected. Do not store paths to secret directories.",
+        "sensitive_path_cred": "Sensitive credential file path detected. Do not store paths to credential files.",
+        "sensitive_path_cred_file": "Sensitive credential file path detected. Do not store paths to credential files.",
+        "sensitive_path_appdata": "AppData path detected. Do not store system directory paths in memory.",
+        "sensitive_path_keyword": "Sensitive path keyword detected. Do not store paths containing secret/credential/apikey/private_key.",
+        "sensitive_path_file": "Sensitive filename detected (e.g. private_key, api_key, secret_key). Do not store paths to key/secret files.",
+    }
+    category = category_map.get(pid)
+    if category:
+        return f"Blocked: {category}"
     return (
         f"Blocked: content matches threat pattern '{pid}'. "
         f"Content is injected into the system prompt and must not contain "
@@ -281,4 +364,5 @@ __all__ = [
     "MAX_SCAN_CHARS",
     "scan_for_threats",
     "first_threat_message",
+    "_check_structural_content",
 ]

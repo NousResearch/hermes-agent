@@ -1,5 +1,6 @@
 """Tests for gateway/hooks.py — event hook system."""
 
+import asyncio
 from unittest.mock import patch
 
 import pytest
@@ -60,6 +61,51 @@ class TestDiscoverAndLoad:
 
 
 class TestEmit:
+
+    @pytest.mark.asyncio
+    async def test_default_registry_keeps_startup_handler_alive(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_startup_handler(_event_type, _context):
+            started.set()
+            await release.wait()
+
+        reg = HookRegistry()
+        reg._handlers["gateway:startup"] = [slow_startup_handler]
+
+        await reg.emit("gateway:startup", {})
+        await started.wait()
+        assert len(reg._background_tasks) == 1
+
+        release.set()
+        await asyncio.gather(*reg._background_tasks)
+        assert reg._background_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_startup_async_handler_does_not_block_gateway_readiness(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_startup_handler(_event_type, _context):
+            started.set()
+            await release.wait()
+
+        background_tasks = set()
+        reg = HookRegistry(background_tasks=background_tasks)
+        reg._handlers["gateway:startup"] = [slow_startup_handler]
+
+        emitted = asyncio.create_task(reg.emit("gateway:startup", {}))
+        try:
+            await started.wait()
+            assert emitted.done()
+            assert len(background_tasks) == 1
+        finally:
+            release.set()
+            await emitted
+
+        await asyncio.gather(*background_tasks)
+        assert background_tasks == set()
 
     @pytest.mark.asyncio
     async def test_emit_calls_async_handler(self, tmp_path):
@@ -138,5 +184,3 @@ class TestEmitCollect:
         results = await reg.emit_collect("command:x", {})
 
         assert results == [{"decision": "deny"}]
-
-

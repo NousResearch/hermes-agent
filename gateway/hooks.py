@@ -61,10 +61,11 @@ class HookRegistry:
         await registry.emit("agent:start", {"platform": "telegram", ...})
     """
 
-    def __init__(self):
+    def __init__(self, background_tasks: Optional[set[asyncio.Task]] = None):
         # event_type -> [handler_fn, ...]
         self._handlers: Dict[str, List[Callable]] = {}
         self._loaded_hooks: List[dict] = []  # metadata for listing
+        self._background_tasks = background_tasks if background_tasks is not None else set()
 
     @property
     def loaded_hooks(self) -> List[dict]:
@@ -174,6 +175,16 @@ class HookRegistry:
             handlers.extend(self._handlers.get(wildcard_key, []))
         return handlers
 
+    @staticmethod
+    def _report_background_hook_failure(event_type: str, task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+
+        try:
+            task.result()
+        except Exception as e:
+            print(f"[hooks] Error in handler for '{event_type}': {e}", flush=True)
+
     async def emit(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
         """
         Fire all handlers registered for an event, discarding return values.
@@ -193,8 +204,17 @@ class HookRegistry:
         for fn in self._resolve_handlers(event_type):
             try:
                 result = fn(event_type, context)
-                # Support both sync and async handlers
                 if asyncio.iscoroutine(result):
+                    if event_type == "gateway:startup":
+                        task = asyncio.create_task(result)
+                        self._background_tasks.add(task)
+                        task.add_done_callback(self._background_tasks.discard)
+                        task.add_done_callback(
+                            lambda completed: self._report_background_hook_failure(
+                                event_type, completed
+                            )
+                        )
+                        continue
                     await result
             except Exception as e:
                 print(f"[hooks] Error in handler for '{event_type}': {e}", flush=True)

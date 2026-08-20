@@ -440,6 +440,55 @@ class TestWaitForReconnection:
 
 
 # ---------------------------------------------------------------------------
+# Regression for #78183: httpx timeout empty-string defeats _is_timeout_error
+# ---------------------------------------------------------------------------
+
+class TestQQTimeoutErrorNormalization:
+    """When an httpx timeout has an empty string representation, qqbot's send
+    paths must preserve the exception type name so the base-layer timeout guard
+    (_is_timeout_error) can still recognise it and suppress the duplicate-
+    delivery plain-text fallback."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    @pytest.mark.asyncio
+    async def test_send_chunk_preserves_read_timeout_type(self):
+        from gateway.platforms.base import BasePlatformAdapter
+
+        adapter = self._make_adapter()
+
+        async def _boom(*args, **kwargs):
+            raise httpx.ReadTimeout("")
+
+        adapter._send_c2c_text = _boom
+
+        result = await adapter._send_chunk("test_openid", "hello world")
+
+        assert not result.success
+        assert result.error, "error must not be empty"
+        assert BasePlatformAdapter._is_timeout_error(result.error), (
+            f"_is_timeout_error must recognise {result.error!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_chunk_non_empty_error_unchanged(self):
+        """A normal exception with a message must keep its original text."""
+        adapter = self._make_adapter()
+
+        async def _boom(*args, **kwargs):
+            raise RuntimeError("Server error '500 Internal Server Error'")
+
+        adapter._send_c2c_text = _boom
+
+        result = await adapter._send_chunk("test_openid", "hello world")
+
+        assert not result.success
+        assert "500 Internal Server Error" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
 # ChunkedUploader
 # ---------------------------------------------------------------------------
 

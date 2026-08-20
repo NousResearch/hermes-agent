@@ -4877,6 +4877,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_for_each_systemd_gateway_unit",
         "_format_concurrent_instances_message",
         "_format_time_ago",
+        "_handoff_reapable_backend_pids",
         "_format_venv_python_holders_message",
         "_gateway_prompt",
         "_get_origin_url",

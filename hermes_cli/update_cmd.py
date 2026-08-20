@@ -3941,6 +3941,76 @@ def _orphaned_desktop_backend_pids(
     return roots
 
 
+def _handoff_reapable_backend_pids(
+    matches: list[tuple[int, str, str]],
+) -> list[int] | None:
+    """PIDs of Hermes ``serve``/``dashboard`` backends safe to reap during a
+    GUI-updater hand-off, INCLUDING ones with a still-live parent.
+
+    Complements ``_orphaned_desktop_backend_pids``, which only reaps backends
+    whose supervisor is provably dead. That check returns ``None`` (keep
+    refusing) the moment ANY holder still has a live parent — which is exactly
+    the case that produced the field incident this fixes: a Windows Desktop
+    update hand-off (``update --yes --gateway --force``) left a *swarm* of
+    per-profile ``serve`` backends (mr-tester, probe-inherit, turqoise, …)
+    holding ``cryptography\\_rust.pyd``. Several still had a lingering
+    parent (the tearing-down Electron process, or the two-hop venv
+    launcher→worker chain mid-exit), so the orphan check disqualified the
+    WHOLE set and the update dead-ended — the user saw a 12-minute hang, then
+    force-closed, and the half-done state stranded bot sessions.
+
+    The hand-off is the safe signal: when the update-incomplete marker is
+    present (the GUI updater claimed it) AND this is a ``--gateway`` hand-off
+    run AND no live Desktop shim (``hermes.exe``) is open, NOTHING legitimate
+    is supervising or respawning a ``serve`` backend from this venv — by the
+    hand-off contract the Desktop tree-kills its backends and parks any
+    relaunch behind the marker (#50238). Any ``serve`` backend still holding
+    the venv here is therefore a leak, live parent or not, and reaping its
+    tree is correct rather than a race.
+
+    Guarded conservatively:
+
+    - Only Hermes backends (``hermes_cli.main`` + ``serve``/``dashboard``)
+      from THIS install's venv qualify; a non-backend holder (operator REPL,
+      stray script) disqualifies the whole set → ``None`` (keep refusing), so
+      we never widen the blast radius during a hand-off.
+    - Requires ``handoff`` True (caller passes ``args.gateway`` AND a claimed
+      marker) — outside a hand-off this returns ``None`` and the stricter
+      orphan-only path stands.
+    - psutil unavailable → ``None`` (can't re-read argv to classify → refuse).
+
+    Returns the backend root PIDs to tree-reap, or ``None`` to leave the
+    decision to the caller's existing rungs. Never raises.
+    """
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return None
+
+    def _is_backend(argv_low: str) -> bool:
+        return "hermes_cli.main" in argv_low and (
+            " serve" in argv_low or " dashboard" in argv_low
+        )
+
+    roots: list[int] = []
+    for pid, _name, cmdline in matches:
+        argv = cmdline
+        try:
+            argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
+        except psutil.NoSuchProcess:
+            # Exited between scan and classification — nothing to reap.
+            continue
+        except Exception:
+            pass
+        if not _is_backend(argv.lower()):
+            # A non-backend holder during a hand-off is unexpected; refuse the
+            # whole set rather than reap something we cannot justify.
+            return None
+        roots.append(int(pid))
+
+    return roots or None
+
+
 def _stop_process_trees(pids: list[int]) -> None:
     """Force-stop each PID with its full child tree (Windows).
 
@@ -4824,6 +4894,40 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _m()._stop_process_trees(_orphan_backends)
                 _time.sleep(1.0)
                 _venv_holders = _m()._detect_venv_python_processes()
+        if _venv_holders:
+            # Final rung before the dead-end: a GUI-updater hand-off
+            # (`update --gateway --force` with the update-incomplete marker
+            # claimed) means the Desktop is contractually gone and nothing
+            # legitimate will respawn a `serve` backend from this venv. The
+            # orphan-only reap above bails the instant ANY holder still has a
+            # live parent — which stranded a whole swarm of per-profile
+            # backends (the tearing-down Electron parent / the venv
+            # launcher→worker chain still mid-exit) and hung the update. In
+            # the hand-off context those surviving Hermes backends are leaks,
+            # live parent or not — reap them by cmdline instead of dead-ending.
+            _handoff = False
+            try:
+                _handoff = bool(getattr(args, "gateway", False)) and _m()._update_marker_path().exists()
+            except Exception:
+                _handoff = False
+            _no_live_shim = True
+            try:
+                _scripts_dir = _m()._venv_scripts_dir()
+                if _scripts_dir is not None:
+                    _no_live_shim = not _m()._detect_concurrent_hermes_instances(_scripts_dir)
+            except Exception:
+                _no_live_shim = True
+            if _handoff and _no_live_shim:
+                _handoff_backends = _m()._handoff_reapable_backend_pids(_venv_holders)
+                if _handoff_backends:
+                    print(
+                        f"  ⚠ {len(_handoff_backends)} Hermes backend process(es) "
+                        "still hold the venv after the Desktop hand-off; "
+                        "stopping their trees"
+                    )
+                    _m()._stop_process_trees(_handoff_backends)
+                    _time.sleep(1.0)
+                    _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:
             print(_format_venv_python_holders_message(_venv_holders))
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)

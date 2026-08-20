@@ -281,25 +281,38 @@ function assertDistBuilt(): void {
 
 /**
  * Find the Electron binary. In the nix devshell, `electron` is on PATH.
- * As a fallback, use the node_modules/.bin/electron from the desktop package.
+ * As a fallback, use the copy installed for the desktop workspace, then the
+ * repository-level installation used by older layouts.
  */
 export function findElectron(): string {
   // In dev mode, we use the `electron` binary directly (not the packaged app).
   // The dev:electron script in package.json does exactly this: `electron .`
   // after building. We replicate that here.
-  const localElectron = path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'electron')
+  const executable = process.platform === 'win32' ? 'electron.exe' : 'electron'
 
-  if (fs.existsSync(localElectron)) {
-    return localElectron
+  const localElectrons = [
+    path.join(DESKTOP_ROOT, 'node_modules', 'electron', 'dist', executable),
+    path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', executable),
+  ]
+
+  for (const localElectron of localElectrons) {
+    if (fs.existsSync(localElectron)) {
+      return localElectron
+    }
   }
 
   // Fall back to PATH
-  const result = spawnSync('which', ['electron'], {
+  const result = spawnSync(process.platform === 'win32' ? 'where' : 'which', [executable], {
     encoding: 'utf8',
   })
 
-  if (result.status === 0 && result.stdout.trim()) {
-    return result.stdout.trim()
+  const resolved = result.stdout
+    .split(/\r?\n/)
+    .map(candidate => candidate.trim())
+    .find(Boolean)
+
+  if (result.status === 0 && resolved) {
+    return resolved
   }
 
   throw new Error(

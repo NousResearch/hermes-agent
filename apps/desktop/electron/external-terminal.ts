@@ -25,8 +25,39 @@
 // Everything here is pure so it can be unit-tested without Electron; the side
 // effects (writing the script, spawning) live in main.ts.
 
+/**
+ * A launcher script must never contain an embedded control character.
+ *
+ * In particular, CR or LF can terminate a launcher-script line before the
+ * shell processes the remainder. Keep this as a small, reusable predicate so
+ * both the IPC boundary and every script field can fail closed.
+ */
+export function containsTerminalControlCharacters(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)
+
+    if (codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function assertSafeTerminalScriptValue(value: string): void {
+  if (containsTerminalControlCharacters(value)) {
+    throw new Error('Terminal launcher values must not contain control characters')
+  }
+}
+
 /** Argv for resuming a session in the TUI, profile-pinned when we know it. */
 export function tuiResumeArgs(sessionId: string, profile?: string): string[] {
+  assertSafeTerminalScriptValue(sessionId)
+
+  if (profile) {
+    assertSafeTerminalScriptValue(profile)
+  }
+
   const head = profile ? ['--profile', profile] : []
 
   return [...head, '--tui', '--resume', sessionId]
@@ -34,12 +65,18 @@ export function tuiResumeArgs(sessionId: string, profile?: string): string[] {
 
 /** Single-quote a value for /bin/sh (the POSIX launcher script). */
 export function posixQuote(value: string): string {
-  return `'${String(value ?? '').replaceAll("'", `'\\''`)}'`
+  const text = String(value ?? '')
+  assertSafeTerminalScriptValue(text)
+
+  return `'${text.replaceAll("'", `'\\''`)}'`
 }
 
 /** Quote a value for a cmd.exe script line. */
 export function windowsQuote(value: string): string {
-  return `"${String(value ?? '').replaceAll('"', '""')}"`
+  const text = String(value ?? '')
+  assertSafeTerminalScriptValue(text)
+
+  return `"${text.replaceAll('"', '""')}"`
 }
 
 /**
@@ -85,6 +122,10 @@ export interface TerminalScriptSpec {
  */
 export function buildTerminalScript({ command, args, cwd, env = {}, platform = process.platform }: TerminalScriptSpec) {
   const entries = Object.entries(env)
+
+  for (const [key] of entries) {
+    assertSafeTerminalScriptValue(key)
+  }
 
   if (platform === 'win32') {
     return [

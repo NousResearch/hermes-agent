@@ -13207,6 +13207,11 @@ def main():
         "--limit", type=int, default=20, help="Max sessions to show"
     )
     sessions_list.add_argument(
+        "--duration", action="store_true",
+        help="Show wall-clock session duration (from started_at to ended_at, "
+             "or to now if the session is still active)"
+    )
+    sessions_list.add_argument(
         "--workspace",
         metavar="NEEDLE",
         help="Only sessions in one workspace: a git repo root or project dir "

@@ -56,6 +56,24 @@ class TestNoninteractiveGitEnv:
         env = noninteractive_git_env({"GIT_TERMINAL_PROMPT": "1"})
         assert env["GIT_TERMINAL_PROMPT"] == "0"
 
+    def test_sets_msys_noglob_to_stop_argv_reparse(self):
+        # Git-for-Windows' MSYS runtime strips braces from ``stash@{0}`` argv
+        # unless glob re-parsing is disabled (#87542).
+        env = noninteractive_git_env({})
+        assert "noglob" in env["MSYS"].split()
+        assert "noglob" in env["CYGWIN"].split()
+
+    def test_msys_noglob_preserves_existing_flags(self):
+        env = noninteractive_git_env({"MSYS": "winsymlinks:nativestrict"})
+        flags = env["MSYS"].split()
+        assert "winsymlinks:nativestrict" in flags
+        assert "noglob" in flags
+
+    def test_msys_noglob_not_duplicated(self):
+        env = noninteractive_git_env({"MSYS": "noglob", "CYGWIN": "noglob"})
+        assert env["MSYS"].split().count("noglob") == 1
+        assert env["CYGWIN"].split().count("noglob") == 1
+
 
 # ---------------------------------------------------------------------------
 # 2. Real-git E2E: 401 remote fails fast instead of prompting

@@ -379,6 +379,20 @@ def noninteractive_git_env(
     env = dict(base if base is not None else os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "Never"
+    # Git-for-Windows' MSYS2 runtime re-parses the argv vector when git.exe is
+    # launched from a *native* (non-MSYS) parent — which is always the case
+    # here, since the caller is python.exe. That re-parse strips the braces
+    # from selectors like ``stash@{0}``, so git sees ``stash@0`` and rejects it
+    # ("stash@0 is not a valid reference"): the auto-stash is never dropped and
+    # ``plugins update`` silently fails to re-apply local edits (#87542).
+    # ``noglob`` disables that re-parse. These internal calls pass explicit
+    # argv and never want MSYS/Cygwin glob expansion anyway, so this only
+    # removes a corruption path. No-op off Windows (the vars are unread there).
+    for _msys_var in ("MSYS", "CYGWIN"):
+        _flags = env.get(_msys_var, "").split()
+        if "noglob" not in _flags:
+            _flags.append("noglob")
+        env[_msys_var] = " ".join(_flags)
     return env
 
 

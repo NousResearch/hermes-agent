@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
+from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_constants import venv_python_path
 
 logger = logging.getLogger(__name__)
@@ -1720,6 +1721,7 @@ def _restore_stashed_changes(
             cwd=cwd,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            env=noninteractive_git_env(),
         )
         if drop.returncode != 0:
             print(
@@ -1771,6 +1773,7 @@ def _discard_stashed_changes(
         cwd=cwd,
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
+        env=noninteractive_git_env(),
     )
     if drop.returncode != 0:
         print(

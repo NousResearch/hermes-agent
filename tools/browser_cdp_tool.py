@@ -201,8 +201,8 @@ async def _cdp_call(
     works for ``Target.*``, ``Browser.*``, ``Storage.*`` and a few other
     globally-scoped domains.
     """
-    assert websockets is not None  # guarded by _WS_AVAILABLE at call-site
-
+    if websockets is None:
+        raise RuntimeError("websockets package is required but not installed")
     async with websockets.connect(
         ws_url,
         max_size=None,  # CDP responses (e.g. DOM.getDocument) can be large

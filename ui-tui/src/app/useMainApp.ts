@@ -1215,8 +1215,10 @@ export function useMainApp(gw: GatewayClient) {
       input: composerState.input,
       inputBuf: composerState.inputBuf,
       pagerPageSize,
+      pendingSteer: composerState.pendingSteer,
       queueEditIdx: composerState.queueEditIdx,
       queuedDisplay: composerState.queuedDisplay,
+      steerEditIdx: composerState.steerEditIdx,
       submit,
       updateInput,
       voiceRecordKey

@@ -707,7 +707,7 @@ export const coreCommands: SlashCommand[] = [
         .rpc<SessionSteerResponse>('session.steer', { session_id: ctx.sid, text: payload })
         .then(
           ctx.guarded<SessionSteerResponse>(r => {
-            if (r?.status === 'queued') {
+            if (r?.status === 'steered' || r?.status === 'queued') {
               ctx.transcript.sys(
                 `steer queued — arrives after next tool call: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`
               )

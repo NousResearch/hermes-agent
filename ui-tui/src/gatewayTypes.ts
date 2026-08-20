@@ -325,7 +325,7 @@ export interface SessionInterruptResponse {
 }
 
 export interface SessionSteerResponse {
-  status?: 'queued' | 'rejected'
+  status?: 'steered' | 'queued' | 'rejected'
   text?: string
 }
 

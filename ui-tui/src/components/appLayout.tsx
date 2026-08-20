@@ -342,8 +342,10 @@ const ComposerPane = memo(function ComposerPane({
     >
       <QueuedMessages
         cols={composer.cols}
+        pendingSteer={composer.pendingSteer}
         queued={composer.queuedDisplay}
         queueEditIdx={composer.queueEditIdx}
+        steerEditIdx={composer.steerEditIdx}
         t={ui.theme}
       />
 

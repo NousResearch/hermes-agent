@@ -543,6 +543,17 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     """Return the plugin path if it exists, or exit with an error listing installed plugins."""
     target = _sanitize_plugin_name(name, plugins_dir, allow_subdir=True)
     if not target.exists():
+        # Model-provider plugins are installed under model-providers/.
+        # Validate *name* the same way as the primary lookup so an absolute
+        # path like ``/etc`` cannot bypass containment via the fallback.
+        try:
+            model_provider_target = _sanitize_plugin_name(
+                name, plugins_dir / "model-providers"
+            )
+        except ValueError:
+            model_provider_target = None
+        if model_provider_target is not None and model_provider_target.exists():
+            return model_provider_target
         installed = ", ".join(d.name for d in plugins_dir.iterdir() if d.is_dir()) or "(none)"
         console.print(
             f"[red]Error:[/red] Plugin '{name}' not found in {plugins_dir}.\n"
@@ -800,10 +811,28 @@ def _install_plugin_core(
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url)
         )
+
+        # Model-provider plugins go under model-providers/ so the Provider
+        # Registry (providers/__init__.py) can discover them.
+        if manifest.get("kind") == "model-provider":
+            install_base = plugins_dir / "model-providers"
+            install_base.mkdir(parents=True, exist_ok=True)
+        else:
+            install_base = plugins_dir
+
         try:
-            target = _sanitize_plugin_name(plugin_name, plugins_dir)
+            target = _sanitize_plugin_name(plugin_name, install_base)
         except ValueError as e:
             raise PluginOperationError(str(e)) from e
+
+        # Migrate legacy flat install: if a model-provider plugin was
+        # previously installed flat (before this routing existed), move it
+        # into model-providers/ so the registry discovers it and the new
+        # install replaces it cleanly.
+        if manifest.get("kind") == "model-provider":
+            legacy_path = _sanitize_plugin_name(plugin_name, plugins_dir)
+            if legacy_path.exists() and legacy_path != target:
+                shutil.move(str(legacy_path), str(target))
 
         mv = manifest.get("manifest_version")
         if mv is not None:
@@ -1093,6 +1122,17 @@ def cmd_update(name: str) -> None:
     except ValueError as e:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
+
+    # Migrate legacy flat model-provider install into model-providers/ so
+    # the Provider Registry can discover it (#76372).
+    manifest = _read_manifest(target)
+    if manifest.get("kind") == "model-provider" and target.parent == plugins_dir:
+        model_providers_dir = plugins_dir / "model-providers"
+        model_providers_dir.mkdir(parents=True, exist_ok=True)
+        new_target = _sanitize_plugin_name(target.name, model_providers_dir)
+        if not new_target.exists():
+            shutil.move(str(target), str(new_target))
+            target = new_target
 
     try:
         metadata = _read_install_metadata()

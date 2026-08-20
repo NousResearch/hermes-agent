@@ -262,6 +262,15 @@ def _exited_status(code: int) -> int:
     return code << 8
 
 
+def _signaled_status(sig: int, core: bool = False) -> int:
+    """Raw wait-status for a WIFSIGNALED child killed by ``sig``.
+
+    Low 7 bits carry the signal number; 0x80 is the core-dump flag. This is
+    the encoding ``os.WIFSIGNALED`` / ``os.WTERMSIG`` decode.
+    """
+    return sig | (0x80 if core else 0)
+
+
 
 
 def test_rate_limit_exit_requeues_without_counting_failure(
@@ -326,6 +335,100 @@ def test_rate_limit_exit_requeues_without_counting_failure(
         assert "crashed" not in outcomes
 
 
+
+
+def test_systemic_gave_up_sticky_against_higher_recompute_limit(
+    kanban_home, monkeypatch,
+):
+    """A systemic gave_up event must not be undone by config limit 2."""
+    import json
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    _kb._recent_worker_exits.clear()
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        task_ids = []
+        now = int(time.time())
+        for i in range(3):
+            worker_pid = 870000 + i
+            tid = kb.create_task(conn, title=f"sys-sticky-{i}", assignee="a")
+            conn.execute(
+                "UPDATE tasks SET status='running', worker_pid=?, "
+                "claim_lock=?, consecutive_failures=0, started_at=? WHERE id=?",
+                (worker_pid, f"{host}:wsticky{i}", now - 120, tid),
+            )
+            _kb._record_worker_exit(worker_pid, _signaled_status(9))
+            task_ids.append(tid)
+        conn.commit()
+
+        crashed = kb.detect_crashed_workers(conn)
+        assert set(crashed) == set(task_ids)
+
+        for tid in task_ids:
+            task = kb.get_task(conn, tid)
+            assert task.status == "blocked", tid
+            assert task.consecutive_failures == 1, tid
+            row = conn.execute(
+                "SELECT kind, payload FROM task_events "
+                "WHERE task_id=? AND kind='gave_up' ORDER BY id DESC LIMIT 1",
+                (tid,),
+            ).fetchone()
+            assert row is not None, tid
+            payload = json.loads(row["payload"])
+            assert payload["failures"] == 1
+            assert payload["effective_limit"] == 1
+
+        promoted = kb.recompute_ready(conn, failure_limit=2)
+        assert promoted == 0
+        for tid in task_ids:
+            assert kb.get_task(conn, tid).status == "blocked"
+            assert kb.get_task(conn, tid).consecutive_failures == 1
+
+        assert kb.unblock_task(conn, task_ids[0])
+        task = kb.get_task(conn, task_ids[0])
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+
+
+def test_dispatch_once_preserves_systemic_gave_up_under_config_limit(
+    kanban_home, monkeypatch,
+):
+    """The complete dispatch tick must preserve a systemic breaker trip."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    _kb._recent_worker_exits.clear()
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        task_ids = []
+        now = int(time.time())
+        for i in range(3):
+            worker_pid = 871000 + i
+            tid = kb.create_task(conn, title=f"sys-dispatch-{i}", assignee="a")
+            conn.execute(
+                "UPDATE tasks SET status='running', worker_pid=?, "
+                "claim_lock=?, started_at=? WHERE id=?",
+                (worker_pid, f"{host}:wdisp{i}", now - 120, tid),
+            )
+            _kb._record_worker_exit(worker_pid, _signaled_status(9))
+            task_ids.append(tid)
+        conn.commit()
+
+        result = kb.dispatch_once(
+            conn,
+            failure_limit=2,
+            spawn_fn=lambda *a, **k: None,
+        )
+        assert set(result.crashed) == set(task_ids)
+        assert set(result.auto_blocked) == set(task_ids)
+        assert result.promoted == 0
+        for tid in task_ids:
+            assert kb.get_task(conn, tid).status == "blocked"
 
 
 def test_respawn_guard_defers_rate_limited_within_cooldown(

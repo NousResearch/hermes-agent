@@ -67,6 +67,8 @@ Adding a new backend:
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import logging
 import os
 import re
@@ -75,9 +77,21 @@ import site
 import subprocess
 import sys
 import sysconfig
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX
+    msvcrt = None
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 
@@ -383,6 +397,113 @@ _LAZY_TARGET_ENV = "HERMES_LAZY_INSTALL_TARGET"
 # incompatible; we detect the mismatch and wipe the store so packages get
 # re-resolved against the new interpreter rather than importing a stale .so.
 _TARGET_STAMP_NAME = ".python-abi"
+
+# Lazy installation mutates either one durable ``--target`` tree or the active
+# venv. Serialize that mutation both within this process and across sibling
+# Hermes processes (gateway, dashboard, CLI) that can first-use the same feature
+# concurrently. The file lock lives OUTSIDE the durable target so an ABI wipe
+# cannot delete the lock that protects it.
+_LAZY_INSTALL_THREAD_LOCK = threading.Lock()
+_LAZY_INSTALL_HANDLE_LOCK = threading.Lock()
+_LAZY_INSTALL_OPEN_HANDLES: set[Any] = set()
+_LAZY_INSTALL_LOCK_NAME = ".hermes-lazy-install.lock"
+
+
+def _before_lazy_install_fork() -> None:
+    """Freeze the handle registry while Python duplicates file descriptors."""
+    _LAZY_INSTALL_HANDLE_LOCK.acquire()
+
+
+def _after_lazy_install_fork_parent() -> None:
+    _LAZY_INSTALL_HANDLE_LOCK.release()
+
+
+def _after_lazy_install_fork_child() -> None:
+    """Drop inherited lock descriptions and reset vanished-thread locks."""
+    global _LAZY_INSTALL_THREAD_LOCK, _LAZY_INSTALL_HANDLE_LOCK
+    for handle in tuple(_LAZY_INSTALL_OPEN_HANDLES):
+        try:
+            handle.close()
+        except OSError:
+            pass
+    _LAZY_INSTALL_OPEN_HANDLES.clear()
+    _LAZY_INSTALL_THREAD_LOCK = threading.Lock()
+    # The registry lock was acquired by the pre-fork hook in the parent and is
+    # inherited as locked; replace it because its owning thread may not exist.
+    _LAZY_INSTALL_HANDLE_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(
+        before=_before_lazy_install_fork,
+        after_in_parent=_after_lazy_install_fork_parent,
+        after_in_child=_after_lazy_install_fork_child,
+    )
+
+
+def _lazy_install_lock_path() -> Path:
+    target = _lazy_install_target()
+    if target is not None:
+        canonical_target = target.resolve(strict=False)
+        return canonical_target.parent / f".{canonical_target.name}.lazy-install.lock"
+    # Keep venv-scoped installs tied to the active venv. Resolving
+    # sys.executable can escape a symlinked venv to the base interpreter.
+    return Path(sys.executable).parent.parent / _LAZY_INSTALL_LOCK_NAME
+
+
+@contextlib.contextmanager
+def _lazy_install_lock() -> Iterator[None]:
+    """Serialize lazy install/wipe/stamp work across threads and processes."""
+    with _LAZY_INSTALL_THREAD_LOCK:
+        lock_path = _lazy_install_lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # Append mode creates the file atomically without ever truncating a
+        # sibling process's lock. Hold the registry mutex across open+register
+        # so a concurrent fork cannot inherit an untracked descriptor. Windows
+        # needs at least one byte to lock.
+        with _LAZY_INSTALL_HANDLE_LOCK:
+            handle = lock_path.open("a+b")
+            _LAZY_INSTALL_OPEN_HANDLES.add(handle)
+        if msvcrt is not None:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b" ")
+                handle.flush()
+            handle.seek(0)
+        try:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            elif msvcrt is not None:
+                handle.seek(0)
+                while True:
+                    try:
+                        msvcrt.locking(  # type: ignore[attr-defined]
+                            handle.fileno(), msvcrt.LK_NBLCK, 1  # type: ignore[attr-defined]
+                        )
+                        break
+                    except OSError as exc:
+                        if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                            raise
+                        # LK_LOCK only retries for about ten seconds. A real pip
+                        # resolve may take minutes, so poll until the owner exits
+                        # the transaction instead of spuriously running unlocked.
+                        time.sleep(0.1)
+            yield
+        finally:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            elif msvcrt is not None:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+                except OSError:
+                    pass
+            with _LAZY_INSTALL_HANDLE_LOCK:
+                _LAZY_INSTALL_OPEN_HANDLES.discard(handle)
+            handle.close()
 
 
 def _python_abi_tag() -> str:
@@ -699,7 +820,9 @@ def _core_constraints_file() -> Optional[Path]:
         return None
 
 
-def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _InstallResult:
+def _venv_pip_install_unlocked(
+    specs: tuple[str, ...], *, timeout: int = 300
+) -> _InstallResult:
     """Install ``specs`` using the uv → pip → ensurepip ladder.
 
     Two modes:
@@ -825,6 +948,20 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                 pass
 
 
+def _venv_pip_install(
+    specs: tuple[str, ...], *, timeout: int = 300, _lock_held: bool = False
+) -> _InstallResult:
+    """Install specs under the shared lazy-install transaction lock.
+
+    ``_lock_held`` is private plumbing for :func:`ensure`, which holds the
+    lock across its required post-acquire recheck and post-install verify.
+    """
+    if _lock_held:
+        return _venv_pip_install_unlocked(specs, timeout=timeout)
+    with _lazy_install_lock():
+        return _venv_pip_install_unlocked(specs, timeout=timeout)
+
+
 # =============================================================================
 # Public API
 # =============================================================================
@@ -941,38 +1078,46 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
                 feature, missing, "user declined install at prompt"
             )
 
-    logger.info("Lazy-installing %s for feature %r", " ".join(missing), feature)
-    result = _venv_pip_install(missing)
-    if not result.success:
-        # Surface the actual pip error so the user can debug PyPI-side
-        # issues (404 quarantine, network down, etc.).
-        snippet = (result.stderr or result.stdout or "").strip()
-        if snippet:
-            # Clip to a readable size — pip can dump pages of resolution traces.
-            snippet = snippet[-2000:]
-        raise FeatureUnavailable(
-            feature, missing,
-            f"pip install failed: {snippet or 'no error output'}"
-        )
+    # Serialize the check/install/verify transaction. Another Hermes process
+    # may have completed the same first-use install while this caller waited,
+    # so always recheck after acquiring the cross-process lock.
+    with _lazy_install_lock():
+        missing = feature_missing(feature)
+        if not missing:
+            return
 
-    # Verify post-install. importlib.metadata caches per-process, so if we
-    # just installed something the cache may not see it without a refresh.
-    try:
-        import importlib.metadata as _md
-        if hasattr(_md, "_cache_clear"):
-            _md._cache_clear()  # type: ignore[attr-defined]
-    except Exception:
-        pass
+        logger.info("Lazy-installing %s for feature %r", " ".join(missing), feature)
+        result = _venv_pip_install(missing, _lock_held=True)
+        if not result.success:
+            # Surface the actual pip error so the user can debug PyPI-side
+            # issues (404 quarantine, network down, etc.).
+            snippet = (result.stderr or result.stdout or "").strip()
+            if snippet:
+                # Clip to a readable size — pip can dump pages of resolution traces.
+                snippet = snippet[-2000:]
+            raise FeatureUnavailable(
+                feature, missing,
+                f"pip install failed: {snippet or 'no error output'}"
+            )
 
-    still_missing = feature_missing(feature)
-    if still_missing:
-        raise FeatureUnavailable(
-            feature, still_missing,
-            "install reported success but packages still not importable "
-            "(may require Python restart)"
-        )
+        # Verify post-install. importlib.metadata caches per-process, so if we
+        # just installed something the cache may not see it without a refresh.
+        try:
+            import importlib.metadata as _md
+            if hasattr(_md, "_cache_clear"):
+                _md._cache_clear()  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
-    logger.info("Lazy install complete for feature %r", feature)
+        still_missing = feature_missing(feature)
+        if still_missing:
+            raise FeatureUnavailable(
+                feature, still_missing,
+                "install reported success but packages still not importable "
+                "(may require Python restart)"
+            )
+
+        logger.info("Lazy install complete for feature %r", feature)
 
 
 def is_available(feature: str) -> bool:

@@ -1525,6 +1525,13 @@ display:
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
+  # How gateway progress is grouped on platforms that support message editing.
+  #   accumulate: Edit one bubble, starting continuations at the message limit (default)
+  #   rolling:    Keep one bounded turn-activity bubble, then send the final separately
+  #   separate:   Send one message per tool (pre-v0.9 style; noisier)
+  # Per-platform override: display.platforms.<platform>.tool_progress_grouping
+  tool_progress_grouping: accumulate
+
   # Per-platform defaults can be quieter than the global setting. Telegram
   # tunes for mobile: tool_progress and busy_ack_detail default off (no
   # per-tool breadcrumb stream, no "iteration 21/60" debug detail in busy

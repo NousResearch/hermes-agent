@@ -1427,10 +1427,13 @@ DEFAULT_CONFIG = {
         # call in the turn reports usage.
         "spinner_token_flow": True,
         # How gateway tool-progress is grouped on platforms that support message
-        # editing: "accumulate" (default) edits one bubble in place; "separate"
-        # sends one message per tool (the pre-v0.9 behavior, noisier). Only
-        # applies where tool_progress is already enabled. Per-platform override
-        # via display.platforms.<platform>.tool_progress_grouping.
+        # editing: "accumulate" (default) edits one bubble in place and starts
+        # continuation bubbles at the platform limit; "rolling" keeps one
+        # bounded turn-activity bubble (tools, interim commentary, heartbeats)
+        # by omitting its oldest complete entries;
+        # "separate" sends one message per tool (the pre-v0.9 behavior, noisier).
+        # Only applies where tool_progress is already enabled. Per-platform
+        # override via display.platforms.<platform>.tool_progress_grouping.
         "tool_progress_grouping": "accumulate",
         # Optional custom phrases for generic long-running status messages.
         # Built-in defaults live in gateway/assets/status_phrases.yaml. Users

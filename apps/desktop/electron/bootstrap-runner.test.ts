@@ -11,7 +11,9 @@ import {
   cachedScriptPath,
   hasExistingGitCheckout,
   installedAgentInstallScript,
+  installerRepoEnv,
   installRefForStamp,
+  installRepositoryForStamp,
   isPinnedCommit,
   resolveInstallScript,
   resolveMarkerPinnedCommit,
@@ -117,7 +119,8 @@ test('fallback install stamps use an unpinned branch ref', () => {
   assert.deepEqual(installRefForStamp(stamp), {
     ref: 'main',
     cacheKey: 'fallback-main',
-    pinned: false
+    pinned: false,
+    repository: 'NousResearch/hermes-agent'
   })
   // Must NOT pass -Commit / --commit for the all-zero placeholder.
   assert.deepEqual(buildPinArgs(stamp), ['-Branch', 'main'])
@@ -268,6 +271,67 @@ test('resolveInstallScript rethrows when the 404 fallback is unavailable', async
       }),
       /HTTP 404|Failed to download/
     )
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('install refs default to the canonical repository', () => {
+  assert.equal(installRepositoryForStamp(null), 'NousResearch/hermes-agent')
+  assert.equal(installRepositoryForStamp({ commit: 'a'.repeat(40) }), 'NousResearch/hermes-agent')
+  // Anything that isn't a clean owner/name slug must not reach a fetch URL.
+  assert.equal(installRepositoryForStamp({ repository: 'ForkOwner/hermes-agent/../evil' }), 'NousResearch/hermes-agent')
+  assert.equal(installRepositoryForStamp({ repository: 'https://evil.example/x/y' }), 'NousResearch/hermes-agent')
+  // Canonical builds pass no installer env, so install.sh/ps1 keep their defaults.
+  assert.deepEqual(installerRepoEnv(null), {})
+  assert.deepEqual(installerRepoEnv({ repository: 'NousResearch/hermes-agent' }), {})
+})
+
+test('fork-stamped builds resolve refs and installer env against the fork', () => {
+  const commit = 'a'.repeat(40)
+
+  assert.equal(installRepositoryForStamp({ repository: 'ForkOwner/hermes-agent' }), 'ForkOwner/hermes-agent')
+  assert.deepEqual(installRefForStamp({ commit, repository: 'ForkOwner/hermes-agent' }), {
+    ref: commit,
+    cacheKey: `ForkOwner_hermes-agent-${commit}`,
+    pinned: true,
+    repository: 'ForkOwner/hermes-agent'
+  })
+  // Unpinned fork stamps must not share a cache entry with the canonical repo.
+  assert.deepEqual(installRefForStamp({ commit: ZERO_COMMIT, branch: 'main', repository: 'ForkOwner/hermes-agent' }), {
+    ref: 'main',
+    cacheKey: 'ForkOwner_hermes-agent-fallback-main',
+    pinned: false,
+    repository: 'ForkOwner/hermes-agent'
+  })
+  assert.deepEqual(installerRepoEnv({ repository: 'ForkOwner/hermes-agent' }), {
+    HERMES_INSTALL_REPO_ARCHIVE_BASE: 'https://github.com/ForkOwner/hermes-agent',
+    HERMES_INSTALL_REPO_URL_HTTPS: 'https://github.com/ForkOwner/hermes-agent.git',
+    HERMES_INSTALL_REPO_URL_SSH: 'git@github.com:ForkOwner/hermes-agent.git'
+  })
+})
+
+test('resolveInstallScript downloads from the stamped fork repository', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-fork-'))
+  const seen: any[] = []
+
+  try {
+    const result: any = await resolveInstallScript({
+      installStamp: { commit: 'b'.repeat(40), branch: 'main', repository: 'ForkOwner/hermes-agent' },
+      sourceRepoRoot: null,
+      hermesHome: home,
+      emit: () => {},
+      _download: async (ref, destPath, repository) => {
+        seen.push({ ref, repository })
+        fs.mkdirSync(path.dirname(destPath), { recursive: true })
+        fs.writeFileSync(destPath, '# installer\n')
+
+        return destPath
+      }
+    })
+
+    assert.equal(result.source, 'download')
+    assert.deepEqual(seen, [{ ref: 'b'.repeat(40), repository: 'ForkOwner/hermes-agent' }])
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }

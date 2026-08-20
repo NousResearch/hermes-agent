@@ -129,6 +129,38 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Skip confirmation prompt (needed in TUI mode)",
     )
 
+    skills_install_set = skills_subparsers.add_parser(
+        "install-set",
+        help="Install a skill set from an AI Catalog or agent-skills discovery index",
+        description=(
+            "Install a group of skills published as a set. Accepts an origin "
+            "(https://example.com — resolved to /.well-known/ai-catalog.json), "
+            "an AI Catalog JSON URL, or a direct agent-skills index.json URL. "
+            "Members are digest-verified and security-scanned individually; "
+            "a /<name> bundle alias is created so the whole set loads in one turn."
+        ),
+    )
+    skills_install_set.add_argument(
+        "url",
+        help="Origin, AI Catalog URL, or agent-skills index.json URL",
+    )
+    skills_install_set.add_argument(
+        "--set", dest="set_name", default="",
+        help="Which skill set to install when the catalog has several",
+    )
+    skills_install_set.add_argument(
+        "--no-alias", action="store_true",
+        help="Install the skills but skip creating the /<name> bundle alias",
+    )
+    skills_install_set.add_argument(
+        "--force", action="store_true",
+        help="Reinstall members that are already installed",
+    )
+    skills_install_set.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation prompt",
+    )
+
     skills_inspect = skills_subparsers.add_parser(
         "inspect", help="Preview a skill without installing"
     )

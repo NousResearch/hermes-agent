@@ -845,6 +845,193 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         c.print("[dim]Use /reset to start a new session now, or --now to activate immediately (invalidates prompt cache).[/]\n")
 
 
+def do_install_set(url: str, *, set_name: str = "", force: bool = False,
+                   skip_confirm: bool = False, no_alias: bool = False,
+                   console: Optional[Console] = None) -> None:
+    """Install a skill *set* from an AI Catalog or a #254 discovery index.
+
+    ``url`` may be:
+      - an origin (``https://example.com``) — resolved to
+        ``/.well-known/ai-catalog.json``
+      - an AI Catalog JSON URL — skill-set entries
+        (``application/agent-skills+json``) are listed / selected
+      - a #254 ``index.json`` URL — treated as a single anonymous set
+
+    Every member flows through the standard fetch -> digest-verify ->
+    quarantine -> scan -> install pipeline. After installing, a local skill
+    bundle (load-alias) is created from the entry's ``io.hermes.skill-set``
+    extension unless ``no_alias`` is set.
+    """
+    from tools.skill_set_catalog import (
+        SkillSetError, catalog_url_for, discover_skill_sets, fetch_member,
+        resolve_bare_index, resolve_skill_set,
+    )
+    from tools.skills_hub import (
+        HUB_DIR, HubLockFile, append_audit_log, ensure_hub_dirs,
+        install_from_quarantine, quarantine_bundle, source_url_for_bundle,
+    )
+    from tools.skills_guard import (
+        format_scan_report, scan_skill_cached, should_allow_install,
+    )
+
+    c = console or _console
+    ensure_hub_dirs()
+
+    # --- Resolve the set -------------------------------------------------
+    try:
+        if url.rstrip("/").endswith("index.json"):
+            resolved = resolve_bare_index(url, name=set_name)
+        else:
+            catalog_url = catalog_url_for(url)
+            c.print(f"\n[bold]Fetching catalog:[/] {catalog_url}")
+            sets = discover_skill_sets(catalog_url)
+            if not sets:
+                c.print("[bold red]Error:[/] catalog has no skill-set entries "
+                        "(type: application/agent-skills+json).\n")
+                return
+            chosen = None
+            if set_name:
+                wanted = set_name.strip().lower()
+                for s in sets:
+                    if wanted in (s.name.strip().lower(),
+                                  s.command.strip().lower(),
+                                  s.identifier.strip().lower()):
+                        chosen = s
+                        break
+                if chosen is None:
+                    c.print(f"[bold red]Error:[/] no skill set named '{set_name}'. "
+                            f"Available: {', '.join(s.name for s in sets)}\n")
+                    return
+            elif len(sets) == 1:
+                chosen = sets[0]
+            else:
+                c.print("\n[bold]Skill sets in this catalog:[/]")
+                for s in sets:
+                    c.print(f"  • [cyan]{s.name}[/] — {s.description or '(no description)'}")
+                c.print("\nRe-run with [bold]--set <name>[/] to pick one.\n")
+                return
+            resolved = resolve_skill_set(chosen)
+    except SkillSetError as exc:
+        c.print(f"[bold red]Error:[/] {exc}\n")
+        return
+
+    info = resolved.info
+    c.print(f"\n[bold]Skill set:[/] {info.name}")
+    if info.description:
+        c.print(f"  {info.description}")
+    c.print(f"  [dim]Index: {info.index_url}[/]")
+    c.print(f"  [bold]{len(resolved.members)}[/] member skill(s): "
+            f"{', '.join(m.name for m in resolved.members)}")
+    for note in resolved.skipped:
+        c.print(f"  [yellow]Skipped:[/] {note}")
+    if not resolved.members:
+        c.print("[bold red]Error:[/] set has no installable members.\n")
+        return
+
+    if not force and not skip_confirm:
+        c.print(Panel(
+            "[bold yellow]You are installing third-party skills at your own risk.[/]\n\n"
+            "Each member is digest-verified and security-scanned before install,\n"
+            "but you should review the installed files before use.",
+            title="Disclaimer", border_style="yellow",
+        ))
+        c.print(f"[bold]Install all {len(resolved.members)} skills from "
+                f"'{info.name}'?[/]")
+        try:
+            answer = input("Confirm [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer not in {"y", "yes"}:
+            c.print("[dim]Installation cancelled.[/]\n")
+            return
+
+    # --- Install each member through the standard pipeline ----------------
+    lock = HubLockFile()
+    installed: List[str] = []
+    failed: List[str] = []
+    for member in resolved.members:
+        c.print(f"\n[bold]── {member.name} ──[/]")
+        try:
+            bundle = fetch_member(member, set_info=info)
+        except SkillSetError as exc:
+            c.print(f"[bold red]Failed:[/] {exc}")
+            failed.append(member.name)
+            continue
+
+        if lock.get_installed(bundle.name) and not force:
+            c.print(f"[yellow]Already installed — skipping.[/] (--force to reinstall)")
+            installed.append(bundle.name)   # still usable by the alias
+            continue
+
+        try:
+            q_path = quarantine_bundle(bundle)
+        except ValueError as exc:
+            c.print(f"[bold red]Blocked:[/] {exc}")
+            append_audit_log("BLOCKED", bundle.name, bundle.source,
+                             bundle.trust_level, "invalid_path", str(exc))
+            failed.append(member.name)
+            continue
+
+        result, scan_provenance = scan_skill_cached(
+            q_path, source=bundle.identifier,
+            source_url=source_url_for_bundle(bundle),
+            cache_dir=HUB_DIR / "scan-cache",
+        )
+        c.print(format_scan_report(result))
+        allowed, reason = should_allow_install(result, force=force)
+        if not allowed:
+            c.print(f"[bold red]Blocked:[/] {reason}")
+            shutil.rmtree(q_path, ignore_errors=True)
+            append_audit_log("BLOCKED", bundle.name, bundle.source,
+                             bundle.trust_level, result.verdict,
+                             f"{len(result.findings)}_findings")
+            failed.append(member.name)
+            continue
+
+        try:
+            install_dir = install_from_quarantine(
+                q_path, bundle.name, "", bundle, result, scan_provenance,
+            )
+        except ValueError as exc:
+            c.print(f"[bold red]Blocked:[/] {exc}")
+            shutil.rmtree(q_path, ignore_errors=True)
+            failed.append(member.name)
+            continue
+        c.print(f"[bold green]Installed:[/] {install_dir.name}")
+        installed.append(bundle.name)
+
+    # --- Create the load-alias (skill bundle) ------------------------------
+    c.print()
+    if failed:
+        c.print(f"[yellow]{len(failed)} member(s) failed:[/] {', '.join(failed)}")
+    if not installed:
+        c.print("[bold red]No skills installed — not creating a bundle alias.[/]\n")
+        return
+
+    if no_alias:
+        c.print(f"[bold green]Done.[/] Installed {len(installed)} skill(s).\n")
+        return
+
+    alias = info.command or info.name
+    try:
+        from agent.skill_bundles import save_bundle
+        bundle_path = save_bundle(
+            alias, installed,
+            description=info.description,
+            instruction=info.instruction,
+            overwrite=True,
+        )
+        from agent.skill_bundles import _slugify as _bundle_slug
+        c.print(f"[bold green]Done.[/] Installed {len(installed)} skill(s) and "
+                f"created the [bold]/{_bundle_slug(alias)}[/] bundle "
+                f"([dim]{bundle_path}[/]).")
+        c.print("[dim]Invoke it in chat to load the whole set in one turn. "
+                "New skills appear next session (or /reset now).[/]\n")
+    except (ValueError, OSError) as exc:
+        c.print(f"[yellow]Installed {len(installed)} skill(s), but could not "
+                f"create the bundle alias: {exc}[/]\n")
+
+
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     """Preview a skill's SKILL.md content without installing."""
     from tools.skills_hub import GitHubAuth, create_source_router
@@ -1823,6 +2010,11 @@ def skills_command(args) -> None:
         do_install(args.identifier, category=args.category, force=args.force,
                    skip_confirm=getattr(args, "yes", False),
                    name_override=getattr(args, "name", "") or "")
+    elif action == "install-set":
+        do_install_set(args.url, set_name=getattr(args, "set_name", "") or "",
+                       force=getattr(args, "force", False),
+                       skip_confirm=getattr(args, "yes", False),
+                       no_alias=getattr(args, "no_alias", False))
     elif action == "inspect":
         do_inspect(args.identifier)
     elif action == "list":
@@ -1877,7 +2069,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|install-set|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 

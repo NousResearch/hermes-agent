@@ -250,6 +250,8 @@ def _safe_next_target(request: Request) -> str:
     user lands at the dashboard root after re-auth.
     """
     path = request.url.path
+    if path == "/":
+        path = "/jarvis"
     # Reject anything that doesn't start with "/" or starts with "//"
     # (protocol-relative URL — would open-redirect to an attacker host).
     if not path or not path.startswith("/") or path.startswith("//"):

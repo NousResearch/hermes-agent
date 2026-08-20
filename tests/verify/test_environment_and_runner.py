@@ -2,6 +2,8 @@
 
 import http.server
 import json
+import os
+import shutil
 import threading
 import time
 
@@ -12,7 +14,45 @@ from agent.verify.environment import (
     save_manifest,
 )
 from agent.verify.recipes import Recipe
-from agent.verify.runner import run_verify
+from agent.verify.runner import _run_phase_command, run_verify
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def test_phase_timeout_reaps_whole_process_tree(tmp_path):
+    """A timed-out phase must not orphan the command's children.
+
+    ``subprocess.run(shell=True, timeout=...)`` kills only the sh wrapper —
+    a phase that spawned children (jest workers, npm build chains) leaves
+    them running and holding ports/fds. The runner kills the whole group.
+    """
+    if shutil.which("bash") is None:
+        import pytest
+
+        pytest.skip("bash required")
+    pidfile = tmp_path / "child.pid"
+    cmd = f"bash -c 'sleep 30 & echo $! > {pidfile}; wait'"
+    result = _run_phase_command("test", cmd, tmp_path, timeout=1.0)
+    assert result.timed_out
+    child_pid = int(pidfile.read_text().strip())
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and _pid_alive(child_pid):
+        time.sleep(0.1)
+    assert not _pid_alive(child_pid), "phase child survived the timeout"
+
+
+def test_phase_success_still_returns_output(tmp_path):
+    result = _run_phase_command("test", "printf hello", tmp_path, timeout=10.0)
+    assert not result.timed_out
+    assert result.exit_code == 0
+    assert result.ok
+    assert "hello" in result.output_tail
 
 
 class TestManifest:

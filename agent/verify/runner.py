@@ -108,26 +108,32 @@ def _run_phase_command(
     on_output: Callable[[str], None] | None = None,
 ) -> PhaseResult:
     started = time.monotonic()
+    # start_new_session puts the command (and every process it spawns) in its
+    # own process group, so a timeout can terminate the WHOLE tree. Plain
+    # ``subprocess.run(..., shell=True, timeout=...)`` only kills the sh
+    # wrapper — a phase that spawned children (jest workers, npm build
+    # chains, dev servers) leaves them orphaned and still running, holding
+    # ports, fds, and CI machines hostage (#sibling of the start-phase fix).
+    proc = subprocess.Popen(
+        command,
+        shell=True,  # project-authored commands; see module docstring
+        cwd=str(root),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,  # own process group for clean teardown
+        text=True,
+        errors="replace",
+    )
     try:
-        proc = subprocess.run(
-            command,
-            shell=True,  # project-authored commands; see module docstring
-            cwd=str(root),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-            text=True,
-            errors="replace",
-        )
-        output = proc.stdout or ""
+        output, _ = proc.communicate(timeout=timeout)
         exit_code: int | None = proc.returncode
         timed_out = False
-    except subprocess.TimeoutExpired as exc:
-        raw = exc.output
-        if isinstance(raw, bytes):
-            output = raw.decode("utf-8", errors="replace")
-        else:
-            output = raw or ""
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(proc)
+        try:
+            output, _ = proc.communicate()  # drain whatever the tree produced
+        except (OSError, ValueError):
+            output = ""
         exit_code = None
         timed_out = True
     duration = time.monotonic() - started

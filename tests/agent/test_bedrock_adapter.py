@@ -10,6 +10,7 @@ Covers:
 """
 
 import json
+import re
 from contextlib import contextmanager
 from types import ModuleType
 from unittest.mock import MagicMock, patch
@@ -182,6 +183,76 @@ class TestConvertMessagesToConverse:
         assert tool_use_blocks[0]["toolUse"]["name"] == "read_file"
         assert tool_use_blocks[0]["toolUse"]["toolUseId"] == "call_123"
         assert tool_use_blocks[0]["toolUse"]["input"] == {"path": "/tmp/test.txt"}
+
+
+class TestBedrockToolNameSanitization:
+    """toolSpec/toolUse names must satisfy Bedrock's [a-zA-Z0-9_-]+ pattern.
+
+    One offending name in the replayed history is validated on EVERY
+    subsequent ConverseStream request, wedging the session after a single
+    bad tool call (#90008)."""
+    def test_spec_name_with_dots_slashes_and_unicode_folds_to_underscores(self):
+        from agent.bedrock_adapter import convert_tools_to_converse
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "mcp.github.search_repos/v2·x",
+                "description": "d",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        spec = convert_tools_to_converse(tools)[0]["toolSpec"]
+        assert re.fullmatch(r"[a-zA-Z0-9_-]+", spec["name"]) is not None
+        assert spec["name"] == "mcp_github_search_repos_v2_x"
+
+    def test_spec_name_over_64_chars_is_truncated(self):
+        from agent.bedrock_adapter import convert_tools_to_converse
+        name = "a" * 80
+        spec = convert_tools_to_converse([{
+            "type": "function",
+            "function": {"name": name, "description": "", "parameters": {}},
+        }])[0]["toolSpec"]
+        assert len(spec["name"]) == 64
+
+    def test_spec_empty_name_falls_back(self):
+        from agent.bedrock_adapter import convert_tools_to_converse, _sanitize_bedrock_tool_name
+        assert _sanitize_bedrock_tool_name("") == "tool"
+        assert _sanitize_bedrock_tool_name(None) == "tool"
+        # A name made purely of illegal characters still yields a
+        # pattern-conforming (if opaque) name, never an empty one.
+        assert _sanitize_bedrock_tool_name("///") == "___"
+
+    def test_replayed_tool_use_history_is_sanitized_the_same_way(self):
+        """The recorded toolUse block that Wedges every later request must be
+        sanitized identically to the spec the model is offered."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "pet.display/info",
+                        "arguments": "{}",
+                    },
+                }],
+            },
+        ]
+        _system, msgs = convert_messages_to_converse(messages)
+        tool_use = next(
+            b["toolUse"] for m in msgs for b in m["content"] if "toolUse" in b
+        )
+        assert tool_use["name"] == "pet_display_info"
+        assert re.fullmatch(r"[a-zA-Z0-9_-]+", tool_use["name"]) is not None
+
+    def test_conforming_names_pass_through_unchanged(self):
+        from agent.bedrock_adapter import convert_tools_to_converse, _sanitize_bedrock_tool_name
+        assert _sanitize_bedrock_tool_name("read_file") == "read_file"
+        assert _sanitize_bedrock_tool_name("mcp__server__tool") == "mcp__server__tool"
+        assert convert_tools_to_converse([]) == []
 
     def test_tool_result_becomes_user_message(self):
         from agent.bedrock_adapter import convert_messages_to_converse

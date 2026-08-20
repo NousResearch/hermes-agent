@@ -485,6 +485,28 @@ def is_anthropic_bedrock_model(model_id: str) -> bool:
 # Message format conversion: OpenAI → Bedrock Converse
 # ---------------------------------------------------------------------------
 
+# Bedrock's Converse API validates toolUse.name / toolSpec.name against
+# ^[a-zA-Z0-9_-]{1,64}$ (ValidationException names the exact regex). Tool
+# names from MCP servers, plugins, or pet-mode aliases can carry dots,
+# slashes, or unicode, and one offending name in the conversation history
+# is replayed on EVERY subsequent request — wedging the session (#90008).
+_BEDROCK_TOOL_NAME_RE = re.compile(r"[^a-zA-Z0-9_]")
+
+
+def _sanitize_bedrock_tool_name(name: Any) -> str:
+    """Coerce a tool name into Bedrock's ``[a-zA-Z0-9_-]+`` pattern.
+
+    Non-conforming characters fold to ``_``; an empty result falls back to
+    ``tool``. The mapping is applied identically to the toolSpec definition
+    and to replayed toolUse history blocks, so the (possibly renamed) spec
+    the model sees matches the name its own earlier calls are recorded
+    under. toolResult blocks pair by toolUseId, not by name, so tool
+    results are unaffected by the rename.
+    """
+    cleaned = _BEDROCK_TOOL_NAME_RE.sub("_", str(name or ""))
+    return cleaned[:64] if cleaned else "tool"
+
+
 def convert_tools_to_converse(tools: List[Dict]) -> List[Dict]:
     """Convert OpenAI-format tool definitions to Bedrock Converse ``toolConfig``.
 
@@ -503,7 +525,7 @@ def convert_tools_to_converse(tools: List[Dict]) -> List[Dict]:
     result = []
     for t in tools:
         fn = t.get("function", {})
-        name = fn.get("name", "")
+        name = _sanitize_bedrock_tool_name(fn.get("name", ""))
         description = fn.get("description", "")
         parameters = fn.get("parameters", {"type": "object", "properties": {}})
         result.append({
@@ -680,7 +702,7 @@ def convert_messages_to_converse(
                 content_blocks.append({
                     "toolUse": {
                         "toolUseId": tc.get("id", ""),
-                        "name": fn.get("name", ""),
+                        "name": _sanitize_bedrock_tool_name(fn.get("name", "")),
                         "input": args_dict,
                     }
                 })

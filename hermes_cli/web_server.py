@@ -5935,11 +5935,8 @@ def _normalize_memory_provider_name(name: Any) -> str:
     try:
         from plugins.memory import normalize_memory_provider_name
         return normalize_memory_provider_name(name)
-    except Exception:
-        provider = str(name or "").strip()
-        if provider.lower() in {"built-in", "builtin", "none"}:
-            return ""
-        return provider
+    except ImportError:
+        return str(name or "").strip()
 
 
 def _load_memory_provider(name: str):

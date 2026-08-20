@@ -2988,14 +2988,12 @@ def run_doctor(args):
     # Same alias set as runtime / dashboard (plugins.memory.normalize_memory_provider_name).
     # Without this, memory.provider: builtin falls through to load_memory_provider
     # and prints a false "plugin not found" warning (#75647).
+    _raw_mem_provider = _active_memory_provider
     try:
         from plugins.memory import normalize_memory_provider_name as _norm_mem_provider
-        _raw_mem_provider = _active_memory_provider
         _active_memory_provider = _norm_mem_provider(_active_memory_provider)
-    except Exception:
-        _raw_mem_provider = _active_memory_provider
-        if str(_active_memory_provider).strip().lower() in {"built-in", "builtin", "none"}:
-            _active_memory_provider = ""
+    except ImportError:
+        pass
 
     if not _active_memory_provider:
         check_ok(

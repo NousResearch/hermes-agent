@@ -482,34 +482,6 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     return None
 
 
-def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
-    """Compact task shape for board-listing tools."""
-    parents = kb.parent_ids(conn, task.id)
-    children = kb.child_ids(conn, task.id)
-    return {
-        "id": task.id,
-        "title": task.title,
-        "assignee": task.assignee,
-        "status": task.status,
-        "priority": task.priority,
-        "tenant": task.tenant,
-        "workspace_kind": task.workspace_kind,
-        "workspace_path": task.workspace_path,
-        "project_id": task.project_id,
-        "created_by": task.created_by,
-        "created_at": task.created_at,
-        "started_at": task.started_at,
-        "completed_at": task.completed_at,
-        "current_run_id": task.current_run_id,
-        "model_override": task.model_override,
-        "provider_override": task.provider_override,
-        "parents": parents,
-        "children": children,
-        "parent_count": len(parents),
-        "child_count": len(children),
-    }
-
-
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
@@ -633,7 +605,7 @@ def _handle_list(args: dict, **kw) -> str:
             truncated = len(rows) > limit
             tasks = rows[:limit]
             return json.dumps({
-                "tasks": [_task_summary_dict(kb, conn, t) for t in tasks],
+                "tasks": [kb.task_to_dict(t, summary=True, conn=conn) for t in tasks],
                 "count": len(tasks),
                 "limit": limit,
                 "truncated": truncated,

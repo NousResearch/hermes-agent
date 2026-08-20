@@ -8,7 +8,7 @@ const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf
 /** Load the plugin in a vm with a scripted cli.exec so member turns are
  *  deterministic. `turnScript(profile, prompt)` returns the member's reply
  *  text (or throws to simulate a failed turn). */
-function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall } = {}) {
+function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approvalUntilResumeCall } = {}) {
   const values = new Map()
   const atom = initial => {
     const slot = { get: () => values.get(slot), set: value => values.set(slot, value) }
@@ -17,6 +17,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall } = {}) 
   }
   const calls = []
   const clarifyResponds = []
+  const approvalResponds = []
   const sessions = new Map()
   const runtimeToStored = new Map()
   const titleToStored = new Map()
@@ -69,6 +70,9 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall } = {}) 
           // simulating a member blocked on its clarify tool (#90694).
           const clarify = clarifyUntilResumeCall && clarifyUntilResumeCall[profile]
           const pendingClarify = clarify && seen <= clarify.until ? clarify.payload : null
+          // Same window shape for pending command approvals (#90694 class).
+          const approval = approvalUntilResumeCall && approvalUntilResumeCall[profile]
+          const pendingApproval = approval && seen <= approval.until ? approval.payload : null
           return {
             session_id: session.runtime,
             session_key: session.stored,
@@ -76,7 +80,8 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall } = {}) 
             messages: [...session.messages],
             inflight: busy,
             running: busy,
-            ...(pendingClarify ? { pending_clarify: pendingClarify } : {})
+            ...(pendingClarify ? { pending_clarify: pendingClarify } : {}),
+            ...(pendingApproval ? { pending_approval: pendingApproval } : {})
           }
         }
         if (method === 'prompt.submit') {
@@ -99,6 +104,10 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall } = {}) 
         if (method === 'clarify.respond') {
           clarifyResponds.push({ ...params })
           return { ok: true }
+        }
+        if (method === 'approval.respond') {
+          approvalResponds.push({ ...params })
+          return { resolved: true }
         }
         return {}
       },
@@ -123,7 +132,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall } = {}) 
     storage: { get: () => null, set: (key, value) => storageWrites.set(key, value) },
     register: () => undefined
   })
-  return { ...context.__gc, calls, clarifyResponds, host: context.host, sessions, storageWrites }
+  return { ...context.__gc, approvalResponds, calls, clarifyResponds, host: context.host, sessions, storageWrites }
 }
 
 const MEMBERS = [{ name: 'research', title: '' }, { name: 'builder', title: '' }, { name: 'ops', title: 'The Ops' }]
@@ -1021,4 +1030,97 @@ test('source contract: room renders clarify cards and the poll gates on them', (
   assert.match(pluginSource, /busy \|\| awaitingUser/)
   assert.match(pluginSource, /roomClarifies\.map\(entry =>/)
   assert.match(pluginSource, /'clarify\.respond'/)
+})
+
+// ── group approvals: same hidden-session class as clarify (#90694) ─────────
+
+const APPROVAL_PAYLOAD = {
+  request_id: 'req-approval-1',
+  command: 'rm -rf ./build',
+  description: 'Clean the build directory',
+  choices: ['once', 'session', 'deny']
+}
+
+test('a member blocked on a command approval surfaces an approval card and holds the turn', async () => {
+  const gc = load(() => 'build cleaned', {
+    approvalUntilResumeCall: { research: { payload: APPROVAL_PAYLOAD, until: 3 } }
+  })
+
+  const thread = gc.sendToGroupChat('Core', [MEMBERS[0]], '@research clean up', null, [])
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  const log = gc.$groupChats.get().Core.log.filter(e => e.thread === thread)
+  const replies = log.filter(e => e.from.kind === 'member')
+
+  assert.equal(replies.length, 1, 'the finished reply still lands after the approval clears')
+  assert.equal(replies[0].text, 'build cleaned')
+  assert.equal(Object.keys(gc.$groupClarify.get()).length, 0)
+  assert.equal(gc.$groupNeedsYou.get().Core, true, 'the blocking approval badged the room')
+})
+
+test('syncGroupClarify mirrors an approval with kind, command, and server choices', () => {
+  const gc = load(() => '(pass)')
+  const member = { name: 'research', title: '' }
+
+  const blocked = gc.syncGroupClarify('Core', member, {
+    session_id: 'rt-research-1',
+    pending_approval: APPROVAL_PAYLOAD
+  })
+  assert.equal(blocked, true)
+
+  const entry = Object.values(gc.$groupClarify.get())[0]
+  assert.equal(entry.kind, 'approval')
+  assert.equal(entry.command, 'rm -rf ./build')
+  assert.equal(entry.question, 'Clean the build directory')
+  assert.equal(JSON.stringify(entry.choices), JSON.stringify(['once', 'session', 'deny']))
+  assert.equal(entry.sessionId, 'rt-research-1')
+})
+
+test('an approval without a server choice set falls back to once/deny', () => {
+  const gc = load(() => '(pass)')
+
+  gc.syncGroupClarify('Core', { name: 'research' }, {
+    pending_approval: { request_id: 'req-a2', command: 'ls' }
+  })
+
+  const entry = Object.values(gc.$groupClarify.get())[0]
+  assert.equal(JSON.stringify(entry.choices), JSON.stringify(['once', 'deny']))
+})
+
+test('answerGroupClarify routes approvals through approval.respond with session + choice', async () => {
+  const gc = load(() => '(pass)')
+  const member = { name: 'research', title: '' }
+
+  gc.syncGroupClarify('Core', member, { session_id: 'rt-research-1', pending_approval: APPROVAL_PAYLOAD })
+  const entry = Object.values(gc.$groupClarify.get())[0]
+
+  await gc.answerGroupClarify(entry, member, 'once')
+
+  assert.equal(
+    JSON.stringify(gc.approvalResponds),
+    JSON.stringify([{ session_id: 'rt-research-1', request_id: 'req-approval-1', choice: 'once' }])
+  )
+  assert.equal(gc.clarifyResponds.length, 0, 'approvals never touch the clarify wire')
+  assert.equal(Object.keys(gc.$groupClarify.get()).length, 0)
+})
+
+test('clarify outranks approval when a snapshot carries both', () => {
+  const gc = load(() => '(pass)')
+
+  gc.syncGroupClarify('Core', { name: 'research' }, {
+    pending_clarify: CLARIFY_PAYLOAD,
+    pending_approval: APPROVAL_PAYLOAD
+  })
+
+  const entry = Object.values(gc.$groupClarify.get())[0]
+  assert.equal(entry.kind, 'clarify')
+  assert.equal(entry.requestId, 'req-clarify-1')
+})
+
+test('source contract: approval card renders the command and routes approval.respond', () => {
+  assert.match(pluginSource, /pending_approval/)
+  assert.match(pluginSource, /'approval\.respond'/)
+  assert.match(pluginSource, /kind: 'approval'/)
+  assert.match(pluginSource, /wants to run a command/)
 })

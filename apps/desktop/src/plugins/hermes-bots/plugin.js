@@ -205,12 +205,13 @@ const $groupChats = atom({})
 const $groupChatWorkspace = atom(null)
 /** Groups whose latest room activity mentions @user — the needs-you badge. */
 const $groupNeedsYou = atom({})
-// Pending clarify questions raised inside hidden group-member sessions,
-// keyed `${group}::${memberKey}` (#90694). Members run in invisible plumbing
-// sessions, so a member's clarify tool used to block server-side with no
-// surface to answer it — the user saw "is thinking…" until the clarify
-// timeout. The turn poll mirrors each member's `pending_clarify` resume
-// field in here; the room renders answer cards from it.
+// Pending prompts (clarify questions AND command approvals) raised inside
+// hidden group-member sessions, keyed `${group}::${memberKey}` (#90694).
+// Members run in invisible plumbing sessions, so a member's blocking prompt
+// used to park server-side with no surface to answer it — the user saw
+// "is thinking…" until the prompt timeout. The turn poll mirrors each
+// member's `pending_clarify` / `pending_approval` resume fields in here;
+// the room renders answer cards from it.
 const $groupClarify = atom({})
 
 // ── group activity feed ─────────────────────────────────────────────────────
@@ -4359,15 +4360,20 @@ const GROUP_TURN_POLL_MS = 2000
 // reached the room (db's Aug 2026 report).
 const GROUP_TURN_HARD_CAP_MS = 20 * 60000
 
-/** Mirror a member's pending clarify (if any) from its resume snapshot into
- *  the room store, keyed `${group}::${memberKey}` (#90694). Returns true
- *  while a question is blocking, so the turn poll can extend its deadline —
- *  a waiting question must not be eaten by the group-turn timeout. Feature-
- *  detected: older backends without `pending_clarify` in the resume payload
- *  always sync to "no question". */
+/** Mirror a member's pending prompt — clarify question OR command approval —
+ *  from its resume snapshot into the room store, keyed
+ *  `${group}::${memberKey}` (#90694). Returns true while a prompt is
+ *  blocking, so the turn poll can extend its deadline — a waiting prompt
+ *  must not be eaten by the group-turn timeout. Feature-detected: older
+ *  backends without `pending_clarify`/`pending_approval` in the resume
+ *  payload always sync to "no prompt". Clarify wins when both are somehow
+ *  present (approvals resolve inside tool batches; clarify is the outer
+ *  blocker). */
 function syncGroupClarify(group, member, state) {
   const key = `${group}::${groupMemberKey(member)}`
-  const pending = state && typeof state.pending_clarify === 'object' ? state.pending_clarify : null
+  const clarify = state && typeof state.pending_clarify === 'object' ? state.pending_clarify : null
+  const approval = state && typeof state.pending_approval === 'object' ? state.pending_approval : null
+  const pending = clarify || approval
   const requestId = pending?.request_id || null
   const all = $groupClarify.get()
   const current = all[key]
@@ -4388,21 +4394,43 @@ function syncGroupClarify(group, member, state) {
     return true
   }
 
+  const base = {
+    requestId,
+    group,
+    member: member.name,
+    memberKey: groupMemberKey(member),
+    // approval.respond keys on the session, not just the request — carry the
+    // runtime id the snapshot came from.
+    sessionId: state?.session_id || null,
+    at: Date.now()
+  }
+
   $groupClarify.set({
     ...all,
-    [key]: {
-      requestId,
-      group,
-      member: member.name,
-      memberKey: groupMemberKey(member),
-      question: typeof pending.question === 'string' ? pending.question : '',
-      choices: Array.isArray(pending.choices) ? pending.choices.filter(c => typeof c === 'string' && c) : [],
-      multiSelect: Boolean(pending.multi_select),
-      // Batch clarifies carry `questions`; the room card answers them
-      // one wire call per question, mirroring the 1:1 batch contract.
-      questions: Array.isArray(pending.questions) ? pending.questions : null,
-      at: Date.now()
-    }
+    [key]: clarify
+      ? {
+          ...base,
+          kind: 'clarify',
+          question: typeof clarify.question === 'string' ? clarify.question : '',
+          choices: Array.isArray(clarify.choices) ? clarify.choices.filter(c => typeof c === 'string' && c) : [],
+          multiSelect: Boolean(clarify.multi_select),
+          // Batch clarifies carry `questions`; the room card answers them
+          // one wire call per question, mirroring the 1:1 batch contract.
+          questions: Array.isArray(clarify.questions) ? clarify.questions : null
+        }
+      : {
+          ...base,
+          kind: 'approval',
+          question: typeof approval.description === 'string' ? approval.description : '',
+          command: typeof approval.command === 'string' ? approval.command : '',
+          // The server precomputes the choice set from allow_permanent
+          // (once/session/always/deny); fall back to the minimal pair.
+          choices: Array.isArray(approval.choices) && approval.choices.length
+            ? approval.choices.filter(c => typeof c === 'string' && c)
+            : ['once', 'deny'],
+          multiSelect: false,
+          questions: null
+        }
   })
   // A blocked member is a question for the human — badge the room.
   $groupNeedsYou.set({ ...$groupNeedsYou.get(), [group]: true })
@@ -4429,14 +4457,23 @@ function clearGroupClarify(group) {
   }
 }
 
-/** Answer a member's pending clarify from the room. Routes clarify.respond
- *  to the member's OWN source (requestForBot), so cross-connection members
- *  work. Batch questions send one respond per question, sequentially — the
- *  LAST lock resolves the blocked tool server-side (same contract as the
- *  1:1 batch card). allow_expired server-side makes racing the timeout
- *  harmless. */
+/** Answer a member's pending prompt from the room. Routes to the member's
+ *  OWN source (requestForBot), so cross-connection members work.
+ *  - clarify: `clarify.respond`; batch questions send one respond per
+ *    question, sequentially — the LAST lock resolves the blocked tool
+ *    server-side (same contract as the 1:1 batch card). allow_expired
+ *    server-side makes racing the timeout harmless.
+ *  - approval: `approval.respond` with the choice (once/session/always/deny),
+ *    keyed by session + request_id — the same wire the 1:1 approval card
+ *    and native notifications use. */
 async function answerGroupClarify(entry, member, answers) {
-  if (entry.questions && entry.questions.length) {
+  if (entry.kind === 'approval') {
+    await requestForBot(member, 'approval.respond', {
+      session_id: entry.sessionId || undefined,
+      request_id: entry.requestId,
+      choice: typeof answers === 'string' && answers ? answers : 'deny'
+    })
+  } else if (entry.questions && entry.questions.length) {
     for (const question of entry.questions) {
       const qid = question?.qid ?? question?.id
       await requestForBot(member, 'clarify.respond', {
@@ -8887,12 +8924,16 @@ function GroupMentionInput({ members, onChange, value, ...inputProps }) {
   })
 }
 
-/** One member's pending question, rendered in the room (#90694). Choices
- *  render as tap buttons (multi-select stages; single-select stages one);
- *  free text always available; Answer sends via the member's own source.
- *  Batch clarifies render every sub-question with its own input. */
+/** One member's pending prompt, rendered in the room (#90694).
+ *  - clarify: choices as tap buttons (multi-select stages; single-select
+ *    stages one), free text always available, batch sub-questions each get
+ *    their own input.
+ *  - approval: the command in a code row plus the server's choice set
+ *    (once/session/always/deny) as buttons — no free text; approvals are a
+ *    closed choice. Answer sends via the member's own source. */
 function GroupClarifyCard({ entry, members }) {
   const { group } = entry
+  const isApproval = entry.kind === 'approval'
   const member = members.find(m => groupMemberKey(m) === entry.memberKey) || members.find(m => m.name === entry.member)
   const [drafts, setDrafts] = useState({})
   const [picked, setPicked] = useState({})
@@ -8913,7 +8954,7 @@ function GroupClarifyCard({ entry, members }) {
       return q.multiSelect ? JSON.stringify(chosen) : chosen[0]
     }
 
-    return (drafts[q.qid] || '').trim()
+    return isApproval ? '' : (drafts[q.qid] || '').trim()
   }
 
   const allAnswered = questions.every(q => answerFor(q))
@@ -8926,7 +8967,9 @@ function GroupClarifyCard({ entry, members }) {
     setSending(true)
 
     try {
-      if (entry.questions && entry.questions.length) {
+      if (isApproval || !(entry.questions && entry.questions.length)) {
+        await answerGroupClarify(entry, member, answerFor(questions[0]))
+      } else {
         const answers = {}
 
         for (const q of questions) {
@@ -8934,14 +8977,14 @@ function GroupClarifyCard({ entry, members }) {
         }
 
         await answerGroupClarify(entry, member, answers)
-      } else {
-        await answerGroupClarify(entry, member, answerFor(questions[0]))
       }
 
       // Echo the exchange into the room log so the thread reads complete.
-      const summary = questions
-        .map(q => (questions.length > 1 ? `${q.question}: ${answerFor(q)}` : answerFor(q)))
-        .join('\n')
+      const summary = isApproval
+        ? `${answerFor(questions[0])} — ${entry.command || entry.question || 'command approval'}`
+        : questions
+            .map(q => (questions.length > 1 ? `${q.question}: ${answerFor(q)}` : answerFor(q)))
+            .join('\n')
       appendGroupChatEntry(group, { kind: 'user', name: 'You' }, summary, entry.thread || 'legacy')
     } catch (err) {
       host.notify({ kind: 'error', message: `Could not send the answer to @${botHandle(entry.member, member)}: ${err?.message || err}` })
@@ -8957,10 +9000,22 @@ function GroupClarifyCard({ entry, members }) {
       jsxs('div', {
         className: 'flex items-center gap-1.5 text-xs font-medium',
         children: [
-          jsx(Codicon, { name: 'question', className: 'shrink-0 text-(--ui-accent,#4f9cf9)' }),
-          `@${botHandle(entry.member, member)} asks:`
+          jsx(Codicon, {
+            name: isApproval ? 'shield' : 'question',
+            className: 'shrink-0 text-(--ui-accent,#4f9cf9)'
+          }),
+          isApproval
+            ? `@${botHandle(entry.member, member)} wants to run a command:`
+            : `@${botHandle(entry.member, member)} asks:`
         ]
       }),
+      isApproval && entry.command
+        ? jsx('code', {
+            className:
+              'block overflow-x-auto rounded bg-(--ui-bg-secondary,rgba(0,0,0,0.25)) px-2 py-1 font-mono text-[0.7rem] whitespace-pre-wrap break-all',
+            children: entry.command
+          })
+        : null,
       ...questions.map(q =>
         jsxs('div', {
           className: 'grid gap-1',
@@ -8977,7 +9032,10 @@ function GroupClarifyCard({ entry, members }) {
                     return jsx(Button, {
                       size: 'sm',
                       variant: chosen ? 'default' : 'secondary',
-                      className: 'h-6 px-2 text-[0.7rem]',
+                      className: cn(
+                        'h-6 px-2 text-[0.7rem]',
+                        isApproval && choice === 'deny' && !chosen && 'text-destructive'
+                      ),
                       onClick: () => {
                         setDrafts(prev => ({ ...prev, [q.qid]: '' }))
                         setPicked(prev => {
@@ -8998,23 +9056,26 @@ function GroupClarifyCard({ entry, members }) {
                   })
                 })
               : null,
-            jsx(Input, {
-              'aria-label': `Answer @${entry.member}`,
-              placeholder: q.choices.length ? 'Or type your own answer…' : 'Type your answer…',
-              value: drafts[q.qid] || '',
-              onChange: event => {
-                const value = event.target.value
-                setPicked(prev => ({ ...prev, [q.qid]: [] }))
-                setDrafts(prev => ({ ...prev, [q.qid]: value }))
-              },
-              onKeyDown: event => {
-                if (event.key === 'Enter' && questions.length === 1) {
-                  event.preventDefault()
-                  void submit()
-                }
-              },
-              className: 'h-7 text-xs'
-            }, `input:${q.qid}`)
+            // Approvals are a closed choice set — no free-text input.
+            isApproval
+              ? null
+              : jsx(Input, {
+                  'aria-label': `Answer @${entry.member}`,
+                  placeholder: q.choices.length ? 'Or type your own answer…' : 'Type your answer…',
+                  value: drafts[q.qid] || '',
+                  onChange: event => {
+                    const value = event.target.value
+                    setPicked(prev => ({ ...prev, [q.qid]: [] }))
+                    setDrafts(prev => ({ ...prev, [q.qid]: value }))
+                  },
+                  onKeyDown: event => {
+                    if (event.key === 'Enter' && questions.length === 1) {
+                      event.preventDefault()
+                      void submit()
+                    }
+                  },
+                  className: 'h-7 text-xs'
+                }, `input:${q.qid}`)
           ]
         }, `q:${q.qid}`)
       ),
@@ -9024,7 +9085,7 @@ function GroupClarifyCard({ entry, members }) {
           size: 'sm',
           disabled: sending || !allAnswered || !member,
           onClick: () => void submit(),
-          children: sending ? 'Sending…' : 'Answer'
+          children: sending ? 'Sending…' : isApproval ? 'Respond' : 'Answer'
         })
       })
     ]

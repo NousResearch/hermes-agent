@@ -101,6 +101,19 @@ def _redact_id(contact_id: str) -> str:
     return s[:2] + "**" + s[-2:]
 
 
+def _text_send_command(chat_id: str, text: str) -> str:
+    """Compose a text send for a numeric ID, group ID, or display name."""
+    if chat_id.startswith("group:"):
+        chat_ref = f"#{chat_id[6:]}"
+    elif chat_id.isascii() and chat_id.isdigit():
+        chat_ref = f"@{chat_id}"
+    else:
+        return f"@{chat_id} {text}"
+
+    composed = json.dumps([{"msgContent": {"type": "text", "text": text}}])
+    return f"/_send {chat_ref} json {composed}"
+
+
 def _guess_extension(data: bytes) -> str:
     """Guess file extension from magic bytes."""
     if data[:4] == b"\x89PNG":
@@ -814,9 +827,10 @@ class SimplexAdapter(BasePlatformAdapter):
         Groups use the structured ``/_send #<id> json [...]`` form
         because the bracket chat-command syntax (``#[<id>] text``) is
         parsed by the daemon as a display-name lookup, which silently
-        drops when the group's display name isn't the literal ID. DMs
-        use the simple ``@<id> text`` form which has always worked in
-        production.
+        drops when the group's display name isn't the literal ID. Numeric
+        DM contact IDs use the same structured form; display-name DMs use
+        the bare ``@<name> text`` form because the daemon rejects names in
+        structured chat references.
 
         The call is fire-and-forget at the WebSocket level: the daemon
         doesn't always return a corrId reply for chat commands, and
@@ -830,18 +844,7 @@ class SimplexAdapter(BasePlatformAdapter):
 
         if content:
             corr_id = self._make_corr_id()
-            # Structured form: addresses by ID, and json.dumps escapes
-            # newlines + special chars correctly.  The bare @id text
-            # syntax is unreliable for DMs — the daemon silently drops
-            # messages when it cannot resolve the display name.
-            composed = json.dumps(
-                [{"msgContent": {"type": "text", "text": content}}]
-            )
-            if chat_id.startswith("group:"):
-                cmd_str = f"/_send #{chat_id[6:]} json {composed}"
-            else:
-                cmd_str = f"/_send @{chat_id} json {composed}"
-
+            cmd_str = _text_send_command(chat_id, content)
             await self._send_ws({"corrId": corr_id, "cmd": cmd_str})
 
         for path in media_paths:
@@ -1262,15 +1265,7 @@ async def _standalone_send(
         return {"error": "SimpleX standalone send: SIMPLEX_WS_URL is required"}
 
     try:
-        composed = json.dumps(
-            [{"msgContent": {"type": "text", "text": message}}]
-        )
-        if chat_id.startswith("group:"):
-            group_id = chat_id[6:]
-            cmd_str = f"/_send #{group_id} json {composed}"
-        else:
-            cmd_str = f"/_send @{chat_id} json {composed}"
-
+        cmd_str = _text_send_command(chat_id, message)
         payload = {
             "corrId": f"{_CORR_PREFIX}snd-{int(time.time() * 1000)}",
             "cmd": cmd_str,

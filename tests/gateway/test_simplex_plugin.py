@@ -134,8 +134,8 @@ def test_corr_id_pending_set_self_trims():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_send_dm():
-    """DMs use the structured ``/_send @<id> json [...]`` form.
+async def test_send_numeric_dm():
+    """Numeric DMs use the structured ``/_send @<id> json [...]`` form.
 
     The bare ``@<id> text`` chat-command form is unreliable — the
     daemon silently drops messages when it cannot resolve the display
@@ -150,15 +150,31 @@ async def test_send_dm():
     mock_ws = AsyncMock()
     adapter._ws = mock_ws
 
-    result = await adapter.send("contact-42", "Hello, SimpleX!")
+    result = await adapter.send("42", "Hello, SimpleX!")
     mock_ws.send.assert_called_once()
     payload = json.loads(mock_ws.send.call_args[0][0])
-    assert payload["cmd"].startswith("/_send @contact-42 json ")
+    assert payload["cmd"].startswith("/_send @42 json ")
     msg_content = json.loads(payload["cmd"].split(" json ", 1)[1])[0][
         "msgContent"
     ]
     assert msg_content == {"type": "text", "text": "Hello, SimpleX!"}
     assert payload["corrId"].startswith(_CORR_PREFIX)
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chat_id", ["alice", "１２"])
+async def test_send_display_name_dm(chat_id):
+    """Display-name DMs use the bare command accepted by the daemon."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter._ws = AsyncMock()
+
+    result = await adapter.send(chat_id, "Hello, SimpleX!")
+
+    payload = json.loads(adapter._ws.send.call_args[0][0])
+    assert payload["cmd"] == f"@{chat_id} Hello, SimpleX!"
     assert result.success is True
 
 
@@ -325,13 +341,39 @@ async def test_standalone_send_defaults_to_local_daemon(monkeypatch):
     import websockets
     monkeypatch.setattr(websockets, "connect", fake_connect)
 
-    result = await _standalone_send(pconfig, "contact-42", "hi")
-    assert result == {"success": True, "platform": "simplex", "chat_id": "contact-42"}
-    assert sent_payloads[0]["cmd"].startswith("/_send @contact-42 json ")
+    result = await _standalone_send(pconfig, "42", "hi")
+    assert result == {"success": True, "platform": "simplex", "chat_id": "42"}
+    assert sent_payloads[0]["cmd"].startswith("/_send @42 json ")
     msg_content = json.loads(
         sent_payloads[0]["cmd"].split(" json ", 1)[1]
     )[0]["msgContent"]
     assert msg_content == {"type": "text", "text": "hi"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chat_id", ["alice", "１２"])
+async def test_standalone_send_display_name_dm(monkeypatch, chat_id):
+    pconfig = MagicMock()
+    pconfig.extra = {"ws_url": "ws://localhost:5225"}
+    sent_payloads = []
+
+    class DummyWs:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def send(self, payload):
+            sent_payloads.append(json.loads(payload))
+
+    import websockets
+    monkeypatch.setattr(websockets, "connect", lambda *args, **kwargs: DummyWs())
+
+    result = await _standalone_send(pconfig, chat_id, "hi")
+
+    assert sent_payloads[0]["cmd"] == f"@{chat_id} hi"
+    assert result == {"success": True, "platform": "simplex", "chat_id": chat_id}
 
 
 @pytest.mark.asyncio

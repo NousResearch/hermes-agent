@@ -141,7 +141,7 @@ _PATTERNS: List[Tuple[str, str, str]] = [
 INVISIBLE_CHARS = frozenset({
     '\u200b',  # zero-width space
     '\u200c',  # zero-width non-joiner
-    '\u200d',  # zero-width joiner
+    '\u200d',  # zero-width joiner (also a legitimate part of emoji ZWJ sequences)
     '\u2060',  # word joiner
     '\u2062',  # invisible times
     '\u2063',  # invisible separator
@@ -157,6 +157,59 @@ INVISIBLE_CHARS = frozenset({
     '\u2068',  # first strong isolate
     '\u2069',  # pop directional isolate
 })
+
+# U+200D Zero-Width Joiner is also a legitimate, required part of many
+# Unicode emoji ZWJ sequences (e.g. the family compound emoji
+# U+1F468 U+200D U+1F469 U+200D U+1F467 U+200D U+1F466, the rainbow flag
+# U+1F3F3 U+FE0F U+200D U+1F308, the technologist U+1F468 U+200D U+1F4BB).
+# Without an exemption, the injection scanner would flag any context file
+# (SOUL.md / AGENTS.md / .cursorrules / USER.md / MEMORY.md) that uses a
+# compound emoji, and the whole file would be replaced with a [BLOCKED: ...]
+# placeholder -- so the agent silently boots without its persona or
+# instructions.  See issue #59492.
+#
+# Heuristic: a ZWJ is part of a legitimate emoji sequence when the code
+# points immediately to its left AND right (skipping past any Variation
+# Selector-16, U+FE0F) both fall inside the documented Extended_Pictographic
+# ranges from Unicode TR51.  A ZWJ hidden between ASCII / Latin text or next
+# to non-emoji characters is still flagged as a real injection signal.
+_ZWJ_CP = '\u200d'
+_VARIATION_SELECTOR_CP = 0xFE0F
+_EMOJI_NEIGHBOUR_CP_RANGES = (
+    (0x1F000, 0x1FFFF),  # main supplementary emoji block
+    (0x2600, 0x27BF),    # miscellaneous symbols + dingbats
+    (0x2300, 0x23FF),    # miscellaneous technical (clock faces etc.)
+    (0x1F1E6, 0x1F1FF),  # regional indicators (flags)
+    (0x20E3, 0x20E3),    # combining enclosing keycap
+    (0x2B00, 0x2BFF),    # miscellaneous symbols and arrows (covers
+                         # 0x2B05..0x2B07, 0x2B1B, 0x2B1C, 0x2B50, 0x2B55)
+)
+
+
+def _is_emoji_codepoint(cp: int) -> bool:
+    """Return True if ``cp`` falls inside the Extended_Pictographic ranges
+    we recognise for the ZWJ-in-emoji-sequence heuristic.
+    """
+    return any(lo <= cp <= hi for lo, hi in _EMOJI_NEIGHBOUR_CP_RANGES)
+
+
+def _zwj_has_emoji_neighbours(content: str, idx: int) -> bool:
+    """Return True when the ZWJ at ``content[idx]`` sits inside a legitimate
+    emoji ZWJ sequence (emoji code points on both sides, ignoring Variation
+    Selector-16 U+FE0F which some platforms insert for emoji presentation).
+    """
+    left = idx - 1
+    while left >= 0 and ord(content[left]) == _VARIATION_SELECTOR_CP:
+        left -= 1
+    right = idx + 1
+    while right < len(content) and ord(content[right]) == _VARIATION_SELECTOR_CP:
+        right += 1
+    return (
+        left >= 0
+        and right < len(content)
+        and _is_emoji_codepoint(ord(content[left]))
+        and _is_emoji_codepoint(ord(content[right]))
+    )
 
 
 # Compiled pattern sets, indexed by scope.  Compiled once at import time;
@@ -234,6 +287,18 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     char_set = set(content)
     invisible_hits = char_set & INVISIBLE_CHARS
     for ch in invisible_hits:
+        # U+200D is special: it is both an injection vector (hiding text
+        # between zero-width joiners) AND a legitimate part of emoji ZWJ
+        # sequences like the family compound (U+1F468 U+200D U+1F469
+        # U+200D U+1F467 U+200D U+1F466).  Skip it when every ZWJ in the
+        # content is joining two emoji code points; otherwise flag it as
+        # before.  See issue #59492.
+        if ch == _ZWJ_CP and _ZWJ_CP in content:
+            zwj_positions = [i for i, c in enumerate(content) if c == _ZWJ_CP]
+            if all(
+                _zwj_has_emoji_neighbours(content, i) for i in zwj_positions
+            ):
+                continue
         findings.append(f"invisible_unicode_U+{ord(ch):04X}")
 
     # Normalise to NFKC so full-width / compatibility Unicode variants

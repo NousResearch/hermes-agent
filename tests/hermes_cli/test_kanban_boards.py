@@ -344,3 +344,65 @@ class TestCLI:
 
 
 
+
+
+class TestWorkerScopeJail:
+    """Workers must spawn inside their own systemd scope (cgroup jail) so
+    their memory bills against themselves, not the dispatcher's service.
+    Incident class 2026-08-06 / 2026-08-08: bare Popen children inherited
+    hermes-gateway.service's cgroup and froze the gateway at its ceiling."""
+
+    def _task(self):
+        return kb.Task(
+            id="t_scope1", title="jail test", body=None, assignee="p",
+            status="ready", priority=0, created_by="user", created_at=0,
+            started_at=None, completed_at=None, workspace_kind="scratch",
+            workspace_path=None, claim_lock=None, claim_expires=None,
+            tenant=None,
+        )
+
+    def test_spawn_wraps_worker_in_systemd_scope(self, fresh_home, monkeypatch):
+        captured = {}
+
+        class FakeProc:
+            pid = 4242
+
+        monkeypatch.setattr(
+            subprocess, "Popen",
+            lambda cmd, *a, **kw: captured.update(cmd=cmd) or FakeProc(),
+        )
+        monkeypatch.setattr(kb.shutil, "which", lambda n: "/usr/bin/systemd-run")
+        monkeypatch.setattr(kb, "_IS_WINDOWS", False)
+        kb.create_board("scopetest")
+
+        kb._default_spawn(self._task(), str(fresh_home / "ws"), board="scopetest")
+
+        cmd = captured["cmd"]
+        assert cmd[0] == "systemd-run", f"worker not jailed: {cmd[:4]}"
+        assert "--scope" in cmd and "--user" in cmd
+        sep = cmd.index("--")
+        props = [cmd[i + 1] for i, t in enumerate(cmd) if t == "--property"]
+        assert any(p.startswith("MemoryMax=") for p in props)
+        # The real worker argv survives intact after the separator.
+        assert "chat" in cmd[sep:] and "-q" in cmd[sep:]
+        unit = cmd[cmd.index("--unit") + 1]
+        assert "t_scope1" in unit
+
+    def test_scope_prefix_unique_per_spawn(self, monkeypatch):
+        monkeypatch.setattr(kb.shutil, "which", lambda n: "/usr/bin/systemd-run")
+        monkeypatch.setattr(kb, "_IS_WINDOWS", False)
+        a = kb._worker_scope_prefix("t_x", {})
+        b = kb._worker_scope_prefix("t_x", {})
+        assert a[a.index("--unit") + 1] != b[b.index("--unit") + 1]
+
+    def test_scope_disabled_or_unavailable_spawns_unwrapped(self, fresh_home, monkeypatch):
+        assert kb._worker_scope_prefix("t_x", {"worker_scope_enabled": False}) == []
+        monkeypatch.setattr(kb.shutil, "which", lambda n: None)
+        assert kb._worker_scope_prefix("t_x", {}) == []
+
+    def test_worker_memory_max_configurable(self, monkeypatch):
+        monkeypatch.setattr(kb.shutil, "which", lambda n: "/usr/bin/systemd-run")
+        monkeypatch.setattr(kb, "_IS_WINDOWS", False)
+        pfx = kb._worker_scope_prefix("t_x", {"worker_memory_max": "6G"})
+        props = [pfx[i + 1] for i, t in enumerate(pfx) if t == "--property"]
+        assert "MemoryMax=6G" in props

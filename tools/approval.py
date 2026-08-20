@@ -1090,6 +1090,61 @@ DANGEROUS_PATTERNS_COMPILED = [
 ]
 
 
+# Self-disruption patterns: the subset of DANGEROUS_PATTERNS whose ONLY
+# rationale is preventing the agent from tearing down the operator's own
+# running service — killing its own gateway/agent process, restarting or
+# stopping the gateway/container lifecycle, or launching the gateway outside
+# supervision. Their risk is a self-inflicted DoS / mid-session state loss,
+# NOT host damage. The container-backend bypass (_should_skip_container_guards)
+# waives dangerous-command approval on the "the container is the host-safety
+# boundary" rationale — which is sound for rm -rf / mkfs / dd (they can't reach
+# the host) but does NOT cover self-termination, because killing the gateway
+# process disrupts the operator's service whether or not it touches the host.
+# So these stay gated even in isolated container backends. Keyed by the pattern
+# description (the same value used as pattern_key elsewhere); a drift-guard test
+# asserts every entry still exists in DANGEROUS_PATTERNS.
+_SELF_DISRUPTION_DESCRIPTIONS: frozenset[str] = frozenset({
+    "stop/restart hermes gateway (kills running agents)",
+    "hermes update (restarts gateway, kills running agents)",
+    "docker compose restart/stop/kill/down (container lifecycle)",
+    "docker restart/stop/kill (container lifecycle)",
+    "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')",
+    "kill hermes/gateway process (self-termination)",
+    "kill process via pgrep/pidof expansion (self-termination)",
+    "kill process via backtick pgrep/pidof expansion (self-termination)",
+    "stop/restart hermes launchd service (kills running agents)",
+})
+
+
+# Compiled self-disruption subset, checked directly (not via
+# detect_dangerous_command's first-match) so a command that also matches an
+# earlier generic pattern is still recognised as self-disruption. For example
+# `pkill -9 hermes` matches the generic "force kill processes" rule first, but
+# it is still self-termination and must stay gated inside a container.
+_SELF_DISRUPTION_PATTERNS_COMPILED = [
+    (regex, description)
+    for regex, description in DANGEROUS_PATTERNS_COMPILED
+    if description in _SELF_DISRUPTION_DESCRIPTIONS
+]
+
+
+def _matches_self_disruption_pattern(command: str) -> bool:
+    """True when *command* is a self-disruption / self-termination action.
+
+    Used so the container-backend approval bypass can carve these out: the
+    "container is the host-safety boundary" rationale does not extend to the
+    agent killing its own gateway/service, so those still require approval even
+    under docker/singularity/modal/daytona backends. Everything else the
+    container bypass waives as before.
+    """
+    for command_variant in _command_detection_variants(command):
+        command_lower = command_variant.lower()
+        for pattern_re, _description in _SELF_DISRUPTION_PATTERNS_COMPILED:
+            if pattern_re.search(command_lower):
+                return True
+    return False
+
+
 def _legacy_pattern_key(pattern: str) -> str:
     """Reproduce the old regex-derived approval key for backwards compatibility."""
     return pattern.split(r'\b')[1] if r'\b' in pattern else pattern[:20]
@@ -3733,7 +3788,13 @@ def check_dangerous_command(command: str, env_type: str,
         {"approved": True/False, "message": str or None, ...}
     """
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return {"approved": True, "message": None}
+        # Self-disruption / self-termination (killing our own gateway/agent
+        # process, tearing down the gateway/container lifecycle) is a
+        # self-inflicted service DoS, not host damage — so the host-safety
+        # container boundary does not justify waiving it. Keep gating those;
+        # everything else the container bypass still waives.
+        if not _matches_self_disruption_pattern(command):
+            return {"approved": True, "message": None}
 
     # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
     # to raw device, shutdown/reboot, fork bomb, kill -1) are blocked
@@ -4356,7 +4417,13 @@ def check_all_command_guards(command: str, env_type: str,
     # Skip isolated container backends for both checks. Docker stops skipping
     # once host paths are bind-mounted into the sandbox.
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return {"approved": True, "message": None}
+        # Exception: self-disruption / self-termination commands (killing our
+        # own gateway/agent process, gateway/container lifecycle teardown) are
+        # a self-inflicted service DoS, not host damage, so the container
+        # host-safety boundary does not cover them — keep them gated. All
+        # other dangerous commands are still waived inside the sandbox.
+        if not _matches_self_disruption_pattern(command):
+            return {"approved": True, "message": None}
 
     # Hardline floor: unconditional block for catastrophic commands
     # (rm -rf /, mkfs, dd to raw device, shutdown/reboot, fork bomb,
@@ -5016,7 +5083,20 @@ def check_execute_code_guard(code: str, env_type: str,
     if env_type == "vercel_sandbox":
         return {"approved": True, "message": None}
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return {"approved": True, "message": None}
+        # Self-disruption carve-out, mirroring check_dangerous_command /
+        # check_all_command_guards: the container host-safety boundary justifies
+        # waiving host-destructive commands, but NOT the agent killing its own
+        # gateway/service — that is a self-inflicted DoS regardless of the
+        # sandbox. execute_code is an equivalent bypass surface (a script can
+        # subprocess/os.system its way to `hermes gateway stop`, `pkill hermes`,
+        # etc.), so a script whose text carries a self-disruption *shell*
+        # command still routes through approval. Matching runs over the script
+        # text, so embedded shell self-termination is caught; a raw in-process
+        # kill (e.g. os.kill on a discovered PID) remains out of scope for
+        # string-pattern detection, as the docstring already notes for the
+        # process APIs execute_code exposes generally.
+        if not _matches_self_disruption_pattern(code):
+            return {"approved": True, "message": None}
 
     # --yolo or approvals.mode=off: bypass (session- or process-scoped).
     approval_mode = _get_approval_mode()

@@ -191,6 +191,8 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 
 :::info
 **Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, or `vercel_sandbox` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
+
+**Exception — self-disruption**: Commands that tear down the agent's own gateway/service (e.g. `pkill`/`killall` hermes, `hermes gateway stop/restart`, `docker compose down`) still require approval even under a container backend. Killing the running gateway is a self-inflicted service outage, not host damage, so the container boundary does not justify waiving it. This also covers `execute_code` scripts whose text issues such a command (e.g. `os.system("pkill hermes")`).
 :::
 
 ### Approval Flow (CLI)

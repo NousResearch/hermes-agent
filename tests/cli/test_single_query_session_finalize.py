@@ -244,7 +244,10 @@ def test_finalize_single_query_closes_agent_and_ends_session(monkeypatch):
 
     assert "agent.close" in calls
     assert calls.index("agent.close") < calls.index("cleanup")
-    assert ended == [("single-query-session", "agent_close")]
+    assert ended == [
+        ("single-query-session", "cli_close"),
+        ("single-query-session", "agent_close"),
+    ]
     assert calls[-1] == "release"
 
 

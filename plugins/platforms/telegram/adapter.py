@@ -233,6 +233,34 @@ async def _shutdown_abandoned_app(app) -> None:
         except Exception:
             logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)
 
+def _report_telegram_import_failure() -> None:
+    """Log the swallowed ImportError that stubbed the Telegram classes.
+
+    Distinguishes a clean "package not installed" (a legitimate optional-
+    dependency state — debug only, no noise) from "installed but failed to
+    import" (broken or racing install, e.g. a pip dependency sync still
+    writing dist-info while the gateway restarts). The latter used to
+    surface only much later as the misleading downstream
+    ``Any cannot be instantiated`` error, with the real cause swallowed
+    (#87455).
+    """
+    try:
+        import importlib.util as _importlib_util
+
+        present = _importlib_util.find_spec("telegram") is not None
+    except Exception:
+        present = True  # cannot tell — assume broken and log the cause
+    if present:
+        logger.warning(
+            "[Telegram] python-telegram-bot is installed but failed to "
+            "import; the Telegram platform will be unavailable until the "
+            "process restarts",
+            exc_info=True,
+        )
+    else:
+        logger.debug("python-telegram-bot not installed; Telegram platform disabled")
+
+
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
     try:
@@ -252,6 +280,7 @@ try:
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
 except ImportError:
+    _report_telegram_import_failure()
     TELEGRAM_AVAILABLE = False
     Update = Any
     Bot = Any

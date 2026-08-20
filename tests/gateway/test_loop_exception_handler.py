@@ -52,6 +52,43 @@ class ClientConnectorError(Exception):
     """Stand-in for ``aiohttp.ClientConnectorError``."""
 
 
+# Stand-ins for the nine newly classified exception names (PR #44180)
+class TimeoutException(Exception):
+    """Stand-in for ``httpx.TimeoutException``."""
+
+
+class RequestError(Exception):
+    """Stand-in for ``httpx.RequestError``."""
+
+
+class TransportError(Exception):
+    """Stand-in for ``httpx.TransportError``."""
+
+
+class ProxyError(Exception):
+    """Stand-in for ``httpx.ProxyError``."""
+
+
+class StreamError(Exception):
+    """Stand-in for ``httpx.StreamError``."""
+
+
+class ConnectionResetError(Exception):
+    """Stand-in for built-in ``ConnectionResetError``."""
+
+
+class ConnectionRefusedError(Exception):
+    """Stand-in for built-in ``ConnectionRefusedError``."""
+
+
+class BrokenPipeError(Exception):
+    """Stand-in for built-in ``BrokenPipeError``."""
+
+
+class TimeoutError(Exception):
+    """Stand-in for built-in ``TimeoutError``."""
+
+
 class SomeUnrelatedBug(Exception):
     """A non-transient error that should NOT be swallowed."""
 
@@ -64,12 +101,23 @@ class SomeUnrelatedBug(Exception):
 @pytest.mark.parametrize(
     "exc_cls",
     [
+        # Original six
         TimedOut,
         NetworkError,
         ConnectError,
         ReadTimeout,
         PoolTimeout,
         ClientConnectorError,
+        # Nine newly classified names (PR #44180)
+        TimeoutException,
+        RequestError,
+        TransportError,
+        ProxyError,
+        StreamError,
+        ConnectionResetError,
+        ConnectionRefusedError,
+        BrokenPipeError,
+        TimeoutError,
     ],
 )
 def test_transient_classifier_matches_known_network_errors(exc_cls):

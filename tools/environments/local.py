@@ -923,18 +923,28 @@ def _bash_starts(bash: str) -> bool:
         return cached
 
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
-            capture_output=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors="replace",
-            timeout=15,
             creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
         )
-        ok = result.returncode == 0
-        if not ok:
-            combined = f"{result.stdout or ''}{result.stderr or ''}"
-            _bash_probe_details_cache[bash] = combined.strip()[:2000]
-            logger.debug("bash probe failed for %s: %s", bash, combined.strip()[:200])
+        try:
+            stdout, stderr = proc.communicate(timeout=15)
+            ok = proc.returncode == 0
+            if not ok:
+                combined = f"{stdout or ''}{stderr or ''}"
+                _bash_probe_details_cache[bash] = combined.strip()[:2000]
+                logger.debug("bash probe failed for %s: %s", bash, combined.strip()[:200])
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            _bash_probe_details_cache[bash] = f"probe timed out after 15s, killed; partial stdout={stdout or ''}"
+            logger.debug("bash probe timed out for %s", bash)
+            ok = False
+    except FileNotFoundError:
+        _bash_probe_details_cache[bash] = "bash not found"
+        ok = False
     except Exception as exc:
         _bash_probe_details_cache[bash] = str(exc)[:2000]
         logger.debug("bash probe error for %s: %s", bash, exc)

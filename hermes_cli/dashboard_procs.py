@@ -365,6 +365,7 @@ def _kill_stale_dashboard_processes(
     pid_service: dict[int, str | None] = {}
     pid_cmdline: dict[int, list[str]] = {}
     pid_home: dict[int, str | None] = {}
+    pid_session_token: dict[int, str] = {}
     if restart_managed and sys.platform != "win32":
         for pid in pids:
             cg_path = _m()._get_pid_cgroup_path(pid)
@@ -379,6 +380,11 @@ def _kill_stale_dashboard_processes(
                 if cmdline:
                     pid_cmdline[pid] = cmdline
                     pid_home[pid] = _hermes_home_for_pid(pid)
+                    # Same lifetime as the argv: the dashboard session token
+                    # disappears with the process, so capture it pre-kill.
+                    session_token = _m()._dashboard_session_token_for_pid(pid)
+                    if session_token:
+                        pid_session_token[pid] = session_token
 
         if already_restarted_units:
             # Already handled directly by the caller (e.g. hermes update's
@@ -501,7 +507,31 @@ def _kill_stale_dashboard_processes(
 
         respawn_cmds = _filter_dashboard_respawn_candidates(respawn_candidates)
         if respawn_cmds:
-            failed_cmds = _m()._respawn_dashboard_processes(respawn_cmds)
+            # The filter returns bare argvs (the pid association is dropped),
+            # so re-attach each surviving command's captured session token by
+            # normalized cmdline.  First occurrence wins, matching the
+            # filter's dedupe order.
+            token_by_cmdline: dict[tuple[str, ...], str | None] = {}
+            for pid in killed:
+                cmdline = pid_cmdline.get(pid)
+                if cmdline:
+                    token_by_cmdline.setdefault(
+                        _normalize_dashboard_cmdline(cmdline),
+                        pid_session_token.get(pid),
+                    )
+            respawn_tokens = [
+                token_by_cmdline.get(_normalize_dashboard_cmdline(cmd))
+                for cmd in respawn_cmds
+            ]
+            # Keep the bare-argv call when nothing was captured so existing
+            # callers/mocks of _respawn_dashboard_processes stay valid.
+            if any(respawn_tokens):
+                failed_cmds = _m()._respawn_dashboard_processes(
+                    respawn_cmds,
+                    session_tokens=respawn_tokens,
+                )
+            else:
+                failed_cmds = _m()._respawn_dashboard_processes(respawn_cmds)
             if failed_cmds:
                 unrecovered.extend(p for p in killed if pid_cmdline.get(p) in failed_cmds)
 

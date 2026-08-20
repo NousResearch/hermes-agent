@@ -8440,12 +8440,31 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
         return None
 
 
-def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
+def _dashboard_session_token_for_pid(pid: int) -> str | None:
+    """Return only the non-empty dashboard session token from *pid*, if readable."""
+    try:
+        import psutil
+
+        token = (psutil.Process(pid).environ() or {}).get(
+            "HERMES_DASHBOARD_SESSION_TOKEN"
+        )
+    except Exception:
+        # Process environment inspection is inherently racy and may be denied.
+        return None
+    return token if isinstance(token, str) and token else None
+
+
+def _respawn_dashboard_processes(
+    commands: list[list[str]],
+    *,
+    session_tokens: list[str | None] | None = None,
+) -> list[list[str]]:
     """Best-effort respawn of manually-started dashboards after ``hermes update``.
 
     Spawns each recovered argv detached (new session, output to the profile's
-    ``logs/dashboard-restart.log``).  Returns the commands that failed to
-    spawn; the caller prints the manual hint for those.
+    ``logs/dashboard-restart.log``), preserving a corresponding captured
+    dashboard session token when supplied.  Returns the commands that failed
+    to spawn; the caller prints the manual hint for those.
 
     Callers must pre-filter via ``_filter_dashboard_respawn_candidates`` so
     Desktop ``serve|dashboard --port 0`` backends are not replayed and
@@ -8461,15 +8480,24 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
     except OSError:
         pass
 
-    for command in commands:
+    for index, command in enumerate(commands):
         try:
             # Keep restarted dashboards headless; reopening a browser after a
             # background update is noisy and fails in SSH/headless sessions.
             if "dashboard" in command and "--no-open" not in command:
                 command = [*command, "--no-open"]
+            env = os.environ.copy()
+            session_token = (
+                session_tokens[index]
+                if session_tokens is not None and index < len(session_tokens)
+                else None
+            )
+            if session_token:
+                env["HERMES_DASHBOARD_SESSION_TOKEN"] = session_token
             with open(log_path, "ab") as log_f:
                 subprocess.Popen(
                     command,
+                    env=env,
                     stdin=subprocess.DEVNULL,
                     stdout=log_f,
                     stderr=subprocess.STDOUT,

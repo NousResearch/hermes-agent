@@ -370,6 +370,118 @@ class TestManualBackendRespawn:
     def _live(self):
         return sys.modules["hermes_cli.main"]
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    def test_respawn_preserves_only_each_process_session_token(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        live = self._live()
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "updater-token")
+        monkeypatch.setenv("HERMES_TEST_UPDATER_STATE", "updater-value")
+
+        commands = {
+            5555: ["hermes", "dashboard", "--port", "8300"],
+            6666: ["hermes", "serve", "--port", "8400"],
+        }
+        old_environments = {
+            5555: {
+                "HERMES_DASHBOARD_SESSION_TOKEN": "old-dashboard-token",
+                "HERMES_HOME": "/old/dashboard/home",
+                "OLD_PROCESS_ONLY": "must-not-be-forwarded",
+            },
+            6666: {
+                "HERMES_DASHBOARD_SESSION_TOKEN": "second-dashboard-token",
+                "HERMES_HOME": "/old/serve/home",
+                "OLD_PROCESS_ONLY": "must-not-be-forwarded",
+            },
+        }
+        spawned: list[tuple[list[str], dict[str, str]]] = []
+
+        class _FakeProcess:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def environ(self):
+                return old_environments[self.pid]
+
+        class _FakePopen:
+            def __init__(self, command, **kwargs):
+                spawned.append((list(command), dict(kwargs.get("env") or {})))
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=list(commands)), \
+             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(live, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(live, "_dashboard_cmdline_for_pid",
+                          side_effect=lambda pid: commands[pid]), \
+             patch("psutil.Process", _FakeProcess), \
+             patch.object(live.subprocess, "Popen", _FakePopen), \
+             patch("gateway.status._pid_exists", return_value=False), \
+             patch("os.kill"), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        assert result["unrecovered"] == []
+        assert [command for command, _ in spawned] == [
+            ["hermes", "dashboard", "--port", "8300", "--no-open"],
+            ["hermes", "serve", "--port", "8400"],
+        ]
+        assert [env["HERMES_DASHBOARD_SESSION_TOKEN"] for _, env in spawned] == [
+            "old-dashboard-token",
+            "second-dashboard-token",
+        ]
+        for _, env in spawned:
+            assert env["HERMES_HOME"] == str(hermes_home)
+            assert env["HERMES_TEST_UPDATER_STATE"] == "updater-value"
+            assert "OLD_PROCESS_ONLY" not in env
+
+        output = capsys.readouterr().out
+        assert "old-dashboard-token" not in output
+        assert "second-dashboard-token" not in output
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    def test_environment_inspection_failure_still_respawns(
+        self, tmp_path, monkeypatch
+    ):
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "updater-token")
+        spawned_environments: list[dict[str, str]] = []
+
+        class _DeniedProcess:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def environ(self):
+                raise PermissionError("denied")
+
+        class _FakePopen:
+            def __init__(self, command, **kwargs):
+                spawned_environments.append(
+                    dict(kwargs.get("env") or os.environ)
+                )
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[7777]), \
+             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(live, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(live, "_dashboard_cmdline_for_pid",
+                          return_value=["hermes", "serve", "--port", "8500"]), \
+             patch("psutil.Process", _DeniedProcess), \
+             patch.object(live.subprocess, "Popen", _FakePopen), \
+             patch("gateway.status._pid_exists", return_value=False), \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        assert result["unrecovered"] == []
+        assert len(spawned_environments) == 1
+        assert spawned_environments[0]["HERMES_DASHBOARD_SESSION_TOKEN"] == "updater-token"
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
     def test_argv_capture_failure_falls_back_to_hint(self, capsys):

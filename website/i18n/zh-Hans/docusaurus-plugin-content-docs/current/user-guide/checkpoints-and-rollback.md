@@ -1,6 +1,6 @@
 ---
 sidebar_position: 8
-sidebar_label: "Checkpoints & Rollback"
+sidebar_label: "检查点与回滚"
 title: "检查点与 /rollback"
 description: "使用影子 git 仓库和自动快照为破坏性操作提供文件系统安全保障"
 ---

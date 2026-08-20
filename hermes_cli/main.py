@@ -13237,6 +13237,12 @@ def main():
         "--source", help="Filter by source (cli, telegram, discord, etc.)"
     )
     sessions_list.add_argument(
+        "--exclude-source",
+        action="append",
+        metavar="SOURCE",
+        help="Exclude sessions from this source (repeatable)",
+    )
+    sessions_list.add_argument(
         "--limit", type=int, default=20, help="Max sessions to show"
     )
     sessions_list.add_argument(
@@ -13695,6 +13701,12 @@ def main():
     )
     sessions_browse.add_argument(
         "--source", help="Filter by source (cli, telegram, discord, etc.)"
+    )
+    sessions_browse.add_argument(
+        "--exclude-source",
+        action="append",
+        metavar="SOURCE",
+        help="Exclude sessions from this source (repeatable)",
     )
     sessions_browse.add_argument(
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)"

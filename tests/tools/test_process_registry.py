@@ -418,6 +418,31 @@ def test_pty_reader_loop_reassembles_multibyte_char_split_across_chunks(registry
 # Orphaned-pipe reconciliation (issue #17327)
 # =========================================================================
 
+def test_list_sessions_reconciles_exit_and_enqueues_completion(registry):
+    """Desktop process.list must observe exit and wake async delivery."""
+    proc = MagicMock()
+    proc.poll.return_value = 0
+    proc.stdout = None
+
+    session = _make_session(sid="proc_list_orphan")
+    session.process = proc
+    session.session_key = "desktop-session"
+    session.notify_on_complete = True
+    registry._running[session.id] = session
+
+    listed = registry.list_sessions(session_key=session.session_key)
+
+    assert len(listed) == 1
+    assert listed[0]["session_id"] == session.id
+    assert listed[0]["status"] == "exited"
+    assert listed[0]["exit_code"] == 0
+
+    event = registry.completion_queue.get_nowait()
+    assert event["type"] == "completion"
+    assert event["session_id"] == session.id
+    assert event["session_key"] == session.session_key
+    assert event["exit_code"] == 0
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: uses setsid/fcntl")
 class TestOrphanedPipeReconciliation:
     """Regression tests for issue #17327.

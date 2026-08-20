@@ -25,6 +25,22 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+def _kanban_identity_tag(platform: str, assignee: Optional[str]) -> str:
+    """Render an assignee label without inventing a Buzz member mention."""
+    if not assignee:
+        return ""
+    if platform == "buzz":
+        return f"{assignee}: "
+    return f"@{assignee} "
+
+
+def _sanitize_kanban_notification(platform: str, message: str) -> str:
+    """Prevent system text from becoming accidental Buzz mentions."""
+    if platform == "buzz":
+        return message.replace("@", "@\u200b")
+    return message
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -530,7 +546,11 @@ class GatewayKanbanWatchersMixin:
                         # worker that did the work. Makes fleets (where one
                         # chat subscribes to many tasks) legible at a glance.
                         who = (task.assignee if task and task.assignee else None)
-                        tag = f"@{who} " if who else ""
+                        # Buzz uses @name as a real member mention and rejects
+                        # unknown names. In the hub-and-spoke deployment the
+                        # worker profiles are labels behind the single Satoshi
+                        # identity, not Buzz members, so render a plain label.
+                        tag = _kanban_identity_tag(platform_str, who)
                         if kind == "completed":
                             # Prefer the run's summary (the worker's
                             # intentional human-facing handoff, carried
@@ -624,6 +644,10 @@ class GatewayKanbanWatchersMixin:
                             # internal transition. They are also excluded from
                             # _WAKE_KINDS below, so they never wake the creator.
                             continue
+                        # buzz-cli interprets every visible @Name anywhere in
+                        # the message as a member mention. Neutralize handles
+                        # in all system-controlled fields before delivery.
+                        msg = _sanitize_kanban_notification(platform_str, msg)
                         delivery_metadata = sub.get("delivery_metadata")
                         metadata: dict[str, Any] = (
                             dict(delivery_metadata)

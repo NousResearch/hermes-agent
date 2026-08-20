@@ -5,11 +5,26 @@ from pathlib import Path
 
 from gateway.config import Platform
 from gateway.kanban_watchers import (
+    _kanban_identity_tag,
+    _sanitize_kanban_notification,
     _acquire_singleton_lock,
     _release_singleton_lock,
 )
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
+
+
+def test_buzz_assignee_is_a_plain_identity_label():
+    assert _kanban_identity_tag("buzz", "pikachu") == "pikachu: "
+    assert _kanban_identity_tag("telegram", "pikachu") == "@pikachu "
+
+
+def test_buzz_notification_neutralizes_all_visible_handles():
+    text = _sanitize_kanban_notification(
+        "buzz", "pikachu: finished @owner work for @scope/package",
+    )
+    assert text == "pikachu: finished @\u200bowner work for @\u200bscope/package"
+    assert _sanitize_kanban_notification("telegram", "hello @owner") == "hello @owner"
 
 
 class RecordingAdapter:

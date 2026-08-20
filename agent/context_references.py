@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import inspect
 import json
 import mimetypes
@@ -105,6 +106,18 @@ _SENSITIVE_HOME_FILES = (
     Path(".pgpass"),
     Path(".npmrc"),
     Path(".pypirc"),
+)
+# Byte-order marks, longest-prefix first. UTF-32 must be tested before UTF-16:
+# BOM_UTF32_LE is b"\xff\xfe\x00\x00" and starts with BOM_UTF16_LE (b"\xff\xfe"),
+# so checking UTF-16 first claims every UTF-32 LE file and decodes it into
+# NUL-interleaved garbage. The codec names are the BOM-consuming variants
+# ("utf-16", not "utf-16-le"), so the mark itself is stripped on decode.
+_BOM_ENCODINGS: tuple[tuple[bytes, str], ...] = (
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF8, "utf-8-sig"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
 )
 
 
@@ -387,7 +400,22 @@ def _expand_file_reference(
         # so it can read/convert/view the file itself.
         return None, _binary_reference_block(ref, path)
 
-    text = path.read_text(encoding="utf-8")
+    # A BOM names the encoding outright, so those files decode normally and are
+    # inlined like any other text. Everything else is read as UTF-8.
+    bom_encoding = _detect_bom_encoding(path)
+    try:
+        text = path.read_text(encoding=bom_encoding or "utf-8")
+    except UnicodeDecodeError as exc:
+        # The file IS text — it passed _is_binary_file — just not decodable with
+        # the encoding we can name. Locale-encoded exports (GB18030, Shift_JIS,
+        # Big5, cp125x) come out of banking, accounting and older enterprise
+        # tooling routinely, and carry no BOM. Inlining would mean guessing, and
+        # guessing is not safe here: cp125x decodes almost any byte sequence
+        # without raising, so a fallback chain would silently inline mojibake
+        # while claiming success. Hand the model the same actionable block binary
+        # files get instead — the file is on disk and its tools can read it with
+        # an explicit encoding.
+        return None, _undecodable_text_reference_block(ref, path, exc, bom_encoding)
     if ref.line_start is not None:
         lines = text.splitlines()
         start_idx = max(ref.line_start - 1, 0)
@@ -577,7 +605,33 @@ def _parse_file_reference_value(value: str) -> tuple[str, int | None, int | None
     return _strip_reference_wrappers(value), None, None
 
 
+def _detect_bom_encoding(path: Path) -> str | None:
+    """Return the codec named by a leading byte-order mark, or None if absent.
+
+    A BOM is the one encoding signal that is deterministic rather than guessed,
+    so it is the only one this module acts on. See ``_BOM_ENCODINGS`` for why
+    the probe order matters.
+    """
+    try:
+        # Bounded read, not read_bytes()[:4]: this runs per entry in a folder
+        # listing, and slurping whole files to look at four bytes is a bad trade.
+        with path.open("rb") as handle:
+            head = handle.read(4)
+    except OSError:  # pragma: no cover - defensive
+        return None
+    for bom, encoding in _BOM_ENCODINGS:
+        if head.startswith(bom):
+            return encoding
+    return None
+
+
 def _is_binary_file(path: Path) -> bool:
+    # The BOM probe has to run before the NUL sniff below, not after it: UTF-16
+    # and UTF-32 encode ASCII with NUL padding, so BOM-marked Unicode text trips
+    # the "binary" heuristic and is diverted to the binary block before any
+    # decoder ever sees it. A BOM is a positive declaration of text — honour it.
+    if _detect_bom_encoding(path) is not None:
+        return False
     mime, _ = mimetypes.guess_type(path.name)
     if mime and not mime.startswith("text/") and not any(
         path.name.endswith(ext) for ext in (".py", ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".js", ".ts")
@@ -693,13 +747,69 @@ def _binary_reference_block(ref: ContextReference, path: Path) -> str:
     )
 
 
+def _undecodable_text_reference_block(
+    ref: ContextReference,
+    path: Path,
+    exc: UnicodeDecodeError,
+    bom_encoding: str | None,
+) -> str:
+    """Actionable block for a text file that will not decode.
+
+    Same contract as :func:`_binary_reference_block`: the reference cannot be
+    inlined, but the file is on disk and the agent's own tools can read it — so
+    say what is wrong, where it is, and what to do, rather than returning a raw
+    codec error the model can only give up on.
+
+    Carries everything needed to make the retry one-shot: size, the requested
+    line range, the exact decode offset and offending byte, and whether a BOM
+    was present. The encoding suggestions are explicitly framed as hints — no
+    detection happened, and saying otherwise would invite the model to trust a
+    guess.
+    """
+    try:
+        size = format_bytes(path.stat().st_size)
+    except OSError:
+        size = "unknown size"
+    if ref.line_start is not None:
+        end = ref.line_end or ref.line_start
+        span = f"line {ref.line_start}" if end == ref.line_start else f"lines {ref.line_start}-{end}"
+        requested = f", {span} requested"
+    else:
+        requested = ""
+    try:
+        offending = f"byte 0x{exc.object[exc.start]:02x} at offset {exc.start}"
+    except (IndexError, TypeError):  # pragma: no cover - defensive
+        offending = "an undecodable byte"
+    bom_status = (
+        f"A {bom_encoding} byte-order mark is present, but the file still failed to decode, "
+        f"so it may be truncated or corrupt."
+        if bom_encoding
+        else "There is no byte-order mark, so the encoding is not recoverable from the file itself."
+    )
+    return (
+        f"📄 {ref.raw} ({size}{requested}) — text file, but it does not decode as "
+        f"{exc.encoding} ({offending}), so it was not inlined. {bom_status} "
+        f"It is available on disk at `{_agent_visible_path(path)}`. Read it with your tools "
+        f"using an explicit encoding, and say which one you used. Hints, not a detection "
+        f"result: gb18030 for Chinese-locale exports, cp932/shift_jis for Japanese, big5 for "
+        f"Traditional Chinese, cp1252 for Western European. Check that the decoded text reads "
+        f"as real words before relying on it. Do not decode with errors=\"replace\" and do not "
+        f"fall back to cp1252 blindly — both accept almost any byte sequence and yield silently "
+        f"corrupted text; do not tell the user the file is unsupported."
+    )
+
+
 def _file_metadata(path: Path) -> str:
     if _is_binary_file(path):
         return f"{path.stat().st_size} bytes"
     try:
-        line_count = path.read_text(encoding="utf-8").count("\n") + 1
+        # Honour the BOM here too. UTF-16 text is valid UTF-8 byte-wise (NUL is
+        # U+0000), so a plain utf-8 read would not raise — it would just count
+        # the lines of a mojibake string and report a plausible-looking lie.
+        text = path.read_text(encoding=_detect_bom_encoding(path) or "utf-8")
     except Exception:
         return f"{path.stat().st_size} bytes"
+    line_count = text.count("\n") + 1
     return f"{line_count} lines"
 
 

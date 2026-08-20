@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "है 1-क्लिक का पालन करें, पसंदीदा, बढ़ावा, और मस्तोडोन के लिए बुकमार्क, कोई बात नहीं जो आप घर कहते हैं.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "आपका मातान्डन इंस्टैंस नाम",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "मदद की जरूरत है?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "खाता कनेक्ट करें",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "खाता में वापस",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "अभी तक मस्तोन पर नहीं?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "इस उदाहरण को ढूंढ नहीं कर सकते, कृपया पता की जाँच करें और फिर कोशिश करें.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "खाता"
+  },
+  "add_account": {
+    "message": "+ जोड़ खाता",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "अधिसूचना दिखाएँ",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "निवरमन",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "खाता मिटाएँ",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "द्वारा"
+  },
+  "or": {
+    "message": "या"
+  },
+  "send_feedback": {
+    "message": "फ़ीडबैक भेजें",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "बग रिपोर्ट करें",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "समर्थन प्राप्त करें",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "दान",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "मडोडोन के लिए चरने का उपयोग करने के लिए तैयार है!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "इस टैब में बंद होगा",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "सेकेंड",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "जैसे",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "अनुसरण करें",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "आपके पीछे",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "अअनुसरण",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "उल्लेख",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "प्रत्यक्ष संदेश",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "साझा करें",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "गूंगा",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "ब्लॉक",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "रिपोर्ट",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "ब्लॉक डोमेन",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "मूल पृष्ठ खोलें",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "पोस्ट से लिंक की नक़ल लें",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "एम्सड",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "प्रोफ़ाइल पर फीचर",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "सदस्यता सब्सक्राईव",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "बूस्ट छुपाएं",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "जोड़ें या सूची से हटाएँ",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "घंटा",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "नीचे",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "आपने इस उत्तर के लिए मतदान किया",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "विन्यास",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "प्रसंग"
+  },
+  "graze_theme_p": {
+    "message": "यदि आप चाहें तो अपने आप को अपने विषय से जोड़ सकते हैं, यदि आप चाहें तो इसे आप ओवरराइड",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "स्तन का गहरा",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "स्तनार्बुद प्रकाश",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "स्तन-पर थीम टोन रंग अध्यारोहित करें",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "भाषा"
+  },
+  "Afrikaans": {
+    "message": "अफ़्रीकान्स"
+  },
+  "Arabic": {
+    "message": "अरबी"
+  },
+  "Bengali": {
+    "message": "बंगाली"
+  },
+  "Bulgarian": {
+    "message": "बुल्ले"
+  },
+  "Chinese_Simplified": {
+    "message": "चीनी सरल"
+  },
+  "Chinese_Traditional": {
+    "message": "चीनी पारंपरिक"
+  },
+  "Czech": {
+    "message": "चेक"
+  },
+  "Danish": {
+    "message": "दानिश"
+  },
+  "Dutch": {
+    "message": "डच भाषा"
+  },
+  "English": {
+    "message": "अंग्रेजी भाषा"
+  },
+  "Finnish": {
+    "message": "फ़िनिश"
+  },
+  "French": {
+    "message": "फ्रेंच भाषा"
+  },
+  "German": {
+    "message": "जर्मन"
+  },
+  "Greek": {
+    "message": "यूनानी भाषा"
+  },
+  "Hawaiian": {
+    "message": "हवाईयन"
+  },
+  "Hebrew": {
+    "message": "हिब्रू"
+  },
+  "Hindi": {
+    "message": "हिन्दी"
+  },
+  "Hungarian": {
+    "message": "हंगेरी"
+  },
+  "Icelandic": {
+    "message": "आइसलैण्ड"
+  },
+  "Indonesian": {
+    "message": "इंडोनेशियाई"
+  },
+  "Italian": {
+    "message": "इतालवी भाषा"
+  },
+  "Japanese": {
+    "message": "जापानी"
+  },
+  "Korean": {
+    "message": "कोरियाई"
+  },
+  "Malay": {
+    "message": "मलय भाषा"
+  },
+  "Maori": {
+    "message": "माओरी"
+  },
+  "Norwegian": {
+    "message": "नार्वे"
+  },
+  "Polish": {
+    "message": "पोलिश"
+  },
+  "Portuguese": {
+    "message": "पुर्तगाली"
+  },
+  "Portuguese_Brazilian": {
+    "message": "पुर्तगाली, ब्राज़ीलियाई"
+  },
+  "Romanian": {
+    "message": "रोमानियन"
+  },
+  "Russian": {
+    "message": "रूसी"
+  },
+  "Serbian_Cyrillic": {
+    "message": "सर्बियाई (सिरिलिक)"
+  },
+  "Spanish_Modern": {
+    "message": "स्पेनी (आधुनिक)"
+  },
+  "Swedish": {
+    "message": "स्वीडिश भाषा"
+  },
+  "Tamil": {
+    "message": "तमिल भाषा"
+  },
+  "Thai": {
+    "message": "थाई भाषा"
+  },
+  "Turkish": {
+    "message": "तुर्की भाषा"
+  },
+  "Ukrainian": {
+    "message": "यूक्रेनियन"
+  },
+  "Urdu_India": {
+    "message": "उर्दू (भारत)"
+  },
+  "Vietnamese": {
+    "message": "विएतनामी"
+  },
+  "Welsh": {
+    "message": "वेल्श"
+  },
+  "convenience": {
+    "message": "सुविधा"
+  },
+  "graze_convenience_p": {
+    "message": "चरना को वेब के चारों ओर से लिंक बनाने के लिए स्तनपाओं का प्रयोग कर सकता है ।",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "Masoddon उपयोगकर्ता नाम को स्थापित करें",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "चरना को वेब के चारों ओर से लिंक बनाने के लिए स्तनपाओं का प्रयोग कर सकता है ।",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "हैओवरकार्ड प्रदर्शित करें",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "Hovercards उपयोगकर्ता के बारे में त्वरित जानकारी दिखा सकते हैं जब आप उनके नाम पर मंडराते हैं.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "इंस्टाल के लिए पॉपअप दिखाएँ जिसे आप फ़ेडरेटेड नहीं कर रहे हैं",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "देखने के दौरान संघटना के उदाहरण बतायें.",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "जब देखने के लिए किसी खाते में लॉग इन किया गया हो तो पॉपअप दिखाएँ",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "खाता त्वरित लॉगिन पॉपअप दिखाएँ",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "ग्राज़ में स्वचालित भाषा को ओवरराइड करें",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "जब आप किसी दूरस्थ सर्वर पर क्लिक करते हैं या \"इस पृष्ठ पर क्लिक करते हैं\" ग्राज़ एक त्वरित जवाब को खोल सकता है या आपको अपने घर के उदाहरण के लिए ले सकता है.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "ग्राज़ से जवाब दें",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "होम इंस्टैंस से जवाब",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "सुदूर उदाहरण पर स्थानीय समयरेखा अधिक बारीकी से उस उदाहरण के उपयोगकर्ताओं और सामग्री को प्रतिबिंबित करती है.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "<strong>एक्सप्लोर करें</strong> को <strong>लोकल</strong> टाइमलाइन पर रीडायरेक्ट करें",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "सामग्री",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "दूरस्थ उदाहरण सामग्री प्रदर्शन मैच अपने स्वयं को प्रदर्शित करें, या इसे मिलाकर मिश्रण करें.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "सामग्री चेतावनी के पीछे सामग्री दिखाएँ (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "जीआईएफएस स्वचलित बजाएँ",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "एनएसएफडब्ल्यू/संवेदनशील छवियों को प्रदर्शित करें",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "सक्रिय खाता नियत",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "रीऑर्डर करने के लिए खींचें",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "{username} के लिए संदेश",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "{username} के लिए सूचनाएं",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "इस खाते से क्रिया लें",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "{username} के रूप में कार्रवाई करना",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "गोल अवतार छवियों को दिखाएं",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "वेब में संदर्भ मेनू से लिंक, छवि, और पाठ स्निपेट साझा करें",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "पसंदीदा कॉन्टेक्स्ट मेन्यू दिखाएँ",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "खाली (अफेडरेटेड) प्रोफाइल को घर में सुरक्षित करने के लिए आप एक क्लिक सुरक्षित",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "स्वचालित रूप से स्वचालित",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "अपनी समय-सीमा में मडोडोन पदों के लिए लिंक का विस्तार करें",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "विस्तारित-पंक्ति पदों में प्रदर्शित किया गया",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "देडपे पोस्ट छवियाँ और लिंक पूर्वावलोकन",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "डिफ़ॉल्ट लिंक पूर्वावलोकन बड़ी छवियाँ और पूर्ण स्निपेट पाठ के साथ बदलें",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "प्रदर्शक रिच लिंक पूर्वावलोकन",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "चरने के लिए आसान पढ़ने के लिए टूलटिप में सिर्फ रंग पाठ \"Alt पाठ\" दिखा सकते हैं सिर्फ एक टूलटिप में पढ़ने के लिए",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "छवियों के नीचे छवि विवरण प्रदर्शित करें",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "चराई केवल उदाहरण के साथ मडोडोन संस्करण 4.0.0 या उससे ऊपर के साथ संगत है",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "इस उदाहरण को ढूंढ नहीं कर सकते, कृपया पता की जाँच करें और फिर कोशिश करें.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "एक त्रुटि हुई. कृपया बाद में पुनः प्रयास करें.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "पोस्ट",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "अनुयायी",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "फोल्लोविंग",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "जी नहीं, धन्यवाद",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "प्रोफ़ाइल निर्देशिका में जाएँ",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "स्थानीय Timine पर जाएँ",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "अपने घर के फीड में सामग्री देखने के लिए स्थानीय फ़ीड से एक खाते का पालन करें.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "आप $username$ से संबद्ध नहीं हैं",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "आप किसी भी इंस्टाल पर इस खाते से कार्रवाई करने के लिए सक्षम हो जाएगा.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "$display_name$ को Graze में जोड़ें?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "ग्राज़ में जोड़ें",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

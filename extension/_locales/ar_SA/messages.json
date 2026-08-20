@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "هو ضغطة واحدة للمتابعة، المفضلة، التعزيز، والعلامة المرجعية لماستدون، بغض النظر عن أي سرفر تسميه بالمنزل.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "اسم سرفر ماستدون الخاص بك",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "تحتاج للمساعدة؟",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "ربط الحساب",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "الرجوع الى الحساب",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "ليس بعد على ماستدون؟",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "لا يمكن العثور على هذا السرفر، الرجاء التحقق من العنوان والمحاولة مرة أخرى.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "حسابات"
+  },
+  "add_account": {
+    "message": "+ إضافة حساب",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "إظهار الإشعارات",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "رجوع",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "إزالة الحساب",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "من"
+  },
+  "or": {
+    "message": "أو"
+  },
+  "send_feedback": {
+    "message": "إرسال ملاحظات",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "إبلاغ عن خلل",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "اطلب دعم",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "تبرع",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "التخرج لماستدون جاهز للاستخدام!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "سيتم اغلاق علامة التبويب هذه في",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "ثواني",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "مثالا",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "متابعة",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "يتبعك",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "إلغاء المُتابعة",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "أذكر",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "رسالة مباشِرة",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "مشاركة",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "كتم",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "حَظْر",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "إبلاغ",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "حجب اسم النطاق",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "فتح الصفحة الأصلية",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "نسخ وصلة لبريد",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "فراش",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "خاصية في ملف المواصفات",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "تغيير لغات مشتركة",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "اخفاء boosts من",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "اضافة أو ازالة من الكشوف",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "ساعة",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "تحت",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "لقد صوت لهذه الإجابة",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "المحددات",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "النسق الرئيسي"
+  },
+  "graze_theme_p": {
+    "message": "غراس) يطابق تلقائيا موضوعك) يمكنك تجاوزه إذا أردت",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "ماستودون ظلام",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "ضوء ماستودون",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "احلال لون نسق Mastodon النسق الرئيسي",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "اللغة"
+  },
+  "Afrikaans": {
+    "message": "أفريقية"
+  },
+  "Arabic": {
+    "message": "عربي"
+  },
+  "Bengali": {
+    "message": "بنجالي"
+  },
+  "Bulgarian": {
+    "message": "بلغاري"
+  },
+  "Chinese_Simplified": {
+    "message": "صينية مبسطة"
+  },
+  "Chinese_Traditional": {
+    "message": "الصينية التقليدية"
+  },
+  "Czech": {
+    "message": "تشيكي"
+  },
+  "Danish": {
+    "message": "دنماركي"
+  },
+  "Dutch": {
+    "message": "هولندي"
+  },
+  "English": {
+    "message": "الإنكليزية"
+  },
+  "Finnish": {
+    "message": "فنلندي"
+  },
+  "French": {
+    "message": "الفرنسية"
+  },
+  "German": {
+    "message": "ألماني"
+  },
+  "Greek": {
+    "message": "يوناني"
+  },
+  "Hawaiian": {
+    "message": "هاواي"
+  },
+  "Hebrew": {
+    "message": "عبري"
+  },
+  "Hindi": {
+    "message": "هندي"
+  },
+  "Hungarian": {
+    "message": "مجري"
+  },
+  "Icelandic": {
+    "message": "أيسلندي"
+  },
+  "Indonesian": {
+    "message": "اندونيسي"
+  },
+  "Italian": {
+    "message": "ايطالي"
+  },
+  "Japanese": {
+    "message": "ياباني"
+  },
+  "Korean": {
+    "message": "كوري"
+  },
+  "Malay": {
+    "message": "ماليزي"
+  },
+  "Maori": {
+    "message": "ماوري"
+  },
+  "Norwegian": {
+    "message": "نرويجي"
+  },
+  "Polish": {
+    "message": "بولندي"
+  },
+  "Portuguese": {
+    "message": "برتغالي"
+  },
+  "Portuguese_Brazilian": {
+    "message": "برتغالي ، البرازيلي"
+  },
+  "Romanian": {
+    "message": "روماني"
+  },
+  "Russian": {
+    "message": "الروسية"
+  },
+  "Serbian_Cyrillic": {
+    "message": "صربي (سيريلي)"
+  },
+  "Spanish_Modern": {
+    "message": "الأسبانية (حديثة)"
+  },
+  "Swedish": {
+    "message": "سويدي"
+  },
+  "Tamil": {
+    "message": "التاميل"
+  },
+  "Thai": {
+    "message": "تايلاندي"
+  },
+  "Turkish": {
+    "message": "تركي"
+  },
+  "Ukrainian": {
+    "message": "أوكراني"
+  },
+  "Urdu_India": {
+    "message": "أوردو (الهند)"
+  },
+  "Vietnamese": {
+    "message": "فيتنامي"
+  },
+  "Welsh": {
+    "message": "ولش"
+  },
+  "convenience": {
+    "message": "ملائمة"
+  },
+  "graze_convenience_p": {
+    "message": "يستطيع Graze أن يجعل اسم مستعمل mastodon وصلات حول الشبكة العنكبوتي.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "أسماء مستخدمي Linkiify Mastodon",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "يستطيع Graze أن يجعل اسم مستعمل mastodon وصلات حول الشبكة العنكبوتي.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "عرض بطاقات العرض",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "يمكن أن تعرض Hovercards معلومات سريعة عن المستخدم عند قيامك بتحوم حول الاسم الخاص بهم.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "عرض مظهرة للنسخ التي لم يتم اتحادها لها",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "اقتراح النسخ للاتحاد عند زيارته",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "عرض مظهرة عند بدء الاتصال في حساب لم يتم اضافته الى Graze",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "عرض اضافة حساب بدء الاتصال السريع للحساب",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "احلال اللغة الآلية في Gesrae",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "عند الضغط على الرد على وحدة الخدمة عن بعد أو \"totoot هذه الصفحة\" يمكن أن تقوم Graze بفتح رد سريع أو أخذك الى نسخة الصفحة الرئيسية الخاصة بك.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "الرد من غراس",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "رد من نسخة الصفحة الرئيسية",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "وعلى سبيل المثال ، فإن الجدول الزمني المحلي يعكس على نحو أوثق مستخدمي هذه الحالة ومضمونها.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "Redirect <strong>Explore</strong> to <strong>Local</strong>",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "المحتويات",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "قم بجعل شاشة محتويات النسخة عن بعد تطابق الخاصة بك ، أو قم بمزجها لأعلى.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "عرض المحتويات خلف تحذيرات المحتويات (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "تشغيل GIFs آليا",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "عرض صور NFPW / الحساسية",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "تحديد حساب فعال",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "السحب لاعادة الطلب",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "رسائل الى {username}",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "اشعارات الى {username}",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "الإجراءات من خلال هذا الحساب",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "اتخاذ إجراءات باعتبارها من {username}",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "إظهار الصور الرمزية المستديرة",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "عرض الوصلة والصورة ومشاركة مقاطع النص من القائمة السياقية عبر الانترنت",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "عرض القائمة السياقية الى Graze",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "اعادة توجيه ملفات مواصفات خالية (غير مفدرل) للمنزل لتكون آمنة بالضغط عليها",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "اعادة التوجيه آليا",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "تكبير الوصلات الخاصة بوظائف Mastodon في الجداول الزمنية الخاصة بك",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "عرض المرسلات الفرعية الموسعة",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Dedupe impes images والوصلات المسبقة للوصلة",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "استبدال مشاهدات الوصلة المفترضة بصور أكبر ونص مقاطع بالكامل",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "عرض مشاهدات الوصلات الغنية",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "يمكن أن تقوم Graze بعرض مواصفات الصورة \"Alt Text\" بأسفل لصور raherer أكثر من مجرد تلميح عن أداة لقراءة أسهل",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "عرض مواصفات الصورة بأسفل الصور",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "Graze متوافق فقط مع المثيلات التي تعمل بالإصدار 4.0.0 أو أعلى من Mastodon",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "لا يمكن العثور على هذا السرفر، الرجاء التحقق من العنوان والمحاولة مرة أخرى.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "لقد وقع خطأ. الرجاء المحاولة مرة أخرى لاحقاً.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "ردود",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "متابِعون",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "متابَعون",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "لا شكرًا",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "الانتقال إلى دليل الملف الشخصي",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "الانتقال إلى الجدول الزمني المحلي",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "تابع حسابًا من الخلاصة المحلية لبدء مشاهدة المحتوى في خلاصتك الرئيسية.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "أنت لست موحداً في $username$",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "ستتمكن من اتخاذ إجراءات من هذا الحساب على أي مثيل.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "إضافة $display_name$ إلى غرايز؟",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "إضافة إلى غرايز",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

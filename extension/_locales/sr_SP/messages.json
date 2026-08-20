@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "је 1-кликните на дугме за праћење, омиљени, потицај и обележивач за Мастодона, без обзира на инстанцу коју позовете кући.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "Име инстанце Мастодона",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "Потребна помоћ?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "Повежи налог",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "Назад на налоге",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "Не још на Мастодону?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "Не могу да нађем овај пример, проверите адресу и покушајте поново.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "Рачуни"
+  },
+  "add_account": {
+    "message": "+ додај налог",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "Прикажи обавештења",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "Нема везе",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "Уклони налог",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "по"
+  },
+  "or": {
+    "message": "или"
+  },
+  "send_feedback": {
+    "message": "Пошаљи повратне информације",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "Пријави грешку",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "Набавите подршку",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "Донирај",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Гразе фор Мастодон је спреман за употребу!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "Овај језичак ће се затворити",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "секунди",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "нпр. ",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "Прати",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "Прати вас",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "Престани праћење",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "Спомени",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "Директна порука",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "Подели",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "Ућуткај",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "Блокирај",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "Извештај",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "Блок домена",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "Отвори почетну страницу",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "Копирај линк ка постави",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "Угради",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "Функција на профилу",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "Промените потписане језике",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "Сакривање буста",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "Додај или уклони са листе",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "сат",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "испод",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "Гласали сте за овај одговор",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "Поставке",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "тема"
+  },
+  "graze_theme_p": {
+    "message": "Пасе аутоматски одговара вашој теми, можете је заменити ако желите.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "Мастодон тамни",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "Мастодон светлост",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "Премости боју акцента мастодона",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "језик"
+  },
+  "Afrikaans": {
+    "message": "Африканс"
+  },
+  "Arabic": {
+    "message": "Арапски"
+  },
+  "Bengali": {
+    "message": "Бенгалски"
+  },
+  "Bulgarian": {
+    "message": "бугарски"
+  },
+  "Chinese_Simplified": {
+    "message": "кинески поједностављени"
+  },
+  "Chinese_Traditional": {
+    "message": "традиционални кинески"
+  },
+  "Czech": {
+    "message": "Чешки"
+  },
+  "Danish": {
+    "message": "Дански"
+  },
+  "Dutch": {
+    "message": "Холандски"
+  },
+  "English": {
+    "message": "енглески"
+  },
+  "Finnish": {
+    "message": "Фински"
+  },
+  "French": {
+    "message": "Француски"
+  },
+  "German": {
+    "message": "немачки"
+  },
+  "Greek": {
+    "message": "Грчки"
+  },
+  "Hawaiian": {
+    "message": "Хавајски"
+  },
+  "Hebrew": {
+    "message": "хебрејски"
+  },
+  "Hindi": {
+    "message": "Хинди"
+  },
+  "Hungarian": {
+    "message": "Мађарски"
+  },
+  "Icelandic": {
+    "message": "исландски"
+  },
+  "Indonesian": {
+    "message": "Индонежански"
+  },
+  "Italian": {
+    "message": "италијански"
+  },
+  "Japanese": {
+    "message": "Јапански"
+  },
+  "Korean": {
+    "message": "Корејски"
+  },
+  "Malay": {
+    "message": "Малај"
+  },
+  "Maori": {
+    "message": "Маори"
+  },
+  "Norwegian": {
+    "message": "норвешки"
+  },
+  "Polish": {
+    "message": "Пољски"
+  },
+  "Portuguese": {
+    "message": "португалски"
+  },
+  "Portuguese_Brazilian": {
+    "message": "португалски, бразилски"
+  },
+  "Romanian": {
+    "message": "Румунски"
+  },
+  "Russian": {
+    "message": "руски"
+  },
+  "Serbian_Cyrillic": {
+    "message": "Српски (ћирилица)"
+  },
+  "Spanish_Modern": {
+    "message": "шпански (модерни)"
+  },
+  "Swedish": {
+    "message": "Шведски"
+  },
+  "Tamil": {
+    "message": "Тамил"
+  },
+  "Thai": {
+    "message": "Таи"
+  },
+  "Turkish": {
+    "message": "турски"
+  },
+  "Ukrainian": {
+    "message": "Украјински"
+  },
+  "Urdu_India": {
+    "message": "Урду (Индија)"
+  },
+  "Vietnamese": {
+    "message": "Вијетнамски"
+  },
+  "Welsh": {
+    "message": "Велшки"
+  },
+  "convenience": {
+    "message": "погодност"
+  },
+  "graze_convenience_p": {
+    "message": "Пасе може да направи мастодоново корисничко име у линкове око мреже.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "Linkiфy Maстондон корисничка имена",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "Пасе може да направи мастодоново корисничко име у линкове око мреже.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "Прикажи ховеркарте",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "Ховеркарте могу да прикажу брзе информације о кориснику када задржите курсор изнад њиховог имена.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "Искачући искачуће за ставови за које нисте удружени",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "Предложи инстанце да се удружите у федерацију",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "Прикажи искачуће када се пријавите на налог који није додат у Graze",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "Искачући искачући налог за додавање налога",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "Замени аутоматског језика у Гразу",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "Када кликнете на одговор на удаљеном серверу или \"otoot ова страница\" Гразе може да отвори брзи одговор или да вас одведе на почетну инстанцу.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "Одговори од Graze",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "Одговори од куће инстанце",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "На даљинској инстанци Локална временска линија је ближе одражава кориснике и садржај те инстанце.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "Преусмерите <strong>Истраживања</strong> на <strong>Локална</strong> временских линија",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "садржај",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "Учините да се садржај на даљину подудара са вашим, или да га помешате.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "Прикажи садржај иза Content Wardines (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "Аутоматски свирај ГИФС",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "Прикажи nSFW/осетљиве слике",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "постави активни налог",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "Повуците да бисте поручио",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "Поруке за {username}",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "Обавештења за {username}",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "ПРЕДУЗИМА РАДЊЕ СА ОВОГ НАЛОГА",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "Предузимање акције као {username}",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "Приказ слика аватара",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "Прикажи линк, слику и исечак текста дељења из контекстуалног менија преко веб странице",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "Прикажи контекстуални мени",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "Преусмери празне (неудружене) профиле у кућне инстанце да бисте безбедни клик",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "Аутоматски преусмеравање",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "Проширите линкове ка Maстодонској постовима у временским роковима",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "Прикажи проширене постове у линијама",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Дедупе пост слике и превиди линка",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "Замените подразумеване поставке линка са већим сликама и поруком са потпуним исеком",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "Приказ унапред приказа линкова",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "Пасе може приказати дескрипцију слике \"Alt Text\" испод слика са слике, него само у облачићу за лакше читање",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "Прикажи описе слике испод слика",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "Паша је компатибилна само са случајем који води Мастодонова верзија 4.0.0 или изнад",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "Не могу да нађем овај пример, проверите адресу и покушајте поново.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "Дошло је до грешке. Покушајте поново касније.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "Постови",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "Пратиоци",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "Пратим",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "Не, хвала",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "Иди у директоријум профила",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "Иди на локалну границу",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "Пратите налог од локалног фида да бисте почели да видите садржај у Home Feed-у.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "Нисте удружени на $username$",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "Моћи ћете да предупредите акције са овог налога на било који Insoince.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "Додај $display_name$ Гразеу?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "Додај у Graze",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

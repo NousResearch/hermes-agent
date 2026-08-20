@@ -1,0 +1,240 @@
+{
+  "graze_description": {
+    "message": "is 1-klik volg, gunsteling, hupstoot en boekmerk vir Mastodon, maak nie saak watter geval jy huis toe noem nie.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "Jou Mastodon-instansienaam",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "Het jy hulp nodig?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "Koppel Rekening",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "Terug na Rekeninge",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "Nog nie op Mastodon nie?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "Kan nie hierdie instansie vind nie. Gaan asseblief die adres na en probeer weer.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "Rekeninge"
+  },
+  "add_account": {
+    "message": "+ VOEG REKENING BY",
+    "description": "Link to add account."
+  },
+  "take_actions": {
+    "message": "NEEM OPTREDE UIT HIERDIE REKENING",
+    "description": "Take actions string on active account."
+  },
+  "show_notifications": {
+    "message": "Wys kennisgewings",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "Toemaar",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "Verwyder rekening",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "deur"
+  },
+  "or": {
+    "message": "of"
+  },
+  "send_feedback": {
+    "message": "Stuur terugvoering",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "Rapporteer fout",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "Kry ondersteuning",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "Skenk",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Graze for Mastodon is gereed om te gebruik!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "Hierdie oortjie sal toemaak",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "sekondes",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "bv.",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "Volg",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "unfollow": {
+    "message": "Ontvolg",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "Noem",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "Direkte boodskap",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "Deel",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "Demp",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "Blok",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "Verslag",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "Blokkeer domein",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "Maak oorspronklike bladsy oop",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "Kopieer skakel na hierdie plasing",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "Embed",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "Toon op profiel",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "Verander ingeskrewe tale",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "Versteek hupstoot van",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "Voeg by of verwyder van lyste",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "uur",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "onder",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "Jy het vir hierdie antwoord gestem",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

@@ -2410,20 +2410,16 @@ def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:
     from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
     from gateway.session_context import _VAR_MAP
     from model_tools import _clear_tool_defs_cache
+    from tools.registry import invalidate_check_fn_cache
 
     reset_secret_source_cache(_get_hermes_home())
     load_hermes_dotenv(hermes_home=_get_hermes_home())
     # Dotenv reload and tool-schema invalidation form one cache-coherence
-    # boundary. The schema cache is process-global and its key deliberately
-    # excludes env state, so keep this invalidation adjacent to the reload
-    # instead of treating it as a per-job detail that can drift away.
-    # .env may have changed TAVILY_API_KEY, web backend selection, or other
-    # check_fn-gated env vars. get_tool_definitions() memoizes quiet_mode=True
-    # results with a key that does not include env state, so a stale pre-.env
-    # cache would permanently hide tools that the freshly-loaded env now makes
-    # available (e.g. web_search in a cron job with
-    # enabled_toolsets=["web","file"]). Clear the cache every time cron
-    # re-reads the environment (#82912).
+    # boundary. The schema cache and the lower-level availability cache are
+    # separate, and both keys deliberately exclude env state. Clear both after
+    # every reload so newly available tools are visible while preserving the
+    # registry's transient-failure semantics elsewhere (#82912).
+    invalidate_check_fn_cache()
     _clear_tool_defs_cache()
 
     delivery_target = _resolve_delivery_target(job)

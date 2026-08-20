@@ -1137,7 +1137,7 @@ class TestRunJobConfigEnvVarExpansion:
             fake_db = MagicMock()
 
             with patch("cron.scheduler._hermes_home", tmp_path), \
-                 patch("cron.scheduler._resolve_origin", return_value=None), \
+                 patch("cron.scheduler._resolve_delivery_target", return_value=None), \
                  patch("hermes_cli.env_loader.reset_secret_source_cache"), \
                  patch("hermes_state.SessionDB", return_value=fake_db), \
                  patch("hermes_cli.runtime_provider.resolve_runtime_provider",

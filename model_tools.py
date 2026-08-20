@@ -20,7 +20,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import (
     CHECK_FN_CACHE_BYPASS, check_fn_cache_epoch, check_fn_cache_scope, check_fn_verdict_window, discover_builtin_tools,
-    invalidate_check_fn_cache, registry, tool_error)
+    registry, tool_error)
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
@@ -215,15 +215,9 @@ _TOOL_DEFS_CACHE_MAX = 8
 def _clear_tool_defs_cache() -> None:
     """Drop memoized results when a dynamic-schema dependency changes (discord caps, sandbox mode).
 
-    Also called by cron after every dotenv reload: this cache is process-global
-    rather than per-session, so invalidating a concurrent interactive or gateway
-    lookup is intentional — the next lookup recomputes both the availability
-    probes and the schema snapshot through their synchronized cache paths.
+    Callers that also changed environment-backed availability probes must
+    invalidate the registry's separate check-function cache explicitly.
     """
-    # Invalidate the underlying availability probes first, so any lookup that
-    # starts after this boundary re-probes dependencies before rebuilding its
-    # schema snapshot.
-    invalidate_check_fn_cache()
     with _tool_defs_cache_lock:
         _tool_defs_cache.clear()
         _tool_defs_expiry.clear()

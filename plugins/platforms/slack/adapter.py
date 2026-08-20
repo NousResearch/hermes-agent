@@ -67,6 +67,21 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
 
 logger = logging.getLogger(__name__)
 
+
+def _new_slack_web_client(token: str) -> Any:
+    """Create a Slack API client without negotiating Brotli responses.
+
+    Some Slack ``conversations.replies`` responses intermittently arrive with
+    a Brotli body that aiohttp cannot decode even when its optional Brotli
+    backend is installed. Requesting gzip keeps the transport deterministic
+    and preserves automatic decompression without changing API semantics.
+    """
+    return AsyncWebClient(
+        token=token,
+        headers={"Accept-Encoding": "gzip"},
+        user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX,
+    )
+
 # User-Agent prefix for outbound Slack API calls so platform partners can
 # identify HermesAgent traffic — matching other Hermes outbound surfaces
 # that already set ``HermesAgent/<version>`` for platform-partner attribution.
@@ -1951,19 +1966,13 @@ class SlackAdapter(BasePlatformAdapter):
 
             # First token is the primary — used for AsyncApp / Socket Mode
             primary_token = bot_tokens[0]
-            primary_client = AsyncWebClient(
-                token=primary_token,
-                user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX,
-            )
+            primary_client = _new_slack_web_client(primary_token)
             self._app = AsyncApp(token=primary_token, client=primary_client)
             _apply_slack_proxy(self._app.client, proxy_url)
 
             # Register each bot token and map team_id → client
             for token in bot_tokens:
-                client = AsyncWebClient(
-                    token=token,
-                    user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX,
-                )
+                client = _new_slack_web_client(token)
                 _apply_slack_proxy(client, proxy_url)
                 auth_response = await client.auth_test()
                 team_id = auth_response.get("team_id", "")
@@ -9213,7 +9222,11 @@ async def _standalone_send(
                 )
             }
 
-        client = _AsyncWebClient(token=token)
+        client = _AsyncWebClient(
+            token=token,
+            user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX,
+            headers={"Accept-Encoding": "gzip"},
+        )
         _apply_slack_proxy(client, resolve_proxy_url())
         last_message_id = None
 

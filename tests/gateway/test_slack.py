@@ -985,7 +985,8 @@ def _fake_slack_sdk_modules(client):
     sdk = ModuleType("slack_sdk")
     web = ModuleType("slack_sdk.web")
     async_client = ModuleType("slack_sdk.web.async_client")
-    async_client.AsyncWebClient = MagicMock(return_value=client)
+    async_client_factory = MagicMock(return_value=client)
+    async_client.AsyncWebClient = async_client_factory
     sdk.web = web
     web.async_client = async_client
     modules = {
@@ -996,7 +997,7 @@ def _fake_slack_sdk_modules(client):
     old = {name: _sys.modules.get(name) for name in modules}
     _sys.modules.update(modules)
     try:
-        yield
+        yield async_client_factory
     finally:
         for name, prev in old.items():
             if prev is None:
@@ -1023,7 +1024,7 @@ class TestStandaloneSendMedia:
         config = PlatformConfig(enabled=True, token="xoxb-fake-token")
 
         with (
-            _fake_slack_sdk_modules(client),
+            _fake_slack_sdk_modules(client) as client_factory,
             patch.object(_slack_mod, "resolve_proxy_url", return_value=None),
             patch.object(
                 _slack_mod.aiohttp,
@@ -1040,6 +1041,10 @@ class TestStandaloneSendMedia:
             )
 
         assert result["success"] is True
+        client_factory.assert_called_once()
+        kwargs = client_factory.call_args.kwargs
+        assert kwargs["headers"]["Accept-Encoding"] == "gzip"
+        assert kwargs["user_agent_prefix"] == _slack_mod._HERMES_SLACK_USER_AGENT_PREFIX
         client.chat_postMessage.assert_awaited_once()
         assert client.chat_postMessage.await_args.kwargs["text"] == "daily report"
         client.files_upload_v2.assert_awaited_once()

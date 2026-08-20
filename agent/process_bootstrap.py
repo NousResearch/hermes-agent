@@ -97,7 +97,10 @@ class _SafeWriter:
             pass
 
     def fileno(self):
-        return self._inner.fileno()
+        try:
+            return self._inner.fileno()
+        except (OSError, ValueError):
+            return 1  # stdout fd as a safe default for a broken/detached stream
 
     def isatty(self):
         try:

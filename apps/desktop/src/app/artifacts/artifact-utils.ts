@@ -131,6 +131,65 @@ function isWindowsPath(value: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\')
 }
 
+const LOCAL_NETWORK_SHARE_HOSTS = new Set(['127.0.0.1', '::1', 'localhost', 'wsl$', 'wsl.localhost'])
+
+function networkShareHost(value: string): string | null {
+  const trimmed = value.trim()
+
+  if (/^file:/i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed)
+
+      if (url.protocol !== 'file:') {
+        return null
+      }
+
+      // `file:////host/share` is not a canonical file URL, but the shared
+      // resolver turns its pathname into `//host/share` on Windows. Treat it
+      // like the equivalent UNC spelling before it reaches the filesystem.
+      const pathnameHost = url.pathname.match(/^\/\/([^/]+)/)?.[1]
+
+      return url.hostname || pathnameHost || null
+    } catch {
+      return null
+    }
+  }
+
+  const normalized = trimmed.replace(/\//g, '\\')
+
+  // Extended-length drive paths stay on the local filesystem. Only the UNC
+  // spelling under the same device prefix names a network share.
+  if (/^\\\\\?\\[A-Za-z]:\\/.test(normalized)) {
+    return null
+  }
+
+  const path = normalized.startsWith('\\\\?\\UNC\\')
+    ? normalized.slice('\\\\?\\UNC\\'.length)
+    : normalized.startsWith('\\\\')
+      ? normalized.slice(2)
+      : null
+
+  if (!path) {
+    return null
+  }
+
+  const separatorIndex = path.indexOf('\\')
+  const host = separatorIndex === -1 ? path : path.slice(0, separatorIndex)
+
+  return host || null
+}
+
+/**
+ * Automatic artifact previews must not cause Windows to contact a remote SMB
+ * share merely because an assistant or tool mentioned its path. WSL's local
+ * integration shares remain available, as do ordinary local file URLs.
+ */
+export function isRemoteNetworkShareArtifactPath(value: string): boolean {
+  const host = networkShareHost(value)
+
+  return host !== null && !LOCAL_NETWORK_SHARE_HOSTS.has(host.toLowerCase())
+}
+
 function looksLikePathOrUrl(value: string): boolean {
   return (
     value.startsWith('http://') ||
@@ -185,6 +244,10 @@ function artifactHref(value: string): string {
 }
 
 export async function artifactImageSrc(value: string): Promise<string> {
+  if (isRemoteNetworkShareArtifactPath(value)) {
+    throw new Error('Automatic previews of remote network-share artifacts are disabled')
+  }
+
   // Delegate the whole local/remote ladder to the shared media resolver:
   // inline (http/data) stays as-is, remote gateway goes through the
   // authenticated fs bridge, local desktop through the Electron

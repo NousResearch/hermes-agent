@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { $connection } from '@/store/session'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
-import { artifactImageSrc, collectArtifactsForSession, loadArtifactsForSessions } from './artifact-utils'
+import {
+  artifactImageSrc,
+  collectArtifactsForSession,
+  isRemoteNetworkShareArtifactPath,
+  loadArtifactsForSessions
+} from './artifact-utils'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -341,6 +346,50 @@ ${payload}
     expect(api).toHaveBeenCalledWith({
       path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2F.hermes%2Fskills%2Fwork-esab%2Freferences%2Fimages%2Fmanual-step03.jpeg'
     })
+  })
+
+  it.each([
+    ['a UNC share', String.raw`\\fileserver\share\generated.png`],
+    ['a slash-style UNC share', '//fileserver/share/generated.png'],
+    ['a device-prefixed UNC share', String.raw`\\?\UNC\fileserver\share\generated.png`],
+    ['a remote file URL', 'file://fileserver/share/generated.png'],
+    ['a non-canonical remote file URL', 'file:////fileserver/share/generated.png']
+  ])('identifies %s as a remote network-share artifact path', (_label, path) => {
+    expect(isRemoteNetworkShareArtifactPath(path)).toBe(true)
+  })
+
+  it.each([
+    ['a local drive path', String.raw`C:\Users\me\generated.png`],
+    ['a device-prefixed local drive path', String.raw`\\?\C:\Users\me\generated.png`],
+    ['a local file URL', 'file:///C:/Users/me/generated.png'],
+    ['a local-host file URL', 'file://localhost/C:/Users/me/generated.png'],
+    ['a WSL UNC path', String.raw`\\wsl.localhost\Ubuntu\home\me\generated.png`],
+    ['a WSL file URL', 'file://wsl.localhost/Ubuntu/home/me/generated.png']
+  ])('keeps %s eligible for a local preview', (_label, path) => {
+    expect(isRemoteNetworkShareArtifactPath(path)).toBe(false)
+  })
+
+  it('does not fetch a remote-share image artifact through either desktop file bridge', async () => {
+    const api = vi.fn()
+    const readFileDataUrl = vi.fn()
+    vi.stubGlobal('window', { hermesDesktop: { api, readFileDataUrl } })
+    $connection.set({ baseUrl: 'https://gw', mode: 'remote', token: 'secret' } as never)
+
+    await expect(artifactImageSrc(String.raw`\\fileserver\share\generated.png`)).rejects.toThrow(
+      'Automatic previews of remote network-share artifacts are disabled'
+    )
+
+    expect(api).not.toHaveBeenCalled()
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+  })
+
+  it('continues to resolve a WSL image artifact through the desktop fs bridge', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,V1NM')
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+    const path = String.raw`\\wsl.localhost\Ubuntu\home\me\generated.png`
+
+    await expect(artifactImageSrc(path)).resolves.toBe('data:image/png;base64,V1NM')
+    expect(readFileDataUrl).toHaveBeenCalledWith(path)
   })
 })
 

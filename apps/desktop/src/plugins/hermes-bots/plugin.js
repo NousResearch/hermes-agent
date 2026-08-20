@@ -8568,7 +8568,7 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
 
                   return jsxs('label', {
                     className: cn(
-                      'flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-(--chrome-action-hover)',
+                      'flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-(--chrome-action-hover)',
                       disabled && 'cursor-not-allowed opacity-50'
                     ),
                     children: [

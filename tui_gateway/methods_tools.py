@@ -771,7 +771,8 @@ def _(rid, params: dict) -> dict:
         except Exception as exc:
             return _err(rid, 5030, f"goals unavailable: {exc}")
 
-        sid_key = session.get("session_key") or ""
+        requested = str(params.get("session_id") or "")
+        sid_key = _goal_manager_session_id(session, requested)
         if not sid_key:
             return _err(rid, 4001, "no session key")
 
@@ -780,11 +781,18 @@ def _(rid, params: dict) -> dict:
             max_turns = int(goals_cfg.get("max_turns", 20) or 20)
         except Exception:
             max_turns = 20
-        mgr = GoalManager(session_id=sid_key, default_max_turns=max_turns)
+        mgr = _goal_manager_for_session(session, requested, max_turns)
 
         lower = arg.strip().lower()
         if not arg.strip() or lower == "status":
-            return _ok(rid, {"type": "exec", "output": mgr.status_line()})
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": mgr.status_line(),
+                    "session_id": mgr.session_id,
+                },
+            )
         if lower == "pause":
             state = mgr.pause(reason="user-paused")
             out = "No goal set." if state is None else f"⏸ Goal paused: {state.goal}"

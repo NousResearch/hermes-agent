@@ -10499,6 +10499,46 @@ _GOAL_COMPRESSION_RECOVERY_ATTEMPTS = "_goal_compression_recovery_attempts"
 _GOAL_COMPRESSION_RECOVERY_LIMIT = 1
 
 
+def _goal_lookup_ids(session, requested=""):
+    """Live agent id, then session_key, then the RPC session_id.
+
+    After compression ``session_key`` can still name the parent while the
+    persisted goal lives on ``agent.session_id``. Status must read that row
+    instead of answering "No active goal" from the stale key.
+    """
+    agent = session.get("agent") if session else None
+    ids = []
+    for candidate in (
+        getattr(agent, "session_id", None) if agent is not None else None,
+        (session or {}).get("session_key"),
+        requested,
+    ):
+        text = str(candidate or "").strip()
+        if text and text not in ids:
+            ids.append(text)
+    return ids
+
+
+def _goal_manager_session_id(session, requested=""):
+    ids = _goal_lookup_ids(session, requested)
+    return ids[0] if ids else ""
+
+
+def _goal_manager_for_session(session, requested, max_turns):
+    from hermes_cli.goals import GoalManager
+
+    last = None
+    for sid in _goal_lookup_ids(session, requested):
+        mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
+        last = mgr
+        state = mgr.state
+        if state is not None and getattr(state, "status", None) != "cleared":
+            return mgr
+    if last is not None:
+        return last
+    return GoalManager(session_id=_goal_manager_session_id(session, requested), default_max_turns=max_turns)
+
+
 def _is_successful_goal_turn(result: Any, status: str, raw: Any) -> bool:
     """Return whether a turn produced a real response the goal judge can use."""
     return bool(

@@ -2,6 +2,7 @@ import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
+import { useHeldTrue } from '@/app/hooks/use-held-true'
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
 import { composerFill, composerFloatingStrip, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
@@ -12,12 +13,14 @@ import { PR_COMMENT_URL_RE } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
+import { $goalsBySession } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
@@ -330,7 +333,16 @@ export function ChatBar({
   })
 
   const hasComposerPayload = hasText || attachments.length > 0
-  const canSubmit = busy || hasComposerPayload
+  const goalLoopLive = useStoreSelector($goalsBySession, goals => {
+    const status = sessionId ? goals[sessionId]?.status : undefined
+
+    return status === 'active' || status === 'waiting'
+  })
+  // Raw `busy` still drives submit/queue. The send/stop glyph follows a held
+  // in-turn flag so goal-judge gaps and reconnect blips do not flip it.
+  const heldBusy = useHeldTrue(busy, 800, sessionId ?? null)
+  const visualBusy = heldBusy || goalLoopLive
+  const canSubmit = visualBusy || hasComposerPayload
 
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
@@ -969,7 +981,7 @@ export function ChatBar({
   const controls = (
     <ComposerControls
       autoSpeak={autoSpeak}
-      busy={busy}
+      busy={visualBusy}
       busyAction={busyAction}
       canSubmit={canSubmit}
       compactModelPill={poppedOut || compactPill}
@@ -1241,7 +1253,7 @@ export function ChatBar({
               />
             )}
             <div className="relative w-full rounded-[inherit]">
-              {hudMode && busy && <span aria-hidden className="arc-border arc-composer" />}
+              {hudMode && visualBusy && <span aria-hidden className="arc-border arc-composer" />}
               <div
                 className={cn(
                   // grid-cols-[minmax(0,1fr)]: the implicit `auto` column sized

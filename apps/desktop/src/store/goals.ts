@@ -134,7 +134,7 @@ function nextGoalFromText(text: string, previous?: SessionGoal): SessionGoal | n
   return undefined
 }
 
-export function applyGoalStatusText(sid: string, text: string) {
+function applyGoalText(sid: string, text: string, { allowClear }: { allowClear: boolean }) {
   if (!sid) {
     return
   }
@@ -142,10 +142,29 @@ export function applyGoalStatusText(sid: string, text: string) {
   const next = nextGoalFromText(text, $goalsBySession.get()[sid])
 
   if (next === null) {
-    clearSessionGoal(sid)
-  } else if (next) {
+    if (allowClear) {
+      clearSessionGoal(sid)
+    }
+
+    return
+  }
+
+  if (next) {
     setSessionGoal(sid, next)
   }
+}
+
+export function applyGoalStatusText(sid: string, text: string) {
+  applyGoalText(sid, text, { allowClear: true })
+}
+
+const hydrationGeneration = new Map<string, number>()
+const HYDRATION_RETRY_MS = [0, 500, 1500, 4000]
+
+export function applyGoalHydrationText(sid: string, text: string) {
+  // A best-effort status read can resolve a different live session and reply
+  // "No active goal". That must not wipe a row the user still has set.
+  applyGoalText(sid, text, { allowClear: false })
 }
 
 export async function refreshSessionGoal(sid: string): Promise<void> {
@@ -155,10 +174,35 @@ export async function refreshSessionGoal(sid: string): Promise<void> {
     return
   }
 
-  try {
-    const result = await gateway.request<{ output?: string }>('slash.exec', { command: 'goal status', session_id: sid })
-    applyGoalStatusText(sid, result?.output ?? '')
-  } catch {
-    // Best-effort: older gateways or detached sessions simply won't hydrate it.
+  const generation = (hydrationGeneration.get(sid) ?? 0) + 1
+  hydrationGeneration.set(sid, generation)
+
+  for (let attempt = 0; attempt < HYDRATION_RETRY_MS.length; attempt += 1) {
+    const waitMs = HYDRATION_RETRY_MS[attempt] ?? 0
+
+    if (waitMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, waitMs))
+    }
+
+    if (hydrationGeneration.get(sid) !== generation) {
+      return
+    }
+
+    try {
+      const result = await gateway.request<{ output?: string }>('slash.exec', {
+        command: 'goal status',
+        session_id: sid
+      })
+
+      if (hydrationGeneration.get(sid) !== generation) {
+        return
+      }
+
+      applyGoalHydrationText(sid, result?.output ?? '')
+
+      return
+    } catch {
+      // Timeout / older gateway / detached runtime — retry the remaining windows.
+    }
   }
 }

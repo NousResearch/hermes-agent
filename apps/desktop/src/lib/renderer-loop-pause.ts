@@ -62,7 +62,9 @@ export function installRendererAnimationPauseState(): () => void {
 
   const sync = () => root.toggleAttribute(RENDERER_ANIMATIONS_PAUSED_ATTRIBUTE, controller.isPaused())
 
-  controller = createRendererLoopPauseController(sync)
+  // Decorative CSS (arc, glow, pulses) must not blink on focus steals —
+  // unattended long sessions live unfocused. Hidden/minimized still pause.
+  controller = createRendererLoopPauseController(sync, { pauseWhenUnfocused: false })
   sync()
 
   return () => {

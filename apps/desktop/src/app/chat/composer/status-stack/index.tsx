@@ -12,7 +12,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { useSessionSlice } from '@/lib/use-session-slice'
+import { useSessionSlice, useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $billingBlock } from '@/store/billing-block'
 import {
@@ -26,6 +26,7 @@ import {
 } from '@/store/composer-status'
 import { refreshSessionGoal } from '@/store/goals'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
+import { $sessionStates } from '@/store/session-states'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { openSessionInNewWindow } from '@/store/windows'
 
@@ -96,6 +97,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   // items actually changed.
   const items = useSessionSlice($statusItemsBySession, sessionId)
   const previews = useSessionSlice($previewStatusBySession, sessionId)
+  const sessionBusy = useStoreSelector($sessionStates, states => Boolean(sessionId && states[sessionId]?.busy))
   const scrolledUp = useStore($threadScrolledUp)
   const billing = useStore($billingBlock)
 
@@ -106,9 +108,14 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   useEffect(() => {
     if (sessionId) {
       void refreshBackgroundProcesses(sessionId)
-      void refreshSessionGoal(sessionId)
     }
   }, [sessionId])
+
+  useEffect(() => {
+    if (sessionId) {
+      void refreshSessionGoal(sessionId)
+    }
+  }, [sessionBusy, sessionId])
 
   const hasRunningBackground = groups.some(g => g.type === 'background' && g.items.some(i => i.state === 'running'))
 

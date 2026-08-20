@@ -7,7 +7,7 @@ import type { CommandCenterSection } from '@/app/command-center'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
-import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
+import { mergeGaugeUsage, useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -244,25 +244,13 @@ export function useStatusbarItems({
     sessionId: activeSessionId
   })
 
-  // The breakdown wins whenever we have one, for two reasons: it reports the
-  // MEASURED occupancy once the backend has it (falling back to the estimate
-  // only before that), and it is keyed to the session it describes. The global
-  // `$currentUsage` is neither — a resumed session reports no context fields,
-  // and the store merges rather than replaces, so the PREVIOUS session's gauge
-  // numbers survive the switch. Mid-turn there's no breakdown by design and
-  // the streamed usage carries the gauge.
-  const gaugeUsage = useMemo<UsageStats>(
-    () =>
-      contextBreakdown
-        ? {
-            ...currentUsage,
-            context_max: contextBreakdown.context_max,
-            context_percent: contextBreakdown.context_percent,
-            context_used: contextBreakdown.context_used
-          }
-        : currentUsage,
-    [contextBreakdown, currentUsage]
-  )
+  // Streamed occupancy wins once this session has it. The breakdown is only
+  // the idle estimate for a resumed chat that has not produced measured
+  // usage yet — it must not overwrite the gauge after a turn settles.
+  const gaugeUsage = useMemo<UsageStats>(() => mergeGaugeUsage(currentUsage, contextBreakdown), [
+    contextBreakdown,
+    currentUsage
+  ])
 
   const contextUsage = useMemo(() => usageContextLabel(gaugeUsage), [gaugeUsage])
   const contextBar = useMemo(() => contextBarLabel(gaugeUsage), [gaugeUsage])

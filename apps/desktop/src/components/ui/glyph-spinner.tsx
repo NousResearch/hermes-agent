@@ -87,7 +87,7 @@ export function GlyphSpinner({ ariaLabel = 'Loading', className, spinner = 'brai
       }, spin.interval)
     }
 
-    pauseController = createRendererLoopPauseController(syncAnimation)
+    pauseController = createRendererLoopPauseController(syncAnimation, { pauseWhenUnfocused: false })
     syncAnimation()
 
     return () => {

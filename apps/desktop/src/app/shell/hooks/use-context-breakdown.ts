@@ -1,12 +1,27 @@
 import { useEffect, useState } from 'react'
 
-import type { ContextBreakdown } from '@/types/hermes'
+import type { ContextBreakdown, UsageStats } from '@/types/hermes'
 
 interface ContextBreakdownOptions {
   busy: boolean
   enabled: boolean
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
   sessionId: null | string
+}
+
+export function mergeGaugeUsage(current: UsageStats, breakdown: ContextBreakdown | null): UsageStats {
+  const measured = typeof current.context_used === 'number' && current.context_used > 0
+
+  if (measured || !breakdown) {
+    return current
+  }
+
+  return {
+    ...current,
+    context_max: breakdown.context_max,
+    context_percent: breakdown.context_percent,
+    context_used: breakdown.context_used
+  }
 }
 
 /** The focused session's context breakdown, fetched as soon as the statusbar
@@ -20,18 +35,22 @@ interface ContextBreakdownOptions {
  *  hasn't spoken yet. It is a read-only chars/4 pass: no provider call, no
  *  prompt-cache impact.
  *
- *  Refetches when the focused session changes and when a turn ends (the
- *  transcript just grew). Held keyed by the session it describes so switching
- *  sessions drops the previous numbers instead of painting them under the new
- *  session's name. */
+ *  Fetches once per focused session while idle so a resumed chat has a
+ *  gauge before any turn has run. Turn-end busy edges do not refetch —
+ *  streamed occupancy is authoritative after the first turn, and a
+ *  chars/4 estimate must not overwrite it. Held keyed by the session it
+ *  describes so switching sessions drops the previous numbers instead of
+ *  painting them under the new session's name. */
 export function useContextBreakdown({ busy, enabled, requestGateway, sessionId }: ContextBreakdownOptions) {
   const [fetched, setFetched] = useState<{ breakdown: ContextBreakdown; sessionId: string } | null>(null)
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    // Mid-turn the transcript changes on every delta and the gateway already
-    // streams measured usage, so an estimate would be both stale and wasteful.
     if (!enabled || !sessionId || busy) {
+      return
+    }
+
+    if (fetched?.sessionId === sessionId) {
       return
     }
 
@@ -54,7 +73,7 @@ export function useContextBreakdown({ busy, enabled, requestGateway, sessionId }
     return () => {
       cancelled = true
     }
-  }, [busy, enabled, requestGateway, sessionId])
+  }, [busy, enabled, fetched?.sessionId, requestGateway, sessionId])
 
   return {
     breakdown: fetched && fetched.sessionId === sessionId ? fetched.breakdown : null,

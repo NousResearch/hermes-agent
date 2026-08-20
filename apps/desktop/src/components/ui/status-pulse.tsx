@@ -58,7 +58,9 @@ const subscribePulse = (subscriber: PulseSubscriber): (() => void) => {
   pulseSubscribers.add(subscriber)
 
   if (!sharedPauseController) {
-    sharedPauseController = createRendererLoopPauseController(handleSharedPauseChange)
+    sharedPauseController = createRendererLoopPauseController(handleSharedPauseChange, {
+      pauseWhenUnfocused: false
+    })
   }
 
   // First subscriber (or a new one joining mid-sleep): play immediately and

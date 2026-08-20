@@ -598,6 +598,19 @@ test('room plumbing sessions carry the room_plumbing contract', async () => {
   assert.match(pluginSource, /room_plumbing: true/)
 })
 
+test('bot sessions carry the follow-profile-config contract (canonical DM + room)', () => {
+  // Canonical Bot Chat: the ONE forever DM per bot must always follow the
+  // member profile's CURRENT config — never a stale stored model/provider pin
+  // (the "out of Nous credits" DM bug after a profile switch).
+  assert.match(pluginSource, /follow_profile_config: true/)
+  // The contract is sent on session.create for BOTH the canonical chat and
+  // room plumbing sessions, so resume rebuilds from current config.
+  const canonical = pluginSource.slice(pluginSource.indexOf('function createCanonicalChat'))
+  assert.match(canonical, /follow_profile_config: true/)
+  const room = pluginSource.slice(pluginSource.indexOf('async function ensureGroupChatSession'))
+  assert.match(room, /follow_profile_config: true/)
+})
+
 test('log trimming keeps watermarks consistent', () => {
   const gc = load(() => '(pass)')
   const log = Array.from({ length: 200 }, (_, i) => ({ from: { kind: 'user', name: 'You' }, text: `m${i}`, at: i }))

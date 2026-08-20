@@ -511,7 +511,7 @@ class TestRoomPlumbingRuntimeOverrides:
         assert _stored_session_runtime_overrides(row) == {}
 
     def test_legacy_group_title_shape_still_skipped(self):
-        """Rows from older desktop builds (hidden + \"Group:\" title, no
+        """Rows from older desktop builds (hidden + "Group:" title, no
         marker) keep the legacy guard: they also rebuild from current config."""
         from tui_gateway.server import _stored_session_runtime_overrides
 
@@ -543,7 +543,7 @@ class TestRoomPlumbingRuntimeOverrides:
         assert overrides["model_override"]["provider"] == "ollama-cloud"
 
     def test_hidden_normal_chat_untouched_by_legacy_shape(self):
-        """A hidden NON-room chat (hidden without a \"Group:\" title) keeps the
+        """A hidden NON-room chat (hidden without a "Group:" title) keeps the
         stored-runtime restore — the legacy shape is narrow on purpose."""
         from tui_gateway.server import _stored_session_runtime_overrides
 
@@ -557,3 +557,111 @@ class TestRoomPlumbingRuntimeOverrides:
         overrides = _stored_session_runtime_overrides(row)
         assert overrides["model_override"]["model"] == "glm-5.1"
 
+
+# --- Regression: bot DM stuck on a stale provider pin (GH #89497 class) ------
+#
+# Bot-Mode canonical chats (the ONE forever DM per bot) and room plumbing
+# sessions are plugin-owned scratch conversations. They are created with the
+# explicit ``follow_profile_config`` contract so resume ALWAYS rebuilds from
+# the member profile's CURRENT config — restoring the stored model/provider
+# pin from an old row is what left bot DMs stuck on a stale provider (e.g.
+# "out of Nous credits" after the profile was switched to ollama-cloud) while
+# the same bot worked fine in rooms. Normal 1:1 user chats keep the
+# stored-runtime restore (opening an older chat must show the model it
+# actually used).
+
+
+class TestFollowProfileConfigRuntimeOverrides:
+    def test_marked_row_returns_no_overrides(self):
+        """A row carrying the follow_profile_config marker never restores a
+        stored provider pin — resume falls back to the profile's CURRENT
+        config."""
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "model": "openai/gpt-5.6-luna-pro",
+            "billing_provider": "nous",
+            "model_config": json.dumps(
+                {
+                    "model": "openai/gpt-5.6-luna-pro",
+                    "provider": "nous",
+                    "follow_profile_config": True,
+                }
+            ),
+        }
+        assert _stored_session_runtime_overrides(row) == {}
+
+    def test_marked_row_dict_model_config_returns_no_overrides(self):
+        """Same contract when model_config is already a dict (not JSON)."""
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "model": "openai/gpt-5.6-luna-pro",
+            "model_config": {
+                "model": "openai/gpt-5.6-luna-pro",
+                "provider": "nous",
+                "follow_profile_config": True,
+            },
+        }
+        assert _stored_session_runtime_overrides(row) == {}
+
+    def test_unmarked_row_still_restores_stored_runtime(self):
+        """Normal 1:1 user chats keep the stored-runtime restore — the
+        contract must not leak into ordinary sessions."""
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "model": "openai/gpt-5.6-luna-pro",
+            "billing_provider": "nous",
+            "model_config": json.dumps(
+                {"model": "openai/gpt-5.6-luna-pro", "provider": "nous"}
+            ),
+        }
+        overrides = _stored_session_runtime_overrides(row)
+        assert overrides["model_override"]["model"] == "openai/gpt-5.6-luna-pro"
+        assert overrides["model_override"]["provider"] == "nous"
+
+    def test_ensure_db_row_persists_contract_marker(self, monkeypatch):
+        """_ensure_session_db_row stamps follow_profile_config into the row's
+        model_config when the session carries the contract."""
+        import tui_gateway.server as server
+
+        captured = {}
+
+        class FakeDB:
+            def create_session(self, *args, **kwargs):
+                captured["model_config"] = kwargs.get("model_config")
+                return None
+
+        monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+        monkeypatch.setattr(server, "_resolve_model", lambda: "glm-5.1")
+
+        session = {
+            "session_key": "key-1",
+            "model_override": {"model": "glm-5.1", "provider": "ollama-cloud"},
+            "follow_profile_config": True,
+        }
+        server._ensure_session_db_row(session)
+        assert captured["model_config"].get("follow_profile_config") is True
+
+    def test_ensure_db_row_omits_marker_without_contract(self, monkeypatch):
+        """Sessions without the contract do NOT get the marker — normal chats
+        keep the stored-runtime restore."""
+        import tui_gateway.server as server
+
+        captured = {}
+
+        class FakeDB:
+            def create_session(self, *args, **kwargs):
+                captured["model_config"] = kwargs.get("model_config")
+                return None
+
+        monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+        monkeypatch.setattr(server, "_resolve_model", lambda: "glm-5.1")
+
+        session = {
+            "session_key": "key-2",
+            "model_override": {"model": "glm-5.1", "provider": "ollama-cloud"},
+        }
+        server._ensure_session_db_row(session)
+        assert captured["model_config"].get("follow_profile_config") is None

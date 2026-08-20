@@ -3897,6 +3897,15 @@ def _ensure_session_db_row(session: dict) -> None:
     # restored verbatim). See _stored_session_runtime_overrides.
     if session.get("room_plumbing"):
         model_config["room_plumbing"] = True
+    # Bot-Mode canonical chats (the ONE forever DM per bot) and room plumbing
+    # sessions are plugin-owned scratch conversations: their runtime must ALWAYS
+    # follow the member profile's CURRENT config, never the model/provider that
+    # was pinned when the row was first written. Persist that contract explicitly
+    # so resume can distinguish them from a normal user chat (whose stored
+    # model/provider must be restored verbatim). See
+    # _stored_session_runtime_overrides.
+    if session.get("follow_profile_config"):
+        model_config["follow_profile_config"] = True
     try:
         db.create_session(
             key,
@@ -5283,6 +5292,31 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     _row_title = str(row.get("title") or "").strip()
     _row_hidden = row.get("hidden")
     if _row_hidden and _row_title.startswith("Group:"):
+        return {}
+
+    # Bot-Mode canonical chats (the ONE forever DM per bot) and room plumbing
+    # sessions are plugin-owned scratch conversations. They must always rebuild
+    # from the member profile's CURRENT config: restoring the stored
+    # model/provider pin from an old row is what left bot DMs stuck on a stale
+    # provider (e.g. "out of Nous credits" after the profile was switched to
+    # ollama-cloud) while the same bot worked fine in rooms. 1:1 user chats
+    # keep the stored-runtime restore (opening an older chat must show the
+    # model it actually used); only the plugin-owned bot sessions are exempt.
+    #
+    # The primary signal is the EXPLICIT ``follow_profile_config`` contract
+    # persisted by session.create consumers (desktop Bot Mode) — a deliberate
+    # marker, not a presentation heuristic.
+    raw_follow = row.get("model_config")
+    if isinstance(raw_follow, dict):
+        _follow_marker = raw_follow.get("follow_profile_config")
+    elif isinstance(raw_follow, str) and raw_follow.strip():
+        try:
+            _follow_marker = json.loads(raw_follow).get("follow_profile_config")
+        except Exception:
+            _follow_marker = None
+    else:
+        _follow_marker = None
+    if _follow_marker:
         return {}
 
     raw_config = row.get("model_config")

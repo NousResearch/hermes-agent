@@ -100,6 +100,7 @@ def _(rid, params: dict) -> dict:
             "pending_title": title or None,
             "pending_hidden": is_truthy_value(params.get("hidden", False)),
             "room_plumbing": is_truthy_value(params.get("room_plumbing", False)),
+            "follow_profile_config": is_truthy_value(params.get("follow_profile_config", False)),
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False,
             "session_key": key,

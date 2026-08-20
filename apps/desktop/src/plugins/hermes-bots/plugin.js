@@ -5868,7 +5868,12 @@ function createCanonicalChat(owner, { kickoff = false, openingStillCurrent = nul
       // plugin-owned. Core applies this via the generic `hidden` flag
       // (deferred as pending_hidden until the row exists); older gateways
       // ignore the unknown param and it stays visible.
-      hidden: true
+      hidden: true,
+      // Explicit contract: this session's runtime always follows the member
+      // profile's CURRENT config. Resume must NOT restore the stored
+      // model/provider pin from an old row (that left bot DMs stuck on a
+      // stale provider — e.g. "out of Nous credits" — after a profile switch).
+      follow_profile_config: true
     })
     const sid = res?.stored_session_id
     const runtime = res?.session_id
@@ -7479,7 +7484,11 @@ async function ensureGroupChatSession(group, member) {
     // profile's CURRENT config. Resume must NOT restore the stored
     // model/provider pin from an old row (that left room bots stuck on a
     // stale provider — e.g. "out of Nous credits" — after a profile switch).
-    room_plumbing: true
+    room_plumbing: true,
+    // Same follow-profile-config contract as the canonical Bot Chat: a room
+    // member's runtime always follows the member profile's CURRENT config,
+    // never a stale stored model/provider pin from an old row.
+    follow_profile_config: true
   })
   const stored = created?.stored_session_id || null
 

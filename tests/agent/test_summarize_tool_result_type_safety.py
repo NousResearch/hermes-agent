@@ -6,7 +6,12 @@ AttributeError. This caused an infinite TUI crash loop in production.
 """
 import json
 import pytest
-from agent.context_compressor import _summarize_tool_result
+from agent.context_compressor import (
+    _summarize_tool_result,
+    _terminal_output_head,
+    _ARCHIVED_MARKER,
+    ContextCompressor,
+)
 
 
 class TestTypeSafety:
@@ -60,7 +65,9 @@ class TestNormalStringArguments:
         args = json.dumps({"command": long_cmd})
         result = _summarize_tool_result("terminal", args, '{"exit_code": 0}')
         assert "..." in result
-        assert len(result) < 150
+        # Summary now includes output head + archived marker, so the total
+        # length is longer. The command itself must still be truncated.
+        assert "aaa..." in result
 
     def test_write_file_normal_content(self):
         """Normal string content should count lines correctly."""
@@ -159,4 +166,124 @@ class TestDisplayPreviewTypeSafety:
         from agent.display import build_tool_preview
         result = build_tool_preview("process", {"action": None, "session_id": "abc"})
         assert isinstance(result, str)
+
+
+class TestTerminalOutputHeadPreservation:
+    """The _terminal_output_head function must preserve evidence of
+    application-level failures even when exit_code is 0."""
+
+    def test_exit_zero_with_failure_body(self):
+        """A curl command that exits 0 but returns a 422 body must carry
+        the body head into the compressed summary."""
+        content = json.dumps({
+            "output": "HTTP 422 Unprocessable Entity\n{\"error\": \"Bad request\"}",
+            "exit_code": 0,
+            "error": None
+        })
+        head = _terminal_output_head(content)
+        assert "422" in head
+        assert "Unprocessable" in head
+
+    def test_exit_zero_empty_output(self):
+        content = json.dumps({"output": "", "exit_code": 0, "error": None})
+        head = _terminal_output_head(content)
+        assert head == ""
+
+    def test_non_json_content_falls_back_to_raw(self):
+        head = _terminal_output_head("plain text output line one")
+        assert "plain text" in head
+
+    def test_long_output_truncated(self):
+        long_output = "A" * 500
+        content = json.dumps({"output": long_output, "exit_code": 0})
+        head = _terminal_output_head(content, limit=50)
+        assert len(head) <= 50
+        assert head.endswith("\u2026")
+
+    def test_content_with_newlines_collapsed(self):
+        content = json.dumps({
+            "output": "line1\nline2\nline3",
+            "exit_code": 0
+        })
+        head = _terminal_output_head(content)
+        assert " " in head
+        assert "\n" not in head
+
+
+class TestArchivedMarkerIdempotence:
+    """_prune_old_tool_results must not re-summarize messages that
+    already contain the _ARCHIVED_MARKER."""
+
+    def test_marker_prevents_redemotion(self):
+        """A tool result that was already summarized (contains _ARCHIVED_MARKER)
+        must survive a second prune pass unchanged."""
+        summarized_content = (
+            "[terminal] ran `npm test` -> exit 0, 47 lines, 12,000 chars "
+            "| output starts: all tests passed "
+            f"| {_ARCHIVED_MARKER}"
+        )
+        # Build a minimal message list: assistant tool_call + tool result
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "tc1", "type": "function", "function": {"name": "terminal", "arguments": json.dumps({"command": "npm test"})}}],
+            },
+            {"role": "tool", "tool_call_id": "tc1", "content": summarized_content},
+            {"role": "user", "content": "What happened?"},
+            {"role": "assistant", "content": "Tests passed."},
+            {"role": "user", "content": "Great, now run deploy."},
+        ]
+        # _prune_old_tool_results doesn't access self (only module-level
+        # functions and locals), so __new__ bypasses __init__ safely.
+        compressor = ContextCompressor.__new__(ContextCompressor)
+        pruned, count = compressor._prune_old_tool_results(
+            messages, protect_tail_count=3
+        )
+        # The already-summarized tool result must be unchanged
+        assert count == 0
+        assert pruned[1]["content"] == summarized_content
+
+    def test_large_summarized_result_not_redemoted(self):
+        """Even if the summarized result exceeds min_prune_chars, the
+        _ARCHIVED_MARKER guard must prevent re-summarization."""
+        long_head = "A" * 300
+        summarized_content = (
+            f"[terminal] ran `build` -> exit 0, 500 lines, 50,000 chars "
+            f"| output starts: {long_head} "
+            f"| {_ARCHIVED_MARKER}"
+        )
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "tc1", "type": "function", "function": {"name": "terminal", "arguments": json.dumps({"command": "build"})}}],
+            },
+            {"role": "tool", "tool_call_id": "tc1", "content": summarized_content},
+            {"role": "user", "content": "Next step."},
+        ]
+        compressor = ContextCompressor.__new__(ContextCompressor)
+        pruned, count = compressor._prune_old_tool_results(
+            messages, protect_tail_count=1, min_prune_chars=200
+        )
+        assert count == 0
+        assert pruned[1]["content"] == summarized_content
+
+    def test_fresh_terminal_result_gets_summarized(self):
+        """Verify the prune still works on fresh (non-archived) tool results."""
+        large_output = json.dumps({"output": "x" * 5000, "exit_code": 0, "error": None})
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "tc1", "type": "function", "function": {"name": "terminal", "arguments": json.dumps({"command": "test"})}}],
+            },
+            {"role": "tool", "tool_call_id": "tc1", "content": large_output},
+            {"role": "user", "content": "Done?"},
+        ]
+        compressor = ContextCompressor.__new__(ContextCompressor)
+        pruned, count = compressor._prune_old_tool_results(
+            messages, protect_tail_count=1, min_prune_chars=200
+        )
+        assert count == 1
+        assert _ARCHIVED_MARKER in pruned[1]["content"]
+        assert "exit 0" in pruned[1]["content"]
+
 

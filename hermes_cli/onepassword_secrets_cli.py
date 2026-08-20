@@ -160,7 +160,6 @@ def cmd_setup(args: argparse.Namespace) -> int:
     token = (args.token or "").strip()
     if token:
         save_env_value(token_env, token)
-        os.environ[token_env] = token
         console.print(f"  [green]✓[/green] service-account token stored in "
                       f"{get_env_path()} as {token_env}")
     elif os.environ.get(token_env):
@@ -345,7 +344,6 @@ def cmd_token(args: argparse.Namespace) -> int:
         console.print(f"[green]✓ Token accepted[/green] ({who}).")
 
     save_env_value(token_env, token)
-    os.environ[token_env] = token
     # Cached resolutions are keyed on the previous token's fingerprint;
     # drop them so the next startup resolves fresh with the new credential.
     op_src.clear_caches()

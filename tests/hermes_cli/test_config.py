@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -258,7 +259,54 @@ class TestSaveEnvValueSecure:
             }
             assert "secret" not in str(result).lower()
 
+    def test_save_env_value_strips_ascii_control_chars(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("OPENAI_API_KEY", None)
+            save_env_value("OPENAI_API_KEY", "sk-\x00live\tkey\x7f\nnext\r")
 
+            content = (tmp_path / ".env").read_text(encoding="utf-8")
+            assert "OPENAI_API_KEY=sk-livekeynext" in content
+            assert "\x00" not in content
+            assert "\t" not in content
+            assert "\x7f" not in content
+            assert os.environ["OPENAI_API_KEY"] == "sk-livekeynext"
+            assert load_env()["OPENAI_API_KEY"] == "sk-livekeynext"
+
+            save_env_value("MCP_HEADER_TEMPLATE", "name\tvalue")
+            assert os.environ["MCP_HEADER_TEMPLATE"] == "name\tvalue"
+            assert load_env()["MCP_HEADER_TEMPLATE"] == "name\tvalue"
+
+    def test_bitwarden_token_path_keeps_sanitized_process_value(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import secrets_cli
+
+        monkeypatch.setattr(
+            secrets_cli,
+            "load_config",
+            lambda: {
+                "secrets": {
+                    "bitwarden": {
+                        "enabled": True,
+                        "access_token_env": "BWS_ACCESS_TOKEN",
+                        "project_id": "",
+                        "server_url": "",
+                    }
+                }
+            },
+        )
+        monkeypatch.setattr(secrets_cli.bw, "clear_caches", lambda: None)
+        monkeypatch.setattr(secrets_cli, "get_env_path", lambda: tmp_path / ".env")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("BWS_ACCESS_TOKEN", None)
+            result = secrets_cli.cmd_token(
+                SimpleNamespace(access_token="0.\x00safe", no_verify=True)
+            )
+
+            assert result == 0
+            assert os.environ["BWS_ACCESS_TOKEN"] == "0.safe"
+            assert load_env()["BWS_ACCESS_TOKEN"] == "0.safe"
 
     def test_save_env_value_preserves_existing_file_mode_on_posix(self, tmp_path):
         """Regression for #31518: pre-existing .env mode (e.g. 0640 for a

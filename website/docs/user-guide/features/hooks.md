@@ -1860,6 +1860,7 @@ hooks:
       events: [on_session_end, subagent_stop]
       secret_env: HERMES_OUTBOUND_WEBHOOK_SECRET   # env var holding the HMAC secret
       timeout: 10                           # per-attempt seconds (1–60)
+      rate_limit_per_second: 10             # optional, 0.1–1000; burst is always 10
 
     - name: tool-monitor
       url: https://metrics.example.com/hooks/hermes
@@ -1917,6 +1918,8 @@ Because `delivery_id` and `timestamp` live **inside the signed body**, a verifie
 - **Fire-and-forget, off the hot path.** Events are serialized and queued instantly; a single background thread performs the HTTP POSTs. A slow or dead endpoint can never stall a tool call or an agent turn.
 - **Notify-only.** Unlike shell hooks, outbound webhooks cannot block tool calls or inject context — the response body is ignored. They observe, never steer.
 - **Bounded retries.** Connection errors and 5xx responses are retried once with backoff; 4xx responses are not retried (the receiver said the request itself is wrong). Failures are logged and dropped — delivery is best-effort, not guaranteed.
+- **Per-destination rate limit.** Each exact configured URL has a process-local token bucket. The default is 10 HTTP attempts per second with a burst of 10; `rate_limit_per_second` accepts a positive number clamped to `0.1`–`1000`. Retries consume tokens too. Duplicate entries for the same URL share one bucket and use the strictest configured rate seen for that URL.
+- **Above-limit deliveries wait.** Accepted events remain in the existing worker queue until a token is available, then are delivered with their original body and delivery id. Rate limiting does not introduce another drop path; only the bounded queue can reject a new event when full.
 - **Redirects are never followed.** A 3xx response is treated as a misconfiguration and logged — following a redirected POST would silently drop the signed payload. Point the `url` at the final endpoint.
 - **Bounded queue.** If the queue backs up (dead endpoint, event storm), new events are dropped with a warning rather than consuming unbounded memory.
 - **No consent prompt.** Outbound targets execute no code on your machine — they receive data at a URL you configured. `HERMES_SAFE_MODE=1` still skips registration, same as plugins and shell hooks. Note that payloads include tool inputs and event metadata, so only point targets at endpoints you trust, and prefer `https://`.

@@ -101,6 +101,55 @@ def _cfg(*entries):
     return {"hooks": {"outbound": list(entries)}}
 
 
+class _FakeClock:
+    def __init__(self):
+        self.now = 100.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+class _Response:
+    def __init__(self, status):
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+
+class _RecordingOpener:
+    def __init__(self, clock, statuses=None):
+        self.clock = clock
+        self.statuses = list(statuses or [200])
+        self.attempts = []
+
+    def open(self, request, timeout):
+        attempt_index = len(self.attempts)
+        status = self.statuses[min(attempt_index, len(self.statuses) - 1)]
+        headers = {key.lower(): value for key, value in request.header_items()}
+        self.attempts.append(
+            {
+                "url": request.full_url,
+                "time": self.clock.monotonic(),
+                "timeout": timeout,
+                "body": request.data,
+                "delivery_id": headers["x-hermes-delivery"],
+            }
+        )
+        return _Response(status)
+
+
 # ── config parsing ────────────────────────────────────────────────────────
 
 
@@ -194,6 +243,66 @@ class TestParseConfig:
             )
         )
         assert targets[0].timeout == outbound_webhooks.DEFAULT_TIMEOUT_SECONDS
+
+    def test_rate_limit_defaults_and_accepts_positive_int_or_float(self):
+        default_target, int_target, float_target = (
+            outbound_webhooks.iter_configured_targets(
+                _cfg(
+                    {"url": f"https://example.com/{index}",
+                     "events": ["on_session_end"], **extra},
+                )
+            )[0]
+            for index, extra in enumerate((
+                {},
+                {"rate_limit_per_second": 25},
+                {"rate_limit_per_second": 2.5},
+            ))
+        )
+
+        assert default_target.rate_limit_per_second == 10.0
+        assert int_target.rate_limit_per_second == 25.0
+        assert float_target.rate_limit_per_second == 2.5
+
+    @pytest.mark.parametrize(
+        "configured",
+        [True, False, float("nan"), float("inf"), float("-inf"), 0, -1, "5", None],
+    )
+    def test_malformed_rate_limit_warns_and_falls_back_to_default(
+        self, configured, caplog,
+    ):
+        targets = outbound_webhooks.iter_configured_targets(
+            _cfg(
+                {
+                    "url": "https://example.com",
+                    "events": ["on_session_end"],
+                    "rate_limit_per_second": configured,
+                }
+            )
+        )
+
+        assert targets[0].rate_limit_per_second == 10.0
+        assert "rate_limit_per_second" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [
+            (0.01, 0.1),
+            (10_000, 1000.0),
+            pytest.param(10**1000, 1000.0, id="huge-int"),
+        ],
+    )
+    def test_positive_rate_limit_is_clamped(self, configured, expected):
+        targets = outbound_webhooks.iter_configured_targets(
+            _cfg(
+                {
+                    "url": "https://example.com",
+                    "events": ["on_session_end"],
+                    "rate_limit_per_second": configured,
+                }
+            )
+        )
+
+        assert targets[0].rate_limit_per_second == expected
 
     def test_matcher_dropped_for_non_tool_events(self):
         targets = outbound_webhooks.iter_configured_targets(
@@ -349,6 +458,256 @@ class TestRegistration:
 
 
 class TestDelivery:
+    def test_default_destination_rate_limit_waits_after_ten_attempts(
+        self, monkeypatch,
+    ):
+        clock = _FakeClock()
+        opener = _RecordingOpener(clock)
+        monkeypatch.setattr(outbound_webhooks, "time", clock)
+        monkeypatch.setattr(outbound_webhooks, "_opener", opener)
+        target = outbound_webhooks.WebhookTarget(
+            url="https://example.com/hook", events=["on_session_end"],
+        )
+        delivery = outbound_webhooks._build_delivery(
+            "on_session_end", target, b"{}", "did_rate_limit",
+        )
+
+        for _ in range(11):
+            outbound_webhooks._deliver(delivery)
+
+        assert len(opener.attempts) == 11
+        assert clock.sleeps == [pytest.approx(0.1)]
+
+    def test_at_limit_traffic_does_not_sleep(self, monkeypatch):
+        clock = _FakeClock()
+        opener = _RecordingOpener(clock)
+        monkeypatch.setattr(outbound_webhooks, "time", clock)
+        monkeypatch.setattr(outbound_webhooks, "_opener", opener)
+        target = outbound_webhooks.WebhookTarget(
+            url="https://example.com/hook", events=["on_session_end"],
+        )
+        delivery = outbound_webhooks._build_delivery(
+            "on_session_end", target, b"{}", "did_at_limit",
+        )
+
+        for _ in range(10):
+            outbound_webhooks._deliver(delivery)
+
+        assert len(opener.attempts) == 10
+        assert clock.sleeps == []
+
+    def test_above_limit_queue_waits_without_losing_deliveries(
+        self, monkeypatch,
+    ):
+        clock = _FakeClock()
+        opener = _RecordingOpener(clock)
+        monkeypatch.setattr(outbound_webhooks, "time", clock)
+        monkeypatch.setattr(outbound_webhooks, "_opener", opener)
+        target = outbound_webhooks.WebhookTarget(
+            url="https://example.com/hook", events=["on_session_end"],
+        )
+        callback = outbound_webhooks._make_callback("on_session_end", target)
+
+        for index in range(11):
+            assert callback(session_id=f"session-{index}") is None
+        outbound_webhooks._delivery_queue.join()
+
+        assert len(opener.attempts) == 11
+        assert clock.sleeps == [pytest.approx(0.1)]
+        assert len({attempt["delivery_id"] for attempt in opener.attempts}) == 11
+        assert [
+            json.loads(attempt["body"])["session_id"]
+            for attempt in opener.attempts
+        ] == [f"session-{index}" for index in range(11)]
+
+    def test_destination_urls_have_independent_buckets(self, monkeypatch):
+        clock = _FakeClock()
+        opener = _RecordingOpener(clock)
+        monkeypatch.setattr(outbound_webhooks, "time", clock)
+        monkeypatch.setattr(outbound_webhooks, "_opener", opener)
+        target_a = outbound_webhooks.WebhookTarget(
+            url="https://a.example.com/hook", events=["on_session_end"],
+        )
+        target_b = outbound_webhooks.WebhookTarget(
+            url="https://b.example.com/hook", events=["on_session_end"],
+        )
+        delivery_a = outbound_webhooks._build_delivery(
+            "on_session_end", target_a, b"{}", "did_a",
+        )
+        delivery_b = outbound_webhooks._build_delivery(
+            "on_session_end", target_b, b"{}", "did_b",
+        )
+
+        for _ in range(10):
+            outbound_webhooks._deliver(delivery_a)
+        outbound_webhooks._deliver(delivery_b)
+
+        assert clock.sleeps == []
+
+        outbound_webhooks._deliver(delivery_a)
+        assert clock.sleeps == [pytest.approx(0.1)]
+
+    def test_same_url_across_events_shares_one_bucket(self, monkeypatch):
+        clock = _FakeClock()
+        opener = _RecordingOpener(clock)
+        monkeypatch.setattr(outbound_webhooks, "time", clock)
+        monkeypatch.setattr(outbound_webhooks, "_opener", opener)
+        session_start = outbound_webhooks.WebhookTarget(
+            url="https://example.com/hook", events=["on_session_start"],
+        )
+        session_end = outbound_webhooks.WebhookTarget(
+            url="https://example.com/hook", events=["on_session_end"],
+        )
+        start_delivery = outbound_webhooks._build_delivery(
+            "on_session_start", session_start, b"{}", "did_start",
+        )
+        end_delivery = outbound_webhooks._build_delivery(
+            "on_session_end", session_end, b"{}", "did_end",
+        )
+
+        for _ in range(10):
+            outbound_webhooks._deliver(start_delivery)
+        outbound_webhooks._deliver(end_delivery)
+
+        assert clock.sleeps == [pytest.approx(0.1)]
+
+    def test_conflicting_same_url_rates_keep_strictest_effective_rate(
+        self, monkeypatch, caplog,
+    ):
+        clock = _FakeClock()
+        opener = _RecordingOpener(clock)
+        monkeypatch.setattr(outbound_webhooks, "time", clock)
+        monkeypatch.setattr(outbound_webhooks, "_opener", opener)
+        fast_target, strict_target = outbound_webhooks.iter_configured_targets(
+            _cfg(
+                {
+                    "url": "https://example.com/hook",
+                    "events": ["on_session_start"],
+                    "rate_limit_per_second": 100.0,
+                },
+                {
+                    "url": "https://example.com/hook",
+                    "events": ["on_session_end"],
+                    "rate_limit_per_second": 0.5,
+                },
+            )
+        )
+        fast_delivery = outbound_webhooks._build_delivery(
+            "on_session_start", fast_target, b"{}", "did_fast",
+        )
+        strict_delivery = outbound_webhooks._build_delivery(
+            "on_session_end", strict_target, b"{}", "did_strict",
+        )
+
+        assert fast_target.rate_limit_per_second == 0.5
+        assert strict_target.rate_limit_per_second == 0.5
+
+        with caplog.at_level("INFO", logger=outbound_webhooks.__name__):
+            for _ in range(10):
+                outbound_webhooks._deliver(fast_delivery)
+            outbound_webhooks._deliver(fast_delivery)
+            outbound_webhooks._deliver(strict_delivery)
+
+        assert clock.sleeps == [pytest.approx(2.0), pytest.approx(2.0)]
+        assert caplog.text.count("rate=0.5/s") == 2
+
+    def test_destination_bucket_recovers_with_monotonic_time(
+        self, monkeypatch,
+    ):
+        clock = _FakeClock()
+        opener = _RecordingOpener(clock)
+        monkeypatch.setattr(outbound_webhooks, "time", clock)
+        monkeypatch.setattr(outbound_webhooks, "_opener", opener)
+        target = outbound_webhooks.WebhookTarget(
+            url="https://example.com/hook", events=["on_session_end"],
+        )
+        delivery = outbound_webhooks._build_delivery(
+            "on_session_end", target, b"{}", "did_refill",
+        )
+
+        for _ in range(10):
+            outbound_webhooks._deliver(delivery)
+        clock.advance(0.2)
+        outbound_webhooks._deliver(delivery)
+        outbound_webhooks._deliver(delivery)
+
+        assert clock.sleeps == []
+
+        outbound_webhooks._deliver(delivery)
+        assert clock.sleeps == [pytest.approx(0.1)]
+
+    def test_retry_attempt_is_rate_limited_after_existing_backoff(
+        self, monkeypatch,
+    ):
+        clock = _FakeClock()
+        opener = _RecordingOpener(clock, statuses=[200] * 9 + [500, 200])
+        monkeypatch.setattr(outbound_webhooks, "time", clock)
+        monkeypatch.setattr(outbound_webhooks, "_opener", opener)
+        target = outbound_webhooks.WebhookTarget(
+            url="https://example.com/hook",
+            events=["on_session_end"],
+            rate_limit_per_second=0.5,
+        )
+        delivery = outbound_webhooks._build_delivery(
+            "on_session_end", target, b"{}", "did_retry",
+        )
+
+        for _ in range(9):
+            outbound_webhooks._deliver(delivery)
+        outbound_webhooks._deliver(delivery)
+
+        assert len(opener.attempts) == 11
+        assert clock.sleeps == [
+            pytest.approx(outbound_webhooks.RETRY_BACKOFF_SECONDS),
+            pytest.approx(1.0),
+        ]
+
+    def test_reset_for_tests_clears_destination_buckets(self, monkeypatch):
+        clock = _FakeClock()
+        opener = _RecordingOpener(clock)
+        monkeypatch.setattr(outbound_webhooks, "time", clock)
+        monkeypatch.setattr(outbound_webhooks, "_opener", opener)
+        target = outbound_webhooks.WebhookTarget(
+            url="https://example.com/hook", events=["on_session_end"],
+        )
+        delivery = outbound_webhooks._build_delivery(
+            "on_session_end", target, b"{}", "did_reset",
+        )
+
+        for _ in range(10):
+            outbound_webhooks._deliver(delivery)
+        outbound_webhooks.reset_for_tests()
+        outbound_webhooks._deliver(delivery)
+
+        assert clock.sleeps == []
+
+    def test_throttle_info_log_is_emitted_only_when_waiting(
+        self, monkeypatch, caplog,
+    ):
+        clock = _FakeClock()
+        opener = _RecordingOpener(clock)
+        monkeypatch.setattr(outbound_webhooks, "time", clock)
+        monkeypatch.setattr(outbound_webhooks, "_opener", opener)
+        target = outbound_webhooks.WebhookTarget(
+            url="https://example.com/hook",
+            events=["on_session_end"],
+            name="named-target",
+        )
+        delivery = outbound_webhooks._build_delivery(
+            "on_session_end", target, b"{}", "did_log",
+        )
+
+        with caplog.at_level("INFO", logger=outbound_webhooks.__name__):
+            for _ in range(10):
+                outbound_webhooks._deliver(delivery)
+            assert "outbound webhook throttled" not in caplog.text
+            outbound_webhooks._deliver(delivery)
+
+        assert "target=named-target" in caplog.text
+        assert "rate=10/s" in caplog.text
+        assert "wait=0.100s" in caplog.text
+        assert "queue_depth=" in caplog.text
+
     def test_delivery_with_hmac_signature(self, http_server):
         secret = "s3cret"
         cfg = _cfg(

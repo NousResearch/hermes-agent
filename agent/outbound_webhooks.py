@@ -18,6 +18,13 @@ Design notes
   loop, so callbacks must never block on network I/O — they serialize,
   enqueue, and return ``None`` immediately.  Outbound targets can never
   block a tool call, inject context, or otherwise influence agent flow.
+* Every physical HTTP attempt, including retries, consumes a token from a
+  process-local bucket keyed by the exact validated URL.  The default is
+  10 attempts/second with burst capacity 10.  Accepted above-limit
+  deliveries wait in the existing worker; duplicate entries for a URL
+  share the strictest configured rate seen by that bucket.  The bounded
+  queue's existing full-warning/drop behavior is unchanged, so delivery
+  remains best-effort.
 * Payloads are signed with HMAC-SHA256 (GitHub-style
   ``X-Hermes-Signature-256: sha256=<hexdigest>`` over the raw body) when
   a secret is configured.  Receivers verify exactly like they verify
@@ -40,6 +47,7 @@ Config schema (``~/.hermes/config.yaml``)::
           # optional regex, honored for pre/post_tool_call only:
           matcher: "terminal|delegate_task"
           timeout: 10       # per-attempt seconds, clamped to [1, 60]
+          rate_limit_per_second: 10  # clamped to [0.1, 1000], burst 10
           name: ci-notify   # optional label for logs / `hermes hooks list`
 
 Wire format (POST body)::
@@ -71,6 +79,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import queue
 import re
@@ -88,6 +97,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 10
 MAX_TIMEOUT_SECONDS = 60
+DEFAULT_RATE_LIMIT_PER_SECOND = 10.0
+MIN_RATE_LIMIT_PER_SECOND = 0.1
+MAX_RATE_LIMIT_PER_SECOND = 1000.0
+RATE_LIMIT_BURST_CAPACITY = 10.0
 MAX_DELIVERY_ATTEMPTS = 2
 RETRY_BACKOFF_SECONDS = 1.0
 QUEUE_MAX_SIZE = 256
@@ -107,6 +120,15 @@ _delivery_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(
 )
 _worker_lock = threading.Lock()
 _worker: Optional[threading.Thread] = None
+_rate_limit_lock = threading.Lock()
+_rate_limit_buckets: Dict[str, "_TokenBucket"] = {}
+
+
+@dataclass
+class _TokenBucket:
+    tokens: float
+    updated_at: float
+    rate_per_second: float
 
 
 @dataclass
@@ -119,6 +141,7 @@ class WebhookTarget:
     secret: Optional[str] = None
     matcher: Optional[str] = None
     timeout: int = DEFAULT_TIMEOUT_SECONDS
+    rate_limit_per_second: float = DEFAULT_RATE_LIMIT_PER_SECOND
     compiled_matcher: Optional[re.Pattern] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -235,6 +258,8 @@ def reset_for_tests() -> None:
     """Clear the idempotence set and drain the queue.  Test-only helper."""
     with _registered_lock:
         _registered.clear()
+    with _rate_limit_lock:
+        _rate_limit_buckets.clear()
     try:
         while True:
             _delivery_queue.get_nowait()
@@ -262,6 +287,15 @@ def _parse_outbound_block(raw: Any) -> List[WebhookTarget]:
         target = _parse_single_target(i, entry)
         if target is not None:
             targets.append(target)
+
+    strictest_rates: Dict[str, float] = {}
+    for target in targets:
+        strictest_rates[target.url] = min(
+            strictest_rates.get(target.url, target.rate_limit_per_second),
+            target.rate_limit_per_second,
+        )
+    for target in targets:
+        target.rate_limit_per_second = strictest_rates[target.url]
     return targets
 
 
@@ -339,6 +373,28 @@ def _parse_single_target(index: int, raw: Any) -> Optional[WebhookTarget]:
         timeout = DEFAULT_TIMEOUT_SECONDS
     timeout = max(1, min(timeout, MAX_TIMEOUT_SECONDS))
 
+    rate_limit_raw = raw.get(
+        "rate_limit_per_second", DEFAULT_RATE_LIMIT_PER_SECOND,
+    )
+    valid_rate_limit = (
+        isinstance(rate_limit_raw, (int, float))
+        and not isinstance(rate_limit_raw, bool)
+        and (isinstance(rate_limit_raw, int) or math.isfinite(rate_limit_raw))
+        and rate_limit_raw > 0
+    )
+    if not valid_rate_limit:
+        logger.warning(
+            "hooks.outbound[%d].rate_limit_per_second must be a positive "
+            "finite int or float (got %r); using default %g/s",
+            index, rate_limit_raw, DEFAULT_RATE_LIMIT_PER_SECOND,
+        )
+        rate_limit_per_second = DEFAULT_RATE_LIMIT_PER_SECOND
+    else:
+        rate_limit_per_second = float(max(
+            MIN_RATE_LIMIT_PER_SECOND,
+            min(rate_limit_raw, MAX_RATE_LIMIT_PER_SECOND),
+        ))
+
     secret = _resolve_secret(index, raw)
 
     name = raw.get("name")
@@ -352,6 +408,7 @@ def _parse_single_target(index: int, raw: Any) -> Optional[WebhookTarget]:
         secret=secret,
         matcher=matcher,
         timeout=timeout,
+        rate_limit_per_second=rate_limit_per_second,
     )
 
 
@@ -452,6 +509,7 @@ def _build_delivery(
         "body": body,
         "headers": headers,
         "timeout": target.timeout,
+        "rate_limit_per_second": target.rate_limit_per_second,
     }
 
 
@@ -517,6 +575,44 @@ class _NoRedirectHandler(urlrequest.HTTPRedirectHandler):
 _opener = urlrequest.build_opener(_NoRedirectHandler)
 
 
+def _acquire_rate_limit_token(delivery: Dict[str, Any]) -> None:
+    """Wait until one physical request token is available for the target URL."""
+    configured_rate = delivery["rate_limit_per_second"]
+    now = time.monotonic()
+    with _rate_limit_lock:
+        bucket = _rate_limit_buckets.get(delivery["url"])
+        if bucket is None:
+            bucket = _TokenBucket(
+                tokens=RATE_LIMIT_BURST_CAPACITY,
+                updated_at=now,
+                rate_per_second=configured_rate,
+            )
+            _rate_limit_buckets[delivery["url"]] = bucket
+        else:
+            bucket.rate_per_second = min(
+                bucket.rate_per_second, configured_rate,
+            )
+            elapsed = max(0.0, now - bucket.updated_at)
+            bucket.tokens = min(
+                RATE_LIMIT_BURST_CAPACITY,
+                bucket.tokens + (elapsed * bucket.rate_per_second),
+            )
+            bucket.updated_at = now
+
+        effective_rate = bucket.rate_per_second
+        wait_seconds = max(0.0, (1.0 - bucket.tokens) / effective_rate)
+        bucket.tokens -= 1.0
+
+    if wait_seconds > 0:
+        logger.info(
+            "outbound webhook throttled: target=%s rate=%g/s wait=%.3fs "
+            "queue_depth=%d",
+            delivery["label"], effective_rate, wait_seconds,
+            _delivery_queue.qsize(),
+        )
+        time.sleep(wait_seconds)
+
+
 def _deliver(delivery: Dict[str, Any]) -> None:
     """POST with bounded retries.  Retries on connection errors and 5xx;
     4xx is the receiver telling us the request itself is wrong — no retry.
@@ -530,6 +626,7 @@ def _deliver(delivery: Dict[str, Any]) -> None:
             method="POST",
         )
         try:
+            _acquire_rate_limit_token(delivery)
             with _opener.open(req, timeout=delivery["timeout"]) as resp:
                 status = getattr(resp, "status", 200)
             if 200 <= status < 300:

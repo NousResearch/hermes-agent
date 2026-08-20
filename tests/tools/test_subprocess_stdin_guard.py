@@ -8,7 +8,7 @@ subprocess calls are added without stdin=subprocess.DEVNULL.
 import importlib.util
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "check_subprocess_stdin.py"
@@ -67,4 +67,13 @@ def test_inline_noqa_marker_exempts_a_call():
         "x.py",
     )
     assert exempt == [], "inline marker should exempt the call"
+
+
+def test_known_safe_paths_use_the_guard_portable_namespace():
+    guard = _load_guard()
+
+    root = PureWindowsPath(r"C:\repo")
+    path = root / "agent" / "shell_hooks.py"
+    assert guard.portable_relative_path(path, root) == "agent/shell_hooks.py"
+    assert guard.portable_relative_path(path, root) in guard.KNOWN_SAFE
 

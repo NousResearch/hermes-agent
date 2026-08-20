@@ -275,6 +275,36 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
 
 
+def _git_rev_parse(repo_dir: Path, rev: str) -> Optional[str]:
+    """Resolve a git revision to a full hash, or None if unavailable."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", rev],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            parsed = result.stdout.strip()
+            if parsed:
+                return parsed
+    except Exception:
+        pass
+    return None
+
+
+def _local_git_cache_rev(repo_dir: Path) -> Optional[str]:
+    """Return a cache key component for local update-check inputs."""
+    head = _git_rev_parse(repo_dir, "HEAD")
+    if not head:
+        return None
+
+    # The update result depends on both HEAD and the fetched upstream ref. If an
+    # external process updates origin/main while HEAD stays fixed, a HEAD-only
+    # cache key can falsely keep reporting "Up to date" until the TTL expires.
+    upstream = _git_rev_parse(repo_dir, "refs/remotes/origin/main") or "unknown"
+    return f"git:{repo_dir}:HEAD={head}:origin/main={upstream}"
+
+
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
@@ -396,6 +426,7 @@ def check_for_updates() -> Optional[int]:
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
+    repo_dir: Optional[Path] = None
 
     # Docker images have no working tree to count commits against — the
     # published image excludes `.git` (see .dockerignore) and sets no
@@ -411,23 +442,8 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         pass
 
-    # Read cache — invalidate if the embedded rev OR installed version has
-    # changed since the last check.
-    now = time.time()
-    try:
-        if cache_file.exists():
-            cached = json.loads(cache_file.read_text(encoding="utf-8"))
-            if (
-                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-                and cached.get("rev") == embedded_rev
-                and cached.get("ver") == VERSION
-            ):
-                return cached.get("behind")
-    except Exception:
-        pass
-
     if embedded_rev:
-        behind = _check_via_rev(embedded_rev)
+        cache_rev = f"embedded:{embedded_rev}"
     else:
         # Prefer the running code's location over the profile-scoped path.
         # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
@@ -439,13 +455,45 @@ def check_for_updates() -> Optional[int]:
             # No git checkout and no embedded revision — can't determine
             # update status. This is the Docker path (already short-circuited
             # above) or an unsupported install without a source tree.
-            behind = None
+            repo_dir = None
+            cache_rev = None
         else:
-            behind = _check_via_local_git(repo_dir)
+            cache_rev = _local_git_cache_rev(repo_dir)
+
+    # Read cache — invalidate if the embedded rev/local git fingerprint OR
+    # installed version has changed since the last check. Older cache files did
+    # not include a local git fingerprint, so do not trust them for git
+    # checkouts; otherwise an already-updated checkout can keep reporting a
+    # stale "N commits behind" result until the TTL expires.
+    now = time.time()
+    try:
+        cache_key_available = repo_dir is None or cache_rev is not None
+        if cache_file.exists() and cache_key_available:
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
+            if (
+                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
+                and cached.get("rev") == cache_rev
+                and cached.get("ver") == VERSION
+            ):
+                return cached.get("behind")
+    except Exception:
+        pass
+
+    if embedded_rev:
+        behind = _check_via_rev(embedded_rev)
+    elif repo_dir is None:
+        behind = None
+    else:
+        behind = _check_via_local_git(repo_dir)
+        # ``_check_via_local_git`` fetches before counting. If that fetch advances
+        # ``origin/main``, persisting the pre-fetch fingerprint forces the next
+        # invocation to miss cache immediately. Recompute before writing so the
+        # cache represents the refs that produced ``behind``.
+        cache_rev = _local_git_cache_rev(repo_dir)
 
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}),
+            json.dumps({"ts": now, "behind": behind, "rev": cache_rev, "ver": VERSION}),
             encoding="utf-8",
         )
     except Exception:

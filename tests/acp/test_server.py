@@ -446,6 +446,55 @@ class TestPrompt:
 
         assert captured.get("child") == resp.session_id
 
+    @pytest.mark.parametrize(
+        ("latest_usage", "expected_input_tokens"),
+        [
+            ({"last_prompt_tokens": 123}, 123),
+            ({"last_prompt_tokens": None}, 0),
+            ({"last_prompt_tokens": -1}, 0),
+            ({}, 0),
+        ],
+        ids=("current", "none", "compression-sentinel", "missing"),
+    )
+    @pytest.mark.asyncio
+    async def test_prompt_uses_bounded_latest_prompt_tokens_for_usage(
+        self,
+        agent,
+        latest_usage,
+        expected_input_tokens,
+    ):
+        """ACP inputTokens should describe current context while totals remain cumulative."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        result = {
+            "final_response": "usage attached",
+            "messages": [],
+            "prompt_tokens": 12_345,
+            "completion_tokens": 45,
+            "total_tokens": 12_390,
+            "reasoning_tokens": 7,
+            "cache_read_tokens": 11,
+        }
+        result.update(latest_usage)
+        state.agent.run_conversation = MagicMock(return_value=result)
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="show usage")]
+        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert isinstance(resp, PromptResponse)
+        assert resp.usage is not None
+        assert resp.usage.input_tokens == expected_input_tokens
+        assert resp.model_dump(by_alias=True)["usage"]["inputTokens"] == expected_input_tokens
+        assert resp.usage.output_tokens == 45
+        assert resp.usage.total_tokens == 12_390
+        assert resp.usage.thought_tokens == 7
+        assert resp.usage.cached_read_tokens == 11
+
 
 
 

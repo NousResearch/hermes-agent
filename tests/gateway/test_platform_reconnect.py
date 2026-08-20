@@ -853,3 +853,148 @@ class TestVoiceInputCallbackWiring:
             "startup must wire _voice_input_callback"
         )
 
+
+
+class TestRequeueHealsDeadReconnectWatcher:
+    """Regression for #90386: a second retryable fatal error for a platform that
+    is ALREADY queued must still check that the reconnect watcher is alive.
+
+    ``_ensure_reconnect_watcher_running()`` is the documented backstop for the
+    watcher exhausting ``_MAX_SUPERVISED_RESTARTS`` (#70344) -- ``_spawn_supervised``
+    stops respawning after that and logs "giving up restarts". Its only call site
+    sat behind the newly-queued branch of ``_queue_retryable_fatal_platform``,
+    so it could never fire for a platform already in ``_failed_platforms`` --
+    which is the only kind of platform the watcher can have been retrying long
+    enough to exhaust the budget on.
+
+    The observable result is a silent permanent outage: the queue holds the
+    platform, nothing retries it, and the stranded check in
+    ``_handle_adapter_fatal_error_detached`` deliberately treats a queued
+    platform as safe, so the process is never restarted either.
+    """
+
+    @staticmethod
+    def _runner_with_dead_watcher(spawned):
+        runner = _make_runner()
+        runner._running = True
+        runner._background_tasks = set()
+
+        def _fake_spawn(coro_factory, name, **kwargs):
+            spawned.append(name)
+            handle = MagicMock()
+            handle.done.return_value = False
+            on_spawn = kwargs.get("on_spawn")
+            if on_spawn is not None:
+                on_spawn(handle)
+            return handle
+
+        runner._spawn_supervised = _fake_spawn
+        return runner
+
+    @staticmethod
+    def _already_queued(runner, *, attempts=7):
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": runner.config.platforms[Platform.TELEGRAM],
+            "attempts": attempts,
+            "next_retry": time.monotonic() + 300,
+            "queued_at": time.monotonic() - 3600,
+            "credential_claim": None,
+            "listener_claim": None,
+        }
+
+    @staticmethod
+    def _fatal_adapter():
+        adapter = StubAdapter()
+        adapter._set_fatal_error(
+            "telegram_network_error",
+            "Telegram polling could not reconnect after 10 network error retries.",
+            retryable=True,
+        )
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_requeue_respawns_a_watcher_that_gave_up_restarting(self):
+        """The core #90386 regression.
+
+        Telegram is queued and the watcher has exhausted its restart budget, so
+        the task is done and ``_spawn_supervised`` will never bring it back on
+        its own. A fresh retryable fatal error arrives for that same platform.
+        Nothing is enqueued (it is already there), but the watcher MUST be
+        respawned -- otherwise the queue entry is retried by nobody, forever.
+        """
+        spawned: list[str] = []
+        runner = self._runner_with_dead_watcher(spawned)
+        self._already_queued(runner)
+
+        async def _died():
+            return None
+
+        dead = asyncio.create_task(_died())
+        await dead
+        runner._reconnect_watcher_task = dead
+
+        queued = runner._queue_retryable_fatal_platform(self._fatal_adapter())
+
+        assert queued is False, "already-queued platform must not be re-enqueued"
+        assert spawned == ["platform_reconnect_watcher"], (
+            "a re-fatal on an already-queued platform must still heal a dead "
+            "reconnect watcher -- it is the only remaining path back to the "
+            "queue once _spawn_supervised has given up restarting (#90386)"
+        )
+        assert not runner._reconnect_watcher_task.done(), (
+            "the tracked handle must point at the newly spawned watcher"
+        )
+
+    @pytest.mark.asyncio
+    async def test_requeue_does_not_disturb_the_existing_queue_entry(self):
+        """Guardrail on the fix: healing the watcher must not become a re-enqueue.
+
+        Overwriting the entry would reset ``attempts`` and ``next_retry``, so a
+        platform that fails repeatedly would restart its backoff ladder on every
+        fatal error and hammer a provider that is already refusing it.
+        """
+        spawned: list[str] = []
+        runner = self._runner_with_dead_watcher(spawned)
+        self._already_queued(runner, attempts=7)
+        before = dict(runner._failed_platforms[Platform.TELEGRAM])
+
+        async def _died():
+            return None
+
+        dead = asyncio.create_task(_died())
+        await dead
+        runner._reconnect_watcher_task = dead
+
+        assert runner._queue_retryable_fatal_platform(self._fatal_adapter()) is False
+        assert runner._failed_platforms[Platform.TELEGRAM] == before, (
+            "the existing queue entry, including its attempt count and backoff "
+            "deadline, must survive the watcher heal untouched"
+        )
+
+    @pytest.mark.asyncio
+    async def test_requeue_with_a_live_watcher_spawns_nothing(self):
+        """Guardrail on the fix: a live watcher must not be duplicated.
+
+        Two concurrent watchers would double every reconnect attempt, which is
+        the failure ``_spawn_supervised``'s ``on_spawn`` handle-tracking exists
+        to prevent.
+        """
+        spawned: list[str] = []
+        runner = self._runner_with_dead_watcher(spawned)
+        self._already_queued(runner)
+
+        async def _alive():
+            await asyncio.sleep(5)
+
+        live = asyncio.create_task(_alive())
+        runner._reconnect_watcher_task = live
+        try:
+            assert runner._queue_retryable_fatal_platform(self._fatal_adapter()) is False
+            assert spawned == [], "a live watcher must never be respawned"
+            assert runner._reconnect_watcher_task is live
+        finally:
+            live.cancel()
+            try:
+                await live
+            except asyncio.CancelledError:
+                pass

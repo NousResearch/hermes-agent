@@ -8339,7 +8339,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not adapter.fatal_error_retryable:
             return False
         platform_config = self.config.platforms.get(adapter.platform)
-        if not platform_config or adapter.platform in self._failed_platforms:
+        if not platform_config:
+            return False
+        if adapter.platform in self._failed_platforms:
+            # Nothing to enqueue -- but "already queued" is precisely the state
+            # in which the watcher has had time to die, and the enqueue branch
+            # below holds the ONLY call to _ensure_reconnect_watcher_running().
+            #
+            # _spawn_supervised auto-restarts the watcher after a crash (#71758),
+            # but only _MAX_SUPERVISED_RESTARTS times in rapid succession; past
+            # that it logs "giving up restarts" and the watcher stays dead
+            # forever. _ensure_reconnect_watcher_running is the documented
+            # backstop for exactly that budget exhaustion (#70344) -- and it was
+            # unreachable for a platform already in the queue, which is the only
+            # kind of platform the watcher can have been retrying long enough to
+            # exhaust it on.
+            #
+            # The result is a silent permanent outage: nothing retries, and the
+            # stranded check in _handle_adapter_fatal_error_detached deliberately
+            # treats a queued platform as safe, so the process never restarts
+            # either (#90386).
+            self._ensure_reconnect_watcher_running()
             return False
         self._failed_platforms[adapter.platform] = {
             "config": platform_config,
@@ -14254,8 +14274,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         If the tracked reconnect watcher task has died (e.g. from exhausting
         its restart budget, or a terminal exception that _spawn_supervised
         could not recover), respawns it so platforms queued for reconnection
-        are not permanently stranded. Called after queueing a retryable fatal
-        error in _handle_adapter_fatal_error (#70344).
+        are not permanently stranded. Called from
+        _queue_retryable_fatal_platform on BOTH paths (#70344, #90386): after a
+        new enqueue, and after a re-fatal for a platform that is already queued
+        -- the latter being the only case in which the watcher can have been
+        retrying long enough to exhaust its supervised restart budget.
         """
         if not getattr(self, "_running", False):
             return

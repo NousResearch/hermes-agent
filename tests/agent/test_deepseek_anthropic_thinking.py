@@ -105,3 +105,60 @@ class TestDeepSeekAnthropicPreservesThinking:
                     assert "cache_control" not in b
 
 
+class TestDeepSeekCustomRelay:
+    """Custom relay host with DeepSeek model — model-name detection path."""
+
+    def test_model_name_detection_for_custom_relay(self) -> None:
+        """When base_url is NOT api.deepseek.com but model starts with 'deepseek',
+        the endpoint is detected via model-name fallback."""
+        from agent.anthropic_adapter import _is_deepseek_anthropic_endpoint
+
+        result = _is_deepseek_anthropic_endpoint(
+            "https://llm-gateway.example.com/v1",
+            "deepseek-deepseek-v4-pro",
+        )
+        assert result is True, (
+            "Custom relay with deepseek model should be detected via model-name fallback"
+        )
+
+    def test_custom_relay_preserves_unsigned_thinking_blocks(self) -> None:
+        """Unsigned thinking blocks from reasoning_content must be preserved on
+        custom relay when model-name detection triggers the DeepSeek path."""
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "reasoning_content": "Looking at the config...",
+                "content": "Let me check.",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "config data"},
+        ]
+        _system, converted = convert_messages_to_anthropic(
+            messages,
+            base_url="https://llm-gateway.example.com/anthropic",
+            model="deepseek-deepseek-v4-pro",
+        )
+
+        # Find the assistant message with tool_calls
+        assistant_msgs = [m for m in converted if m["role"] == "assistant"]
+        assert len(assistant_msgs) == 1, "Expected one assistant message"
+        thinking_blocks = [
+            b for b in assistant_msgs[0]["content"]
+            if isinstance(b, dict) and b.get("type") == "thinking"
+        ]
+        assert len(thinking_blocks) >= 1, (
+            "Unsigned thinking blocks from reasoning_content must be "
+            "preserved on custom DeepSeek relays"
+        )
+        assert thinking_blocks[0]["thinking"] == "Looking at the config..."
+
+

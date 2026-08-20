@@ -148,7 +148,12 @@ THREAT_PATTERNS = [
      "reads known secrets file"),
 
     # ── Exfiltration: programmatic env access ──
-    (r'printenv|env\s*\|',
+    # `env` alone is usually a launcher (`env python3 -c ...`), so it is only
+    # a dump when something consumes its output. A pipe is one such consumer;
+    # command substitution is the other, and `$(env)` never launches anything.
+    # `printenv` needs no such qualifier, which is why the two spellings were
+    # not previously covered alike.
+    (r'printenv|env\s*\||\$\(\s*env\s*\)|`\s*env\s*`',
      "dump_all_env", "high", "exfiltration",
      "dumps all environment variables"),
     # `os.environ` bare access (dict dump / iteration) is suspicious, but the

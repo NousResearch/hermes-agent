@@ -347,19 +347,74 @@ def _fetch_provider_override(provider: str) -> dict[str, Any] | None:
     return _fetch_manifest(override_url.strip(), DEFAULT_FETCH_TIMEOUT)
 
 
-def _get_provider_block(provider: str) -> dict[str, Any] | None:
-    """Return the provider's manifest block, respecting per-provider overrides."""
-    override = _fetch_provider_override(provider)
-    if override is not None:
-        block = override.get("providers", {}).get(provider)
-        if isinstance(block, dict):
-            return block
-
-    catalog = get_catalog()
-    if not catalog:
+def _fetch_provider_supplement(provider: str) -> dict[str, Any] | None:
+    """Fetch an optional provider list that is appended to the regular catalog."""
+    cfg = _load_catalog_config()
+    if not cfg["enabled"]:
         return None
-    block = catalog.get("providers", {}).get(provider)
-    return block if isinstance(block, dict) else None
+    provider_cfg = cfg["providers"].get(provider)
+    if not isinstance(provider_cfg, dict):
+        return None
+    supplemental_url = provider_cfg.get("supplemental_url")
+    if not isinstance(supplemental_url, str) or not supplemental_url.strip():
+        return None
+    return _fetch_manifest(supplemental_url.strip(), DEFAULT_FETCH_TIMEOUT)
+
+
+def _merge_provider_blocks(
+    regular: dict[str, Any] | None,
+    supplemental: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Append unique supplemental models while preserving regular order/metadata."""
+    if not isinstance(regular, dict):
+        return supplemental if isinstance(supplemental, dict) else None
+    if not isinstance(supplemental, dict):
+        return regular
+
+    merged = dict(regular)
+    regular_models = regular.get("models", [])
+    supplemental_models = supplemental.get("models", [])
+    models = list(regular_models) if isinstance(regular_models, list) else []
+    seen = {
+        str(model.get("id") or "").strip()
+        for model in models
+        if isinstance(model, dict)
+    }
+    if isinstance(supplemental_models, list):
+        for model in supplemental_models:
+            if not isinstance(model, dict):
+                continue
+            model_id = str(model.get("id") or "").strip()
+            if model_id and model_id not in seen:
+                models.append(model)
+                seen.add(model_id)
+    merged["models"] = models
+    return merged
+
+
+def _get_provider_block(provider: str) -> dict[str, Any] | None:
+    """Return the provider block with optional override and supplemental union."""
+    override = _fetch_provider_override(provider)
+    block = None
+    if override is not None:
+        candidate = override.get("providers", {}).get(provider)
+        if isinstance(candidate, dict):
+            block = candidate
+
+    if block is None:
+        catalog = get_catalog()
+        if catalog:
+            candidate = catalog.get("providers", {}).get(provider)
+            if isinstance(candidate, dict):
+                block = candidate
+
+    supplemental_manifest = _fetch_provider_supplement(provider)
+    supplemental_block = None
+    if supplemental_manifest is not None:
+        candidate = supplemental_manifest.get("providers", {}).get(provider)
+        if isinstance(candidate, dict):
+            supplemental_block = candidate
+    return _merge_provider_blocks(block, supplemental_block)
 
 
 def get_curated_openrouter_models() -> list[tuple[str, str]] | None:

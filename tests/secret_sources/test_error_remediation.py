@@ -85,6 +85,31 @@ def test_fetch_auth_failure_gets_friendly_error(monkeypatch, tmp_path):
     assert "invalid_client" in result.error  # mechanics preserved
 
 
+def test_fetch_keeps_auth_kind_when_marker_is_beyond_display_limit(
+    monkeypatch, tmp_path,
+):
+    src = BitwardenSource()
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.dead")
+    monkeypatch.setattr(
+        bw, "find_bws", lambda install_if_missing=True: tmp_path / "bws"
+    )
+    stderr = "Error:\n  0: network timed out " + ("x" * 220) + " invalid_client"
+    monkeypatch.setattr(
+        bw.subprocess,
+        "run",
+        lambda *a, **kw: mock.Mock(returncode=1, stdout="", stderr=stderr),
+    )
+
+    result = src.fetch(
+        {"enabled": True, "project_id": "p", "cache_ttl_seconds": 0},
+        tmp_path,
+    )
+
+    assert result.error_kind == ErrorKind.AUTH_FAILED
+    assert "rejected the machine-account access token" in result.error
+    assert "invalid_client" not in result.error
+
+
 # ---------------------------------------------------------------------------
 # remediation() hook
 # ---------------------------------------------------------------------------

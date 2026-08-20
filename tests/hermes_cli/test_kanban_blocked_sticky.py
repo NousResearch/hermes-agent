@@ -76,6 +76,201 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             assert kb.get_task(conn, tid).status == "blocked"
 
 
+@pytest.mark.parametrize("kind", ["needs_input", "capability"])
+def test_human_block_kinds_remain_sticky(
+    kanban_home: Path,
+    kind: str,
+) -> None:
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title=f"human block: {kind}")
+        kb.claim_task(conn, tid)
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="operator action required",
+            kind=kind,
+            expected_run_id=kb.get_task(conn, tid).current_run_id,
+        )
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+@pytest.mark.parametrize("completed_parent", [False, True])
+def test_initially_blocked_task_is_sticky(
+    kanban_home: Path,
+    completed_parent: bool,
+) -> None:
+    """Creation-time human-ops blocks are deliberate, not dependency waits."""
+    with kb.connect() as conn:
+        parents: list[str] = []
+        if completed_parent:
+            parent = kb.create_task(conn, title="completed parent")
+            conn.execute(
+                "UPDATE tasks SET status = 'done' WHERE id = ?",
+                (parent,),
+            )
+            parents.append(parent)
+
+        tid = kb.create_task(
+            conn,
+            title="awaiting human ops",
+            parents=parents,
+            initial_status="blocked",
+        )
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+@pytest.mark.parametrize("completed_parent", [False, True])
+def test_dispatch_does_not_claim_or_spawn_initially_blocked_task(
+    kanban_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    completed_parent: bool,
+) -> None:
+    """The full dispatch tick must preserve a creation-time blocked card."""
+    with kb.connect() as conn:
+        parents: list[str] = []
+        if completed_parent:
+            parent = kb.create_task(conn, title="completed parent")
+            conn.execute(
+                "UPDATE tasks SET status = 'done' WHERE id = ?",
+                (parent,),
+            )
+            parents.append(parent)
+
+        tid = kb.create_task(
+            conn,
+            title="awaiting human ops",
+            assignee="worker",
+            parents=parents,
+            initial_status="blocked",
+        )
+        claim_calls: list[str] = []
+        spawn_calls: list[str] = []
+        real_claim_task = kb.claim_task
+
+        def spy_claim_task(connection, task_id, **kwargs):
+            claim_calls.append(task_id)
+            return real_claim_task(connection, task_id, **kwargs)
+
+        def fake_spawn(task, _workspace):
+            spawn_calls.append(task.id)
+            return 12345
+
+        monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: True)
+        monkeypatch.setattr(kb, "claim_task", spy_claim_task)
+
+        result = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+        assert result.promoted == 0
+        assert result.spawned == []
+        assert claim_calls == []
+        assert spawn_calls == []
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        "",
+        "{}",
+        '{"assignee":"worker"}',
+        '{"status":"unknown"}',
+        '{"status":null}',
+        '{"status":[]}',
+        '{"status":{}}',
+        "{not-json",
+        "[]",
+        '"blocked"',
+        "1",
+        "true",
+    ],
+)
+def test_unreadable_creation_provenance_fails_closed(
+    kanban_home: Path,
+    payload: str | None,
+) -> None:
+    """A corrupt legacy event cannot crash dispatch or release blocked work."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="blocked with corrupt provenance",
+            initial_status="blocked",
+        )
+        conn.execute(
+            "UPDATE task_events SET payload = ? "
+            "WHERE task_id = ? AND kind = 'created'",
+            (payload, tid),
+        )
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_deep_creation_provenance_does_not_abort_recompute_ready(
+    kanban_home: Path,
+) -> None:
+    """Recursive JSON corruption must preserve the blocked card."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="blocked with deeply nested provenance",
+            initial_status="blocked",
+        )
+        conn.execute(
+            "UPDATE task_events SET payload = ? "
+            "WHERE task_id = ? AND kind = 'created'",
+            ("[" * 2000 + "]" * 2000, tid),
+        )
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_dispatch_does_not_claim_or_spawn_deep_creation_provenance(
+    kanban_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One corrupt created event must not abort or release dispatch work."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="blocked with deeply nested provenance",
+            assignee="worker",
+            initial_status="blocked",
+        )
+        conn.execute(
+            "UPDATE task_events SET payload = ? "
+            "WHERE task_id = ? AND kind = 'created'",
+            ("[" * 2000 + "]" * 2000, tid),
+        )
+        claim_calls: list[str] = []
+        spawn_calls: list[str] = []
+        real_claim_task = kb.claim_task
+
+        def spy_claim_task(connection, task_id, **kwargs):
+            claim_calls.append(task_id)
+            return real_claim_task(connection, task_id, **kwargs)
+
+        def fake_spawn(task, _workspace):
+            spawn_calls.append(task.id)
+            return 12345
+
+        monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: True)
+        monkeypatch.setattr(kb, "claim_task", spy_claim_task)
+
+        result = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+        assert result.promoted == 0
+        assert result.spawned == []
+        assert claim_calls == []
+        assert spawn_calls == []
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +283,52 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
 # ---------------------------------------------------------------------------
 # unblock_task clears the sticky state
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("clear_with", ["unblock", "promote"])
+@pytest.mark.parametrize(
+    ("failures", "expected_promoted"),
+    [(0, 1), (2, 0)],
+)
+def test_explicit_clear_restores_circuit_breaker_retry_policy(
+    kanban_home: Path,
+    clear_with: str,
+    failures: int,
+    expected_promoted: int,
+) -> None:
+    """Old creation provenance must not make a later ``gave_up`` sticky."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="operator parked",
+            initial_status="blocked",
+        )
+
+        if clear_with == "unblock":
+            assert kb.unblock_task(conn, tid)
+            expected_event = "unblocked"
+        else:
+            ok, error = kb.promote_task(conn, tid, actor="operator")
+            assert ok and error is None
+            expected_event = "promoted_manual"
+
+        events = kb.list_events(conn, tid)
+        assert events[-1].kind == expected_event
+
+        # A later circuit-breaker block has no explicit ``blocked`` event and
+        # keeps the existing retry-policy semantics: below the limit it may
+        # recover; at the limit it remains blocked.
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', consecutive_failures = ? "
+                "WHERE id = ?",
+                (failures, tid),
+            )
+            kb._append_event(conn, tid, "gave_up", {"failures": failures})
+
+        assert kb.recompute_ready(conn, failure_limit=2) == expected_promoted
+        expected_status = "ready" if expected_promoted else "blocked"
+        assert kb.get_task(conn, tid).status == expected_status
 
 
 # ---------------------------------------------------------------------------

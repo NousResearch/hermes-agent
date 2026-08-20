@@ -26,6 +26,7 @@ from hermes_cli.config import (
     save_env_value_secure,
     sanitize_env_file,
     set_config_value,
+    unset_config_value,
     write_platform_config_field,
     _sanitize_env_lines,
 )
@@ -245,6 +246,106 @@ class TestSaveAndLoadRoundtrip:
 
 
 
+
+
+    def test_config_set_refuses_to_overwrite_unparseable_existing_config(self, tmp_path):
+        """Unparseable YAML must not be replaced with a single-key document.
+
+        Regression for the set/unset wipe class: a bare except around YAML
+        load used to treat parse failure as {}, then atomic-write only the
+        new key — destroying every prior override with no .corrupt backup.
+        """
+        config_path = tmp_path / "config.yaml"
+        original = (
+            "model:\n"
+            "  default: claude-opus\n"
+            "  provider: anthropic\n"
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      enabled: true\n"
+            "broken: [unterminated\n"
+        )
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(RuntimeError, match="not valid YAML"):
+                set_config_value("model.default", "gpt-4o")
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
+            "parse-failure path should snapshot a corrupt backup before refusing"
+        )
+
+    def test_config_unset_refuses_to_overwrite_unparseable_existing_config(self, tmp_path):
+        """Unset must refuse the same way — env-sync paths used to write {}."""
+        config_path = tmp_path / "config.yaml"
+        original = "model:\n  default: keep-me\nbroken: [unterminated\n"
+        config_path.write_text(original, encoding="utf-8")
+        (tmp_path / ".env").write_text("TERMINAL_TIMEOUT=30\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(RuntimeError, match="not valid YAML"):
+                unset_config_value("terminal.timeout")
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert (tmp_path / ".env").read_text(encoding="utf-8") == "TERMINAL_TIMEOUT=30\n"
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
+            "unset parse-failure path should snapshot a corrupt backup before refusing"
+        )
+
+    def test_config_set_refuses_non_mapping_root(self, tmp_path):
+        """A list/scalar root parses without raising but would still wipe."""
+        config_path = tmp_path / "config.yaml"
+        original = "- just\n- a\n- list\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(RuntimeError, match="must be a mapping"):
+                set_config_value("model.default", "gpt-4o")
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
+            "non-mapping root should snapshot a corrupt backup before refusing"
+        )
+
+    def test_config_unset_refuses_non_mapping_root(self, tmp_path):
+        """Unset shares the same non-mapping refuse path as set."""
+        config_path = tmp_path / "config.yaml"
+        original = "- just\n- a\n- list\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(RuntimeError, match="must be a mapping"):
+                unset_config_value("model.default")
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak"))
+
+    def test_config_set_allows_valid_empty_mapping(self, tmp_path):
+        """A genuine empty {} config must still be writable (not a false refuse)."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("{}\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            set_config_value("model.default", "gpt-4o")
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved == {"model": {"default": "gpt-4o"}}
+
+    def test_atomic_config_write_refuses_unparseable_existing_config(self, tmp_path):
+        """Shared chokepoint must refuse unparseable YAML, not only unreadable."""
+        from hermes_cli.config import atomic_config_write
+
+        config_path = tmp_path / "config.yaml"
+        original = "broken: [unterminated\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="not valid YAML"):
+            atomic_config_write(config_path, {"model": {"provider": "openai"}})
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak"))
 
 class TestSaveEnvValueSecure:
 

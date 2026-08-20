@@ -164,6 +164,7 @@ from gateway.platforms.base import (
     _prefix_within_utf16_limit,
     utf16_len,
     validate_inbound_media_size,
+    neutralize_undeliverable_media_tags,
 )
 from tools.url_safety import is_safe_url
 
@@ -3468,6 +3469,12 @@ class DiscordAdapter(BasePlatformAdapter):
             return result
 
         try:
+            # Backstop: a MEDIA: directive must never reach Discord as raw
+            # text (issue #86122). Deliverable tags are handled upstream; any
+            # undeliverable leftover is replaced with a sanitized token so an
+            # absolute filesystem path never leaks into the chat.
+            content = neutralize_undeliverable_media_tags(content)
+
             # Determine target channel: thread_id in metadata takes precedence.
             thread_id = None
             if metadata and metadata.get("thread_id"):
@@ -3594,6 +3601,11 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         # _derive_forum_thread_name is defined further down in this same
         # module — no cross-module import needed.
+
+        # Backstop: neutralize undeliverable MEDIA: directives before deriving
+        # the thread title so a leading ``MEDIA:/path`` line never becomes the
+        # forum thread name (issue #86122).
+        content = neutralize_undeliverable_media_tags(content)
 
         formatted = self.format_message(content)
         chunks = self._cap_split_chunks(

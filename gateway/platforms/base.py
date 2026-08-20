@@ -2116,6 +2116,76 @@ def _strip_media_tag_directives(text: str) -> str:
     return cleaned
 
 
+# ---------------------------------------------------------------------------
+# Undeliverable-MEDIA neutralisation
+# ---------------------------------------------------------------------------
+# A ``MEDIA:<path>`` directive that fails delivery (placeholder, hallucinated
+# path, missing file, denied prefix) must never reach the user as raw text —
+# an absolute filesystem path is a leak (issue #86122).  ``_strip_media_tag_directives``
+# deliberately leaves undeliverable tags visible so the bare-path detector
+# (``extract_local_files``) can still pick them up downstream (#34517).  This
+# neutralizer is the display/adapter backstop: it strips deliverable tags
+# exactly as before, then replaces any remaining ``MEDIA:`` directive outside
+# a protected span with ``<attachment unavailable>`` so the path never leaks.
+_UNDELIVERED_MEDIA_TOKEN = "<attachment unavailable>"
+
+# Matches a leftover ``MEDIA:`` keyword plus the placeholder/path token that
+# follows it.  Runs only AFTER ``_strip_media_tag_directives`` has removed
+# deliverable tags, so anything this pattern matches is undeliverable:
+#   - angle/squared placeholders (``<local-file-path>``, ``[placeholder]``)
+#   - quoted / backticked paths
+#   - anchored bare paths (``~/``, ``/``, ``X:\\``) with an unknown/no
+#     extension that failed on-disk validation
+# Optional leading/trailing emphasis markers (``**``, ``*``, ``_``, backticks)
+# are consumed so emphasis-wrapped directives are fully replaced.
+_MEDIA_LEFTOVER_RE = re.compile(
+    r'''[`"'*_]{0,3}MEDIA:\s*'''
+    r'''(?:'''
+    r'''<[^>\n]+>|'''
+    r'''\[[^\]\n]+\]|'''
+    r'''`[^`\n]+`|'''
+    r'''"[^"\n]+"|'''
+    r''''[^'\n]+'|'''
+    r'''(?:~/|/|[A-Za-z]:[/\\])[^\s\n`"']+'''
+    r''')'''
+    r'''[`"'*_]{0,3}''',
+    re.IGNORECASE,
+)
+
+
+def neutralize_undeliverable_media_tags(text: str) -> str:
+    """Strip deliverable MEDIA: tags and replace undeliverable ones with a token.
+
+    Deliverable tags (known-extension, or extension-less paths that validate on
+    disk) are removed exactly as ``_strip_media_tag_directives`` does.  Any
+    remaining ``MEDIA:`` directive outside a protected span (code block,
+    inline code, blockquote, JSON string value) is replaced with
+    ``<attachment unavailable>`` so an absolute filesystem path can never reach
+    the user.  Used by the display path and the Discord adapter backstop.
+    """
+    if (
+        "MEDIA:" not in text
+        and "[[audio_as_voice]]" not in text
+        and "[[as_document]]" not in text
+    ):
+        return text
+    cleaned = _strip_media_tag_directives(text)
+    if "MEDIA:" not in cleaned:
+        return cleaned
+    # Locate leftover MEDIA: spans on a masked copy (offset-preserving), then
+    # replace those spans in the unmasked text — same pattern as
+    # _strip_media_tag_directives, so protected spans survive verbatim.
+    masked = BasePlatformAdapter._mask_protected_spans(cleaned)
+    masked = BasePlatformAdapter._mask_json_string_media(masked)
+    spans = [m.span() for m in _MEDIA_LEFTOVER_RE.finditer(masked)]
+    if not spans:
+        return cleaned
+    chars = list(cleaned)
+    for start, end in reversed(_merge_spans(spans)):
+        chars[start:end] = list(_UNDELIVERED_MEDIA_TOKEN)
+    return "".join(chars)
+
+
 def get_document_cache_dir() -> Path:
     """Return the document cache directory, creating it if it doesn't exist."""
     d = _resolve_cache_dir("DOCUMENT_CACHE_DIR", "cache/documents", "document_cache")
@@ -5060,10 +5130,10 @@ class BasePlatformAdapter(ABC):
     def strip_media_directives_for_display(text: str) -> str:
         """Strip MEDIA: directives from streamed/display text.
 
-        Known-extension tags are removed unconditionally (same as
-        ``MEDIA_TAG_CLEANUP_RE``). Extension-less tags are removed only when
-        ``validate_media_delivery_path`` accepts the path so undeliverable
-        paths stay visible for debugging.
+        Deliverable tags (known-extension, or extension-less paths that validate
+        on disk) are removed.  Undeliverable tags are replaced with
+        ``<attachment unavailable>`` so an absolute path never leaks into
+        user-visible text (issue #86122).
         """
         if (
             "MEDIA:" not in text
@@ -5071,7 +5141,7 @@ class BasePlatformAdapter(ABC):
             and "[[as_document]]" not in text
         ):
             return text
-        cleaned = _strip_media_tag_directives(text)
+        cleaned = neutralize_undeliverable_media_tags(text)
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         return cleaned.rstrip()
 
@@ -6427,6 +6497,13 @@ class BasePlatformAdapter(ABC):
                     if local_files:
                         logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
 
+                # Neutralize any undeliverable MEDIA: directive that survived
+                # extraction (placeholder, hallucinated path, missing file) so an
+                # absolute filesystem path never reaches the user (issue #86122).
+                # Deliverable tags were already stripped by extract_media /
+                # _strip_media_directives above.
+                text_content = neutralize_undeliverable_media_tags(text_content)
+
                 # A2 (#29346): extraction can reduce a non-empty response to
                 # empty text with no attachment, and the `if text_content` guard
                 # below then drops it silently. Recover on every platform (#33842
@@ -6435,7 +6512,7 @@ class BasePlatformAdapter(ABC):
                     # Recover from the post-extract_media `response`, not the raw
                     # snapshot: extract_media already stripped MEDIA (incl. spaced
                     # paths) with its full grammar, so no fragment can leak.
-                    _recovered = _strip_media_directives(response).strip()
+                    _recovered = neutralize_undeliverable_media_tags(response).strip()
                     if _recovered:
                         logger.warning(
                             "[%s] response_delivery_recovered: extract pipeline "

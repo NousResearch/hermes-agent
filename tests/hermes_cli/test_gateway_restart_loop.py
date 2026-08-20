@@ -310,6 +310,28 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
         assert "referenced script" in result["error"]
 
+    @pytest.mark.parametrize("form", [". {path}", "source {path}"])
+    def test_blocks_lifecycle_command_in_a_dot_sourced_script(
+        self, monkeypatch, tmp_path, form
+    ):
+        """Sourcing runs the script in the CURRENT shell, so it restarts the
+        gateway just as surely as executing it. `.` and `source` are the same
+        builtin and must both be caught — `.` was not (Path(".").name == "")."""
+        import tools.terminal_tool as tt
+
+        script = tmp_path / "delayed-ops.sh"
+        script.write_text(
+            "#!/bin/bash\nsleep 45\nhermes gateway restart\n", encoding="utf-8"
+        )
+        self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
+
+        result = json.loads(
+            tt.terminal_tool(command=form.format(path=script))
+        )
+
+        assert result["exit_code"] == 1
+        assert "referenced script" in result["error"]
+
     def test_blocks_launchctl_submit_inside_gateway(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 
@@ -1031,6 +1053,239 @@ class TestLifecycleGuardModule:
 # ---------------------------------------------------------------------------
 # Defense 2 (chokepoint): cron.jobs.create_job blocks the AGENT model-tool path
 # ---------------------------------------------------------------------------
+
+class TestDotSourceIsScannedLikeSource:
+    """`.` and `source` are the same POSIX builtin and must scan alike.
+
+    `Path(".").name` is "" — pathlib has no name component for a pure-path
+    token — so keying the sourced-script branch on it left the `.` spelling
+    unreachable. `source ./helper.sh` was scanned while `. ./helper.sh`
+    walked straight past both the cron guard and the in-gateway terminal
+    guard, carrying whatever the sourced script contained.
+    """
+
+    def _scan(self, command, cwd):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        return contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=cwd
+        )
+
+    @pytest.fixture
+    def helper(self, tmp_path):
+        script = tmp_path / "helper.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        return script
+
+    @pytest.mark.parametrize("form", [". {path}", "source {path}"])
+    def test_both_spellings_block_a_referenced_script(self, tmp_path, helper, form):
+        assert self._scan(form.format(path=helper), cwd=str(tmp_path)) is True
+
+    @pytest.mark.parametrize("form", [". ./helper.sh", "source ./helper.sh"])
+    def test_both_spellings_block_a_relative_reference(self, tmp_path, helper, form):
+        assert self._scan(form, cwd=str(tmp_path)) is True
+
+    def test_env_assignment_prefix_does_not_hide_dot_source(self, tmp_path, helper):
+        assert self._scan(f"FOO=1 . {helper}", cwd=str(tmp_path)) is True
+
+    def test_dot_source_nested_in_shell_c_is_blocked(self, tmp_path, helper):
+        assert self._scan(f"sh -c '. {helper}'", cwd=str(tmp_path)) is True
+
+    @pytest.mark.parametrize("command", [
+        # `.` as a plain path argument is not a source and must stay allowed —
+        # this is the #77131 false-positive class the guard already carries
+        # scar tissue for.
+        "find . -name '*.py'",
+        "git add .",
+        "cd . && make",
+        "tar -czf out.tgz .",
+        "cp -r . /tmp/backup",
+    ])
+    def test_dot_as_an_argument_is_not_treated_as_a_source(self, tmp_path, command):
+        assert self._scan(command, cwd=str(tmp_path)) is False
+
+    def test_sourcing_a_clean_script_is_allowed(self, tmp_path):
+        clean = tmp_path / "ok.sh"
+        clean.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+        assert self._scan(f". {clean}", cwd=str(tmp_path)) is False
+
+
+class TestTransparentWrapperPrefixes:
+    """`sudo`/`env`/`nohup`/... exec their argument tail, so the command that
+    actually runs sits further right. Reading only the first token made the
+    referenced-script walk, the `sh -c` payload walk and the label-independent
+    `launchctl submit` block (#62891) all miss a wrapped invocation:
+    `sudo bash ~/restart.sh` sailed past a guard that stops
+    `bash ~/restart.sh`."""
+
+    def _scan(self, command, cwd=None):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        return contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=cwd
+        )
+
+    @pytest.fixture
+    def helper(self, tmp_path):
+        script = tmp_path / "helper.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        return script
+
+    @pytest.mark.parametrize("prefix", [
+        "sudo", "doas", "env", "nohup", "setsid", "nice", "eatmydata",
+        "exec", "command", "stdbuf -o0", "nice -n 5", "sudo -u deploy",
+        "env FOO=bar", "timeout 60", "timeout -k 5 60", "sudo --",
+    ])
+    def test_wrapped_script_reference_is_scanned(self, tmp_path, helper, prefix):
+        assert self._scan(f"{prefix} bash {helper}", cwd=str(tmp_path)) is True
+
+    @pytest.mark.parametrize("prefix", ["sudo", "env", "nohup", "timeout 60"])
+    def test_wrapped_dot_source_is_scanned(self, tmp_path, helper, prefix):
+        assert self._scan(f"{prefix} . {helper}", cwd=str(tmp_path)) is True
+
+    @pytest.mark.parametrize("prefix", ["sudo", "env", "nohup"])
+    def test_wrapped_shell_c_payload_is_scanned(self, tmp_path, helper, prefix):
+        assert self._scan(
+            f"{prefix} sh -c 'bash {helper}'", cwd=str(tmp_path)
+        ) is True
+
+    @pytest.mark.parametrize("prefix", ["sudo", "env", "nohup", "setsid"])
+    def test_wrapped_launchctl_submit_is_blocked(self, prefix):
+        from cron.lifecycle_guard import contains_launchctl_submit_command
+
+        assert contains_launchctl_submit_command(
+            f"{prefix} launchctl submit -l com.example.helper -- /usr/bin/true"
+        ) is True
+
+    @pytest.mark.parametrize("prefix", [
+        # Privilege and namespace wrappers, including the option forms whose
+        # operand is a VALUE rather than the command.
+        "pkexec", "pkexec --user root",
+        "runuser -u root --", "setpriv --reuid=0 --",
+        "systemd-run --scope", "systemd-run -p X=1",
+        "nsenter --target 1 --mount", "nsenter -t 1 -m",
+        "unshare -r", "sudo pkexec",
+    ])
+    def test_privilege_and_namespace_wrappers_are_scanned(
+        self, tmp_path, helper, prefix
+    ):
+        assert self._scan(f"{prefix} bash {helper}", cwd=str(tmp_path)) is True
+
+    @pytest.mark.parametrize("command", [
+        # An option carrying a COMMAND STRING is shell source, not an opaque
+        # value: skipping it would hide whatever it runs.
+        "env -S 'bash {path}'",
+        "env --split-string='bash {path}'",
+        "su -c 'bash {path}'",
+        "su root -c 'bash {path}'",
+        "runuser -u root -c 'bash {path}'",
+    ])
+    def test_command_string_options_are_rescanned(self, tmp_path, helper, command):
+        assert self._scan(command.format(path=helper), cwd=str(tmp_path)) is True
+
+    @pytest.mark.parametrize("command", [
+        # The same wrappers around ordinary work must not start blocking.
+        "pkexec systemctl status nginx",
+        "su -c 'ls -la'",
+        "unshare -r whoami",
+        "systemd-run --scope make -j4",
+        "nsenter -t 1 -m ps aux",
+        "setpriv --reuid=0 -- id",
+        "runuser -u nobody -- whoami",
+        "env -S 'echo hi'",
+    ])
+    def test_privilege_wrappers_around_benign_work_are_allowed(
+        self, tmp_path, command
+    ):
+        assert self._scan(command, cwd=str(tmp_path)) is False
+
+    @pytest.mark.parametrize("command", [
+        # Wrappers around ordinary work must stay allowed — peeling must not
+        # invent a script reference where there is none.
+        "sudo apt-get update",
+        "env FOO=bar python3 script.py",
+        "timeout 60 curl https://example.com",
+        "nohup python3 -m http.server &",
+        "sudo -u postgres psql -c 'SELECT 1'",
+        "nice -n 10 make -j4",
+        "env",
+        "sudo",
+    ])
+    def test_wrapped_benign_commands_are_allowed(self, tmp_path, command):
+        assert self._scan(command, cwd=str(tmp_path)) is False
+
+    @pytest.mark.parametrize("name", ["timeout", "env", "nice", "command"])
+    def test_local_script_named_like_a_wrapper_is_still_scanned(
+        self, tmp_path, name
+    ):
+        """`./timeout` is a script in the cwd, not the coreutils wrapper.
+        Peeling is additive precisely so it cannot swallow the reference the
+        un-peeled read finds."""
+        script = tmp_path / name
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        assert self._scan(f"./{name}", cwd=str(tmp_path)) is True
+        assert self._scan(str(script), cwd=str(tmp_path)) is True
+
+    def test_wrapped_clean_script_is_allowed(self, tmp_path):
+        clean = tmp_path / "ok.sh"
+        clean.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+        assert self._scan(f"sudo bash {clean}", cwd=str(tmp_path)) is False
+
+
+class TestRelativePathDoesNotDisableDataExemption:
+    """A leading dot disables the data-sink exemption because sqlite3 spells
+    its escapes as dot-commands (`.shell`). `.`, `./x` and `../x` are plain
+    path operands, so `grep -r <pattern> .` — the most ordinary recursive
+    search there is — was blocked outright when the pattern happened to be a
+    lifecycle string."""
+
+    def _scan(self, command):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        return contains_gateway_lifecycle_command_or_referenced_script(command)
+
+    @pytest.mark.parametrize("command", [
+        "grep -r 'systemctl restart hermes-gateway' .",
+        "grep -rn 'hermes gateway restart' ./logs",
+        "rg 'hermes gateway restart' ../archive",
+        "grep -c 'systemctl stop hermes-gateway' ./var/log/syslog",
+        "sqlite3 ./stats.db \"SELECT restart_reason FROM hermes_gateway_restarts\"",
+    ])
+    def test_relative_path_operands_keep_the_exemption(self, command):
+        assert self._scan(command) is False
+
+    @pytest.mark.parametrize("command", [
+        # Narrowing the dot test must not open an execution route: every
+        # escape hatch still fires with a relative-path operand present.
+        'sqlite3 ./db ".shell hermes gateway restart"',
+        'sqlite3 ./db ".system systemctl restart hermes-gateway"',
+        'psql ./x -c "\\! systemctl restart hermes-gateway"',
+        "grep -r 'hermes gateway restart' . | sh",
+        "grep -r 'hermes gateway restart' ./logs | bash",
+        "grep -r 'hermes gateway restart' . | sudo sh",
+        "grep -r 'x' . ; hermes gateway restart",
+        "grep -r 'x' . && systemctl restart hermes-gateway",
+        'grep -r "$(hermes gateway restart)" .',
+        "rg 'x' ./logs | xargs systemctl restart hermes-gateway",
+    ])
+    def test_relative_path_does_not_open_an_execution_route(self, command):
+        assert self._scan(command) is True
+
+    @pytest.mark.parametrize("command", [
+        # Real dot-commands must still defeat the exemption.
+        'sqlite3 db ".shell hermes gateway restart"',
+        'sqlite3 db ".system systemctl restart hermes-gateway"',
+        'psql -c "\\! systemctl restart hermes-gateway"',
+    ])
+    def test_dot_commands_still_block(self, command):
+        assert self._scan(command) is True
+
 
 class TestCreateJobBlocksLifecycleCommands:
     """The regression the CLI-layer-only guard could not catch: the agent's

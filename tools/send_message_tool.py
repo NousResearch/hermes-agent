@@ -1371,19 +1371,34 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
         except Exception:
             _tg_proxy = None
-        if _tg_proxy:
-            try:
-                from telegram.request import HTTPXRequest
+        try:
+            from telegram.request import HTTPXRequest
+
+            # Keep standalone sends aligned with the gateway adapter. PTB
+            # routes file uploads through this separate per-socket timeout;
+            # 60 seconds tolerates congested-link stalls without hiding a dead
+            # socket for minutes.
+            request_kwargs = {"media_write_timeout": 60.0}
+            if _tg_proxy:
+                request_kwargs["proxy"] = _tg_proxy
                 logger.info("send_message: standalone Telegram send routed through proxy %s", _tg_proxy)
-                bot = Bot(
-                    token=token,
-                    request=HTTPXRequest(proxy=_tg_proxy),
-                    get_updates_request=HTTPXRequest(proxy=_tg_proxy),
+            bot = Bot(
+                token=token,
+                request=HTTPXRequest(**request_kwargs),
+                get_updates_request=HTTPXRequest(**request_kwargs),
+            )
+        except Exception as _request_err:
+            if _tg_proxy:
+                logger.warning(
+                    "send_message: failed to attach Telegram proxy (%s), "
+                    "falling back to direct connection",
+                    _request_err,
                 )
-            except Exception as _proxy_err:
-                logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", _proxy_err)
-                bot = Bot(token=token)
-        else:
+            else:
+                logger.warning(
+                    "send_message: failed to configure Telegram request timeouts (%s)",
+                    _request_err,
+                )
             bot = Bot(token=token)
         from plugins.platforms.telegram.telegram_ids import (
             normalize_telegram_chat_id,

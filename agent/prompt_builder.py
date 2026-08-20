@@ -351,7 +351,14 @@ KANBAN_GUIDANCE = (
     "specialist profile.\n"
     "- Do not call `delegate_task` as a board substitute. `delegate_task` is "
     "for short reasoning subtasks inside your own run; board tasks are for "
-    "cross-agent handoffs that outlive one API loop."
+    "cross-agent handoffs that outlive one API loop.\n"
+    "- Do NOT create new chat sessions to deliver results (no `hermes chat -q`, "
+    "no desktop/gateway session creation, no 'deliver this in a new session' "
+    "step). Every task's output is collected into ONE canonical session per "
+    "root task automatically — extra sessions fragment that record. Attach "
+    "real files with `kanban_attach` and write the summary into "
+    "`kanban_complete`; that is the deliverable and it lands in the canonical "
+    "session on its own."
 )
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (

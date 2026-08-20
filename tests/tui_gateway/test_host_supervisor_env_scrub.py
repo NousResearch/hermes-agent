@@ -7,7 +7,7 @@ from tui_gateway.host_supervisor import HostSupervisor
 
 
 def test_spawn_does_not_remerge_full_os_environ(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-leak-via-update")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-retained-for-model-child")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tg-should-not-leak-via-update")
 
     captured = {}
@@ -46,5 +46,7 @@ def test_spawn_does_not_remerge_full_os_environ(tmp_path, monkeypatch):
             supervisor._spawn_locked(reason="test")
 
     env = captured["env"]
+    # Provider credentials remain available to the model-driving child by design.
+    assert env["OPENAI_API_KEY"] == "sk-retained-for-model-child"
     # Tier-1 always-strip keys must stay absent even when inherit_credentials=True.
     assert "TELEGRAM_BOT_TOKEN" not in env

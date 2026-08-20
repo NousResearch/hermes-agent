@@ -2202,6 +2202,57 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('read_preview', function_args, tool_duration, result=function_result)}")
+        elif function_name == "drive_preview":
+            def _execute(next_args: dict) -> Any:
+                from tools.drive_preview_tool import drive_preview_tool as _drive_preview_tool
+                return _drive_preview_tool(
+                    action=next_args.get("action", ""),
+                    ref=next_args.get("ref"),
+                    selector=next_args.get("selector"),
+                    text=next_args.get("text"),
+                    key=next_args.get("key"),
+                    submit=next_args.get("submit"),
+                    amount=next_args.get("amount"),
+                    to=next_args.get("to"),
+                    limit=next_args.get("max"),
+                    callback=getattr(agent, "drive_preview_callback", None),
+                )
+            function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                execute=_execute,
+                scope_block=_ts_scope_block,
+                display_index=i,
+            ))
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('drive_preview', function_args, tool_duration, result=function_result)}")
+        elif function_name == "annotate_preview":
+            def _execute(next_args: dict) -> Any:
+                from tools.annotate_preview_tool import annotate_preview_tool as _annotate_preview_tool
+                return _annotate_preview_tool(
+                    action=next_args.get("action", "add"),
+                    ref=next_args.get("ref"),
+                    selector=next_args.get("selector"),
+                    label=next_args.get("label"),
+                    callback=getattr(agent, "drive_preview_callback", None),
+                )
+            function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                execute=_execute,
+                scope_block=_ts_scope_block,
+                display_index=i,
+            ))
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('annotate_preview', function_args, tool_duration, result=function_result)}")
         elif function_name == "read_window_below":
             def _execute(next_args: dict) -> Any:
                 from tools.read_window_tool import read_window_below_tool as _read_window_below_tool

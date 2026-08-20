@@ -2,7 +2,7 @@ import { QueryClient } from '@tanstack/react-query'
 import { cleanup, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getGlobalModelInfo } from '@/hermes'
+import { getGlobalModelInfo, getGlobalModelOptions } from '@/hermes'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -25,6 +25,7 @@ const notifyError = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: vi.fn(),
+  getGlobalModelOptions: vi.fn(),
   setApiRequestProfile: vi.fn(),
   setGlobalModel: (...args: Parameters<typeof setGlobalModel>) => setGlobalModel(...args)
 }))
@@ -108,6 +109,74 @@ describe('useModelControls', () => {
     expect($currentModel.get()).toBe('openai/gpt-5.5')
     expect($currentProvider.get()).toBe('openai-codex')
     expect(getCurrentModelSource()).toBe('default')
+  })
+
+  it('reseeds a stale manual pick to the default when the catalog cache is empty (cold boot)', async () => {
+    // Reproduces the voice-404 bug: after a cache wipe the model-options cache is
+    // EMPTY, so the conservative manualPickRemoved guard kept a since-delisted
+    // pick (tencent/hy3:free) and every new chat 404'd. With an empty cache the
+    // hook must fetch a fresh catalog, confirm the model is gone, and reseed from
+    // the profile default (kimi-k3).
+    setCurrentModel('tencent/hy3:free')
+    setCurrentProvider('nous')
+    setCurrentModelSource('manual')
+    // NOTE: no queryClient.setQueryData -> the catalog cache is empty (cold boot).
+
+    // Fresh catalog: provider present but no longer shipping the delisted model.
+    vi.mocked(getGlobalModelOptions).mockResolvedValue({
+      model: 'moonshotai/kimi-k3',
+      provider: 'openrouter',
+      providers: [{ name: 'Nous', slug: 'nous', models: ['hermes-4'] }]
+    })
+    // The default to fall back to.
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'moonshotai/kimi-k3',
+      provider: 'openrouter'
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    expect(getGlobalModelOptions).toHaveBeenCalled()
+    expect($currentModel.get()).toBe('moonshotai/kimi-k3')
+    expect($currentProvider.get()).toBe('openrouter')
+    expect(getCurrentModelSource()).toBe('default')
+  })
+
+  it('keeps a valid manual pick when the fresh catalog still lists it (cold boot)', async () => {
+    setCurrentModel('hermes-4')
+    setCurrentProvider('nous')
+    setCurrentModelSource('manual')
+
+    vi.mocked(getGlobalModelOptions).mockResolvedValue({
+      model: 'moonshotai/kimi-k3',
+      provider: 'openrouter',
+      providers: [{ name: 'Nous', slug: 'nous', models: ['hermes-4'] }]
+    })
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'moonshotai/kimi-k3',
+      provider: 'openrouter'
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    // Still in the catalog -> the user's pick survives; default is NOT applied.
+    expect($currentModel.get()).toBe('hermes-4')
+    expect($currentProvider.get()).toBe('nous')
+    expect(getCurrentModelSource()).toBe('manual')
   })
 
   it('does not clobber the active session footer state with global model info', async () => {

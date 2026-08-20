@@ -5,7 +5,7 @@ import type { ModelSelection } from '@/app/shell/model-menu-panel'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isBusySessionModelSwitch } from '@/lib/gateway-rpc'
-import { manualPickRemoved, modelOptionsQueryKey } from '@/lib/model-options'
+import { manualPickRemoved, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -129,6 +129,41 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
 
         if (keepManualPick()) {
           return
+        }
+
+        // Cold-boot fix (#voice-404): on a fresh launch / cache wipe the
+        // model-options cache is EMPTY, so manualPickRemoved above conservatively
+        // returned false and a stale persisted pick (e.g. a since-delisted free
+        // model) was kept — every new chat then 404'd. When the pick is manual
+        // and the cache has no providers, fetch a fresh catalog and re-check:
+        // if the model is confirmed gone, fall through and reseed from the
+        // profile default (kimi-k3); if still present (or the fetch fails),
+        // keep the pick.
+        if (!force && $currentModel.get() && getCurrentModelSource() === 'manual') {
+          const cached = queryClient.getQueryData<ModelOptionsResponse>(
+            modelOptionsQueryKey($activeGatewayProfile.get())
+          )
+
+          if (!cached?.providers?.length) {
+            try {
+              const fresh = await requestModelOptions({})
+
+              queryClient.setQueryData(
+                modelOptionsQueryKey($activeGatewayProfile.get()),
+                fresh
+              )
+
+              if (!manualPickRemoved(fresh?.providers, $currentProvider.get(), $currentModel.get())) {
+                // Model verified still in the catalog — keep the user's pick.
+                return
+              }
+              // else: confirmed delisted -> fall through to reseed from default.
+            } catch {
+              // Catalog fetch failed (offline / re-auth): conservatively keep the
+              // pick rather than clobber a possibly-valid selection.
+              return
+            }
+          }
         }
 
         // Snapshot the selection generation before awaiting so a picker click

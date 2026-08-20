@@ -59,6 +59,89 @@ def _resolve_hermes_home() -> Path:
     return get_hermes_home()
 
 
+def _admit_credential_relpath(relative_path: str, *, source: str) -> Optional[Path]:
+    """Resolve *relative_path* to an admissible host credential file, or ``None``.
+
+    The single containment + master-store policy gate shared by BOTH the skill
+    registration path (:func:`register_credential_file`) and the config path
+    (:func:`_load_config_files`), so the two admission surfaces can never drift.
+    A mount is admitted only when the path:
+
+    * is relative (absolute paths bypass the HERMES_HOME sandbox entirely);
+    * stays inside HERMES_HOME after symlink/``..`` resolution, so a declaration
+      like ``../../.ssh/id_rsa`` cannot exfiltrate host files into a sandbox;
+    * points at an existing file; and
+    * is NOT one of the MASTER credential stores the agent is denied from
+      reading. Containment alone is insufficient because HERMES_HOME is exactly
+      where the master stores live: a caller legitimately needs its own service
+      token (``google_token.json``); it never needs ``.env`` (every provider
+      key), ``auth.json`` (all provider tokens and OAuth grants), ``mcp-tokens/``
+      or the Bitwarden plaintext cache. Those are refused via the canonical read
+      deny-list (``agent.file_safety.get_read_block_error``) — the same guard
+      that stops the agent reading them with ``read_file``, so the mount surface
+      can never hand a caller what the read surface denies it.
+
+    Fails CLOSED: if the canonical guard can't be imported or raises, the mount
+    is refused rather than risk bind-mounting a master store into a sandbox
+    (#67665). *source* is a short label ("skill"/"config") used only for logging.
+    """
+    hermes_home = _resolve_hermes_home()
+
+    # Reject absolute paths — they bypass the HERMES_HOME sandbox entirely.
+    if os.path.isabs(relative_path):
+        logger.warning(
+            "credential_files: rejected absolute %s path %r (must be relative to HERMES_HOME)",
+            source, relative_path,
+        )
+        return None
+
+    host_path = hermes_home / relative_path
+
+    # Resolve symlinks and normalise ``..`` before the containment check so
+    # that traversal like ``../.ssh/id_rsa`` cannot escape HERMES_HOME.
+    from tools.path_security import validate_within_dir
+
+    containment_error = validate_within_dir(host_path, hermes_home)
+    if containment_error:
+        logger.warning(
+            "credential_files: rejected %s path traversal %r (%s)",
+            source, relative_path, containment_error,
+        )
+        return None
+
+    resolved = host_path.resolve()
+    if not resolved.is_file():
+        logger.debug("credential_files: skipping %s %s (not found)", source, resolved)
+        return None
+
+    # Master credential stores are never mountable, even though they sit inside
+    # HERMES_HOME and therefore pass the containment check above. Fails CLOSED.
+    if get_read_block_error is None:
+        logger.error(
+            "credential_files: refusing %s %r — agent.file_safety could not be "
+            "imported, so the master-store deny-list cannot be consulted",
+            source, relative_path,
+        )
+        return None
+    try:
+        denied = get_read_block_error(str(resolved))
+    except Exception:
+        logger.exception(
+            "credential_files: refusing %s %r — read guard raised", source, relative_path
+        )
+        return None
+    if denied:
+        logger.warning(
+            "credential_files: refused %s %r — it is a credential store the agent "
+            "is denied from reading; mount your own service token, not the master "
+            "key files",
+            source, relative_path,
+        )
+        return None
+
+    return resolved
+
+
 def register_credential_file(
     relative_path: str,
     container_base: str = "/root/.hermes",
@@ -66,80 +149,12 @@ def register_credential_file(
     """Register a credential file for mounting into remote sandboxes.
 
     *relative_path* is relative to ``HERMES_HOME`` (e.g. ``google_token.json``).
-    Returns True if the file exists on the host and was registered.
-
-    Security: rejects absolute paths and path traversal sequences (``..``).
-    The resolved host path must remain inside HERMES_HOME so that a malicious
-    skill cannot declare ``required_credential_files: ['../../.ssh/id_rsa']``
-    and exfiltrate sensitive host files into a container sandbox.
-
-    Containment alone is not sufficient, because HERMES_HOME is exactly where
-    the MASTER credential stores live. A skill legitimately needs its own
-    service token (``google_token.json``); it never needs ``.env`` (every
-    provider key), ``auth.json`` (all provider tokens and OAuth grants),
-    ``mcp-tokens/`` or the Bitwarden plaintext cache. Those are refused via
-    the canonical read deny-list (``agent.file_safety.get_read_block_error``)
-    — the same guard that stops the agent reading them with ``read_file``, so
-    the mount surface cannot hand a skill what the read surface denies it.
+    Returns True if the file passes the shared admission policy
+    (:func:`_admit_credential_relpath` — relative, contained, existing, and not
+    a master credential store) and was registered.
     """
-    hermes_home = _resolve_hermes_home()
-
-    # Reject absolute paths — they bypass the HERMES_HOME sandbox entirely.
-    if os.path.isabs(relative_path):
-        logger.warning(
-            "credential_files: rejected absolute path %r (must be relative to HERMES_HOME)",
-            relative_path,
-        )
-        return False
-
-    host_path = hermes_home / relative_path
-
-    # Resolve symlinks and normalise ``..`` before the containment check so
-    # that traversal like ``../. ssh/id_rsa`` cannot escape HERMES_HOME.
-    from tools.path_security import validate_within_dir
-
-    containment_error = validate_within_dir(host_path, hermes_home)
-    if containment_error:
-        logger.warning(
-            "credential_files: rejected path traversal %r (%s)",
-            relative_path,
-            containment_error,
-        )
-        return False
-
-    resolved = host_path.resolve()
-    if not resolved.is_file():
-        logger.debug("credential_files: skipping %s (not found)", resolved)
-        return False
-
-    # Master credential stores are never mountable, even though they sit
-    # inside HERMES_HOME and therefore pass the containment check above.
-    # Fails CLOSED: if the canonical guard can't be consulted we refuse the
-    # mount rather than risk bind-mounting auth.json into a sandbox. The
-    # import lives at module top (no circular-import concern — file_safety is
-    # stdlib-only); the sentinel + logger.exception keep guard failures
-    # debuggable instead of silently swallowed (#67665).
-    if get_read_block_error is None:
-        logger.error(
-            "credential_files: refusing %r — agent.file_safety could not be "
-            "imported, so the master-store deny-list cannot be consulted",
-            relative_path,
-        )
-        return False
-    try:
-        denied = get_read_block_error(str(resolved))
-    except Exception:
-        logger.exception(
-            "credential_files: refusing %r — read guard raised", relative_path
-        )
-        return False
-    if denied:
-        logger.warning(
-            "credential_files: refused %r — it is a credential store the agent "
-            "is denied from reading; a skill may mount its own service token, "
-            "not the master key files",
-            relative_path,
-        )
+    resolved = _admit_credential_relpath(relative_path, source="skill")
+    if resolved is None:
         return False
 
     container_path = f"{container_base.rstrip('/')}/{relative_path}"
@@ -182,30 +197,20 @@ def _load_config_files() -> List[Dict[str, str]]:
     result: List[Dict[str, str]] = []
     try:
         from hermes_cli.config import read_raw_config
-        hermes_home = _resolve_hermes_home()
         cfg = read_raw_config()
         cred_files = cfg_get(cfg, "terminal", "credential_files")
         if isinstance(cred_files, list):
-            from tools.path_security import validate_within_dir
-
             for item in cred_files:
                 if isinstance(item, str) and item.strip():
                     rel = item.strip()
-                    if os.path.isabs(rel):
-                        logger.warning(
-                            "credential_files: rejected absolute config path %r", rel,
-                        )
-                        continue
-                    host_path = hermes_home / rel
-                    containment_error = validate_within_dir(host_path, hermes_home)
-                    if containment_error:
-                        logger.warning(
-                            "credential_files: rejected config path traversal %r (%s)",
-                            rel, containment_error,
-                        )
-                        continue
-                    resolved_path = host_path.resolve()
-                    if resolved_path.is_file():
+                    # Route config entries through the SAME admission policy as
+                    # skill registration: containment plus the master-store
+                    # deny-list. Previously the config path checked only
+                    # absolute/traversal + existence, so a config entry such as
+                    # ``auth.json`` or ``.env`` mounted straight into the sandbox,
+                    # bypassing the read deny-list the skill path enforces.
+                    resolved_path = _admit_credential_relpath(rel, source="config")
+                    if resolved_path is not None:
                         container_path = f"/root/.hermes/{rel}"
                         result.append({
                             "host_path": str(resolved_path),

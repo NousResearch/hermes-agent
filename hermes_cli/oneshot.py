@@ -55,6 +55,15 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     if normalized is None:
         return None, None
 
+    # ``none`` is an explicit, fail-closed request for a model-only run.  It
+    # must remain distinct from an omitted --toolsets flag, which loads the
+    # configured CLI toolsets below.  This is useful for automation that only
+    # needs structured model output and must not expose any callable tools.
+    if normalized == ["none"]:
+        return [], None
+    if "none" in normalized:
+        return None, "hermes -z: --toolsets none cannot be combined with other toolsets.\n"
+
     try:
         from toolsets import validate_toolset
     except Exception as exc:
@@ -406,6 +415,14 @@ def _run_agent(
     # has enabled for "cli". sorted() gives stable ordering for config-derived
     # sets; explicit values preserve user order.
     toolsets_list = _normalize_toolsets(toolsets)
+    # _normalize_toolsets([]) intentionally returns None for ordinary callers,
+    # but [] from the validated ``none`` sentinel means "load zero tools".
+    if (
+        toolsets_list is None
+        and not use_config_toolsets
+        and isinstance(toolsets, (list, tuple))
+    ):
+        toolsets_list = []
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 

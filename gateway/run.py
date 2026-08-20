@@ -26391,6 +26391,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _generation_at_interrupt = self._invalidate_session_run_generation(
             session_key, reason=invalidation_reason
         )
+        # Clear any pending clarify before the interrupted turn unwinds.
+        # /stop (and /new) must not leave a clarify entry registered: the
+        # turn is already dead, but the entry would keep the NEXT non-command
+        # message in this session intercepted as the clarify answer and
+        # swallowed (nothing is emitted because the turn is interrupted).
+        # clear_session also unblocks the agent thread parked in
+        # wait_for_response via the empty-string sentinel, so it drains
+        # instead of hanging until the clarify timeout.
+        try:
+            from tools.clarify_gateway import clear_session as _clear_clarify_session
+
+            _clear_clarify_session(session_key)
+        except Exception as e:  # pragma: no cover - defensive, mirrors approval cleanup
+            logger.debug(
+                "Failed to clear clarify state for interrupted session %s: %s",
+                session_key,
+                e,
+            )
         if _process_task_id and _process_baseline is not None:
             threading.Thread(
                 target=_reap_gateway_turn_processes,

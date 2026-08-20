@@ -254,13 +254,21 @@ class TestSendDingtalk:
 
         with patch("httpx.AsyncClient", return_value=client_ctx):
             extra = {"webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=abc"}
-            result = asyncio.run(_send_dingtalk(extra, "ignored", "hello dingtalk"))
+            result = asyncio.run(
+                _send_dingtalk(extra, "ignored", "# Daily report\n\n**Done**: yes")
+            )
 
         assert result == {"success": True, "platform": "dingtalk", "chat_id": "ignored"}
         client.post.assert_awaited_once()
         call_kwargs = client.post.await_args
         assert call_kwargs[0][0] == "https://oapi.dingtalk.com/robot/send?access_token=abc"
-        assert call_kwargs[1]["json"] == {"msgtype": "text", "text": {"content": "hello dingtalk"}}
+        assert call_kwargs[1]["json"] == {
+            "msgtype": "markdown",
+            "markdown": {
+                "title": "Hermes",
+                "text": "# Daily report\n\n**Done**: yes",
+            },
+        }
 
 
     def test_http_error_redacts_access_token_in_exception_text(self):

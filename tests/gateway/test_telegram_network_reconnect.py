@@ -686,3 +686,70 @@ async def test_disconnect_advances_past_cancellation_swallowing_lifecycle(monkey
 
     release.set()
     await asyncio.wait({wedged}, timeout=0.2)
+
+
+@pytest.mark.asyncio
+async def test_drain_replaces_client_when_close_wait_shutdown_hangs(monkeypatch):
+    """A timed-out drain must not let the next poll reuse the stale client."""
+    adapter = _make_adapter()
+
+    class _Client:
+        is_closed = False
+
+        async def aclose(self):
+            # Simulate httpcore cleanup that absorbs cancellation for a while.
+            # The detached cleanup must not stay registered forever.
+            for _ in range(20):
+                try:
+                    await asyncio.sleep(0.01)
+                except asyncio.CancelledError:
+                    continue
+
+    class _PollingRequest:
+        def __init__(self):
+            self._client = _Client()
+            self.rebuilt = []
+
+        def _build_client(self):
+            client = _Client()
+            self.rebuilt.append(client)
+            return client
+
+        async def shutdown(self):
+            await asyncio.Event().wait()
+
+        async def initialize(self):
+            # Mirrors PTB: initialize() does nothing while is_closed is false.
+            if self._client.is_closed:
+                self._client = self._build_client()
+
+    request = _PollingRequest()
+    original_client = request._client
+    app = MagicMock()
+    app.bot._request = (request, MagicMock())
+    adapter._app = app
+    monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 0.02)
+
+    ticks = 0
+
+    async def _ticker():
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0.005)
+
+    ticker = asyncio.create_task(_ticker())
+    await adapter._drain_polling_connections()
+    ticker.cancel()
+    await asyncio.gather(ticker, return_exceptions=True)
+
+    assert request.rebuilt, "stale polling client must be replaced"
+    assert request._client is request.rebuilt[-1]
+    assert request._client is not original_client
+    assert ticks >= 2, "a wedged close must not block the asyncio event loop"
+
+    await asyncio.sleep(0.25)
+    assert not adapter._background_tasks, (
+        "stale-client cleanup must finish or abandon its own wedged close "
+        "without accumulating a background task"
+    )

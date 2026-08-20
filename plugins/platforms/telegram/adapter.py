@@ -2468,17 +2468,31 @@ class TelegramAdapter(BasePlatformAdapter):
             polling_req = self._app.bot._request[0]  # noqa: SLF001
         except Exception:
             return
+        shutdown_ok = False
         try:
             # Bounded: a wedged CLOSE-WAIT socket can make this close hang
-            # forever and freeze the reconnect ladder (#66377).
-            await asyncio.wait_for(polling_req.shutdown(), timeout=_DRAIN_TIMEOUT)
+            # forever and freeze the reconnect ladder (#66377). The thread
+            # deadline abandons cancellation-shielded PTB/httpcore work instead
+            # of waiting for cancellation to propagate.
+            await _await_with_thread_deadline(
+                polling_req.shutdown(), timeout=_DRAIN_TIMEOUT
+            )
+            shutdown_ok = True
         except Exception:
             logger.debug(
                 "[%s] Polling request shutdown failed/timed out (non-fatal)",
                 self.name, exc_info=True,
             )
+        if not shutdown_ok:
+            # PTB's initialize() only creates a new client when the old client
+            # reports is_closed. A timed-out shutdown can leave that flag false,
+            # so initialize() becomes a no-op and the next polling generation
+            # reuses the CLOSE-WAIT socket (#87057).
+            self._replace_polling_http_client(polling_req)
         try:
-            await asyncio.wait_for(polling_req.initialize(), timeout=_DRAIN_TIMEOUT)
+            await _await_with_thread_deadline(
+                polling_req.initialize(), timeout=_DRAIN_TIMEOUT
+            )
             logger.debug(
                 "[%s] Polling request pool drained before reconnect", self.name
             )
@@ -2486,6 +2500,66 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.debug(
                 "[%s] Polling request re-initialize failed/timed out (non-fatal)",
                 self.name, exc_info=True,
+            )
+            self._replace_polling_http_client(polling_req)
+
+    def _replace_polling_http_client(self, polling_req) -> None:
+        """Swap out a PTB client left open after a timed-out shutdown.
+
+        PTB 22.x does not expose a public request-client replacement API. The
+        polling request is isolated in ``Bot._request[0]`` and
+        ``HTTPXRequest._build_client`` is the same factory used by PTB during
+        normal initialization. Keep the private access narrowly contained here
+        so an upgrade can be audited in one place. If a future PTB removes these
+        attributes, the guarded fallback preserves the previous recovery path.
+        """
+        old_client = getattr(polling_req, "_client", None)
+        build_client = getattr(polling_req, "_build_client", None)
+        if old_client is None or not callable(build_client):
+            return
+        if getattr(old_client, "is_closed", True):
+            return
+        try:
+            polling_req._client = build_client()  # noqa: SLF001
+        except Exception:
+            logger.debug(
+                "[%s] Failed to replace stale Telegram polling HTTP client",
+                self.name,
+                exc_info=True,
+            )
+            return
+
+        logger.warning(
+            "[%s] Replaced stale Telegram getUpdates HTTP client after drain timeout",
+            self.name,
+        )
+
+        async def _close_old_client() -> None:
+            try:
+                # The stale client can be wedged in the same cancellation-
+                # swallowing httpcore scope as shutdown(). Do not use
+                # asyncio.wait_for() here: it waits for cancellation to
+                # propagate and would leave one detached cleanup task alive
+                # per reconnect attempt.
+                await _await_with_thread_deadline(
+                    old_client.aclose(), timeout=_DRAIN_TIMEOUT
+                )
+            except Exception:
+                logger.debug(
+                    "[%s] Stale Telegram polling client close did not complete",
+                    self.name,
+                    exc_info=True,
+                )
+
+        try:
+            task = asyncio.create_task(_close_old_client())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        except Exception:
+            logger.debug(
+                "[%s] Could not schedule stale polling client cleanup",
+                self.name,
+                exc_info=True,
             )
 
     def _begin_polling_generation(self) -> tuple[int, asyncio.Event]:
@@ -4370,8 +4444,18 @@ class TelegramAdapter(BasePlatformAdapter):
                     max_keepalive_connections=_base_limits.max_keepalive_connections,
                     keepalive_expiry=_base_limits.keepalive_expiry,
                 )
+                # A long-poll request is continuously active, so keepalive
+                # expiry cannot protect it from a server-side connection close.
+                # Never hand getUpdates a pooled socket from a previous poll;
+                # ordinary Bot API requests retain the shared reusable pool.
+                _updates_limits = _httpx.Limits(
+                    max_connections=request_kwargs["connection_pool_size"],
+                    max_keepalive_connections=0,
+                    keepalive_expiry=_base_limits.keepalive_expiry,
+                )
             else:  # pragma: no cover — httpx always present alongside PTB
                 _pool_limits = None
+                _updates_limits = None
 
             def _with_limits(httpx_kwargs: Optional[dict] = None) -> dict:
                 """Merge tuned keepalive limits into httpx client kwargs.
@@ -4448,6 +4532,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 _transport_kwargs: dict = {}
                 if _pool_limits is not None:
                     _transport_kwargs["limits"] = _pool_limits
+                _updates_transport_kwargs = dict(_transport_kwargs)
+                if _updates_limits is not None:
+                    _updates_transport_kwargs["limits"] = _updates_limits
                 request = HTTPXRequest(
                     **request_kwargs,
                     httpx_kwargs={
@@ -4460,7 +4547,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     **request_kwargs,
                     httpx_kwargs={
                         "transport": TelegramFallbackTransport(
-                            fallback_ips, **_transport_kwargs
+                            fallback_ips,
+                            **_updates_transport_kwargs,
                         )
                     },
                 )
@@ -4470,14 +4558,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
                 )
                 get_updates_request = HTTPXRequest(
-                    **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
+                    **request_kwargs,
+                    proxy=proxy_url,
+                    httpx_kwargs={"limits": _updates_limits},
                 )
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
                 request = HTTPXRequest(**request_kwargs, httpx_kwargs=_with_limits())
                 get_updates_request = HTTPXRequest(
-                    **request_kwargs, httpx_kwargs=_with_limits()
+                    **request_kwargs, httpx_kwargs={"limits": _updates_limits}
                 )
 
             get_updates_request = self._instrument_polling_request(get_updates_request)

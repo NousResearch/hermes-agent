@@ -24,18 +24,29 @@ stacks via ``faulthandler``, records the exit in the lifecycle ledger
 the service-restart code so s6/systemd revive the process instead of
 babysitting a zombie.
 
-Slow-but-alive startups are NOT killed. Before firing, the watchdog checks
-whether the process consumed meaningful CPU time during the expired window
-(``time.process_time()`` is process-wide). Long-but-legitimate synchronous
-startup work — most importantly large ``state.db`` schema migrations, which
-run inside ``SessionDB.__init__`` well before the loop starts and can
-genuinely exceed any fixed deadline on multi-GB databases — burns CPU
-continuously, so the deadline is extended (with a log line each time) for as
-long as progress continues. The OOF-298 deadlock class parks every thread in
-futex waits and accrues ~zero CPU, so it still fires on schedule. Known
-limitation, documented deliberately: a *spinning* (busy-wait) startup
-deadlock reads as CPU progress and will not fire; the observed incident class
-is parked-thread deadlocks, which this catches.
+Slow-but-alive startups are NOT killed. Two mechanisms, in order of
+authority:
+
+1. **Phase-owned progress leases** (:func:`report_startup_progress`): a
+   startup phase that is about to do legitimately long synchronous work
+   (large ``state.db`` schema migrations, corruption repair/backup — both
+   run inside ``SessionDB.__init__`` well before the loop starts, and both
+   can be I/O-bound with near-zero CPU) declares a lease for its honest
+   worst case. The lease is the authoritative signal: it proves the
+   *startup path itself* is alive, not merely that the process is warm.
+2. **CPU progress, as a bounded fallback only**: if the deadline expires
+   but the process consumed meaningful CPU during the window
+   (``time.process_time()`` is process-wide), the deadline is extended —
+   at most ``_MAX_CPU_EXTENSIONS`` times. Process-wide CPU proves activity,
+   not startup progress (an unrelated daemon thread burning CPU must not
+   hide a parked startup thread forever), hence the cap. Phases that hold
+   a current lease are never subject to the cap.
+
+The OOF-298 deadlock class parks every thread in futex waits, accrues ~zero
+CPU, and owns no lease — it fires on schedule. Known limitation, documented
+deliberately: a *spinning* (busy-wait) startup deadlock reads as CPU
+progress and gets the capped extensions before firing; the observed
+incident class is parked-thread deadlocks, which fire immediately.
 
 Waits that are idle-by-design get explicit handling instead:
 
@@ -103,14 +114,33 @@ _FALSEY = frozenset({"0", "false", "no", "off"})
 _POLL_SLICE_S = 5.0
 
 # Minimum process CPU-time delta (seconds) within one expired deadline window
-# for startup to count as "making progress" and earn an extension. A parked
-# futex deadlock accrues microseconds; a schema migration accrues orders of
-# magnitude more than this per window even on slow disks.
+# for startup to count as "making progress" and earn a fallback extension. A
+# parked futex deadlock accrues microseconds; a schema migration accrues
+# orders of magnitude more than this per window even on slow disks.
 _CPU_PROGRESS_MIN_S = 1.0
+
+# Hard cap on CPU-fallback extensions. CPU is process-wide evidence and can
+# be produced by threads unrelated to startup, so it may only stretch the
+# runway to (1 + cap) x timeout; anything longer must hold an explicit
+# phase lease (report_startup_progress). 3 x 300s default = 20min total.
+_MAX_CPU_EXTENSIONS = 3
+
+# Per-call clamp on progress leases (report_startup_progress). A phase that
+# genuinely needs longer renews its lease — the renewal is itself the
+# liveness evidence. 15 minutes covers the observed worst-case single
+# migration step on multi-GB state.db files with generous margin.
+_MAX_LEASE_S = 900.0
 
 # How long the fire path waits for the lifecycle-ledger helper thread before
 # exiting anyway (the import lock may be held by the wedged main thread).
 _LEDGER_JOIN_TIMEOUT_S = 5.0
+
+# Upper bound on the ENTIRE forensic fire path (logging, dump record,
+# faulthandler, ledger). A sibling escort thread — which touches no logging,
+# no filesystem, and no application locks — hard-exits the process if the
+# forensics wedge (e.g. the wedged main thread holds the logging handler
+# lock, or the disk is full/hung). Must exceed _LEDGER_JOIN_TIMEOUT_S.
+_FIRE_EXIT_BOUND_S = 10.0
 
 # Handle lifecycle states. Transitions are guarded by the handle's state
 # lock so a disarm and a fire can never both "win" (P2 race, PR #89750
@@ -216,6 +246,14 @@ class StartupWatchdogHandle:
         self._disarmed_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._extensions = 0
+        # Phase-owned progress lease (see lease()). monotonic deadline the
+        # current startup phase has claimed for legitimately long sync work.
+        self._lease_until = 0.0
+        self._lease_phase: Optional[str] = None
+        self._lease_count = 0
+        # Set by _fire() once forensics complete; the exit escort thread
+        # uses it to stand down when the normal exit path won the race.
+        self._fire_done = threading.Event()
 
     def disarm(self) -> None:
         """Startup reached a live event loop — stand down. Idempotent.
@@ -244,6 +282,32 @@ class StartupWatchdogHandle:
         with self._state_lock:
             self._deadline = time.monotonic() + self.timeout_s + extra
 
+    def lease(self, expected_s: float, phase: str = "") -> None:
+        """Claim a progress lease: this startup phase is alive and expects
+        up to ``expected_s`` more seconds of legitimate synchronous work.
+
+        This is the authoritative "still making progress" signal — unlike
+        process-wide CPU time it is owned by the startup path itself, so it
+        works for I/O-bound phases (corruption repair, backups) that accrue
+        almost no CPU, and it cannot be counterfeited by unrelated threads.
+
+        Leases are clamped to ``_MAX_LEASE_S`` per call so a single buggy
+        caller cannot silence the watchdog indefinitely; genuinely long
+        phases renew periodically (renewal proves continued liveness).
+        Never raises."""
+        try:
+            expected = float(expected_s)
+        except (TypeError, ValueError):
+            return
+        if expected <= 0:
+            return
+        expected = min(expected, _MAX_LEASE_S)
+        with self._state_lock:
+            self._lease_until = max(self._lease_until, time.monotonic() + expected)
+            if phase:
+                self._lease_phase = str(phase)
+            self._lease_count += 1
+
     @property
     def disarmed(self) -> bool:
         return self._state == _DISARMED
@@ -266,13 +330,33 @@ class StartupWatchdogHandle:
             return None
 
     def _fire(self) -> None:
+        """Forensics, then exit — with the exit itself independently bounded.
+
+        Everything in here that produces forensics (logging, the JSON dump
+        record, faulthandler, the lifecycle ledger) can in principle block:
+        the wedged main thread may hold the logging handler lock, the disk
+        may be full or hung. None of that may stop the respawn. An escort
+        thread is started FIRST; it touches no logging, no filesystem and
+        no application locks — it sleeps, checks whether the normal exit
+        happened, and otherwise calls the exit seam itself. ``os._exit``
+        is async-signal-safe and lock-free by design."""
+        try:
+            escort = threading.Thread(
+                target=self._exit_escort,
+                daemon=True,
+                name="gateway-startup-watchdog-exit-escort",
+            )
+            escort.start()
+        except Exception:
+            pass
         elapsed = time.monotonic() - self.armed_at
         try:
             logger.critical(
                 "Gateway startup did not reach a live event loop within %.0fs "
-                "(elapsed %.0fs, %d extension(s)) and shows no CPU progress; "
-                "dumping all thread stacks and exiting with code %d so the "
-                "service supervisor can restart it (OOF-298).",
+                "(elapsed %.0fs, %d extension(s)), holds no progress lease "
+                "and shows no CPU progress; dumping all thread stacks and "
+                "exiting with code %d so the service supervisor can restart "
+                "it (OOF-298).",
                 self.timeout_s,
                 elapsed,
                 self._extensions,
@@ -288,6 +372,8 @@ class StartupWatchdogHandle:
                 "timeout_s": self.timeout_s,
                 "elapsed_s": round(elapsed, 3),
                 "extensions": self._extensions,
+                "lease_count": self._lease_count,
+                "last_lease_phase": self._lease_phase,
                 "exit_code": self.exit_code,
             }
         )
@@ -322,7 +408,24 @@ class StartupWatchdogHandle:
             ledger_thread.join(timeout=_LEDGER_JOIN_TIMEOUT_S)
         except Exception:
             pass
+        self._fire_done.set()
         self._exit(self.exit_code)
+
+    def _exit_escort(self) -> None:
+        """Hard-exit if the forensic fire path wedges (bounded-exit seam).
+
+        Deliberately free of log handlers, filesystem access, module loads
+        and any lock shared with application code: its only dependencies
+        are a monotonic sleep, an Event check, and the exit seam."""
+        self._sleep(_FIRE_EXIT_BOUND_S)
+        if self._fire_done.is_set():
+            return
+        self._exit(self.exit_code)
+
+    @staticmethod
+    def _sleep(seconds: float) -> None:
+        """Seam for tests; production is a bare ``time.sleep``."""
+        time.sleep(seconds)
 
     @staticmethod
     def _exit(code: int) -> None:
@@ -341,15 +444,48 @@ class StartupWatchdogHandle:
                 if self._disarmed_event.wait(timeout=min(remaining, _POLL_SLICE_S)):
                     return
                 continue
-            # Deadline expired. A slow-but-alive startup (large state.db
-            # schema migration inside SessionDB.__init__) burns CPU
-            # continuously; a parked futex deadlock accrues ~none. Extend
-            # for the former, fire only for the latter.
+            # Deadline expired. Order of authority:
+            #
+            # 1. Phase lease (report_startup_progress): the startup path
+            #    itself declared long legitimate work — honor it outright.
+            #    Works for I/O-bound phases with ~zero CPU (corruption
+            #    repair, backups) and cannot be faked by unrelated threads.
+            # 2. CPU progress, bounded: process-wide CPU proves the process
+            #    is doing *something*, not that startup is progressing (an
+            #    unrelated daemon thread could burn CPU while the startup
+            #    thread sits parked forever). Extend at most
+            #    _MAX_CPU_EXTENSIONS times, then fire regardless.
+            now = time.monotonic()
+            with self._state_lock:
+                lease_until = self._lease_until
+                lease_phase = self._lease_phase
+            if lease_until > now:
+                with self._state_lock:
+                    if self._state != _ARMED:
+                        return
+                    self._deadline = max(
+                        lease_until, now + min(_POLL_SLICE_S, self.timeout_s)
+                    )
+                try:
+                    logger.warning(
+                        "Gateway startup exceeded %.0fs but phase %r holds a "
+                        "progress lease for another %.0fs — honoring it.",
+                        self.timeout_s,
+                        lease_phase or "unknown",
+                        lease_until - now,
+                    )
+                except Exception:
+                    pass
+                # Leased work may be I/O-bound; reset the CPU baseline so a
+                # post-lease window is judged on its own activity.
+                last_cpu = self._process_cpu_seconds()
+                continue
             cpu = self._process_cpu_seconds()
             if (
                 cpu is not None
                 and last_cpu is not None
                 and (cpu - last_cpu) >= _CPU_PROGRESS_MIN_S
+                and self._extensions < _MAX_CPU_EXTENSIONS
             ):
                 window_delta = cpu - last_cpu
                 last_cpu = cpu
@@ -361,11 +497,14 @@ class StartupWatchdogHandle:
                 try:
                     logger.warning(
                         "Gateway startup exceeded %.0fs but is consuming CPU "
-                        "(%.1fs this window) — likely a long schema migration; "
-                        "extending the startup watchdog deadline (extension #%d).",
+                        "(%.1fs this window); extending the startup watchdog "
+                        "deadline (CPU-fallback extension %d of %d — phases "
+                        "doing long legitimate work should call "
+                        "report_startup_progress instead).",
                         self.timeout_s,
                         window_delta,
                         self._extensions,
+                        _MAX_CPU_EXTENSIONS,
                     )
                 except Exception:
                     pass
@@ -459,6 +598,30 @@ def kick_startup_watchdog(extra_s: float = 0.0) -> None:
             handle.kick(extra_s)
     except Exception:
         logger.debug("Failed to kick gateway startup watchdog", exc_info=True)
+
+
+def report_startup_progress(expected_s: float, phase: str = "") -> None:
+    """Declare a phase-owned progress lease on the armed startup watchdog.
+
+    Call from startup phases about to perform legitimately long synchronous
+    work — most importantly ``state.db`` schema migrations and corruption
+    repair/backup inside ``SessionDB.__init__`` — passing an honest worst
+    case for the work about to be done, and renew periodically for
+    multi-step phases. Unlike CPU-time inference, a lease is owned by the
+    startup path itself: it works for I/O-bound work that accrues ~zero CPU
+    and cannot be counterfeited by unrelated busy threads.
+
+    Per-call lease duration is clamped to ``_MAX_LEASE_S``; renewals prove
+    continued liveness. No-op when the watchdog is not armed; never raises —
+    safe to call unconditionally from application code.
+    """
+    try:
+        with _handle_lock:
+            handle = _handle
+        if handle is not None:
+            handle.lease(expected_s, phase)
+    except Exception:
+        logger.debug("Failed to report startup progress", exc_info=True)
 
 
 def _reset_for_tests() -> None:

@@ -18,6 +18,7 @@ from typing import Dict, Optional, Sequence
 
 
 from hermes_constants import get_hermes_home
+from hermes_startup_watchdog import report_startup_progress
 from hermes_state_common import (
     DEFERRED_INDEX_SQL,
     FTS_CJK_STALE_KEY,
@@ -971,6 +972,13 @@ class SessionSchemaMixin:
         The schema_version table is retained for future data migrations
         (transforming existing rows) which cannot be handled declaratively.
         """
+        # Declare a startup-watchdog progress lease before potentially long
+        # synchronous work: on multi-GB state.db files the reconciliation +
+        # version-gated data migrations below are legitimately slow and can
+        # be I/O-bound (near-zero CPU), which the watchdog's CPU fallback
+        # would misread as a parked deadlock (OOF-298 / PR #89750).
+        report_startup_progress(600.0, phase="state_db_init_schema")
+
         cursor = self._conn.cursor()
 
         cursor.executescript(SCHEMA_SQL)
@@ -1068,6 +1076,9 @@ class SessionSchemaMixin:
 
         else:
             current_version = row["version"] if isinstance(row, sqlite3.Row) else row[0]
+            # Renew the progress lease: the version-gated chain below can
+            # rewrite whole tables (PK rebuilds, backfills) on large DBs.
+            report_startup_progress(600.0, phase="state_db_data_migrations")
             # Data migrations that can't be expressed declaratively (row
             # backfills, index changes tied to a specific version step) stay
             # in a version-gated chain. Column additions are handled by

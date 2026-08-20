@@ -28,6 +28,7 @@ from hermes_startup_watchdog import (
     disarm_startup_watchdog,
     get_startup_watchdog_dump_path,
     kick_startup_watchdog,
+    report_startup_progress,
     resolve_startup_watchdog_timeout,
     startup_watchdog_disabled,
 )
@@ -260,7 +261,10 @@ class TestKick:
 class TestCpuProgressExtension:
     def test_cpu_progress_extends_instead_of_firing(self, exit_capture, monkeypatch):
         """A long schema migration burns CPU: the watchdog must extend, not
-        fire (the P1 false-fire/restart-loop case from review)."""
+        fire (the P1 false-fire/restart-loop case from review). Cap raised
+        here to observe pure extension behavior; the cap itself is covered
+        by test_cpu_extensions_are_capped."""
+        monkeypatch.setattr(sw, "_MAX_CPU_EXTENSIONS", 10_000)
         # Each probe call reports +10s CPU — always 'progress'.
         counter = {"cpu": 0.0}
 
@@ -278,6 +282,28 @@ class TestCpuProgressExtension:
         assert handle._extensions >= 1
         disarm_startup_watchdog()
 
+    def test_cpu_extensions_are_capped(self, exit_capture, monkeypatch):
+        """Adversarial: an unrelated daemon thread burning CPU while the
+        startup thread sits parked must NOT hide the deadlock forever.
+        Process-wide CPU is bounded evidence — after _MAX_CPU_EXTENSIONS
+        the watchdog fires anyway (review blocker #2, false-negative arm)."""
+        counter = {"cpu": 0.0}
+
+        def _busy_probe():
+            counter["cpu"] += 10.0
+            return counter["cpu"]
+
+        monkeypatch.setattr(
+            StartupWatchdogHandle, "_process_cpu_seconds", staticmethod(_busy_probe)
+        )
+        handle = arm_startup_watchdog(timeout_s=0.1)
+        assert handle is not None
+        # Perpetual CPU "progress" earns exactly _MAX_CPU_EXTENSIONS
+        # extensions, then fires.
+        assert exit_capture.fired.wait(timeout=10)
+        assert handle._extensions == sw._MAX_CPU_EXTENSIONS
+        assert exit_capture.codes == [SERVICE_RESTART_EXIT_CODE]
+
     def test_no_cpu_progress_fires(self, exit_capture):
         # autouse fixture pins CPU time at 0.0 — no progress.
         arm_startup_watchdog(timeout_s=0.1)
@@ -292,6 +318,104 @@ class TestCpuProgressExtension:
         )
         arm_startup_watchdog(timeout_s=0.1)
         assert exit_capture.fired.wait(timeout=5)
+
+
+class TestProgressLease:
+    """Phase-owned progress leases (review blocker #2): the authoritative
+    'startup is alive' signal, owned by the startup path itself — works for
+    I/O-bound phases with ~zero CPU, can't be counterfeited by unrelated
+    busy threads, and is clamped per call so it can't silence the watchdog
+    forever without renewal."""
+
+    def test_lease_prevents_firing_with_zero_cpu(self, exit_capture):
+        """Adversarial (false-positive arm): an I/O-bound repair/backup
+        phase accrues ~no CPU. Without a lease it would be killed; with one
+        it must survive past the deadline."""
+        handle = arm_startup_watchdog(timeout_s=0.1)
+        assert handle is not None
+        report_startup_progress(60.0, phase="state_db_repair")
+        time.sleep(0.6)
+        assert not exit_capture.fired.is_set()
+        disarm_startup_watchdog()
+
+    def test_expired_lease_no_longer_protects(self, exit_capture):
+        """A lease is a bounded claim, not a permanent mute: once it expires
+        (and no renewal arrives, no CPU progress) the watchdog fires."""
+        handle = arm_startup_watchdog(timeout_s=0.1)
+        assert handle is not None
+        report_startup_progress(0.2, phase="short_phase")
+        assert exit_capture.fired.wait(timeout=10)
+        assert exit_capture.codes == [SERVICE_RESTART_EXIT_CODE]
+
+    def test_lease_duration_is_clamped(self):
+        handle = arm_startup_watchdog(timeout_s=60)
+        assert handle is not None
+        report_startup_progress(10**9, phase="greedy")
+        with handle._state_lock:
+            remaining = handle._lease_until - time.monotonic()
+        assert remaining <= sw._MAX_LEASE_S + 1
+        disarm_startup_watchdog()
+
+    def test_lease_outranks_cpu_extension_cap(self, exit_capture, monkeypatch):
+        """A current lease is honored even when the CPU-fallback cap is
+        exhausted — the lease is the stronger, owned signal. Cap pinned to
+        0 so CPU progress alone can never extend; only the lease can."""
+        monkeypatch.setattr(sw, "_MAX_CPU_EXTENSIONS", 0)
+        counter = {"cpu": 0.0}
+
+        def _busy_probe():
+            counter["cpu"] += 10.0
+            return counter["cpu"]
+
+        monkeypatch.setattr(
+            StartupWatchdogHandle, "_process_cpu_seconds", staticmethod(_busy_probe)
+        )
+        handle = arm_startup_watchdog(timeout_s=0.1)
+        assert handle is not None
+        report_startup_progress(60.0, phase="post_cap_migration")
+        time.sleep(0.6)
+        assert not exit_capture.fired.is_set()
+        disarm_startup_watchdog()
+
+    def test_lease_without_arm_is_safe(self):
+        report_startup_progress(30.0, phase="x")  # must not raise
+
+    def test_lease_with_garbage_is_safe(self):
+        arm_startup_watchdog(timeout_s=60)
+        report_startup_progress("nonsense")  # type: ignore[arg-type]
+        report_startup_progress(-5)
+        disarm_startup_watchdog()
+
+    def test_lease_visible_in_dump_record(self, exit_capture, tmp_path):
+        arm_startup_watchdog(timeout_s=0.1)
+        report_startup_progress(0.15, phase="brief_phase")
+        assert exit_capture.fired.wait(timeout=10)
+        dump_path = get_startup_watchdog_dump_path(tmp_path)
+        deadline = time.monotonic() + 2
+        while not dump_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        record = json.loads(dump_path.read_text(encoding="utf-8").splitlines()[0])
+        assert record["lease_count"] >= 1
+        assert record["last_lease_phase"] == "brief_phase"
+
+    def test_schema_init_declares_lease(self):
+        """hermes_state_schema._init_schema must hold a progress lease so
+        multi-GB migrations aren't misread as deadlocks (wiring contract)."""
+        import inspect
+
+        import hermes_state_schema
+
+        src = inspect.getsource(hermes_state_schema.SessionSchemaMixin._init_schema)
+        assert "report_startup_progress" in src
+
+    def test_repair_declares_lease(self):
+        """repair_state_db_schema (I/O-bound, ~zero CPU) must hold a lease."""
+        import inspect
+
+        import hermes_state
+
+        src = inspect.getsource(hermes_state.repair_state_db_schema)
+        assert "report_startup_progress" in src
 
 
 class TestFire:
@@ -341,6 +465,98 @@ class TestFire:
         arm_startup_watchdog(timeout_s=0.1, exit_code=42)
         assert exit_capture.fired.wait(timeout=5)
         assert exit_capture.codes == [42]
+
+
+class TestBoundedExit:
+    """The fire path's forensics (logging, dump record, faulthandler,
+    ledger) may themselves wedge — the wedged main thread can hold the
+    logging handler lock, the disk can be full or hung. An escort thread
+    free of logging/filesystem/application locks must still reach the exit
+    seam within _FIRE_EXIT_BOUND_S (review blocker #1)."""
+
+    @pytest.fixture
+    def fast_escort(self, monkeypatch):
+        """Shrink the escort bound so tests don't wait 10s."""
+        monkeypatch.setattr(
+            StartupWatchdogHandle, "_sleep", staticmethod(lambda s: time.sleep(0.2))
+        )
+
+    def test_exits_even_when_logging_lock_is_held(
+        self, exit_capture, fast_escort, monkeypatch
+    ):
+        """Adversarial: acquire the lock of every handler reachable from
+        this module's logger before the deadline expires. logger.critical
+        in _fire blocks forever — the escort must exit anyway."""
+        import logging
+
+        # Ensure there is at least one handler whose lock we can hold.
+        blocker_handler = logging.StreamHandler()
+        root = logging.getLogger()
+        root.addHandler(blocker_handler)
+        held = [h for h in root.handlers if h.lock is not None]
+        assert held, "expected at least one lockable logging handler"
+        for h in held:
+            h.lock.acquire()
+        handle = None
+        try:
+            handle = arm_startup_watchdog(timeout_s=0.1)
+            assert handle is not None
+            # Normal forensic path is stuck on logger.critical; only the
+            # escort can set fired.
+            assert exit_capture.fired.wait(timeout=10)
+            assert SERVICE_RESTART_EXIT_CODE in exit_capture.codes
+        finally:
+            for h in held:
+                h.lock.release()
+            root.removeHandler(blocker_handler)
+            # Let the unblocked fire thread finish while _exit is still the
+            # capture — otherwise it could reach the REAL os._exit after
+            # monkeypatch teardown and kill the test run.
+            if handle is not None:
+                handle.join(timeout=10)
+
+    def test_exits_even_when_dump_write_hangs(
+        self, exit_capture, fast_escort, monkeypatch
+    ):
+        """Adversarial: filesystem forensics hang (full/hung disk). The
+        escort must exit anyway."""
+        forever = threading.Event()
+
+        def _hang(record):
+            forever.wait(timeout=30)  # bounded only so the test can't leak
+
+        monkeypatch.setattr(sw, "_write_dump_record", _hang)
+        handle = arm_startup_watchdog(timeout_s=0.1)
+        assert handle is not None
+        assert exit_capture.fired.wait(timeout=10)
+        assert SERVICE_RESTART_EXIT_CODE in exit_capture.codes
+        # Unblock and drain the fire thread before monkeypatch teardown
+        # (same real-os._exit hazard as above).
+        forever.set()
+        handle.join(timeout=10)
+
+    def test_escort_stands_down_when_fire_completes(self, exit_capture, monkeypatch):
+        """When forensics complete normally the escort must NOT double-exit:
+        it observes _fire_done and returns."""
+        monkeypatch.setattr(
+            StartupWatchdogHandle, "_sleep", staticmethod(lambda s: time.sleep(0.5))
+        )
+        handle = arm_startup_watchdog(timeout_s=0.1)
+        assert handle is not None
+        assert exit_capture.fired.wait(timeout=5)
+        # Give the escort time to wake and observe _fire_done.
+        time.sleep(0.8)
+        assert exit_capture.codes == [SERVICE_RESTART_EXIT_CODE]
+
+    def test_escort_uses_no_logging_or_filesystem(self):
+        """Structural guarantee: the escort body must not touch logging,
+        the filesystem, or imports — only sleep, an Event check, and the
+        exit seam."""
+        import inspect
+
+        src = inspect.getsource(StartupWatchdogHandle._exit_escort)
+        for banned in ("logger.", "logging", "open(", "Path(", "import ", "mkdir"):
+            assert banned not in src, f"escort must not use {banned!r}"
 
 
 class TestDumpPath:

@@ -22,13 +22,14 @@ import shutil
 import subprocess
 import time
 from abc import ABC, abstractmethod
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from agent.skill_utils import is_excluded_skill_path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 from urllib.parse import unquote, urljoin, urlparse, urlsplit, urlunparse
 
 import httpx
@@ -342,6 +343,70 @@ def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response
 
     logger.warning("Skills Hub fetch exceeded redirect limit for %s", url)
     return None
+
+
+@contextmanager
+def _guarded_http_stream(
+    url: str,
+    *,
+    params: Optional[Dict[str, str]] = None,
+    timeout: int = 20,
+) -> Iterator[Optional[httpx.Response]]:
+    """Stream one response with bounded, policy-checked redirects."""
+    from tools.url_safety import SSRFConnectionBlocked, create_ssrf_safe_client
+
+    current_url = url
+    current_params = params
+    response: Optional[httpx.Response] = None
+    stack = ExitStack()
+
+    try:
+        for _ in range(_MAX_SKILL_FETCH_REDIRECTS + 1):
+            if not is_safe_url(current_url):
+                logger.warning("Blocked unsafe Skills Hub URL: %s", current_url)
+                response = None
+                break
+
+            blocked = check_website_access(current_url)
+            if blocked:
+                logger.info(
+                    "Blocked Skills Hub fetch for %s by rule %s",
+                    blocked["host"],
+                    blocked["rule"],
+                )
+                response = None
+                break
+
+            stack.close()
+            stack = ExitStack()
+            try:
+                client = stack.enter_context(
+                    create_ssrf_safe_client(timeout=timeout, follow_redirects=False)
+                )
+                response = stack.enter_context(
+                    client.stream("GET", current_url, params=current_params)
+                )
+            except (SSRFConnectionBlocked, httpx.HTTPError) as exc:
+                logger.debug("Skills Hub stream failed for %s: %s", current_url, exc)
+                response = None
+                break
+
+            if response.status_code not in _REDIRECT_STATUS_CODES:
+                break
+
+            location = response.headers.get("location")
+            if not location:
+                response = None
+                break
+            current_url = urljoin(current_url, location)
+            current_params = None
+        else:
+            logger.warning("Skills Hub fetch exceeded redirect limit for %s", url)
+            response = None
+
+        yield response
+    finally:
+        stack.close()
 
 
 def _validate_bundle_rel_path(rel_path: str) -> str:
@@ -2204,6 +2269,8 @@ class ClawHubSource(SkillSource):
     # timeout=30 so nothing errors), so an unbounded walk can block for
     # minutes. Bound it so a slow/large catalog cannot hang the caller.
     CATALOG_WALK_BUDGET_SECONDS = 12
+    ZIP_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
+    ZIP_DOWNLOAD_CHUNK_BYTES = 64 * 1024
 
     def source_id(self) -> str:
         return "clawhub"
@@ -2922,30 +2989,65 @@ class ClawHubSource(SkillSource):
         files: Dict[str, str] = {}
         max_retries = 3
         for attempt in range(max_retries):
+            retry_after_delay: Optional[int] = None
             try:
-                resp = httpx.get(
+                with _guarded_http_stream(
                     f"{self.BASE_URL}/download",
                     params={"slug": slug, "version": version},
                     timeout=30,
-                    follow_redirects=True,
-                )
-                if resp.status_code == 429:
-                    try:
-                        retry_after = int(resp.headers.get("retry-after", "5"))
-                    except (ValueError, TypeError):
-                        retry_after = 5
-                    retry_after = min(retry_after, 15)  # Cap wait time
-                    logger.debug(
-                        "ClawHub download rate-limited for %s, retrying in %ds (attempt %d/%d)",
-                        slug, retry_after, attempt + 1, max_retries,
-                    )
-                    time.sleep(retry_after)
-                    continue
-                if resp.status_code != 200:
-                    logger.debug("ClawHub ZIP download for %s v%s returned %s", slug, version, resp.status_code)
-                    return files
+                ) as resp:
+                    if resp is None:
+                        return files
+                    if resp.status_code == 429:
+                        try:
+                            retry_after = int(resp.headers.get("retry-after", "5"))
+                        except (ValueError, TypeError):
+                            retry_after = 5
+                        retry_after = max(0, min(retry_after, 15))  # Cap wait time
+                        logger.debug(
+                            "ClawHub download rate-limited for %s, retrying in %ds (attempt %d/%d)",
+                            slug, retry_after, attempt + 1, max_retries,
+                        )
+                        retry_after_delay = retry_after
+                    else:
+                        if resp.status_code != 200:
+                            logger.debug("ClawHub ZIP download for %s v%s returned %s", slug, version, resp.status_code)
+                            return files
 
-                with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                        content_length = resp.headers.get("content-length")
+                        if content_length:
+                            try:
+                                declared_size = int(content_length)
+                            except (ValueError, TypeError):
+                                declared_size = 0
+                            if declared_size > self.ZIP_DOWNLOAD_MAX_BYTES:
+                                logger.debug(
+                                    "Skipping oversized ClawHub ZIP for %s v%s: %d bytes",
+                                    slug, version, declared_size,
+                                )
+                                return files
+
+                        archive = io.BytesIO()
+                        total = 0
+                        for chunk in resp.iter_bytes(chunk_size=self.ZIP_DOWNLOAD_CHUNK_BYTES):
+                            if not chunk:
+                                continue
+                            total += len(chunk)
+                            if total > self.ZIP_DOWNLOAD_MAX_BYTES:
+                                logger.debug(
+                                    "Skipping oversized ClawHub ZIP for %s v%s: exceeded %d bytes",
+                                    slug, version, self.ZIP_DOWNLOAD_MAX_BYTES,
+                                )
+                                return files
+                            archive.write(chunk)
+                        archive.seek(0)
+
+                if retry_after_delay is not None:
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_after_delay)
+                    continue
+
+                with zipfile.ZipFile(archive) as zf:
                     for info in zf.infolist():
                         if info.is_dir():
                             continue

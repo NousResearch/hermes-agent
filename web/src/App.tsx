@@ -102,6 +102,7 @@ import { useI18n } from "@/i18n";
 import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
+import { pluginRoutePaths } from "@/plugins/pluginRoutes";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { latchChatActivation } from "@/lib/chat-activation";
@@ -346,22 +347,26 @@ function buildRoutes(
     if (m.tab.hidden) continue;
     if (m.tab.path === "/plugins") continue;
     if (builtinRoutes[m.tab.path]) continue;
-    routes.push({
-      key: `plugin:${m.name}`,
-      path: m.tab.path,
-      element: <PluginPage name={m.name} />,
-    });
+    for (const [index, path] of pluginRoutePaths(m.tab.path).entries()) {
+      routes.push({
+        key: `plugin:${m.name}:${index}`,
+        path,
+        element: <PluginPage name={m.name} />,
+      });
+    }
   }
 
   for (const m of manifests) {
     if (!m.tab.hidden) continue;
     if (m.tab.path === "/plugins") continue;
     if (builtinRoutes[m.tab.path] || m.tab.override) continue;
-    routes.push({
-      key: `plugin:hidden:${m.name}`,
-      path: m.tab.path,
-      element: <PluginPage name={m.name} />,
-    });
+    for (const [index, path] of pluginRoutePaths(m.tab.path).entries()) {
+      routes.push({
+        key: `plugin:hidden:${m.name}:${index}`,
+        path,
+        element: <PluginPage name={m.name} />,
+      });
+    }
   }
 
   return routes;

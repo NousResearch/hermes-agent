@@ -15,6 +15,23 @@ def test_show_status_all_does_not_print_tavily_key_value(monkeypatch, capsys, tm
     assert sentinel not in output
 
 
+def test_show_status_reports_self_hosted_firecrawl_without_key(
+    monkeypatch, capsys, tmp_path
+):
+    self_hosted_url = "https://firecrawl.internal.example.test:3002"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("FIRECRAWL_API_URL", self_hosted_url)
+    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    firecrawl_row = next(line for line in output.splitlines() if "Firecrawl" in line)
+    assert "self-hosted" in firecrawl_row.lower()
+    assert "not set" not in firecrawl_row.lower()
+    assert self_hosted_url not in output
+
+
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
     import hermes_cli.auth as auth_mod

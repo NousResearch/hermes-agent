@@ -13,6 +13,7 @@ managed, which is False on a NAS-hosted Fly agent). The real gate is
 from __future__ import annotations
 
 import os
+import urllib.error
 
 import pytest
 
@@ -161,8 +162,9 @@ def test_post_provision_body_includes_instanceId_only_when_set(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def read(self):
-            return json.dumps({"secret": "a" * 64, "deliveryKey": "b" * 64, "tenant": "t", "gatewayId": "gw-1"}).encode()
+        def read(self, size=-1):
+            body = json.dumps({"secret": "a" * 64, "deliveryKey": "b" * 64, "tenant": "t", "gatewayId": "gw-1"}).encode()
+            return body if size < 0 else body[:size]
 
     def _fake_urlopen(req, timeout=None):  # noqa: ANN001
         sent["body"] = json.loads(req.data.decode())
@@ -194,6 +196,67 @@ def test_post_provision_body_includes_instanceId_only_when_set(monkeypatch):
         route_keys=[],
     )
     assert "instanceId" not in sent["body"]
+
+
+@pytest.mark.parametrize("status", [None, 403])
+def test_post_provision_bounds_success_and_error_bodies(monkeypatch, status):
+    import json
+
+    from hermes_cli import _http_response_limits as limits
+
+    monkeypatch.setattr(limits, "JSON_RESPONSE_BODY_MAX_BYTES", 8)
+    monkeypatch.setattr(limits, "ERROR_RESPONSE_BODY_MAX_BYTES", 8)
+    body = b'x' * 9
+
+    class _Resp:
+        def __init__(self):
+            self.read_calls = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size=-1):
+            self.read_calls.append(size)
+            return body if size < 0 else body[:size]
+
+    response = _Resp()
+    result = (
+        urllib.error.HTTPError(
+            "https://connector.example/relay/provision",
+            status,
+            "Forbidden",
+            {},
+            response,
+        )
+        if status
+        else response
+    )
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(result)
+        if status
+        else result,
+    )
+
+    label = "error " if status else ""
+    with pytest.raises(
+        RuntimeError,
+        match=rf"relay provision {label}response body exceeded 8 bytes",
+    ):
+        relay._post_provision(
+            provision_url="https://connector.example/relay/provision",
+            access_token="token",
+            gateway_id="gw",
+            platform="discord",
+            bot_id="bot",
+            gateway_endpoint=None,
+            route_keys=[],
+        )
+
+    assert response.read_calls == [9]
 
 
 # ─────────────────── wake-url forwarding (Phase 5 Unit C) ───────────────────

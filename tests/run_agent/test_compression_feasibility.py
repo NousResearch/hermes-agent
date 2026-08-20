@@ -71,9 +71,13 @@ def _make_agent(
 
 @patch("agent.model_metadata.get_model_context_length", return_value=80_000)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
-def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_client, mock_ctx_len):
-    """Auto-correction: aux >= 64K floor but < threshold → lower threshold
-    to aux_context so compression still works this session."""
+def test_small_aux_window_keeps_threshold_and_stashes_it(mock_get_client, mock_ctx_len):
+    """aux >= 64K floor but < threshold → threshold UNCHANGED; the aux window
+    is stashed for _generate_summary's per-call input fit instead. Lowering
+    the session threshold (the old behaviour) silently shrank the main
+    model's usable window, while the summariser request — bounded by
+    per-message truncation and _SUMMARY_INPUT_MAX_CHARS — never approached
+    the threshold it was compared against."""
     agent = _make_agent(main_context=200_000, threshold_percent=0.50)
     # threshold = 100,000 — aux has 80,000 (above 64K floor, below threshold)
     mock_client = MagicMock()
@@ -86,30 +90,14 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
 
     agent._check_compression_model_feasibility()
 
-    assert len(messages) == 1
-    assert "Compression model" in messages[0]
-    assert "80,000" in messages[0]        # aux context
-    assert "100,000" in messages[0]       # old threshold
-    assert "Auto-lowered" in messages[0]
-    # Actionable persistence guidance included
-    assert "config.yaml" in messages[0]
-    assert "auxiliary:" in messages[0]
-    assert "compression:" in messages[0]
-    # 200K main is under the 512K small-context limit and 80K/200K = 40% sits
-    # below the 75% floor — a `threshold:` suggestion would be raised back to
-    # 75% and ignored (#67422), so the message must not offer one and must
-    # explain the recomputed trigger instead (0.75 * 200K = 150K).
-    assert "threshold:" not in messages[0]
-    assert "150,000" in messages[0]
-    # Warning stored for gateway replay
-    assert agent._compression_warning is not None
-    # Threshold on the live compressor was actually lowered to aux_context.
-    assert agent.context_compressor.threshold_tokens == 80_000
-    # Every threshold-derived budget must move with it. Keeping the original
-    # 20K tail here would protect 25% of the lowered threshold instead of the
-    # configured 20%, and larger real-world mismatches can make the tail's 1.5x
-    # soft ceiling wider than the entire compression trigger.
-    assert agent.context_compressor.tail_token_budget == 16_000
+    # No user-facing warning: the per-call bound makes the model just work.
+    assert messages == []
+    assert agent._compression_warning is None
+    # Threshold and every threshold-derived budget stay untouched.
+    assert agent.context_compressor.threshold_tokens == 100_000
+    assert agent.context_compressor.tail_token_budget == 20_000
+    # The aux window is stashed for the per-call fit.
+    assert agent.context_compressor.summary_model_context_length == 80_000
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=32_768)
@@ -325,15 +313,15 @@ def test_no_unavailable_warning_when_configured_fallback_chain_resolves():
 # ── Two-phase: __init__ + run_conversation replay ───────────────────
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=80_000)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
-def test_warning_stored_for_gateway_replay(mock_get_client, mock_ctx_len):
-    """__init__ stores the warning; _replay sends it through status_callback."""
+def test_warning_stored_for_gateway_replay(mock_get_client):
+    """__init__ stores the warning; _replay sends it through status_callback.
+
+    The small-aux-window case no longer warns (the per-call input fit makes
+    it work silently), so the replay path is exercised with the remaining
+    startup warning: no auxiliary provider available at all."""
     agent = _make_agent(main_context=200_000, threshold_percent=0.50)
-    mock_client = MagicMock()
-    mock_client.base_url = "https://openrouter.ai/api/v1"
-    mock_client.api_key = "sk-aux"
-    mock_get_client.return_value = (mock_client, "google/gemini-3-flash-preview")
+    mock_get_client.return_value = (None, None)
 
     # Phase 1: __init__ — _emit_status prints (CLI) but callback is None
     vprint_messages = []
@@ -349,7 +337,7 @@ def test_warning_stored_for_gateway_replay(mock_get_client, mock_ctx_len):
     agent._replay_compression_warning()
 
     assert any(
-        ev == "lifecycle" and "Auto-lowered" in msg
+        ev == "lifecycle" and "No auxiliary LLM provider" in msg
         for ev, msg in callback_events
     )
 
@@ -380,16 +368,14 @@ def test_no_replay_when_no_warning(mock_get_client, mock_ctx_len):
 
 
 
-# ── #67422: threshold suggestion must survive the small-context floor ────────
-
-
+# ── Large-context main model: same no-lower semantics ───────────────────────
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=300_000)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
-def test_threshold_suggestion_kept_for_large_context_main(mock_get_client, mock_ctx_len):
-    """Main window >= 512K has no floor — any suggestion is honored, so the
-    `threshold:` option stays even below 75%."""
+def test_large_context_main_also_keeps_threshold(mock_get_client, mock_ctx_len):
+    """A 1M-window main model with a 300K aux stays at its 500K threshold —
+    the stash-and-fit semantics do not depend on the small-context floor."""
     agent = _make_agent(main_context=1_000_000, threshold_percent=0.50)
     # threshold = 500,000 — aux has 300,000
     mock_client = MagicMock()
@@ -402,8 +388,9 @@ def test_threshold_suggestion_kept_for_large_context_main(mock_get_client, mock_
 
     agent._check_compression_model_feasibility()
 
-    assert len(messages) == 1
-    assert "threshold: 0.30" in messages[0]
+    assert messages == []
+    assert agent.context_compressor.threshold_tokens == 500_000
+    assert agent.context_compressor.summary_model_context_length == 300_000
 
 
 

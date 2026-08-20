@@ -437,7 +437,7 @@ def inject_new_comments_from_env(agent: Any) -> bool:
 
 
 def _ok(**fields: Any) -> str:
-    return json.dumps({"ok": True, **fields})
+    return json.dumps({"ok": True, **fields}, ensure_ascii=False)
 
 
 def _normalize_profile(value: Any) -> Optional[str]:
@@ -560,7 +560,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "started_at": r.started_at, "ended_at": r.ended_at,
                 }
 
-            return json.dumps({
+            result = {
                 "task": _task_dict(task),
                 "parents": parents,
                 "children": children,
@@ -575,12 +575,13 @@ def _handle_show(args: dict, **kw) -> str:
                     for e in events[-50:]   # cap; full log via CLI
                 ],
                 "runs": [_run_dict(r) for r in runs],
-                # Also surface the worker's own context block so the
-                # agent can include it directly if it wants. This is
-                # the same string build_worker_context returns to the
-                # dispatcher at spawn time.
-                "worker_context": kb.build_worker_context(conn, tid),
-            })
+            }
+            if (
+                os.environ.get("HERMES_KANBAN_TASK") == tid
+                and _is_dispatcher_owned_worker()
+            ):
+                result["worker_context"] = kb.build_worker_context(conn, tid)
+            return json.dumps(result, ensure_ascii=False)
         finally:
             conn.close()
     except ValueError as e:
@@ -642,7 +643,7 @@ def _handle_list(args: dict, **kw) -> str:
                     if truncated and limit < KANBAN_LIST_MAX_LIMIT else None
                 ),
                 "promoted": promoted,
-            })
+            }, ensure_ascii=False)
         finally:
             conn.close()
     except ValueError as e:
@@ -1330,7 +1331,7 @@ def _handle_attachments(args: dict, **kw) -> str:
                     }
                     for a in atts
                 ],
-            })
+            }, ensure_ascii=False)
         finally:
             conn.close()
     except ValueError as e:
@@ -1699,9 +1700,11 @@ KANBAN_SHOW_SCHEMA = {
         "Read a task's full state — title, body, assignee, parent task "
         "handoffs, your prior attempts on this task if any, comments, "
         "and recent events. Use this to (re)orient yourself before "
-        "starting work, especially on retries. The response includes a "
+        "starting work, especially on retries. When a dispatcher-owned "
+        "worker reads its own task, the response also includes a "
         "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning."
+        "verbatim in its reasoning; other callers receive only the "
+        "structured task fields."
     ),
     "parameters": {
         "type": "object",

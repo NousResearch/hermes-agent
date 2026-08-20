@@ -80,6 +80,57 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_show_only_includes_worker_context_for_own_task(monkeypatch, worker_env):
+    from agent.delegation_context import non_dispatcher_owned_context
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        other_tid = kb.create_task(conn, title="other-task", assignee="peer")
+    finally:
+        conn.close()
+
+    foreign = json.loads(kt._handle_show({"task_id": other_tid}))
+    assert "worker_context" not in foreign
+
+    with non_dispatcher_owned_context():
+        nested_cron = json.loads(kt._handle_show({"task_id": worker_env}))
+    assert "worker_context" not in nested_cron
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    orchestrator = json.loads(kt._handle_show({"task_id": worker_env}))
+    assert "worker_context" not in orchestrator
+
+
+def test_kanban_tool_outputs_preserve_unicode(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET title = ?, body = ? WHERE id = ?",
+            ("日本語の作業", "説明", worker_env),
+        )
+        kb.add_attachment(
+            conn,
+            worker_env,
+            filename="資料.txt",
+            stored_path="unused",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert "成功" in kt._ok(message="成功")
+    assert "日本語の作業" in kt._handle_show({})
+    assert "資料.txt" in kt._handle_attachments({})
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    assert "日本語の作業" in kt._handle_list({})
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

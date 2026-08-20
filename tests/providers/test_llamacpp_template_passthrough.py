@@ -30,7 +30,7 @@ import yaml
 
 from tests.providers.test_llamacpp_profile import (
     _fresh_hermes_home,
-    _installed_plugin_dir,
+    _bundled_plugin_dir,
 )
 from tests.providers.test_llamacpp_reasoning_kwargs import (
     _fake_probe,
@@ -38,11 +38,6 @@ from tests.providers.test_llamacpp_reasoning_kwargs import (
     _qwen38_caps,
 )
 from tests.providers.test_plugin_discovery import _clear_provider_caches
-
-pytestmark = pytest.mark.skipif(
-    _installed_plugin_dir() is None,
-    reason="real llamacpp user plugin not installed on this machine",
-)
 
 BASE_URL = "http://rig:8080/v1"
 
@@ -54,7 +49,7 @@ def rig(tmp_path, monkeypatch):
     plugin_dir = hermes_home / "plugins" / "model-providers" / "llamacpp"
     plugin_dir.parent.mkdir(parents=True)
     shutil.copytree(
-        _installed_plugin_dir(),
+        _bundled_plugin_dir(),
         plugin_dir,
         ignore=shutil.ignore_patterns(".git", "__pycache__"),
     )

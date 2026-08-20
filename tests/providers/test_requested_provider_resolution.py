@@ -109,8 +109,19 @@ def test_non_opt_in_profile_never_shadows_provider(tmp_path, monkeypatch):
 
 
 def test_plugin_absent_requested_llamacpp_resolves_custom(tmp_path, monkeypatch):
-    """Without the plugin dir every entry resolves exactly as today."""
+    """With no llamacpp plugin in any placement, entries resolve stock."""
+    import shutil
+
+    import providers as _pkg
+
     _hermes_home_with_stub(tmp_path, monkeypatch, install_stub=False)
+    stripped_root = tmp_path / "bundled-minus-llamacpp"
+    shutil.copytree(
+        _pkg._BUNDLED_PLUGINS_DIR,
+        stripped_root,
+        ignore=shutil.ignore_patterns("llamacpp", "__pycache__"),
+    )
+    monkeypatch.setattr(_pkg, "_BUNDLED_PLUGINS_DIR", stripped_root)
     _clear_provider_caches()
     from providers import resolve_provider_profile
 

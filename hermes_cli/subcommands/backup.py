@@ -35,4 +35,12 @@ def build_backup_parser(subparsers, *, cmd_backup: Callable) -> None:
     backup_parser.add_argument(
         "-l", "--label", help="Label for the snapshot (only used with --quick)"
     )
+    backup_parser.add_argument(
+        "-k",
+        "--keep",
+        type=int,
+        default=None,
+        help="Number of hermes-backup-*.zip files to keep after backup (default: 3, "
+        "configurable via backup.run_backup_keep in config.yaml)",
+    )
     backup_parser.set_defaults(func=cmd_backup)

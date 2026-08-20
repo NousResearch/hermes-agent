@@ -52,7 +52,7 @@ For many Python MCP servers, `uvx` is a nice default.
 
 ## Step 2: add one server first
 
-Start with a single, safe server.
+Start with a single, safe server. Open the ~/.hermes/config.yaml and add:
 
 Example: filesystem access to one project directory only.
 

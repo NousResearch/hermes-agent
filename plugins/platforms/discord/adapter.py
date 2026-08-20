@@ -8153,13 +8153,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
                     return False
         # Auto-thread: when enabled, automatically create a thread for every
-        # @mention in a text channel so each conversation is isolated (like Slack).
-        # Messages already inside threads or DMs are unaffected.
-        # no_thread_channels: channels where bot responds directly without thread.
+        # new text-channel conversation the bot handles so each conversation is
+        # isolated (like Slack). Messages already inside threads or DMs are
+        # unaffected. no_thread_channels is the explicit escape hatch for
+        # channels where the bot should respond directly without a thread.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels = self._get_no_thread_channels()
-            skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
+            skip_thread = bool(channel_keys & no_thread_channels)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:

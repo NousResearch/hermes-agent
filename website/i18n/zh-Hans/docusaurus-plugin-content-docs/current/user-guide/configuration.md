@@ -1589,12 +1589,12 @@ timezone: "America/New_York"   # IANA 时区（默认："" = 服务器本地时�
 discord:
   require_mention: true          # 在服务器频道中需要 @提及才能响应
   free_response_channels: ""     # 逗号分隔的频道 ID，bot 在这些频道无需 @提及即可响应
-  auto_thread: true              # 在频道中 @提及时自动创建线程
+  auto_thread: true              # 为 bot 处理的频道消息自动创建线程
 ```
 
 - `require_mention` —— 为 `true`（默认）时，bot 仅在服务器频道中被 `@BotName` 提及时响应。DM 始终无需提及即可工作。
 - `free_response_channels` —— 逗号分隔的频道 ID 列表，bot 在这些频道对每条消息响应，无需提及。
-- `auto_thread` —— 为 `true`（默认）时，频道中的提及会自动为对话创建线程，保持频道整洁（类似 Slack 线程）。
+- `auto_thread` —— 为 `true`（默认）时，bot 在频道中处理的消息会自动为对话创建线程，保持频道整洁（类似 Slack 线程）。若要让某些频道直接回复，请将它们列入 `no_thread_channels`。
 
 ## 安全
 

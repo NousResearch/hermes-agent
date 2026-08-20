@@ -3122,8 +3122,6 @@ class TestVisionAutoSkipsKimiCoding:
         assert client is fake_or_client
         assert model == "google/gemini-3-flash-preview"
 
-
-
     def test_skip_set_covers_exactly_known_entries(self):
         """Guard against accidental widening of the skip list."""
         from agent.auxiliary_client import _PROVIDERS_WITHOUT_VISION
@@ -4620,3 +4618,28 @@ class TestFastModelTier:
             _FAST_MODEL_TASKS
         )
         assert not overlap
+
+
+def test_resolve_custom_runtime_with_named_custom_provider():
+    """``_resolve_custom_runtime`` should first try the default-configured
+    provider (which may be a named custom provider like ``ollama-launch``)
+    before falling back to an explicit ``requested="custom"`` call.
+    """
+    from agent.auxiliary_client import _resolve_custom_runtime
+
+    mock_runtime_first = {
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "base_url": "http://192.168.1.210:11434/v1",
+        "api_key": "ollama-key",
+    }
+
+    with patch(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        return_value=mock_runtime_first,
+    ) as mock_resolve:
+        base, key, mode = _resolve_custom_runtime()
+        assert base == "http://192.168.1.210:11434/v1"
+        assert key == "ollama-key"
+        assert mode == "chat_completions"
+        mock_resolve.assert_called_once_with(requested=None)

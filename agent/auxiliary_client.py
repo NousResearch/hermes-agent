@@ -3544,7 +3544,14 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        runtime = resolve_runtime_provider(requested="custom")
+        # Resolve the default configured provider first. If it's a custom
+        # runtime (e.g. a user-defined named custom provider like
+        # ollama-launch) we use it directly; otherwise fall back to an
+        # explicit "custom" request so the legacy single-custom path still
+        # works.
+        runtime = resolve_runtime_provider(requested=None)
+        if not isinstance(runtime, dict) or runtime.get("provider") != "custom":
+            runtime = resolve_runtime_provider(requested="custom")
     except Exception as exc:
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
         runtime = None

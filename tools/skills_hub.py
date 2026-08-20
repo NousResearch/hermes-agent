@@ -4914,6 +4914,14 @@ def install_from_quarantine(
             raise ValueError("Verified install staging differs from security scan")
         shutil.rmtree(scanned_path, ignore_errors=True)
 
+    # The configured skills root itself may be a supported junction (for
+    # example a redirected profile directory). Bind publication to the
+    # already-resolved quarantine directory while still rejecting redirects
+    # in any skill/category component through the destination resolver.
+    quarantine_path = quarantine_path.resolve(strict=True)
+    if not quarantine_path.is_relative_to(quarantine_root):
+        raise ValueError("Quarantine staging escaped its verified root")
+
     target_lock_name = hashlib.sha256(install_rel_path.encode("utf-8")).hexdigest()
     target_lock_path = _hub_dir() / "install-locks" / f"{target_lock_name}.lock"
     backup_dir: Optional[Path] = None

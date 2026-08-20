@@ -13,6 +13,7 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuShortcut,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
@@ -20,6 +21,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { desktopGit } from '@/lib/desktop-git'
+import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 import {
   $sidebarCardRows,
@@ -39,7 +41,6 @@ import {
   setSidebarGrouping,
   setSidebarOrdering,
   setSidebarShowArchived,
-  setWorkspaceNodesOpen,
   type SidebarGrouping,
   type SidebarOrdering,
   type SidebarRowMeta,
@@ -57,7 +58,7 @@ import {
   toggleShowAllProfiles
 } from '@/store/profile'
 import { runImportProfileFlow } from '@/store/profile-share'
-import { $projectTree } from '@/store/projects'
+import { $projectTree, projectsAllCollapsed, toggleAllProjectsCollapsed } from '@/store/projects'
 import type { PullRequestBucket } from '@/store/pull-requests'
 import { $unreadFinishedSessionIds, markAllSessionsRead } from '@/store/session'
 import type { SessionStatusBucket } from '@/store/session-dot-state'
@@ -174,7 +175,8 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const prAvailable = Boolean(desktopGit()?.review?.prList)
   // Project rows default open, so "all collapsed" means every one of them has
   // been explicitly shut.
-  const projectsCollapsed = projects.length > 0 && projects.every(project => nodeOpen[project.id] === false)
+  const projectsCollapsed = projectsAllCollapsed(projects, nodeOpen)
+  const collapseHint = useKeybindHint('view.toggleProjects')
 
   const groupingLabel = GROUPINGS.find(option => option.id === grouping)?.label
 
@@ -397,15 +399,9 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
             what "collapse all" means here. Their lanes underneath keep their
             own state, so re-opening a project shows it as you left it. */}
         {grouping === 'project' && projects.length > 0 && (
-          <DropdownMenuItem
-            onSelect={() =>
-              setWorkspaceNodesOpen(
-                projects.map(project => project.id),
-                projectsCollapsed
-              )
-            }
-          >
+          <DropdownMenuItem onSelect={toggleAllProjectsCollapsed}>
             {projectsCollapsed ? 'Expand all' : 'Collapse all'}
+            {collapseHint && <DropdownMenuShortcut>{collapseHint}</DropdownMenuShortcut>}
           </DropdownMenuItem>
         )}
         <DropdownMenuItem disabled={unreadIds.length === 0} onSelect={markAllSessionsRead}>

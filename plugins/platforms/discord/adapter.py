@@ -4705,14 +4705,24 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
 
     def _discord_bots_require_inline_mention(self) -> bool:
-        """Whether a bot author must type a literal ``<@thisbot>`` to wake us (off by default).
-        A reply-ping adds us to ``message.mentions`` silently, letting two bots ping-pong forever.
-        Config: ``discord.bots_require_inline_mention`` / ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``."""
-        configured = self.config.extra.get("bots_require_inline_mention")
-        if isinstance(configured, str):
-            return configured.lower() in {"true", "1", "yes", "on"}
+        """Whether another bot must type an inline @mention to trigger us.
+
+        On by default. A bot-authored message only wakes this bot if its
+        content contains a literal ``<@thisbot>`` token. A Discord reply/quote
+        to one of our messages is NOT enough on its own, because Discord's
+        reply-ping silently adds us to ``message.mentions`` even though the
+        author never typed our handle — which otherwise lets two bots ping-pong
+        replies at each other indefinitely. Humans are never affected by this
+        gate; it only applies to bot authors. Set the option to false only for
+        trusted relay integrations that intentionally depend on reply pings or
+        unmentioned bot messages.
+
+        Config: ``discord.bots_require_inline_mention`` (or env
+        ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
+        """
         return self._extra_or_env_flag(
-            "bots_require_inline_mention", "DISCORD_BOTS_REQUIRE_INLINE_MENTION", "false", truthy=True)
+            "bots_require_inline_mention", "DISCORD_BOTS_REQUIRE_INLINE_MENTION", "true", truthy=True
+        )
 
     def _discord_channel_keys(self, message: Any, parent_channel_id: Optional[str] = None) -> set[str]:
         """Channel keys (ID, bare name, ``#name``, plus parent for threads) accepted by channel gates."""

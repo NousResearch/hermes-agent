@@ -16446,7 +16446,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Plugins receive the MessageEvent and may return a dict influencing flow:
         #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
         #   {"action": "rewrite", "text":  ...}     -> replace event.text, continue
-        #   {"action": "allow"}   /   None          -> normal dispatch
+        #   {"action": "allow"}   /   None          -> normal dispatch (auth applies)
+        #   {"action": "authorize"}                 -> skip allowlist checks (the hook
+        #                                              IS the authz layer, e.g. a plugin
+        #                                              that resolved the sender's identity)
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
         # (e.g. customer handover ingest) without triggering the pairing flow.
         if not is_internal:
@@ -16465,6 +16468,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
                 _hook_results = []
 
+            _hook_authorized = False
             for _result in _hook_results:
                 if not isinstance(_result, dict):
                     continue
@@ -16477,6 +16481,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         source.chat_id or "unknown",
                     )
                     return None
+                if _action == "authorize":
+                    # The hook vouches for this sender (e.g. an identity/
+                    # access plugin that already authenticated them and may
+                    # have mutated source.user_id to a canonical identity).
+                    # Skip the platform allowlist below.
+                    _hook_authorized = True
+                    break
                 if _action == "rewrite":
                     _new_text = _result.get("text")
                     if isinstance(_new_text, str):
@@ -16487,6 +16498,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     break
 
         if is_internal:
+            pass
+        elif _hook_authorized:
             pass
         elif source.user_id is None:
             # Messages with no user identity (Telegram service messages,

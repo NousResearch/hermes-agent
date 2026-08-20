@@ -48,10 +48,14 @@ def _scan_provenance_for_source(
     source: str,
     identifier: str = "",
     fallback: str = "",
+    *,
+    origin_verified: bool = False,
 ) -> tuple[str, bool]:
     """Return scan identity and whether reserved origin markers may elevate."""
-    if source in {"official", "agent-created"}:
+    if source == "agent-created":
         return source, True
+    if source == "official":
+        return ("official", True) if origin_verified else ("community", False)
     return identifier or fallback or "community", False
 
 
@@ -98,6 +102,24 @@ def _audit_install_attestation(
     return None
 
 
+def _audit_origin_identity_is_valid(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    return bool(
+        re.fullmatch(
+            r"git:NousResearch/hermes-agent@[0-9a-f]{40}", value
+        )
+        or re.fullmatch(
+            r"nix-store:[0-9abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+",
+            value,
+        )
+        or re.fullmatch(
+            r"github:NousResearch/hermes-agent@[0-9a-f]{40}",
+            value,
+        )
+    )
+
+
 def _audit_scan_identity_for_lock_entry(
     entry: Dict[str, Any], skill_path: Path
 ) -> tuple[str, bool]:
@@ -126,6 +148,7 @@ def _audit_scan_identity_for_lock_entry(
         and attestation.get("source") == "official"
         and attestation.get("identifier") == identifier
         and attestation.get("trust_level") == "builtin"
+        and _audit_origin_identity_is_valid(attestation.get("origin_identity"))
         and not _audit_tree_has_redirect(skill_path)
         and attestation.get("bundle_hash") == full_content_hash(skill_path)
     ):
@@ -816,6 +839,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         bundle.source,
         getattr(bundle, "identifier", "") or getattr(meta, "identifier", ""),
         identifier,
+        origin_verified=getattr(bundle, "origin_verified", False),
     )
     from tools.skills_hub import HUB_DIR, source_url_for_bundle
     result, scan_provenance = scan_skill_cached(

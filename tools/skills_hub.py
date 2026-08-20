@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import time
 from abc import ABC, abstractmethod
@@ -150,6 +151,215 @@ class SkillBundle:
     identifier: str
     trust_level: str
     metadata: Dict[str, Any] = field(default_factory=dict)
+    origin_verified: bool = False
+    origin_identity: str = ""
+
+
+def _nix_store_optional_identity(
+    path: Path,
+    *,
+    store_root: Path = Path("/nix/store"),
+) -> str:
+    """Return a package identity for an immutable Nix optional-skill root."""
+    try:
+        resolved = path.resolve()
+        root = store_root.resolve()
+        relative = resolved.relative_to(root)
+        if path.absolute() != resolved:
+            return ""
+        parts = relative.parts
+        if (
+            len(parts) != 4
+            or not re.fullmatch(
+                r"[0-9abcdfghijklmnpqrsvwxyz]{32}-.+",
+                parts[0],
+            )
+            or parts[1:] != ("share", "hermes-agent", "optional-skills")
+        ):
+            return ""
+        store_item = root / parts[0]
+        package_dirs = (
+            store_item,
+            store_item / "share",
+            store_item / "share" / "hermes-agent",
+            resolved,
+        )
+        for directory in package_dirs:
+            if (
+                _is_path_redirect(directory)
+                or not directory.is_dir()
+                or directory.stat().st_mode & 0o222
+            ):
+                return ""
+        for entry in resolved.rglob("*"):
+            if _is_path_redirect(entry) or entry.lstat().st_mode & 0o222:
+                return ""
+        return f"nix-store:{parts[0]}"
+    except (OSError, ValueError):
+        return ""
+
+
+def _git_checkout_optional_identity(path: Path, repo_root: Path) -> str:
+    """Return the exact clean Git commit that owns a checkout's optional tree."""
+    try:
+        resolved = path.resolve()
+        repo_root = repo_root.resolve()
+        expected = (repo_root / "optional-skills").resolve()
+        if resolved != expected or _is_path_redirect(path):
+            return ""
+        for entry in resolved.rglob("*"):
+            if _is_path_redirect(entry):
+                return ""
+        top = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        if Path(top).resolve() != repo_root:
+            return ""
+        status = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+                "--",
+                "optional-skills",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+        if status:
+            return ""
+        ignored_untracked = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "ls-files",
+                "--others",
+                "--ignored",
+                "--exclude-standard",
+                "-z",
+                "--",
+                "optional-skills",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=10,
+        ).stdout
+        ignored_paths = [
+            Path(raw.decode("utf-8", errors="surrogateescape"))
+            for raw in ignored_untracked.split(b"\0")
+            if raw
+        ]
+        if any(
+            not path.name.startswith(".")
+            and "__pycache__" not in path.parts
+            and path.suffix != ".pyc"
+            for path in ignored_paths
+        ):
+            return ""
+        remote_output = subprocess.run(
+            ["git", "-C", str(repo_root), "remote", "-v"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+        official_urls = {
+            "https://github.com/NousResearch/hermes-agent",
+            "https://github.com/NousResearch/hermes-agent.git",
+            "git@github.com:NousResearch/hermes-agent.git",
+            "ssh://git@github.com/NousResearch/hermes-agent.git",
+        }
+        official_fetch_remotes = {
+            parts[0]
+            for line in remote_output.splitlines()
+            if (parts := line.split())
+            and len(parts) >= 3
+            and parts[1] in official_urls
+            and parts[2] == "(fetch)"
+        }
+        if not official_fetch_remotes:
+            return ""
+        head_tree = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "rev-parse",
+                "HEAD:optional-skills",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        for remote in sorted(official_fetch_remotes):
+            try:
+                revision = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(repo_root),
+                        "rev-parse",
+                        f"{remote}/main^{{commit}}",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                ).stdout.strip()
+                remote_tree = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(repo_root),
+                        "rev-parse",
+                        f"{remote}/main:optional-skills",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                ).stdout.strip()
+            except subprocess.SubprocessError:
+                continue
+            if (
+                remote_tree == head_tree
+                and re.fullmatch(r"[0-9a-f]{40}", revision)
+            ):
+                return f"git:NousResearch/hermes-agent@{revision}"
+        return ""
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return ""
+
+
+def optional_skills_root_identity(path: Path) -> str:
+    """Return a verified package/runtime identity for an optional-skill root."""
+    nix_identity = _nix_store_optional_identity(path)
+    if nix_identity:
+        return nix_identity
+    repo_root = Path(__file__).parent.parent
+    return _git_checkout_optional_identity(path, repo_root)
+
+
+def optional_skills_root_is_authoritative(path: Path) -> bool:
+    """Whether ``path`` has a runtime/package-bound official identity.
+
+    ``HERMES_OPTIONAL_SKILLS`` remains a discovery/package-layout override,
+    but an arbitrary environment path is not an official-origin authority.
+    Clean source checkouts are bound to their exact Git commit; the separately
+    shipped Nix tree is bound to an immutable, content-addressed store item.
+    """
+    return bool(optional_skills_root_identity(path))
 
 
 _ALLOWED_SUPPORT_DIRS = frozenset({"references", "templates", "scripts", "assets", "examples"})
@@ -265,7 +475,16 @@ def _is_path_redirect(path: Path) -> bool:
     redirect a subsequent ``rmtree`` to content outside it. ``is_junction``
     only exists on Python 3.12+ Windows; gate with ``hasattr``.
     """
-    return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+    try:
+        is_junction = getattr(path, "is_junction", None)
+        if path.is_symlink() or (is_junction and is_junction()):
+            return True
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
 
 
 def _resolve_lock_install_path(
@@ -1082,11 +1301,18 @@ class GitHubSource(SkillSource):
         except UnicodeDecodeError:
             return None
 
-    def _fetch_file_bytes(self, repo: str, path: str) -> Optional[bytes]:
+    def _fetch_file_bytes(
+        self,
+        repo: str,
+        path: str,
+        *,
+        revision: str = "",
+    ) -> Optional[bytes]:
         """Fetch exact file bytes from GitHub without text decoding."""
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
         resp = self._github_get(
             url,
+            params={"ref": revision} if revision else None,
             headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
         )
         if resp is not None and resp.status_code == 200:
@@ -3359,7 +3585,11 @@ class OptionalSkillSource(SkillSource):
         return "official"
 
     def trust_level_for(self, identifier: str) -> str:
-        return "builtin"
+        return (
+            "builtin"
+            if optional_skills_root_is_authoritative(self._optional_dir)
+            else "community"
+        )
 
     # -- search -----------------------------------------------------------
 
@@ -3428,6 +3658,7 @@ class OptionalSkillSource(SkillSource):
         else:
             skill_dir = resolved
 
+        origin_identity_before = optional_skills_root_identity(self._optional_dir)
         files: Dict[str, Union[str, bytes]] = {}
         for f in skill_dir.rglob("*"):
             if (
@@ -3448,12 +3679,22 @@ class OptionalSkillSource(SkillSource):
         # Determine category from directory structure
         name = skill_dir.name
 
+        origin_identity_after = optional_skills_root_identity(self._optional_dir)
+        origin_identity = (
+            origin_identity_after
+            if origin_identity_before
+            and origin_identity_before == origin_identity_after
+            else ""
+        )
+        origin_verified = bool(origin_identity)
         return SkillBundle(
             name=name,
             files=files,
             source="official",
             identifier=f"official/{skill_dir.resolve().relative_to(self._optional_dir.resolve()).as_posix()}",
-            trust_level="builtin",
+            trust_level="builtin" if origin_verified else "community",
+            origin_verified=origin_verified,
+            origin_identity=origin_identity,
         )
 
     # -- inspect ----------------------------------------------------------
@@ -3533,6 +3774,13 @@ class OptionalSkillSource(SkillSource):
         if tree is None:
             return None
         _branch, entries = tree
+        revision = github._tree_revisions.get(self.OFFICIAL_REPO, "")
+        verified_revision = (
+            revision
+            if isinstance(revision, str)
+            and re.fullmatch(r"[0-9a-f]{40}", revision)
+            else ""
+        )
         prefix = f"{repo_path}/"
         files: Dict[str, Union[str, bytes]] = {}
         for item in entries:
@@ -3545,7 +3793,11 @@ class OptionalSkillSource(SkillSource):
             base = rel_file.rsplit("/", 1)[-1]
             if base.startswith(".") or base.endswith(".pyc") or "__pycache__" in rel_file.split("/"):
                 continue
-            content = github._fetch_file_bytes(self.OFFICIAL_REPO, item_path)
+            content = github._fetch_file_bytes(
+                self.OFFICIAL_REPO,
+                item_path,
+                revision=revision,
+            )
             if content is None:
                 logger.warning("Live-repo optional skill fetch failed for %s", item_path)
                 return None
@@ -3560,7 +3812,13 @@ class OptionalSkillSource(SkillSource):
             files=files,
             source="official",
             identifier=f"official/{rel}",
-            trust_level="builtin",
+            trust_level="builtin" if verified_revision else "community",
+            origin_verified=bool(verified_revision),
+            origin_identity=(
+                f"github:{self.OFFICIAL_REPO}@{verified_revision}"
+                if verified_revision
+                else ""
+            ),
         )
 
     def _list_remote_skill_dirs(self) -> Dict[str, bool]:
@@ -3622,6 +3880,7 @@ class OptionalSkillSource(SkillSource):
             return []
 
         results: List[SkillMeta] = []
+        local_trust_level = self.trust_level_for("official")
         for skill_md in sorted(self._optional_dir.rglob("SKILL.md")):
             if is_excluded_skill_path(
                 skill_md.relative_to(self._optional_dir), root=self._optional_dir
@@ -3651,7 +3910,7 @@ class OptionalSkillSource(SkillSource):
                 description=desc[:200],
                 source="official",
                 identifier=f"official/{rel_path}",
-                trust_level="builtin",
+                trust_level=local_trust_level,
                 repo=self.OFFICIAL_REPO,
                 # The centralized skills index consumes repo-root-relative paths.
                 path=f"optional-skills/{rel_path}",
@@ -4068,6 +4327,7 @@ def install_from_quarantine(
             source=bundle.source,
             identifier=bundle.identifier,
             trust_level=scan_result.trust_level,
+            origin_identity=getattr(bundle, "origin_identity", ""),
         ),
     )
 

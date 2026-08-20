@@ -211,6 +211,7 @@ def test_do_audit_replays_matching_install_attestation_without_refetch(
             source="official",
             identifier=identifier,
             trust_level="builtin",
+            origin_identity="git:NousResearch/hermes-agent@" + "a" * 40,
         ),
     }
     scanned = {}
@@ -241,6 +242,40 @@ def test_do_audit_replays_matching_install_attestation_without_refetch(
     assert scanned["source"] == "official"
     assert scanned["allow_origin_markers"] is True
     assert "trust=builtin" in sink.getvalue()
+
+
+@pytest.mark.parametrize(
+    "origin_identity",
+    [
+        "asserted-by-lock",
+        "nix-store:" + "0" * 32 + "-../../forged",
+    ],
+)
+def test_audit_rejects_unknown_origin_identity(tmp_path, origin_identity):
+    import tools.skills_guard as guard
+    from hermes_cli.skills_hub import _audit_scan_identity_for_lock_entry
+
+    skill_path = tmp_path / "demo"
+    skill_path.mkdir()
+    (skill_path / "SKILL.md").write_text("# Demo\n")
+    identifier = "official/devops/demo"
+    entry = {
+        "source": "official",
+        "identifier": identifier,
+        "trust_level": "builtin",
+        "install_attestation": guard.build_install_attestation(
+            skill_path,
+            source="official",
+            identifier=identifier,
+            trust_level="builtin",
+            origin_identity=origin_identity,
+        ),
+    }
+
+    assert _audit_scan_identity_for_lock_entry(entry, skill_path) == (
+        "community",
+        False,
+    )
 
 
 def test_audit_rejects_legacy_scan_provenance_as_official_proof(tmp_path):
@@ -289,6 +324,7 @@ def test_do_audit_scans_verified_official_snapshot(monkeypatch, tmp_path, hub_en
             source="official",
             identifier="official/devops/demo",
             trust_level="builtin",
+            origin_identity="git:NousResearch/hermes-agent@" + "b" * 40,
         ),
     }
     scanned = {}
@@ -581,6 +617,21 @@ def test_audit_path_is_redirect_detects_windows_reparse_points():
     assert _audit_path_is_redirect(cast(Path, JunctionLikePath())) is True
 
 
+def test_scan_provenance_requires_verified_official_origin():
+    from hermes_cli.skills_hub import _scan_provenance_for_source
+
+    assert _scan_provenance_for_source(
+        "official",
+        "official/devops/demo",
+        origin_verified=False,
+    ) == ("community", False)
+    assert _scan_provenance_for_source(
+        "official",
+        "official/devops/demo",
+        origin_verified=True,
+    ) == ("official", True)
+
+
 @pytest.mark.parametrize(
     ("entry", "expected"),
     [
@@ -724,6 +775,7 @@ def test_audit_install_attestation_does_not_reject_executable_mode(tmp_path):
             source="official",
             identifier=identifier,
             trust_level="builtin",
+            origin_identity="git:NousResearch/hermes-agent@" + "c" * 40,
         ),
     }
 
@@ -895,8 +947,26 @@ def _install_mocks(monkeypatch, tmp_path, source_factory, category_hint=""):
     return install_calls
 
 
-def test_do_install_denies_reserved_origin_marker_from_external_identifier(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    ("bundle_source", "bundle_identifier", "install_identifier", "expected_source"),
+    [
+        ("clawhub", "official", "clawhub/official", "official"),
+        (
+            "official",
+            "official/devops/demo",
+            "official/devops/demo",
+            "community",
+        ),
+    ],
+    ids=["external-reserved-marker", "unverified-optional-root"],
+)
+def test_do_install_denies_unverified_official_origin(
+    monkeypatch,
+    tmp_path,
+    bundle_source,
+    bundle_identifier,
+    install_identifier,
+    expected_source,
 ):
     import tools.skills_guard as guard
     import tools.skills_hub as hub
@@ -904,9 +974,10 @@ def test_do_install_denies_reserved_origin_marker_from_external_identifier(
     bundle = hub.SkillBundle(
         name="demo",
         files={"SKILL.md": "# Demo\n"},
-        source="clawhub",
-        identifier="official",
+        source=bundle_source,
+        identifier=bundle_identifier,
         trust_level="community",
+        origin_verified=False,
     )
 
     class Source:
@@ -914,8 +985,8 @@ def test_do_install_denies_reserved_origin_marker_from_external_identifier(
             return hub.SkillMeta(
                 name="demo",
                 description="demo",
-                source="clawhub",
-                identifier="official",
+                source=bundle_source,
+                identifier=bundle_identifier,
                 trust_level="community",
             )
 
@@ -965,13 +1036,13 @@ def test_do_install_denies_reserved_origin_marker_from_external_identifier(
     monkeypatch.setattr(guard, "should_allow_install", lambda *_args, **_kwargs: (True, "ok"))
 
     do_install(
-        "clawhub/official",
+        install_identifier,
         skip_confirm=True,
         console=Console(file=StringIO(), force_terminal=False),
     )
 
     assert observed == {
-        "source": "official",
+        "source": expected_source,
         "allow_origin_markers": False,
     }
 

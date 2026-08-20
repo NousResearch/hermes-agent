@@ -120,6 +120,12 @@ def _get_optional_dir() -> Path:
     return get_optional_skills_dir(Path(__file__).parent.parent / "optional-skills")
 
 
+def _optional_root_identity(path: Path) -> str:
+    from tools.skills_hub import optional_skills_root_identity
+
+    return optional_skills_root_identity(path)
+
+
 def _build_external_skill_index() -> Set[str]:
     """Index every skill available in external_dirs by name and frontmatter name.
 
@@ -519,6 +525,13 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
     optional_dir = _get_optional_dir()
     if not optional_dir.exists():
         return []
+    origin_identity = _optional_root_identity(optional_dir)
+    if not origin_identity:
+        logger.debug(
+            "Skipping official provenance backfill for unverified optional root %s",
+            optional_dir,
+        )
+        return []
 
     lock_path = _skills_dir() / ".hub" / "lock.json"
     try:
@@ -581,6 +594,7 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
                     source="official",
                     identifier=identifier,
                     trust_level="builtin",
+                    origin_identity=origin_identity,
                 )
                 existing_entry["updated_at"] = datetime.now(timezone.utc).isoformat()
                 backfilled.append(lock_name)
@@ -633,6 +647,7 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
                 source="official",
                 identifier=identifier,
                 trust_level="builtin",
+                origin_identity=origin_identity,
             ),
             "installed_at": timestamp,
             "updated_at": timestamp,
@@ -640,10 +655,15 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
         existing_paths.add(install_path)
         backfilled.append(lock_name)
         changed = True
-        if not quiet:
-            print(f"  = {lock_name} (official optional provenance backfilled)")
 
     if changed:
+        if _optional_root_identity(optional_dir) != origin_identity:
+            logger.debug(
+                "Skipping official provenance backfill because optional-root "
+                "identity changed during verification: %s",
+                optional_dir,
+            )
+            return []
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         # Atomic write so a crash mid-write can't silently wipe all provenance
         # via the JSONDecodeError fallback above (which resets `installed` to
@@ -668,6 +688,12 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
             except OSError:
                 pass
             raise
+        if not quiet:
+            for lock_name in backfilled:
+                print(
+                    f"  = {lock_name} "
+                    "(official optional provenance backfilled)"
+                )
     return backfilled
 
 

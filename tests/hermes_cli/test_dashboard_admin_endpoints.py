@@ -599,11 +599,18 @@ class _FakeMeta:
 
 
 class _FakeBundle:
-    def __init__(self, identifier, source="github", trust_level="community"):
+    def __init__(
+        self,
+        identifier,
+        source="github",
+        trust_level="community",
+        origin_verified=False,
+    ):
         self.name = identifier.rsplit("/", 1)[-1]
         self.identifier = identifier
         self.source = source
         self.trust_level = trust_level
+        self.origin_verified = origin_verified
         self.description = "desc"
         self.repo = "owner/repo"
         self.tags = ["a", "b"]
@@ -801,6 +808,51 @@ class TestSkillsHubScanEndpoint:
         assert response.json()["trust_level"] == "community"
         assert observed == {
             "source": "official",
+            "allow_origin_markers": False,
+        }
+
+    def test_scan_downgrades_unverified_official_optional_root(self, monkeypatch):
+        from pathlib import Path
+
+        from tools.skills_guard import ScanResult
+
+        monkeypatch.setattr("tools.skills_hub.create_source_router", lambda: [])
+        bundle = _FakeBundle(
+            "official/devops/demo",
+            source="official",
+            trust_level="community",
+            origin_verified=False,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
+            lambda ident, sources: (None, bundle, None),
+        )
+        monkeypatch.setattr(
+            "tools.skills_hub.quarantine_bundle", lambda _bundle: Path("/tmp/_fake_q")
+        )
+        observed = {}
+
+        def _scan(path, source="community", **kwargs):
+            observed["source"] = source
+            observed["allow_origin_markers"] = kwargs.get("allow_origin_markers")
+            return ScanResult(
+                skill_name="demo",
+                source=source,
+                trust_level="community",
+                verdict="safe",
+            )
+
+        monkeypatch.setattr("tools.skills_guard.scan_skill", _scan)
+        monkeypatch.setattr("shutil.rmtree", lambda *a, **k: None)
+
+        response = self.client.get(
+            "/api/skills/hub/scan?identifier=official/devops/demo"
+        )
+
+        assert response.status_code == 200
+        assert response.json()["trust_level"] == "community"
+        assert observed == {
+            "source": "community",
             "allow_origin_markers": False,
         }
 

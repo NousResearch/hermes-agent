@@ -712,6 +712,195 @@ class TestAppendAuditLog:
 
 
 class TestOptionalSkillSourceMetadata:
+    def test_repo_optional_root_identity_is_commit_bound(self):
+        import re
+        from pathlib import Path
+
+        import tools.skills_hub as hub
+
+        optional_root = Path(hub.__file__).resolve().parent.parent / "optional-skills"
+        assert re.fullmatch(
+            r"git:NousResearch/hermes-agent@[0-9a-f]{40}",
+            hub.optional_skills_root_identity(optional_root),
+        )
+
+    def test_git_optional_identity_requires_official_fetch_remote(self, tmp_path):
+        import subprocess
+
+        from tools.skills_hub import _git_checkout_optional_identity
+
+        repo = tmp_path / "repo"
+        skill = repo / "optional-skills" / "devops" / "demo"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Demo\n")
+        for command in (
+            ["git", "init", "-q"],
+            ["git", "config", "user.name", "Test"],
+            ["git", "config", "user.email", "test@example.invalid"],
+            [
+                "git",
+                "remote",
+                "add",
+                "upstream",
+                "https://example.invalid/untrusted.git",
+            ],
+            [
+                "git",
+                "remote",
+                "set-url",
+                "--add",
+                "--push",
+                "upstream",
+                "https://github.com/NousResearch/hermes-agent.git",
+            ],
+            ["git", "add", "optional-skills"],
+            ["git", "commit", "-qm", "fixture"],
+        ):
+            subprocess.run(command, cwd=repo, check=True)
+
+        assert _git_checkout_optional_identity(repo / "optional-skills", repo) == ""
+
+    def test_git_optional_identity_rejects_ignored_untracked_files(self, tmp_path):
+        import subprocess
+
+        from tools.skills_hub import _git_checkout_optional_identity
+
+        repo = tmp_path / "repo"
+        skill = repo / "optional-skills" / "devops" / "demo"
+        skill.mkdir(parents=True)
+        (repo / "optional-skills" / ".gitignore").write_text("*.payload\n")
+        (skill / "SKILL.md").write_text("# Demo\n")
+        for command in (
+            ["git", "init", "-q"],
+            ["git", "config", "user.name", "Test"],
+            ["git", "config", "user.email", "test@example.invalid"],
+            [
+                "git",
+                "remote",
+                "add",
+                "upstream",
+                "https://github.com/NousResearch/hermes-agent.git",
+            ],
+            ["git", "add", "optional-skills"],
+            ["git", "commit", "-qm", "fixture"],
+        ):
+            subprocess.run(command, cwd=repo, check=True)
+
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/upstream/main", "HEAD"],
+            cwd=repo,
+            check=True,
+        )
+        assert _git_checkout_optional_identity(
+            repo / "optional-skills", repo
+        ).startswith("git:NousResearch/hermes-agent@")
+
+        ignored_payload = skill / "evil.payload"
+        ignored_payload.write_text("ignored but installable\n")
+
+        assert _git_checkout_optional_identity(repo / "optional-skills", repo) == ""
+
+        ignored_payload.unlink()
+        (skill / "SKILL.md").write_text("# Locally modified\n")
+        subprocess.run(["git", "add", "optional-skills"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-qm", "local-only change"],
+            cwd=repo,
+            check=True,
+        )
+
+        assert _git_checkout_optional_identity(repo / "optional-skills", repo) == ""
+
+    def test_redirect_helper_recognizes_windows_reparse_point(self):
+        import stat
+        from pathlib import Path
+        from types import SimpleNamespace
+        from typing import cast
+
+        from tools.skills_hub import _is_path_redirect
+
+        class ReparsePath:
+            def is_symlink(self):
+                return False
+
+            def is_junction(self):
+                return False
+
+            def lstat(self):
+                return SimpleNamespace(
+                    st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT
+                )
+
+        assert _is_path_redirect(cast(Path, ReparsePath())) is True
+
+    def test_nix_store_optional_root_has_package_identity(self, tmp_path):
+        from tools.skills_hub import _nix_store_optional_identity
+
+        store_root = tmp_path / "nix" / "store"
+        store_item = store_root / ("0" * 32 + "-hermes-agent")
+        optional_root = store_item / "share" / "hermes-agent" / "optional-skills"
+        optional_root.mkdir(parents=True)
+        store_item.chmod(0o555)
+        optional_root.chmod(0o555)
+
+        assert _nix_store_optional_identity(
+            optional_root,
+            store_root=store_root,
+        ) == ""
+
+        (store_item / "share").chmod(0o555)
+        (store_item / "share" / "hermes-agent").chmod(0o555)
+        assert _nix_store_optional_identity(
+            optional_root,
+            store_root=store_root,
+        ) == f"nix-store:{store_item.name}"
+
+    def test_local_fetch_downgrades_when_origin_changes_during_read(
+        self, monkeypatch, tmp_path
+    ):
+        optional_root = tmp_path / "optional-skills"
+        skill = optional_root / "devops" / "demo"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Demo\n")
+        source = OptionalSkillSource()
+        source._optional_dir = optional_root
+        identities = iter(
+            [
+                "git:NousResearch/hermes-agent@" + "a" * 40,
+                "git:NousResearch/hermes-agent@" + "b" * 40,
+            ]
+        )
+        monkeypatch.setattr(
+            "tools.skills_hub.optional_skills_root_identity",
+            lambda _path: next(identities),
+        )
+
+        bundle = source.fetch("official/devops/demo")
+
+        assert bundle is not None
+        assert bundle.trust_level == "community"
+        assert bundle.origin_verified is False
+        assert bundle.origin_identity == ""
+
+    def test_env_override_is_not_treated_as_verified_official_origin(
+        self, monkeypatch, tmp_path
+    ):
+        optional_root = tmp_path / "hostile-optional-skills"
+        skill_dir = optional_root / "devops" / "demo"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Demo\n")
+        monkeypatch.setenv("HERMES_OPTIONAL_SKILLS", str(optional_root))
+
+        source = OptionalSkillSource()
+        bundle = source.fetch("official/devops/demo")
+        meta = source.inspect("official/devops/demo")
+
+        assert bundle is not None
+        assert bundle.trust_level == "community"
+        assert bundle.origin_verified is False
+        assert meta is not None
+        assert meta.trust_level == "community"
+
     def test_scan_all_emits_repo_root_relative_metadata(self, tmp_path):
         optional_root = tmp_path / "optional-skills"
         skill_dir = optional_root / "finance" / "3-statement-model"
@@ -824,7 +1013,10 @@ class TestOptionalSkillSourceLiveRepoFallback:
             contents[rel_path] = data
         fake = MagicMock()
         fake._get_repo_tree.return_value = ("main", entries)
-        fake._fetch_file_bytes.side_effect = lambda repo, path: contents.get(path)
+        fake._tree_revisions = {"NousResearch/hermes-agent": "d" * 40}
+        fake._fetch_file_bytes.side_effect = (
+            lambda repo, path, **_kwargs: contents.get(path)
+        )
         return fake
 
     def test_fetch_falls_back_to_live_repo_when_missing_locally(self, tmp_path):
@@ -844,9 +1036,32 @@ class TestOptionalSkillSourceLiveRepoFallback:
         assert bundle.source == "official"
         assert bundle.identifier == "official/software-development/ast-grep"
         assert bundle.trust_level == "builtin"
+        assert bundle.origin_verified is True
+        assert bundle.origin_identity == (
+            "github:NousResearch/hermes-agent@" + "d" * 40
+        )
+        src._github._fetch_file_bytes.assert_any_call(
+            "NousResearch/hermes-agent",
+            "optional-skills/software-development/ast-grep/SKILL.md",
+            revision="d" * 40,
+        )
         # FULL directory arrives — including root-level files GitHubSource.fetch drops
         assert bundle.files["install.sh"] == b"#!/bin/sh\n"
         assert bundle.files["LICENSE"] == b"MIT"
+
+    def test_live_repo_requires_immutable_commit_revision(self, tmp_path):
+        src = self._make_source(tmp_path, ["security/scanner"])
+        src._github = self._fake_github_with_tree(["security/scanner"])
+        src._github._tree_revisions = {
+            "NousResearch/hermes-agent": "main"
+        }
+
+        bundle = src.fetch("official/security/scanner")
+
+        assert bundle is not None
+        assert bundle.trust_level == "community"
+        assert bundle.origin_verified is False
+        assert bundle.origin_identity == ""
 
     def test_fetch_bare_name_resolves_via_remote_tree(self, tmp_path):
         src = self._make_source(tmp_path, ["software-development/ast-grep"])

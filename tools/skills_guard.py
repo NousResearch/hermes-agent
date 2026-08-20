@@ -771,6 +771,7 @@ def build_install_attestation(
     source: str,
     identifier: str,
     trust_level: str,
+    origin_identity: str = "",
 ) -> dict:
     """Create the content-bound install record used by audit.
 
@@ -778,7 +779,7 @@ def build_install_attestation(
     it detects content drift and preserves scanner-assigned origin, but it is
     not protection against a process that can rewrite both the skill and lock.
     """
-    return {
+    attestation = {
         "version": 2,
         "hash_scheme": TREE_HASH_SCHEME,
         "source": source,
@@ -786,6 +787,9 @@ def build_install_attestation(
         "trust_level": trust_level,
         "bundle_hash": full_content_hash(skill_path),
     }
+    if origin_identity:
+        attestation["origin_identity"] = origin_identity
+    return attestation
 
 
 def _finding_dict(finding: Finding) -> dict:

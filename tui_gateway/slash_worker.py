@@ -28,7 +28,7 @@ import time
 
 import cli as cli_mod
 from cli import HermesCLI
-from tui_gateway._stdin_recovery import handle_spurious_eof
+from tui_gateway._stdin_recovery import handle_spurious_eof, handle_stdin_oserror
 from rich.console import Console
 
 # Env-overridable so the integration test can drive sub-second timing.
@@ -152,7 +152,18 @@ def main():
         print(f"[slash-worker] {reason}", file=sys.stderr, flush=True)
 
     while True:
-        raw = sys.stdin.readline()
+        try:
+            raw = sys.stdin.readline()
+        except OSError as _stdin_exc:
+            # Windows: a child process inheriting the stdio pipe can corrupt
+            # its state, surfacing as EINVAL/EBADF/EPIPE on the next read.
+            # Retry (rate-limited) instead of crashing the worker (#78820).
+            _action = handle_stdin_oserror(_stdin_exc, _sw_recovery_times, _sw_log)
+            if _action is None:
+                raise
+            if _action:
+                continue
+            break
         if not raw:
             if not handle_spurious_eof(_sw_recovery_times, _sw_log):
                 break

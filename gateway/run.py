@@ -28,6 +28,7 @@ import asyncio
 import concurrent.futures
 import dataclasses
 import faulthandler
+import hashlib
 import inspect
 import json
 import logging
@@ -25787,9 +25788,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # would otherwise be silently ignored until the user triggers a
     # different cache eviction (model switch, /reset, etc.).
     #
-    # Each entry is a tuple of (section, key) read from the raw config dict.
+    # Each entry is a config path read from the raw config dict.
     # Add more here as new baked-at-construction config settings are added.
-    _CACHE_BUSTING_CONFIG_KEYS: tuple = (
+    _CACHE_BUSTING_CONFIG_KEYS: tuple[tuple[str, ...], ...] = (
         ("model", "context_length"),
         ("model", "max_tokens"),
         ("compression", "enabled"),
@@ -25799,12 +25800,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "threshold_tokens"),
         ("compression", "codex_gpt55_autoraise"),
         ("compression", "codex_app_server_auto"),
+        ("compression", "codex_responses_native"),
+        ("compression", "codex_responses_compact_threshold"),
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
         ("compression", "proactive_prune_tokens"),
         ("compression", "proactive_prune_min_result_chars"),
         ("compression", "proactive_prune_min_reclaim_tokens"),
         ("compression", "min_tail_user_messages"),
+        ("auxiliary", "compression", "provider"),
+        ("auxiliary", "compression", "model"),
+        ("auxiliary", "compression", "base_url"),
+        ("auxiliary", "compression", "api_mode"),
+        ("auxiliary", "compression", "context_length"),
+        ("auxiliary", "compression", "fallback_chain"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
         ("checkpoints", "enabled"),
@@ -25860,9 +25869,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
         """Pull values that must bust the cached agent.
 
-        Returns a flat dict keyed by 'section.key'.  Missing config keys and
-        non-dict sections yield None values, which still contribute to the
-        signature (so 'absent' vs 'present-and-null' differ).
+        Returns a flat dict keyed by dotted config path. Missing config keys
+        and non-dict intermediate sections yield None values, which still
+        contribute to the signature (so 'absent' vs 'present-and-null' differ).
 
         The live tool registry generation is included too.  MCP reloads and
         dynamic MCP tool-list changes mutate the registry without necessarily
@@ -25872,16 +25881,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         out: Dict[str, Any] = {}
         cfg = user_config if isinstance(user_config, dict) else {}
-        for section, key in cls._CACHE_BUSTING_CONFIG_KEYS:
-            section_val = cfg.get(section)
-            if section == "checkpoints" and isinstance(section_val, bool):
+        for path in cls._CACHE_BUSTING_CONFIG_KEYS:
+            section_val = cfg.get(path[0])
+            if path[0] == "checkpoints" and isinstance(section_val, bool):
                 # Preserve legacy ``checkpoints: true`` behavior.  A live
                 # toggle must still rebuild the cached agent.
-                out[f"{section}.{key}"] = section_val if key == "enabled" else None
-            elif isinstance(section_val, dict):
-                out[f"{section}.{key}"] = section_val.get(key)
-            else:
-                out[f"{section}.{key}"] = None
+                out[".".join(path)] = section_val if path[-1] == "enabled" else None
+                continue
+            cur: Any = cfg
+            for part in path:
+                if not isinstance(cur, dict):
+                    cur = None
+                    break
+                cur = cur.get(part)
+            out[".".join(path)] = cur
+
+        # A fallback chain can contain an inline API key. Keep only a stable
+        # digest in the cache signature so edits rebuild the agent without
+        # retaining raw credentials in cache metadata or debug surfaces.
+        fallback_chain_key = "auxiliary.compression.fallback_chain"
+        fallback_chain = out.get(fallback_chain_key)
+        if fallback_chain is not None:
+            try:
+                serialized_chain = json.dumps(
+                    fallback_chain,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                )
+            except (TypeError, ValueError):
+                serialized_chain = repr(fallback_chain)
+            out[fallback_chain_key] = hashlib.sha256(
+                serialized_chain.encode("utf-8")
+            ).hexdigest()
         try:
             from tools.registry import registry
 

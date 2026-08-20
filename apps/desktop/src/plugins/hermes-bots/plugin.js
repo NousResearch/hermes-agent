@@ -3384,17 +3384,24 @@ async function openStoredBotChat(name, storedId, summary) {
 /** Adopt-before-mint: the profile may already own a canonical Bot Chat that
  *  the pin lost track of (pin cleared during an outage, ui_meta rolled back,
  *  a fork squatting the title). The core UNIQUE title index guarantees at
- *  most ONE session titled "Bot Chat" per profile db, so a title scan is an
- *  exact registry lookup, not a heuristic. Minting while a "Bot Chat" row
- *  exists is always wrong twice over: it forks the forever-chat AND the new
- *  row can never take the (already held) canonical title, so the next
- *  identity check misreads it and forks again — the infinite-fork loop.
- *  include_hidden is required (canonical chats are always hidden); an older
- *  gateway without it simply finds nothing and we fall through to mint. */
+ *  most ONE session titled "Bot Chat" per profile db — Profile → Named
+ *  Session is an exact registry, so consult it exactly: `title` asks the
+ *  gateway for an indexed WHERE title = ? lookup (window-free; a busy
+ *  profile can push the forever-chat past any recency window, which would
+ *  re-open the fork loop with a higher trigger threshold). Minting while a
+ *  "Bot Chat" row exists is always wrong twice over: it forks the
+ *  forever-chat AND the new row can never take the (already held) canonical
+ *  title, so the next identity check misreads it and forks again — the
+ *  infinite-fork loop. An older gateway ignores the unknown `title` param
+ *  and returns the plain windowed listing instead — the pre-exact-lookup
+ *  behavior — so the local scan below stays as the compatibility rung.
+ *  include_hidden is required (canonical chats are always hidden); a gateway
+ *  without it simply finds nothing and we fall through to mint. */
 async function findExistingCanonicalChat(name) {
   try {
     const res = await host.request('session.list', {
       profile: name,
+      title: 'Bot Chat',
       limit: PROFILE_SESSION_LIST_LIMIT,
       include_hidden: true
     })
@@ -3424,7 +3431,10 @@ function createCanonicalChat(name) {
       saveBotMeta(name, { chat: existing.id })
 
       if (typeof host.openSession === 'function') {
-        await openStoredBotChat(name, existing.id, existing)
+        // The exact-lookup gateway reports the compression-lineage tip as
+        // resolved_id; the pin stays the durable row id (same split the
+        // preferred_session path uses).
+        await openStoredBotChat(name, existing.resolved_id || existing.id, existing)
       }
 
       return existing.id

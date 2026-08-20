@@ -52,6 +52,12 @@ source ~/.bashrc    # 重新加载 shell（或: source ~/.zshrc）
 hermes              # 开始对话！
 ```
 
+## 在 Sealos 上部署
+
+[![Deploy on Sealos](https://sealos.io/Deploy-on-Sealos.svg)](https://sealos.io/products/app-store/hermes-agent)
+
+这份由社区维护的 [Sealos 模板](https://github.com/labring-actions/templates/tree/kb-0.9/template/hermes-agent) 会运行 Hermes 网关与控制台，并为两者配置共享的持久化数据卷。部署时需要设置控制台凭据和 API 密钥，随后 Sealos 会通过 HTTPS 公开这些服务。
+
 ---
 
 ## 快速入门

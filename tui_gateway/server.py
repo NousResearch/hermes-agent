@@ -1676,6 +1676,11 @@ def _emit(event: str, sid: str, payload: dict | None = None):
 # is how such events reach WS clients at all. See _broadcast_global_event.
 _live_transports: set[Transport] = set()
 _live_transports_lock = threading.Lock()
+# Match the negotiated client heartbeat deadline. Once a silent transport has
+# missed 45 seconds of inbound activity, a replacement socket must be able to
+# activate immediately instead of waiting behind an owner the client already
+# declared dead.
+_TRANSPORT_OWNERSHIP_LIVE_S = 45.0
 
 
 def register_live_transport(transport: Transport | None) -> None:
@@ -1690,6 +1695,47 @@ def unregister_live_transport(transport: Transport | None) -> None:
     """Stop tracking a transport (call on disconnect). Idempotent."""
     with _live_transports_lock:
         _live_transports.discard(transport)
+
+
+def _transport_is_recently_live(transport: Transport | None) -> bool:
+    """Whether a transport still owns a session stream.
+
+    WebSocket transports publish their last inbound activity. A transport that
+    is closed, unregistered, detached, or beyond the heartbeat recovery window
+    no longer blocks a reconnecting renderer from reclaiming the stream.
+    """
+    if transport is None or transport is _detached_ws_transport:
+        return False
+    if bool(getattr(transport, "closed", False)):
+        return False
+
+    last_inbound = getattr(transport, "last_inbound_at", None)
+    if isinstance(last_inbound, (int, float)):
+        with _live_transports_lock:
+            registered = transport in _live_transports
+        return registered and (time.monotonic() - float(last_inbound)) <= _TRANSPORT_OWNERSHIP_LIVE_S
+
+    # Stdio and test transports have no application heartbeat. Preserve their
+    # historical behavior; the conflict contract is for competing WS clients.
+    return False
+
+
+def _bind_session_transport(session: dict, candidate: Transport | None) -> bool:
+    """Atomically rebind a session unless another recently-live WS owns it."""
+    if candidate is None:
+        return True
+
+    # Partially-constructed sessions (and synthetic ones in tests) may not carry
+    # a history_lock yet. Fall back to a throwaway lock, matching the defensive
+    # reads elsewhere in this module, rather than raising KeyError.
+    with session.get("history_lock") or threading.Lock():
+        current = session.get("transport")
+        if current is candidate:
+            return True
+        if _transport_is_recently_live(current):
+            return False
+        session["transport"] = candidate
+        return True
 
 
 def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
@@ -8323,8 +8369,17 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         if not queued_prompts:
             session.pop("queued_prompts", None)
         session["running"] = True
-        if queued.get("transport") is not None:
-            session["transport"] = queued["transport"]
+        # A queued prompt carries the transport of the renderer that submitted
+        # it. Restore that stream when draining, but never steal one a *different*
+        # renderer is still actively driving (the same ownership contract enforced
+        # inline here because we already hold history_lock, which
+        # _bind_session_transport re-acquires).
+        queued_transport = queued.get("transport")
+        if queued_transport is not None and not (
+            queued_transport is not session.get("transport")
+            and _transport_is_recently_live(session.get("transport"))
+        ):
+            session["transport"] = queued_transport
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:
@@ -8895,11 +8950,11 @@ def _live_session_payload(
     transport: Transport | None = None,
     omit_messages: bool = False,
 ) -> dict:
+    if transport is not None:
+        _bind_session_transport(session, transport)
     with session["history_lock"]:
         if cols is not None:
             session["cols"] = cols
-        if transport is not None:
-            session["transport"] = transport
         if touch:
             session["last_active"] = time.time()
         in_memory_history = list(session.get("display_history_prefix") or []) + list(

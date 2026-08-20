@@ -632,6 +632,32 @@ def test_drain_fires_queued_prompt_and_claims_running(monkeypatch):
     assert session["transport"] == "ws-9"
 
 
+def test_drain_does_not_steal_recently_live_owner(monkeypatch):
+    """A queued prompt from an old renderer must not reclaim a stream that a
+    reconnected renderer is now actively driving."""
+    class _FakeWS:
+        def __init__(self):
+            self.closed = False
+            self.last_inbound_at = time.monotonic()
+
+    monkeypatch.setattr(
+        server, "_run_prompt_submit",
+        lambda rid, sid, session, text, **kwargs: None,
+    )
+    owner = _FakeWS()
+    session = _session(queued_prompt={"text": "go", "transport": "ws-old"}, transport=owner)
+    server._live_transports.clear()
+    server.register_live_transport(owner)
+    try:
+        assert server._drain_queued_prompt("r1", "sid", session) is True
+        # The turn still fires, but the recently-live owner keeps the stream.
+        assert session["running"] is True
+        assert session["transport"] is owner
+    finally:
+        server.unregister_live_transport(owner)
+        server._live_transports.clear()
+
+
 def test_drain_compute_host_forwards_queued_image_paths(monkeypatch):
     captured = {}
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)

@@ -35,7 +35,6 @@ from tools.registry import (
     CHECK_FN_CACHE_BYPASS,
     check_fn_cache_scope,
     discover_builtin_tools,
-    invalidate_check_fn_cache,
     registry,
     tool_error,
 )
@@ -321,16 +320,9 @@ def _clear_tool_defs_cache() -> None:
 
     This is used when dynamic schema dependencies change (for example, a
     Discord capability cache reset or execute_code sandbox reconfiguration).
-    Cron also calls it after every dotenv reload because this cache is
-    process-global rather than per-session: invalidating a concurrent
-    interactive or gateway lookup is intentional, and the next lookup
-    recomputes both the availability probes and the small schema snapshot
-    through their synchronized cache paths.
+    Callers that also changed environment-backed availability probes must
+    invalidate the registry's separate check-function cache explicitly.
     """
-    # Invalidate the underlying availability probes first, so any lookup that
-    # starts after this boundary re-probes dependencies before rebuilding its
-    # schema snapshot.
-    invalidate_check_fn_cache()
     with _tool_defs_cache_lock:
         _tool_defs_cache.clear()
 

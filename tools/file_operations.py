@@ -1902,6 +1902,25 @@ class ShellFileOperations(FileOperations):
             denied = get_write_denied_error(p, verb="Move")
             if denied:
                 return WriteResult(error=denied)
+        
+        # Check if dst is a directory in the backend namespace.
+        # If so, mv will write src into dst as dst/basename(src), so we must
+        # check the effective destination against the denial list.
+        dir_probe = self._exec(
+            f"test -d {self._escape_shell_arg(dst)} && echo 1 || echo 0"
+        )
+        if dir_probe.stdout and dir_probe.stdout.strip() == "1":
+            # Derive basename host-side (pure lexical operation, no backend call needed)
+            import os
+            leaf = os.path.basename(src)
+            if not leaf:
+                # Fail-closed: cannot determine effective destination
+                return WriteResult(error=f"Failed to derive leaf name from {src!r}")
+            effective_dst = dst + "/" + leaf
+            denied = get_write_denied_error(effective_dst, verb="Move")
+            if denied:
+                return WriteResult(error=denied)
+        
         result = self._exec(
             f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
         )

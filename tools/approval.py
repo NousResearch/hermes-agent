@@ -881,7 +881,13 @@ DANGEROUS_PATTERNS = [
     # Shell -c is parsed structurally by _execution_flag_findings(). A regex
     # that merely searched a dash-token for "c" also matched --norc,
     # --rcfile, and --restricted.
-    (r'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)', "pipe remote content to shell"),
+    # Shell basenames may be path-qualified (/bin/sh, ./zsh, C:\msys64\usr\
+    # bin\bash.exe), quoted, suffixed with .exe (Windows/MSYS), or followed by
+    # a redirect instead of whitespace (`| bash>/tmp/log`). The terminator
+    # group rejects non-shell basenames like `shred` or `bash-helper`.
+    # (port of block/goose#10989)
+    (r'\b(curl|wget)\b.*\|\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:\S+=\S+\s+)*)?[\'"]?(?:[a-zA-Z]:)?(?:[.\w~-]*[/\\])*(bash|sh|zsh|ksh|dash|fish|csh|tcsh)(?:\.exe)?(?:[\'"]|\s|[;&|<>]|$)',
+     "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # Remote content executed via command substitution: eval/source/. $(curl ...)
     # or `wget ...`. Equivalent to piping remote content to a shell.

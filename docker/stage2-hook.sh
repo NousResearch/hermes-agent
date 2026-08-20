@@ -470,6 +470,22 @@ if [ -f "$HERMES_HOME/.env" ]; then
     fi
 fi
 
+# --- Grant the gateway access to the Fly Machines API socket (scale-to-zero) ---
+# On Fly, flyd mounts the local Machines API ("flaps") unix socket at /.fly/api
+# owned root:root 0755. The gateway's scale-to-zero self-suspend
+# (gateway/scale_to_zero.py suspend_self) must POST to it, but the gateway runs
+# as the unprivileged `hermes` user — without this it gets EACCES on every
+# suspend attempt and the machine can never sleep (fail-awake; verified live on
+# staging 2026-08-20: "flaps suspend request failed: [Errno 13]"). stage2 runs
+# as root before the supervision tree starts, so grant group access here.
+# Group-write is the minimal widening: the socket stays root-owned and
+# non-hermes users gain nothing. No-op off Fly (socket absent).
+if [ -S /.fly/api ]; then
+    chgrp hermes /.fly/api 2>/dev/null || true
+    chmod g+w /.fly/api 2>/dev/null || true
+    echo "[stage2] Granted hermes group access to the Fly Machines API socket"
+fi
+
 # --- Migrate persisted config schema ---
 # Docker image upgrades replace the code under $INSTALL_DIR but preserve
 # $HERMES_HOME on the mounted volume. Run the same safe, non-interactive

@@ -153,6 +153,12 @@ def windows_batch_command(
     characters are rejected because ``cmd.exe`` cannot transport them without
     reparsing.
 
+    This function mutates the caller-provided environment mapping in place.
+    Callers must pass a disposable copy and then give that same mapping to
+    :class:`subprocess.Popen`. The generated placeholder variables are
+    intentionally inherited by the batch child (and its descendants): cmd.exe
+    expands them exactly once to transport argv without reparsing its values.
+
     Async callers should use :func:`windows_batch_proxy_command`: asyncio's
     exec API converts argv with native quoting rules that are not cmd.exe's
     rules, while the tiny native-Python proxy can pass this raw string directly

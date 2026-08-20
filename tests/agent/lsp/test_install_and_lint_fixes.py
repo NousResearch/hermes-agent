@@ -54,7 +54,12 @@ def test_install_npm_passes_extras_to_npm_command(tmp_path, monkeypatch):
     monkeypatch.setattr(install_mod, "find_node_executable", lambda c: "/usr/bin/npm" if c == "npm" else None)
 
     extras = install_mod.INSTALL_RECIPES["typescript-language-server"]["extra_pkgs"]
-    assert extras == ["typescript@6"]
+    sdk_target = next(
+        target for target in extras if target.partition("@")[0] == "typescript"
+    )
+    # The server's current major still loads lib/tsserver.js, which TypeScript
+    # 7 removed. Keep the recipe compatible without freezing the whole list.
+    assert sdk_target.partition("@")[2].split(".", 1)[0] == "6"
     install_mod._install_npm(
         "typescript-language-server",
         "typescript-language-server",
@@ -63,11 +68,10 @@ def test_install_npm_passes_extras_to_npm_command(tmp_path, monkeypatch):
 
     cmd = captured["cmd"]
     assert "typescript-language-server" in cmd
-    assert "typescript@6" in cmd
     # Both must come AFTER the npm flags, in install-target position
     install_idx = cmd.index("install")
     assert cmd.index("typescript-language-server") > install_idx
-    assert cmd.index("typescript@6") > install_idx
+    assert cmd.index(sdk_target) > install_idx
 
 
 def test_install_npm_works_without_extras(tmp_path, monkeypatch):
@@ -329,20 +333,41 @@ def test_stale_posix_only_install_triggers_npm_repair(tmp_path, monkeypatch):
     assert repair_calls == [("pyright", "pyright-langserver", [])]
 
 
-def test_existing_binary_accepts_native_extensionless_pe_on_windows(tmp_path, monkeypatch):
+def test_existing_binary_accepts_native_extensionless_pe_on_windows(
+    tmp_path, monkeypatch
+):
     """A native PE executable remains valid even without a file suffix."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from agent.lsp import install as install_mod
 
     binary = install_mod.hermes_lsp_bin_dir() / "custom-language-server"
-    binary.write_bytes(b"MZ\x90\x00native executable fixture")
+    dos_header = bytearray(64)
+    dos_header[:2] = b"MZ"
+    dos_header[0x3C:0x40] = (len(dos_header)).to_bytes(4, "little")
+    binary.write_bytes(bytes(dos_header) + b"PE\0\0")
     binary.chmod(0o755)
 
     monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
     monkeypatch.setattr(install_mod.shutil, "which", lambda _name: None)
 
     assert install_mod._existing_binary("custom-language-server") == str(binary)
+
+
+def test_existing_binary_rejects_mz_prefixed_non_pe_on_windows(tmp_path, monkeypatch):
+    """A DOS marker alone must not make an arbitrary blob launchable."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent.lsp import install as install_mod
+
+    binary = install_mod.hermes_lsp_bin_dir() / "custom-language-server"
+    binary.write_bytes(b"MZ\x90\x00not actually a PE executable")
+    binary.chmod(0o755)
+
+    monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
+    monkeypatch.setattr(install_mod.shutil, "which", lambda _name: None)
+
+    assert install_mod._existing_binary("custom-language-server") is None
 
 
 def test_non_windows_candidates_preserve_extensionless_launcher(monkeypatch):
@@ -427,6 +452,85 @@ async def test_spawn_routes_windows_batch_launcher_through_native_proxy(
     assert not any(
         key.startswith("HERMES_LSP_COMMAND_")
         for key in captured["kwargs"]["env"]
+    )
+
+
+async def _exercise_bounded_lsp_cleanup(monkeypatch, expected_events):
+    """Drive cleanup with a process that exits only after forced cleanup."""
+    from agent.lsp import client as client_mod
+
+    events = []
+    finished = asyncio.Event()
+
+    class FakeProcess:
+        returncode = None
+        _transport = None
+
+        async def wait(self):
+            events.append("wait")
+            await finished.wait()
+            return 0
+
+        def terminate(self):
+            events.append("terminate")
+
+        def kill(self):
+            events.append("kill")
+            finished.set()
+
+    proc = FakeProcess()
+    client = client_mod.LSPClient(
+        server_id="cleanup-order-test",
+        workspace_root=".",
+        command=["server"],
+    )
+    setattr(client, "_proc", proc)
+    monkeypatch.setattr(client_mod, "PROCESS_EXIT_GRACE_SECONDS", 0.01)
+
+    if sys.platform == "win32":
+
+        def fake_kill_process_tree(actual_proc):
+            assert actual_proc is proc
+            events.append("tree-kill")
+            finished.set()
+
+        monkeypatch.setattr(client_mod, "kill_process_tree", fake_kill_process_tree)
+
+    await asyncio.wait_for(client._cleanup_process(), timeout=1.0)
+
+    assert events == expected_events
+
+
+@pytest.mark.windows_only
+@pytest.mark.asyncio
+async def test_lsp_cleanup_gives_clean_exit_one_bounded_chance_then_tree_kills(
+    monkeypatch,
+):
+    await _exercise_bounded_lsp_cleanup(
+        monkeypatch,
+        ["wait", "tree-kill", "wait"],
+    )
+
+
+@pytest.mark.linux_only
+@pytest.mark.asyncio
+async def test_lsp_cleanup_gives_clean_exit_one_bounded_chance_then_posix_escalates_linux(
+    monkeypatch,
+):
+    await _exercise_bounded_lsp_cleanup(
+        monkeypatch,
+        ["wait", "terminate", "wait", "kill", "wait"],
+    )
+
+
+@pytest.mark.macos_only
+@pytest.mark.asyncio
+async def test_lsp_cleanup_gives_clean_exit_one_bounded_chance_then_posix_escalates_macos(
+    monkeypatch,
+):
+    await _exercise_bounded_lsp_cleanup(
+        monkeypatch,
+        ["wait", "terminate", "wait", "kill", "wait"],
     )
 
 

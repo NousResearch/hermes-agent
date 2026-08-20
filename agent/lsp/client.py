@@ -83,7 +83,9 @@ DIAGNOSTICS_DOCUMENT_WAIT = 5.0
 DIAGNOSTICS_FULL_WAIT = 10.0
 DIAGNOSTICS_REQUEST_TIMEOUT = 3.0
 PUSH_DEBOUNCE = 0.15
-SHUTDOWN_GRACE = 1.0  # seconds between SIGTERM and SIGKILL
+# Maximum wait after the protocol-level ``shutdown`` + ``exit`` exchange, and
+# again after POSIX ``terminate()``, before escalating process cleanup.
+PROCESS_EXIT_GRACE_SECONDS = 1.0
 
 # Retry policy for transient ContentModified errors.
 MAX_CONTENT_MODIFIED_RETRIES = 3
@@ -312,24 +314,20 @@ class LSPClient:
             # gateway's child set, it captures the LSP PID, records the
             # inherited pgid, and killpg() then kills the TUI parent itself.
             # See tui_gateway_crash.log "killpg → SIGTERM received" stacks.
-            spawn_kwargs = {
-                "stdin": asyncio.subprocess.PIPE,
-                "stdout": asyncio.subprocess.PIPE,
-                "stderr": asyncio.subprocess.PIPE,
-                "env": env,
-                "cwd": self._cwd,
-                "start_new_session": True,
-                "creationflags": creationflags,
-            }
-            if use_windows_shell:
-                proxy_command = self._win_batch_proxy_command(cmd)
-                self._proc = await asyncio.create_subprocess_exec(
-                    proxy_command[0], *proxy_command[1:], **spawn_kwargs
-                )
-            else:
-                self._proc = await asyncio.create_subprocess_exec(
-                    cmd[0], *cmd[1:], **spawn_kwargs
-                )
+            spawn_command = (
+                self._win_batch_proxy_command(cmd) if use_windows_shell else cmd
+            )
+            self._proc = await asyncio.create_subprocess_exec(
+                spawn_command[0],
+                *spawn_command[1:],
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+                cwd=self._cwd,
+                start_new_session=True,
+                creationflags=creationflags,
+            )
         except FileNotFoundError as e:
             raise LSPProtocolError(
                 f"LSP server binary not found: {cmd[0]} ({e})"
@@ -461,8 +459,10 @@ class LSPClient:
     async def shutdown(self) -> None:
         """Best-effort graceful shutdown.
 
-        Sends ``shutdown`` + ``exit``, then SIGTERMs/SIGKILLs the
-        process if it doesn't exit cleanly.  Idempotent.
+        Sends ``shutdown`` + ``exit`` and gives the server one bounded chance
+        to exit cleanly. If it remains alive, Windows tears down the complete
+        proxy/command/server tree; POSIX sends terminate, waits once more, then
+        kills. Every wait is bounded. Idempotent.
         """
         if self._stopping:
             return
@@ -500,11 +500,12 @@ class LSPClient:
             return
         if proc.returncode is None:
             try:
-                # Give a server that received shutdown+exit one brief chance to
-                # leave cleanly. On Windows, forced cleanup must kill the full
-                # Python-proxy -> cmd.exe -> language-server tree; terminating
-                # only the tracked proxy leaks Node indefinitely.
-                await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
+                # Ordering is intentional: shutdown() has already sent the LSP
+                # shutdown+exit pair, so first allow exactly one brief clean-exit
+                # chance. Only then escalate. On Windows, forced cleanup must
+                # own the full Python-proxy -> cmd.exe -> language-server tree;
+                # terminating only the tracked proxy leaks Node indefinitely.
+                await asyncio.wait_for(proc.wait(), timeout=PROCESS_EXIT_GRACE_SECONDS)
             except asyncio.TimeoutError:
                 if sys.platform == "win32":
                     await asyncio.to_thread(kill_process_tree, proc)
@@ -514,12 +515,19 @@ class LSPClient:
                     except ProcessLookupError:
                         pass
                 try:
-                    await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
+                    await asyncio.wait_for(
+                        proc.wait(), timeout=PROCESS_EXIT_GRACE_SECONDS
+                    )
                 except asyncio.TimeoutError:
                     try:
                         proc.kill()
-                        await proc.wait()
                     except ProcessLookupError:
+                        pass
+                    try:
+                        await asyncio.wait_for(
+                            proc.wait(), timeout=PROCESS_EXIT_GRACE_SECONDS
+                        )
+                    except (asyncio.TimeoutError, ProcessLookupError):
                         pass
         # asyncio's proactor subprocess transport keeps its pipe handles and a
         # pending-connection callback alive even after the process exits. Close

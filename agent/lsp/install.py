@@ -122,6 +122,8 @@ _install_results: Dict[str, Optional[str]] = {}
 _install_lock_meta = threading.Lock()
 _WINDOWS_WRAPPER_SUFFIXES = (".exe", ".com", ".cmd", ".bat")
 _HERMES_NPM_WRAPPER_TAG = ".hermes"
+_DOS_HEADER_SIZE = 64
+_PE_HEADER_OFFSET_FIELD = 0x3C
 
 
 def _is_windows() -> bool:
@@ -143,14 +145,27 @@ def _is_windows_launchable(path: Path) -> bool:
     npm installs both an extensionless POSIX shell shim and a native
     ``.cmd`` wrapper. The shell shim is executable to MSYS, but native
     Windows Python cannot spawn it directly. Recognized Windows wrapper
-    suffixes are safe; an extensionless file is accepted only when it has
-    the ``MZ`` header used by native PE executables.
+    suffixes are safe; an extensionless file is accepted only when its DOS
+    ``MZ`` header points to a valid PE signature.
     """
     if path.suffix.lower() in _WINDOWS_WRAPPER_SUFFIXES:
         return True
     try:
         with path.open("rb") as handle:
-            return handle.read(2) == b"MZ"
+            dos_header = handle.read(_DOS_HEADER_SIZE)
+            if len(dos_header) < _DOS_HEADER_SIZE or dos_header[:2] != b"MZ":
+                return False
+            pe_offset = int.from_bytes(
+                dos_header[
+                    _PE_HEADER_OFFSET_FIELD : _PE_HEADER_OFFSET_FIELD + 4
+                ],
+                byteorder="little",
+            )
+            file_size = os.fstat(handle.fileno()).st_size
+            if pe_offset < _DOS_HEADER_SIZE or pe_offset + 4 > file_size:
+                return False
+            handle.seek(pe_offset)
+            return handle.read(4) == b"PE\0\0"
     except OSError:
         return False
 

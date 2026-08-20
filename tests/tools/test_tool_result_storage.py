@@ -75,6 +75,26 @@ class TestWriteToSandbox:
         assert env.execute.call_args[1]["stdin_data"] == "hello world"
 
 
+    def test_execute_exception_logs_warning(self, caplog):
+        env = MagicMock()
+        env.execute.side_effect = RuntimeError("connection lost")
+        with caplog.at_level("WARNING", logger="tools.tool_result_storage"):
+            result = _write_to_sandbox("content", "/tmp/hermes-results/abc.txt", env)
+
+        assert result is False
+        assert "env.execute() raised RuntimeError: connection lost" in caplog.text
+        assert "/tmp/hermes-results/abc.txt" in caplog.text
+
+    def test_nonzero_return_logs_exit_and_output(self, caplog):
+        env = MagicMock()
+        env.execute.return_value = {"output": "disk full", "returncode": 28}
+        with caplog.at_level("WARNING", logger="tools.tool_result_storage"):
+            result = _write_to_sandbox("content", "/tmp/hermes-results/abc.txt", env)
+
+        assert result is False
+        assert "exit code 28" in caplog.text
+        assert "disk full" in caplog.text
+
     def test_large_content_via_stdin(self):
         """Regression: 200 KB content exceeds Linux MAX_ARG_STRLEN (128 KB).
         It must travel via stdin, never inside the command string."""
@@ -166,6 +186,25 @@ class TestBuildPersistedMessage:
             file_path="/tmp/hermes-results/big.txt",
         )
         assert "MB" in msg
+
+    def test_sub_kb_size_shows_bytes(self):
+        msg = _build_persisted_message(
+            preview="x",
+            has_more=False,
+            original_size=16,
+            file_path="/tmp/hermes-results/tiny.txt",
+        )
+        assert "16 characters, 16 bytes" in msg
+        assert "0.0 KB" not in msg
+
+    def test_kb_boundary_shows_kb(self):
+        msg = _build_persisted_message(
+            preview="x",
+            has_more=False,
+            original_size=1024,
+            file_path="/tmp/hermes-results/one-kb.txt",
+        )
+        assert "1,024 characters, 1.0 KB" in msg
 
 
 # ── maybe_persist_tool_result ─────────────────────────────────────────

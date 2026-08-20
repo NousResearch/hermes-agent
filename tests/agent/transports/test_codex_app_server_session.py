@@ -162,6 +162,32 @@ class TestLifecycle:
         method_calls = [m for (m, _) in client.requests if m == "thread/start"]
         assert len(method_calls) == 1
 
+    def test_startup_diagnostics_report_effective_harness(self, tmp_path, caplog):
+        client = FakeClient(codex_bin="codex", codex_home=str(tmp_path))
+        session = CodexAppServerSession(
+            cwd="/workspace",
+            codex_bin="codex",
+            codex_home=str(tmp_path),
+            client_factory=lambda **_kwargs: client,
+        )
+
+        with caplog.at_level("WARNING", logger=session_mod.__name__):
+            session.ensure_started()
+
+        assert session.startup_diagnostics() == {
+            "binary": "codex",
+            "configured_codex_home": str(tmp_path),
+            "reported_codex_home": "/tmp",
+            "user_agent": "fake/0.0.0",
+            "platform_family": "unix",
+            "platform_os": "linux",
+            "cwd": "/workspace",
+            "thread_id": "thread-fake-001",
+        }
+        assert "codex app-server home mismatch" in caplog.text
+        assert f"configured={tmp_path}" in caplog.text
+        assert "reported=/tmp" in caplog.text
+
     def test_thread_start_passes_cwd_only(self):
         """thread/start carries cwd. We intentionally do NOT pass `permissions`
         on this codex version (experimentalApi-gated + requires matching

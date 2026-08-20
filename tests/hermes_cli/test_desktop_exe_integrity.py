@@ -53,6 +53,17 @@ def make_pe(path: Path, machine: int = PE_AMD64, *, truncate_to: int | None = No
     return path
 
 
+def make_desktop_payload(exe: Path) -> None:
+    """Create the required packaged app payload beside a synthetic Hermes.exe."""
+    resources = exe.parent / "resources"
+    dist = resources / "app.asar.unpacked" / "dist"
+    dist.mkdir(parents=True, exist_ok=True)
+    (dist / "electron-main.mjs").write_text("export default {}\n" * 80, encoding="utf-8")
+    (dist / "index.html").write_text("<html><body>Hermes</body></html>\n", encoding="utf-8")
+    header = b'{"files":{"package.json":{},"dist":{"files":{"electron-main.mjs":{}}}}}'
+    (resources / "app.asar").write_bytes(header + b"\0" * 8192)
+
+
 # ─── _parse_pe_machine ──────────────────────────────────────────────────────
 
 
@@ -213,6 +224,7 @@ def test_rollback_restores_backup_and_keeps_corrupt_copy(tmp_path):
     make_pe(exe, PE_AMD64, truncate_to=0x300)  # corrupt new build
     backup_exe = desktop_dir / "release" / "win-unpacked.bak" / "Hermes.exe"
     make_pe(backup_exe, PE_AMD64)  # valid old build
+    make_desktop_payload(backup_exe)
 
     with patch("hermes_cli.main._windows_native_machine", return_value="AMD64"):
         restored = cli_main._rollback_desktop_from_backup(exe)
@@ -231,8 +243,21 @@ def test_rollback_restores_backup_and_keeps_corrupt_copy(tmp_path):
 # ─── _ensure_desktop_exe_launchable (the gate) ──────────────────────────────
 
 
+def test_gate_rejects_exe_with_empty_app_archive(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+    desktop_dir, exe = _win_tree(tmp_path)
+    make_pe(exe, PE_AMD64)
+    resources = exe.parent / "resources"
+    resources.mkdir(parents=True)
+    (resources / "app.asar").write_bytes(b"empty")
 
+    with patch("hermes_cli.main._windows_native_machine", return_value="AMD64"), \
+         patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \
+         patch("hermes_cli.main._desktop_stamp_path", return_value=tmp_path / "stamp.json"):
+        verified, rolled_back = cli_main._ensure_desktop_exe_launchable(desktop_dir, exe)
 
+    assert verified is None
+    assert rolled_back is False
 
 
 @pytest.mark.windows_only
@@ -292,7 +317,9 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
 
     exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
     make_pe(exe, PE_AMD64, truncate_to=0x300)  # what the failed pack produced
-    make_pe(desktop_dir / "release" / "win-unpacked.bak" / "Hermes.exe", PE_AMD64)
+    backup_exe = desktop_dir / "release" / "win-unpacked.bak" / "Hermes.exe"
+    make_pe(backup_exe, PE_AMD64)
+    make_desktop_payload(backup_exe)
 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
     pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
@@ -317,5 +344,4 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
     mock_stamp.assert_not_called()
     out = capsys.readouterr().out
     assert "integrity check" in out
-
 

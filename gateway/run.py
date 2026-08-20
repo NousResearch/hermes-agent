@@ -5404,10 +5404,27 @@ class TurnRunner:
                 if ctx._run_still_current():
                     _stts_consumer_ref.on_delta(text)
 
+        def _transform_outbound_text(text: str) -> str:
+            if not text:
+                return text
+            try:
+                from hermes_cli.lifecycle import transform_llm_output as _transform_llm_output
+
+                transformed, _ = _transform_llm_output(
+                    text,
+                    session_id=ctx.session_key or "",
+                    model=model,
+                    platform=platform_key,
+                )
+                return transformed
+            except Exception:
+                logger.warning("interim output transform failed", exc_info=True)
+                return text
+
         def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
-            display_text = text
+            display_text = _transform_outbound_text(text)
             if _stream_consumer is not None:
                 if already_streamed:
                     _stream_consumer.on_segment_break()

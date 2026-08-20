@@ -545,6 +545,38 @@ _RICH_PROTECTED_REGION_RE = re.compile(
     re.MULTILINE,
 )
 
+# Telegram Rich Markdown interprets paired literal dollar signs as inline
+# LaTeX delimiters. Protect currency only on rich-rendered lines containing
+# multiple amounts; leave ordinary prose, legitimate math, code, and shell
+# variables unchanged.
+_RICH_CURRENCY_PROTECTED_RE = re.compile(r"```.*?```|~~~.*?~~~|`[^`\n]*`", re.DOTALL)
+_RICH_CURRENCY_AMOUNT_RE = re.compile(r"(?<![\\`\w])\$\d+(?:,\d{3})*(?:\.\d+)?")
+_RICH_CURRENCY_PLACEHOLDER = "\x00HERMES_RICH_CURRENCY_{index}\x00"
+
+
+def _protect_rich_currency(text: str) -> str:
+    """Wrap multiple same-line currency amounts in inline code."""
+    stashed: list[str] = []
+
+    def stash(match: re.Match[str]) -> str:
+        stashed.append(match.group(0))
+        return _RICH_CURRENCY_PLACEHOLDER.format(index=len(stashed) - 1)
+
+    masked = _RICH_CURRENCY_PROTECTED_RE.sub(stash, text)
+    lines = masked.split("\n")
+    for index, line in enumerate(lines):
+        if len(_RICH_CURRENCY_AMOUNT_RE.findall(line)) < 2:
+            continue
+        lines[index] = _RICH_CURRENCY_AMOUNT_RE.sub(
+            lambda match: f"`{match.group(0)}`", line
+        )
+    protected = "\n".join(lines)
+    for index, original in enumerate(stashed):
+        protected = protected.replace(
+            _RICH_CURRENCY_PLACEHOLDER.format(index=index), original
+        )
+    return protected
+
 
 def _rich_normalize_linebreaks(text: str) -> str:
     """Convert single ``\\n`` to Markdown hard breaks for the rich-message path.
@@ -2109,7 +2141,7 @@ class TelegramAdapter(BasePlatformAdapter):
         multi-line content (slash-command lists, etc.) renders correctly
         in the rich-message path.  See ``_rich_normalize_linebreaks``.
         """
-        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
+        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(_protect_rich_currency(content))}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload

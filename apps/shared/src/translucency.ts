@@ -415,9 +415,19 @@ function opacityRamp(lever: number): number {
  * and only the separate `fade` reaches the window, so a glass window stays at
  * 1 until the user opts into fading it — which is what keeps a tint drag from
  * touching anything native.
+ *
+ * Fade is gated on glass being ACTIVE, not merely selected. The light default
+ * carries a single point of it so the window edge reads as glass rather than
+ * as paint, and without this gate that point would follow someone who had
+ * turned the tint to zero — leaving a window that asked to be opaque sitting
+ * at 0.9999. Off has to mean off.
  */
-export function windowOpacityFor({ intensity, fade, mode }: TranslucencyState): number {
-  return opacityRamp(mode === 'glass' ? fade : intensity)
+export function windowOpacityFor(state: TranslucencyState): number {
+  if (state.mode !== 'glass') {
+    return opacityRamp(state.intensity)
+  }
+
+  return opacityRamp(glassActive(state) ? state.fade : 0)
 }
 
 /**

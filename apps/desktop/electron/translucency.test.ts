@@ -189,7 +189,7 @@ describe('windowOpacityFor', () => {
   it('fades a glass window only through its own lever, on the ramp clear uses', () => {
     expect(windowOpacityFor(glass(60, DEFAULT_GLASS_MATERIAL, 0))).toBe(1)
     expect(windowOpacityFor(glass(60, DEFAULT_GLASS_MATERIAL, 40))).toBe(windowOpacityFor(clear(40)))
-    expect(windowOpacityFor(glass(0, DEFAULT_GLASS_MATERIAL, 100))).toBe(windowOpacityFor(clear(100)))
+    expect(windowOpacityFor(glass(100, DEFAULT_GLASS_MATERIAL, 100))).toBe(windowOpacityFor(clear(100)))
   })
 
   it('leaves fade inert under clear, where the intensity lever already is the opacity', () => {
@@ -551,6 +551,18 @@ describe('what an update actually changes natively', () => {
 
   it('is everything when switching between the two modes', () => {
     expect(nativeDiff(clear(60), glass(60))).toEqual({ backing: true, material: true, opacity: true })
+  })
+
+  it('leaves a window alone when glass is selected but off', () => {
+    // The light default carries one point of fade. Someone who dragged the
+    // tint to zero asked for an opaque window, and that point must not follow
+    // them there — off has to mean exactly 1, not 0.9999.
+    expect(windowOpacityFor({ ...glass(0), fade: 1 })).toBe(1)
+    expect(windowOpacityFor({ ...glass(0), fade: 40 })).toBe(1)
+  })
+
+  it('still fades a window whose glass is actually on', () => {
+    expect(windowOpacityFor({ ...glass(66), fade: 40 })).toBeLessThan(1)
   })
 })
 

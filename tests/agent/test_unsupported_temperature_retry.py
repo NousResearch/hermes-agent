@@ -28,6 +28,10 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from agent.auxiliary_client import (
+    OMIT_TEMPERATURE,
+    _build_call_kwargs,
+    _fixed_temperature_for_model,
+    _is_gpt55_family,
     call_llm,
     async_call_llm,
     _is_unsupported_temperature_error,
@@ -74,6 +78,42 @@ def _dummy_response():
     return {"ok": True}
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-5.5",
+        "gpt-5.5-pro",
+        "gpt-5.5-2026-04-23",
+        "openai/gpt-5.5",
+        "GPT-5.5",
+        "  gpt-5.5  ",
+    ],
+)
+def test_gpt55_family_omits_temperature(model):
+    assert _is_gpt55_family(model) is True
+    assert _fixed_temperature_for_model(model) is OMIT_TEMPERATURE
+
+
+@pytest.mark.parametrize(
+    "model",
+    [None, "", "gpt-5.4", "gpt-5.55", "gpt-5.50", "gpt-55", "gpt-4o"],
+)
+def test_gpt55_family_rejects_near_misses(model):
+    assert _is_gpt55_family(model) is False
+
+
+def test_gpt55_call_kwargs_omit_temperature():
+    kwargs = _build_call_kwargs(
+        provider="openai-api",
+        model="gpt-5.5-pro",
+        messages=[{"role": "user", "content": "hi"}],
+        temperature=0.1,
+        timeout=120.0,
+    )
+    assert "temperature" not in kwargs
+    assert kwargs["model"] == "gpt-5.5-pro"
+
+
 class TestCallLlmUnsupportedTemperatureRetry:
     """``call_llm`` retries once without temperature and returns on success."""
 
@@ -93,9 +133,9 @@ class TestCallLlmUnsupportedTemperatureRetry:
 
         with (
             patch("agent.auxiliary_client._resolve_task_provider_model",
-                  return_value=("openai-codex", "gpt-5.5", None, None, None)),
+                  return_value=("openai-codex", "gpt-5.4", None, None, None)),
             patch("agent.auxiliary_client._get_cached_client",
-                  return_value=(client, "gpt-5.5")),
+                  return_value=(client, "gpt-5.4")),
             patch("agent.auxiliary_client._validate_llm_response",
                   side_effect=lambda resp, _task, **_kw: resp),
         ):
@@ -119,6 +159,30 @@ class TestCallLlmUnsupportedTemperatureRetry:
         assert "max_tokens" not in first_kwargs
         assert "max_tokens" not in retry_kwargs
         assert retry_kwargs["model"] == first_kwargs["model"]
+
+    def test_gpt55_family_succeeds_without_reactive_retry(self):
+        client = MagicMock()
+        client.base_url = "https://api.openai.com/v1"
+        client.chat.completions.create.return_value = _dummy_response()
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai-codex", "gpt-5.5", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(client, "gpt-5.5")),
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task, **_kw: resp),
+        ):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "remember this"}],
+                temperature=0.3,
+                max_tokens=500,
+            )
+
+        assert result == {"ok": True}
+        assert client.chat.completions.create.call_count == 1
+        assert "temperature" not in client.chat.completions.create.call_args.kwargs
 
     def test_non_temperature_400_does_not_retry_as_temperature(self):
         """Unrelated 400s (e.g. bad tool role) must not silently drop temp."""
@@ -193,9 +257,9 @@ class TestAsyncCallLlmUnsupportedTemperatureRetry:
 
         with (
             patch("agent.auxiliary_client._resolve_task_provider_model",
-                  return_value=("openai-codex", "gpt-5.5", None, None, None)),
+                  return_value=("openai-codex", "gpt-5.4", None, None, None)),
             patch("agent.auxiliary_client._get_cached_client",
-                  return_value=(client, "gpt-5.5")),
+                  return_value=(client, "gpt-5.4")),
             patch("agent.auxiliary_client._validate_llm_response",
                   side_effect=lambda resp, _task, **_kw: resp),
         ):

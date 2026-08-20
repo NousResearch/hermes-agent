@@ -3317,6 +3317,16 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
 
 
 
+# Claude Code's read-only file tools mapped to their Hermes equivalents.
+# Deliberately read-only — see the note in ``repair_tool_call`` for why
+# Write/Edit/Bash are not here.
+_CLAUDE_CODE_TOOL_ALIASES = {
+    "glob": "search_files",
+    "grep": "search_files",
+    "read": "read_file",
+}
+
+
 def repair_tool_call(agent, tool_name: str) -> str | None:
     """Attempt to repair a mismatched tool name before aborting.
 
@@ -3402,6 +3412,24 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     for c in cands:
         if c and c in agent.valid_tool_names:
             return c
+
+    # Claude Code tool names (#84222). Under an Anthropic OAuth token the
+    # request carries the Claude Code system identity (see
+    # ``anthropic_adapter._CLAUDE_CODE_SYSTEM_PREFIX``), and Claude models
+    # trained on that identity reach for Claude Code's own tools. Those are
+    # real tools, just not registered here, and none of them survive the passes
+    # above: ``read`` scores 0.61 against ``read_file``, under the 0.7 fuzzy
+    # cutoff below, and ``glob`` / ``grep`` have no near neighbour at all. Left
+    # alone, each one burns a turn of the 3-strike agent-correction budget.
+    #
+    # Read-only names only. Aliasing one of these turns a failed call into a
+    # successful one; aliasing a destructive name (Write / Edit / Bash) would
+    # turn a failed call into an *executed* one, under an argument schema the
+    # model did not write for. Those keep erroring until someone maps the
+    # arguments too.
+    aliased = _CLAUDE_CODE_TOOL_ALIASES.get(lowered)
+    if aliased and aliased in agent.valid_tool_names:
+        return aliased
 
     # Fuzzy match as last resort.
     matches = get_close_matches(lowered, agent.valid_tool_names, n=1, cutoff=0.7)

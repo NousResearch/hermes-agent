@@ -31,6 +31,14 @@ class FakePopen:
     def wait(self, timeout=None):
         return self._rc
 
+    def poll(self):
+        # Mirror subprocess.Popen.poll(): None while running, exit code once
+        # the process has terminated (our fake terminates on wait()).
+        return self._rc
+
+    def kill(self):
+        self._rc = -9
+
 
 class TestQwen3TTSMLXStreamer:
     def test_registered(self):

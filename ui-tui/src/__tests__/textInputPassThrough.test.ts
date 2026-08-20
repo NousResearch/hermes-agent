@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { shouldPassThroughToGlobalHandler, shouldPreserveCtrlJNewline } from '../components/textInput.js'
-import { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } from '../lib/platform.js'
+import { DEFAULT_VOICE_RECORD_KEY, parseInterruptKey, parseVoiceRecordKey } from '../lib/platform.js'
 
 const key = (overrides: Record<string, unknown> = {}) => ({ ctrl: false, meta: false, ...overrides }) as any
 
@@ -49,5 +49,19 @@ describe('shouldPassThroughToGlobalHandler', () => {
     expect(shouldPassThroughToGlobalHandler('', key({ tab: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageUp: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageDown: true }))).toBe(true)
+  })
+
+  it('passes through a custom interrupt key (ctrl+g) so composer does not consume it', () => {
+    const interruptCfg = parseInterruptKey('ctrl+g')
+
+    expect(
+      shouldPassThroughToGlobalHandler('g', key({ ctrl: true }), DEFAULT_VOICE_RECORD_KEY, interruptCfg)
+    ).toBe(true)
+  })
+
+  it('does not pass through interrupt key without modifier when typing normally', () => {
+    const interruptCfg = parseInterruptKey('ctrl+g')
+
+    expect(shouldPassThroughToGlobalHandler('g', key(), DEFAULT_VOICE_RECORD_KEY, interruptCfg)).toBe(false)
   })
 })

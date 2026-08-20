@@ -142,7 +142,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   } = useQueue()
 
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
-  const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, isBlocked, gw)
+  const { clearCompletions, completions, compIdx, setCompIdx, compReplace } = useCompletion(input, isBlocked, gw)
 
   const clearIn = useCallback(() => {
     setInput('')
@@ -424,6 +424,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     () => ({
       attachClipboardImage,
       attachImagePath,
+      clearCompletions,
       clearIn,
       dequeue,
       enqueue,
@@ -444,6 +445,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     [
       attachClipboardImage,
       attachImagePath,
+      clearCompletions,
       clearIn,
       dequeue,
       enqueue,

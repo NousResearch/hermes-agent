@@ -11,7 +11,7 @@ import { patchUiState, resetUiState } from '../app/uiStore.js'
 import { StatusRule } from '../components/appChrome.js'
 import { AppLayout } from '../components/appLayout.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import { DEFAULT_VOICE_RECORD_KEY } from '../lib/platform.js'
+import { DEFAULT_INTERRUPT_KEY, DEFAULT_VOICE_RECORD_KEY } from '../lib/platform.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -156,7 +156,8 @@ const layoutProps: AppLayoutProps = {
     queuedDisplay: [],
     submit: () => {},
     updateInput: () => {},
-    voiceRecordKey: DEFAULT_VOICE_RECORD_KEY
+    voiceRecordKey: DEFAULT_VOICE_RECORD_KEY,
+    interruptKey: DEFAULT_INTERRUPT_KEY
   },
   mouseTracking: 'off',
   progress: { showProgressArea: false },

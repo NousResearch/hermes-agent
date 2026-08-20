@@ -21,6 +21,7 @@ export const HOTKEYS: [string, string][] = [
   [action + '+G / Alt+G', 'open $EDITOR (Alt+G fallback for VSCode/Cursor)'],
   [action + '+L', 'redraw / repaint'],
   [paste + '+V / /paste', 'paste text; /paste attaches clipboard image'],
+  ['Esc (or interrupt_key)', 'dismiss completions / interrupt (when busy) / cancel queue edit / clear selection'],
   ['Esc Esc', 'discard draft (recall with ↑)'],
   ['Tab', 'apply completion'],
   ['↑/↓', 'completions / queue edit / history'],

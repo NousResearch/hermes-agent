@@ -13,7 +13,7 @@ import type {
   SubscriptionUpgradeResponse
 } from '../gatewayTypes.js'
 import type { QueueItem } from '../hooks/useQueue.js'
-import type { ParsedVoiceRecordKey } from '../lib/platform.js'
+import type { ParsedInterruptKey, ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { ActiveWidget } from '../sdk/types.js'
 import type { Theme } from '../theme.js'
@@ -372,6 +372,7 @@ export interface ComposerActions {
   attachClipboardImage: () => void
   /** Attach an image by path in as a token. */
   attachImagePath: (path: string) => void
+  clearCompletions: () => void
   clearIn: () => void
   dequeue: () => string | undefined
   enqueue: (text: string, display?: string) => void
@@ -442,6 +443,7 @@ export interface InputHandlerContext {
     state: ComposerState
   }
   gateway: GatewayServices
+  interruptKey: ParsedInterruptKey
   terminal: {
     hasSelection: boolean
     scrollRef: RefObject<null | ScrollBoxHandle>
@@ -573,6 +575,7 @@ export interface AppLayoutComposerProps {
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   input: string
   inputBuf: string[]
+  interruptKey: ParsedInterruptKey
   pagerPageSize: number
   queueEditIdx: null | number
   queuedDisplay: string[]

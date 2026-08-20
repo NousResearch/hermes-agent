@@ -3999,8 +3999,14 @@ def add_comment(
             "VALUES (?, ?, ?, ?)",
             (task_id, author.strip(), body.strip(), now),
         )
-        _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
-        return int(cur.lastrowid or 0)
+        comment_id = int(cur.lastrowid or 0)
+        _append_event(
+            conn,
+            task_id,
+            "commented",
+            {"author": author, "len": len(body), "comment_id": comment_id},
+        )
+        return comment_id
 
 
 def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
@@ -9386,8 +9392,8 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
-# Event kinds that mean "an operator, a reviewer, or the board deliberately
-# asked for another run of this task":
+# Events that supersede recent-success evidence by returning a task to a
+# dispatchable phase:
 #
 #   status            manual phase move (an operator dragging done -> ready)
 #   promoted          dependency satisfied, task promoted into ready
@@ -9397,8 +9403,6 @@ _clear_spawn_failures = _clear_failure_counter
 #   changes_requested reviewer sent the implementer back (``request_changes``)
 #   review_reopened   review lane reopened for a re-run
 #
-# The respawn guard's evidence rules treat any of these, landing at or after
-# the evidence they would otherwise defer on, as superseding that evidence.
 _RESPAWN_REQUEUE_EVENT_KINDS = (
     "status",
     "promoted",
@@ -9409,26 +9413,93 @@ _RESPAWN_REQUEUE_EVENT_KINDS = (
     "review_reopened",
 )
 
+# Only events that carry explicit operator/reviewer intent may override an
+# active-PR signal.  Automatic recovery events (``promoted`` and
+# ``reclaimed``) remain valid overrides for ``recent_success`` but must not
+# defeat duplicate-PR protection: a crashed worker may have opened the PR
+# immediately before it was reclaimed, and dependency promotion can happen
+# without anyone asking to resume that PR.
+_ACTIVE_PR_CONTINUATION_EVENT_KINDS = (
+    "promoted_manual",
+    "unblocked",
+    "changes_requested",
+    "review_reopened",
+)
+
 
 def _requeued_since(
-    conn: sqlite3.Connection, task_id: str, since: int
+    conn: sqlite3.Connection,
+    task_id: str,
+    since: int,
+    *,
+    event_kinds: tuple[str, ...] = _RESPAWN_REQUEUE_EVENT_KINDS,
+    same_second_event_kinds: Optional[tuple[str, ...]] = None,
 ) -> bool:
     """Return True if an explicit re-queue event landed at/after ``since``.
 
     ``since`` is a unix timestamp taken from the piece of evidence the guard
     is about to defer on (a completed run, a PR-URL comment). Event and
-    comment timestamps are both second-granularity and the CLI writes its
-    ``UNBLOCK: <reason>`` comment in the same second as the ``unblocked``
-    event, so the comparison is inclusive — a re-queue in the same second as
-    the evidence counts as being after it.
+    comment timestamps are both second-granularity. By default a matching
+    event in the same second counts as a requeue, preserving the historical
+    ``recent_success`` behavior. Callers may narrow equal-second authority
+    with ``same_second_event_kinds``; the active-PR rule does so because only
+    the CLI's own ``UNBLOCK: <reason>`` comment is known to precede its event.
     """
-    placeholders = ", ".join("?" for _ in _RESPAWN_REQUEUE_EVENT_KINDS)
-    return conn.execute(
-        "SELECT 1 FROM task_events "
+    if same_second_event_kinds is None:
+        same_second_event_kinds = event_kinds
+    placeholders = ", ".join("?" for _ in event_kinds)
+    rows = conn.execute(
+        "SELECT kind, created_at FROM task_events "
         "WHERE task_id = ? AND created_at >= ? "
         f"AND kind IN ({placeholders}) "
-        "LIMIT 1",
-        (task_id, since, *_RESPAWN_REQUEUE_EVENT_KINDS),
+        "ORDER BY created_at DESC, id DESC",
+        (task_id, since, *event_kinds),
+    ).fetchall()
+    return any(
+        int(row["created_at"] or 0) > since
+        or row["kind"] in same_second_event_kinds
+        for row in rows
+    )
+
+
+def _comment_event_id(
+    conn: sqlite3.Connection, task_id: str, comment_id: int
+) -> Optional[int]:
+    """Return the event-stream position for a comment when recorded.
+
+    New comments carry their row id in the adjacent ``commented`` event so
+    cross-table ordering does not depend on whole-second timestamps. Event ids
+    are monotonic because ``task_events.id`` is ``AUTOINCREMENT``. Legacy
+    comments lack that payload and return ``None`` for the compatibility
+    fallback; it remains necessary while pre-upgrade nonterminal cards exist.
+    """
+    rows = conn.execute(
+        "SELECT id, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'commented' ORDER BY id DESC",
+        (task_id,),
+    ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else {}
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if payload.get("comment_id") == comment_id:
+            return int(row["id"])
+    return None
+
+
+def _requeued_after_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    event_id: int,
+    event_kinds: tuple[str, ...],
+) -> bool:
+    """Return whether an allowlisted event follows ``event_id``."""
+    placeholders = ", ".join("?" for _ in event_kinds)
+    return conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND id > ? "
+        f"AND kind IN ({placeholders}) LIMIT 1",
+        (task_id, event_id, *event_kinds),
     ).fetchone() is not None
 
 
@@ -9485,11 +9556,10 @@ def check_respawn_guard(
         A GitHub PR URL appears in a recent task comment (within
         ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
         opened a PR; re-spawning risks a duplicate PR on the same task.
-        Bypassed on the same condition as ``recent_success``: an explicit
-        re-queue event arriving AFTER the newest PR-URL comment is a
-        deliberate "work that PR again" request. A PR URL posted after the
-        re-queue re-arms the rule, so duplicate-PR protection still covers
-        the resumed round.
+        Bypassed only when an explicit operator/reviewer continuation event
+        (``_ACTIVE_PR_CONTINUATION_EVENT_KINDS``) arrives AFTER the newest
+        PR-URL comment. A PR URL posted after the continuation re-arms the
+        rule, so duplicate-PR protection still covers the resumed round.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -9583,14 +9653,37 @@ def check_respawn_guard(
     #    commit through to merge.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body, created_at FROM task_comments "
+        "SELECT id, body, created_at FROM task_comments "
         "WHERE task_id = ? AND created_at >= ? "
         "ORDER BY created_at DESC, id DESC",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
             # Newest-first, so the first match is the freshest PR evidence.
-            if _requeued_since(conn, task_id, int(c["created_at"] or 0)):
+            comment_event_id = _comment_event_id(conn, task_id, int(c["id"]))
+            if comment_event_id is not None:
+                continued = _requeued_after_event(
+                    conn,
+                    task_id,
+                    comment_event_id,
+                    _ACTIVE_PR_CONTINUATION_EVENT_KINDS,
+                )
+            else:
+                # Legacy comments have no event binding.  Fall back to time;
+                # only the CLI's own UNBLOCK reason may use an equal-second
+                # event because it is written immediately before that event.
+                continued = _requeued_since(
+                    conn,
+                    task_id,
+                    int(c["created_at"] or 0),
+                    event_kinds=_ACTIVE_PR_CONTINUATION_EVENT_KINDS,
+                    same_second_event_kinds=(
+                        ("unblocked",)
+                        if c["body"].lstrip().startswith("UNBLOCK:")
+                        else ()
+                    ),
+                )
+            if continued:
                 break
             return "active_pr"
 

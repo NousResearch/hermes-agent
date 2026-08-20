@@ -822,8 +822,90 @@ def test_active_pr_guard_yields_to_an_unblock_reason_quoting_the_pr(
             conn, tid, author="operator",
             body=f"UNBLOCK: changes requested on {_PR_URL}",
         )
+        # Simulate a pre-upgrade comment whose adjacent event did not yet
+        # carry comment_id; the timestamp fallback must preserve this CLI
+        # ordering case.
+        with kb.write_txn(conn):
+            event = conn.execute(
+                "SELECT id, payload FROM task_events "
+                "WHERE task_id = ? AND kind = 'commented' "
+                "ORDER BY id DESC LIMIT 1",
+                (tid,),
+            ).fetchone()
+            payload = json.loads(event["payload"])
+            payload.pop("comment_id", None)
+            conn.execute(
+                "UPDATE task_events SET payload = ? WHERE id = ?",
+                (json.dumps(payload), event["id"]),
+            )
         assert kb.unblock_task(conn, tid)
         assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_legacy_same_second_comment_fails_closed_without_native_unblock_prefix(
+    kanban_home: Path,
+) -> None:
+    """Legacy timestamp fallback must not guess cross-table ordering."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="legacy same second", assignee="worker")
+        kb.add_comment(conn, tid, author="worker", body=f"Opened {_PR_URL}")
+        with kb.write_txn(conn):
+            event = conn.execute(
+                "SELECT id, payload, created_at FROM task_events "
+                "WHERE task_id = ? AND kind = 'commented' "
+                "ORDER BY id DESC LIMIT 1",
+                (tid,),
+            ).fetchone()
+            payload = json.loads(event["payload"])
+            payload.pop("comment_id", None)
+            conn.execute(
+                "UPDATE task_events SET payload = ? WHERE id = ?",
+                (json.dumps(payload), event["id"]),
+            )
+            kb._append_event(
+                conn,
+                tid,
+                "changes_requested",
+                {"reason": "legacy ordering is ambiguous"},
+            )
+            conn.execute(
+                "UPDATE task_events SET created_at = ? "
+                "WHERE task_id = ? AND kind = 'changes_requested'",
+                (event["created_at"], tid),
+            )
+
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_active_pr_guard_rearms_for_later_pr_comment_in_same_second(
+    kanban_home: Path,
+) -> None:
+    """Equal timestamps do not let an older continuation beat a new PR."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="same-second PR", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: awaiting review",
+            expected_run_id=claimed.current_run_id,
+        )
+        assert kb.unblock_task(conn, tid)
+        kb.add_comment(conn, tid, author="worker", body=f"Opened {_PR_URL}")
+        unblocked_at = conn.execute(
+            "SELECT created_at FROM task_events "
+            "WHERE task_id = ? AND kind = 'unblocked' ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()["created_at"]
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_comments SET created_at = ? "
+                "WHERE task_id = ? AND body = ?",
+                (unblocked_at, tid, f"Opened {_PR_URL}"),
+            )
+
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
 
 
 def test_active_pr_guard_yields_to_review_reopen_and_changes_requested(
@@ -867,3 +949,49 @@ def test_active_pr_guard_yields_to_review_reopen_and_changes_requested(
         assert ok is True
         assert kb.get_task(conn, rejected).status == "ready"
         assert kb.check_respawn_guard(conn, rejected) is None
+
+
+def test_active_pr_guard_survives_reclaim_after_pr_comment(
+    kanban_home: Path,
+) -> None:
+    """A crashed/reclaimed worker is not authority to resume PR work.
+
+    The worker may have opened the PR immediately before dying.  Reclaiming
+    its claim must therefore leave duplicate-PR protection in force until an
+    operator or reviewer explicitly requests continuation.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="crash after PR", assignee="worker")
+        assert kb.claim_task(conn, tid) is not None
+        kb.add_comment(conn, tid, author="worker", body=f"Opened {_PR_URL}")
+
+        assert kb.reclaim_task(conn, tid, reason="worker exited")
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_active_pr_guard_survives_automatic_dependency_promotion(
+    kanban_home: Path,
+) -> None:
+    """Dependency completion alone does not authorize resuming a PR."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        parent_run = kb.claim_task(conn, parent)
+        assert parent_run is not None
+        child = kb.create_task(
+            conn,
+            title="dependent PR",
+            assignee="worker",
+            parents=[parent],
+        )
+        assert kb.get_task(conn, child).status == "todo"
+        kb.add_comment(conn, child, author="worker", body=f"Opened {_PR_URL}")
+
+        assert kb.complete_task(
+            conn,
+            parent,
+            summary="dependency complete",
+            expected_run_id=parent_run.current_run_id,
+        )
+        assert kb.get_task(conn, child).status == "ready"
+        assert kb.check_respawn_guard(conn, child) == "active_pr"

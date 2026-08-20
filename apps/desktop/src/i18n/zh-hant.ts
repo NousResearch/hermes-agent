@@ -365,6 +365,11 @@ export const zhHant = defineLocale({
       reactionsDesc: 'iMessage 風格的表情回應 — 你可以對訊息做出回應，Hermes 也能回應你的訊息。',
       composerPopoutTitle: '懸浮輸入框',
       composerPopoutDesc: '允許將輸入框拖出底部停靠區。關閉後，輸入框會鎖定在底部。',
+      profileSwitchTitle: '設定檔切換',
+      profileSwitchDesc:
+        '僅適用於這個桌面客戶端。「新草稿」會保留 Hermes 的原生行為；「上次工作階段」會在返回時重新開啟最後顯示的工作階段。',
+      profileSwitchFresh: '新草稿',
+      profileSwitchRestore: '上次工作階段',
       embedsTitle: '內嵌預覽',
       embedsDesc:
         '豐富預覽會從第三方網站（YouTube、X 等）載入。詢問會在你允許前顯示佔位符；一律會自動載入；關閉則保留純連結。',

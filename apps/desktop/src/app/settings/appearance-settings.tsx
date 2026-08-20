@@ -18,6 +18,11 @@ import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import {
+  $profileSwitchBehavior,
+  type ProfileSwitchBehavior,
+  setProfileSwitchBehavior
+} from '@/store/profile-switch-behavior'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
@@ -352,6 +357,7 @@ export function AppearanceSettings() {
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const reactionsEnabled = useStore($reactionsEnabled)
+  const profileSwitchBehavior = useStore($profileSwitchBehavior)
   const backdrop = useStore($backdrop)
   const introSplash = useStore($introSplash)
   const installs = useStore($marketplaceInstalls)
@@ -710,6 +716,25 @@ export function AppearanceSettings() {
             description={a.composerPopoutDesc}
             label={a.composerPopoutTitle}
             onChange={setComposerPopoutGesturesEnabled}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setProfileSwitchBehavior(id as ProfileSwitchBehavior)
+                }}
+                options={[
+                  { id: 'fresh_draft', label: a.profileSwitchFresh },
+                  { id: 'restore_last_session', label: a.profileSwitchRestore }
+                ]}
+                value={profileSwitchBehavior}
+              />
+            }
+            description={a.profileSwitchDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.profileSwitch)}
+            title={a.profileSwitchTitle}
           />
 
           <ListRow

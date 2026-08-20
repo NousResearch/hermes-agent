@@ -288,9 +288,12 @@ describe('refreshSessions batches slices into one request', () => {
 
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
 
+    let committed: boolean | undefined
     await act(async () => {
-      await result.current.refreshSessions()
+      committed = await result.current.refreshSessionsCommitted()
     })
+
+    expect(committed).toBe(true)
 
     // One batched call, not three separate listAllProfileSessions reads.
     expect(listSidebarSessions).toHaveBeenCalledTimes(1)
@@ -326,14 +329,16 @@ describe('refreshSessions batches slices into one request', () => {
       initialProps: { profileScope: 'work' }
     })
 
-    const staleRefresh = result.current.refreshSessions
+    const staleRefresh = result.current.refreshSessionsCommitted
 
     rerender({ profileScope: 'personal' })
 
+    let committed: boolean | undefined
     await act(async () => {
-      await staleRefresh()
+      committed = await staleRefresh()
     })
 
+    expect(committed).toBe(false)
     expect(listSidebarSessions).not.toHaveBeenCalled()
   })
 

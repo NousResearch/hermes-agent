@@ -71,6 +71,7 @@ import {
   setMessages
 } from '@/store/session'
 import { requestForSessionProfile } from '@/store/session-request-router'
+import { $focusedStoredSessionId } from '@/store/session-states'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isHudWindow } from '@/store/windows'
@@ -216,6 +217,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const messagingSessions = useStore($messagingSessions)
   const sessions = useStore($sessions)
+  const visibleStoredSessionId = useStore($focusedStoredSessionId)
   const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const profileScope = useStore($profileScope)
@@ -299,8 +301,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [ambientRequestGateway]
   )
 
-  const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =
-    useSessionListActions({ profileScope })
+  const {
+    loadMoreMessagingForPlatform,
+    loadMoreSessions,
+    refreshCronJobs,
+    refreshMessagingSessions,
+    refreshSessions,
+    refreshSessionsCommitted
+  } = useSessionListActions({ profileScope })
 
   const updateActiveSessionRuntimeInfo = useCallback(
     (info: { branch?: string; cwd?: string }) => {
@@ -821,17 +829,19 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const previewTarget = useStore($previewTarget)
 
   useDesktopIntegrations({
+    activeConnectionId,
     activeProfile: normalizeProfileKey(activeGatewayProfile),
     chatOpen,
     hasPreview: Boolean(previewTarget),
     locationPathname: location.pathname,
     navigate,
     profileReady: boot.phase === 'renderer.ready',
-    refreshSessions,
+    refreshSessions: refreshSessionsCommitted,
     resumeExhaustedSessionId,
     routedSessionId,
     runtimeIdByStoredSessionId: runtimeIdByStoredSessionIdRef,
-    sessions
+    sessions,
+    visibleStoredSessionId
   })
 
   // Pin/unpin the selected session (statusbar keybind + chat header) — pinned

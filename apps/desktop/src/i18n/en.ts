@@ -548,6 +548,11 @@ export const en: Translations = {
       introSplashDesc: 'The wordmark and prompt shown on an empty chat.',
       reactionsTitle: 'Message Reactions',
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
+      profileSwitchTitle: 'Profile switching',
+      profileSwitchDesc:
+        'Applies only on this Desktop client. Start fresh keeps native Hermes behavior; Restore last session returns to the session you last viewed for that profile.',
+      profileSwitchFresh: 'Start fresh',
+      profileSwitchRestore: 'Restore last session',
       composerPopoutTitle: 'Floating Composer',
       composerPopoutDesc: 'Allow dragging the composer out of its dock. Turn this off to keep it locked at the bottom.',
       embedsTitle: 'Inline Embeds',

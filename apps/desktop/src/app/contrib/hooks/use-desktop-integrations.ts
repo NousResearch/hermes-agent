@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
@@ -6,6 +7,7 @@ import { openSession } from '@/app/open-session'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
+import { $pendingConnectionId } from '@/store/connections'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { startMcpHealthChecker, stopMcpHealthChecker } from '@/store/mcp-health'
 import {
@@ -15,6 +17,12 @@ import {
   respondToApprovalAction
 } from '@/store/native-notifications'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import {
+  $profileSwitchBehavior,
+  $profileSwitchRestoreIntent,
+  clearProfileSwitchRestoreIntent,
+  registerProfileSwitchAnchorCapture
+} from '@/store/profile-switch-behavior'
 import { openFolderAsProject } from '@/store/projects'
 import {
   getRememberedRoute,
@@ -34,6 +42,7 @@ import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionR
 type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'profile'>
 
 interface DesktopIntegrationsParams {
+  activeConnectionId: null | string
   activeProfile: string
   chatOpen: boolean
   hasPreview: boolean
@@ -45,6 +54,7 @@ interface DesktopIntegrationsParams {
   routedSessionId: null | string
   runtimeIdByStoredSessionId: { readonly current: Map<string, string> }
   sessions: readonly RememberedSession[]
+  visibleStoredSessionId: null | string
 }
 
 /**
@@ -55,6 +65,7 @@ interface DesktopIntegrationsParams {
  * "talks to the desktop shell" surface reads as one unit.
  */
 export function useDesktopIntegrations({
+  activeConnectionId,
   activeProfile,
   locationPathname,
   navigate,
@@ -63,7 +74,8 @@ export function useDesktopIntegrations({
   resumeExhaustedSessionId,
   routedSessionId,
   runtimeIdByStoredSessionId,
-  sessions
+  sessions,
+  visibleStoredSessionId
 }: DesktopIntegrationsParams): void {
   // Update polling — populates $desktopVersion/$updateStatus, which feed the
   // statusbar version pill and the update toasts. Also honors the main
@@ -90,6 +102,128 @@ export function useDesktopIntegrations({
   }, [])
 
   const restoredRef = useRef(false)
+  const profileSwitchBehavior = useStore($profileSwitchBehavior)
+  const profileSwitchRestoreIntent = useStore($profileSwitchRestoreIntent)
+  const pendingConnectionId = useStore($pendingConnectionId)
+
+  // `selectProfile()` owns the explicit switch gesture, while this integration
+  // owner has the router and the true focused tile. Capture synchronously before
+  // the gateway swaps profile-scoped session/tile state.
+  useEffect(() => {
+    if (isHudWindow() || isSecondaryWindow()) {
+      return
+    }
+
+    return registerProfileSwitchAnchorCapture(() => {
+      if (visibleStoredSessionId && sessionBelongsToProfile(sessions, visibleStoredSessionId, activeProfile)) {
+        setRememberedSessionId(visibleStoredSessionId, activeProfile)
+      }
+    })
+  }, [activeProfile, sessions, visibleStoredSessionId])
+
+  // Explicit profile-switch restore is deliberately separate from the one-shot
+  // cold-start `restoredRef` behavior below. It restores a session through the
+  // native openSession door, so an already-open tile is focused in place rather
+  // than being routed into main, replaced, or reordered.
+  useEffect(() => {
+    const intent = profileSwitchRestoreIntent
+
+    if (!intent || isHudWindow() || isSecondaryWindow()) {
+      return
+    }
+
+    if (profileSwitchBehavior !== 'restore_last_session') {
+      clearProfileSwitchRestoreIntent(intent.sequence)
+
+      return
+    }
+
+    if (pendingConnectionId) {
+      clearProfileSwitchRestoreIntent(intent.sequence)
+
+      return
+    }
+
+    if (intent.connectionId === undefined) {
+      return
+    }
+
+    if (intent.connectionId !== activeConnectionId) {
+      clearProfileSwitchRestoreIntent(intent.sequence)
+
+      return
+    }
+
+    if (!profileReady || intent.profile !== activeProfile) {
+      return
+    }
+
+    let cancelled = false
+
+    // Use the existing scoped refresh as the completion barrier. It reports
+    // whether this request actually committed; if another refresh supersedes
+    // it, retry as the newest request instead of validating stale rows.
+    void (async () => {
+      let committed = false
+
+      for (let attempt = 0; attempt < 3 && !cancelled; attempt += 1) {
+        const result = await Promise.resolve(refreshSessions())
+
+        if (result !== false) {
+          committed = true
+
+          break
+        }
+      }
+
+      if (cancelled) {
+        return
+      }
+
+      const latest = $profileSwitchRestoreIntent.get()
+
+      if (
+        latest?.sequence !== intent.sequence ||
+        latest.connectionId !== activeConnectionId ||
+        latest.profile !== activeProfile
+      ) {
+        return
+      }
+
+      if (!committed) {
+        clearProfileSwitchRestoreIntent(intent.sequence)
+
+        return
+      }
+
+      const last = getRememberedSessionId(activeProfile)
+      clearProfileSwitchRestoreIntent(intent.sequence)
+
+      if (last) {
+        openSession(last, navigate, 'in-place')
+      }
+    })().catch(() => {
+      if (!cancelled) {
+        // The switch already entered the native fresh-draft surface. A failed
+        // refresh ends this attempt but preserves the remembered anchor for a
+        // later successful return.
+        clearProfileSwitchRestoreIntent(intent.sequence)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    activeConnectionId,
+    activeProfile,
+    navigate,
+    pendingConnectionId,
+    profileReady,
+    profileSwitchBehavior,
+    profileSwitchRestoreIntent,
+    refreshSessions
+  ])
 
   // Wait until boot has adopted the primary profile, then restore that profile's
   // navigation exactly once. The same effect owns subsequent writes so the

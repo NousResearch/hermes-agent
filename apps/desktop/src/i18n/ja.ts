@@ -374,6 +374,11 @@ export const ja = defineLocale({
         'iMessage風の絵文字タップバック — メッセージにリアクションでき、Hermesもあなたのメッセージにリアクションします。',
       composerPopoutTitle: 'フローティング入力欄',
       composerPopoutDesc: '入力欄をドックからドラッグして外せるようにします。オフにすると画面下部に固定されます。',
+      profileSwitchTitle: 'プロフィール切り替え',
+      profileSwitchDesc:
+        'このデスクトップクライアントにのみ適用されます。「新しい下書き」は Hermes の標準動作を維持し、「前回のセッション」は戻ったときに最後に表示していたセッションを再び開きます。',
+      profileSwitchFresh: '新しい下書き',
+      profileSwitchRestore: '前回のセッション',
       embedsTitle: 'インライン埋め込み',
       embedsDesc:
         'リッチプレビューは第三者サイト（YouTube、X など）から読み込まれます。確認は許可するまでプレースホルダーを表示し、常には自動で読み込み、オフはリンクのままにします。',

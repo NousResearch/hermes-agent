@@ -15,6 +15,7 @@ export const APPEARANCE_SETTING_IDS = {
   embeds: 'appearance.embeds',
   introSplash: 'appearance.intro-splash',
   language: 'appearance.language',
+  profileSwitch: 'appearance.profile-switch',
   theme: 'appearance.theme',
   toolView: 'appearance.tool-view',
   translucency: 'appearance.translucency',

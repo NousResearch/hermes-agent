@@ -4,9 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HermesConnection } from '@/global'
 import type { ProfileInfo } from '@/types/hermes'
 
+import { deferred } from '../test/deferred'
+
 // Keep profile.ts's side-effecting imports inert: the gateway socket layer and
 // the REST query client must not run for real in a unit test.
-const ensureGatewayForProfile = vi.fn(async () => undefined)
+const ensureGatewayForProfile = vi.fn<(profile: string) => Promise<void>>(async () => undefined)
 const ensureGatewayForAgent = vi.fn(async () => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const $gateway = atom<unknown>({ id: 'live-socket' })
@@ -26,8 +28,15 @@ const {
   ensureGatewayProfile,
   invalidateProfileListFetches,
   prewarmProfileBackend,
-  refreshProfiles
+  refreshProfiles,
+  selectProfile
 } = await import('./profile')
+
+const {
+  $profileSwitchRestoreIntent,
+  _resetProfileSwitchBehaviorForTests,
+  setProfileSwitchBehavior
+} = await import('./profile-switch-behavior')
 
 const { $connection } = await import('./session')
 const { invalidateProfileScopedQueries } = await import('@/lib/query-client')
@@ -52,8 +61,10 @@ const localConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
 const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnection>>()
 
 beforeEach(() => {
+  _resetProfileSwitchBehaviorForTests()
   getConnection.mockReset()
-  ensureGatewayForProfile.mockClear()
+  ensureGatewayForProfile.mockReset()
+  ensureGatewayForProfile.mockResolvedValue(undefined)
   openGatewayForProfile.mockClear()
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
@@ -66,6 +77,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  _resetProfileSwitchBehaviorForTests()
   $connection.set(null)
 })
 
@@ -83,6 +95,86 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect(getConnection).toHaveBeenCalledWith('vps-remote')
     expect($connection.get()?.mode).toBe('remote')
     expect($connection.get()?.profile).toBe('vps-remote')
+  })
+
+  it('reports the exact target descriptor before releasing the activation lease', async () => {
+    const target = remoteConn({ connectionId: 'remote-b' })
+    const onActivated = vi.fn()
+    getConnection.mockResolvedValue(target)
+
+    await ensureGatewayProfile('vps-remote', onActivated)
+
+    expect(onActivated).toHaveBeenCalledTimes(1)
+    expect(onActivated).toHaveBeenCalledWith(target)
+  })
+
+  it('serializes rapid profile activations so the latest request publishes last', async () => {
+    const beta = deferred<void>()
+    const gamma = deferred<void>()
+    const delta = deferred<void>()
+
+    const gates = new Map([
+      ['beta', beta],
+      ['gamma', gamma],
+      ['delta', delta]
+    ])
+
+    getConnection.mockImplementation(async name =>
+      remoteConn({ connectionId: `connection-${name}`, profile: name ?? 'default' })
+    )
+    ensureGatewayForProfile.mockImplementation(name => gates.get(name)?.promise ?? Promise.resolve())
+
+    const betaRun = ensureGatewayProfile('beta')
+    const gammaRun = ensureGatewayProfile('gamma')
+    const deltaRun = ensureGatewayProfile('delta')
+
+    await vi.waitFor(() => expect(ensureGatewayForProfile.mock.calls.map(([name]) => name)).toEqual(['beta']))
+
+    beta.resolve()
+    await vi.waitFor(() => expect(ensureGatewayForProfile.mock.calls.map(([name]) => name)).toEqual(['beta', 'gamma']))
+
+    gamma.resolve()
+    await vi.waitFor(() =>
+      expect(ensureGatewayForProfile.mock.calls.map(([name]) => name)).toEqual(['beta', 'gamma', 'delta'])
+    )
+
+    delta.resolve()
+    await Promise.all([betaRun, gammaRun, deltaRun])
+
+    expect($activeGatewayProfile.get()).toBe('delta')
+    expect($connection.get()?.connectionId).toBe('connection-delta')
+  })
+
+  it('treats a re-click of the visible profile during a swap as the latest intent', async () => {
+    const beta = deferred<void>()
+    const alpha = deferred<void>()
+
+    const gates = new Map([
+      ['beta', beta],
+      ['alpha', alpha]
+    ])
+
+    $activeGatewayProfile.set('alpha')
+    $connection.set(localConn({ connectionId: 'connection-alpha', profile: 'alpha' }))
+    setProfileSwitchBehavior('restore_last_session')
+    getConnection.mockImplementation(async name =>
+      remoteConn({ connectionId: `connection-${name}`, profile: name ?? 'default' })
+    )
+    ensureGatewayForProfile.mockImplementation(name => gates.get(name)?.promise ?? Promise.resolve())
+
+    selectProfile('beta')
+    const first = $profileSwitchRestoreIntent.get()
+    selectProfile('alpha')
+    const latest = $profileSwitchRestoreIntent.get()
+
+    expect(first?.profile).toBe('beta')
+    expect(latest?.profile).toBe('alpha')
+    expect(latest?.sequence).toBeGreaterThan(first?.sequence ?? 0)
+
+    beta.resolve()
+    await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('alpha'))
+    alpha.resolve()
+    await vi.waitFor(() => expect($activeGatewayProfile.get()).toBe('alpha'))
   })
 
   it('resyncs $connection back to local when returning to the default profile', async () => {

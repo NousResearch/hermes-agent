@@ -5033,7 +5033,6 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
   const open = async () => {
     const generation = ++botOpenGeneration
     haptic('tap')
-    $groupChatWorkspace.set(null)
     $selectedBot.set(bot.name)
 
     if (bot.remoteSource) {
@@ -5045,6 +5044,9 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
       })
       return
     }
+
+    // Retire any group main tab before async prep so Bot Chat owns the surface.
+    dismissGroupChatForLocalBotOpen()
 
     let pinnedChat = meta?.chat
 
@@ -9562,6 +9564,19 @@ function closeGroupChatMainTab(group) {
   }
 }
 
+/** Local-bot open handoff: capture the selected group and retire its main
+ *  tab (or clear the in-panel selection) before any async source prep /
+ *  canonical open. Remote bots must NOT call this — they stay-and-@. */
+function dismissGroupChatForLocalBotOpen() {
+  const group = $groupChatWorkspace.get()
+
+  if (!group) {
+    return
+  }
+
+  closeGroupChatMainTab(group)
+}
+
 /** Main-window wrapper: seats the member roster reactively (live roster +
  *  bot meta + the room's stored cross-connection descriptors) so the room
  *  keeps working as members change while the tab is open. */
@@ -9943,6 +9958,9 @@ function BotsPane() {
             })
             return
           }
+
+          // Same local handoff as BotRow: close group main tab before async open.
+          dismissGroupChatForLocalBotOpen()
 
           if ($botUnread.get()[bot.name]) {
             const next = { ...$botUnread.get() }

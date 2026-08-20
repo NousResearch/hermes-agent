@@ -132,6 +132,58 @@ def test_loop_stops_when_worker_already_completed(monkeypatch):
 
 
 
+def test_loop_honors_seconds_wait_before_retry(monkeypatch):
+    verdicts = iter([
+        ("wait", "provider rate limited", False, {"seconds": 900}, False),
+        ("done", "finished after retry", False, None, False),
+    ])
+    monkeypatch.setattr(goals, "judge_goal", lambda *_a, **_kw: next(verdicts))
+    statuses = iter(["running", "done"])
+    sleeps = []
+    turns = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t-wait",
+        goal_text="retry after provider recovery",
+        run_turn=lambda p: turns.append(p) or "retried",
+        task_status_fn=lambda: next(statuses),
+        block_fn=lambda r: pytest.fail(f"should not block: {r}"),
+        sleep_fn=sleeps.append,
+        max_turns=4,
+        first_response="HTTP 429",
+    )
+
+    assert res["outcome"] == "completed_by_worker"
+    assert sleeps == [900.0]
+    assert len(turns) == 1
+
+
+def test_loop_clamps_seconds_wait(monkeypatch):
+    monkeypatch.setattr(
+        goals,
+        "judge_goal",
+        lambda *_a, **_kw: (
+            "wait", "usage window resets later", False,
+            {"seconds": 86_400}, False,
+        ),
+    )
+    sleeps = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t-long-wait",
+        goal_text="wait safely",
+        run_turn=lambda _p: "retry attempted",
+        task_status_fn=lambda: "running",
+        block_fn=lambda _r: None,
+        sleep_fn=sleeps.append,
+        max_turns=2,
+        first_response="HTTP 429",
+    )
+
+    assert res["outcome"] == "blocked_budget"
+    assert sleeps == [3600.0]
+
+
 # ---------------------------------------------------------------------------
 # CLI judge gate tests (hermes kanban complete bypass fix)
 # ---------------------------------------------------------------------------

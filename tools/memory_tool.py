@@ -31,7 +31,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
 
-from utils import atomic_write_text
+from utils import atomic_write_text, is_truthy_value
 from tools.registry import no_cache_check_fn
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
@@ -1164,8 +1164,8 @@ def get_builtin_memory_store_flags(config: Optional[Dict[str, Any]] = None) -> T
     if not isinstance(section, dict):
         return True, True
     return (
-        bool(section.get("memory_enabled", True)),
-        bool(section.get("user_profile_enabled", True)),
+        is_truthy_value(section.get("memory_enabled"), default=True),
+        is_truthy_value(section.get("user_profile_enabled"), default=True),
     )
 
 

@@ -80,6 +80,13 @@ class TestBuiltinMemoryToolAvailability:
         assert get_builtin_memory_store_flags({"memory": {}}) == (True, True)
         assert get_builtin_memory_store_flags({}) == (True, True)
 
+    def test_quoted_false_flags_are_disabled(self):
+        from tools.memory_tool import get_builtin_memory_store_flags
+
+        assert get_builtin_memory_store_flags(
+            {"memory": {"memory_enabled": "false", "user_profile_enabled": "false"}}
+        ) == (False, False)
+
     def test_config_flip_updates_tool_without_manual_cache_clear(self, hermes_home):
         _write_memory_config(
             hermes_home, memory_enabled=False, user_profile_enabled=False

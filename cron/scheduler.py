@@ -1018,12 +1018,23 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
             )
             continue
         try:
+            # Fence the write the same way every other terminal mark_job_run()
+            # call in this file does: a claim that changed owner between the
+            # sweep's snapshot and this write (a different worker legitimately
+            # claimed and already completed the job) must not be clobbered by
+            # this stale worker's forced-release message.
+            claim = job.get("fire_claim")
+            fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
+            mark_kwargs = {}
+            if fire_owner is not None:
+                mark_kwargs["expected_fire_owner"] = fire_owner
             mark_job_run(
                 job_id,
                 False,
                 f"Stale in-flight claim force-released after {age / 60:.1f}m "
                 f"(allowance {allowance / 60:.1f}m); previous run never released "
                 f"the scheduler in-flight guard",
+                **mark_kwargs,
             )
         except Exception as e:
             logger.warning("Could not record forced release for job %s: %s", job_id, e)

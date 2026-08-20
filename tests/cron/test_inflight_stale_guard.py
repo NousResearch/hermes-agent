@@ -275,6 +275,24 @@ class TestStaleInflightSweep:
             assert sched.sweep_stale_inflight([job]) == [job["id"]]
         assert mark.call_count == 1
 
+    def test_forced_release_fences_on_fire_claim_owner(self, tmp_path):
+        """The forced-release write must be fenced with expected_fire_owner,
+        same as every other terminal mark_job_run() call in this file — a
+        stale worker's own sweep must not be able to overwrite a legitimate
+        replacement claim's result just because its message text differs."""
+        job = _job()
+        job["fire_claim"] = {"by": "worker-a"}
+        sched._running_job_ids.add(job["id"])
+        sched._running_since[job["id"]] = time.time() - 5 * 60 * 60
+        sched._running_futures[job["id"]] = sched._FUTURE_PENDING
+
+        with patch.object(sched, "mark_job_run") as mark, \
+             patch.object(sched, "_get_hermes_home", return_value=tmp_path):
+            assert sched.sweep_stale_inflight([job]) == [job["id"]]
+
+        assert mark.call_count == 1
+        assert mark.call_args.kwargs.get("expected_fire_owner") == "worker-a"
+
     def test_pending_sentinel_young_claim_is_not_released(self, tmp_path):
         """A young pending claim (submit still in flight) is safe."""
         job = _job()

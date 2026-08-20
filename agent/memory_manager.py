@@ -25,10 +25,11 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
+import copy
+import inspect
 import json
 import logging
 import re
-import inspect
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import Any, Callable, Dict, List, Optional
@@ -666,11 +667,27 @@ class MemoryManager:
         try:
             signature = inspect.signature(provider.sync_turn)
         except (TypeError, ValueError):
-            return True
+            # Optional context must be opt-in. An uninspectable legacy
+            # callable may reject new keywords, dropping the whole sync.
+            return False
         params = list(signature.parameters.values())
         if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
             return True
         return "messages" in signature.parameters
+
+    @staticmethod
+    def _provider_sync_accepts_metadata(provider: MemoryProvider) -> bool:
+        """Return whether sync_turn accepts a metadata keyword."""
+        try:
+            signature = inspect.signature(provider.sync_turn)
+        except (TypeError, ValueError):
+            # Fail closed for optional transport when signature discovery is
+            # unavailable; the required legacy call remains fully usable.
+            return False
+        params = list(signature.parameters.values())
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+            return True
+        return "metadata" in signature.parameters
 
     def sync_all(
         self,
@@ -679,6 +696,7 @@ class MemoryManager:
         *,
         session_id: str = "",
         messages: Optional[List[Dict[str, Any]]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Sync a completed turn to all providers.
 
@@ -705,23 +723,24 @@ class MemoryManager:
         if not clean_user_content:
             return
         user_content = clean_user_content
+        # The worker may run after the caller mutates its turn buffers. Freeze
+        # optional context at submission so providers observe one exact turn.
+        messages_snapshot = copy.deepcopy(messages) if messages is not None else None
+        metadata_snapshot = copy.deepcopy(metadata) if metadata is not None else None
 
         def _run() -> None:
             for provider in providers:
                 try:
-                    if messages is not None and self._provider_sync_accepts_messages(provider):
-                        provider.sync_turn(
-                            user_content,
-                            assistant_content,
-                            session_id=session_id,
-                            messages=messages,
-                        )
-                    else:
-                        provider.sync_turn(
-                            user_content,
-                            assistant_content,
-                            session_id=session_id,
-                        )
+                    sync_kwargs: Dict[str, Any] = {"session_id": session_id}
+                    if messages_snapshot is not None and self._provider_sync_accepts_messages(provider):
+                        sync_kwargs["messages"] = messages_snapshot
+                    if metadata_snapshot is not None and self._provider_sync_accepts_metadata(provider):
+                        sync_kwargs["metadata"] = metadata_snapshot
+                    provider.sync_turn(
+                        user_content,
+                        assistant_content,
+                        **sync_kwargs,
+                    )
                 except Exception as e:
                     logger.warning(
                         "Memory provider '%s' sync_turn failed: %s",

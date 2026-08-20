@@ -4436,6 +4436,18 @@ class AIAgent:
             sync_kwargs = {"session_id": self.session_id or ""}
             if messages is not None:
                 sync_kwargs["messages"] = messages
+            metadata = {
+                "session_id": self.session_id or "",
+                "parent_session_id": getattr(self, "_parent_session_id", "") or "",
+                "lineage_key": getattr(self, "_gateway_session_key", "") or "",
+                "platform": getattr(self, "platform", "") or "",
+                "chat_id": getattr(self, "_chat_id", "") or "",
+                "thread_id": getattr(self, "_thread_id", "") or "",
+                "origin_kind": "direct",
+            }
+            sync_kwargs["metadata"] = {
+                key: value for key, value in metadata.items() if value != ""
+            }
             self._memory_manager.sync_all(
                 user_text,
                 response_text,

@@ -9841,9 +9841,9 @@ function GroupChatWorkspace({ group, members, onBack }) {
             jsx('span', { className: 'font-medium text-foreground', children: group }),
             ' grouping from its ',
             String(members.length),
-            ' bots and clears the shared room log. The bots themselves and their “Group: ',
-            group,
-            '” sessions are kept.'
+            // New rooms title member sessions by roomId, legacy rooms by name —
+            // so the copy names the concept, not a literal session title.
+            ' bots and clears the shared room log. The bots themselves and their per-group sessions are kept.'
           ]
         }),
         destructive: true,

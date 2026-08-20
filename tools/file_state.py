@@ -178,7 +178,10 @@ class FileStateRegistry:
                         f"{resolved} was modified by sibling subagent "
                         f"{writer_tid!r} but this agent never read it. "
                         "Read the file before writing to avoid overwriting "
-                        "the sibling's changes."
+                        "the sibling's changes. If concurrent agents will "
+                        "keep editing this repo, isolate in a git worktree "
+                        "(`hermes -w` / `git worktree add`) or coordinate "
+                        "to avoid further clobbers."
                     )
                 read_ts = stamp[1]
                 if writer_ts > read_ts:
@@ -186,7 +189,10 @@ class FileStateRegistry:
                         f"{resolved} was modified by sibling subagent "
                         f"{writer_tid!r} at {_fmt_ts(writer_ts)} — after "
                         f"this agent's last read at {_fmt_ts(read_ts)}. "
-                        "Re-read the file before writing."
+                        "Re-read the file before writing. If concurrent "
+                        "agents will keep editing this repo, isolate in a "
+                        "git worktree (`hermes -w` / `git worktree add`) "
+                        "or coordinate to avoid further clobbers."
                     )
 
         # Case 2: external / unknown modification (mtime drifted).

@@ -621,6 +621,32 @@ class TestThreadScopedSessions:
         )
 
     @pytest.mark.asyncio
+    async def test_provisional_scope_wins_when_root_precedes_late_parent(self, adapter):
+        """The first child starts the stable scope even if root beats parent."""
+        events = [
+            _thread_event(THREAD_CHILD, CHANNEL, content="@Chip child first",
+                          reply=THREAD_PARENT, created_at=10),
+            _thread_event(THREAD_ROOT, CHANNEL, content="@Chip root second",
+                          created_at=11),
+            _thread_event(THREAD_PARENT, CHANNEL, content="@Chip parent late",
+                          reply=THREAD_ROOT, created_at=12),
+            _thread_event(SIBLING_ROOT, CHANNEL, content="@Chip direct root reply",
+                          root=THREAD_ROOT, created_at=13),
+        ]
+        state = adapter._channel_state[CHANNEL]
+        for event in events:
+            await adapter._handle_event(CHANNEL, state, event)
+
+        assert [d["thread_id"] for d in adapter._dispatched] == [
+            THREAD_PARENT,
+            None,
+            THREAD_PARENT,
+            THREAD_PARENT,
+        ]
+        roots = adapter._channel_state[CHANNEL]["roots"]
+        assert roots[THREAD_ROOT] == THREAD_PARENT
+
+    @pytest.mark.asyncio
     async def test_agent_reply_bridges_the_thread_chain(self, adapter):
         """A user replying to the AGENT's reply must land in the same thread
         session: send() records its own event id against the root."""

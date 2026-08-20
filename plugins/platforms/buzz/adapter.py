@@ -1555,7 +1555,11 @@ class BuzzAdapter(BasePlatformAdapter):
             # or canonical root into that same scope now, before a later direct
             # reply to the root can open a second Hermes session.
             if parsed and _EVENT_ID_RE.fullmatch(parsed):
-                roots.setdefault(parsed, root)
+                # This event already anchors live provisional history, so that
+                # earlier scope wins even if the canonical root was observed
+                # top-level in the meantime. `setdefault` would leave future
+                # direct-root replies in a second session.
+                roots[parsed] = root
                 roots.move_to_end(parsed)
                 self._trim_roots(roots)
             return root

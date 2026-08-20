@@ -634,9 +634,18 @@ class QQAdapter(BasePlatformAdapter):
                     self._access_token = None
                     self._token_expires_at = 0.0
 
-                # Session invalid → clear session, will re-identify on next Hello
-                # Note: 4009 (connection timeout) is NOT included here — it is
-                # resumable per the QQ protocol and should preserve session state.
+                # QQ sends opcode 7 before 4009 to request a fresh connection.
+                # A stale session cannot be resumed reliably after that pair;
+                # clear the resume cursor so the next Hello performs Identify.
+                if code == 4009 and self._session_id is not None:
+                    logger.info(
+                        "[%s] Session timed out (4009), clearing resume state for re-identify",
+                        self._log_tag,
+                    )
+                    self._session_id = None
+                    self._last_seq = None
+
+                # Session invalid → clear session, will re-identify on next Hello.
                 if code in {
                         4006,
                         4007,

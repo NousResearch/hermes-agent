@@ -849,6 +849,36 @@ class TestOptionalSkillSourceMetadata:
         assert "ATTACKER_GIT_EXECUTED" not in result.stdout
         assert result.stdout.startswith("git version ")
 
+    def test_trusted_git_does_not_execute_local_fsmonitor(self, tmp_path):
+        import subprocess
+        import tools.skills_hub as hub
+
+        if hub.os.name == "nt":
+            pytest.skip("POSIX executable regression")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        marker = tmp_path / "fsmonitor-executed"
+        payload = tmp_path / "fsmonitor"
+        payload.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n")
+        payload.chmod(0o755)
+        subprocess.run(
+            ["git", "config", "core.fsmonitor", str(payload)],
+            cwd=repo,
+            check=True,
+        )
+
+        hub._run_trusted_git(
+            repo,
+            "status",
+            "--porcelain",
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        assert not marker.exists()
+
     def test_git_archive_ignores_replace_refs(self, monkeypatch, tmp_path):
         import subprocess
         import tools.skills_hub as hub
@@ -1598,6 +1628,119 @@ def test_reinstall_preserves_existing_skill_when_late_scan_check_fails(
             )
 
     assert (existing / "SKILL.md").read_text() == "# Existing\n"
+
+
+def test_reinstall_reports_recoverable_backup_when_cleanup_is_blocked(
+    monkeypatch, tmp_path
+):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    skills_dir = tmp_path / "skills"
+    existing = skills_dir / "demo"
+    existing.mkdir(parents=True)
+    (existing / "SKILL.md").write_text("# Existing\n")
+    hub_dir = skills_dir / ".hub"
+    quarantine_root = hub_dir / "quarantine"
+    q_dir = quarantine_root / "demo-v2"
+    q_dir.mkdir(parents=True)
+    (q_dir / "SKILL.md").write_text("# Version 2\n")
+    bundle = hub.SkillBundle(
+        name="demo",
+        files={"SKILL.md": "# Version 2\n"},
+        source="community",
+        identifier="owner/repo/demo-v2",
+        trust_level="community",
+    )
+    result = guard.ScanResult(
+        skill_name="demo",
+        source="community",
+        trust_level="community",
+        verdict="safe",
+    )
+    monkeypatch.setattr(
+        hub.HubLockFile,
+        "record_install",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("lock write failed")
+        ),
+    )
+    original_rmtree = hub._rmtree_bound
+
+    def _blocked_target_cleanup(parent, name, binding):
+        if name == "demo":
+            raise PermissionError("sharing violation")
+        return original_rmtree(parent, name, binding)
+
+    monkeypatch.setattr(hub, "_rmtree_bound", _blocked_target_cleanup)
+
+    with patch.object(hub, "SKILLS_DIR", skills_dir), \
+            patch.object(hub, "HUB_DIR", hub_dir), \
+            patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+            patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+        with pytest.raises(ValueError, match="previous version remains at") as exc:
+            hub.install_from_quarantine(q_dir, "demo", "", bundle, result)
+
+    backups = list(skills_dir.glob(".demo.previous-*"))
+    assert len(backups) == 1
+    assert str(backups[0]) in str(exc.value)
+    assert (backups[0] / "SKILL.md").read_text() == "# Existing\n"
+    assert (existing / "SKILL.md").read_text() == "# Version 2\n"
+
+
+def test_reinstall_succeeds_when_only_old_backup_cleanup_is_blocked(
+    monkeypatch, tmp_path
+):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    skills_dir = tmp_path / "skills"
+    existing = skills_dir / "demo"
+    existing.mkdir(parents=True)
+    (existing / "SKILL.md").write_text("# Existing\n")
+    hub_dir = skills_dir / ".hub"
+    quarantine_root = hub_dir / "quarantine"
+    q_dir = quarantine_root / "demo-v2"
+    q_dir.mkdir(parents=True)
+    (q_dir / "SKILL.md").write_text("# Version 2\n")
+    bundle = hub.SkillBundle(
+        name="demo",
+        files={"SKILL.md": "# Version 2\n"},
+        source="community",
+        identifier="owner/repo/demo-v2",
+        trust_level="community",
+    )
+    result = guard.ScanResult(
+        skill_name="demo",
+        source="community",
+        trust_level="community",
+        verdict="safe",
+    )
+    original_rmtree = hub._rmtree_bound
+
+    def _blocked_backup_cleanup(parent, name, binding):
+        if name.startswith(".demo.previous-"):
+            raise PermissionError("sharing violation")
+        return original_rmtree(parent, name, binding)
+
+    monkeypatch.setattr(hub, "_rmtree_bound", _blocked_backup_cleanup)
+
+    with patch.object(hub, "SKILLS_DIR", skills_dir), \
+            patch.object(hub, "HUB_DIR", hub_dir), \
+            patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+            patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+        installed = hub.install_from_quarantine(
+            q_dir, "demo", "", bundle, result
+        )
+
+    assert installed == existing
+    assert (existing / "SKILL.md").read_text() == "# Version 2\n"
+    entry = HubLockFile(path=hub_dir / "lock.json").get_installed("demo")
+    assert entry is not None
+    assert entry["identifier"] == "owner/repo/demo-v2"
+    backups = list(skills_dir.glob(".demo.previous-*"))
+    assert len(backups) == 1
+    assert (backups[0] / "SKILL.md").read_text() == "# Existing\n"
 
 
 def test_lockfile_keeps_all_concurrent_install_records(tmp_path):

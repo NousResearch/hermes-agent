@@ -325,6 +325,8 @@ def _run_trusted_git(repo_root: Path, *args: str, **kwargs):
             "--no-replace-objects",
             "-c",
             "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
             "-C",
             str(repo_root),
             *args,
@@ -5081,7 +5083,8 @@ def install_from_quarantine(
                         origin_identity=getattr(bundle, "origin_identity", ""),
                     ),
                 )
-            except Exception:
+            except Exception as install_exc:
+                cleanup_error: Optional[Exception] = None
                 if published:
                     try:
                         _rmtree_bound(
@@ -5091,21 +5094,49 @@ def install_from_quarantine(
                         )
                     except FileNotFoundError:
                         pass
+                    except Exception as exc:
+                        cleanup_error = exc
+                if cleanup_error is not None:
+                    if backup_dir is not None:
+                        raise ValueError(
+                            "Install rollback incomplete; the failed version remains "
+                            f"active and the previous version remains at {backup_dir}"
+                        ) from install_exc
+                    raise ValueError(
+                        "Install rollback incomplete; the failed installation remains "
+                        f"at {final_install_dir}"
+                    ) from install_exc
                 if backup_dir is not None:
-                    _replace_bound_directory_entry(
-                        backup_dir,
-                        final_install_dir,
-                        destination_binding,
-                        destination_binding,
-                    )
-                raise
+                    try:
+                        _replace_bound_directory_entry(
+                            backup_dir,
+                            final_install_dir,
+                            destination_binding,
+                            destination_binding,
+                        )
+                    except Exception as restore_exc:
+                        raise ValueError(
+                            "Install rollback incomplete; the previous version remains "
+                            f"at {backup_dir}"
+                        ) from restore_exc
+                raise ValueError(
+                    f"Install failed and the previous state was restored: {install_exc}"
+                ) from install_exc
             else:
                 if backup_dir is not None:
-                    _rmtree_bound(
-                        backup_dir.parent,
-                        backup_dir.name,
-                        destination_binding,
-                    )
+                    try:
+                        _rmtree_bound(
+                            backup_dir.parent,
+                            backup_dir.name,
+                            destination_binding,
+                        )
+                    except OSError:
+                        logger.warning(
+                            "Installed %s successfully but could not remove backup %s",
+                            safe_skill_name,
+                            backup_dir,
+                            exc_info=True,
+                        )
 
     install_dir = final_install_dir
 

@@ -5924,6 +5924,15 @@ class TurnRunner:
             timeout = _clarify_mod.get_clarify_timeout()
             response = _clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
             if response is None or response == "":
+                # wait_for_response also returns on the thread-scoped
+                # interrupt (#83889); report what actually happened instead
+                # of blaming the user for not responding.
+                try:
+                    from tools.interrupt import is_interrupted as _clarify_is_interrupted
+                    if _clarify_is_interrupted():
+                        return "[interrupted by user]"
+                except Exception:
+                    pass
                 # Timeout or session-boundary cancellation
                 return f"[user did not respond within {int(timeout / 60)}m]"
             return response

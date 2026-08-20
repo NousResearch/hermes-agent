@@ -1974,6 +1974,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         or base_url_host_matches(agent.base_url, "moonshot.ai")
         or base_url_host_matches(agent.base_url, "moonshot.cn")
     )
+    _is_deepseek = base_url_host_matches(agent._base_url_lower, "api.deepseek.com")
     _is_tokenhub = base_url_host_matches(agent._base_url_lower, "tokenhub.tencentmaas.com")
     _is_lmstudio = (agent.provider or "").strip().lower() == "lmstudio"
 
@@ -2092,6 +2093,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         is_github_models=_is_gh,
         is_nvidia_nim=_is_nvidia,
         is_kimi=_is_kimi,
+        is_deepseek=_is_deepseek,
         is_tokenhub=_is_tokenhub,
         is_lmstudio=_is_lmstudio,
         is_custom_provider=agent.provider == "custom",
@@ -2980,11 +2982,16 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             (agent.provider or "").strip().lower() == "lmstudio"
             and agent._supports_reasoning_extra_body()
         )
+        _is_deepseek_summary = base_url_host_matches(agent._base_url_lower, "api.deepseek.com")
         _lm_reasoning_effort: str | None = (
             agent._resolve_lmstudio_summary_reasoning_effort()
             if _is_lmstudio_summary else None
         )
-        if not _is_lmstudio_summary and agent._supports_reasoning_extra_body():
+        _deepseek_reasoning_effort: str | None = None
+        if _is_deepseek_summary and agent.reasoning_config:
+            _e = str(agent.reasoning_config.get("effort", "high")).strip().lower()
+            _deepseek_reasoning_effort = "max" if _e == "xhigh" else "high"
+        if not _is_lmstudio_summary and not _is_deepseek_summary and agent._supports_reasoning_extra_body():
             if agent.reasoning_config is not None:
                 summary_extra_body["reasoning"] = agent.reasoning_config
             else:
@@ -3014,6 +3021,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
             if _lm_reasoning_effort is not None:
                 summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
+            if _deepseek_reasoning_effort is not None:
+                summary_kwargs["reasoning_effort"] = _deepseek_reasoning_effort
+                summary_extra_body["thinking"] = {"type": "enabled"}
 
             # Merge the profile's canonical body even when routing is unset:
             # profiles may always emit required metadata such as Portal tags.

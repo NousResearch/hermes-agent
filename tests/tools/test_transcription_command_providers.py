@@ -86,18 +86,34 @@ def _python_emit_stdout_command(transcript_text: str) -> str:
 
 class TestResolveCommandSTTProviderConfig:
     def test_builtin_names_are_never_command_providers(self):
+        # Configure a command entry for EVERY built-in so the loop below
+        # actually exercises the built-in guard for each name (an unconfigured
+        # name would resolve to None trivially). Kept in sync with
+        # BUILTIN_STT_PROVIDERS.
         cfg = {
             "providers": {
-                "openai": {"type": "command", "command": "echo hi"},
-                "groq": {"type": "command", "command": "echo hi"},
-                "local": {"type": "command", "command": "echo hi"},
-                "local_command": {"type": "command", "command": "echo hi"},
-                "mistral": {"type": "command", "command": "echo hi"},
-                "xai": {"type": "command", "command": "echo hi"},
+                name: {"type": "command", "command": "echo hi"}
+                for name in BUILTIN_STT_PROVIDERS
             },
         }
         for name in BUILTIN_STT_PROVIDERS:
             assert _resolve_command_stt_provider_config(name, cfg) is None
+
+    def test_elevenlabs_command_config_is_excluded(self):
+        # ElevenLabs is a native built-in; a stt.providers.elevenlabs command
+        # entry must be ignored by both command-provider resolution and
+        # iteration, never routed to a user shell command.
+        cfg = {
+            "providers": {
+                "elevenlabs": {"type": "command", "command": "echo hi"},
+                "my-cli": {"type": "command", "command": "whisper {input_path}"},
+            },
+        }
+        assert "elevenlabs" in BUILTIN_STT_PROVIDERS
+        assert _resolve_command_stt_provider_config("elevenlabs", cfg) is None
+        iterated = {name for name, _ in _iter_command_stt_providers(cfg)}
+        assert "elevenlabs" not in iterated
+        assert "my-cli" in iterated  # a genuine command provider is still yielded
 
     def test_missing_provider_returns_none(self):
         cfg = {"providers": {}}

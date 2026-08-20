@@ -75,6 +75,12 @@ import pytest
     ("anthropic/claude-opus-4-20250514", 240.0),
     ("anthropic/claude-sonnet-4.5", 180.0),
     ("anthropic/claude-sonnet-4.6", 180.0),
+    # Native Anthropic IDs use hyphens (claude-sonnet-4-5-20250929,
+    # claude-sonnet-4-6) — regression for the dotted-key mismatch that left
+    # current Sonnet thinking models with no stale-timeout floor.
+    ("claude-sonnet-4-6", 180.0),
+    ("claude-sonnet-4-5-20250929", 180.0),
+    ("anthropic/claude-sonnet-4-5-20250929", 180.0),
     # Anthropic Mythos-class named reasoning models — deep-reasoning tier.
     ("anthropic/claude-fable-5", 600.0),
     ("claude-fable-5", 600.0),

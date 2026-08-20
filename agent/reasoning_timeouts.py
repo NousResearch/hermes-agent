@@ -107,6 +107,14 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     ("claude-sonnet-5", 180),
     ("claude-sonnet-4.5", 180),
     ("claude-sonnet-4.6", 180),
+    # Native Anthropic model IDs use a hyphen version separator
+    # (``claude-sonnet-4-5-20250929``, ``claude-sonnet-4-6``), so the dotted
+    # keys above only match OpenRouter-style ids. Pin the hyphenated forms too
+    # — without them the native Sonnet 4.5/4.6 thinking stream gets no floor
+    # and is idle-killed at the default. (Opus above is version-agnostic and
+    # already matches hyphenated ids via the ``[\-._]`` separator anchor.)
+    ("claude-sonnet-4-5", 180),
+    ("claude-sonnet-4-6", 180),
     # Anthropic Mythos-class named reasoning models (claude-fable-5, …).
     # 1M context + 128K output — heavier thinking phase than the
     # numbered Claude line, so the floor is in the deep-reasoning tier

@@ -1670,6 +1670,12 @@ BROWSER_ORPHAN_GRACE_SECONDS = max(3600, BROWSER_SESSION_INACTIVITY_TIMEOUT * 20
 
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}
+# Non-secret profile identity used to rebuild the owning scope in the
+# process-global inactivity janitor.  Capturing the janitor thread's context
+# would pin whichever profile happened to start it first.
+_session_profile_homes: Dict[str, str] = {}
+_cleanup_failure_counts: Dict[str, int] = {}
+MAX_INACTIVITY_CLEANUP_FAILURES = 3
 
 # Background cleanup thread state
 _cleanup_thread = None
@@ -1742,6 +1748,8 @@ def _emergency_cleanup_all_sessions():
             with _cleanup_lock:
                 _active_sessions.clear()
                 _session_last_activity.clear()
+                _session_profile_homes.clear()
+                _cleanup_failure_counts.clear()
                 _recording_sessions.clear()
 
     # Sweep orphans from other crashed hermes processes.  Safe even if we
@@ -1786,12 +1794,68 @@ def _cleanup_inactive_browser_sessions():
         try:
             elapsed = int(current_time - _session_last_activity.get(task_id, current_time))
             logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
-            cleanup_browser(task_id)
             with _cleanup_lock:
-                if task_id in _session_last_activity:
-                    del _session_last_activity[task_id]
+                profile_home = _session_profile_homes.get(task_id)
+
+            if profile_home is None:
+                cleanup_browser(task_id)
+            else:
+                from agent.secret_scope import (
+                    build_profile_secret_scope,
+                    reset_secret_scope,
+                    set_secret_scope,
+                )
+                from hermes_constants import (
+                    reset_hermes_home_override,
+                    set_hermes_home_override,
+                )
+                from hermes_cli.env_loader import hydrate_profile_secret_sources
+
+                home_token = set_hermes_home_override(profile_home)
+                try:
+                    hydrate_profile_secret_sources(profile_home)
+                    scope_token = set_secret_scope(
+                        build_profile_secret_scope(Path(profile_home))
+                    )
+                    try:
+                        cleanup_browser(task_id)
+                    finally:
+                        reset_secret_scope(scope_token)
+                finally:
+                    reset_hermes_home_override(home_token)
+
+            with _cleanup_lock:
+                _session_last_activity.pop(task_id, None)
+                _session_profile_homes.pop(task_id, None)
+                _cleanup_failure_counts.pop(task_id, None)
         except Exception as e:
-            logger.warning("Error cleaning up inactive session %s: %s", task_id, e)
+            with _cleanup_lock:
+                failures = _cleanup_failure_counts.get(task_id, 0) + 1
+                _cleanup_failure_counts[task_id] = failures
+            if failures < MAX_INACTIVITY_CLEANUP_FAILURES:
+                logger.warning(
+                    "Error cleaning up inactive session %s (attempt %d/%d): %s",
+                    task_id,
+                    failures,
+                    MAX_INACTIVITY_CLEANUP_FAILURES,
+                    e,
+                )
+                continue
+
+            logger.error(
+                "Browser cleanup failed %d times for inactive session %s; "
+                "force-reaping its tracked local daemon: %s",
+                failures,
+                task_id,
+                e,
+            )
+            try:
+                _force_reap_browser_session(task_id)
+            finally:
+                with _cleanup_lock:
+                    _session_last_activity.pop(task_id, None)
+                    _session_profile_homes.pop(task_id, None)
+                    _cleanup_failure_counts.pop(task_id, None)
 
 
 def _write_owner_pid(socket_dir: str, session_name: str) -> None:
@@ -2147,6 +2211,8 @@ def _update_session_activity(task_id: str):
     """Update the last activity timestamp for a session."""
     with _cleanup_lock:
         _session_last_activity[task_id] = time.time()
+        _session_profile_homes.setdefault(task_id, str(get_hermes_home()))
+        _cleanup_failure_counts.pop(task_id, None)
 
 
 # Register cleanup thread stop on exit
@@ -4889,6 +4955,69 @@ def _cleanup_old_recordings(max_age_hours=72):
 # Cleanup and Management Functions
 # ============================================================================
 
+def _reap_tracked_browser_daemon(session_info: Dict[str, Any]) -> None:
+    """Kill the local daemon represented by trusted in-memory session state."""
+    session_name = session_info.get("session_name", "")
+    if not session_name:
+        return
+
+    socket_dir = os.path.join(
+        _socket_safe_tmpdir(), f"agent-browser-{session_name}"
+    )
+    if not os.path.exists(socket_dir):
+        return
+
+    pid_file = os.path.join(socket_dir, f"{session_name}.pid")
+    if os.path.isfile(pid_file):
+        try:
+            from tools.process_registry import ProcessRegistry
+
+            daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
+            ProcessRegistry._terminate_host_pid(daemon_pid)
+            logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
+        except (ProcessLookupError, ValueError, PermissionError, OSError):
+            logger.debug(
+                "Could not kill daemon pid for %s (already dead or inaccessible)",
+                session_name,
+            )
+    shutil.rmtree(socket_dir, ignore_errors=True)
+
+
+def _force_reap_browser_session(task_id: str) -> None:
+    """Best-effort local teardown after repeated normal cleanup failures."""
+    if _is_local_sidecar_key(task_id):
+        session_keys = [task_id]
+        bare_task_id = task_id[: -len(_LOCAL_SUFFIX)]
+    else:
+        bare_task_id = task_id
+        session_keys = [task_id, f"{task_id}{_LOCAL_SUFFIX}"]
+
+    with _cleanup_lock:
+        tracked = [
+            (session_key, _active_sessions.pop(session_key, None))
+            for session_key in session_keys
+        ]
+        for session_key in session_keys:
+            _session_last_activity.pop(session_key, None)
+            _session_profile_homes.pop(session_key, None)
+            _cleanup_failure_counts.pop(session_key, None)
+            _recording_sessions.discard(session_key)
+
+    for session_key, session_info in tracked:
+        try:
+            _stop_cdp_supervisor(session_key)
+        except Exception as exc:
+            logger.debug(
+                "Could not stop CDP supervisor during force-reap for %s: %s",
+                session_key,
+                exc,
+            )
+        if session_info:
+            _reap_tracked_browser_daemon(session_info)
+
+    _last_active_session_key.pop(bare_task_id, None)
+
+
 def cleanup_browser(task_id: Optional[str] = None) -> None:
     """
     Clean up browser session(s) for a task.
@@ -4990,6 +5119,8 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         with _cleanup_lock:
             _active_sessions.pop(task_id, None)
             _session_last_activity.pop(task_id, None)
+            _session_profile_homes.pop(task_id, None)
+            _cleanup_failure_counts.pop(task_id, None)
 
         # Cloud mode: close the cloud browser session via provider API.
         # Local sidecars have bb_session_id=None so this no-ops for them.
@@ -5001,22 +5132,8 @@ def _cleanup_single_browser_session(task_id: str) -> None:
                 except Exception as e:
                     logger.warning("Could not close cloud browser session: %s", e)
 
-        # Kill the daemon process and clean up socket directory
-        session_name = session_info.get("session_name", "")
-        if session_name:
-            socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{session_name}")
-            if os.path.exists(socket_dir):
-                # agent-browser writes {session}.pid in the socket dir
-                pid_file = os.path.join(socket_dir, f"{session_name}.pid")
-                if os.path.isfile(pid_file):
-                    try:
-                        from tools.process_registry import ProcessRegistry
-                        daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
-                        ProcessRegistry._terminate_host_pid(daemon_pid)
-                        logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
-                    except (ProcessLookupError, ValueError, PermissionError, OSError):
-                        logger.debug("Could not kill daemon pid for %s (already dead or inaccessible)", session_name)
-                shutil.rmtree(socket_dir, ignore_errors=True)
+        # Kill the daemon process and clean up socket directory.
+        _reap_tracked_browser_daemon(session_info)
 
         logger.debug("Removed task %s from active sessions", task_id)
     else:

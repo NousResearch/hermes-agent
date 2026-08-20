@@ -442,6 +442,11 @@ export const en: Translations = {
     currentProfile: "current ({name})",
     managingProfile:
       "Managing profile \u201c{name}\u201d — toggles apply to that profile, not this dashboard\u2019s.",
+    deleteSkill: "Delete skill",
+    deleteSkillConfirmTitle: "Delete skill \u201c{name}\u201d?",
+    deleteSkillConfirmMessage:
+      "This permanently deletes the skill's folder (SKILL.md plus any scripts and references). Cannot be undone.",
+    skillDeleted: "{name} deleted",
   },
 
   config: {

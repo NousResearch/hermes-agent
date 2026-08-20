@@ -541,3 +541,36 @@ async def update_skill_content(body: SkillContentUpdate):
         raise HTTPException(status_code=status, detail=err)
     _clear_skills_prompt_cache()
     return result
+
+
+@router.delete("/api/skills")
+async def delete_skill(name: str, profile: Optional[str] = None):
+    """Delete a skill from the dashboard (port of paradigmxyz/centaur#1393).
+
+    Routes through the same guarded delete path as the agent's
+    ``skill_manage`` tool — pinned-skill guard, org-mirror guard, and the
+    skills-root/symlink defense-in-depth all apply. ``absorbed_into=""``
+    declares an explicit user-directed prune (no consolidation target), so
+    the curator classification pipeline doesn't log a legacy warning.
+    A delete from the authenticated dashboard IS the user acting directly,
+    matching the create/update endpoints above.
+    """
+    from tools.skill_manager_tool import _delete_skill
+
+    def _run():
+        with _profile_scope(profile):
+            return _delete_skill(name, absorbed_into="")
+
+    result = await asyncio.to_thread(_run)
+    if not result.get("success"):
+        err = result.get("error", "Failed to delete skill.")
+        err_l = str(err).lower()
+        if "not found" in err_l:
+            status = 404
+        elif "pinned" in err_l:
+            status = 409
+        else:
+            status = 400
+        raise HTTPException(status_code=status, detail=err)
+    _clear_skills_prompt_cache()
+    return result

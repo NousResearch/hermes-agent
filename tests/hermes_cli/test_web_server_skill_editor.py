@@ -144,6 +144,46 @@ class TestSkillUpdate:
         assert resp.status_code == 400
 
 
+class TestSkillDelete:
+    """DELETE /api/skills — port of paradigmxyz/centaur#1393."""
+
+    def test_delete_removes_skill_dir(self, client, isolated_profiles):
+        skill_dir = isolated_profiles["default"] / "skills" / "dashboard-skill"
+        assert skill_dir.exists()
+        resp = client.delete("/api/skills", params={"name": "dashboard-skill"})
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+        assert not skill_dir.exists()
+
+    def test_delete_unknown_skill_404(self, client, isolated_profiles):
+        resp = client.delete("/api/skills", params={"name": "no-such-skill"})
+        assert resp.status_code == 404
+
+    def test_delete_scopes_to_profile(self, client, isolated_profiles):
+        worker_dir = isolated_profiles["worker_alpha"] / "skills" / "worker-skill"
+        # Invisible without the profile param...
+        resp = client.delete("/api/skills", params={"name": "worker-skill"})
+        assert resp.status_code == 404
+        assert worker_dir.exists()
+        # ...deleted with it.
+        resp = client.delete(
+            "/api/skills", params={"name": "worker-skill", "profile": "worker_alpha"}
+        )
+        assert resp.status_code == 200
+        assert not worker_dir.exists()
+
+    def test_delete_pinned_skill_409(self, client, isolated_profiles, monkeypatch):
+        import tools.skill_manager_tool as smt
+
+        monkeypatch.setattr(
+            smt, "_pinned_guard", lambda name: f"Skill '{name}' is pinned and cannot be deleted."
+        )
+        skill_dir = isolated_profiles["default"] / "skills" / "dashboard-skill"
+        resp = client.delete("/api/skills", params={"name": "dashboard-skill"})
+        assert resp.status_code == 409
+        assert skill_dir.exists()
+
+
 class TestEditorEndpointsAuth:
     @pytest.mark.parametrize(
         "method,path,kwargs",
@@ -151,6 +191,7 @@ class TestEditorEndpointsAuth:
             ("get", "/api/skills/content?name=dashboard-skill", {}),
             ("post", "/api/skills", {"json": {"name": "x", "content": "y"}}),
             ("put", "/api/skills/content", {"json": {"name": "x", "content": "y"}}),
+            ("delete", "/api/skills?name=dashboard-skill", {}),
         ],
     )
     def test_endpoints_401_without_token(

@@ -771,6 +771,11 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, content, profile: profile || undefined }),
     }),
+  deleteSkill: (name: string, profile?: string) =>
+    fetchJSON<SkillWriteResult>(
+      `/api/skills?name=${encodeURIComponent(name)}${profile ? `&profile=${encodeURIComponent(profile)}` : ""}`,
+      { method: "DELETE" },
+    ),
   getToolsets: (profile?: string) =>
     fetchJSON<ToolsetInfo[]>(`/api/tools/toolsets${profileQuery(profile)}`),
   toggleToolset: (name: string, enabled: boolean, profile?: string) =>
@@ -2314,6 +2319,8 @@ export interface SkillInfo {
   description: string;
   category: string;
   enabled: boolean;
+  /** "hub" | "bundled" | "agent" — agent covers agent-authored + hand-made. */
+  provenance?: string;
 }
 
 export interface SkillContent {

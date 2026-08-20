@@ -1,0 +1,51 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: genoffice
+description: Create and byte-preserving-edit Office documents (docx/pptx) via the GenOffice engines.
+source: https://github.com/genspark-ai/genoffice
+
+# mcp-genoffice (MIT — https://github.com/criptogus/mcp-genoffice) exposes the
+# pure-TS GenOffice engines (genspark-ai/genoffice, Apache-2.0) as MCP tools:
+# text extraction, docx blocks/patch/watermark/create/delete and pptx
+# slides/patch/create/delete — all byte-preserving (untouched blocks,
+# elements and zip parts keep their original bytes, so layout never breaks).
+#
+# Why git install: the GenOffice engine packages are NOT published to npm and
+# ship as TypeScript source. The server runs under the tsx loader and, on
+# first tool use, auto-clones a SHA-pinned genoffice revision into
+# ~/.cache/mcp-genoffice/src (one-time shallow fetch + npm install, ~40s).
+# The engine pin lives in src/engine.ts of the pinned server commit below.
+install:
+  type: git
+  url: https://github.com/criptogus/mcp-genoffice.git
+  ref: a23f738c5099efc70c6b127c155248c3f498e864
+  bootstrap:
+    - npm install --no-audit --no-fund
+
+transport:
+  type: stdio
+  command: node
+  args:
+    - ${INSTALL_DIR}/bin/mcp-genoffice.mjs
+
+auth:
+  type: none
+
+post_install: |
+  The first tool call takes ~40s: the server clones the pinned GenOffice
+  engines into ~/.cache/mcp-genoffice/src and runs npm install once. After
+  that, calls are instant.
+
+  Agent workflow (all intelligence from your agent — no vendor AI needed):
+    1. genoffice_docx_blocks / genoffice_pptx_slides — read the document
+    2. genoffice_docx_patch / genoffice_pptx_patch — edit text with
+       byte-preserving roundtrips (a NEW file is written; the original is
+       never modified)
+    3. genoffice_docx_create / genoffice_pptx_create — new documents from
+       scratch; genoffice_docx_delete / genoffice_pptx_delete — remove
+       blocks/elements; genoffice_docx_watermark — confidentiality marks
+
+  Developers: set GENOFFICE_SRC in mcp_servers.genoffice.env to point at your
+  own genspark-ai/genoffice checkout to skip the auto-clone.

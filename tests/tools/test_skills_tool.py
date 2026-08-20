@@ -400,9 +400,9 @@ class TestSkillView:
         assert "references/api.md" in result["available_files"]["references"]
 
     def test_disabled_skill_blocked_enabled_allowed(self, tmp_path):
+        pass
 
-
-def test_view_discovers_custom_subdirectory(self, tmp_path):
+    def test_view_discovers_custom_subdirectory(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = _make_skill(tmp_path, "multi-phase")
             steps_dir = skill_dir / "steps"
@@ -445,7 +445,6 @@ def test_view_discovers_custom_subdirectory(self, tmp_path):
 
     def test_view_disabled_skill_blocked(self, tmp_path):
         """Disabled skills should not be viewable via skill_view."""
->>>>> (feat(skills): auto-discover custom subdirectories in skill linked_files (#30999))
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
             patch("tools.skills_tool._is_skill_disabled", return_value=True),

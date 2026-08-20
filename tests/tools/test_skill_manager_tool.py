@@ -1246,4 +1246,3 @@ class TestDiscoverSkillSubdirs:
         result = _discover_skill_subdirs(skill_dir)
 
         assert "references" in result
->>>>> (feat(skills): auto-discover custom subdirectories in skill linked_files (#30999))

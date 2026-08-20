@@ -318,8 +318,16 @@ def _skill_not_found_error(name: str, suffix: str = "") -> str:
     return base + suffix
 
 
-def _validate_file_path(file_path: str) -> Optional[str]:
-    """Validate a write_file/remove_file path: under an allowed subdir, no escape."""
+def _validate_file_path(file_path: str, skill_name: Optional[str] = None) -> Optional[str]:
+    """
+    Validate a file path for write_file/remove_file.
+    Must be under an allowed subdirectory and not escape the skill dir.
+    
+    When ``skill_name`` is provided, custom subdirectories discovered by
+    ``_discover_skill_subdirs`` are also accepted alongside ``ALLOWED_SUBDIRS``
+    so agents that see a custom directory file listed in ``skill_view`` can
+    actually write to it.
+    """
     from tools.path_security import has_traversal_component
     if not file_path:
         return "file_path is required."
@@ -327,12 +335,30 @@ def _validate_file_path(file_path: str) -> Optional[str]:
     # Traversal first, so the SKILL.md exception is unreachable by a traversal-laden path.
     if has_traversal_component(file_path):
         return "Path traversal ('..') is not allowed."
-    # SKILL.md lives at the skill root; accept 'SKILL.md' and '<skill>/SKILL.md'.
-    if parts and parts[-1] == "SKILL.md" and len(parts) in (1, 2):
-        return None
-    if not parts or parts[0] not in ALLOWED_SUBDIRS:
-        allowed = ", ".join(sorted(ALLOWED_SUBDIRS))
-        return f"File must be under one of: {allowed}. Got: '{file_path}'"
+
+    # SKILL.md is the canonical skill file and lives at the skill root, not
+    # under an allowed subdirectory. Accept its two natural spellings —
+    # 'SKILL.md' and '<skill-name>/SKILL.md' — so callers can target the main
+    # file. The traversal guard above still applies, so this can't escape.
+    if parts and parts[-1] == "SKILL.md":
+        if len(parts) == 1 or len(parts) == 2:
+            return None
+
+    # Build the set of allowed subdirectories: standard 4 + any custom dirs
+    # discovered in the skill directory.
+    allowed = set(ALLOWED_SUBDIRS)
+    if skill_name:
+        existing = _find_skill(skill_name)
+        if existing:
+            found = _discover_skill_subdirs(existing["path"])
+            allowed |= found
+
+    # Must be under an allowed subdirectory
+    if not parts or parts[0] not in allowed:
+        allowed_str = ", ".join(sorted(allowed))
+        return f"File must be under one of: {allowed_str}. Got: '{file_path}'"
+
+    # Must have a filename (not just a directory)
     if len(parts) < 2:
         return f"Provide a file path, not just a directory. Example: '{parts[0]}/myfile.md'"
     return None
@@ -479,6 +505,10 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
         return guard
     target_label = file_path or "SKILL.md"
     if file_path:
+        # Patching a supporting file
+        err = _validate_file_path(file_path, skill_name=name)
+        if err:
+            return err
         target, err = _resolve_supporting_file(skill_dir, file_path)
         if err:
             return err
@@ -556,7 +586,8 @@ def _rmdir_if_empty(parent: Path, stop: Path) -> None:
 
 def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     """Add or overwrite a supporting file within any skill directory."""
-    if err := _validate_file_path(file_path):
+    err = _validate_file_path(file_path, skill_name=name)
+    if err:
         return _err(err)
     if not file_content and file_content != "":
         return _err("file_content is required.")
@@ -582,7 +613,8 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
 
 def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     """Remove a supporting file from any skill directory."""
-    if err := _validate_file_path(file_path):
+    err = _validate_file_path(file_path, skill_name=name)
+    if err:
         return _err(err)
     skill_dir, guard = _locate_for_write(name, "remove_file", org_guard=False)
     if guard:

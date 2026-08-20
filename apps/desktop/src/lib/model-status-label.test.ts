@@ -42,6 +42,23 @@ describe('model-status-label', () => {
     )
   })
 
+  it('localizes the effort segment via effortLabels', () => {
+    const zhLabels: Record<string, string> = {
+      low: '低',
+      medium: '中',
+      high: '高',
+      none: '关闭'
+    }
+
+    expect(formatModelStatusLabel('openai/gpt-5.5', { reasoningEffort: 'high', effortLabels: zhLabels })).toBe(
+      'GPT-5.5 · 高'
+    )
+    expect(formatModelStatusLabel('openai/gpt-5.5', { reasoningEffort: 'none', effortLabels: zhLabels })).toBe(
+      'GPT-5.5 · 关闭'
+    )
+    expect(formatModelStatusLabel('openai/gpt-5.5', { effortLabels: zhLabels })).toBe('GPT-5.5 · 中')
+  })
+
   it('returns just the placeholder name when there is no model', () => {
     expect(formatModelStatusLabel('')).toBe('No model')
   })

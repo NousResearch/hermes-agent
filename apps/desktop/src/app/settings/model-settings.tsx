@@ -879,7 +879,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
                   <SelectContent>
                     {REASONING_EFFORT_VALUES.map(value => (
                       <SelectItem key={value} value={value}>
-                        {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
+                        {t.shell.modelOptions[value]}
                       </SelectItem>
                     ))}
                   </SelectContent>

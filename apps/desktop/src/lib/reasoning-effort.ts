@@ -27,10 +27,14 @@ const SHORT_LABELS: Record<string, string> = {
   ultra: 'Ultra'
 }
 
-export function reasoningEffortLabel(effort: string): string {
+/** Map a reasoning effort value to a display label. When `labels` is provided
+ *  (e.g. the i18n `t.shell.modelOptions` catalog) it takes precedence over the
+ *  built-in English fallback map, so localized labels (Chinese "中"/"高"/"低")
+ *  are shown instead of the English "Med"/"High"/"Low". */
+export function reasoningEffortLabel(effort: string, labels?: Record<string, string>): string {
   const key = normalize(effort)
 
-  return key ? (SHORT_LABELS[key] ?? effort) : ''
+  return key ? (labels?.[key] ?? SHORT_LABELS[key] ?? effort) : ''
 }
 
 export const isReasoningEffort = (value: string): value is ReasoningEffort =>

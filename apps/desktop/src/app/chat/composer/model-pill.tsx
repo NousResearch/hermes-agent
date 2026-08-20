@@ -41,6 +41,7 @@ export function ModelPill({
   model: ChatBarState['model']
 }) {
   const copy = useI18n().t.shell.statusbar
+  const modelLabels = useI18n().t.shell.modelOptions
   const view = useSessionView()
   // Prefer the chat-bar snapshot (already view-scoped by ChatView); fall back
   // to the live SessionView atoms so a mid-flight session.info still paints.
@@ -95,7 +96,7 @@ export function ModelPill({
     <>
       {currentModel.trim() ? (
         <span className="truncate">
-          {formatModelStatusLabel(currentModel, { defaultEffort, fastMode, reasoningEffort })}
+          {formatModelStatusLabel(currentModel, { defaultEffort, fastMode, reasoningEffort, effortLabels: modelLabels })}
         </span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />

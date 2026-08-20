@@ -39,7 +39,7 @@ from typing import Optional, Dict, List, Any, Set, Tuple, Union, Collection
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
-from utils import atomic_replace, atomic_write_text
+from cron._hermes_utils import atomic_replace, atomic_write_text
 
 # ``croniter`` compiles ~15 ms of regexes at import and only matters for
 # 5-field cron expressions. Resolve lazily; ``HAS_CRONITER`` stays a module

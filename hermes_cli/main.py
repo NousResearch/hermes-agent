@@ -4139,7 +4139,7 @@ def _format_aux_current(task_cfg: dict) -> str:
 def _delegation_cfg_as_task(cfg: dict) -> dict:
     """Project the top-level ``delegation`` section into aux-task shape.
 
-    Returns a dict with provider/model/base_url/api_key keys so the shared
+    Returns a dict with provider/model/base_url/api_key/key_env keys so the shared
     rendering (``_format_aux_current``) and picker code can treat delegation
     like any other task. Empty provider means "inherit parent" which renders
     as "auto".
@@ -4152,6 +4152,7 @@ def _delegation_cfg_as_task(cfg: dict) -> dict:
         "model": str(d.get("model") or "").strip(),
         "base_url": str(d.get("base_url") or "").strip(),
         "api_key": str(d.get("api_key") or "").strip(),
+        "key_env": str(d.get("key_env") or d.get("api_key_env") or "").strip(),
     }
 
 
@@ -4196,7 +4197,16 @@ def _save_aux_choice(
         entry["provider"] = "" if provider == "auto" else provider
         entry["model"] = model or ""
         entry["base_url"] = base_url or ""
-        entry["api_key"] = api_key or ""
+        if key_env:
+            entry["key_env"] = key_env
+            entry.pop("api_key", None)
+            entry.pop("api", None)
+            entry.pop("api_key_env", None)
+        else:
+            entry.pop("key_env", None)
+            entry.pop("api_key_env", None)
+            entry.pop("api", None)
+            entry["api_key"] = api_key or ""
         save_config(cfg)
         return
 
@@ -4250,7 +4260,7 @@ def _reset_aux_to_auto() -> int:
         if entry.get("provider") not in {None, "", "auto"}:
             entry["provider"] = "auto"
             changed = True
-        for field in ("model", "base_url", "api_key"):
+        for field in ("model", "base_url", "api_key", "key_env", "api_key_env"):
             if entry.get(field):
                 entry[field] = ""
                 changed = True
@@ -4263,7 +4273,7 @@ def _reset_aux_to_auto() -> int:
     dele = cfg.get("delegation")
     if isinstance(dele, dict):
         changed = False
-        for field in ("provider", "model", "base_url", "api_key"):
+        for field in ("provider", "model", "base_url", "api_key", "key_env", "api_key_env"):
             if dele.get(field):
                 dele[field] = ""
                 changed = True

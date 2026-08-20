@@ -3084,6 +3084,13 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
             api_key = configured_api_key
         base_url = str(cp_config.get("base_url") or "").strip().rstrip("/")
         name = str(cp_config.get("name") or "").strip()
+        if key_env and not api_key:
+            logger.warning(
+                "custom endpoint %s references missing key_env %s; "
+                "the credential pool will remain unauthenticated",
+                name or pool_key,
+                key_env,
+            )
         if api_key:
             source = f"env:{key_env}" if env_api_key else f"config:{name}"
             if not _is_suppressed(pool_key, source):
@@ -3123,29 +3130,37 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                 if not model_api_key and isinstance(v, str) and v.strip():
                     model_api_key = v.strip()
                     break
-            if model_provider == "custom" and model_base_url and model_api_key:
-                # Check if this model's base_url matches our custom provider
+            if model_provider == "custom" and model_base_url:
+                # Check if this model's base_url matches our custom provider.
                 matched_key = get_custom_provider_pool_key(model_base_url)
                 if matched_key == pool_key:
-                    source = f"env:{model_key_env}" if env_model_api_key else "model_config"
-                    if not _is_suppressed(pool_key, source):
-                        active_sources.add(source)
-                        changed |= _upsert_entry(
-                            entries,
-                            pool_key,
-                            source,
-                            {
-                                "source": source,
-                                "auth_type": AUTH_TYPE_API_KEY,
-                                "access_token": model_api_key,
-                                "base_url": model_base_url,
-                                "label": (
-                                    model_key_env
-                                    if source.startswith("env:")
-                                    else "model_config"
-                                ),
-                            },
+                    if model_key_env and not model_api_key:
+                        logger.warning(
+                            "custom model endpoint %s references missing key_env %s; "
+                            "the credential pool will remain unauthenticated",
+                            model_base_url,
+                            model_key_env,
                         )
+                    if model_api_key:
+                        source = f"env:{model_key_env}" if env_model_api_key else "model_config"
+                        if not _is_suppressed(pool_key, source):
+                            active_sources.add(source)
+                            changed |= _upsert_entry(
+                                entries,
+                                pool_key,
+                                source,
+                                {
+                                    "source": source,
+                                    "auth_type": AUTH_TYPE_API_KEY,
+                                    "access_token": model_api_key,
+                                    "base_url": model_base_url,
+                                    "label": (
+                                        model_key_env
+                                        if source.startswith("env:")
+                                        else "model_config"
+                                    ),
+                                },
+                            )
     except Exception:
         pass
 

@@ -8196,6 +8196,10 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     existing = providers.get(endpoint_id)
     if not isinstance(existing, dict):
         existing = {}
+    previous_base_url = str(existing.get("base_url") or "").strip().rstrip("/")
+    previous_key_env = str(
+        existing.get("key_env") or existing.get("api_key_env") or ""
+    ).strip()
 
     # Merge onto the existing entry rather than replacing it. A providers.<name>
     # block is not owned by this panel: it can carry hand-written keys the
@@ -8239,10 +8243,25 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         save_env_value(env_var, submitted_key)
         entry["key_env"] = env_var
         entry.pop("api_key", None)
+        entry.pop("api_key_env", None)
     elif submitted_key is not None:
         # Blank field means "clear the key", not "leave it alone".
         remove_env_value(env_var)
         entry.pop("key_env", None)
+        entry.pop("api_key_env", None)
+        entry.pop("api_key", None)
+    elif (
+        previous_base_url
+        and custom_endpoint_identity(previous_base_url)
+        != custom_endpoint_identity(base_url)
+    ):
+        # Endpoint A → B without a replacement key must not route B with A's
+        # credential. Only remove the generated endpoint slot; a hand-written
+        # key_env may belong to another config owner and is left untouched.
+        if previous_key_env == env_var:
+            remove_env_value(previous_key_env)
+        entry.pop("key_env", None)
+        entry.pop("api_key_env", None)
         entry.pop("api_key", None)
     elif str(entry.get("api_key") or "").strip() and not _config_api_key_is_env_ref(endpoint_id):
         # No new key submitted, but this entry still carries one an earlier

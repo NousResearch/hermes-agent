@@ -1353,6 +1353,41 @@ def test_custom_endpoint_pool_seeds_from_config_key_env(tmp_path, monkeypatch):
     )
 
 
+def test_custom_endpoint_pool_warns_when_key_env_is_missing(
+    tmp_path, monkeypatch, caplog
+):
+    """A configured but unavailable key_env must be visible, not silent."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    missing_key_env = "HERMES_TEST_MISSING_CUSTOM_KEY_80927"
+    monkeypatch.delenv(missing_key_env, raising=False)
+    _write_auth_store(tmp_path, {"version": 1})
+
+    import logging
+    import yaml
+
+    (tmp_path / "hermes" / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "custom_providers": [
+                    {
+                        "name": "Missing Key Endpoint",
+                        "base_url": "https://missing.example/v1",
+                        "key_env": missing_key_env,
+                    }
+                ]
+            }
+        )
+    )
+
+    from agent.credential_pool import load_pool
+
+    with caplog.at_level(logging.WARNING, logger="agent.credential_pool"):
+        pool = load_pool("custom:missing-key-endpoint")
+
+    assert not pool.has_credentials()
+    assert missing_key_env in caplog.text
+
+
 def test_custom_endpoint_pool_seeds_from_model_config(tmp_path, monkeypatch):
     """Verify seeding from model.api_key when model.provider=='custom' and base_url matches."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

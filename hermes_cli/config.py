@@ -15,6 +15,7 @@ This module provides:
 """
 
 import copy
+import hashlib
 from hermes_cli.cli_output import line_input
 import json
 import logging
@@ -4304,23 +4305,52 @@ def save_env_value(key: str, value: str):
 
 
 def custom_endpoint_identity(base_url: str) -> str:
-    """Stable host:port identity for a custom endpoint URL.
+    """Return a stable, collision-resistant identity for a custom endpoint.
 
-    Two URLs that differ only by path share a credential slot; two ports on
-    the same host do not. Empty or unparseable URLs yield an empty identity.
+    The readable host/port prefix keeps generated names diagnosable, while the
+    short digest covers scheme, path, and query. Two tenants or API protocols
+    hosted on the same machine therefore cannot silently share one credential
+    slot. Trailing slashes and URL fragments are transport-insignificant and
+    are normalized away. Empty or unparseable URLs yield an empty identity.
     """
-    parsed = urllib.parse.urlparse(str(base_url or "").strip())
-    identity = parsed.hostname or ""
-    if parsed.port:
-        identity = f"{identity}_{parsed.port}"
-    return identity
+    raw_url = str(base_url or "").strip()
+    if not raw_url:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(raw_url)
+        hostname = (parsed.hostname or "").lower()
+        port = parsed.port
+    except ValueError:
+        return ""
+    if not hostname:
+        return ""
+
+    host_identity = hostname
+    if port is not None:
+        host_identity = f"{host_identity}_{port}"
+
+    host_for_url = f"[{hostname}]" if ":" in hostname else hostname
+    canonical_netloc = host_for_url + (f":{port}" if port is not None else "")
+    canonical_path = parsed.path.rstrip("/")
+    canonical_url = urllib.parse.urlunsplit(
+        (
+            parsed.scheme.lower(),
+            canonical_netloc,
+            canonical_path,
+            parsed.query,
+            "",
+        )
+    )
+    digest = hashlib.sha256(canonical_url.encode("utf-8")).hexdigest()[:12]
+    return f"{host_identity}_{digest}"
 
 
 def custom_endpoint_key_env(identity: str) -> str:
     """Env var name holding a custom endpoint's API key.
 
     ``identity`` is whatever names the endpoint on the calling path — the
-    Desktop panel's endpoint id, or ``host:port`` for the CLI setup flow.
+    Desktop panel's endpoint id, or the normalized full-URL identity used by
+    the CLI setup flow.
     Two properties matter:
 
     - It keys off the endpoint's own identity, not just its hostname, so two

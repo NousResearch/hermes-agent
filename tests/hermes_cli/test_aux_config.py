@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli.config import DEFAULT_CONFIG, load_config
+from hermes_cli.config import DEFAULT_CONFIG, get_env_value, load_config
 from hermes_cli.main import (
     _AUX_TASKS,
     _DELEGATION_TASK_KEY,
+    _aux_flow_custom_endpoint,
     _delegation_cfg_as_task,
     _format_aux_current,
     _reset_aux_to_auto,
@@ -115,7 +116,6 @@ def test_aux_flow_custom_rotation_without_key_clears_key_env(tmp_path, monkeypat
     """A→B without a replacement key must not keep the previous key_env."""
     from pathlib import Path
 
-    from hermes_cli.config import load_config
     from hermes_cli.main import _aux_flow_custom_endpoint, _save_aux_choice
 
     home = tmp_path / ".hermes"
@@ -152,6 +152,39 @@ def test_aux_flow_custom_rotation_without_key_clears_key_env(tmp_path, monkeypat
     assert slot["base_url"] == "http://evil.example:8080/v1"
     assert not slot.get("key_env")
     assert not slot.get("api_key")
+
+
+def test_save_delegation_custom_endpoint_persists_key_env_not_secret(
+    tmp_path, monkeypatch
+):
+    """The special top-level delegation slot follows aux secret hygiene."""
+    from pathlib import Path
+
+    from hermes_cli.config import load_config
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    answers = iter(["https://delegation.example/v1", "delegation-model"])
+    monkeypatch.setattr("builtins.input", lambda *_a, **_k: next(answers))
+    monkeypatch.setattr(
+        "hermes_cli.secret_prompt.masked_secret_prompt",
+        lambda *_a, **_k: "delegation-secret",
+    )
+
+    _aux_flow_custom_endpoint(_DELEGATION_TASK_KEY, {})
+
+    cfg = load_config()
+    delegation = cfg["delegation"]
+    dumped = (home / "config.yaml").read_text(encoding="utf-8")
+    assert str(delegation.get("key_env") or "").startswith("HERMES_CUSTOM_")
+    assert not delegation.get("api_key")
+    assert "api_key_env" not in delegation
+    assert "delegation-model" in dumped
+    assert "delegation-secret" not in dumped
+    assert get_env_value(delegation["key_env"]) == "delegation-secret"
 
 
 

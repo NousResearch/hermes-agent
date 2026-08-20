@@ -1578,7 +1578,15 @@ class TestWebServerEndpoints:
         config.yaml. The API key is written to ``~/.hermes/.env`` and both
         ``model.key_env`` and the ``custom_providers`` entry reference it,
         matching the ``hermes model`` custom flow. Regression for #57547."""
-        from hermes_cli.config import load_config, get_env_path
+        from hermes_cli.config import (
+            custom_endpoint_identity,
+            custom_endpoint_key_env,
+            get_env_path,
+            load_config,
+        )
+        env_var = custom_endpoint_key_env(
+            custom_endpoint_identity("https://text.example.com/v1")
+        )
 
         resp = self.client.post(
             "/api/model/set",
@@ -1599,11 +1607,11 @@ class TestWebServerEndpoints:
         assert model_cfg["provider"] == "custom"
         assert model_cfg["base_url"] == "https://text.example.com/v1"
         assert "api_key" not in model_cfg
-        assert model_cfg["key_env"] == "HERMES_CUSTOM_TEXT_EXAMPLE_COM_API_KEY"
+        assert model_cfg["key_env"] == env_var
 
         # Secret lives in .env, not config.yaml.
         env_text = get_env_path().read_text(encoding="utf-8")
-        assert "HERMES_CUSTOM_TEXT_EXAMPLE_COM_API_KEY=sk-secret" in env_text
+        assert f"{env_var}=sk-secret" in env_text
 
         # Registered in custom_providers (dedup by base_url) so the picker shows
         # a proper ready row instead of the "needs setup" dead-end.
@@ -1611,7 +1619,7 @@ class TestWebServerEndpoints:
         assert any(
             isinstance(e, dict)
             and e.get("base_url") == "https://text.example.com/v1"
-            and e.get("key_env") == "HERMES_CUSTOM_TEXT_EXAMPLE_COM_API_KEY"
+            and e.get("key_env") == env_var
             and e.get("api_key") is None
             and e.get("model") == "gpt-oss-120b"
             for e in custom
@@ -1657,7 +1665,15 @@ class TestWebServerEndpoints:
 
     def test_set_model_auxiliary_custom_persists_key_env(self):
         """Auxiliary custom assignments must not write plaintext keys."""
-        from hermes_cli.config import get_env_path, load_config
+        from hermes_cli.config import (
+            custom_endpoint_identity,
+            custom_endpoint_key_env,
+            get_env_path,
+            load_config,
+        )
+        env_var = custom_endpoint_key_env(
+            custom_endpoint_identity("https://vision.example.com/v1")
+        )
 
         resp = self.client.post(
             "/api/model/set",
@@ -1676,10 +1692,10 @@ class TestWebServerEndpoints:
         slot = (load_config().get("auxiliary") or {}).get("vision")
         assert isinstance(slot, dict)
         assert slot["base_url"] == "https://vision.example.com/v1"
-        assert slot["key_env"] == "HERMES_CUSTOM_VISION_EXAMPLE_COM_API_KEY"
+        assert slot["key_env"] == env_var
         assert not str(slot.get("api_key") or "").strip()
         env_text = get_env_path().read_text(encoding="utf-8")
-        assert "HERMES_CUSTOM_VISION_EXAMPLE_COM_API_KEY=sk-aux-secret" in env_text
+        assert f"{env_var}=sk-aux-secret" in env_text
 
     def test_set_model_auxiliary_custom_rotation_clears_key_env(self):
         """Auxiliary A→B without a new key must drop the old key_env."""
@@ -1715,6 +1731,44 @@ class TestWebServerEndpoints:
         assert slot["base_url"] == "https://vision-b.example.com/v1"
         assert not str(slot.get("key_env") or "").strip()
         assert not str(slot.get("api_key") or "").strip()
+
+    def test_custom_endpoint_upsert_rotation_clears_old_key_env(self):
+        """Updating one endpoint id from A to B must not reuse A's key."""
+        from hermes_cli.config import (
+            custom_endpoint_key_env,
+            get_env_value,
+            load_config,
+        )
+
+        first = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "rotating-proxy",
+                "name": "Rotating Proxy",
+                "base_url": "https://old.example/v1",
+                "model": "old-model",
+                "api_key": "sk-old",
+            },
+        )
+        assert first.status_code == 200
+
+        rotated = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "rotating-proxy",
+                "name": "Rotating Proxy",
+                "base_url": "https://new.example/v1",
+                "model": "new-model",
+            },
+        )
+        assert rotated.status_code == 200
+
+        entry = (load_config().get("providers") or {}).get("rotating-proxy")
+        assert isinstance(entry, dict)
+        assert entry["base_url"] == "https://new.example/v1"
+        assert not entry.get("key_env")
+        assert not entry.get("api_key")
+        assert not get_env_value(custom_endpoint_key_env("rotating-proxy"))
 
 
 

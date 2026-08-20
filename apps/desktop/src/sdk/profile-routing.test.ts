@@ -105,8 +105,14 @@ const { deleteProfile } = await import('@/hermes')
 const { openGatewayForProfile, requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } =
   await import('@/store/gateway')
 
-const { $activeGatewayProfile, $gatewaySwapTarget, $profiles, ensureGatewayProfile, refreshProfiles, setShowAllProfiles } =
-  await import('@/store/profile')
+const {
+  $activeGatewayProfile,
+  $gatewaySwapTarget,
+  $profiles,
+  ensureGatewayProfile,
+  refreshProfiles,
+  setShowAllProfiles
+} = await import('@/store/profile')
 
 const { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } = await import('@/store/session-states')
 
@@ -475,11 +481,13 @@ describe('profile-aware plugin session opens', () => {
     // one-shots (not a standing mockImplementation) so this doesn't leak into
     // later tests via the shared afterEach's vi.clearAllMocks(), which clears
     // call history but not a standing implementation.
-    vi.mocked(openSessionCore).mockImplementationOnce(() => undefined).mockImplementationOnce(() => {
-      setMockAtom($selectedStoredSessionId, 'waking-bot-chat')
-      setMockAtom($activeSessionId, 'runtime-waking')
-      setMockAtom($messages, [{ id: 'history-waking', parts: [], role: 'assistant' }] as never)
-    })
+    vi.mocked(openSessionCore)
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => {
+        setMockAtom($selectedStoredSessionId, 'waking-bot-chat')
+        setMockAtom($activeSessionId, 'runtime-waking')
+        setMockAtom($messages, [{ id: 'history-waking', parts: [], role: 'assistant' }] as never)
+      })
 
     await host.openSession('waking-bot-chat', {
       profile: 'hyoseob',
@@ -655,7 +663,10 @@ describe('profile-aware plugin session opens', () => {
       })
     ).rejects.toThrow('Timed out loading ')
 
-    expect(warn).toHaveBeenCalledWith('[bot-wake] hydration timed out', expect.objectContaining({ phase: 'activation' }))
+    expect(warn).toHaveBeenCalledWith(
+      '[bot-wake] hydration timed out',
+      expect.objectContaining({ phase: 'activation' })
+    )
 
     const payload = warn.mock.calls.at(-1)?.[1] as { hydrationWaitMs: number; profileActivationMs: number }
 
@@ -689,7 +700,7 @@ describe('profile-aware plugin session opens', () => {
       awaitHydration: true,
       expectHistory: true,
       keepAllProfilesScope: false,
-        hydrationTimeoutMs: 200
+      hydrationTimeoutMs: 200
     })
 
     // 300ms total is past a single shared 200ms budget and inside hydration's
@@ -761,15 +772,21 @@ describe('profile-aware plugin session opens', () => {
 
     let settled = 'pending'
 
-    void host.openSession('plain-chat', { profile: 'medicina', intent: 'main', keepAllProfilesScope: false,
-        hydrationTimeoutMs: 40 }).then(
-      () => {
-        settled = 'resolved'
-      },
-      () => {
-        settled = 'rejected'
-      }
-    )
+    void host
+      .openSession('plain-chat', {
+        profile: 'medicina',
+        intent: 'main',
+        keepAllProfilesScope: false,
+        hydrationTimeoutMs: 40
+      })
+      .then(
+        () => {
+          settled = 'resolved'
+        },
+        () => {
+          settled = 'rejected'
+        }
+      )
 
     await new Promise(resolve => setTimeout(resolve, 200))
 

@@ -285,8 +285,7 @@ function waitForFocusedSessionHydration({
         return
       }
 
-      const profileMatches =
-        !requireActiveProfile || normalizeProfileKey($activeGatewayProfile.get()) === profile
+      const profileMatches = !requireActiveProfile || normalizeProfileKey($activeGatewayProfile.get()) === profile
       const sessionMatches = $selectedStoredSessionId.get() === storedSessionId
       const runtimeReady = Boolean($activeSessionId.get())
       const historyPainted = Boolean($messages.get().length)

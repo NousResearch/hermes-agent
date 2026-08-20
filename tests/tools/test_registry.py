@@ -703,3 +703,71 @@ class TestDeregisterAuthorization:
             evil_handler = eval("lambda *a, **k: 'hijacked'", {"__name__": "hermes_plugins.evil"})
             reg.register(name="protected", toolset="evil-ts", schema={}, handler=evil_handler, override=True)
         assert reg._tools["protected"].handler({}) == "built-in"
+
+
+class TestCheckFnLogLevels:
+    """A check_fn returning False is a capability being OFF, not a failure.
+
+    `check_fn` gates optional toolsets on runtime prerequisites: is a terminal
+    open, is kanban mode enabled, is a browser attached, is Home Assistant
+    configured. On any normal install most of those are simply not in use, and
+    every one of them logged at WARNING once per turn.
+
+    Measured on a live install: 420 of 1869 WARNING lines - 22% of every
+    warning emitted - were `check_fn ... returned False` for features that had
+    never been enabled, and zero were the `raised` case. Real warnings drown in
+    that, which is the actual cost.
+
+    An exception from a check_fn IS a defect and stays at WARNING. The registry
+    already distinguishes the two.
+    """
+
+    @staticmethod
+    def _registry_with(check_fn):
+        reg = ToolRegistry()
+        reg.register(
+            name="t",
+            toolset="gated",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            check_fn=check_fn,
+        )
+        return reg
+
+    def test_returning_false_is_not_a_warning(self, caplog):
+        reg = self._registry_with(lambda: False)
+
+        with caplog.at_level("DEBUG", logger="tools.registry"):
+            assert reg.is_toolset_available("gated") is False
+
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert warnings == [], (
+            "a disabled capability must not warn: "
+            f"{[r.getMessage() for r in warnings]}"
+        )
+
+    def test_returning_false_is_still_logged_for_diagnosis(self, caplog):
+        """Quiet-mode subagents lose tools silently, so the signal must survive
+        the level change - just below WARNING."""
+        reg = self._registry_with(lambda: False)
+
+        with caplog.at_level("INFO", logger="tools.registry"):
+            reg.is_toolset_available("gated")
+
+        records = [r for r in caplog.records if "returned False" in r.getMessage()]
+        assert len(records) == 1
+        assert records[0].levelname == "INFO"
+
+    def test_raising_check_fn_still_warns(self, caplog):
+        def boom():
+            raise RuntimeError("probe blew up")
+
+        reg = self._registry_with(boom)
+
+        with caplog.at_level("DEBUG", logger="tools.registry"):
+            assert reg.is_toolset_available("gated") is False
+
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("raised" in m for m in warnings), (
+            f"an exception from check_fn is a real defect and must warn: {warnings}"
+        )

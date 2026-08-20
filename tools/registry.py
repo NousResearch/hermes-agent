@@ -382,7 +382,17 @@ def _check_fn_cached(fn: Callable) -> bool:
 
         # No recent success (or grace expired) — honor the failure. Log it so
         # silent tool loss in quiet mode (subagents) is diagnosable.
-        logger.warning(
+        #
+        # Level split: a check_fn that RAISED is a defect and warrants a
+        # warning. One that simply returned False is an optional capability
+        # being off (no terminal open, kanban disabled, no browser attached,
+        # Home Assistant not configured) — the normal state on most installs,
+        # re-logged every turn. Warning on that buried the real signal: on a
+        # live install 420 of 1869 warnings (22%) were this line, none of them
+        # the raised case. Keep it at info so quiet-mode tool loss stays
+        # diagnosable without drowning genuine warnings.
+        log = logger.warning if raised else logger.info
+        log(
             "check_fn %s %s; dependent tools will be unavailable this turn",
             getattr(fn, "__qualname__", fn),
             "raised" if raised else "returned False",

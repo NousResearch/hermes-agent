@@ -30,7 +30,7 @@ import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Dict, Any, Optional, List, Tuple, Set, Iterator
 
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.secret_prompt import masked_secret_prompt
@@ -2038,6 +2038,133 @@ class ConfigIssue:
     hint: str
 
 
+def validate_base_url(base_url: str) -> None:
+    """Reject obviously broken custom endpoint URLs before they reach httpx.
+
+    Public, config-time counterpart of the runtime check that previously lived
+    in ``agent.auxiliary_client``. Its semantics are intentionally lenient — it
+    only rejects http(s) URLs with a malformed port — so the same function can be
+    wired into ``validate_config_structure`` without bricking startup on URLs
+    that are placeholders, non-http schemes, or env-template references.
+    """
+    from urllib.parse import urlparse
+
+    candidate = str(base_url or "").strip()
+    if not candidate or candidate.startswith("acp://"):
+        return
+    try:
+        parsed = urlparse(candidate)
+        if parsed.scheme in {"http", "https"}:
+            _ = parsed.port              # raises ValueError for malformed ports
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Malformed custom endpoint URL: {candidate!r}. "
+            "Run `hermes setup` or `hermes model` and enter a valid http(s) base URL."
+        ) from exc
+
+
+# Top-level config sections whose values are dicts (possibly nested) in which we
+# collect URL fields. Maps each section name to the set of key names that hold an
+# endpoint URL under that section. Lists encountered while walking a section are
+# skipped wholesale (so ``model.stream_only_base_urls`` — a substring allowlist,
+# *not* URLs — is never validated), except for ``custom_providers`` which is a
+# top-level list of entry dicts and is descended into by ``iter_base_url_values``.
+_URL_KEY_SETS: Dict[str, Set[str]] = {
+    "model": {"base_url"},
+    "auxiliary": {"base_url"},
+    "stt": {"base_url"},
+    "tts": {"base_url"},
+    "honcho": {"base_url"},
+    "providers": {"base_url", "url", "api"},
+    "mcp_servers": {"url"},
+}
+
+
+def _walk_url_values(
+    tree: Dict[str, Any], key_set: Set[str], prefix: str
+) -> Iterator[Tuple[str, str]]:
+    """Recursively yield ``(path, stripped_value)`` for URL-holding keys under *tree*.
+
+    Descends into nested dicts so deeply-placed values like
+    ``auxiliary.vision.base_url`` or ``tts.openai.base_url`` are found. List
+    values are skipped entirely (``stream_only_base_urls`` is an allowlist of
+    substrings, not URLs).
+    """
+    for key, value in tree.items():
+        path = f"{prefix}.{key}"
+        if isinstance(value, dict):
+            yield from _walk_url_values(value, key_set, path)
+        elif isinstance(value, list):
+            # Descend into lists of dicts (path suffixed [i]) so list-shaped
+            # endpoint definitions are covered; non-dict list items — e.g. the
+            # model.stream_only_base_urls substring allowlist — stay untouched.
+            for idx, item in enumerate(value):
+                if isinstance(item, dict):
+                    yield from _walk_url_values(item, key_set, f"{path}[{idx}]")
+        elif key in key_set and isinstance(value, str) and value.strip():
+            yield path, value.strip()
+
+
+def iter_base_url_values(
+    config: Dict[str, Any]
+) -> Iterator[Tuple[str, str]]:
+    """Yield ``(path, value)`` for every user-set base_url-style entry across config sections.
+
+    Covers model.base_url, auxiliary.*.base_url (deep), custom_providers[].base_url,
+    providers.<slug>.{base_url,url,api}, stt/tts provider subtrees, honcho.base_url,
+    and mcp_servers.<name>.url. Empty and non-string values are skipped
+    (e.g. the model.stream_only_base_urls list is a substring allowlist, NOT URLs).
+
+    Best-effort by design: every URL-holding key is checked independently, so a
+    providers entry whose ``base_url`` resolves but carries a malformed shadow
+    ``url``/``api`` alias is still flagged — the runtime resolver picks one
+    winner (config.py:1351), and runtime validation re-checks the resolved
+    value at client init, so this is diagnostic noise, never a false block.
+    """
+    if not isinstance(config, dict):
+        return
+
+    for section, tree in config.items():
+        if section == "custom_providers":
+            # The only top-level section that is a list of entry dicts — descend
+            # into each dict entry looking for a base_url key.
+            if not isinstance(tree, list):
+                continue
+            for i, entry in enumerate(tree):
+                if not isinstance(entry, dict):
+                    continue
+                raw = entry.get("base_url")
+                if isinstance(raw, str) and raw.strip():
+                    yield f"custom_providers[{i}].base_url", raw.strip()
+            continue
+
+        key_set = _URL_KEY_SETS.get(section)
+        if key_set is None:
+            continue
+        if not isinstance(tree, dict):
+            continue
+        yield from _walk_url_values(tree, key_set, section)
+
+
+def _base_url_warning_hint(path: str) -> str:
+    """Pick the remediation hint for a scanned config path.
+
+    ``hermes setup`` / ``hermes model`` configure model-provider endpoints, so
+    they are the right hint for model/custom_providers/providers/auxiliary
+    paths. MCP, speech, and the honcho plugin section are configured in
+    config.yaml directly (``hermes mcp add`` for HTTP/SSE MCP servers).
+    """
+    if path.startswith("mcp_servers."):
+        return (
+            "Re-add the server with `hermes mcp add <name> --url <valid URL>`, "
+            "or fix the URL in config.yaml under `mcp_servers`."
+        )
+    if path.startswith(("stt.", "tts.", "honcho.")):
+        section = path.split(".")[0]
+        return f"Fix the URL in config.yaml under `{section}`."
+    return "Run `hermes setup` or `hermes model` and enter a valid http(s) base URL."
+
+
 def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:
     """Validate config.yaml structure and return a list of detected issues.
 
@@ -2196,6 +2323,21 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 "warning",
                 f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
                 f"Move '{key}' under the appropriate section",
+            ))
+
+    # ── base_url values must be valid http(s) URLs ─────────────────────────
+    # Always a *warning* (never an error and never raised): a malformed URL must
+    # not brick startup — the runtime validator in agent.auxiliary_client still
+    # raises at client init for the same values. The set of values scanned and
+    # the exact rules mirror the runtime validator for parity.
+    for path, value in iter_base_url_values(config):
+        try:
+            validate_base_url(value)
+        except RuntimeError:
+            issues.append(ConfigIssue(
+                "warning",
+                f"{path} is not a valid http(s) URL: {value!r}",
+                _base_url_warning_hint(path),
             ))
 
     return issues

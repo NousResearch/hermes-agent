@@ -163,6 +163,7 @@ def aux_probe_mode():
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
+from hermes_cli.config import validate_base_url as _validate_base_url
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
@@ -3616,24 +3617,6 @@ def _validate_proxy_env_urls() -> None:
                 f"Malformed proxy environment variable {key}={value!r}. "
                 "Fix or unset your proxy settings and try again."
             ) from exc
-
-
-def _validate_base_url(base_url: str) -> None:
-    """Reject obviously broken custom endpoint URLs before they reach httpx."""
-    from urllib.parse import urlparse
-
-    candidate = str(base_url or "").strip()
-    if not candidate or candidate.startswith("acp://"):
-        return
-    try:
-        parsed = urlparse(candidate)
-        if parsed.scheme in {"http", "https"}:
-            _ = parsed.port              # raises ValueError for malformed ports
-    except ValueError as exc:
-        raise RuntimeError(
-            f"Malformed custom endpoint URL: {candidate!r}. "
-            "Run `hermes setup` or `hermes model` and enter a valid http(s) base URL."
-        ) from exc
 
 
 def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:

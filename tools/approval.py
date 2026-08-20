@@ -1312,6 +1312,7 @@ _COMMAND_WRAPPER_WORDS = {
     "time",
     "command",
     "builtin",
+    "timeout",
 }
 _SUDO_OPTIONS_WITH_ARG = {
     "-c", "--close-from",
@@ -1794,6 +1795,16 @@ def _execution_flag_findings(command: str):
                 if any(token.startswith("<<") for token in tokens[1:]):
                     yield ("script execution via heredoc", None)
                     continue
+                # Executing a file through an interpreter is arbitrary script
+                # execution too; do not treat it as a harmless binary call.
+                script_arg = next(
+                    (token for token in tokens[1:]
+                     if token == "--" or not token.startswith("-")),
+                    None,
+                )
+                if script_arg and script_arg != "--":
+                    yield ("script execution via interpreter file", None)
+                    continue
             if executable_name in {"bash", "sh", "zsh", "ksh"}:
                 found, payload = _bash_exec_payload(tokens[1:])
                 if found:
@@ -2213,6 +2224,12 @@ def _iter_shell_command_word_spans(command: str):
             if lower_word in _COMMAND_WRAPPER_WORDS:
                 skip_wrapper_options = lower_word in {"sudo", "env"}
                 pos = word_end
+                if lower_word == "timeout":
+                    # GNU timeout's first positional argument is the
+                    # duration; the command after it must still be inspected.
+                    _, duration_end, duration = _read_shell_word(command, pos)
+                    if duration_end > pos and not duration.startswith("-"):
+                        pos = duration_end
                 continue
             if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
                 skip_wrapper_options = False

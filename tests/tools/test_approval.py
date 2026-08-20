@@ -784,11 +784,18 @@ class TestHeredocScriptExecution:
             assert dangerous is True, cmd
 
 
-    def test_plain_script_invocations_not_flagged(self):
-        """Plain 'python3 script.py' / 'bash script.sh' must stay safe."""
-        for cmd in ("python3 my_script.py", "bash my_script.sh"):
-            dangerous, _, _ = detect_dangerous_command(cmd)
-            assert dangerous is False, cmd
+    def test_interpreter_files_and_wrappers_are_detected(self):
+        for cmd in (
+            "python3 my_script.py",
+            "timeout 5 bash -c 'python3 -c \\\"print(1)\\\"'",
+        ):
+            dangerous, _, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert "script execution" in desc or "shell command" in desc
+
+    def test_plain_shell_script_invocation_is_not_flagged(self):
+        dangerous, _, _ = detect_dangerous_command("bash my_script.sh")
+        assert dangerous is False
 
 
 class TestPgrepKillExpansion:

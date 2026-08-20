@@ -217,6 +217,17 @@ def _uses_container_paths(task_id: str = "default") -> bool:
     return _terminal_env_type_for_task(task_id) in container_backends
 
 
+def _host_stat_applies(task_id: str = "default") -> bool:
+    """True when a host-side os.path stat sees the same file the task sees.
+
+    os.path.getmtime/exists on a resolved path only stats the HOST
+    filesystem; for ssh/container backends the path lives in the remote
+    namespace, so host-side dedup/staleness bookkeeping is at best a no-op
+    and at worst serves stale content as if it were current.
+    """
+    return _terminal_env_type_for_task(task_id) == "local"
+
+
 def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosixPath:
     """Normalize path syntax without following host symlinks.
 
@@ -1152,10 +1163,22 @@ _patch_failure_lock = threading.Lock()
 _patch_failure_tracker: dict = {}  # {task_id: {resolved_path: count}}
 
 
+# The per-task interior caps below don't stop the top-level task_id key
+# set itself from growing monotonically in a long-lived gateway process.
+# FIFO-evict the oldest task entry on overflow.
+_TRACKED_TASKS_CAP = 1024
+
+
+def _cap_task_tracker(tracker: dict) -> None:
+    while len(tracker) > _TRACKED_TASKS_CAP:
+        tracker.pop(next(iter(tracker)), None)
+
+
 def _record_patch_failure(task_id: str, resolved_path: str) -> int:
     """Increment and return the consecutive-failure count for this path."""
     with _patch_failure_lock:
         task_failures = _patch_failure_tracker.setdefault(task_id, {})
+        _cap_task_tracker(_patch_failure_tracker)
         # Cap dict size per task to avoid unbounded growth in long sessions
         # where the agent fails on many distinct files.  64 distinct
         # failing files per task is generous; older entries get evicted.
@@ -1298,7 +1321,9 @@ def _check_not_found_cache(op: str, resolved_str: str, task_id: str) -> str | No
     # check below in read_file_tool): the lock is global across all tasks,
     # and a hung stat on a dead network mount must not stall every other
     # task's read/search bookkeeping.
-    if _os.path.exists(resolved_str):
+    # Skip the guard entirely on non-local backends: the stat hits the
+    # host filesystem, not the remote namespace the path lives in.
+    if _host_stat_applies(task_id) and _os.path.exists(resolved_str):
         with _read_tracker_lock:
             task_data = _read_tracker.get(task_id)
             nf = task_data.get("not_found") if task_data else None
@@ -1317,6 +1342,7 @@ def _record_not_found(op: str, resolved_str: str, task_id: str, error_json: str)
             "read_history": set(), "dedup": {},
             "dedup_hits": {}, "read_timestamps": {},
         })
+        _cap_task_tracker(_read_tracker)
         nf = task_data.setdefault("not_found", {})
         nf[(op, resolved_str)] = (time.monotonic(), error_json)
         _cap_read_tracker_data(task_data)
@@ -1798,6 +1824,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 "read_history": set(), "dedup": {},
                 "dedup_hits": {}, "read_timestamps": {},
             })
+            _cap_task_tracker(_read_tracker)
             # Backward-compat for pre-existing tracker entries that predate
             # dedup_hits/read_timestamps (long-lived task or crossed an
             # upgrade boundary).
@@ -1807,7 +1834,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 task_data["read_timestamps"] = {}
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
-        if cached_mtime is not None:
+        # Skip the host-mtime comparison on non-local backends — the stat
+        # would hit a same-named host path, so fall through to a full read.
+        if cached_mtime is not None and _host_stat_applies(task_id):
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
@@ -1946,12 +1975,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             # 1. Dedup: skip identical re-reads of unchanged files.
             # 2. Staleness: warn on write/patch if the file changed since
             #    the agent last read it (external edit, concurrent agent, etc.).
-            try:
-                _mtime_now = os.path.getmtime(resolved_str)
-                task_data["dedup"][dedup_key] = _mtime_now
-                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
-            except OSError:
-                pass  # Can't stat — skip tracking for this entry
+            # Host mtime is meaningless on non-local backends — skip
+            # tracking there.
+            if _host_stat_applies(task_id):
+                try:
+                    _mtime_now = os.path.getmtime(resolved_str)
+                    task_data["dedup"][dedup_key] = _mtime_now
+                    task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+                except OSError:
+                    pass  # Can't stat — skip tracking for this entry
 
             # Bound the per-task containers so a long CLI session doesn't
             # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.
@@ -2097,6 +2129,10 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
     """
     # Invalidate dedup first (before acquiring lock for timestamp update).
     _invalidate_dedup_for_path(filepath, task_id)
+    # Skip host mtime bookkeeping on non-local backends — the stat would
+    # hit the host filesystem, not the remote namespace.
+    if not _host_stat_applies(task_id):
+        return
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
         current_mtime = os.path.getmtime(resolved)
@@ -2116,6 +2152,10 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     the last read_file call for this task), or None if the file is fresh
     or was never read.  Does not block — the write still proceeds.
     """
+    # Skip the host-mtime comparison on non-local backends — the stat
+    # would hit the host filesystem, not the remote namespace.
+    if not _host_stat_applies(task_id):
+        return None
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
@@ -2556,6 +2596,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0, "read_history": set(),
             })
+            _cap_task_tracker(_read_tracker)
             if task_data["last_key"] == search_key:
                 task_data["consecutive"] += 1
             else:

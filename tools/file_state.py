@@ -55,6 +55,13 @@ _MAX_PATHS_PER_AGENT = 4096
 # Global last-writer map cap.  Same policy.
 _MAX_GLOBAL_WRITERS = 4096
 
+# The per-agent/per-path caps above don't stop the TOP-LEVEL key sets
+# (task_id keys in _reads, path keys in _path_locks) from growing
+# monotonically in a long-lived gateway process.  FIFO-evict the oldest
+# entries on overflow.
+_MAX_TRACKED_AGENTS = 1024
+_MAX_PATH_LOCKS = 8192
+
 
 class FileStateRegistry:
     """Process-wide coordinator for cross-agent file edits."""
@@ -71,6 +78,14 @@ class FileStateRegistry:
         with self._meta_lock:
             lock = self._path_locks.get(resolved)
             if lock is None:
+                # Evict only unlocked entries — a lock currently held must
+                # stay reachable by its holder.
+                if len(self._path_locks) >= _MAX_PATH_LOCKS:
+                    for key, old in list(self._path_locks.items()):
+                        if len(self._path_locks) < _MAX_PATH_LOCKS:
+                            break
+                        if not old.locked():
+                            del self._path_locks[key]
                 lock = threading.Lock()
                 self._path_locks[resolved] = lock
             return lock
@@ -107,6 +122,10 @@ class FileStateRegistry:
                 return
         now = time.time()
         with self._state_lock:
+            # FIFO-evict the oldest task entry so the top-level task_id
+            # key set stays bounded.
+            if task_id not in self._reads and len(self._reads) >= _MAX_TRACKED_AGENTS:
+                self._reads.pop(next(iter(self._reads)), None)
             agent_reads = self._reads[task_id]
             agent_reads[resolved] = (float(mtime), now, bool(partial))
             _cap_dict(agent_reads, _MAX_PATHS_PER_AGENT)
@@ -136,6 +155,8 @@ class FileStateRegistry:
             self._last_writer[resolved] = (task_id, now)
             _cap_dict(self._last_writer, _MAX_GLOBAL_WRITERS)
             # Writer's own view is now up-to-date.
+            if task_id not in self._reads and len(self._reads) >= _MAX_TRACKED_AGENTS:
+                self._reads.pop(next(iter(self._reads)), None)
             self._reads[task_id][resolved] = (float(mtime), now, False)
             _cap_dict(self._reads[task_id], _MAX_PATHS_PER_AGENT)
 

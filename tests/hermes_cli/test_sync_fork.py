@@ -250,3 +250,62 @@ def test_non_conflict_failure_is_not_reported_as_a_conflict(tmp_path: Path) -> N
     assert "conflict" not in result.reason.lower()
     assert _git(a, "rev-parse", "HEAD") == before
     assert _git(a, "status", "--porcelain") == ""
+# ---------------------------------------------------------------------------
+# an unreadable position is not a healthy one
+# ---------------------------------------------------------------------------
+
+
+def _fork_with_unfetched_upstream(tmp_path: Path) -> Path:
+    """A fork whose ``upstream`` remote exists but has never been fetched.
+
+    This is not a contrived case: it is the state of every fresh clone where
+    someone ran ``git remote add upstream ...`` and then went straight to
+    ``hermes sync-fork``. The ``forked`` fixture above deliberately fetches, which
+    is why the rest of this suite never exercised it.
+    """
+    up = tmp_path / "upstream"
+    up.mkdir()
+    _git(up, "init", "-q", "-b", "main")
+    _commit(up, "shared.py", "BASE = 1\n", "base")
+    _commit(up, "upstream_only.py", "UP = 1\n", "upstream feature")
+
+    fork = tmp_path / "fork"
+    subprocess.run(["git", "clone", "-q", str(up), str(fork)], check=True)
+    _git(fork, "remote", "add", "upstream", str(up))
+    # Upstream moves on, so there IS something to be behind by.
+    _commit(up, "upstream_later.py", "LATER = 1\n", "upstream later")
+    # No fetch. upstream/main does not exist in the fork.
+    return fork
+
+
+def test_an_unfetched_upstream_is_an_error_not_up_to_date(tmp_path: Path) -> None:
+    """The state must say it could not be read, rather than reading as current.
+
+    ``git rev-list --count HEAD..upstream/main`` fails when the ref is absent;
+    that failure became an empty string and then the integer 0, so the fork was
+    certified up to date while being two commits behind. A silent no-op forever
+    is exactly what this command exists to prevent one level up.
+    """
+    fork = _fork_with_unfetched_upstream(tmp_path)
+    state = sync_fork.inspect(fork)
+
+    assert state.error, "an unresolvable upstream ref reported no error"
+    assert "upstream/main" in state.error
+    # And the numbers must not be mistakable for a healthy reading.
+    assert state.behind == 0 and state.diverged is False
+    # Proof the fork really was behind, i.e. the 0 above was a lie without the guard.
+    _git(fork, "fetch", "-q", "upstream", "main")
+    assert sync_fork.inspect(fork).behind > 0
+
+
+def test_a_garbage_upstream_ref_is_an_error(forked: Path) -> None:
+    """A mistyped --upstream-ref is the same class of fault, not a clean repo."""
+    state = sync_fork.inspect(forked, "@@not-a-ref@@")
+    assert state.error and "@@not-a-ref@@" in state.error
+
+
+def test_a_resolvable_ref_still_reports_no_error(forked: Path) -> None:
+    """The guard must not fire on the happy path."""
+    state = sync_fork.inspect(forked)
+    assert state.error is None
+    assert state.diverged is True

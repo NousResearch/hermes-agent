@@ -32,6 +32,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 DEFAULT_UPSTREAM_REF = "upstream/main"
 
@@ -58,6 +59,9 @@ class ForkState:
     ahead: int
     diverged: bool
     dirty: bool
+    # Set when the position could not be READ at all, as opposed to read and
+    # found healthy. Without this the two are the same value — see inspect().
+    error: Optional[str] = None
 
 
 @dataclass
@@ -94,6 +98,13 @@ def _out(cwd: Path, *args: str) -> str:
 
 
 def _count(cwd: Path, base: str, head: str) -> int:
+    """Commits in ``base..head``.
+
+    Returns 0 when git cannot answer, which is only safe because every caller
+    resolves the ref first — see ``_rev_exists`` and the guard in ``inspect``.
+    A failed ``rev-list`` is indistinguishable from a count of zero here, and
+    that conflation is exactly what reported a missing ref as "up to date".
+    """
     raw = _out(cwd, "rev-list", "--count", f"{base}..{head}")
     try:
         return int(raw)
@@ -101,8 +112,40 @@ def _count(cwd: Path, base: str, head: str) -> int:
         return 0
 
 
+def _rev_exists(cwd: Path, ref: str) -> bool:
+    """Whether ``ref`` names a commit in this repository."""
+    return _git(
+        cwd, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False
+    ).returncode == 0
+
+
 def inspect(cwd: Path, upstream_ref: str = DEFAULT_UPSTREAM_REF) -> ForkState:
-    """Report the fork's position without touching anything."""
+    """Report the fork's position without touching anything.
+
+    The ref is resolved BEFORE anything is counted. ``git rev-list --count``
+    against a ref that does not exist fails, ``_out`` turns the failure into an
+    empty string and ``_count`` turns that into 0 — so a mistyped ref, or the
+    far more likely case of an ``upstream`` remote that was added but never
+    fetched, produced ``behind=0, ahead=0, diverged=False``. Every surface reads
+    that as "up to date": the JSON consumer, the human headline, ``--check``'s
+    exit code, and the cron that branches on all three. A fork could sit
+    arbitrarily far behind while this function certified it current, which is
+    the precise failure this command exists to eliminate one level up.
+
+    Reproduced on a fresh clone with an unfetched ``upstream``, and with
+    ``--upstream-ref`` set to a garbage string.
+    """
+    if not _rev_exists(cwd, upstream_ref):
+        return ForkState(
+            behind=0,
+            ahead=0,
+            diverged=False,
+            dirty=bool(_out(cwd, "status", "--porcelain")),
+            error=(
+                f"upstream ref {upstream_ref!r} does not resolve in this repository "
+                "— fetch it (git fetch upstream) or pass --upstream-ref"
+            ),
+        )
     behind = _count(cwd, "HEAD", upstream_ref)
     ahead = _count(cwd, upstream_ref, "HEAD")
     return ForkState(

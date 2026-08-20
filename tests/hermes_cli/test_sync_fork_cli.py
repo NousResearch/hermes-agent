@@ -227,3 +227,60 @@ def test_ui_degrades_to_plain_output_without_a_terminal(monkeypatch, capsys):
     assert rc == 0
     assert "no usable terminal" in out
     assert "5 commit" in out, "the status the user asked for is missing"
+# ---------------------------------------------------------------------------
+# an unreadable state must not reach anything that branches on `behind`
+# ---------------------------------------------------------------------------
+
+
+def _unreadable(dirty=False):
+    return sync_fork.ForkState(behind=0, ahead=0, diverged=False, dirty=dirty,
+                               error="upstream ref 'upstream/main' does not resolve")
+
+
+def test_json_reports_an_unreadable_state_as_an_error_object(monkeypatch, capsys):
+    """The documented contract: an unresolvable ref answers {"error": ...}.
+
+    It was documented in this command's own description and consumed by the
+    fork-keeper cron, which extracts `.error` to decide whether to bail — but
+    nothing ever produced the key, so that guard was dead code and the cron read
+    behind=0 as "nothing to do".
+    """
+    monkeypatch.setattr(sync_fork, "inspect", lambda *a, **k: _unreadable())
+    rc = sync_fork_cli.run(_args(json=True))
+    payload = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 2
+    assert "does not resolve" in payload["error"]
+    # No commit count at all: a consumer must not be able to read a number here.
+    assert "behind" not in payload
+
+
+def test_check_does_not_report_current_when_the_ref_is_unresolvable(monkeypatch, capsys):
+    """--check returns 0 for "current" and 1 for "sync available". Neither is true
+    when the position could not be read, so it must return the third value."""
+    monkeypatch.setattr(sync_fork, "inspect", lambda *a, **k: _unreadable())
+    rc = sync_fork_cli.run(_args(check=True))
+    capsys.readouterr()
+    assert rc == 2
+
+
+def test_an_unreadable_state_never_reaches_the_merge(monkeypatch, capsys):
+    """The action path branches on `behind`, which is 0 here for the wrong reason."""
+    monkeypatch.setattr(sync_fork, "inspect", lambda *a, **k: _unreadable())
+
+    def _boom(*a, **k):
+        raise AssertionError("sync() was called with a state that could not be read")
+
+    monkeypatch.setattr(sync_fork, "sync", _boom)
+    monkeypatch.setattr(sync_fork, "plan", _boom)
+    rc = sync_fork_cli.run(_args())
+    capsys.readouterr()
+    assert rc == 2
+
+
+def test_the_human_headline_is_the_error_not_up_to_date(monkeypatch):
+    """_render_state is shared with the curses screen, which calls inspect itself
+    and so never passes the guard in _run. It has to refuse on its own."""
+    lines = sync_fork_cli._render_state(_unreadable(), _plan())
+    assert lines and "does not resolve" in lines[0]
+    assert not any("Up to date" in line for line in lines)

@@ -21,6 +21,10 @@ def _repo_root(explicit: str | None = None) -> Path:
 
 def _render_state(state: sync_fork.ForkState, plan: sync_fork.SyncPlan) -> list[str]:
     """Human-readable status block, shared by the CLI and the curses screen."""
+    # First, because "up to date" is what an unreadable state used to render as,
+    # and the curses screen reaches this function without passing the CLI guard.
+    if state.error:
+        return [state.error]
     if state.behind == 0 and not state.diverged:
         headline = "Up to date with upstream."
     elif state.diverged:
@@ -60,6 +64,22 @@ def run(args) -> int:
         return _run_ui(root, upstream_ref)
 
     state = sync_fork.inspect(root, upstream_ref)
+
+    # Before the plan, and before every action path below. A state that could not
+    # be read must not reach code that branches on `behind`, because `behind` is
+    # 0 in that case and 0 means "nothing to do" everywhere downstream.
+    #
+    # Exit 2, distinct from 1: 1 already means "a sync is available" for --check,
+    # so reusing it would tell a cron the opposite of the truth. Consumers that
+    # branch on the exit code (hermes-webui's fork_keeper_bridge does) get a
+    # value that cannot be confused with either success or work-pending.
+    if state.error:
+        if getattr(args, "json", False):
+            print(json.dumps({"error": state.error}))
+        else:
+            print(f"  {state.error}")
+        return 2
+
     plan = sync_fork.plan(root, upstream_ref)
 
     if getattr(args, "json", False):

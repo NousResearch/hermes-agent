@@ -116,3 +116,86 @@ class TestUnsupportedOAuthDedup:
         assert len(recs) == 1
         assert recs[0].levelno == logging.DEBUG
         assert not any(r.levelno >= logging.WARNING for r in recs)
+
+
+class TestNamedCustomProviderNoKeyDedup:
+    """A named custom provider (config.yaml providers/custom_providers entry)
+    with no resolvable api_key repeats the identical warning on every call
+    until the user edits config — same dead-end shape as the OAuth/extproc
+    branches above."""
+
+    def setup_method(self):
+        ac._LOGGED_NAMED_CUSTOM_NOKEY_KEYS.clear()
+
+    def test_no_key_logs_debug_once_not_warning(self, caplog, monkeypatch):
+        import hermes_cli.runtime_provider as rp
+
+        entry = {"name": "my-custom", "base_url": "https://custom.example/v1"}
+        monkeypatch.setattr(rp, "_get_named_custom_provider", lambda _p: entry)
+
+        with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
+            resolve_provider_client("my-custom", "some-model")
+            resolve_provider_client("my-custom", "some-model")  # repeat → suppressed
+
+        recs = [
+            r for r in caplog.records
+            if "has no resolvable" in r.getMessage()
+        ]
+        assert len(recs) == 1
+        assert recs[0].levelno == logging.DEBUG
+        assert not any(r.levelno >= logging.WARNING for r in recs)
+
+
+class TestNamedCustomProviderNoBaseUrlDedup:
+    def setup_method(self):
+        ac._LOGGED_NAMED_CUSTOM_NOBASEURL_KEYS.clear()
+
+    def test_no_base_url_logs_debug_once_not_warning(self, caplog, monkeypatch):
+        import hermes_cli.runtime_provider as rp
+
+        entry = {"name": "my-custom-2", "api_key": "sk-test"}
+        monkeypatch.setattr(rp, "_get_named_custom_provider", lambda _p: entry)
+
+        with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
+            client, model = resolve_provider_client("my-custom-2", "some-model")
+            resolve_provider_client("my-custom-2", "some-model")  # repeat → suppressed
+
+        assert (client, model) == (None, None)
+        recs = [
+            r for r in caplog.records
+            if "has no base_url" in r.getMessage()
+        ]
+        assert len(recs) == 1
+        assert recs[0].levelno == logging.DEBUG
+        assert not any(r.levelno >= logging.WARNING for r in recs)
+
+
+class TestCopilotAcpNoModelDedup:
+    def setup_method(self):
+        ac._LOGGED_COPILOT_ACP_NOMODEL_KEYS.clear()
+
+    def test_no_model_logs_debug_once_not_warning(self, caplog, monkeypatch):
+        import hermes_cli.auth as auth
+
+        monkeypatch.setattr(ac, "_read_main_model", lambda: "")
+        monkeypatch.setattr(ac, "_get_aux_model_for_provider", lambda _p: "")
+        # The CLI binary isn't installed on the test machine; resolving
+        # external-process credentials would otherwise raise before this
+        # branch's own model check runs.
+        monkeypatch.setattr(
+            auth, "resolve_external_process_provider_credentials",
+            lambda _p: {"api_key": "k", "base_url": "http://local", "command": "copilot", "args": []},
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
+            client, model = resolve_provider_client("copilot-acp", "")
+            resolve_provider_client("copilot-acp", "")  # repeat → suppressed
+
+        assert (client, model) == (None, None)
+        recs = [
+            r for r in caplog.records
+            if "no model was provided or configured" in r.getMessage()
+        ]
+        assert len(recs) == 1
+        assert recs[0].levelno == logging.DEBUG
+        assert not any(r.levelno >= logging.WARNING for r in recs)

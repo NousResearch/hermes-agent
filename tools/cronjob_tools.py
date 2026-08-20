@@ -683,6 +683,30 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _manual_run_delivery_note(deliver: str, refreshed: Dict[str, Any]) -> str:
+    """Parenthetical delivery note for a manual run's completion summary.
+
+    Follows the refreshed job record (#83993): ``run_one_job`` writes
+    ``last_delivery_error`` via ``mark_job_run`` when the post-run delivery
+    (telegram/discord/…) failed, and the summary must not claim success over
+    that record — the calling agent relays this line to the user. Local jobs
+    never deliver; an empty/missing error keeps the legacy wording
+    byte-for-byte.
+    """
+    # Falsy deliver ("", stored JSON null) means no delivery target — the
+    # fire-time path normalizes it to "local" (no delivery, output persisted
+    # in last_output, no delivery error), so it must read as saved-locally,
+    # not as a delivered remote target. Whitespace-only values are NOT folded
+    # in here: they keep falling through to the error check, where the
+    # fire-time "no delivery target resolved" error gets surfaced.
+    if not deliver or deliver == "local":
+        return " (output saved locally only)"
+    err = str(refreshed.get("last_delivery_error") or "").strip()
+    if not err:
+        return " (output was delivered there by the job itself)"
+    return f" (⚠ delivery FAILED: {err[:200]})"
+
+
 def _execute_job_now(
     job: Dict[str, Any], extra_prompt: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -1097,7 +1121,14 @@ def _try_dispatch_background_run(
         max_async = 3
 
     started_at = time.time()
-    deliver = job.get("deliver", "local")
+    # Canonicalize with the scheduler's own normalizer so the summary states
+    # the same target fire time will use: falsy ("", stored JSON null) reads
+    # "local", legacy list-form deliver flattens to its comma string. Read
+    # from the claimed snapshot — the owner-bearing record the run actually
+    # executes — not the pre-claim `job` the tool loaded.
+    from cron.scheduler import _normalize_deliver_value
+
+    deliver = _normalize_deliver_value(claimed_job.get("deliver", "local"))
 
     def _runner() -> Dict[str, Any]:
         res = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
@@ -1108,11 +1139,7 @@ def _try_dispatch_background_run(
             f"Result: {'ok' if res.get('success') else 'FAILED'}"
             + (f" — {res.get('error')}" if res.get("error") else ""),
             f"Delivery target: {deliver}"
-            + (
-                " (output was delivered there by the job itself)"
-                if deliver != "local"
-                else " (output saved locally only)"
-            ),
+            + _manual_run_delivery_note(deliver, refreshed),
         ]
         if refreshed.get("next_run_at"):
             lines.append(f"Next scheduled run: {refreshed['next_run_at']}")

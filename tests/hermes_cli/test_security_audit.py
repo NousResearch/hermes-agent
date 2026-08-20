@@ -6,8 +6,10 @@ is exercised in the E2E test embedded in PR validation, not here.
 
 from __future__ import annotations
 
+import http.client
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -134,6 +136,74 @@ class TestRunAudit:
         # CRITICAL must come first
         assert findings[0].vuln.osv_id == "CRIT-1"
         assert findings[1].vuln.osv_id == "LOW-1"
+
+
+# ─── OSV fault tolerance (truncated/aborted HTTP responses) ──────────────────
+
+
+class TestOSVFaultTolerance:
+    """A truncated OSV response (IncompleteRead etc.) must never crash the
+    audit: detail fetches degrade to UNKNOWN, batch queries surface as
+    RuntimeError. Regression for the 2026-08-01 crash where IncompleteRead
+    escaped the except tuple and killed the whole audit."""
+
+    def test_detail_fetch_incomplete_read_degrades(self):
+        def fake_urlopen(*args, **kwargs):
+            raise http.client.IncompleteRead(b"partial", 1584)
+
+        with patch.object(sa.urllib.request, "urlopen", fake_urlopen):
+            details = sa._osv_fetch_details(["GHSA-xxxx-xxxx-xxxx"])
+        v = details["GHSA-xxxx-xxxx-xxxx"]
+        assert v.severity == "UNKNOWN"
+        assert v.osv_id == "GHSA-xxxx-xxxx-xxxx"
+
+    def test_detail_fetch_remote_disconnected_degrades(self):
+        def fake_urlopen(*args, **kwargs):
+            raise http.client.RemoteDisconnected("closed without response")
+
+        with patch.object(sa.urllib.request, "urlopen", fake_urlopen):
+            details = sa._osv_fetch_details(["CVE-2026-0001"])
+        assert details["CVE-2026-0001"].severity == "UNKNOWN"
+
+    def test_detail_fetch_bad_json_degrades(self):
+        def fake_urlopen(*args, **kwargs):
+            class _Resp:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    return False
+
+                def read(self):
+                    return b"not json {"
+
+            return _Resp()
+
+        with patch.object(sa.urllib.request, "urlopen", fake_urlopen):
+            details = sa._osv_fetch_details(["CVE-2026-0002"])
+        assert details["CVE-2026-0002"].severity == "UNKNOWN"
+
+    def test_detail_fetch_urlerror_still_degrades(self):
+        # Pre-existing tolerance must survive; this is the regression guard.
+        def fake_urlopen(*args, **kwargs):
+            raise sa.urllib.error.URLError("boom")
+
+        with patch.object(sa.urllib.request, "urlopen", fake_urlopen):
+            details = sa._osv_fetch_details(["CVE-2026-0003"])
+        assert details["CVE-2026-0003"].severity == "UNKNOWN"
+
+    def test_batch_query_incomplete_read_becomes_runtime_error(self):
+        def fake_urlopen(*args, **kwargs):
+            raise http.client.IncompleteRead(b"partial", 999)
+
+        comp = SimpleNamespace(name="pkg", ecosystem="PyPI", version="1.0.0")
+        with patch.object(sa.urllib.request, "urlopen", fake_urlopen):
+            try:
+                sa._osv_query_batch([comp])
+            except RuntimeError as exc:
+                assert "OSV batch query failed" in str(exc)
+            else:
+                raise AssertionError("expected RuntimeError from truncated batch")
 
 
 # ─── CLI subcommand exit codes ────────────────────────────────────────────────

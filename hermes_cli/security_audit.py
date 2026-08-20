@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import http.client
 import json
 import re
 import sys
@@ -318,7 +319,13 @@ def _osv_query_batch(components: list[Component]) -> dict[Component, list[str]]:
         }
         try:
             resp = _http_post_json(OSV_BATCH_URL, payload)
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            http.client.HTTPException,
+            json.JSONDecodeError,
+        ) as exc:
             raise RuntimeError(f"OSV batch query failed: {exc}") from exc
         results = resp.get("results") or []
         for comp, result in zip(chunk, results):
@@ -393,7 +400,13 @@ def _osv_fetch_details(vuln_ids: Iterable[str]) -> dict[str, Vulnerability]:
     def _fetch_one(vid: str) -> Vulnerability:
         try:
             rec = _http_get_json(OSV_VULN_URL.format(vid=vid))
-        except (urllib.error.URLError, TimeoutError, ConnectionError):
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            http.client.HTTPException,
+            json.JSONDecodeError,
+        ):
             return Vulnerability(osv_id=vid)
         return Vulnerability(
             osv_id=vid,

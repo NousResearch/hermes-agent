@@ -70,6 +70,10 @@ _CHANNEL_TYPE_MAP = {
 
 _MATTERMOST_DISABLE_MENTIONS_PROPS = {"disable_mentions": True}
 
+# Mattermost special mentions.  They match the @username pattern but are never
+# channel members, so trying to resolve them paginates the entire membership.
+_MATTERMOST_SPECIAL_MENTIONS = frozenset({"channel", "here", "all"})
+
 # Reconnect parameters (exponential backoff).
 _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
@@ -912,6 +916,9 @@ class MattermostAdapter(BasePlatformAdapter):
                     message_text = re.sub(
                         re.escape(pattern), "", message_text, flags=re.IGNORECASE
                     ).strip()
+                message_text = await self._strip_peer_bot_mentions(
+                    channel_id, message_text
+                )
 
         # Resolve sender info.
         sender_id = post.get("user_id", "")
@@ -1011,6 +1018,84 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(msg_event)
+
+    async def _strip_peer_bot_mentions(self, channel_id: str, text: str) -> str:
+        """Remove confirmed peer-bot handles while preserving human mentions."""
+        mentioned = {
+            match.group(1).lower()
+            for match in re.finditer(
+                r"(?<![\w.-])@([A-Za-z0-9][A-Za-z0-9._-]{0,63})",
+                text,
+            )
+        } - _MATTERMOST_SPECIAL_MENTIONS
+        if not mentioned:
+            return text
+
+        original = text
+        users: list[Dict[str, Any]] = []
+        resolved_usernames: set[str] = set()
+        seen_usernames: set[str] = set()
+        page = 0
+        while resolved_usernames != mentioned:
+            try:
+                page_users = await self._api_get(
+                    f"users?in_channel={channel_id}&page={page}&per_page=200"
+                )
+            except Exception:
+                return original
+            if not isinstance(page_users, list):
+                return original
+
+            users.extend(user for user in page_users if isinstance(user, dict))
+            page_usernames = {
+                str(user.get("username", "")).lower()
+                for user in page_users
+                if isinstance(user, dict)
+            }
+            resolved_usernames.update(page_usernames & mentioned)
+            if len(page_users) < 200:
+                break
+            if not page_usernames - seen_usernames:
+                # A full page that adds no new member means the server is not
+                # advancing; stop instead of requesting the same page forever.
+                break
+            seen_usernames.update(page_usernames)
+            page += 1
+
+        if resolved_usernames != mentioned:
+            return original
+
+        peer_bot_usernames = {
+            str(user.get("username", "")).lower()
+            for user in users
+            if isinstance(user, dict)
+            and user.get("is_bot") is True
+            and str(user.get("username", "")).lower() in mentioned
+            and str(user.get("username", "")).lower()
+            != self._bot_username.lower()
+        }
+        if not peer_bot_usernames:
+            return original
+
+        peer_alternation = "|".join(
+            re.escape(username) for username in sorted(peer_bot_usernames)
+        )
+        peer_pattern = re.compile(
+            rf"(?<![\w.-])@(?:{peer_alternation})(?![\w.-])",
+            flags=re.IGNORECASE,
+        )
+        for match in reversed(list(peer_pattern.finditer(text))):
+            before = text[:match.start()]
+            after = text[match.end():]
+            if before and after and before[-1] in " \t" and after[0] in " \t":
+                before = before.rstrip(" \t")
+                after = " " + after.lstrip(" \t")
+            elif not before and after[:1] in {" ", "\t"}:
+                after = after.lstrip(" \t")
+            elif not after and before[-1:] in {" ", "\t"}:
+                before = before.rstrip(" \t")
+            text = before + after
+        return text
 
 
 

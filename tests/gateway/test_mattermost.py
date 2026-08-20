@@ -3,7 +3,7 @@ import json
 import os
 import time
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageType
@@ -393,6 +393,121 @@ class TestMattermostMentionBehavior:
             await self.adapter._handle_ws_event(self._make_event("hello", channel_id="chan_456"))
             assert self.adapter.handle_message.called
 
+    @pytest.mark.asyncio
+    async def test_multi_bot_fanout_strips_peer_bots_but_preserves_humans(self):
+        self.adapter._api_get = AsyncMock(return_value=[
+            {"username": "hermes-bot", "is_bot": True},
+            {"username": "agent-one", "is_bot": True},
+            {"username": "agent-two", "is_bot": True},
+            {"username": "human-user", "is_bot": False},
+        ])
+
+        await self.adapter._handle_ws_event(
+            self._make_event(
+                "ping @hermes-bot @agent-one @agent-two for @human-user"
+            )
+        )
+
+        message = self.adapter.handle_message.call_args[0][0]
+        assert message.text == "ping for @human-user"
+        self.adapter._api_get.assert_awaited_once_with(
+            "users?in_channel=chan_456&page=0&per_page=200"
+        )
+
+    @pytest.mark.asyncio
+    async def test_multi_bot_fanout_preserves_unrelated_whitespace(self):
+        self.adapter._api_get = AsyncMock(return_value=[
+            {"username": "agent-one", "is_bot": True},
+        ])
+
+        await self.adapter._handle_ws_event(
+            self._make_event("value  =  expression @hermes-bot @agent-one")
+        )
+
+        message = self.adapter.handle_message.call_args[0][0]
+        assert message.text == "value  =  expression"
+
+    @pytest.mark.asyncio
+    async def test_multi_bot_fanout_finds_peer_bot_on_second_users_page(self):
+        first_page = [
+            {"username": f"human-{index}", "is_bot": False}
+            for index in range(200)
+        ]
+        second_page = [{"username": "agent-one", "is_bot": True}]
+        self.adapter._api_get = AsyncMock(side_effect=[first_page, second_page])
+
+        await self.adapter._handle_ws_event(
+            self._make_event("ping @hermes-bot @agent-one")
+        )
+
+        message = self.adapter.handle_message.call_args[0][0]
+        assert message.text == "ping"
+        assert self.adapter._api_get.await_args_list == [
+            call("users?in_channel=chan_456&page=0&per_page=200"),
+            call("users?in_channel=chan_456&page=1&per_page=200"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_peer_bot_lookup_failure_preserves_message(self):
+        self.adapter._api_get = AsyncMock(side_effect=RuntimeError("lookup failed"))
+
+        await self.adapter._handle_ws_event(
+            self._make_event("ping @hermes-bot @agent-one")
+        )
+
+        message = self.adapter.handle_message.call_args[0][0]
+        assert message.text == "ping  @agent-one"
+
+    @pytest.mark.asyncio
+    async def test_special_mentions_cost_no_member_lookups(self):
+        """@channel/@here/@all are never members; they must not paginate."""
+        self.adapter._api_get = AsyncMock()
+
+        await self.adapter._handle_ws_event(
+            self._make_event("@hermes-bot please tell @channel about X")
+        )
+
+        message = self.adapter.handle_message.call_args[0][0]
+        assert message.text == "please tell @channel about X"
+        self.adapter._api_get.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_special_mentions_do_not_block_peer_bot_lookup(self):
+        """A real handle alongside a special mention still resolves."""
+        self.adapter._api_get = AsyncMock(return_value=[
+            {"username": "agent-one", "is_bot": True},
+        ])
+
+        await self.adapter._handle_ws_event(
+            self._make_event("@hermes-bot @agent-one tell @here")
+        )
+
+        message = self.adapter.handle_message.call_args[0][0]
+        assert message.text == "tell @here"
+        self.adapter._api_get.assert_awaited_once_with(
+            "users?in_channel=chan_456&page=0&per_page=200"
+        )
+
+    @pytest.mark.asyncio
+    async def test_unresolved_mention_stops_when_pagination_stalls(self):
+        """A server that keeps returning the same page must not loop forever."""
+        stalled_page = [
+            {"username": f"human-{index}", "is_bot": False}
+            for index in range(200)
+        ]
+        self.adapter._api_get = AsyncMock(return_value=list(stalled_page))
+
+        await self.adapter._handle_ws_event(
+            self._make_event("ping @hermes-bot @never-resolves")
+        )
+
+        message = self.adapter.handle_message.call_args[0][0]
+        assert message.text == "ping  @never-resolves"
+        assert self.adapter._api_get.await_args_list == [
+            call("users?in_channel=chan_456&page=0&per_page=200"),
+            call("users?in_channel=chan_456&page=1&per_page=200"),
+        ]
+
 
 # ---------------------------------------------------------------------------
 # File upload (send_image)
@@ -592,5 +707,4 @@ async def test_mattermost_top_level_channel_post_is_thread_root():
     assert msg_event.source.thread_id == "top_post_123"
     assert msg_event.source.message_id == "top_post_123"
     assert msg_event.message_id == "top_post_123"
-
 

@@ -247,6 +247,18 @@ export async function runRewindSubmit(
   const hasDurableAddress =
     typeof truncateRowId === 'number' ||
     (typeof truncateMessageId === 'string' && truncateMessageId.length > 0 && !isSyntheticRendererId(truncateMessageId))
+  // A bound INTEGER row_id is the gateway's authoritative address — the cut is
+  // ALWAYS aimed by the resolved durable target, never the client ordinal
+  // (gateway `_reconcile_client_ordinal`: "The cut itself is always aimed by the
+  // resolved durable target, never by the client ordinal"). But the renderer's
+  // visible-user ordinal can diverge from the gateway's durable ordinal space by
+  // an arbitrary amount (#87059; observed 75 vs 102), and the gateway REFUSES a
+  // mismatch with 4030 even though the row_id resolved fine — turning a
+  // legitimate rewind/edit/regenerate into a false refusal. With a row_id in
+  // hand, send it alone and drop the redundant ordinal + message-id; the gateway
+  // already prefers row_id over both, and stale-row_id safety is unchanged (an
+  // unknown/dead id still fails closed with 4018).
+  const hasRowId = typeof truncateRowId === 'number' && Number.isInteger(truncateRowId)
 
   if (wantsTruncation && !hasDurableAddress) {
     resolvedRowId =
@@ -258,6 +270,14 @@ export async function runRewindSubmit(
     // diverge from the gateway's — the #87059 root). Resolved: the row id alone
     // is the address; sending the divergent ordinal too would trip the
     // gateway's 4030 cross-check. Unresolved: plain resubmit, no truncation.
+    resolvedOrdinal = undefined
+    resolvedMessageId = undefined
+  }
+
+  if (hasRowId) {
+    // Durable row_id in hand: drop the ordinal and message-id so the gateway
+    // aims purely by the row_id (see the note above) instead of tripping its
+    // 4030 cross-check on a divergent renderer ordinal.
     resolvedOrdinal = undefined
     resolvedMessageId = undefined
   }

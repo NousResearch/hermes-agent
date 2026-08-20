@@ -485,7 +485,40 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
     const submit = calls.find(call => call.method === 'prompt.submit')
 
     expect(submit?.params?.truncate_before_row_id).toBe(13)
-    expect(submit?.params?.truncate_before_user_ordinal).toBe(1)
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+    expect(submit?.params?.truncate_before_message_id).toBeUndefined()
+    expect(submit?.params?.confirm_truncate).toBe(true)
+  })
+
+  it('sends ONLY the durable rowId when bound, dropping a divergent ordinal (#4030 false-refusal)', async () => {
+    // The renderer's visible-user ordinal can diverge from the gateway's durable
+    // ordinal space (here ordinal 5 vs the durable target's real ordinal) — the
+    // #87059 class that used to make the gateway refuse a legitimate rewind with
+    // 4030 because the row_id and ordinal disagreed. A bound row_id is
+    // authoritative and the cut is aimed by it alone, so it must be sent without
+    // the wasteful, mismatch-triggering ordinal / message-id.
+    const calls: Call[] = []
+
+    await runRewindSubmit(makeGateway(calls), 'sid', 'fixed prompt', 5, undefined, false, undefined, 13, 'typo prompt')
+
+    const submit = calls.find(call => call.method === 'prompt.submit')
+
+    expect(submit?.params?.truncate_before_row_id).toBe(13)
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+    expect(submit?.params?.truncate_before_message_id).toBeUndefined()
+    expect(submit?.params?.confirm_truncate).toBe(true)
+  })
+
+  it('keeps confirm_empty_truncate for an ordinal-0 restore even with a bound rowId', async () => {
+    const calls: Call[] = []
+
+    await runRewindSubmit(makeGateway(calls), 'sid', 'restore to empty', 0, undefined, false, undefined, 13, 'typo prompt')
+
+    const submit = calls.find(call => call.method === 'prompt.submit')
+
+    expect(submit?.params?.truncate_before_row_id).toBe(13)
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+    expect(submit?.params?.confirm_empty_truncate).toBe(true)
   })
 })
 

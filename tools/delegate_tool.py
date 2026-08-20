@@ -4414,6 +4414,29 @@ def _resolve_child_credential_pool(
     return None
 
 
+def _normalize_auto_sentinel(value) -> Optional[str]:
+    """Treat the literal ``"auto"`` sentinel as "inherit from parent".
+
+    ``delegation.model`` / ``delegation.provider`` document ``empty = inherit
+    parent``. Users (and setup flows) frequently write the sentinel ``"auto"``
+    to mean the same thing, but without normalization the non-empty string is
+    treated as an explicit override: ``provider="auto"`` reaches
+    ``resolve_runtime_provider(requested="auto")`` (which matches no configured
+    provider and silently reroutes through the fallback chain), and
+    ``model="auto"`` is passed verbatim to the child AIAgent and then to the
+    wire, where the API rejects it (HTTP 401 "Model auto is not supported") on
+    every subagent spawn. "auto" is not a model or provider literally named
+    "auto"; map it to ``None`` so the documented inherit-from-parent path
+    applies. Mirrors the auxiliary-path sentinel handling in
+    ``agent/auxiliary_client.py`` and the cron-job normalization in
+    ``cron/scheduler.py``.
+    """
+    text = str(value or "").strip()
+    if text.lower() == "auto":
+        return None
+    return text or None
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -4435,8 +4458,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     Raises ValueError with a user-friendly message on credential failure.
     """
-    configured_model = str(cfg.get("model") or "").strip() or None
-    configured_provider = str(cfg.get("provider") or "").strip() or None
+    configured_model = _normalize_auto_sentinel(cfg.get("model"))
+    configured_provider = _normalize_auto_sentinel(cfg.get("provider"))
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None

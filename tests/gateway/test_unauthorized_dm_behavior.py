@@ -278,6 +278,53 @@ async def test_whatsapp_self_chat_never_sends_pairing_code(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_whatsapp_omitted_mode_preserves_pairing_compatibility(monkeypatch):
+    """Legacy installs without WHATSAPP_MODE retain the pairing default."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True,
+                extra={"dm_policy": "pairing"},
+            ),
+        },
+    )
+    runner, adapter = _make_runner(Platform.WHATSAPP, config)
+    runner.pairing_store.generate_code.return_value = "ABC12DEF"
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.WHATSAPP,
+            "15551234567@s.whatsapp.net",
+            "15551234567@s.whatsapp.net",
+        )
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_called_once()
+    adapter.send.assert_awaited_once()
+
+
+def test_whatsapp_platform_pair_override_beats_self_chat_safety(monkeypatch):
+    """A per-platform pair override remains an explicit opt-in."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True,
+                extra={
+                    "mode": "self-chat",
+                    "unauthorized_dm_behavior": "pair",
+                },
+            ),
+        },
+    )
+    runner, _adapter = _make_runner(Platform.WHATSAPP, config)
+
+    assert runner._get_unauthorized_dm_behavior(Platform.WHATSAPP) == "pair"
+
+
+@pytest.mark.asyncio
 async def test_unauthorized_whatsapp_dm_can_be_ignored(monkeypatch):
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(

@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [GitHub, Repositories, Git, Releases, Secrets, Configuration]
-    related_skills: [github-auth, github-pr-workflow, github-issues]
+    related_skills: [github-auth, github-pr-workflow, github-issues, hermes-pr-provenance]
 ---
 
 # GitHub Repository Management
@@ -18,6 +18,7 @@ Create, clone, fork, configure, and manage GitHub repositories. Each section sho
 ## Prerequisites
 
 - Authenticated with GitHub (see `github-auth` skill)
+- When creating a repository from Hermes-authored local work or an initial commit, use `hermes-pr-provenance`/`hermes-git-workflow` so commits and any opening PR identify the provider-level writer.
 
 ### Setup
 
@@ -124,7 +125,10 @@ cd my-new-project
 cd /path/to/existing/project
 git init
 git add .
-git commit -m "Initial commit"
+git commit -m "chore: initial commit
+
+Writer: codex
+Refs: initial-setup"
 git remote add origin https://github.com/$GH_USER/my-new-project.git
 git push -u origin main
 ```

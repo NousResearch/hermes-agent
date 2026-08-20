@@ -60,11 +60,12 @@ pending_questions: dict[str, "PendingQuestion"] = {}
 class PendingQuestion:
     """One unanswered extension_ui_request from a pi child."""
 
-    def __init__(self, method: str, title: str, options: list[str] | None):
+    def __init__(self, method: str, title: str, options: list[str] | None, owner: "PiRPCClient | None" = None):
         self.id = f"q_{int(time.time() * 1000)}_{id(self):x}"
         self.method = method
         self.title = title
         self.options = list(options or [])
+        self.owner = owner  # owning client; questions die with their client
         self.answered = threading.Event()
         self.answer: dict[str, Any] | None = None
         self.created_at = time.time()
@@ -111,11 +112,17 @@ class PendingQuestion:
 def answer_oldest_pending_question(text: str) -> bool:
     """Route free text to the oldest pending pi question, if any.
 
+    Questions whose owning client has closed are skipped (their run is
+    gone; answering them would steal the text from a live question).
     Returns True when the text was consumed as a question answer.
     """
     with _registry_lock:
         oldest = None
-        for question in pending_questions.values():
+        for question in list(pending_questions.values()):
+            if question.owner is not None and question.owner.is_closed:
+                pending_questions.pop(question.id, None)
+                question.answered.set()  # unblock the dead waiter if any
+                continue
             if oldest is None or question.created_at < oldest.created_at:
                 oldest = question
         if oldest is None:
@@ -266,6 +273,18 @@ class PiRPCClient:
         tools = os.getenv("HERMES_PI_TOOLS", "").strip()
         if tools:
             argv += ["--tools", tools]
+        # Auto-load pi-ask-user (interactive questions) if installed; users can
+        # force extra extensions with HERMES_PI_EXTENSIONS (colon-separated).
+        ask_user = os.path.join(
+            os.path.expanduser("~"), ".pi", "agent", "npm", "node_modules",
+            "pi-ask-user", "index.ts",
+        )
+        exts = []
+        if os.path.isfile(ask_user):
+            exts.append(ask_user)
+        exts += [p for p in os.getenv("HERMES_PI_EXTENSIONS", "").split(":") if p]
+        for ext in exts:
+            argv += ["-e", ext]
         try:
             proc = subprocess.Popen(
                 argv,
@@ -414,7 +433,7 @@ class PiRPCClient:
             except Exception:
                 pass
             return
-        question = PendingQuestion(method, title, options)
+        question = PendingQuestion(method, title, options, owner=self)
         with _registry_lock:
             pending_questions[question.id] = question
 

@@ -1,7 +1,14 @@
+from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from cli import HermesCLI, _build_compact_banner, _rich_text_from_ansi
+from cli import (
+    ChatConsole,
+    HermesCLI,
+    _build_compact_banner,
+    _rich_text_from_ansi,
+    _skin_markdown_theme,
+)
 from hermes_cli.skin_engine import get_active_skin, set_active_skin
 
 
@@ -103,6 +110,52 @@ class TestCompactBannerSkinIntegration:
         assert skin.get_color("banner_border") in banner
         assert skin.get_color("banner_title") in banner
         assert skin.get_color("banner_dim") in banner
+
+
+class TestMarkdownThemeSkinIntegration:
+
+    def test_markdown_theme_maps_skin_accent_onto_rich_styles(self):
+        set_active_skin("poseidon")
+        skin = get_active_skin()
+        accent = skin.get_color("ui_accent") or skin.get_color("banner_accent")
+
+        theme = _skin_markdown_theme()
+
+        # Rich normalises hex colors to lowercase when parsing a Style.
+        assert theme is not None
+        assert accent.lower() in str(theme.styles["markdown.h2"]).lower()
+        assert accent.lower() in str(theme.styles["markdown.item.bullet"]).lower()
+
+    def test_rendered_markdown_emits_skin_accent(self):
+        from rich.console import Console
+        from rich.markdown import Markdown
+
+        set_active_skin("poseidon")
+        skin = get_active_skin()
+        accent = skin.get_color("ui_accent") or skin.get_color("banner_accent")
+        red, green, blue = (int(accent[i:i + 2], 16) for i in (1, 3, 5))
+
+        buffer = StringIO()
+        Console(
+            file=buffer,
+            force_terminal=True,
+            color_system="truecolor",
+            width=60,
+            theme=_skin_markdown_theme(),
+        ).print(Markdown("## Heading\n"))
+
+        assert f"38;2;{red};{green};{blue}" in buffer.getvalue()
+
+    def test_chat_console_attaches_the_skin_markdown_theme(self):
+        set_active_skin("poseidon")
+        skin = get_active_skin()
+        accent = skin.get_color("ui_accent") or skin.get_color("banner_accent")
+
+        assert accent.lower() in str(ChatConsole()._inner.get_style("markdown.h2")).lower()
+
+    def test_markdown_theme_falls_back_to_rich_defaults_when_skin_unavailable(self):
+        with patch("hermes_cli.skin_engine.get_active_skin", side_effect=RuntimeError("boom")):
+            assert _skin_markdown_theme() is None
 
 
 

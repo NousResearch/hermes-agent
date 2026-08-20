@@ -4504,6 +4504,73 @@ def _collect_query_images(query: str | None, image_arg: str | None = None) -> tu
 _OSC_ESCAPE_RE = re.compile(r"\x1b\][\s\S]*?(?:\x07|\x1b\\)")
 
 
+# Rich's Markdown renderer styles itself from the console theme's
+# ``markdown.*`` keys.  Without a theme it falls back to Rich's stock palette
+# (magenta headings, `bold cyan on black` code), so the BODY of a rendered
+# response ignored the active skin entirely — a skin only ever colored the
+# chrome (panel border, labels).  Build the theme from the active skin so
+# `display.final_response_markdown: render` honors it.
+_MARKDOWN_THEME_CACHE: dict = {}
+
+
+def _skin_markdown_theme():
+    """Rich Theme mapping ``markdown.*`` styles onto the active skin.
+
+    Returns None when the skin engine is unavailable, which leaves Rich on its
+    built-in defaults — the pre-existing behavior.
+    """
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        from rich.theme import Theme
+
+        # get_color() already routes through the light-mode remap
+        # (_install_skin_light_mode_hook), so these need no further adaptation.
+        c = get_active_skin().get_color
+        accent = c("ui_accent") or c("banner_accent") or "#FFBF00"
+        primary = c("ui_primary") or c("banner_title") or accent
+        dim = c("banner_dim") or "#808080"
+        border = c("ui_border") or c("banner_border") or accent
+        code = c("syntax_string") or accent
+        comment = c("syntax_comment") or dim
+
+        key = (accent, primary, dim, border, code, comment)
+        cached = _MARKDOWN_THEME_CACHE.get(key)
+        if cached is not None:
+            return cached
+
+        # inherit=True keeps Rich's defaults for every key left unset, and the
+        # non-color styles (strong/em/s) stay untouched on purpose — bold and
+        # italic are not the skin's to recolor.
+        theme = Theme(
+            {
+                "markdown.h1": f"bold {primary}",
+                "markdown.h2": f"bold {accent}",
+                "markdown.h3": accent,
+                "markdown.h4": f"italic {accent}",
+                "markdown.h5": f"italic {dim}",
+                "markdown.h6": f"dim {dim}",
+                "markdown.code": f"bold {code}",
+                "markdown.code_block": code,
+                "markdown.link": f"underline {accent}",
+                "markdown.link_url": f"underline {dim}",
+                "markdown.block_quote": comment,
+                "markdown.hr": border,
+                "markdown.list": accent,
+                "markdown.item.bullet": f"bold {accent}",
+                "markdown.item.number": accent,
+                "markdown.table.border": border,
+                "markdown.table.header": f"bold {accent}",
+            },
+            inherit=True,
+        )
+        # Keyed on the resolved colors, so editing a skin in place (same name,
+        # new palette) rebuilds instead of serving a stale theme.
+        _MARKDOWN_THEME_CACHE[key] = theme
+        return theme
+    except Exception:
+        return None
+
+
 class ChatConsole:
     """Rich Console adapter for prompt_toolkit's patch_stdout context.
 
@@ -4521,6 +4588,7 @@ class ChatConsole:
             force_terminal=True,
             color_system="truecolor",
             highlight=False,
+            theme=_skin_markdown_theme(),
         )
 
     def print(self, *args, **kwargs):

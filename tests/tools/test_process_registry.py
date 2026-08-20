@@ -2226,7 +2226,7 @@ class TestSystemdCgroupIsolation:
         assert "--" in argv, "systemd-run argv must use -- to separate command"
         sep_idx = argv.index("--")
         assert "/bin/bash" in argv[sep_idx:]
-        assert "set +m; echo hello" in argv[sep_idx:]
+        assert "command cd -- /tmp || exit 126; set +m; echo hello" in argv[sep_idx:]
         # systemd-run --scope gives the worker a new cgroup but NOT a new
         # session (#70716 regression: start_new_session was False, so the
         # worker kept the parent's session + controlling terminal → SIGTTIN/
@@ -2261,7 +2261,11 @@ class TestSystemdCgroupIsolation:
 
         argv = captured["argv"]
         # No systemd-run wrapping — direct shell invocation.
-        assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
+        assert argv == [
+            "/bin/bash",
+            "-lic",
+            "command cd -- /tmp || exit 126; set +m; echo hello",
+        ], argv
         assert captured["start_new_session"] is True
 
     def test_falls_back_when_not_under_supervisor(self, registry, monkeypatch):
@@ -2287,7 +2291,11 @@ class TestSystemdCgroupIsolation:
             registry.spawn_local("echo hello", cwd="/tmp")
 
         argv = captured["argv"]
-        assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
+        assert argv == [
+            "/bin/bash",
+            "-lic",
+            "command cd -- /tmp || exit 126; set +m; echo hello",
+        ], argv
         assert captured["start_new_session"] is True
 
     @pytest.mark.parametrize("use_pty", [False, True])
@@ -2319,7 +2327,9 @@ class TestSystemdCgroupIsolation:
             ):
                 session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
             assert pty_spawn.call_args.args[0] == [
-                "/bin/bash", "-lic", "set +m; codex",
+                "/bin/bash",
+                "-lic",
+                "command cd -- /tmp || exit 126; set +m; codex",
             ]
         else:
             fake_popen, captured = self._fake_popen_capture()
@@ -2330,7 +2340,9 @@ class TestSystemdCgroupIsolation:
             ):
                 session = registry.spawn_local("echo hello", cwd="/tmp")
             assert captured["argv"] == [
-                "/bin/bash", "-lic", "set +m; echo hello",
+                "/bin/bash",
+                "-lic",
+                "command cd -- /tmp || exit 126; set +m; echo hello",
             ]
             assert captured["start_new_session"] is True
 
@@ -2370,7 +2382,9 @@ class TestSystemdCgroupIsolation:
             ):
                 session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
             assert pty_spawn.call_args.args[0] == [
-                "/bin/bash", "-lic", "set +m; codex",
+                "/bin/bash",
+                "-lic",
+                "command cd -- /tmp || exit 126; set +m; codex",
             ]
         else:
             fake_popen, captured = self._fake_popen_capture()
@@ -2381,7 +2395,9 @@ class TestSystemdCgroupIsolation:
             ):
                 session = registry.spawn_local("echo hello", cwd="/tmp")
             assert captured["argv"] == [
-                "/bin/bash", "-lic", "set +m; echo hello",
+                "/bin/bash",
+                "-lic",
+                "command cd -- /tmp || exit 126; set +m; echo hello",
             ]
             assert captured["start_new_session"] is True
 
@@ -2451,7 +2467,11 @@ class TestSystemdCgroupIsolation:
         assert "--scope" in argv
         assert "--unit" in argv
         assert "--" in argv
-        assert argv[-3:] == ["/bin/bash", "-lic", "set +m; codex"]
+        assert argv[-3:] == [
+            "/bin/bash",
+            "-lic",
+            "command cd -- /tmp || exit 126; set +m; codex",
+        ]
         assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
 
     @pytest.mark.linux_only
@@ -2863,6 +2883,53 @@ class TestSystemdCgroupIsolation:
         assert pr._stop_systemd_unit("hermes-worker-gone.scope") is True
 
 
+class TestSpawnLocalCwdRepin:
+    @staticmethod
+    def _wait_for_exit(session):
+        deadline = time.time() + 20
+        while not session.exited and time.time() < deadline:
+            time.sleep(0.05)
+        assert session.exited, "spawned pwd did not exit in time"
+        assert session.exit_code == 0, session.output_buffer
+        return [line.strip() for line in session.output_buffer.splitlines() if line.strip()]
+
+    @pytest.mark.linux_only
+    @pytest.mark.parametrize("use_pty", [False, True])
+    def test_dash_rc_cannot_override_requested_cwd(
+        self, registry, tmp_path, monkeypatch, use_pty
+    ):
+        """The real dash path has no ``builtin`` command and sources an rc ``cd``."""
+        dash = shutil.which("dash")
+        if dash is None:
+            pytest.skip("dash is not installed")
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        profile = fake_home / ".profile"
+        profile.write_text("cd /\n")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("ENV", str(profile))
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: dash)
+
+        workdir = tmp_path / "work dir"
+        workdir.mkdir()
+        session = registry.spawn_local("pwd -P", cwd=str(workdir), use_pty=use_pty)
+        lines = self._wait_for_exit(session)
+        assert lines[-1] == os.path.realpath(workdir)
+
+    @pytest.mark.windows_only
+    def test_git_bash_rc_cannot_override_native_windows_cwd(
+        self, registry, tmp_path, monkeypatch
+    ):
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        (fake_home / ".bash_profile").write_text("cd /\n")
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        workdir = tmp_path / "work dir"
+        workdir.mkdir()
+        session = registry.spawn_local("pwd -W", cwd=str(workdir))
+        lines = self._wait_for_exit(session)
+        assert os.path.samefile(lines[-1], workdir)
 
 
 class TestNotificationRedaction:

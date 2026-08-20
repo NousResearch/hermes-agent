@@ -293,6 +293,60 @@ class TestInPlaceAntiGrowthGuard:
             assert agent.session_id == sid
             assert db.get_session(sid)["end_reason"] is None
 
+    def test_in_place_salvages_near_break_even_growth(self):
+        """Fat retained tool output + todo state should be salvaged and committed."""
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+        from agent.model_metadata import estimate_messages_tokens_rough
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "20260819_salvage"
+            _seed(db, sid, "salvage")
+            agent = _make_agent(db, sid, in_place=True)
+            agent._last_flushed_db_idx = 5
+
+            tool_calls = [
+                {"id": call_id, "function": {"name": "terminal", "arguments": "{}"}}
+                for call_id in ("c1", "c2", "c3")
+            ]
+            original = [
+                {"role": "user", "content": "do the work"},
+                {"role": "assistant", "content": "calling tools", "tool_calls": tool_calls},
+                {"role": "tool", "tool_call_id": "c1", "content": "OLD1 " + ("x" * 8000)},
+                {"role": "tool", "tool_call_id": "c2", "content": "OLD2 " + ("y" * 8000)},
+                {"role": "tool", "tool_call_id": "c3", "content": "keep-me " + ("z" * 100)},
+                {"role": "user", "content": "thanks"},
+            ]
+            grown = [
+                {"role": "user", "content": "[CONTEXT COMPACTION] " + ("S" * 200)},
+                {"role": "assistant", "content": "calling tools", "tool_calls": tool_calls},
+                {"role": "tool", "tool_call_id": "c1", "content": "OLD1 " + ("x" * 8000)},
+                {"role": "tool", "tool_call_id": "c2", "content": "OLD2 " + ("y" * 8000)},
+                {"role": "tool", "tool_call_id": "c3", "content": "keep-me " + ("z" * 100)},
+                {
+                    "role": "user",
+                    "content": "Current todos:\n- [ ] leftover",
+                    "_todo_snapshot_synthetic": True,
+                },
+            ]
+            assert estimate_messages_tokens_rough(grown) > estimate_messages_tokens_rough(original)
+            compressor = getattr(agent, "context_compressor")
+            compressor.compress = (
+                lambda messages, current_tokens=None, focus_topic=None, force=False: grown
+            )
+
+            compressed, _sp = compress_context(
+                agent, original, approx_tokens=100_000, system_message="sys"
+            )
+
+            assert getattr(agent, "_last_compaction_in_place") is True
+            assert estimate_messages_tokens_rough(compressed) < estimate_messages_tokens_rough(original)
+            tool_bodies = [m.get("content") for m in compressed if m.get("role") == "tool"]
+            assert any(isinstance(body, str) and body.startswith("keep-me") for body in tool_bodies)
+            assert any("cleared to save context space" in (body or "") for body in tool_bodies)
+            assert not any(m.get("_todo_snapshot_synthetic") for m in compressed)
+
     def test_in_place_still_commits_shrinking_compression(self):
         """The guard must not block legitimate compressions — a result SMALLER
         than the input still commits in place (regression net for #83339)."""

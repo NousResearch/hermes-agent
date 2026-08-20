@@ -12,6 +12,7 @@ import os
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import textwrap
@@ -379,24 +380,42 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
 # rewrites ``state/gateway.heartbeat`` every 30s (#66892), so a frozen loop
 # stops refreshing the file while a busy-but-alive loop keeps refreshing it.
 #
-# ``probe_gateway_loop_liveness`` reads that signal (a local stat + JSON read,
-# instant — far inside the 10s query tier of the subprocess timeout doc) and
-# classifies the gateway BEFORE any drain wait begins:
+# Since #90502 the heartbeat write runs on a thread (a stalling filesystem
+# must not be able to block the loop the watchdog watches), which costs the
+# file its status as *proof*: a stalled write or a saturated executor can age
+# the file while the loop runs, and an off-loop write can land after the loop
+# froze, keeping the file fresh for a dead loop. The loop therefore also arms
+# a second witness — ``state/gateway.loop-tick.<pid>.sock``, a UNIX socket
+# answered by the loop itself — and records whether it is armed in the
+# heartbeat payload (``loop_tick_socket``).
 #
-# - ``alive``   — heartbeat is fresh: the loop is dispatching (possibly busy).
-#                 Callers must take the normal graceful-drain path, which
-#                 honours the in-flight cron drain floor (#86684).
-# - ``wedged``  — heartbeat belongs to this PID but has gone stale well past
-#                 several missed beats: the loop is provably dead.  Draining
-#                 is pointless (nothing can run the drain), so callers may
-#                 escalate immediately via ``_escalate_wedged_gateway``.
-# - ``unknown`` — no heartbeat / unreadable / PID mismatch (older gateway,
-#                 still starting up, stale file from a previous process).
+# ``probe_gateway_loop_liveness`` reads both signals (a local stat + JSON
+# read + a bounded socket ping — instant, far inside the 10s query tier of
+# the subprocess timeout doc) and classifies the gateway BEFORE any drain
+# wait begins:
+#
+# - ``alive``   — the loop answered the tick socket, or the file is fresh and
+#                 the loop is not contradicted by the socket.  Callers must
+#                 take the normal graceful-drain path, which honours the
+#                 in-flight cron drain floor (#86684).
+# - ``wedged``  — the heartbeat belongs to this PID, is stale well past
+#                 several missed beats, AND the tick socket is armed but does
+#                 not answer: both witnesses agree the loop is provably dead.
+#                 Draining is pointless (nothing can run the drain), so
+#                 callers may escalate immediately via
+#                 ``_escalate_wedged_gateway``.
+# - ``unknown`` — no heartbeat / unreadable / PID mismatch / witness conflict
+#                 (fresh file with a silent loop, armed socket unreachable).
 #                 Treated like ``alive``: never escalate on ambiguity.
 #
 # The distinction matters: only a *provably dead* loop may bypass the cron
-# drain floor.  A merely busy gateway still answers the probe (fresh file)
-# and keeps its full drain budget.
+# drain floor.  A merely busy gateway still answers the probe (socket ping)
+# and keeps its full drain budget — even when the filesystem is stalling the
+# heartbeat write (the incident that motivated #90502).
+#
+# Legacy gateways (no ``loop_tick_socket`` flag in the payload) wrote the
+# file on-loop, so their staleness remains proof and the old single-witness
+# contract is unchanged.
 
 GATEWAY_LOOP_ALIVE = "alive"
 GATEWAY_LOOP_WEDGED = "wedged"
@@ -406,19 +425,82 @@ GATEWAY_LOOP_UNKNOWN = "unknown"
 # Three missed beats is decisive without false-positiving on one slow write.
 DEFAULT_LOOP_LIVENESS_STALE_AFTER_S = 90.0
 
+# Sentinel for "the producer never wrote the witness flag" (legacy payload).
+_LOOP_TICK_ABSENT = object()
+
+
+def _probe_loop_tick_socket(
+    pid: int,
+    home: Path | None,
+    timeout: float = 1.0,
+) -> bool | None:
+    """Ping the loop-scheduling witness socket for ``pid``.
+
+    Returns:
+      True  — the loop answered: it is dispatching right now.
+      False — a socket node exists for this PID but did not answer (the loop
+              is not scheduling, or the node is a leftover from a dead
+              listener).
+      None  — no socket node for this PID (legacy producer), or the path
+              could not be resolved. Not evidence either way.
+    """
+    try:
+        from gateway.shutdown_watchdog import get_loop_tick_socket_path
+
+        path = get_loop_tick_socket_path(home, pid)
+        if not path.is_socket():
+            return None
+    except Exception:
+        return None
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(max(float(timeout), 0.0))
+        sock.connect(str(path))
+        return sock.recv(1) == b"1"
+    except Exception:
+        # ECONNREFUSED (node with no listener), timeout (loop not answering),
+        # transient errors: the witness exists but is silent.
+        return False
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
 
 def probe_gateway_loop_liveness(
     pid: int,
     *,
     stale_after: float = DEFAULT_LOOP_LIVENESS_STALE_AFTER_S,
     home: Path | None = None,
+    tick_timeout: float = 1.0,
 ) -> str:
     """Classify a gateway PID's event loop as alive / wedged / unknown.
 
-    Reads the loop-liveness heartbeat file the gateway rewrites every 30s
-    while its loop is dispatching.  Never raises; any ambiguity (missing
-    file, unreadable JSON, PID mismatch) returns ``GATEWAY_LOOP_UNKNOWN``
-    so callers default to the safe graceful-drain path.
+    Two witnesses:
+
+    - the loop-tick socket (``state/gateway.loop-tick.<pid>.sock``): answered
+      by the gateway loop itself, so a reply is direct proof that the loop is
+      dispatching. It is never refreshed by the heartbeat executor thread and
+      never stalled by a filesystem that is slow to fsync.
+    - the heartbeat file (``state/gateway.heartbeat``): rewritten every 30s
+      on a thread since #90502, so freshness alone is no longer proof of loop
+      schedulability — a stalled write (measured at 112.6s max on the
+      incident box) or a saturated executor can age the file while the loop
+      runs, and a write can land after the loop froze.
+
+    A stale file classifies as ``wedged`` only when the producer declared the
+    tick socket armed (``loop_tick_socket: true`` in the payload) AND the
+    socket does not answer — both witnesses agree the loop stopped
+    scheduling. Any conflict or ambiguity returns ``unknown`` so callers keep
+    the safe graceful-drain path. Legacy producers (payload without the
+    flag) wrote the file on-loop, so their staleness remains proof and the
+    old contract is unchanged.
+
+    Never raises; any ambiguity (missing file, unreadable JSON, PID mismatch)
+    returns ``GATEWAY_LOOP_UNKNOWN``.
     """
     try:
         stale_budget = max(float(stale_after), 0.0)
@@ -437,10 +519,41 @@ def probe_gateway_loop_liveness(
         # No heartbeat for THIS process — old gateway version, still starting
         # up, or a stale file from a previous PID.  Not evidence of a wedge.
         return GATEWAY_LOOP_UNKNOWN
+
+    witness = _probe_loop_tick_socket(pid, home, timeout=tick_timeout)
+    if witness is True:
+        # The loop answered a ping — it is dispatching right now. A stale
+        # heartbeat file is a stalled write or a saturated executor, not a
+        # wedge (#90502).
+        return GATEWAY_LOOP_ALIVE
+
+    tick_armed = payload.get("loop_tick_socket", _LOOP_TICK_ABSENT)
     age = time.time() - mtime
-    if age > stale_budget:
+    if age <= stale_budget:
+        if witness is False:
+            # File fresh but the loop did not answer: an off-loop write can
+            # land after the loop froze, so a fresh file is not a liveness
+            # proof while the loop itself is silent.
+            return GATEWAY_LOOP_UNKNOWN
+        return GATEWAY_LOOP_ALIVE
+
+    # File is stale past the budget. The verdict now depends on what the
+    # producer promised about its witness:
+    if tick_armed is _LOOP_TICK_ABSENT:
+        # Legacy producer: the write ran on-loop, so staleness really does
+        # prove the loop stopped scheduling — old contract, unchanged.
         return GATEWAY_LOOP_WEDGED
-    return GATEWAY_LOOP_ALIVE
+    if tick_armed is not True:
+        # New producer whose witness could not be armed (bind failed): the
+        # write is off-loop, so staleness is NOT proof. Never escalate
+        # without a witness.
+        return GATEWAY_LOOP_UNKNOWN
+    if witness is False:
+        # Both witnesses agree the loop is not scheduling.
+        return GATEWAY_LOOP_WEDGED
+    # Armed producer but the socket is unreachable: ambiguity — never kill on
+    # it. The graceful drain path remains the backstop.
+    return GATEWAY_LOOP_UNKNOWN
 
 
 def _escalate_wedged_gateway(

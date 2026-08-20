@@ -9,14 +9,23 @@ seconds. A busy-but-alive gateway (fresh heartbeat) must keep the full drain
 path — including the in-flight cron drain floor from #86684.
 """
 
+import asyncio
 import json
 import os
+import socket
+import threading
 import time
+from unittest.mock import patch
 
 import pytest
 
 import hermes_cli.gateway as gateway_cli
-from gateway.shutdown_watchdog import get_loop_heartbeat_path, write_loop_heartbeat
+from gateway.shutdown_watchdog import (
+    get_loop_heartbeat_path,
+    get_loop_tick_socket_path,
+    loop_heartbeat_forever,
+    write_loop_heartbeat,
+)
 
 
 def _write_heartbeat(home, pid, age_s=0.0):
@@ -27,6 +36,34 @@ def _write_heartbeat(home, pid, age_s=0.0):
         stamp = time.time() - age_s
         os.utime(path, (stamp, stamp))
     return path
+
+
+def _mark_witness_flag(home, armed, age_s=0.0):
+    """Set ``loop_tick_socket`` on the heartbeat payload; re-stamp mtime."""
+    path = get_loop_heartbeat_path(home)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["loop_tick_socket"] = armed
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    if age_s:
+        stamp = time.time() - age_s
+        os.utime(path, (stamp, stamp))
+    return path
+
+
+def _silent_socket_node(path):
+    """Create a socket node at ``path`` that never answers.
+
+    Bind + listen, then close the listener WITHOUT unlinking: the node stays,
+    so a probe's connect() gets ECONNREFUSED — a witness that exists but is
+    silent, exactly like a dead listener (or a loop that stopped scheduling).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        srv.bind(str(path))
+        srv.listen(1)
+    finally:
+        srv.close()
 
 
 class TestProbeGatewayLoopLiveness:
@@ -261,3 +298,238 @@ class TestLaunchdRestartWedgedIntegration:
         gateway_cli.launchd_restart()
         assert "escalate" not in events
         assert ("drain", 4242, 195.0) in events
+
+
+class TestLoopTickWitness:
+    """Two-witness liveness (#90502 review).
+
+    The heartbeat write moved off-loop, so a stale file no longer proves a
+    wedged loop and a fresh file no longer proves an alive one. The loop
+    answers a UNIX socket instead; the probe only escalates when BOTH
+    witnesses agree the loop stopped scheduling.
+    """
+
+    def test_stalled_heartbeat_write_never_escalates_a_running_loop(
+        self, tmp_path, monkeypatch
+    ):
+        """Producer + consumer composition.
+
+        While the heartbeat write is stalled longer than the stale budget, a
+        loop that demonstrably keeps dispatching must probe ALIVE — and a
+        restart path fed by the real probe must take the graceful drain,
+        never the bounded escalation. This is the exact false-positive the
+        review called out: the measured fsync stall (112.6s max) exceeds the
+        90s destructive-classifier threshold.
+        """
+        pid = os.getpid()
+        block_s = 1.5
+        stale_after = 1.0
+
+        # First write lands immediately; every later write stalls like an
+        # fsync on the incident filesystem, so the file ages past the budget
+        # while the loop keeps running.
+        def stalling_write(**_kwargs):
+            if not get_loop_heartbeat_path(tmp_path).exists():
+                return write_loop_heartbeat(**_kwargs)
+            time.sleep(block_s)
+            return write_loop_heartbeat(**_kwargs)
+
+        errors = []
+
+        async def producer() -> None:
+            with patch(
+                "gateway.shutdown_watchdog.write_loop_heartbeat", stalling_write
+            ):
+                task = asyncio.create_task(
+                    loop_heartbeat_forever(interval_s=1.0, home=tmp_path)
+                )
+                try:
+                    # One interval (1.0s) elapses, the second write starts and
+                    # stalls; 1.35s in the file is stale but the loop ticks.
+                    await asyncio.sleep(1.35)
+                finally:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
+        def run_producer() -> None:
+            try:
+                asyncio.run(producer())
+            except Exception as exc:  # surfaced via errors after join
+                errors.append(exc)
+
+        thread = threading.Thread(target=run_producer, daemon=True)
+        thread.start()
+        try:
+            sock_path = get_loop_tick_socket_path(tmp_path, pid)
+            deadline = time.monotonic() + 5.0
+            while not sock_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert sock_path.exists(), "producer never armed the tick socket"
+
+            hb_path = get_loop_heartbeat_path(tmp_path)
+            deadline = time.monotonic() + 5.0
+            while True:
+                try:
+                    age = time.time() - hb_path.stat().st_mtime
+                except FileNotFoundError:
+                    # The socket is armed before the first write lands; the
+                    # file appears a tick later.
+                    age = 0.0
+                if age > stale_after:
+                    break
+                assert time.monotonic() < deadline, "heartbeat never went stale"
+                time.sleep(0.02)
+
+            # The file is stale but the loop answers: ALIVE, not WEDGED.
+            assert (
+                gateway_cli.probe_gateway_loop_liveness(
+                    pid, home=tmp_path, stale_after=stale_after, tick_timeout=0.25
+                )
+                == gateway_cli.GATEWAY_LOOP_ALIVE
+            )
+
+            # The restart path fed by the REAL probe must drain, not escalate.
+            events = []
+            monkeypatch.setattr(
+                gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway"
+            )
+            monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+            monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 180.0)
+            monkeypatch.setattr(
+                "gateway.status.get_running_pid", lambda *a, **k: pid
+            )
+            monkeypatch.setattr(
+                gateway_cli, "_request_gateway_self_restart", lambda pid: False
+            )
+            monkeypatch.setattr(
+                gateway_cli,
+                "_escalate_wedged_gateway",
+                lambda pid, **kw: events.append("escalate") or True,
+            )
+            monkeypatch.setattr(
+                gateway_cli,
+                "terminate_pid",
+                lambda pid, force=False: events.append(("kill" if force else "term", pid)),
+            )
+            monkeypatch.setattr(
+                gateway_cli,
+                "_wait_for_gateway_exit",
+                lambda timeout, force_after=None: events.append(("drain", timeout))
+                or True,
+            )
+            monkeypatch.setattr(
+                gateway_cli.subprocess,
+                "run",
+                lambda *a, **k: events.append("kickstart")
+                or __import__("types").SimpleNamespace(
+                    returncode=0, stdout="", stderr=""
+                ),
+            )
+            monkeypatch.setattr(
+                gateway_cli, "_clear_launchd_unsupported_marker", lambda: None
+            )
+            # The real probe resolves the state dir through this hook.
+            monkeypatch.setattr(
+                "gateway.shutdown_watchdog._process_hermes_home", lambda: tmp_path
+            )
+            gateway_cli.launchd_restart()
+            assert "escalate" not in events
+            assert ("drain", 180.0) in events
+        finally:
+            thread.join(timeout=5.0)
+            assert not errors, errors
+
+    def test_off_loop_completion_cannot_manufacture_fresh_liveness(self, tmp_path):
+        """A write landing after the loop froze must not look alive.
+
+        File fresh (a late off-loop write completed) + loop silent: the probe
+        must NOT return ALIVE — the loop itself never answered, so freshness
+        is not a liveness proof. UNKNOWN keeps the safe drain path while
+        denying the false-fresh window the review described.
+        """
+        pid = 4242
+        _silent_socket_node(get_loop_tick_socket_path(tmp_path, pid))
+        _write_heartbeat(tmp_path, pid, age_s=5.0)
+        _mark_witness_flag(tmp_path, armed=True)
+        assert (
+            gateway_cli.probe_gateway_loop_liveness(
+                pid, home=tmp_path, tick_timeout=0.2
+            )
+            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+        )
+
+    def test_true_wedge_requires_both_witnesses_to_agree(self, tmp_path):
+        """Stale file + armed but silent socket: both agree, so WEDGED.
+
+        The destructive path must still exist for genuinely dead loops — a
+        frozen loop stops answering the socket, and the file goes stale.
+        """
+        pid = 4242
+        _silent_socket_node(get_loop_tick_socket_path(tmp_path, pid))
+        _write_heartbeat(tmp_path, pid, age_s=600.0)
+        _mark_witness_flag(tmp_path, armed=True, age_s=600.0)
+        assert (
+            gateway_cli.probe_gateway_loop_liveness(
+                pid, home=tmp_path, tick_timeout=0.2
+            )
+            == gateway_cli.GATEWAY_LOOP_WEDGED
+        )
+
+    def test_armed_witness_unreachable_is_unknown(self, tmp_path):
+        """Producer claims the witness is armed but no node exists: ambiguity.
+
+        Never kill on it — the graceful drain remains the backstop.
+        """
+        pid = 4242
+        _write_heartbeat(tmp_path, pid, age_s=600.0)
+        _mark_witness_flag(tmp_path, armed=True, age_s=600.0)
+        assert (
+            gateway_cli.probe_gateway_loop_liveness(
+                pid, home=tmp_path, tick_timeout=0.2
+            )
+            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+        )
+
+    def test_unarmed_witness_disables_stale_escalation(self, tmp_path):
+        """New producer whose bind failed: staleness is NOT proof.
+
+        The write is off-loop, so the file can age while the loop runs; with
+        no witness, a stale file must never escalate.
+        """
+        pid = 4242
+        _write_heartbeat(tmp_path, pid, age_s=600.0)
+        _mark_witness_flag(tmp_path, armed=False, age_s=600.0)
+        assert (
+            gateway_cli.probe_gateway_loop_liveness(
+                pid, home=tmp_path, tick_timeout=0.2
+            )
+            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+        )
+
+    def test_legacy_payload_keeps_single_witness_contract(self, tmp_path):
+        """No witness flag = on-loop writer: staleness stays proof.
+
+        Old gateways never moved the write off-loop, so their stale file
+        still means a dead loop — the legacy WEDGED verdict is unchanged.
+        """
+        pid = 4242
+        _write_heartbeat(tmp_path, pid, age_s=600.0)
+        assert (
+            gateway_cli.probe_gateway_loop_liveness(pid, home=tmp_path)
+            == gateway_cli.GATEWAY_LOOP_WEDGED
+        )
+        # And a fresh legacy file stays safe even if a dead-listener node
+        # exists for the PID (leftover from a newer process): the silent
+        # socket denies ALIVE, and UNKNOWN never escalates — the drain path
+        # keeps the full budget either way.
+        _write_heartbeat(tmp_path, pid, age_s=5.0)
+        _silent_socket_node(get_loop_tick_socket_path(tmp_path, pid))
+        assert (
+            gateway_cli.probe_gateway_loop_liveness(
+                pid, home=tmp_path, tick_timeout=0.2
+            )
+            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+        )

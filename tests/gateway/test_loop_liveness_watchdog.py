@@ -382,3 +382,24 @@ def test_heartbeat_write_is_awaited_so_a_frozen_loop_still_goes_stale():
         "the heartbeat write is fire-and-forget; a frozen loop would keep the "
         "file fresh and the staleness signal would be lost"
     )
+
+
+def test_loop_scheduling_witness_is_served_by_the_loop_itself():
+    """The tick socket must be armed on the loop, never in a thread.
+
+    The two-witness contract in ``probe_gateway_loop_liveness`` rests on the
+    socket being answered only while the loop is actually dispatching. If the
+    server ever moved into the heartbeat's executor thread, a wedged loop
+    could keep answering pings (same class of lie as a fire-and-forget file
+    write) and the interlock would be void.
+    """
+    src = pathlib.Path(
+        inspect.getsourcefile(loop_heartbeat_forever) or ""
+    ).read_text()
+    body = src[src.index("async def loop_heartbeat_forever("):]
+    body = body[: body.index("\ndef ") if "\ndef " in body else len(body)]
+    # Awaited directly on the loop task: a coroutine cannot run inside a
+    # thread, so an awaited start_unix_server is structurally loop-owned.
+    assert "await asyncio.start_unix_server(" in body, (
+        "the loop-scheduling witness socket is not armed by the loop task"
+    )

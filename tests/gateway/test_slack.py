@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import importlib
 from importlib.machinery import PathFinder
+import logging
 import os
 import socket
 import sys
@@ -2558,6 +2559,32 @@ class TestReactions:
             channel="C123", timestamp="ts1", name="eyes"
         )
 
+
+    @pytest.mark.asyncio
+    async def test_missing_reaction_scope_warns_once(self, adapter, caplog):
+        class MissingScopeError(Exception):
+            response = {
+                "error": "missing_scope",
+                "needed": "reactions:write",
+            }
+
+        adapter._app.client.reactions_add = AsyncMock(
+            side_effect=MissingScopeError("missing_scope")
+        )
+        caplog.set_level(logging.WARNING, logger="plugins.platforms.slack.adapter")
+
+        await adapter._add_reaction("C123", "ts1", "eyes", "T123")
+        await adapter._add_reaction("C123", "ts2", "white_check_mark", "T123")
+
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        ]
+        assert len(warnings) == 1
+        assert "reactions:write" in warnings[0]
+        assert "hermes slack manifest --write" in warnings[0]
+        assert "reinstall" in warnings[0].lower()
 
     @pytest.mark.asyncio
     async def test_remove_reaction_calls_api(self, adapter):

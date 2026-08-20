@@ -126,7 +126,9 @@ class TestSlackFullManifest:
 
         assert "assistant_view" in manifest["features"]
         assert "agent_view" not in manifest["features"]
-        assert "assistant:write" in manifest["oauth_config"]["scopes"]["bot"]
+        bot_scopes = manifest["oauth_config"]["scopes"]["bot"]
+        assert "assistant:write" in bot_scopes
+        assert "reactions:write" in bot_scopes
         bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
         assert "assistant_thread_started" in bot_events
 
@@ -146,10 +148,14 @@ class TestSlackFullManifest:
         assert manifest["settings"]["socket_mode_enabled"] is True
         # Channel + DM scopes/events survive so the bot still works everywhere.
         bot_scopes = manifest["oauth_config"]["scopes"]["bot"]
-        for scope in ("commands", "channels:history", "groups:read", "im:history"):
+        for scope in (
+            "commands",
+            "channels:history",
+            "groups:read",
+            "im:history",
+            "reactions:write",
+        ):
             assert scope in bot_scopes
         bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
         for event in ("message.im", "message.channels", "message.groups", "app_mention"):
             assert event in bot_events
-
-

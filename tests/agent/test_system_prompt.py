@@ -116,6 +116,87 @@ class TestCodingContextBlock:
         assert "coding agent" not in _stable_prompt(agent)
 
 
+class TestExecutionGuidanceInjection:
+    """Injection gate for OPENAI_MODEL_EXECUTION_GUIDANCE via
+    ``agent.execution_guidance`` (auto/true/false/list).
+
+    Background — Composio agentic-eval traces (2026-08): the block was
+    historically fenced to gpt/codex/grok AND nested inside the
+    tool-use-enforcement branch, so DeepSeek/Kimi/Qwen-class models
+    received no execution discipline at all. The gate is now independent
+    of tool_use_enforcement and defaults to a broader family list.
+    """
+
+    def _prompt(self, model, execution_guidance="auto", *,
+                tool_use_enforcement=False,
+                valid_tool_names=("terminal", "read_file")):
+        agent = _make_agent(
+            valid_tool_names=list(valid_tool_names),
+            model=model,
+            _tool_use_enforcement=tool_use_enforcement,
+            _execution_guidance=execution_guidance,
+        )
+        return _stable_prompt(agent)
+
+    def test_deepseek_gets_guidance_by_default(self):
+        stable = self._prompt("deepseek/deepseek-v4-pro")
+        assert "Execution discipline" in stable
+        assert "<external_state_verification>" in stable
+
+    def test_kimi_gets_guidance_by_default(self):
+        assert "Execution discipline" in self._prompt("moonshotai/kimi-k3")
+
+    def test_qwen_glm_minimax_mimo_mistral_get_guidance_by_default(self):
+        for model in ("qwen/qwen-3-max", "z-ai/glm-5.2",
+                      "minimax/minimax-m2", "xiaomi/mimo-v2",
+                      "mistralai/mistral-large-3"):
+            assert "Execution discipline" in self._prompt(model), model
+
+    def test_gpt_still_gets_guidance(self):
+        assert "Execution discipline" in self._prompt("openai/gpt-5.5")
+
+    def test_grok_still_gets_guidance(self):
+        assert "Execution discipline" in self._prompt("xai/grok-4")
+
+    def test_independent_of_tool_use_enforcement(self):
+        # The gate must not require tool-use enforcement to be on.
+        stable = self._prompt("deepseek/deepseek-v4-flash",
+                              tool_use_enforcement=False)
+        assert "Execution discipline" in stable
+        assert "Tool-use enforcement" not in stable
+
+    def test_claude_does_not_get_guidance_by_default(self):
+        assert "Execution discipline" not in self._prompt(
+            "anthropic/claude-opus-4.8")
+
+    def test_gemini_does_not_get_guidance_by_default(self):
+        assert "Execution discipline" not in self._prompt(
+            "google/gemini-2.5-pro")
+
+    def test_config_false_suppresses(self):
+        assert "Execution discipline" not in self._prompt(
+            "openai/gpt-5.5", execution_guidance=False)
+        assert "Execution discipline" not in self._prompt(
+            "deepseek/deepseek-v4-pro", execution_guidance="off")
+
+    def test_config_true_forces_for_any_model(self):
+        assert "Execution discipline" in self._prompt(
+            "anthropic/claude-opus-4.8", execution_guidance=True)
+
+    def test_config_list_matches_substring(self):
+        stable = self._prompt("mycorp/custom-llm-7b",
+                              execution_guidance=["custom-llm", "gpt"])
+        assert "Execution discipline" in stable
+
+    def test_config_list_non_match_suppresses(self):
+        assert "Execution discipline" not in self._prompt(
+            "openai/gpt-5.5", execution_guidance=["deepseek"])
+
+    def test_no_tools_no_guidance(self):
+        assert "Execution discipline" not in self._prompt(
+            "deepseek/deepseek-v4-pro", valid_tool_names=())
+
+
 class TestNamedProfileHintIntegration:
     """The same defect through the REAL resolution chain (#72894).
 

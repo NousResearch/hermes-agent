@@ -1143,9 +1143,34 @@ def memory_tool(
     return json.dumps(result, ensure_ascii=False)
 
 
+def builtin_memory_stores_enabled() -> bool:
+    """Return whether either built-in store (MEMORY.md / USER.md) is enabled.
+
+    ``agent_init`` only builds a ``MemoryStore`` when at least one of
+    ``memory.memory_enabled`` / ``memory.user_profile_enabled`` is true, so with
+    both off the tool dispatches against ``store=None`` and every call fails
+    with "Memory is not available".
+
+    Fails open when config can't be read: an unreadable config must not strip a
+    tool that would otherwise work.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        section = (load_config_readonly() or {}).get("memory")
+        if not isinstance(section, dict):
+            return True
+        return bool(section.get("memory_enabled", True)) or bool(
+            section.get("user_profile_enabled", True)
+        )
+    except Exception:
+        logger.debug("Could not read memory config for availability", exc_info=True)
+        return True
+
+
 def check_memory_requirements() -> bool:
-    """Memory tool has no external requirements -- always available."""
-    return True
+    """Available unless both built-in memory stores are disabled in config."""
+    return builtin_memory_stores_enabled()
 
 
 def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:

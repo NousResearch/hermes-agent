@@ -18,6 +18,7 @@ import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { KbdCombo } from '@/components/ui/kbd'
 import { getHermesConfigRecord, listAllProfileSessions } from '@/hermes'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
@@ -248,8 +249,8 @@ const rankGroups = (groups: PaletteGroup[], search: string): PaletteGroup[] => {
     .map(entry => entry.group)
 }
 
-// cmdk selection values must be unique; labels alone can repeat (the same
-// theme lists under both Light and Dark). The id suffix disambiguates.
+// cmdk selection values must be unique; labels alone can repeat (a settings
+// field and a session can share a title). The id suffix disambiguates.
 const paletteValue = (item: PaletteItem): string => `${item.label}\u0001${item.id}`
 
 const EMPTY_GROUPS: PaletteGroup[] = []
@@ -558,6 +559,16 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
 
   const { availableThemes, clearThemePreview, mode, previewTheme, resolvedMode, setMode, setTheme, themeName } =
     useTheme()
+
+  // Mode rows preview like theme rows do: paint the committed skin at the
+  // highlighted brightness. `system` has to be resolved here — previewTheme
+  // paints a concrete light/dark.
+  const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
+
+  const resolveThemeMode = useCallback(
+    (target: ThemeMode): 'light' | 'dark' => (target === 'system' ? (systemDark ? 'dark' : 'light') : target),
+    [systemDark]
+  )
 
   const [search, setSearch] = useState('')
   const [page, setPage] = useState<string | null>(null)
@@ -1148,6 +1159,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         keepOpen: true,
         keywords: ['appearance', 'color mode', 'brightness', entry.mode, t.settings.modeOptions[entry.mode].label],
         label: t.settings.modeOptions[entry.mode].label,
+        onHighlight: () => previewTheme(themeName, resolveThemeMode(entry.mode)),
         run: () => setMode(entry.mode)
       }))
     })
@@ -1232,6 +1244,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     mode,
     previewTheme,
     resolvedMode,
+    resolveThemeMode,
     search,
     sessions,
     setMode,
@@ -1325,27 +1338,51 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
               }
             ]
           },
-          // Built-ins and imported families list under the mode(s) they support;
-          // picking sets skin + mode at once. A multi-variant import (GitHub,
-          // Solarized) appears in both groups and switches variants with the mode.
-          ...(['light', 'dark'] as const).map(groupMode => ({
-            heading: groupMode === 'light' ? t.settings.modeOptions.light.label : t.settings.modeOptions.dark.label,
-            items: availableThemes
-              .filter(theme => themeSupportsMode(theme.name, groupMode))
-              .map(theme => ({
-                active: themeName === theme.name && resolvedMode === groupMode,
-                icon: groupMode === 'light' ? Sun : Moon,
-                id: `theme-${theme.name}-${groupMode}`,
+          // Brightness lives with the palettes: one mode toggle for the whole
+          // list instead of splitting every theme across a Light and a Dark group.
+          {
+            heading: t.settings.appearance.colorMode,
+            items: THEME_MODES.map(entry => ({
+              active: mode === entry.mode,
+              icon: entry.icon,
+              id: `theme-mode-${entry.mode}`,
+              keepOpen: true,
+              keywords: ['appearance', 'brightness', 'color mode', t.settings.modeOptions[entry.mode].label],
+              label: t.settings.modeOptions[entry.mode].label,
+              onHighlight: () => previewTheme(themeName, resolveThemeMode(entry.mode)),
+              run: () => setMode(entry.mode)
+            }))
+          },
+          // Every palette once, applied on top of the selected mode. An import
+          // that only ships one variant (Dracula) flips the mode to the side it
+          // can actually render.
+          {
+            heading: t.settings.appearance.themeTitle,
+            items: availableThemes.map(theme => {
+              const previewMode = themeSupportsMode(theme.name, resolvedMode)
+                ? resolvedMode
+                : resolvedMode === 'dark'
+                  ? 'light'
+                  : 'dark'
+
+              return {
+                active: themeName === theme.name,
+                icon: Palette,
+                id: `theme-${theme.name}`,
                 keepOpen: true,
-                keywords: ['theme', 'appearance', 'palette', groupMode, theme.label, theme.description ?? ''],
+                keywords: ['theme', 'appearance', 'palette', theme.label, theme.description ?? ''],
                 label: theme.label,
-                onHighlight: () => previewTheme(theme.name, groupMode),
+                onHighlight: () => previewTheme(theme.name, previewMode),
                 run: () => {
                   setTheme(theme.name)
-                  setMode(groupMode)
+
+                  if (previewMode !== resolvedMode) {
+                    setMode(previewMode)
+                  }
                 }
-              }))
-          }))
+              }
+            })
+          }
         ]
       },
       'color-mode': {
@@ -1361,6 +1398,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
               keepOpen: true,
               keywords: ['appearance', 'brightness', t.settings.modeOptions[entry.mode].label],
               label: t.settings.modeOptions[entry.mode].label,
+              onHighlight: () => previewTheme(themeName, resolveThemeMode(entry.mode)),
               run: () => setMode(entry.mode)
             }))
           }
@@ -1387,7 +1425,18 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         groups: settingsPageGroups
       }
     }),
-    [availableThemes, mode, previewTheme, resolvedMode, setMode, setTheme, settingsPageGroups, t, themeName]
+    [
+      availableThemes,
+      mode,
+      previewTheme,
+      resolvedMode,
+      resolveThemeMode,
+      setMode,
+      setTheme,
+      settingsPageGroups,
+      t,
+      themeName
+    ]
   )
 
   const activePage = page ? subPages[page] : null

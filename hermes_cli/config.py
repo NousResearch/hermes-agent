@@ -15,6 +15,7 @@ This module provides:
 """
 
 import copy
+from hermes_cli.cli_output import line_input
 import json
 import logging
 import os
@@ -2223,25 +2224,21 @@ def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
     sys.stderr.write("\n".join(lines) + "\n\n")
 
 
-def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> None:
+def warn_deprecated_cwd_env_vars() -> None:
     """Warn if MESSAGING_CWD or TERMINAL_CWD is set in .env instead of config.yaml.
 
     These env vars are deprecated — the canonical setting is terminal.cwd
-    in config.yaml.  Prints a migration hint to stderr.
+    in config.yaml.  Read the file rather than ``os.environ`` because runtime
+    config bridges and session restoration legitimately set ``TERMINAL_CWD``.
+    Prints a migration hint to stderr.
     """
-    messaging_cwd = os.environ.get("MESSAGING_CWD")
-    terminal_cwd_env = os.environ.get("TERMINAL_CWD")
+    try:
+        env_map = load_env()
+    except Exception:
+        return
 
-    if config is None:
-        try:
-            config = load_config()
-        except Exception:
-            return
-
-    terminal_cfg = config.get("terminal", {})
-    config_cwd = terminal_cfg.get("cwd", ".") if isinstance(terminal_cfg, dict) else "."
-    # Only warn if config.yaml doesn't have an explicit path
-    config_has_explicit_cwd = config_cwd not in {".", "auto", "cwd", ""}
+    messaging_cwd = str(env_map.get("MESSAGING_CWD") or "").strip()
+    terminal_cwd_env = str(env_map.get("TERMINAL_CWD") or "").strip()
 
     lines: list[str] = []
     if messaging_cwd:
@@ -2249,8 +2246,7 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
             f"  \033[33m⚠\033[0m MESSAGING_CWD={messaging_cwd} found in .env — "
             f"this is deprecated."
         )
-    if terminal_cwd_env and not config_has_explicit_cwd:
-        # TERMINAL_CWD in env but not from config bridge — likely from .env
+    if terminal_cwd_env:
         lines.append(
             f"  \033[33m⚠\033[0m TERMINAL_CWD={terminal_cwd_env} found in .env — "
             f"this is deprecated."
@@ -2438,7 +2434,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if var.get("password"):
                 value = masked_secret_prompt(f"  {var['prompt']}: ")
             else:
-                value = input(f"  {var['prompt']}: ").strip()
+                value = line_input(f"  {var['prompt']}: ").strip()
             
             if value:
                 save_env_value(var["name"], value)
@@ -2491,7 +2487,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                             f"  {info.get('prompt', name)} (Enter to skip): "
                         )
                     else:
-                        value = input(f"  {info.get('prompt', name)} (Enter to skip): ").strip()
+                        value = line_input(f"  {info.get('prompt', name)} (Enter to skip): ").strip()
                     if value:
                         save_env_value(name, value)
                         results["env_added"].append(name)
@@ -2542,7 +2538,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             for var in missing_skill_config:
                 default = var.get("default", "")
                 default_hint = f" (default: {default})" if default else ""
-                value = input(f"  {var['prompt']}{default_hint}: ").strip()
+                value = line_input(f"  {var['prompt']}{default_hint}: ").strip()
                 if not value and default:
                     value = str(default)
                 if value:
@@ -3080,6 +3076,83 @@ def is_provider_enabled(provider_cfg: Optional[Dict[str, Any]]) -> bool:
     if isinstance(flag, str):
         return flag.strip().lower() not in {"false", "0", "no", "off"}
     return bool(flag)
+
+
+# Sentinel used when the user requests an unlimited turn budget.
+# ``sys.maxsize`` (9,223,372,036,854,775,807) is chosen so it:
+#   - survives the ``str() → int()`` round-trip through the HERMES_MAX_ITERATIONS
+#     env-var bridge in gateway/run.py,
+#   - works correctly in every ``<``, ``>=``, and ``remaining = max - used``
+#     comparison in agent/iteration_budget.py and agent/conversation_loop.py
+#     without requiring those call sites to learn about a special "unlimited"
+#     value, and
+#   - is large enough that no real conversation will ever reach it (a turn
+#     takes seconds; 9.2e18 turns would take ~10^11 years).
+TURN_LIMIT_UNLIMITED = sys.maxsize
+
+# String spellings that mean "no limit".  Lowercased, whitespace-stripped
+# before comparison so ``"None"``, ``" unlimited "`` etc. all match.
+_UNLIMITED_SPELLINGS = frozenset({
+    "none", "null", "unlimited", "infinite", "infinity", "inf",
+    "∞", "-1", "0",
+})
+
+
+def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
+    """Normalize a raw ``agent.max_turns`` value into an int iteration cap.
+
+    Accepts:
+      - ``int`` / ``float`` → ``int(raw)`` (floats truncated; values ≤ 0 mean
+        "no limit" → :data:`TURN_LIMIT_UNLIMITED`).
+      - numeric string (``"120"``) → ``int(raw)``.
+      - ``"none"`` / ``"null"`` / ``"unlimited"`` / ``"infinite"`` /
+        ``"infinity"`` / ``"inf"`` / ``"∞"`` / ``"-1"`` / ``"0"``
+        (case-insensitive, whitespace-tolerant) → :data:`TURN_LIMIT_UNLIMITED`.
+      - YAML ``None`` / ``null`` / absent value → ``default`` (which is itself
+        :data:`TURN_LIMIT_UNLIMITED` — max_turns is unlimited by default).
+      - Anything unparseable → ``default`` (with a debug log).
+
+    The returned int is always ≥ 1, so loop conditions like
+    ``while api_call_count < agent.max_iterations`` behave correctly even when
+    the default (unlimited) path is taken.
+
+    This is the single normalization point for the turn-limit value type.
+    Config-reading sites (cli.py, gateway/run.py, cron/scheduler.py) call this
+    instead of bare ``int(...)``, so ``agent.max_turns: none`` in config.yaml
+    becomes a first-class supported spelling of "unlimited". max_turns is
+    unlimited unless the user sets an explicit positive integer cap.
+    """
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        # bool is a subclass of int; reject it explicitly so True/False don't
+        # silently become 1/0.
+        return default
+    if isinstance(raw, (int, float)):
+        n = int(raw)
+        if n <= 0:
+            return TURN_LIMIT_UNLIMITED
+        return n
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if not s:
+            return default
+        if s in _UNLIMITED_SPELLINGS:
+            return TURN_LIMIT_UNLIMITED
+        try:
+            n = int(s)
+        except ValueError:
+            try:
+                n = int(float(s))
+            except ValueError:
+                logger.debug("resolve_turn_limit: unparseable value %r → default %d", raw, default)
+                return default
+        if n <= 0:
+            return TURN_LIMIT_UNLIMITED
+        return n
+    # Unknown type (list, dict, …) — don't crash the agent over a bad config.
+    logger.debug("resolve_turn_limit: unsupported type %s (%r) → default %d", type(raw).__name__, raw, default)
+    return default
 
 
 def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> Any:
@@ -5281,6 +5354,32 @@ def _looks_structured_value(value: str) -> bool:
     return False
 
 
+def _coerce_int(value: str):
+    """Return int(value) for a clean integer literal, else None.
+
+    Uses ``int()`` so signs, surrounding whitespace, and underscores parse —
+    unlike ``str.isdigit()`` which rejects "-5"/" 5 ". Rejects float-looking
+    strings (that's ``_coerce_float``'s job) and bools masquerading as ints.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value: str):
+    """Return float(value) for a clean float literal, else None."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    # Reject NaN/inf spellings — they are almost never intended config values
+    # and round-trip confusingly through YAML.
+    if f != f or f in (float("inf"), float("-inf")):
+        return None
+    return f
+
+
 def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value.
 
@@ -5298,6 +5397,21 @@ def set_config_value(key: str, value: str, force: bool = False):
     if is_managed():
         managed_error("set configuration values")
         return
+    # Reject malformed dotted keys with empty segments (leading/trailing/
+    # double dots). ``"agent."`` split to ["agent", ""] and _set_nested wrote
+    # config["agent"][""] = ..., polluting a live schema section with a
+    # garbage empty-string key that round-tripped through get (CFG-04).
+    if key != key.strip() or not key.strip():
+        print(f"✗ Invalid config key: {key!r} (empty or surrounding whitespace).",
+              file=sys.stderr)
+        sys.exit(1)
+    if any(seg == "" for seg in key.split(".")):
+        print(
+            f"✗ Invalid config key: {key!r} — contains an empty path segment "
+            "(leading, trailing, or doubled '.').",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     # Managed scope guard (D2): a key pinned by the managed layer cannot be set by
     # the user — the next load would override it anyway. Hard-reject and name the
     # source. Distinct from is_managed() above (the package-manager write-lock).
@@ -5363,14 +5477,25 @@ def set_config_value(key: str, value: str, force: bool = False):
     # retain the historical best-effort coercion behavior.
     coerced_value: Any = value
     if not isinstance(_default_value_for_key(key), str):
-        if value.lower() in {'true', 'yes', 'on'}:
+        _stripped = value.strip()
+        _lower = _stripped.lower()
+        if _lower in {'true', 'yes', 'on'}:
             coerced_value = True
-        elif value.lower() in {'false', 'no', 'off'}:
+        elif _lower in {'false', 'no', 'off'}:
             coerced_value = False
-        elif value.isdigit():
-            coerced_value = int(value)
-        elif value.replace('.', '', 1).isdigit():
-            coerced_value = float(value)
+        elif _lower in {'null', 'none', '~'}:
+            # YAML null / "off" state. Many DEFAULT_CONFIG leaves default to
+            # None and are documented as "null/absent = off"; without this,
+            # ``config set X null`` stored the truthy string "null" and the
+            # feature could never be cleared via set (CFG-05).
+            coerced_value = None
+        elif _coerce_int(_stripped) is not None:
+            # int() handles signs, surrounding whitespace, and underscores —
+            # unlike the old ``value.isdigit()`` which rejected "-5" and " 5 "
+            # and silently stored them as strings on int-typed keys (CFG-02).
+            coerced_value = _coerce_int(_stripped)
+        elif _coerce_float(_stripped) is not None:
+            coerced_value = _coerce_float(_stripped)
         elif _looks_structured_value(value):
             # List/mapping literals -- e.g.
             #   hermes config set platform_toolsets.line '["file","web"]'

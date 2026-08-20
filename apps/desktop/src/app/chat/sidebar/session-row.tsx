@@ -30,6 +30,7 @@ import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
+import { $openStoredSessionIds } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
 import { $todoProgressBySession } from '@/store/todos'
 
@@ -173,6 +174,10 @@ function SidebarSessionRowImpl({
   // those branches should repaint.
   const prKey = sessionPrKey(session)
   const pr = useStoreSelector($pullRequestsByBranch, prs => (rowMeta.includes('pr') && prKey ? prs[prKey] : undefined))
+  // Open in a pane, but not the focused one. A selector rather than a prop:
+  // it reaches all four row render paths at once, the set only changes when a
+  // tile opens or closes, and the boolean bails every unaffected row out.
+  const openUnfocused = useStoreSelector($openStoredSessionIds, open => !isSelected && open.has(session.id))
   const totalTokens = session.input_tokens + session.output_tokens
   const cost = sessionCostUsd(session)
 
@@ -352,6 +357,10 @@ function SidebarSessionRowImpl({
           !card && density !== 'compact' && 'min-h-[2.75rem]',
           !card && density === 'detailed' && 'min-h-[3.875rem]',
           isSelected && 'bg-(--ui-row-active-background)',
+          // Open in another pane: the SAME band, just weaker. Its own mixed
+          // token rather than row opacity — dimming the whole row would take
+          // the title and the status dot down with it.
+          openUnfocused && 'bg-(--ui-row-open-background)',
           liveTurn && 'text-foreground',
           // Opaque surface while lifted so the dragged row erases what's under
           // it (translucency let the rows below bleed through). data-glass-opaque
@@ -396,9 +405,13 @@ function SidebarSessionRowImpl({
         <SidebarRowBody
           // Every trailing figure lives in the actions slot, which the row
           // measures — so the title needs a gap from it and nothing else. Hover
-          // changes what you can see in that slot, never how wide it is.
+          // changes what you can see in that slot, never how wide it is. The
+          // card has no such column to clear (its cluster is INSIDE the body,
+          // ending at the shell's own trailing inset), and keeping the gap
+          // would pull the header in past every line below it.
           className={cn(
-            'z-0 pr-2',
+            'z-0',
+            card && 'pr-0',
             branchStem && 'pl-3.5',
             // The card is a grid with ONE spacing knob: --card-gap. Every row
             // gap is gap-y-(--card-gap); the title/preview group opts out

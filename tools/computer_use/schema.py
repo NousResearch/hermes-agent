@@ -22,7 +22,11 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
         "Preferred workflow: call with "
         "action='capture' (mode='som' gives numbered element overlays), "
         "then click by `element` index for reliability. Pixel coordinates "
-        "are supported for models trained on them. Works on any window — "
+        "are supported for models trained on them. Image captures include a "
+        "shareable `screenshot_path`; when the user asks to receive the image "
+        "and the current surface supports attachments, deliver that file using "
+        "the platform's native MEDIA attachment syntax. Do not automatically "
+        "send screenshots used only for computer control. Works on any window — "
         "hidden, minimized, or behind another app. Requires cua-driver to "
         "be installed."
     ),

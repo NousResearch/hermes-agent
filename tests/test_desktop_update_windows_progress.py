@@ -39,7 +39,11 @@ def test_progress_advances_while_the_orchestrator_blocks(tmp_path: Path) -> None
     env = os.environ.copy()
     env["TEMP"] = str(tmp_path)
     env["TMP"] = str(tmp_path)
-    env["HERMES_SELFTEST_HOLD_SECONDS"] = "4"
+    # Generous hold: the assertions below must both land INSIDE it. 4s was
+    # too tight for a slow runner — the second sample slid past the hold,
+    # caught the cleared terminal state, and failed '' == 'Testing quiet
+    # update' (PR #90358 rerun, Aug 2026).
+    env["HERMES_SELFTEST_HOLD_SECONDS"] = "10"
 
     with output_path.open("wb") as output:
         process = subprocess.Popen(
@@ -72,7 +76,20 @@ def test_progress_advances_while_the_orchestrator_blocks(tmp_path: Path) -> None
             time.sleep(0.1)
 
         assert shim_url, output_path.read_text(encoding="utf-8", errors="replace")
+
+        # The URL prints BEFORE the orchestrator publishes its held stage —
+        # sampling immediately races the publish and can catch the page's
+        # boot default instead ('Hermes will open once done.' ==
+        # 'Testing quiet update', PR #90358 first run). Wait for the held
+        # stage to actually land, THEN start the stability window.
+        held_stage = "Testing quiet update"
+        publish_deadline = time.monotonic() + 10
         first = _read_progress(shim_url)
+        while first.get("message") != held_stage and time.monotonic() < publish_deadline:
+            time.sleep(0.1)
+            first = _read_progress(shim_url)
+        assert first["message"] == held_stage, first
+
         time.sleep(1.5)
         second = _read_progress(shim_url)
 

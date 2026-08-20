@@ -18,8 +18,11 @@ import { onComposerModelMenuRequest } from './focus'
 import { useComposerScope } from './scope'
 import type { ChatBarState } from './types'
 
+// `shrink` (not `shrink-0`) with a truncating label: the pill is the one
+// control in the row that can give width back continuously, so it absorbs the
+// squeeze between collapse stages instead of pushing Send past the edge.
 const PILL = cn(
-  'h-(--composer-control-size) max-w-40 shrink-0 gap-1 rounded-md px-2 text-xs font-normal',
+  'h-(--composer-control-size) min-w-0 max-w-40 shrink gap-1 rounded-md px-2 text-xs font-normal',
   'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
 )
 

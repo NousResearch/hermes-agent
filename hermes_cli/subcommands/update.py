@@ -51,6 +51,18 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help="Assume yes for interactive prompts (config migration, stash restore). API-key entry is skipped; run 'hermes config migrate' separately for those.",
     )
     update_parser.add_argument(
+        "--keep-stash",
+        action="store_true",
+        default=False,
+        help=(
+            "Do NOT re-apply local changes after the update. Uncommitted "
+            "changes are still stashed so the update can proceed, but they "
+            "stay parked in git stash instead of being restored onto the "
+            "updated code. Used by the desktop updater so local source edits "
+            "never silently ride along across updates."
+        ),
+    )
+    update_parser.add_argument(
         "--branch",
         default=None,
         metavar="NAME",

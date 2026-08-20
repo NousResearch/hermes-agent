@@ -193,7 +193,7 @@ def fake_subprocess_run(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
-    """Verifies the dirs + FIFO + modes the helper lays down."""
+    """Verifies the dirs + FIFO the helper lays down."""
     import stat
 
     from hermes_cli.service_manager import _seed_supervise_skeleton
@@ -206,9 +206,6 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     # Top-level event/ — s6-svlisten1 event subscription dir.
     event = svc_dir / "event"
     assert event.is_dir(), "missing top-level event/"
-    assert stat.S_IMODE(event.stat().st_mode) == 0o3730, (
-        f"event/ mode = {oct(event.stat().st_mode)}, want 03730"
-    )
 
     # supervise/ dir.
     supervise = svc_dir / "supervise"
@@ -218,7 +215,6 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     # supervise/event/.
     supervise_event = supervise / "event"
     assert supervise_event.is_dir(), "missing supervise/event/"
-    assert stat.S_IMODE(supervise_event.stat().st_mode) == 0o3730
 
     # supervise/control FIFO.
     control = supervise / "control"
@@ -227,6 +223,31 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
         "supervise/control must be a FIFO"
     )
     assert stat.S_IMODE(control.stat().st_mode) == 0o660
+
+
+@pytest.mark.linux_only
+def test_seed_supervise_skeleton_sets_setgid_on_event_dirs(tmp_path) -> None:
+    """The event dirs carry setgid so s6-supervise's EEXIST path leaves them alone.
+
+    Linux-only because the assertion is about what ``chmod`` does, and that
+    differs by kernel: BSD (macOS) silently drops ``S_ISGID`` from a directory
+    unless the caller is root or a member of the directory's group, so the same
+    correct helper produces 01730 there. s6 only ever runs on Linux — inside
+    s6-overlay's stage2 as root with umask 0 — so Linux is the host whose
+    answer matters.
+    """
+    import stat
+
+    from hermes_cli.service_manager import _seed_supervise_skeleton
+
+    svc_dir = tmp_path / "gateway-foo"
+    svc_dir.mkdir()
+
+    _seed_supervise_skeleton(svc_dir)
+
+    for rel in ("event", "supervise/event"):
+        mode = stat.S_IMODE((svc_dir / rel).stat().st_mode)
+        assert mode == 0o3730, f"{rel}/ mode = {oct(mode)}, want 0o3730"
 
 
 

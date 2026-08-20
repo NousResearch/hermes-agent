@@ -207,6 +207,58 @@ def test_relay_metadata_preserves_provider_name():
     }
 
 
+def test_provider_request_overlays_interceptor_added_codex_field():
+    """Relay rewrites may introduce provider fields absent from the original."""
+    original = {"model": "gpt-5.6-sol", "input": "hello"}
+    relay_request_body = relay_llm._relay_request_body(
+        original,
+        {"api_mode": "codex_responses"},
+    )
+    intercepted = SimpleNamespace(
+        content={
+            **relay_request_body,
+            "prompt_cache_retention": "24h",
+        },
+        headers={},
+    )
+
+    provider_request = relay_llm._provider_request(
+        original,
+        intercepted,
+        relay_request_body=relay_request_body,
+        codec_baseline_body=dict(relay_request_body),
+        metadata={"api_mode": "codex_responses"},
+    )
+
+    assert "prompt_cache_retention" not in original
+    assert provider_request["prompt_cache_retention"] == "24h"
+
+
+def test_provider_request_overlays_interceptor_added_extra_body():
+    """Relay rewrites may also carry provider fields through extra_body."""
+    original = {"model": "gpt-5.6-sol", "input": "hello"}
+    relay_request_body = relay_llm._relay_request_body(
+        original,
+        {"api_mode": "codex_responses"},
+    )
+    provider_request = relay_llm._provider_request(
+        original,
+        SimpleNamespace(
+            content={
+                **relay_request_body,
+                "extra_body": {"prompt_cache_retention": "24h"},
+            },
+            headers={},
+        ),
+        relay_request_body=relay_request_body,
+        codec_baseline_body=dict(relay_request_body),
+        metadata={"api_mode": "codex_responses"},
+    )
+
+    assert "extra_body" not in original
+    assert provider_request["extra_body"] == {"prompt_cache_retention": "24h"}
+
+
 def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     relay, turn = relay_turn
     captured_requests = []
@@ -309,6 +361,39 @@ def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     assert chunks[0].choices[0].delta.content == "HELLO"
     assert stream.output_modified is True
     assert turn.logical_llm_calls == {}
+
+
+def test_live_stream_defers_runtime_shutdown_until_exhaustion(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "stream-shutdown-profile"))
+    relay_runtime._reset_for_tests()
+    host = relay_runtime.get_runtime()
+    assert host is not None
+    host.retain_managed_execution("test.live-stream")
+    assert host.ensure_session({"session_id": "stream-shutdown"}) is not None
+    chunks = [{"delta": "first"}, {"delta": "second"}]
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter(chunks),
+        session_id="stream-shutdown",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "complete"},
+        metadata={"api_mode": "custom"},
+    )
+
+    try:
+        host.shutdown()
+        assert not host._shutdown_complete.is_set()
+
+        assert list(stream) == chunks
+        assert host._shutdown_complete.wait(5)
+    finally:
+        stream.close()
+        host.release_managed_execution("test.live-stream")
+        relay_runtime._reset_for_tests()
 
 
 

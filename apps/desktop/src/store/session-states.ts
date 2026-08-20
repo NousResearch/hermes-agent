@@ -997,6 +997,15 @@ export const $focusedStoredSessionId = computed(
   }
 )
 
+/** Every session currently OPEN as a surface: the primary's selection plus
+ *  every tile's stored id. The sidebar highlights all of them (the focused one
+ *  at full strength, the rest dimmed) so a multi-pane workspace shows which
+ *  chats are on screen, not just the one being typed into. */
+export const $openStoredSessionIds = computed(
+  [$selectedStoredSessionId, $sessionTiles],
+  (selected, tiles) => new Set([...(selected ? [selected] : []), ...tiles.map(t => t.storedSessionId)])
+)
+
 /** Live runtime id of the focused session (a tile's bound runtime, else the
  *  primary's active session). */
 export const $focusedRuntimeId = computed(

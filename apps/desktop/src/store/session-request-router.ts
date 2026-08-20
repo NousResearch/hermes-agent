@@ -40,13 +40,28 @@ export function sessionRpcNeedsProfileRoute(
  */
 export function requestForSessionProfile<T>(
   ownerProfile: null | string | undefined,
-  ambientRequest: <R>(method: string, params?: Record<string, unknown>) => Promise<R>,
+  ambientRequest: <R>(
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs?: number,
+    signal?: AbortSignal
+  ) => Promise<R>,
   method: string,
-  params: Record<string, unknown> = {}
+  params: Record<string, unknown> = {},
+  timeoutMs?: number,
+  signal?: AbortSignal
 ): Promise<T> {
   if (!sessionRpcNeedsProfileRoute(ownerProfile)) {
-    return ambientRequest<T>(method, params)
+    // Forward the extra args only when the caller actually supplied them. The
+    // ambient dispatcher is a plain gateway request whose arity callers assert
+    // on; handing it a trailing `undefined, undefined` on every session RPC
+    // changes the observed call shape for the many callers that never asked
+    // for a deadline (the plugin host bridge in contrib/wiring is the only one
+    // that does).
+    return timeoutMs === undefined && signal === undefined
+      ? ambientRequest<T>(method, params)
+      : ambientRequest<T>(method, params, timeoutMs, signal)
   }
 
-  return requestGatewayForProfile<T>(normKey(ownerProfile), method, params)
+  return requestGatewayForProfile<T>(normKey(ownerProfile), method, params, timeoutMs, signal)
 }

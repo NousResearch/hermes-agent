@@ -31,11 +31,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use tauri::{AppHandle, Emitter};
-use tokio::io::BufReader;
 use tokio::process::Command;
 
 use crate::events::{BootstrapEvent, LogStream, StageInfo, StageState};
-use crate::powershell::read_decoded_line;
+use crate::powershell::{pump_child, DRAIN_GRACE};
 
 /// `hermes update` exit code meaning "another hermes process is holding the
 /// venv shim open / dirty precondition" — see _cmd_update_impl in
@@ -825,39 +824,34 @@ async fn run_streamed(
         .spawn()
         .map_err(|e| anyhow!("spawning {} {:?}: {e}", program.display(), args))?;
 
-    let stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
-    // Same non-UTF-8-safe decode path as powershell::run_script (#67193).
-    let mut out = BufReader::new(stdout);
-    let mut err = BufReader::new(stderr);
-    let mut out_buf = Vec::new();
-    let mut err_buf = Vec::new();
-
+    // Same non-UTF-8-safe decode path as powershell::run_script (#67193), and
+    // the same rule about pipe EOF: `hermes update` is precisely the shape that
+    // leaves resident descendants holding an inherited stdout handle, and every
+    // stage this drives sits downstream of the read.
     let stage_owned = stage.map(|s| s.to_string());
-    loop {
-        tokio::select! {
-            line = read_decoded_line(&mut out, &mut out_buf) => match line {
-                Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l),
-                Ok(None) => break,
-                Err(e) => { tracing::warn!("stdout read error: {e}"); break; }
-            },
-            line = read_decoded_line(&mut err, &mut err_buf) => match line {
-                Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l),
-                Ok(None) => {}
-                Err(e) => { tracing::warn!("stderr read error: {e}"); }
-            },
-        }
-    }
-    while let Ok(Some(l)) = read_decoded_line(&mut out, &mut out_buf).await {
-        emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l);
-    }
-    while let Ok(Some(l)) = read_decoded_line(&mut err, &mut err_buf).await {
-        emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l);
+    let outcome = pump_child(
+        &mut child,
+        |l| emit_log(app, stage_owned.as_deref(), LogStream::Stdout, l),
+        |l| emit_log(app, stage_owned.as_deref(), LogStream::Stderr, l),
+        &mut None,
+        DRAIN_GRACE,
+    )
+    .await
+    .map_err(|e| anyhow!("streaming {} {:?}: {e}", program.display(), args))?;
+
+    if outcome.abandoned {
+        let note = format!(
+            "{} exited but a surviving descendant still holds its stdout/stderr; \
+             gave up on the last {}s of output (#90455)",
+            program.display(),
+            DRAIN_GRACE.as_secs()
+        );
+        tracing::warn!("{note}");
+        emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &note);
     }
 
-    let status = child.wait().await.map_err(|e| anyhow!("waiting for child: {e}"))?;
     Ok(CmdResult {
-        exit_code: status.code(),
+        exit_code: outcome.exit_code,
     })
 }
 

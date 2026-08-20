@@ -2671,9 +2671,12 @@ class TestNewEndpoints:
         assert data["needs_nous_auth"] is True
         assert data["feature"] == "browser"
         # The selection is still persisted — activation is what's gated.
+        # Managed rows store the single 'nous' provider string (the runtime
+        # maps it to the Browser Use cloud through the Nous Tool Gateway).
         from hermes_cli.config import load_config
         cfg = load_config()
-        assert cfg["browser"]["cloud_provider"] == "browser-use"
+        assert cfg["browser"]["cloud_provider"] == "nous"
+        assert "use_gateway" not in cfg["browser"]
 
 
     # -- Web capability split (search vs extract backends) ------------------

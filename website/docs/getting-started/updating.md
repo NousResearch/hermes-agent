@@ -66,6 +66,16 @@ updates:
 
 In the desktop app this is **Settings → Advanced → In-App Update Local Changes**.
 
+**Desktop updates never auto-restore.** The desktop updater invokes `hermes update --keep-stash`: local source edits are still stashed so the update can proceed, but they are **not** re-applied afterward — they stay parked in `git stash` and the update log prints the exact `git stash apply <ref>` command to bring them back. This prevents local edits from silently riding along across desktop updates and breaking the freshly updated install. (`non_interactive_local_changes: discard` still wins if you've opted into discarding.) To restore parked changes manually:
+
+```bash
+cd ~/.hermes/hermes-agent   # or your install root
+git stash list --format='%gd %H %s'   # find the hermes-update-autostash entry
+git stash apply stash@{0}
+```
+
+You can pass `--keep-stash` to a terminal `hermes update` too if you want the same never-reapply behavior interactively.
+
 ### Preview-only: `hermes update --check`
 
 Want to know if an update is available before pulling? Run `hermes update --check` — it fetches and compares commits against `origin/main`. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
@@ -170,7 +180,7 @@ You no longer need to wrap `hermes update` in `screen` or `tmux` to survive a te
 ### Checking your current version
 
 ```bash
-hermes version
+hermes --version
 ```
 
 Compare against the latest release at the [GitHub releases page](https://github.com/NousResearch/hermes-agent/releases).

@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
+import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 import { $connection } from '@/store/session'
@@ -565,5 +566,22 @@ describe('AppContextMenu guest (in-app browser)', () => {
 
     expect(guest.replaceMisspelling).toHaveBeenCalledWith('the')
     expect(screen.queryByText('Add to dictionary')).toBeNull()
+  })
+})
+
+describe('ContextMenuTrigger asChild', () => {
+  it('keeps the coordinator marker when the child overwrites data-slot', () => {
+    render(
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <footer data-slot="statusbar">bar</footer>
+        </ContextMenuTrigger>
+      </ContextMenu>
+    )
+
+    const footer = screen.getByText('bar')
+
+    expect(footer.getAttribute('data-slot')).toBe('statusbar')
+    expect(footer.hasAttribute(HERMES_CONTEXT_MENU_TRIGGER_ATTR)).toBe(true)
   })
 })

@@ -75,7 +75,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     setIgnoreMouse: ignore => ipcRenderer.send('hermes:hud:ignore-mouse', ignore),
     moveBy: delta => ipcRenderer.send('hermes:hud:move-by', delta),
     setBounds: bounds => ipcRenderer.send('hermes:hud:set-bounds', bounds),
-    setVibrancy: on => ipcRenderer.invoke('hermes:hud:vibrancy', on),
+    // Whether the band covers the window below the bar. Main pairs it with the
+    // user's translucency setting to decide the native frost (macOS vibrancy /
+    // Windows 11 DWM backdrop) — see hudFrostFor.
+    setFrost: showing => ipcRenderer.invoke('hermes:hud:frost', showing),
     // The HUD tells main which session it is on; main hands that back to the
     // app window when the HUD closes, so the app can re-home onto it.
     setSession: sessionId => ipcRenderer.send('hermes:hud:session', sessionId),
@@ -152,7 +155,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     setLastUsed: id => ipcRenderer.invoke('hermes:connections:set-last-used', id),
     test: id => ipcRenderer.invoke('hermes:connections:test', id),
     // Fan out `hermes update` to every eligible registered connection.
-    updateAll: () => ipcRenderer.invoke('hermes:connections:update-all'),
+    // Optional excludeIds skips rows the caller updates through another path.
+    updateAll: options => ipcRenderer.invoke('hermes:connections:update-all', options),
     // Registry lifecycle push (main → renderer): a connection was removed or
     // materially edited, so secondaries scoped to it must be disposed (and,
     // for edits, re-dialed at the new target).

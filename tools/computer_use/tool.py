@@ -1195,6 +1195,11 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             or image_dimensions[1] < _MIN_PROVIDER_IMAGE_DIMENSION
         )
     )
+    screenshot_path = (
+        _persist_capture_image(cap)
+        if cap.png_b64 and cap.mode != "ax" and not image_too_small
+        else None
+    )
 
     # Index only what's actually surfaced in the response — otherwise the
     # human-readable summary references element indices the model cannot
@@ -1209,6 +1214,10 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     ]
     if bounds_note:
         summary_lines.append(f"  ({bounds_note})")
+    if screenshot_path:
+        summary_lines.append(
+            f"  (shareable screenshot saved to {screenshot_path})"
+        )
     if elements_file:
         summary_lines.append(
             f"  (full element tree with untruncated labels saved to "
@@ -1243,6 +1252,7 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
                 visible_elements=visible_elements,
                 truncated_elements=truncated_elements,
                 elements_file=elements_file,
+                screenshot_path=screenshot_path,
             )
             if routed is not None:
                 return routed
@@ -1278,6 +1288,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
                 payload["truncated_elements"] = truncated_elements
             if elements_file:
                 payload["elements_file"] = elements_file
+            if screenshot_path:
+                payload["screenshot_path"] = screenshot_path
             if bounds_scale:
                 payload["bounds_scale"] = bounds_scale
             return json.dumps(payload)
@@ -1303,9 +1315,10 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             ],
             "text_summary": summary,
             "meta": {"mode": cap.mode, "width": response_width, "height": response_height,
-                     "elements": total_elements, "png_bytes": cap.png_bytes_len,
-                     **({"elements_file": elements_file} if elements_file else {}),
-                     **({"bounds_scale": bounds_scale} if bounds_scale else {})},
+                      "elements": total_elements, "png_bytes": cap.png_bytes_len,
+                      **({"screenshot_path": screenshot_path} if screenshot_path else {}),
+                      **({"elements_file": elements_file} if elements_file else {}),
+                      **({"bounds_scale": bounds_scale} if bounds_scale else {})},
         }
     # AX-only (or image-missing fallback): text path actually carries the
     # `elements` array, so the truncation note applies here.
@@ -1446,6 +1459,7 @@ def _route_capture_through_aux_vision(
     visible_elements: Optional[List[UIElement]] = None,
     truncated_elements: int = 0,
     elements_file: Optional[str] = None,
+    screenshot_path: Optional[str] = None,
 ) -> Optional[str]:
     """Pre-analyse the captured PNG via ``vision_analyze`` and return a text result.
 
@@ -1559,6 +1573,8 @@ def _route_capture_through_aux_vision(
         payload["truncated_elements"] = truncated_elements
     if elements_file:
         payload["elements_file"] = elements_file
+    if screenshot_path:
+        payload["screenshot_path"] = screenshot_path
     return json.dumps(payload)
 
 
@@ -1647,6 +1663,53 @@ _MAX_ELEMENT_LABEL_CHARS = 120
 # Keep at most this many spilled element-tree files in the cache dir. Each
 # capture of a dense UI can spill; without pruning the cache grows unbounded.
 _MAX_SPILL_FILES = 20
+
+# Keep user-shareable capture files bounded independently from the gateway's
+# periodic media-cache cleanup. CLI-only sessions may never start the gateway,
+# and capture_after can otherwise leave an unbounded screenshot trail.
+_MAX_CAPTURE_FILES = 20
+
+
+def _persist_capture_image(cap: CaptureResult) -> Optional[str]:
+    """Save a capture in Hermes' media cache and return its absolute path.
+
+    Captures are normally embedded only in the model's tool context. Persisting
+    a bounded copy gives attachment-capable surfaces a real file to deliver
+    when the user explicitly asks for the screenshot. This is best-effort: an
+    unwritable cache must never break computer control.
+    """
+    if not cap.png_b64:
+        return None
+    try:
+        import uuid as _uuid
+
+        from hermes_constants import get_hermes_dir
+
+        raw = base64.b64decode(cap.png_b64, validate=False)
+        mime = str(cap.image_mime_type or "").lower()
+        ext = ".jpg" if mime == "image/jpeg" or (
+            not mime and cap.png_b64[:8].startswith("/9j/")
+        ) else ".png"
+
+        cache_dir = get_hermes_dir("cache/images", "image_cache")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            captures = sorted(
+                cache_dir.glob("computer_use_*.*"),
+                key=lambda path: path.stat().st_mtime,
+            )
+            keep_before_write = max(0, _MAX_CAPTURE_FILES - 1)
+            for stale in captures[: max(0, len(captures) - keep_before_write)]:
+                stale.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        path = cache_dir / f"computer_use_{_uuid.uuid4().hex}{ext}"
+        path.write_bytes(raw)
+        return str(path)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("computer_use: screenshot persistence failed: %s", exc)
+        return None
 
 
 def _spill_elements_to_file(cap: CaptureResult) -> Optional[str]:

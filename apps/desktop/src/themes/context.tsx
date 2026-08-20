@@ -16,10 +16,13 @@ import { $registryVersion } from '@/contrib/registry'
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { setAppearance } from '@/store/translucency'
 
+import { $accentOverride } from './accent-override'
 import { $backendThemes, $pendingSkinApply } from './backend-sync'
-import { hexToRgb, mix, readableOn } from './color'
+import { harmonize, hexToRgb, mix, readableOn } from './color'
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
+import { retintTheme } from './retint'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 import { $userThemes, listAllThemes, resolveTheme } from './user-themes'
 
@@ -35,6 +38,8 @@ const PROFILE_MODES_KEY = 'hermes-desktop-profile-modes-v1'
 // Last active profile, recorded so the boot-time paint can pick that profile's
 // theme before the gateway reports which profile actually launched.
 const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
+// Skins that no longer exist. A profile still pointing at one falls back to
+// DEFAULT_SKIN_NAME rather than painting a name nothing resolves.
 const RETIRED_SKINS = new Set(['nous-light', 'default', 'gold'])
 
 export type ThemeMode = 'light' | 'dark' | 'system'
@@ -47,8 +52,16 @@ const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-
 const normalizeSkin = (name: string | null): string =>
   name && resolveTheme(name) && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
 
+/**
+ * A stored mode, or `system` when there isn't one.
+ *
+ * A fresh profile follows the OS. Defaulting to `light` meant someone whose
+ * desktop is dark got a white window on first launch and had to go find the
+ * setting — and with per-appearance translucency it also handed them light's
+ * much heavier tint, tuned for a bright desktop they don't have.
+ */
 const normalizeMode = (value: string | null): ThemeMode =>
-  value === 'light' || value === 'dark' || value === 'system' ? value : 'light'
+  value === 'light' || value === 'dark' || value === 'system' ? value : 'system'
 
 // ─── Per-profile appearance persistence ─────────────────────────────────────
 // Skin and mode are each stored per profile. "default" isn't a real profile —
@@ -194,6 +207,12 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
   root.dataset.hermesMode = rendered
   root.classList.toggle('dark', isDark)
 
+  // Translucency is tuned per appearance, and "appearance" means the palette
+  // actually painted — a skin that keeps a bright surface in "dark" wants
+  // light's tint. Publishing from here covers the boot paint too, so the very
+  // first resolved state main is told about is already the right one.
+  setAppearance(rendered)
+
   // Brand seeds feed every glass + shadcn token via `color-mix()` in styles.css.
   const seeds: Record<string, string> = {
     '--theme-foreground': c.foreground,
@@ -224,6 +243,11 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     '--dt-destructive-foreground': c.destructiveForeground,
     '--dt-sidebar-border': c.sidebarBorder ?? c.border,
     '--dt-user-bubble-border': c.userBubbleBorder ?? c.border,
+    // Semantic success, bent toward the accent so it settles into the palette
+    // instead of clashing with it. A green accent barely moves it (see
+    // `harmonize`); a blue one turns the sidebar's finished dots teal rather
+    // than leaving eight emerald spots fighting the theme.
+    '--ui-success': harmonize('#10b981', midground, 0.25),
     '--dt-font-sans': typo.fontSans,
     '--dt-font-mono': typo.fontMono,
     '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'
@@ -352,7 +376,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   )
 
   const [mode, setModeState] = useState<ThemeMode>(() =>
-    typeof window === 'undefined' ? 'light' : modePref.resolve(readBootProfileKey())
+    typeof window === 'undefined' ? 'system' : modePref.resolve(readBootProfileKey())
   )
 
   // Follow profile switches: paint the profile's assigned skin + mode and
@@ -404,10 +428,20 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     [paintedName, paintedMode, userThemes, backendThemes, registryVersion]
   )
 
-  // What actually gets painted (matches the `.dark` class applyTheme toggles).
-  const renderedMode = useMemo(() => renderedModeFor(activeTheme.colors, paintedMode), [activeTheme, paintedMode])
+  // Dev-only accent retint. `null` (always, in production) returns the theme
+  // untouched, and retintTheme is an identity when the seed already matches —
+  // so the picker costs nothing until it's actually moved off the default.
+  const accentOverride = useStore($accentOverride)
 
-  useEffect(() => applyTheme(activeTheme, paintedMode), [activeTheme, paintedMode])
+  const paintedTheme = useMemo(
+    () => (accentOverride === null ? activeTheme : retintTheme(activeTheme, accentOverride)),
+    [activeTheme, accentOverride]
+  )
+
+  // What actually gets painted (matches the `.dark` class applyTheme toggles).
+  const renderedMode = useMemo(() => renderedModeFor(paintedTheme.colors, paintedMode), [paintedTheme, paintedMode])
+
+  useEffect(() => applyTheme(paintedTheme, paintedMode), [paintedTheme, paintedMode])
 
   // Keep the native window appearance pinned to the app theme (vibrancy
   // material, titlebar, new-window pre-paint background).
@@ -453,7 +487,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<ThemeContextValue>(
     () => ({
-      theme: activeTheme,
+      theme: paintedTheme,
       themeName,
       mode,
       resolvedMode,
@@ -465,7 +499,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       clearThemePreview
     }),
     [
-      activeTheme,
+      paintedTheme,
       themeName,
       mode,
       resolvedMode,

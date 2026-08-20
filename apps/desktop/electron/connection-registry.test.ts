@@ -271,6 +271,28 @@ test('rememberSshEnumeration: live list wins, cache then seed default', () => {
   })
 })
 
+test('rememberSshEnumeration: a bounced remote source keeps its last-known roster (4-bots-show-as-2)', () => {
+  // A VPS restart makes the remote source unreachable for a few polls. The
+  // last successful enumeration must keep painting so the roster does not
+  // silently drop that source's bots mid-outage.
+  assert.deepEqual(
+    rememberSshEnumeration({ profiles: null, error: 'unreachable' }, ['default', 'ceo', 'accounter'], 'remote'),
+    { profiles: ['default', 'ceo', 'accounter'], error: 'unreachable' }
+  )
+  // Never-seen remote source: no seed — an unreachable URL is not evidence a
+  // backend exists there.
+  assert.deepEqual(rememberSshEnumeration({ profiles: null, error: 'unreachable' }, null, 'remote'), {
+    profiles: null,
+    error: 'unreachable'
+  })
+  // Local enumeration failures never reuse a cache (the local runtime answers
+  // authoritatively or not at all).
+  assert.deepEqual(rememberSshEnumeration({ profiles: null, error: 'boom' }, ['default'], 'local'), {
+    profiles: null,
+    error: 'boom'
+  })
+})
+
 test('shouldRetrySshInventory: first try, cooldown, then retry; cache never retries', () => {
   assert.equal(shouldRetrySshInventory(false, null, 1_000), true)
   assert.equal(shouldRetrySshInventory(false, 1_000, 30_000, 60_000), false)

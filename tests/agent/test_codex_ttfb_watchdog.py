@@ -349,3 +349,167 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
 
 
 
+
+
+def _capture_codex_stream_immediate(agent, monkeypatch):
+    """Wire a stream stub that marks bytes-flowing immediately and returns.
+
+    Keeps the watchdog setup path (where the scaling/capping log records are
+    emitted) exercised without any real waiting.
+    """
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    sentinel = SimpleNamespace(ok=True)
+
+    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+        agent._codex_stream_last_event_ts = time.time()
+        if on_first_delta:
+            on_first_delta()
+        return sentinel
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
+    return sentinel, closes
+
+
+def _scale_cap_records(caplog):
+    scaling = [
+        r for r in caplog.records if "Scaling openai-codex" in r.getMessage()
+    ]
+    capping = [
+        r for r in caplog.records
+        if "Capping openai-codex" in r.getMessage()
+    ]
+    return scaling, capping
+
+
+def test_default_cap_large_request_emits_no_scale_or_cap_logs(
+    tmp_path, monkeypatch, caplog
+):
+    """Regression: with all-default env (base TTFB 120s, cap 120s), a >100k-token
+    request must NOT emit the contradictory 'Scaling ... to 180s' /
+    'Capping ... to 120s' INFO pair. Since scaling/capping each log *before*
+    mutating the timeout, the absence of both records also proves the
+    effective timeout never left the 120s default."""
+    import logging as _logging
+
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    # No HERMES_CODEX_TTFB_* overrides: real defaults.
+    sentinel, closes = _capture_codex_stream_immediate(agent, monkeypatch)
+
+    large_input = "x" * 440_000  # ~110k estimated tokens → >100k tier (180s target)
+    with caplog.at_level(_logging.INFO, logger="agent.chat_completion_helpers"):
+        resp = h.interruptible_api_call(
+            agent, {"model": "gpt-5.5", "input": large_input}
+        )
+
+    assert resp is sentinel
+    assert "codex_ttfb_kill" not in closes
+    scaling, capping = _scale_cap_records(caplog)
+    assert not scaling, f"unexpected scale-up log: {[r.getMessage() for r in scaling]}"
+    assert not capping, f"unexpected cap log: {[r.getMessage() for r in capping]}"
+
+
+def test_capped_scale_up_is_clamped_silently_and_cap_governs_kill(
+    tmp_path, monkeypatch, caplog
+):
+    """Scaled-down analog of the default configuration (cap == base timeout):
+    the large-request scale-up target must be clamped to the cap BEFORE any
+    logging, so no scale/cap records appear — and a silent hang is killed at
+    the cap, not at the 180s scale target."""
+    import logging as _logging
+
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("HERMES_CODEX_TTFB_MAX_SECONDS", "1")
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    stop = {"flag": False}
+
+    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+        deadline = time.time() + 30
+        while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
+            time.sleep(0.02)
+        raise RuntimeError("connection closed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
+
+    large_input = "x" * 440_000  # ~110k estimated tokens → 180s scale target
+    t0 = time.time()
+    try:
+        with caplog.at_level(_logging.INFO, logger="agent.chat_completion_helpers"):
+            with pytest.raises(TimeoutError) as excinfo:
+                h.interruptible_api_call(
+                    agent, {"model": "gpt-5.5", "input": large_input}
+                )
+        elapsed = time.time() - t0
+        # Killed at the ~1s cap, nowhere near the 180s scale target.
+        assert elapsed < 20, f"TTFB kill took {elapsed:.1f}s — cap did not govern"
+        assert "codex_ttfb_kill" in closes
+        assert "TTFB threshold: 1s" in str(excinfo.value)
+        scaling, capping = _scale_cap_records(caplog)
+        assert not scaling, (
+            f"scale-up announced despite cap: {[r.getMessage() for r in scaling]}"
+        )
+        assert not capping, (
+            f"cap log emitted: {[r.getMessage() for r in capping]}"
+        )
+    finally:
+        stop["flag"] = True
+
+
+def test_raised_cap_still_logs_honest_scale_up(tmp_path, monkeypatch, caplog):
+    """When the cap allows headroom, the large-request scale-up must still
+    happen and log ONCE, announcing the clamped (cap-respecting) target —
+    with no follow-up capping record."""
+    import logging as _logging
+
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "0.4")
+    monkeypatch.setenv("HERMES_CODEX_TTFB_MAX_SECONDS", "5")
+
+    sentinel, closes = _capture_codex_stream_immediate(agent, monkeypatch)
+
+    large_input = "x" * 440_000  # ~110k estimated tokens → 180s target, clamped to 5s
+    with caplog.at_level(_logging.INFO, logger="agent.chat_completion_helpers"):
+        resp = h.interruptible_api_call(
+            agent, {"model": "gpt-5.5", "input": large_input}
+        )
+
+    assert resp is sentinel
+    scaling, capping = _scale_cap_records(caplog)
+    assert len(scaling) == 1, (
+        f"expected exactly one scale-up log, got {[r.getMessage() for r in scaling]}"
+    )
+    # The announced target is the cap-clamped value (5s), not the raw 180s tier.
+    assert "to 5s" in scaling[0].getMessage()
+    assert "180" not in scaling[0].getMessage()
+    assert not capping, (
+        f"contradictory cap log after scale-up: {[r.getMessage() for r in capping]}"
+    )

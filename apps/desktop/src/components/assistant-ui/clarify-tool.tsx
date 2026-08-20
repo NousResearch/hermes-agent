@@ -550,6 +550,23 @@ function ClarifyToolSinglePending({
       return
     }
 
+    // Don't yank focus from an input the user is actively typing in (the
+    // composer contenteditable, the Other free-text box, a terminal input,
+    // etc.). If the user is mid-draft they'd lose keystrokes to the choices.
+    // Only claim when focus is neutral or on a non-editable element, so a
+    // pure-keyboard user still gets a usable target but a typist isn't
+    // interrupted. `hasChoices` in the deps re-runs this when choices resolve
+    // after an initial no-choice render, so the late-arriving case is covered.
+    const el = document.activeElement
+    const editing =
+      el instanceof HTMLInputElement ||
+      el instanceof HTMLTextAreaElement ||
+      (el instanceof HTMLElement && el.isContentEditable)
+
+    if (editing) {
+      return
+    }
+
     claimedFocus.current = true
     panelRef.current?.focus()
   }, [hasChoices, ready, submitting])

@@ -1852,6 +1852,213 @@ class TestMatrixReactions:
         assert content["m.relates_to"]["key"] == "\U0001f44d"
 
 
+    def test_processing_reaction_scope_reads_matrix_extra(self):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "processing_reaction_scope": "thread",
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        assert adapter._processing_reaction_scope == "thread"
+        assert adapter._processing_reaction_state_limit == 500
+
+    def test_processing_reaction_state_limit_is_configurable(self):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "processing_reaction_scope": "thread",
+                "processing_reaction_state_limit": 2,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        assert adapter._processing_reaction_state_limit == 2
+
+    def test_thread_scope_without_thread_id_falls_back_to_message(self):
+        from gateway.platforms.base import MessageEvent, MessageType
+
+        self.adapter._processing_reaction_scope = "thread"
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        source.thread_id = None
+        event = MessageEvent(
+            text="plain message",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$message",
+        )
+
+        assert self.adapter._processing_reaction_target(event) == (
+            "!room:ex",
+            "$message",
+        )
+
+    @pytest.mark.asyncio
+    async def test_thread_scope_reopens_parent_on_follow_up(self):
+        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+
+        self.adapter._reactions_enabled = True
+        self.adapter._processing_reaction_scope = "thread"
+        self.adapter._reaction_redaction_delay_seconds = 0
+        self.adapter._send_reaction = AsyncMock(
+            side_effect=["$eyes_root", "$check_root", "$eyes_reply"]
+        )
+        self.adapter._redact_reaction = AsyncMock(return_value=True)
+
+        root_source = MagicMock()
+        root_source.chat_id = "!room:ex"
+        root_source.thread_id = "$root"
+        root = MessageEvent(
+            text="root",
+            message_type=MessageType.TEXT,
+            source=root_source,
+            raw_message={},
+            message_id="$root",
+        )
+        await self.adapter.on_processing_start(root)
+        await self.adapter.on_processing_complete(root, ProcessingOutcome.SUCCESS)
+        await asyncio.sleep(0.01)
+
+        reply_source = MagicMock()
+        reply_source.chat_id = "!room:ex"
+        reply_source.thread_id = "$root"
+        reply = MessageEvent(
+            text="follow-up",
+            message_type=MessageType.TEXT,
+            source=reply_source,
+            raw_message={},
+            message_id="$reply",
+        )
+        await self.adapter.on_processing_start(reply)
+
+        self.adapter._redact_reaction.assert_any_await(
+            "!room:ex", "$check_root", "processing resumed"
+        )
+        assert self.adapter._send_reaction.call_args_list[-1].args == (
+            "!room:ex",
+            "$root",
+            "\U0001f440",
+        )
+        assert self.adapter._pending_reactions == {("!room:ex", "$root"): "$eyes_reply"}
+        state = self.adapter._reaction_states[("!room:ex", "$root")]
+        assert state.terminal_event_id is None
+        assert state.eyes_event_id == "$eyes_reply"
+
+    @pytest.mark.asyncio
+    async def test_thread_scope_stale_completion_does_not_overwrite_newer_state(self):
+        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+
+        self.adapter._reactions_enabled = True
+        self.adapter._processing_reaction_scope = "thread"
+        self.adapter._send_reaction = AsyncMock(
+            side_effect=["$eyes_first", "$eyes_second", "$check_second"]
+        )
+        self.adapter._redact_reaction = AsyncMock(return_value=True)
+
+        def make_event(message_id: str) -> MessageEvent:
+            source = MagicMock()
+            source.chat_id = "!room:ex"
+            source.thread_id = "$root"
+            return MessageEvent(
+                text=message_id,
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message={},
+                message_id=message_id,
+            )
+
+        first = make_event("$first")
+        second = make_event("$second")
+        await self.adapter.on_processing_start(first)
+        await self.adapter.on_processing_start(second)
+
+        await self.adapter.on_processing_complete(first, ProcessingOutcome.SUCCESS)
+        assert self.adapter._send_reaction.call_count == 2
+
+        await self.adapter.on_processing_complete(second, ProcessingOutcome.SUCCESS)
+        self.adapter._send_reaction.assert_called_with("!room:ex", "$root", "\u2705")
+
+    @pytest.mark.asyncio
+    async def test_thread_scope_cancelled_clears_parent_eyes(self):
+        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+
+        self.adapter._reactions_enabled = True
+        self.adapter._processing_reaction_scope = "thread"
+        self.adapter._send_reaction = AsyncMock(return_value="$eyes_root")
+        self.adapter._redact_reaction = AsyncMock(return_value=True)
+
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        source.thread_id = "$root"
+        event = MessageEvent(
+            text="cancel me",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$message",
+        )
+        await self.adapter.on_processing_start(event)
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
+
+        self.adapter._redact_reaction.assert_awaited_once_with(
+            "!room:ex",
+            "$eyes_root",
+            "processing cancelled",
+        )
+        assert self.adapter._pending_reactions == {}
+
+    @pytest.mark.asyncio
+    async def test_thread_scope_prunes_completed_state_but_keeps_active_state(self):
+        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+
+        self.adapter._reactions_enabled = True
+        self.adapter._processing_reaction_scope = "thread"
+        self.adapter._processing_reaction_state_limit = 1
+        self.adapter._reaction_redaction_delay_seconds = 0
+        self.adapter._send_reaction = AsyncMock(
+            side_effect=["$eyes_old", "$check_old", "$eyes_active"]
+        )
+        self.adapter._redact_reaction = AsyncMock(return_value=True)
+
+        def make_event(thread_id: str, message_id: str) -> MessageEvent:
+            source = MagicMock()
+            source.chat_id = "!room:ex"
+            source.thread_id = thread_id
+            return MessageEvent(
+                text=message_id,
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message={},
+                message_id=message_id,
+            )
+
+        old = make_event("$old", "$old-message")
+        await self.adapter.on_processing_start(old)
+        await self.adapter.on_processing_complete(old, ProcessingOutcome.SUCCESS)
+        await asyncio.sleep(0.01)
+
+        active = make_event("$active", "$active-message")
+        await self.adapter.on_processing_start(active)
+
+        assert ("!room:ex", "$old") not in self.adapter._reaction_states
+        assert ("!room:ex", "$active") in self.adapter._reaction_states
+        self.adapter._redact_reaction.assert_awaited_with(
+            "!room:ex", "$check_old", "processing state expired"
+        )
+
     @pytest.mark.asyncio
     async def test_on_processing_complete_sends_check(self):
         from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome

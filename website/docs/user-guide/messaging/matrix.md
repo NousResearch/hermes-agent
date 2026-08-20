@@ -120,6 +120,20 @@ MATRIX_ALLOW_ROOM_MENTIONS=false
 `MATRIX_REACTIONS=false` turns off the processing-lifecycle emoji reactions (👀/✅/❌) the bot posts on inbound messages. Useful for rooms where reaction events are noisy or aren't supported by all participating clients.
 :::
 
+:::tip Thread-scoped processing reactions
+By default, processing reactions are attached to each inbound message. To keep one status marker on the Matrix thread root instead, opt in with:
+
+```yaml
+platforms:
+  matrix:
+    extra:
+      processing_reaction_scope: thread
+      processing_reaction_state_limit: 500
+```
+
+With this setting, a follow-up message reopens the thread-root status (`✅`/`❌` → `👀`) and the latest completion updates that same root. `processing_reaction_state_limit` bounds completed thread state retained in memory while preserving active turns. Messages without a Matrix `thread_id` retain message-scoped behavior. Hermes only redacts reaction events it created during the current gateway process; existing reactions are not scanned or changed after a gateway restart.
+:::
+
 :::tip Room-wide mentions
 Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@alice:example.org`. Room-wide `@room` notifications are disabled by default; set `MATRIX_ALLOW_ROOM_MENTIONS=true` only in rooms where the bot is allowed to notify everyone.
 :::

@@ -187,6 +187,14 @@ _OSV_MALWARE_CHECK_TIMEOUT_S = 12.0
 _mcp_stderr_log_fh: Optional[Any] = None
 _mcp_stderr_log_lock = threading.Lock()
 
+# Rotate the shared stderr log when it exceeds this size. The handle is held
+# open for the life of the process (asyncio wires child fds to it directly),
+# so rotation happens at open time: growth is bounded to ~cap per gateway
+# lifetime plus one archived generation (.1). Without this the file grows
+# forever — observed 20 MB of FastMCP banners on a long-lived deployment —
+# because no logrotate config knows about it.
+_MCP_STDERR_LOG_MAX_BYTES = 5 * 1024 * 1024
+
 
 def _get_mcp_stderr_log() -> Any:
     """Return a shared append-mode file handle for MCP subprocess stderr.
@@ -205,6 +213,13 @@ def _get_mcp_stderr_log() -> Any:
             log_dir = get_hermes_home() / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = log_dir / "mcp-stderr.log"
+            # One-shot rotation before the long-lived handle is opened: keep a
+            # single previous generation so recent history stays debuggable.
+            try:
+                if log_path.stat().st_size > _MCP_STDERR_LOG_MAX_BYTES:
+                    log_path.replace(log_path.with_suffix(".log.1"))
+            except OSError:
+                pass  # Missing file or racing writer — append mode handles it.
             # Line-buffered so server output lands on disk promptly; errors=
             # "replace" tolerates garbled binary output from misbehaving
             # servers.

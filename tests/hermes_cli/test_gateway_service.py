@@ -233,6 +233,12 @@ class TestGeneratedSystemdUnits:
         assert str(local_bin) in plist
         assert str(profile_node_bin) not in plist
 
+    def test_launchd_plist_omits_limit_load_to_session_type(self):
+        """The gateway must not be restricted to Aqua login sessions."""
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "LimitLoadToSessionType" not in plist
+
     def test_launchd_plist_persists_configured_nofile_soft_limit(self, monkeypatch):
         """The generated plist must carry SoftResourceLimits/NumberOfFiles so a
         plist rewrite by `hermes gateway start` cannot strip the FD floor and

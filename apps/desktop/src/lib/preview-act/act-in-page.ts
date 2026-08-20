@@ -138,8 +138,10 @@ export function actInPageCore(
       }
 
       const tag = el.tagName.toLowerCase()
+
       const role =
         el.getAttribute('role') || (tag === 'input' ? 'input:' + ((el as HTMLInputElement).type || 'text') : tag)
+
       const label = labelOf(el)
       const value = valueOf(el)
 

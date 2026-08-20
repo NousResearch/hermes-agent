@@ -1538,13 +1538,43 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     agent = session.get("agent")
+    mirror = _metadata_mirror(session)
     usage: dict = _session_usage_snapshot(session)
     if agent is None and not usage:
         usage = {"calls": 0, "input": 0, "output": 0, "total": 0}
-    # Nous credits block — agent-independent (a portal fetch), so it shows even
-    # with zero API calls or on a resumed session. The TUI /usage panel renders
-    # these lines regardless of `calls`. Fail-open: [] when not logged into Nous
-    # or on any portal hiccup.
+    provider = (
+        getattr(agent, "provider", None) if agent is not None else None
+    ) or mirror.get("provider")
+    if provider:
+        try:
+            from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+            base_url = (
+                getattr(agent, "base_url", None)
+                if agent is not None
+                else mirror.get("base_url")
+            )
+            api_key = getattr(agent, "api_key", None) if agent is not None else None
+            api_mode = (
+                getattr(agent, "api_mode", None)
+                if agent is not None
+                else mirror.get("api_mode")
+            )
+            account_snapshot = fetch_account_usage(
+                provider,
+                base_url=base_url,
+                api_key=api_key,
+                api_mode=api_mode,
+            )
+            if account_snapshot:
+                account_lines = render_account_usage_lines(account_snapshot)
+                if account_lines:
+                    usage["account_lines"] = account_lines
+        except Exception:
+            pass
+
+    # Nous credits are agent-independent. Keep this fetch isolated so a custom
+    # provider timeout or malformed response cannot hide a valid Nous balance.
     try:
         from agent.account_usage import nous_credits_lines
 

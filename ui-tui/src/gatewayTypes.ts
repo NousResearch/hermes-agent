@@ -269,6 +269,7 @@ export interface SessionUndoResponse {
 }
 
 export interface SessionUsageResponse {
+  account_lines?: string[]
   active_subagents?: number
   cache_read?: number
   cache_write?: number

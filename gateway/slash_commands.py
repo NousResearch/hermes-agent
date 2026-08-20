@@ -5352,6 +5352,7 @@ class GatewaySlashCommandsMixin:
                     provider,
                     base_url=base_url,
                     api_key=api_key,
+                    api_mode=getattr(agent, "api_mode", None) if agent else None,
                 )
             except Exception:
                 account_snapshot = None

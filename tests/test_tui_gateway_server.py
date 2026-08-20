@@ -36,6 +36,98 @@ def _dispatch_sync(req: dict, transport=None) -> dict | None:
         reset_transport(token)
 
 
+def test_session_usage_includes_live_provider_account_lines(monkeypatch):
+    agent = types.SimpleNamespace(
+        provider="custom:antigravity-proxy",
+        base_url="http://127.0.0.1:8091/anthropic",
+        api_key="live-key",
+    )
+    session = {"agent": agent}
+    monkeypatch.setattr(server, "_sess_nowait", lambda params, rid: (session, None))
+    monkeypatch.setattr(
+        server,
+        "_session_usage_snapshot",
+        lambda current: {"calls": 1, "input": 10, "output": 20, "total": 30},
+    )
+
+    with (
+        patch("agent.account_usage.fetch_account_usage", return_value=object()) as fetch,
+        patch("agent.account_usage.render_account_usage_lines", return_value=["Account limits", "Gemini quota: 5% used"]),
+        patch("agent.account_usage.nous_credits_lines", return_value=[]),
+    ):
+        response = server._methods["session.usage"]("usage-1", {"session_id": "s-1"})
+
+    assert response["result"]["account_lines"] == ["Account limits", "Gemini quota: 5% used"]
+    fetch.assert_called_once_with(
+        "custom:antigravity-proxy",
+        base_url="http://127.0.0.1:8091/anthropic",
+        api_key="live-key",
+        api_mode=None,
+    )
+
+
+def test_session_usage_keeps_nous_credits_when_provider_usage_fails(monkeypatch):
+    session = {"agent": types.SimpleNamespace(provider="custom:broken")}
+    monkeypatch.setattr(server, "_sess_nowait", lambda params, rid: (session, None))
+    monkeypatch.setattr(
+        server,
+        "_session_usage_snapshot",
+        lambda current: {"calls": 0, "input": 0, "output": 0, "total": 0},
+    )
+
+    with (
+        patch("agent.account_usage.fetch_account_usage", side_effect=RuntimeError("broken")),
+        patch("agent.account_usage.nous_credits_lines", return_value=["Nous credits: 42"]),
+    ):
+        response = server._methods["session.usage"]("usage-2", {"session_id": "s-2"})
+
+    assert response["result"]["credits_lines"] == ["Nous credits: 42"]
+
+
+def test_session_usage_resolves_persisted_provider_without_live_agent(monkeypatch):
+    session = {"agent": None}
+    seen = {}
+    monkeypatch.setattr(server, "_sess_nowait", lambda params, rid: (session, None))
+    monkeypatch.setattr(
+        server,
+        "_metadata_mirror",
+        lambda current: {
+            "provider": "custom",
+            "base_url": "https://proxy.example/anthropic",
+            "api_mode": "anthropic_messages",
+        },
+    )
+    monkeypatch.setattr(
+        server,
+        "_session_usage_snapshot",
+        lambda current: {"calls": 0, "input": 0, "output": 0, "total": 0},
+    )
+
+    def fake_fetch(provider, *, base_url=None, api_key=None, api_mode=None):
+        seen.update(
+            provider=provider,
+            base_url=base_url,
+            api_key=api_key,
+            api_mode=api_mode,
+        )
+        return object()
+
+    with (
+        patch("agent.account_usage.fetch_account_usage", side_effect=fake_fetch),
+        patch("agent.account_usage.render_account_usage_lines", return_value=["Quota"]),
+        patch("agent.account_usage.nous_credits_lines", return_value=[]),
+    ):
+        response = server._methods["session.usage"]("usage-3", {"session_id": "s-3"})
+
+    assert response["result"]["account_lines"] == ["Quota"]
+    assert seen == {
+        "provider": "custom",
+        "base_url": "https://proxy.example/anthropic",
+        "api_key": None,
+        "api_mode": "anthropic_messages",
+    }
+
+
 @pytest.fixture(autouse=True)
 def _neuter_agent_prewarm_timer(request, monkeypatch):
     """Stub the deferred agent pre-warm timer for every test in this module.

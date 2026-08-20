@@ -13594,8 +13594,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
                 try:
                     account_snapshot = _pool.submit(
-                        fetch_account_usage, provider,
-                        base_url=base_url, api_key=api_key,
+                        fetch_account_usage,
+                        provider,
+                        base_url=base_url,
+                        api_key=api_key,
+                        api_mode=getattr(agent, "api_mode", None),
                     ).result(timeout=10.0)
                 except (concurrent.futures.TimeoutError, Exception):
                     account_snapshot = None

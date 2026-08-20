@@ -546,6 +546,27 @@ describe('renderRpcResult', () => {
         'Resets: 2026-08-01'
       ])
     })
+
+    it('appends provider account_lines before Nous credits', () => {
+      const body = renderRpcResult(
+        {
+          calls: 1,
+          input: 10,
+          output: 20,
+          total: 30,
+          account_lines: ['Account limits', 'Gemini quota: 5% used'],
+          credits_lines: ['Nous credits: 8,420 remaining']
+        },
+        'usage'
+      )
+
+      expect(body.split('\n')).toEqual([
+        'Usage: 1 calls · 10 in / 20 out · 30 total',
+        'Account limits',
+        'Gemini quota: 5% used',
+        'Nous credits: 8,420 remaining'
+      ])
+    })
   })
 
   describe('agents.list', () => {

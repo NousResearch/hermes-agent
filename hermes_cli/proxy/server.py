@@ -3,10 +3,18 @@
 Listens on ``http://<host>:<port>/v1/<path>`` and forwards each request to
 ``<upstream-base-url>/<path>`` with the client's ``Authorization`` header
 replaced by a freshly-resolved bearer from the configured adapter. The
-response is streamed back unmodified, preserving SSE.
+response body is streamed through unchanged (SSE deltas preserved).
 
-The server is intentionally minimal: it does NOT mediate, log, transform,
-or rewrite request/response bodies. It's a credential-attaching forwarder.
+One narrow SSE compatibility shim applies after a *clean* upstream EOF:
+when a ``text/event-stream`` response carries a terminal ``finish_reason``
+or ``lastOne: true`` but omits the OpenAI ``data: [DONE]`` sentinel, the
+proxy appends a single ``[DONE]`` frame. It never rewrites earlier frames,
+never duplicates an upstream ``[DONE]``, and never synthesizes ``[DONE]``
+after an error event or a mid-stream interrupt (see
+:mod:`hermes_cli.proxy.sse_done`, issue #90848).
+
+Otherwise the server does not mediate, log, or rewrite request/response
+bodies — it is a credential-attaching forwarder.
 """
 
 from __future__ import annotations
@@ -26,6 +34,11 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
 
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
+from hermes_cli.proxy.sse_done import (
+    DONE_SSE_FRAME,
+    SseDoneTracker,
+    content_type_is_sse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -222,11 +235,23 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         )
         await resp.prepare(request)
 
+        # Track SSE terminal markers so we can append a missing [DONE]
+        # after clean EOF without rewriting any earlier frames.
+        done_tracker: Optional[SseDoneTracker] = None
+        if content_type_is_sse(upstream_resp.headers):
+            done_tracker = SseDoneTracker()
+
         try:
             async for chunk in upstream_resp.content.iter_any():
                 if chunk:
+                    if done_tracker is not None:
+                        done_tracker.feed(chunk)
                     await resp.write(chunk)
+            if done_tracker is not None and done_tracker.should_append_done():
+                await resp.write(DONE_SSE_FRAME)
         except (aiohttp.ClientError, asyncio.CancelledError) as exc:
+            if done_tracker is not None:
+                done_tracker.mark_interrupted()
             logger.warning("proxy: streaming interrupted: %s", exc)
         finally:
             upstream_resp.release()

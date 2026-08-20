@@ -762,11 +762,13 @@ class TestDownloadMedia:
     """Two-step Graph media download: meta -> temp URL -> bytes."""
 
     @pytest.mark.asyncio
-    async def test_two_step_download_writes_cache_file(self, tmp_path):
+    async def test_two_step_download_writes_cache_file(self, tmp_path, monkeypatch):
         from gateway.platforms import whatsapp_cloud as wac
 
         adapter = _make_adapter()
         adapter._http_client = MagicMock()
+        safety_check = AsyncMock(return_value=True)
+        monkeypatch.setattr(wac, "async_is_safe_url", safety_check)
 
         # Step 1 — metadata returns temp URL + mime
         meta_resp = MagicMock(status_code=200)
@@ -793,6 +795,68 @@ class TestDownloadMedia:
         assert _os.path.basename(local_path).endswith(".jpg")
         with open(local_path, "rb") as fh:
             assert fh.read() == b"\xff\xd8\xff\xe0jpegdata"
+        safety_check.assert_awaited_once_with(
+            "https://lookaside.fbsbx.com/whatsapp/m/..."
+        )
+        assert adapter._http_client.get.call_args_list[1].kwargs[
+            "follow_redirects"
+        ] is False
+
+    @pytest.mark.asyncio
+    async def test_unsafe_temporary_url_stops_before_byte_fetch(self, monkeypatch):
+        from gateway.platforms import whatsapp_cloud as wac
+
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        meta_resp = MagicMock(status_code=200)
+        meta_resp.json = MagicMock(
+            return_value={
+                "url": "http://169.254.169.254/latest/meta-data/",
+                "mime_type": "image/jpeg",
+            }
+        )
+        adapter._http_client.get = AsyncMock(return_value=meta_resp)
+        safety_check = AsyncMock(return_value=False)
+        monkeypatch.setattr(wac, "async_is_safe_url", safety_check)
+
+        local_path, mime = await adapter._download_media_to_cache("media_xyz")
+
+        assert local_path is None and mime is None
+        safety_check.assert_awaited_once_with(
+            "http://169.254.169.254/latest/meta-data/"
+        )
+        adapter._http_client.get.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_connect_builds_guarded_http_client(self, monkeypatch):
+        from gateway.platforms import whatsapp_cloud as wac
+
+        adapter = _make_adapter()
+        adapter._mark_connected = MagicMock()
+
+        guarded_client = MagicMock()
+        guarded_client.aclose = AsyncMock()
+        guarded_factory = MagicMock(return_value=guarded_client)
+        monkeypatch.setattr(wac, "create_ssrf_safe_async_client", guarded_factory)
+
+        app = MagicMock()
+        app.router = MagicMock()
+        monkeypatch.setattr(wac.web, "Application", MagicMock(return_value=app))
+        runner = MagicMock()
+        runner.setup = AsyncMock()
+        runner.cleanup = AsyncMock()
+        monkeypatch.setattr(wac.web, "AppRunner", MagicMock(return_value=runner))
+        site = MagicMock()
+        site.start = AsyncMock()
+        monkeypatch.setattr(wac.web, "TCPSite", MagicMock(return_value=site))
+
+        assert await adapter.connect() is True
+        guarded_factory.assert_called_once()
+        assert guarded_factory.call_args.kwargs["timeout"] == 30.0
+        assert adapter._http_client is guarded_client
+
+        await adapter.disconnect()
+        guarded_client.aclose.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_metadata_failure_returns_none(self):
@@ -1399,4 +1463,3 @@ class TestReplyContextResolution:
         assert event.reply_to_message_id is None
         assert event.reply_to_text is None
         assert event.reply_to_is_own_message is False
-

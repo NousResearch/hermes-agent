@@ -16,6 +16,12 @@ growing the core.
 Two properties shape almost every design decision and are the lens for
 reviewing any change:
 
+- **Non-trivial AI-assisted engineering runs through Harness discipline.** Use
+  [`docs/harness-agenting-engineering.md`](docs/harness-agenting-engineering.md)
+  for spec-first context routing, extension placement, evidence gates, and
+  retention decisions. The bundled plugin/skill live at
+  `plugins/harness_engineering/` and
+  `skills/software-development/harness-agenting-engineering/`.
 - **Per-conversation prompt caching is sacred.** A long-lived conversation
   reuses a cached prefix every turn. Anything that mutates past context,
   swaps toolsets, or rebuilds the system prompt mid-conversation invalidates

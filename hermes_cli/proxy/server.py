@@ -29,9 +29,14 @@ from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 
 logger = logging.getLogger(__name__)
 
-# Headers we strip when forwarding to the upstream. ``host``/``content-length``
+# Headers we strip when forwarding to the upstream.  ``host``/``content-length``
 # are recomputed by aiohttp; ``authorization`` is replaced with our bearer.
-# Everything else (content-type, accept, user-agent, x-* headers) passes through.
+# Provider-specific auth headers (x-api-key, api-key, etc.) are also stripped
+# to prevent client credentials from leaking to the upstream -- the proxy
+# replaces auth with its own resolved bearer, so any client-carried credential
+# must be removed.  ``cookie``/``set-cookie`` are stripped to prevent session
+# token leakage.  Everything else (content-type, accept, user-agent, x-*
+# headers that are not auth-related) passes through.
 _HOP_BY_HOP_HEADERS = frozenset(
     {
         "host",
@@ -45,6 +50,17 @@ _HOP_BY_HOP_HEADERS = frozenset(
         "transfer-encoding",
         "upgrade",
         "authorization",  # we replace this one
+        # Provider-specific auth headers that could carry client credentials.
+        "x-api-key",       # Anthropic native, Google AI Studio
+        "api-key",         # Azure OpenAI
+        "x-goog-api-key",  # Google/Gemini native
+        "x-api-token",     # generic API token header
+        "x-auth-token",    # generic auth token header
+        "x-access-token",  # generic access token header
+        "apikey",          # alternative casing used by some providers
+        # Session cookies must not leak to the upstream API provider.
+        "cookie",
+        "set-cookie",
     }
 )
 

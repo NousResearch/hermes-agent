@@ -9,6 +9,7 @@ import sys
 import subprocess
 import shutil
 import importlib.util
+from collections import namedtuple
 from pathlib import Path
 
 from hermes_cli.config import (
@@ -650,6 +651,86 @@ def report_deprecated_config_and_env(
         )
         check_info(f"Migrate {legacy}: {replacement}")
     return findings
+
+
+# Result type shared by the connectivity probes inside ``run_doctor``. Lives
+# at module level so individually testable probes (``_probe_bedrock``) can
+# construct it without running the whole doctor.
+_ConnectivityResult = namedtuple(
+    "_ConnectivityResult", ["label", "lines", "issues"]
+)
+
+
+def _probe_bedrock() -> "_ConnectivityResult":
+    """Probe AWS Bedrock connectivity via the control plane.
+
+    Calls ``boto3.client("bedrock").list_foundation_models()`` — the control
+    plane. A green tick here means model listing works with the resolved
+    credentials; it says nothing about the inference endpoint the agent is
+    actually configured to call (``model.base_url``), which can still reject
+    every request (e.g. 401 while this probe passes, #87195). The success
+    line therefore says ``control plane only`` so it is not read as
+    "inference works".
+    """
+    try:
+        from agent.bedrock_adapter import (
+            has_aws_credentials,
+            resolve_aws_auth_env_var,
+            resolve_bedrock_region,
+        )
+    except ImportError as e:
+        # A broken/incompatible adapter install must not read as a silent
+        # green pass (indistinguishable from "no AWS credentials") — a
+        # user WITH credentials would never learn the probe didn't run.
+        warn_label = "AWS Bedrock".ljust(20)
+        return _ConnectivityResult(
+            "AWS Bedrock",
+            [(color("⚠", Colors.YELLOW), warn_label,
+              color(f"(bedrock adapter unavailable: {e})", Colors.DIM))],
+            ["Bedrock probe skipped: agent.bedrock_adapter failed to import"],
+        )
+    if not has_aws_credentials():
+        return _ConnectivityResult("AWS Bedrock", [], [])
+    auth_var = resolve_aws_auth_env_var()
+    region = resolve_bedrock_region()
+    label = "AWS Bedrock".ljust(20)
+    try:
+        import boto3
+        from botocore.config import Config as _BotoConfig
+        # Trim retries on the actual Bedrock API call so a transient
+        # failure doesn't pad the doctor run by 30+ seconds.
+        cfg = _BotoConfig(
+            connect_timeout=5,
+            read_timeout=10,
+            retries={"max_attempts": 1},
+        )
+        client = boto3.client("bedrock", region_name=region, config=cfg)
+        resp = client.list_foundation_models()
+        n = len(resp.get("modelSummaries", []))
+        return _ConnectivityResult(
+            "AWS Bedrock",
+            [(color("✓", Colors.GREEN), label,
+              color(f"({auth_var}, {region}, {n} models, control plane only)",
+                    Colors.DIM))],
+            [],
+        )
+    except ImportError:
+        return _ConnectivityResult(
+            "AWS Bedrock",
+            [(color("⚠", Colors.YELLOW), label,
+              color(f"(boto3 not installed — {sys.executable} -m pip install boto3)",
+                    Colors.DIM))],
+            [f"Install boto3 for Bedrock: {sys.executable} -m pip install boto3"],
+        )
+    except Exception as e:
+        err_name = type(e).__name__
+        return _ConnectivityResult(
+            "AWS Bedrock",
+            [(color("⚠", Colors.YELLOW), label,
+              color(f"({err_name}: {e})", Colors.DIM))],
+            [f"AWS Bedrock: {err_name} — check IAM permissions for "
+             f"bedrock:ListFoundationModels"],
+        )
 
 
 def _enabled_cli_toolsets_for_doctor() -> set[str] | None:
@@ -2465,11 +2546,7 @@ def run_doctor(args):
     # the line(s) to print and any issue strings to append. No globals,
     # no shared mutable state, no printing inside the workers.
     import concurrent.futures as _futures
-    from collections import namedtuple as _namedtuple
 
-    _ConnectivityResult = _namedtuple(
-        "_ConnectivityResult", ["label", "lines", "issues"]
-    )
     _probes: list = []  # list of (label, callable) submitted in display order
 
     def _probe_openrouter() -> _ConnectivityResult:
@@ -2685,57 +2762,6 @@ def run_doctor(args):
                 [(color("⚠", Colors.YELLOW), label,
                   color(f"({e})", Colors.DIM))],
                 [],
-            )
-
-    def _probe_bedrock() -> _ConnectivityResult:
-        try:
-            from agent.bedrock_adapter import (
-                has_aws_credentials,
-                resolve_aws_auth_env_var,
-                resolve_bedrock_region,
-            )
-        except ImportError:
-            return _ConnectivityResult("AWS Bedrock", [], [])
-        if not has_aws_credentials():
-            return _ConnectivityResult("AWS Bedrock", [], [])
-        auth_var = resolve_aws_auth_env_var()
-        region = resolve_bedrock_region()
-        label = "AWS Bedrock".ljust(20)
-        try:
-            import boto3
-            from botocore.config import Config as _BotoConfig
-            # Trim retries on the actual Bedrock API call so a transient
-            # failure doesn't pad the doctor run by 30+ seconds.
-            cfg = _BotoConfig(
-                connect_timeout=5,
-                read_timeout=10,
-                retries={"max_attempts": 1},
-            )
-            client = boto3.client("bedrock", region_name=region, config=cfg)
-            resp = client.list_foundation_models()
-            n = len(resp.get("modelSummaries", []))
-            return _ConnectivityResult(
-                "AWS Bedrock",
-                [(color("✓", Colors.GREEN), label,
-                  color(f"({auth_var}, {region}, {n} models)", Colors.DIM))],
-                [],
-            )
-        except ImportError:
-            return _ConnectivityResult(
-                "AWS Bedrock",
-                [(color("⚠", Colors.YELLOW), label,
-                  color(f"(boto3 not installed — {sys.executable} -m pip install boto3)",
-                        Colors.DIM))],
-                [f"Install boto3 for Bedrock: {sys.executable} -m pip install boto3"],
-            )
-        except Exception as e:
-            err_name = type(e).__name__
-            return _ConnectivityResult(
-                "AWS Bedrock",
-                [(color("⚠", Colors.YELLOW), label,
-                  color(f"({err_name}: {e})", Colors.DIM))],
-                [f"AWS Bedrock: {err_name} — check IAM permissions for "
-                 f"bedrock:ListFoundationModels"],
             )
 
     def _probe_azure_entra() -> _ConnectivityResult:

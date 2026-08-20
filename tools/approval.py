@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 # instantly bypass all approval checks — a prompt-injection escalation path.
 _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 
+# Platform gate for the Windows-only MSYS process-substitution guard. Read at
+# import time; a process does not change platform mid-flight.
+_IS_WINDOWS: bool = sys.platform == "win32"
+
 # Per-thread/per-task gateway session identity.
 # Gateway runs agent turns concurrently in executor threads, so reading a
 # process-global env var for session identity is racy. Keep env fallback for
@@ -596,6 +600,105 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     if _SUDO_STDIN_RE.search(normalized):
         return (True, "sudo password guessing via stdin (sudo -S)")
     return (False, None)
+
+
+# ---------------------------------------------------------------------------
+# MSYS process substitution guard (Windows-only, unconditional)
+# ---------------------------------------------------------------------------
+# On Windows git-bash, bash process substitution ``<(cmd)`` / ``>(cmd)``
+# expands to ``/dev/fd/N`` — an MSYS pipe handle. Native Windows programs
+# (python, git, curl, uv, …) have NO access to that handle and fail with
+# "file not found", even with MSYS_NO_PATHCONV / MSYS2_ARG_CONV_EXCL fully
+# configured: the fd object does not cross the process boundary, so no path
+# conversion can rescue it (the same structural dead end as #56700/#56147 —
+# see hermes-troubleshooting MSYS section). This is a command class that is
+# GUARANTEED to fail on Windows, so like the hardline/sudo-stdin floors it
+# fires BEFORE the yolo / mode=off bypass: letting it through is not a risk
+# trade-off, it just re-produces the same confusing "file not found" error.
+#
+# v1 was a bare substring regex and false-positived on quoted literals
+# (echo "<( text"), single-quoted grep patterns, comments, and backslash
+# escapes — all legitimate data, not process substitution. v2 scans the RAW
+# command (before _normalize_command_for_detection, whose backslash-strip
+# would corrupt quote state — same lesson as upstream d127fb219) with a
+# shell-aware state machine: single quotes are literal, double quotes honour
+# backslash escapes, a ``#`` at a word boundary starts a comment to end of
+# line, and a backslash outside quotes escapes the next character. Only
+# code-position occurrences of ``<(``, ``>(``, ``/dev/fd/`` count.
+#
+# Known limitation (accepted): MSYS-to-MSYS process substitution (diff
+# <(a) <(b) where every consumer is an MSYS program) actually works on
+# git-bash, but the guard blocks it too — determining whether a consumer is
+# native vs MSYS needs an unbounded whitelist, and agent commands almost
+# always feed native programs, so the block is kept wholesale and the block
+# message teaches the always-available rewrite (pipe / real file).
+def _find_msys_process_substitution(command: str) -> bool:
+    """Return True if ``command`` contains code-position process substitution."""
+    cmd = command.lower()
+    n = len(cmd)
+    i = 0
+    quote: str | None = None  # None | "'" | '"'
+    while i < n:
+        ch = cmd[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if quote == '"':
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if ch == '"':
+                quote = None
+            i += 1
+            continue
+        # Unquoted code position.
+        if ch == "\\":
+            i += 2  # backslash escapes the next char (literal)
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "#" and (i == 0 or cmd[i - 1] in " \t\n;|&("):
+            nl = cmd.find("\n", i)
+            i = n if nl == -1 else nl + 1
+            continue
+        if cmd.startswith("<(", i) or cmd.startswith(">(", i) \
+                or cmd.startswith("/dev/fd/", i):
+            return True
+        i += 1
+    return False
+
+
+def _check_msys_process_substitution(command: str) -> tuple:
+    """Detect bash process substitution syntax on Windows/MSYS hosts.
+
+    Returns:
+        (is_blocked: bool, description: str | None)
+    """
+    if not _IS_WINDOWS:
+        return (False, None)
+    if _find_msys_process_substitution(command):
+        return (True, "bash process substitution (<(...), >(...), /dev/fd/)")
+    return (False, None)
+
+
+def _msys_process_substitution_block_result(description: str) -> dict:
+    """Build the standard block result for the MSYS process substitution guard."""
+    return {
+        "approved": False,
+        "message": (
+            f"BLOCKED (MSYS process substitution): {description}. On Windows "
+            "this syntax expands to /dev/fd/N — an MSYS pipe handle that "
+            "native programs (python, git, curl, uv, …) cannot open, so the "
+            "command cannot succeed. Write the data to a real file first "
+            "(write_file / mktemp) and pass its path, or restructure with a "
+            "pipe. This block is not a security risk — it is a command class "
+            "that is structurally broken on Windows and cannot be bypassed."
+        ),
+    }
 
 
 def detect_hardline_command(command: str) -> tuple:
@@ -4377,6 +4480,16 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    # == MSYS process substitution guard (Windows-only) ==
+    # `<(...)`/`>(...)`/`/dev/fd/` expand to MSYS pipe handles that native
+    # Windows programs cannot open — the command is structurally doomed, so
+    # like the hardline floor this fires BEFORE the yolo / mode=off bypass.
+    is_msys_psub, msys_psub_desc = _check_msys_process_substitution(command)
+    if is_msys_psub:
+        logger.warning("MSYS process substitution block: %s (command: %s)",
+                       msys_psub_desc, command[:200])
+        return _msys_process_substitution_block_result(msys_psub_desc)
 
     # User-defined deny rules (approvals.deny in config.yaml): like the
     # hardline floor, these fire BEFORE the yolo / mode=off bypass — a deny

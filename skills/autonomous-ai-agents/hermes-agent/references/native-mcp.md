@@ -71,6 +71,8 @@ mcp_servers:
     url: "https://my-server.example.com/mcp"   # (required) server URL
     headers:                                     # (optional) HTTP headers
       Authorization: "Bearer sk-..."
+    headers_from_env:                            # (optional) secret headers
+      X-Api-Key: "MY_SERVER_API_KEY"            # header -> environment variable
     timeout: 180               # (optional) per-tool-call timeout in seconds, default: 120
     connect_timeout: 60        # (optional) initial connection timeout in seconds, default: 60
 ```
@@ -84,6 +86,7 @@ mcp_servers:
 | `env`             | dict   | `{}`    | Extra environment variables for the subprocess    |
 | `url`             | string | --      | Server URL (HTTP transport, required)             |
 | `headers`         | dict   | `{}`    | HTTP headers sent with every request              |
+| `headers_from_env`| dict   | `{}`    | HTTP header names mapped to environment variables |
 | `timeout`         | int    | `120`   | Per-tool-call timeout in seconds                  |
 | `connect_timeout` | int    | `60`    | Timeout for initial connection and discovery      |
 
@@ -156,6 +159,24 @@ mcp_servers:
     headers:
       Authorization: "Bearer sk-..."
 ```
+
+For credentials that should not be stored in `config.yaml`, map each HTTP
+header to an environment variable. Hermes resolves the values immediately
+before connecting and fails closed if a variable is missing, empty, malformed,
+or duplicates a literal header (header matching is case-insensitive):
+
+```yaml
+mcp_servers:
+  remote_api:
+    url: "https://mcp.example.com/mcp"
+    headers_from_env:
+      Authorization: "REMOTE_MCP_AUTHORIZATION"
+      X-Tenant-Key: "REMOTE_MCP_TENANT_KEY"
+```
+
+The environment variables may come from `~/.hermes/.env` or an enabled Hermes
+external secret source such as Bitwarden or 1Password. Their values are never
+written back to the MCP configuration.
 
 If HTTP support is not available in your installed `mcp` version, the server will fail with an ImportError and other servers will continue normally.
 

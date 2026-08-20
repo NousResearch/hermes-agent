@@ -37,6 +37,8 @@ Example config::
         url: "https://my-mcp-server.example.com/mcp"
         headers:
           Authorization: "Bearer sk-..."
+        headers_from_env:      # optional: header name -> environment variable
+          X-Api-Key: "REMOTE_API_KEY"
         identity_header:       # optional per-user identity header attached
           name: "X-User-Id"    # to this server's HTTP/SSE requests
           value_from: "static" # "static" (default) or "profile"
@@ -1627,6 +1629,64 @@ def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dic
         )
         return headers
     headers[name] = value
+    return headers
+
+
+_HTTP_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _resolve_http_headers(server_name: str, config: dict) -> dict:
+    """Return literal plus environment-sourced HTTP headers.
+
+    ``headers_from_env`` keeps secret values out of ``config.yaml`` while
+    remaining explicit about which process environment variables may cross
+    the MCP trust boundary. Missing, ambiguous, or unsafe values fail closed
+    before any connection attempt.
+    """
+    headers = dict(config.get("headers") or {})
+    raw = config.get("headers_from_env")
+    if raw is None:
+        return headers
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"MCP server '{server_name}': headers_from_env must be a mapping "
+            "of HTTP header names to environment variable names."
+        )
+
+    occupied = {str(name).lower() for name in headers}
+    for header_name, env_name in raw.items():
+        if not isinstance(header_name, str) or not _HTTP_HEADER_NAME_RE.fullmatch(
+            header_name
+        ):
+            raise ValueError(
+                f"MCP server '{server_name}': headers_from_env contains an "
+                "invalid HTTP header name."
+            )
+        if not isinstance(env_name, str) or not _ENV_VAR_NAME_RE.fullmatch(env_name):
+            raise ValueError(
+                f"MCP server '{server_name}': headers_from_env for "
+                f"'{header_name}' must name a valid environment variable."
+            )
+        normalized = header_name.lower()
+        if normalized in occupied:
+            raise ValueError(
+                f"MCP server '{server_name}': HTTP header '{header_name}' is "
+                "configured more than once."
+            )
+        value = os.environ.get(env_name)
+        if not value:
+            raise ValueError(
+                f"MCP server '{server_name}': environment variable "
+                f"'{env_name}' is not set for HTTP header '{header_name}'."
+            )
+        if any(char in value for char in ("\r", "\n", "\x00")):
+            raise ValueError(
+                f"MCP server '{server_name}': environment variable "
+                f"'{env_name}' contains unsafe characters for an HTTP header."
+            )
+        headers[header_name] = value
+        occupied.add(normalized)
     return headers
 
 
@@ -3387,7 +3447,7 @@ class MCPServerTask:
             )
 
         url = config["url"]
-        headers = dict(config.get("headers") or {})
+        headers = _resolve_http_headers(self.name, config)
         # Portable Agent Plugins v1 packages set strict_redirect_headers:
         # configured headers are visible package data and MUST NOT be
         # forwarded to a different origin through a redirect (spec §7.2.1).
@@ -3789,7 +3849,11 @@ class MCPServerTask:
             # would incorrectly block the OAuth flow before it can run.
             if config.get("transport") != "sse" and not config.get("skip_preflight") and not self._ready.is_set() and self._auth_type != "oauth":
                 try:
-                    _probe_headers = dict(config.get("headers") or {})
+                    # Use the same resolved authentication headers as the real
+                    # transport. Otherwise an authenticated endpoint can look
+                    # like a plain HTML login page and be rejected before the
+                    # MCP handshake gets a chance to run.
+                    _probe_headers = _resolve_http_headers(self.name, config)
                     await self._preflight_content_type(
                         config["url"],
                         headers=_probe_headers,

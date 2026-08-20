@@ -465,6 +465,7 @@ def _scan_gateway_pids(
     exclude_pids: set[int],
     all_profiles: bool = False,
     include_restart_managers: bool = False,
+    authoritative_pid: int | None = None,
 ) -> list[int]:
     """Best-effort process-table scan for gateway PIDs.
 
@@ -592,9 +593,22 @@ def _scan_gateway_pids(
                         all_profiles or _matches_current_profile(current_cmd)
                     ):
                         try:
-                            _append_unique_pid(pids, int(pid_str), exclude_pids)
+                            candidate_pid = int(pid_str)
                         except ValueError:
                             pass
+                        else:
+                            # A live profile PID/lock owner is authoritative.
+                            # Windows startup attempts can stall before claiming
+                            # either and retain the same ``gateway run`` argv;
+                            # do not report those stragglers as live gateways.
+                            if (
+                                all_profiles
+                                or authoritative_pid is None
+                                or candidate_pid == authoritative_pid
+                            ):
+                                _append_unique_pid(
+                                    pids, candidate_pid, exclude_pids
+                                )
                     current_cmd = ""
         else:
             # Try /proc first (works in Docker without procps installed),
@@ -726,11 +740,13 @@ def find_gateway_pids(
     """
     _exclude = set(exclude_pids or set())
     pids: list[int] = []
+    authoritative_pid: int | None = None
     if not all_profiles:
         try:
             from gateway.status import get_running_pid
 
-            _append_unique_pid(pids, get_running_pid(), _exclude)
+            authoritative_pid = get_running_pid()
+            _append_unique_pid(pids, authoritative_pid, _exclude)
         except Exception:
             pass
     for pid in _get_service_pids():
@@ -743,6 +759,7 @@ def find_gateway_pids(
         _exclude,
         all_profiles=all_profiles,
         include_restart_managers=include_restart_managers,
+        authoritative_pid=authoritative_pid,
     ):
         _append_unique_pid(pids, pid, _exclude)
     return pids
@@ -5552,6 +5569,23 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
 
+    # Claim singleton ownership before importing gateway.run or creating the
+    # asyncio event loop. On Windows a concurrent pythonw startup can stall in
+    # Proactor loop construction before start_gateway() reaches its later lock
+    # guard, leaving a live orphan with a gateway-looking command line.
+    #
+    # Replacement is excluded because start_gateway(replace=True) must first
+    # terminate the current lock owner; its existing post-termination lock race
+    # remains authoritative for that explicit takeover path.
+    _startup_runtime_lock_acquired = False
+    if not replace:
+        from gateway.status import acquire_gateway_runtime_lock
+
+        _startup_runtime_lock_acquired = acquire_gateway_runtime_lock()
+        if not _startup_runtime_lock_acquired:
+            print_error("Gateway runtime lock is already held by another instance.")
+            return False
+
     # Detached Windows gateway runs must ignore console-control broadcasts
     # from sibling CLI processes, but foreground `hermes gateway run` still
     # needs to obey the banner's "Press Ctrl+C to stop" contract.
@@ -5745,6 +5779,13 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         # finalization so non-daemon worker threads (notably in-flight cron
         # ThreadPoolExecutor jobs) cannot keep the old gateway alive and delay a
         # service-managed /restart by minutes.
+        if _startup_runtime_lock_acquired:
+            from gateway.status import release_gateway_runtime_lock
+
+            # start_gateway() normally releases this itself. This idempotent
+            # release also covers mocked/test runners and early return paths.
+            release_gateway_runtime_lock()
+
         from gateway.run import _exit_after_graceful_shutdown
 
         _exit_after_graceful_shutdown(code)

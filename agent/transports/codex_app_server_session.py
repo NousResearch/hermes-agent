@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -198,13 +199,9 @@ def _coerce_turn_input_text(user_input: Any) -> str:
     return "" if user_input is None else str(user_input)
 
 
-# Substrings in codex stderr / JSON-RPC error messages that signal the
-# subprocess died because its OAuth credentials are no longer valid.
-# Kept conservative: we only redirect users to `codex login` when we're
-# reasonably sure that's the actual failure, otherwise we surface the
-# original error verbatim. Mirrors openclaw beta.8's auth-refresh
-# classification.
-_OAUTH_REFRESH_FAILURE_HINTS = (
+# Strong credential failure signals that are safe to classify in either the
+# primary operation error or ambient app-server stderr.
+_OAUTH_CREDENTIAL_FAILURE_HINTS = (
     "invalid_grant",
     "invalid grant",
     "refresh token",
@@ -213,41 +210,59 @@ _OAUTH_REFRESH_FAILURE_HINTS = (
     "token_refresh",
     "token has expired",
     "expired_token",
+    "token_expired",
     "expired token",
     "not authenticated",
     "unauthenticated",
-    "unauthorized",
-    "401 unauthorized",
     "re-authenticate",
     "reauthenticate",
     "please log in",
     "please login",
-    "auth profile",
     "no auth profile",
+    "missing auth profile",
+    "auth profile not found",
+)
+
+# Generic auth words are authoritative in the primary JSON-RPC/turn error, but
+# not in stderr. Codex writes independent ChatGPT plugin prewarm failures to
+# stderr, so a plugin HTTP 401 must not hide an unrelated core runtime error.
+_PRIMARY_OAUTH_FAILURE_HINTS = (
+    *_OAUTH_CREDENTIAL_FAILURE_HINTS,
+    "unauthorized",
+    "401 unauthorized",
     "oauth",
+    "auth profile",
 )
 
 
-def _classify_oauth_failure(*parts: str) -> Optional[str]:
-    """Return a user-friendly re-auth hint if any of the provided strings
-    look like a codex OAuth/token-refresh failure; otherwise None.
+def _classify_oauth_failure(
+    primary_error: str = "",
+    *,
+    stderr: str = "",
+) -> Optional[str]:
+    """Return a re-auth hint when the primary error or stderr proves that
+    Codex credentials are invalid.
 
-    Used for both `turn/start` JSON-RPC errors and post-mortem stderr
-    inspection when the subprocess exits unexpectedly. Conservative on
-    purpose — we only redirect users to `codex login` when the signal
-    is strong, so unrelated runtime failures still surface verbatim.
+    Generic 401/unauthorized/OAuth text is accepted only from the primary
+    operation error. Ambient stderr requires a stronger refresh/token/profile
+    signal because ChatGPT plugin prewarm failures are independent of the core
+    app-server request.
     """
-    haystack = " ".join(p for p in parts if p).lower()
-    if not haystack:
-        return None
-    for needle in _OAUTH_REFRESH_FAILURE_HINTS:
-        if needle in haystack:
-            return (
-                "Codex authentication failed — your ChatGPT/Codex login "
-                "looks expired or invalid. Run `codex login` to refresh, "
-                "then retry. (Fall back to default runtime with "
-                "`/codex-runtime auto` if the issue persists.)"
-            )
+    primary_haystack = str(primary_error or "").lower()
+    stderr_haystack = str(stderr or "").lower()
+    primary_match = any(
+        needle in primary_haystack for needle in _PRIMARY_OAUTH_FAILURE_HINTS
+    ) or re.search(r"\b401\b", primary_haystack) is not None
+    stderr_match = any(
+        needle in stderr_haystack for needle in _OAUTH_CREDENTIAL_FAILURE_HINTS
+    )
+    if primary_match or stderr_match:
+        return (
+            "Codex authentication failed — your ChatGPT/Codex login "
+            "looks expired or invalid. Run `codex login` to refresh, "
+            "then retry. (Fall back to default runtime with "
+            "`/codex-runtime auto` if the issue persists.)"
+        )
     return None
 
 
@@ -531,7 +546,7 @@ class CodexAppServerSession:
             # Classify auth/refresh failures so the user gets a clear
             # `codex login` pointer instead of a raw RPC error string.
             stderr_blob = "\n".join(self._client.stderr_tail(40))
-            hint = _classify_oauth_failure(exc.message, stderr_blob)
+            hint = _classify_oauth_failure(exc.message, stderr=stderr_blob)
             if hint is not None:
                 result.error = hint
                 # Subprocess is fine on a JSON-RPC level here, but the
@@ -548,7 +563,7 @@ class CodexAppServerSession:
         except TimeoutError as exc:
             # turn/start hanging is a strong signal the subprocess is wedged.
             stderr_blob = "\n".join(self._client.stderr_tail(40))
-            hint = _classify_oauth_failure(stderr_blob)
+            hint = _classify_oauth_failure(stderr=stderr_blob)
             result.error = hint or self._format_error_with_stderr(
                 "turn/start timed out", exc
             )
@@ -579,7 +594,7 @@ class CodexAppServerSession:
             # rather than waiting for the full turn deadline.
             if not self._client.is_alive():
                 stderr_blob = "\n".join(self._client.stderr_tail(60))
-                hint = _classify_oauth_failure(stderr_blob)
+                hint = _classify_oauth_failure(stderr=stderr_blob)
                 if hint is not None:
                     result.error = hint
                 else:
@@ -748,7 +763,10 @@ class CodexAppServerSession:
                         stderr_blob = "\n".join(
                             self._client.stderr_tail(40)
                         )
-                        hint = _classify_oauth_failure(err_msg, stderr_blob)
+                        hint = _classify_oauth_failure(
+                            err_msg,
+                            stderr=stderr_blob,
+                        )
                         if hint is not None:
                             result.error = hint
                             result.should_retire = True
@@ -824,7 +842,7 @@ class CodexAppServerSession:
             )
         except CodexAppServerError as exc:
             stderr_blob = "\n".join(self._client.stderr_tail(40))
-            hint = _classify_oauth_failure(exc.message, stderr_blob)
+            hint = _classify_oauth_failure(exc.message, stderr=stderr_blob)
             if hint is not None:
                 result.error = hint
                 result.should_retire = True
@@ -835,7 +853,7 @@ class CodexAppServerSession:
             return result
         except TimeoutError as exc:
             stderr_blob = "\n".join(self._client.stderr_tail(40))
-            hint = _classify_oauth_failure(stderr_blob)
+            hint = _classify_oauth_failure(stderr=stderr_blob)
             result.error = hint or self._format_error_with_stderr(
                 "thread/compact/start timed out", exc
             )
@@ -853,7 +871,7 @@ class CodexAppServerSession:
 
             if not self._client.is_alive():
                 stderr_blob = "\n".join(self._client.stderr_tail(60))
-                hint = _classify_oauth_failure(stderr_blob)
+                hint = _classify_oauth_failure(stderr=stderr_blob)
                 if hint is not None:
                     result.error = hint
                 else:
@@ -957,7 +975,10 @@ class CodexAppServerSession:
                     err_obj = turn_obj.get("error")
                     err_msg = _format_responses_error(err_obj, str(turn_status))
                     stderr_blob = "\n".join(self._client.stderr_tail(40))
-                    hint = _classify_oauth_failure(err_msg, stderr_blob)
+                    hint = _classify_oauth_failure(
+                        err_msg,
+                        stderr=stderr_blob,
+                    )
                     if hint is not None:
                         result.error = hint
                         result.should_retire = True

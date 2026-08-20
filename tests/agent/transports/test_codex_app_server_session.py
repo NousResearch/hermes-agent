@@ -366,6 +366,48 @@ class TestRunTurn:
         assert "sk-stalled-secret-abc123" not in r.error
         assert r.should_retire is True
 
+    def test_turn_start_failure_preserves_error_when_plugin_stderr_has_401(self):
+        """A background ChatGPT plugin failure is not evidence that the
+        primary app-server request failed authentication."""
+        client = FakeClient()
+        client.set_stderr_tail([
+            "WARN failed to warm featured plugin ids cache: HTTP 401 Unauthorized",
+        ])
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        def boom(method, params):
+            if method == "turn/start":
+                raise CodexAppServerError(
+                    code=-32603,
+                    message="workspace initialization failed",
+                )
+            return {"thread": {"id": "t"}, "activePermissionProfile": {"id": "x"}}
+
+        client._request_handler = boom
+        r = make_session(client).run_turn("hi", turn_timeout=2.0)
+
+        assert r.error is not None
+        assert "workspace initialization failed" in r.error
+        assert "codex login" not in r.error
+
+    def test_turn_start_timeout_is_not_reclassified_by_plugin_401_stderr(self):
+        client = FakeClient()
+        client.set_stderr_tail([
+            "WARN failed to warm featured plugin ids cache: HTTP 401 Unauthorized",
+        ])
+
+        def stall(method, params):
+            if method == "turn/start":
+                raise TimeoutError("codex method 'turn/start' timed out after 10s")
+            return {"thread": {"id": "t"}, "activePermissionProfile": {"id": "x"}}
+
+        client._request_handler = stall
+        r = make_session(client).run_turn("hi", turn_timeout=2.0)
+
+        assert r.error is not None
+        assert "turn/start timed out" in r.error
+        assert "codex login" not in r.error
+
 
 
 
@@ -437,6 +479,26 @@ class TestCompactThread:
         assert r.final_text == "compacted"
         assert r.token_usage_last["totalTokens"] == 12
         assert r.model_context_window == 200000
+
+    def test_compact_start_timeout_is_not_reclassified_by_plugin_401_stderr(self):
+        client = FakeClient()
+        client.set_stderr_tail([
+            "WARN failed to warm featured plugin ids cache: HTTP 401 Unauthorized",
+        ])
+
+        def stall(method, params):
+            if method == "thread/compact/start":
+                raise TimeoutError(
+                    "codex method 'thread/compact/start' timed out after 10s"
+                )
+            return {"thread": {"id": "t"}, "activePermissionProfile": {"id": "x"}}
+
+        client._request_handler = stall
+        r = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert r.error is not None
+        assert "thread/compact/start timed out" in r.error
+        assert "codex login" not in r.error
 
     def test_compact_thread_ignores_foreign_child_completion(self):
         client = FakeClient()
@@ -887,6 +949,44 @@ class TestClassifyOAuthFailure:
         hint = _classify_oauth_failure("HTTP 401 Unauthorized")
         assert hint is not None
 
+    def test_bare_401_primary_error_is_classified(self):
+        from agent.transports.codex_app_server_session import (
+            _classify_oauth_failure,
+        )
+        hint = _classify_oauth_failure("request failed with HTTP status 401")
+        assert hint is not None
+
+    def test_plugin_401_stderr_does_not_override_non_auth_primary_error(self):
+        from agent.transports.codex_app_server_session import (
+            _classify_oauth_failure,
+        )
+        hint = _classify_oauth_failure(
+            "workspace initialization failed",
+            stderr=(
+                "failed to warm featured plugin ids cache: HTTP 401 Unauthorized"
+            ),
+        )
+        assert hint is None
+
+    def test_informational_auth_profile_stderr_is_not_classified(self):
+        from agent.transports.codex_app_server_session import (
+            _classify_oauth_failure,
+        )
+        hint = _classify_oauth_failure(
+            "workspace initialization failed",
+            stderr='using auth profile "custom-provider"',
+        )
+        assert hint is None
+
+    def test_token_expired_stderr_is_classified(self):
+        from agent.transports.codex_app_server_session import (
+            _classify_oauth_failure,
+        )
+        hint = _classify_oauth_failure(
+            stderr="OAuth refresh failed: token_expired"
+        )
+        assert hint is not None
+
 
     def test_empty_inputs(self):
         from agent.transports.codex_app_server_session import (
@@ -894,5 +994,4 @@ class TestClassifyOAuthFailure:
         )
         assert _classify_oauth_failure() is None
         assert _classify_oauth_failure("") is None
-        assert _classify_oauth_failure("", None) is None  # type: ignore[arg-type]
-
+        assert _classify_oauth_failure(stderr=None) is None  # type: ignore[arg-type]

@@ -280,6 +280,13 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
                 # dry-run output too.
                 continue
 
+        # Re-validate stale "test" entries (fixes #75403): a durable
+        # project tree re-classification must also be reflected here.
+        if cat == "test":
+            re_cat = guess_category(p)
+            if re_cat != "test":
+                continue
+
         if cat == "test":
             auto.append(item)
         elif cat == "temp" and age > 7:

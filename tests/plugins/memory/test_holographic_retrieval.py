@@ -95,6 +95,95 @@ def test_prefetch_recovers_prose_query(retriever_with_facts):
     assert "deployment rollback" in results[0]["content"].lower()
 
 
+# ---------------------------------------------------------------------------
+# Entity-bound recall — search/prefetch must consult the entity index when
+# FTS5 content-token overlap is zero (#77919)
+# ---------------------------------------------------------------------------
+
+def test_search_recovers_entity_bound_facts(tmp_path):
+    """Facts bound to an entity the query names must surface even when the
+    fact content shares no tokens with the query.
+
+    Regression for #77919: search() short-circuited on empty FTS5
+    candidates, so prefetch returned empty context even though probe()
+    would find the entity-bound facts (chicken-and-egg: the agent never
+    learns the entity exists to probe it).
+    """
+    db_path = tmp_path / "entity_recall.db"
+    store = MemoryStore(str(db_path))
+    try:
+        # Content deliberately shares no tokens with the query terms.
+        store.add_fact(
+            "The nightly run rebuilds the indexes before the first user opens the app.",
+            category="project",
+        )
+        # Bind the fact to an entity whose NAME contains the query terms.
+        entity_id = store._resolve_entity("Morning Briefing")
+        fact_id = store._conn.execute(
+            "SELECT fact_id FROM facts LIMIT 1"
+        ).fetchone()["fact_id"]
+        store._link_fact_entity(fact_id, entity_id)
+
+        retriever = FactRetriever(store=store)
+        results = retriever.search("morning briefing")
+        assert results, "entity-bound fact should be recovered via entity index"
+        assert any("nightly run" in r["content"].lower() for r in results)
+    finally:
+        store.close()
+
+
+def test_search_recovers_entity_alias_facts(tmp_path):
+    """Entity aliases participate in the entity-index recall path (#77919)."""
+    db_path = tmp_path / "entity_alias_recall.db"
+    store = MemoryStore(str(db_path))
+    try:
+        store.add_fact(
+            "Uses a CPAP machine every night at low pressure.",
+            category="general",
+        )
+        entity_id = store._resolve_entity("OSA")
+        store._conn.execute(
+            "UPDATE entities SET aliases = ? WHERE entity_id = ?",
+            ("sleep apnea, apnea", entity_id),
+        )
+        store._conn.commit()
+        fact_id = store._conn.execute(
+            "SELECT fact_id FROM facts LIMIT 1"
+        ).fetchone()["fact_id"]
+        store._link_fact_entity(fact_id, entity_id)
+
+        retriever = FactRetriever(store=store)
+        results = retriever.search("sleep apnea")
+        assert results, "alias-matched entity fact should be recovered"
+        assert any("CPAP" in r["content"] for r in results)
+    finally:
+        store.close()
+
+
+def test_search_entity_augmentation_respects_category(tmp_path):
+    """Entity augmentation honors the category filter (#77919)."""
+    db_path = tmp_path / "entity_category_recall.db"
+    store = MemoryStore(str(db_path))
+    try:
+        store.add_fact(
+            "The nightly run rebuilds the indexes before the first user opens the app.",
+            category="project",
+        )
+        entity_id = store._resolve_entity("Morning Briefing")
+        fact_id = store._conn.execute(
+            "SELECT fact_id FROM facts LIMIT 1"
+        ).fetchone()["fact_id"]
+        store._link_fact_entity(fact_id, entity_id)
+
+        retriever = FactRetriever(store=store)
+        # Same entity, but the fact lives in category 'project' — a 'general'
+        # search must NOT surface it via the entity index.
+        results = retriever.search("morning briefing", category="general")
+        assert all(r.get("category") != "project" for r in results)
+    finally:
+        store.close()
+
+
 
 
 # ---------------------------------------------------------------------------

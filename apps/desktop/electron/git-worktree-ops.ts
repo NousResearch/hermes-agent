@@ -63,14 +63,15 @@ function parseWorktrees(out) {
   return trees
 }
 
-async function listWorktrees(repoPath, gitBin) {
-  let resolved
+// git's own "there is no repository here" verdict, as opposed to a probe that
+// never got an answer (missing binary, unreadable dir, timeout). Callers must
+// keep the two apart: only the first is EVIDENCE about the directory.
+function isNotARepository(err) {
+  return /not a git repository|not a working tree/i.test(`${String(err?.stderr || '')}\n${String(err?.message || '')}`)
+}
 
-  try {
-    resolved = resolveRequestedPathForIpc(repoPath, { purpose: 'Worktree list' })
-  } catch {
-    return []
-  }
+async function listWorktrees(repoPath, gitBin) {
+  const resolved = resolveRequestedPathForIpc(repoPath, { purpose: 'Worktree list' })
 
   try {
     const out = await runGit(gitBin, ['worktree', 'list', '--porcelain'], resolved)
@@ -82,8 +83,15 @@ async function listWorktrees(repoPath, gitBin) {
       detached: tree.detached,
       locked: tree.locked
     }))
-  } catch {
-    return []
+  } catch (err) {
+    // A repo always lists at least its main worktree, so an empty list is only
+    // ever "not a repository" — the sidebar reads it as exactly that. Any other
+    // failure must surface instead of impersonating that verdict.
+    if (isNotARepository(err)) {
+      return []
+    }
+
+    throw err
   }
 }
 
@@ -435,6 +443,21 @@ async function listBranches(repoPath, gitBin) {
   }
 }
 
+// Whether `dir` sits inside a git work tree, as three outcomes: git said yes,
+// git said no, or the probe itself failed. A failed probe is NOT a "no" — the
+// caller has to keep failing loudly rather than assume a plain folder.
+async function isInsideWorkTree(gitBin, dir) {
+  try {
+    return (await runGit(gitBin, ['rev-parse', '--is-inside-work-tree'], dir)).trim() === 'true'
+  } catch (err) {
+    if (isNotARepository(err)) {
+      return false
+    }
+
+    throw err
+  }
+}
+
 async function switchBranch(repoPath, branch, gitBin) {
   const resolved = resolveRequestedPathForIpc(repoPath, { purpose: 'Branch switch' })
 
@@ -460,6 +483,15 @@ async function switchBranch(repoPath, branch, gitBin) {
 
   if (!target) {
     throw new Error('Branch name is required.')
+  }
+
+  // A project folder that git confirms is not a repo has no branch to leave, so
+  // there is nothing to switch — succeed quietly rather than failing the
+  // caller's real work (the sidebar switches before starting a session). Never
+  // `git init` here: creating a repo behind the user's back is not a branch
+  // switch. A probe that FAILS still throws, so a broken git stays visible.
+  if (!(await isInsideWorkTree(gitBin, resolved))) {
+    return { branch: target }
   }
 
   await runGit(gitBin, ['switch', target], resolved)

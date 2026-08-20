@@ -13,6 +13,7 @@ import {
   NO_PROJECT_ID,
   overlayLiveLanes,
   overlayLivePreviews,
+  overlayRepoLanes,
   sessionProjectColor,
   type SidebarProjectTree,
   type SidebarSessionGroup,
@@ -425,6 +426,100 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
 
     expect(merged.map(g => g.label)).toEqual(['main'])
     expect(merged[0].isHome).toBeFalsy()
+    expect(merged[0].isFolder).toBeFalsy()
+  })
+
+  it("folds a NON-repo folder's fabricated branch lanes into one folder lane", () => {
+    const repo = {
+      id: '/docs/interview prep',
+      path: '/docs/interview prep',
+      groups: [
+        // What a plain folder actually produces: the backend's path fallback
+        // lane (dir name) plus a `main` lane minted from a null git_branch.
+        lane({
+          id: '/docs/interview prep::branch::interview prep',
+          label: 'interview prep',
+          isMain: true,
+          path: '/docs/interview prep',
+          sessions: [makeSession('/docs/interview prep', { id: 'a' })]
+        }),
+        lane({
+          id: '/docs/interview prep::branch::main',
+          label: 'main',
+          isMain: true,
+          path: '/docs/interview prep',
+          sessions: [makeSession('/docs/interview prep', { id: 'a' }), makeSession('/docs/interview prep', { id: 'b' })]
+        })
+      ]
+    }
+
+    // The probe RAN and git found nothing: not a work tree.
+    const merged = mergeRepoWorktreeGroups(repo, [])
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0].label).toBe('interview prep')
+    expect(merged[0].isFolder).toBe(true)
+    expect(merged[0].isHome).toBe(true)
+    expect(merged[0].path).toBe('/docs/interview prep')
+    // Each session lands once, not once per fabricated lane.
+    expect(merged[0].sessions.map(s => s.id).sort()).toEqual(['a', 'b'])
+  })
+
+  it("does not flag a real repo's home lane as a folder", () => {
+    const repo = {
+      id: '/repo',
+      path: '/repo',
+      groups: [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo' })]
+    }
+
+    const discovered: HermesGitWorktree[] = [
+      { branch: 'main', detached: false, isMain: true, locked: false, path: '/repo' }
+    ]
+
+    expect(mergeRepoWorktreeGroups(repo, discovered).find(g => g.isHome)?.isFolder).toBeFalsy()
+  })
+})
+
+describe('overlayRepoLanes (optimistic placement)', () => {
+  it('places a branchless new session in the existing root lane instead of minting "main"', () => {
+    const repo = {
+      id: '/docs/interview prep',
+      label: 'interview prep',
+      path: '/docs/interview prep',
+      sessionCount: 0,
+      groups: [
+        lane({
+          id: '/docs/interview prep::folder',
+          label: 'interview prep',
+          isMain: true,
+          isHome: true,
+          isFolder: true,
+          path: '/docs/interview prep'
+        })
+      ]
+    }
+
+    // A fresh row in a non-repo folder records no branch.
+    const fresh = makeSession('/docs/interview prep', { git_branch: null, id: 'new' })
+    const { groups } = overlayRepoLanes(repo, [fresh])
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0].id).toBe('/docs/interview prep::folder')
+    expect(groups[0].sessions.map(s => s.id)).toEqual(['new'])
+  })
+
+  it('still mints a branch lane for a session that records one', () => {
+    const repo = {
+      id: '/repo',
+      label: 'repo',
+      path: '/repo',
+      sessionCount: 0,
+      groups: [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo' })]
+    }
+
+    const { groups } = overlayRepoLanes(repo, [makeSession('/repo', { git_branch: 'feature', id: 'new' })])
+
+    expect(groups.map(g => g.label).sort()).toEqual(['feature', 'main'])
   })
 })
 

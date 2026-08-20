@@ -130,7 +130,7 @@ interface SidebarSessionsSectionProps {
   projectContent?: SidebarProjectTree
   // Live git lanes (`git worktree list`) for repos in the entered project —
   // a VISUAL enhancer only (empty lanes), never session membership.
-  projectRepoWorktrees?: Record<string, HermesGitWorktree[]>
+  projectRepoWorktrees?: Record<string, HermesGitWorktree[] | null>
   // Live session cache used for optimistic placement inside entered-project lanes.
   liveSessions?: SessionInfo[]
   // Client-side optimistic eviction layer (deleted/archived ids).

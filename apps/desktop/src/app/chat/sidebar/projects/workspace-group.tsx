@@ -89,8 +89,10 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
 
     // Main-checkout lanes are branch-labeled views over the same repo root path.
     // Clicking "+" on `main` should open on `main`, not whatever branch the root
-    // currently sits on (`test0`, etc.), so explicitly switch first.
-    if (group.isMain && group.path && group.label) {
+    // currently sits on (`test0`, etc.), so explicitly switch first. A folder
+    // lane is a plain directory with no branch behind its label — switching
+    // there would fail on `git switch` and swallow the new session with it.
+    if (group.isMain && !group.isFolder && group.path && group.label) {
       try {
         await switchBranchInRepo(group.path, group.label)
       } catch (err) {

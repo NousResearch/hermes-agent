@@ -61,6 +61,14 @@ def _git_out(cwd: str, args: list[str]) -> str:
     return out if code == 0 else ""
 
 
+def _is_not_a_repo(stderr: str) -> bool:
+    """git's own "there is no repository here" verdict, as opposed to a probe
+    that never got an answer (missing binary, unreadable dir, timeout). Only the
+    former is EVIDENCE about the directory."""
+    lowered = stderr.lower()
+    return "not a git repository" in lowered or "not a working tree" in lowered
+
+
 def _git_ok(cwd: str, args: list[str]) -> None:
     """Run a git mutation, raising RuntimeError with stderr on failure."""
     code, _, err = _git(cwd, args)
@@ -593,7 +601,14 @@ def _parse_worktrees(out: str) -> list[dict]:
 
 
 def worktree_list(cwd: str) -> list[dict]:
-    out = _git_out(cwd, ["worktree", "list", "--porcelain"])
+    code, out, err = _git(cwd, ["worktree", "list", "--porcelain"])
+    if code != 0:
+        # A repo always lists at least its main worktree, so an empty list is
+        # only ever "not a repository" — the sidebar reads it as exactly that.
+        # Any other failure must surface instead of impersonating that verdict.
+        if not _is_not_a_repo(err):
+            raise RuntimeError(err.strip() or "git worktree list failed")
+        return []
     if not out:
         return []
     return [
@@ -821,6 +836,16 @@ def branch_switch(cwd: str, branch: str) -> dict:
     target = _sanitize_branch(branch)
     if not target:
         raise RuntimeError("Branch name is required.")
+    # A project folder that git confirms is not a repo has no branch to leave,
+    # so there is nothing to switch — succeed quietly rather than failing the
+    # caller's real work (the sidebar switches before starting a session). Never
+    # init a repo here: creating one behind the user's back is not a branch
+    # switch. A probe that FAILS still raises, so a broken git stays visible.
+    code, inside, err = _git(cwd, ["rev-parse", "--is-inside-work-tree"])
+    if code != 0 and not _is_not_a_repo(err):
+        raise RuntimeError(err.strip() or "git rev-parse failed")
+    if inside.strip() != "true":
+        return {"branch": target}
     _git_ok(cwd, ["switch", target])
     return {"branch": target}
 

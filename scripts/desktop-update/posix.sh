@@ -19,6 +19,7 @@
 #     [--sandbox-fallback]     linux: the caller vouches for a sandbox opt-out
 #                              (ELECTRON_DISABLE_SANDBOX / --no-sandbox launch)
 #     [--no-ui] [--no-marker-cleanup] [--self-test-ui] [--self-test-gate]
+#     [--self-test-marker]
 #     [-- <args...>]           linux: filtered launch args to replay
 #
 # The shim (ui.html in a chromeless browser app window) is decoration: it
@@ -37,7 +38,8 @@ set -u
 ORIGINAL_ARGS=("$@")
 INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
-NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 HANDOFF_DAEMONIZED=0
+NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
+HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --install-root) INSTALL_ROOT="$2"; shift 2 ;;
@@ -51,6 +53,7 @@ while [ $# -gt 0 ]; do
     --self-test-ui) SELF_TEST_UI=1; shift ;;
     --self-test-gate) SELF_TEST_GATE=1; shift ;;
     --daemonized) HANDOFF_DAEMONIZED=1; shift ;;
+    --self-test-marker) SELF_TEST_MARKER=1; NO_UI=1; NO_MARKER_CLEANUP=1; shift ;;
     --) shift; RELAUNCH_ARGS=("$@"); shift $# ;;
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
@@ -466,7 +469,23 @@ rm -f "$RESULT" 2>/dev/null || true
 
 # Marker claim: same cross-process lock contract as windows.ps1 /
 # update_lock.py (the `hermes update` child adopts it via process ancestry).
-printf '%s\n%s\n' "$$" "$(date +%s)" > "$MARKER" 2>/dev/null || log "WARNING: could not write update marker"
+# The Desktop supplies one acquisition time for the whole ownership chain.
+NOW="$(date +%s)"
+STARTED_AT="${HERMES_UPDATE_STARTED_AT:-$NOW}"
+case "$STARTED_AT" in ''|*[!0-9]*) STARTED_AT="$NOW" ;; esac
+MIN_STARTED_AT=$((NOW - 1200))
+# Compare the validated decimal strings before doing arithmetic. Shell integer
+# expansion can wrap on an attacker-controlled value wider than signed 64-bit.
+if [ "${#STARTED_AT}" -ne "${#NOW}" ] \
+    || [[ "$STARTED_AT" > "$NOW" || "$STARTED_AT" < "$MIN_STARTED_AT" ]]; then
+  STARTED_AT="$NOW"
+fi
+printf '%s\n%s\n' "$$" "$STARTED_AT" > "$MARKER" 2>/dev/null || log "WARNING: could not write update marker"
+
+if [ "$SELF_TEST_MARKER" -eq 1 ]; then
+  trap - EXIT
+  exit 0
+fi
 
 # Wait out the Desktop (FAIL CLOSED: updating under live backends bricks).
 if [ "$DESKTOP_PID" -gt 0 ] 2>/dev/null; then

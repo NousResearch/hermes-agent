@@ -10370,6 +10370,82 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             "messages_after": messages_after,
         }
 
+    @staticmethod
+    def _resolve_notification_owner_on_conn(
+        conn: sqlite3.Connection, session_id: str
+    ) -> Optional[str]:
+        """Resolve one unambiguous compression lineage for cursor ownership.
+
+        General resume deliberately tolerates malformed historical state and
+        chooses the newest eligible child. Notification delivery cannot: a
+        guessed owner can consume another live session's event. This resolver
+        therefore returns ``None`` for a missing compression continuation,
+        multiple eligible children, a cycle, or an over-depth lineage. Query
+        errors propagate so callers fail closed rather than treating the input
+        session as authoritative.
+        """
+        if not session_id:
+            return None
+        current = session_id
+        seen = {current}
+        for _ in range(100):
+            parent = conn.execute(
+                "SELECT end_reason FROM sessions WHERE id = ?", (current,)
+            ).fetchone()
+            if parent is None:
+                return None
+            if parent["end_reason"] != "compression":
+                return current
+            children = conn.execute(
+                "SELECT child.id FROM sessions AS child "
+                "WHERE child.parent_session_id = ? "
+                "  AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL "
+                "  AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL "
+                "  AND json_extract(COALESCE(child.model_config, '{}'), '$._reset_from') IS NULL "
+                f"  AND NOT {_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)} "
+                "  AND COALESCE(child.source, '') != 'tool' "
+                "ORDER BY child.id LIMIT 2",
+                (current,),
+            ).fetchall()
+            if len(children) != 1:
+                return None
+            child_id = children[0]["id"]
+            if not child_id or child_id in seen:
+                return None
+            seen.add(child_id)
+            current = child_id
+        return None
+
+    def resolve_notification_owner_session_id(
+        self, session_id: str
+    ) -> Optional[str]:
+        """Return the unique current owner of a TUI notification subscription."""
+        with self._read_ctx() as conn:
+            return self._resolve_notification_owner_on_conn(conn, session_id)
+
+    def claim_if_notification_owner(
+        self,
+        owner_session_id: str,
+        live_session_id: str,
+        claim: Callable[[], T],
+    ) -> Optional[T]:
+        """Run ``claim`` only while notification lineage ownership is stable.
+
+        ``BEGIN IMMEDIATE`` serializes compression publication across processes.
+        The state-db write reservation remains held through the board cursor CAS,
+        closing the resolve-to-claim race without advancing and rewinding.
+        """
+
+        def _claim_if_owner(conn: sqlite3.Connection) -> Optional[T]:
+            resolved = self._resolve_notification_owner_on_conn(
+                conn, owner_session_id
+            )
+            if resolved != live_session_id:
+                return None
+            return claim()
+
+        return self._execute_write(_claim_if_owner)
+
     def resolve_resume_session_id(self, session_id: str) -> str:
         """Redirect a resume target to the descendant session that holds the messages.
 

@@ -822,13 +822,20 @@ class WebSocketRelayTransport:
         await self._ws.send(json.dumps(frame) + "\n")
 
     async def _read_loop(self) -> None:
-        assert self._ws is not None
         # Bind the socket this reader serves: the finally below must only
         # clear _ws if it still points at THIS socket (a supervisor re-dial
         # may have already installed a fresh one by the time we unwind).
         ws = self._ws
         buf = ""
         try:
+            if ws is None:
+                # Scheduled without a socket (a lifecycle bug, not a normal
+                # path). The old `assert` here escaped BEFORE the finally
+                # existed to fail pending futures — the one exit that could
+                # still strand waiters for the full outbound timeout. Fall
+                # through to the finally instead; it settles them all.
+                logger.error("relay ws read loop started with no socket")
+                return
             try:
                 async for chunk in self._ws:
                     buf += chunk if isinstance(chunk, str) else chunk.decode("utf-8")

@@ -264,6 +264,24 @@ async def _run_reader_to_exit(t: WebSocketRelayTransport, fake: _DroppingWS) -> 
 
 
 @pytest.mark.asyncio
+async def test_read_loop_without_socket_still_fails_pending():
+    """If the reader is ever scheduled with no socket (lifecycle bug), it must
+    still settle in-flight waiters on its way out — the old `assert` escaped
+    before the fail-pending cleanup and left them to the full 30s timeout."""
+    t = WebSocketRelayTransport("ws://unused", "discord", "bot1", outbound_timeout_s=30.0)
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+    t._pending["rid"] = fut
+    t._ws = None
+
+    await t._read_loop()  # must not raise
+
+    assert fut.done()
+    assert fut.result() == {"success": False, "error": "relay transport connection lost"}
+    assert t._pending == {}
+
+
+@pytest.mark.asyncio
 async def test_send_after_terminal_4401_revocation_fails_fast():
     """A terminal 4401 revocation deliberately arms NO reconnect supervisor,
     so the reader's exit is the LAST liveness transition this transport will

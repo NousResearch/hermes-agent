@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v1"
+SCANNER_VERSION = "skills-guard-v2"
 
 
 
@@ -98,6 +98,13 @@ class ScanResult:
 # Threat patterns — (regex, pattern_id, severity, category, description)
 # ---------------------------------------------------------------------------
 
+_NON_NEGATED_ACTION = r"(?<!not )(?<!not ever )(?<!not be )(?<!never )(?<!never be )(?<!don't )(?<!cannot )(?<!can't )"
+_HERMES_ENV_PATH = r"(?:\$HOME/\.hermes/\.env|\~/\.hermes/\.env)"
+_AGENT_CONFIG_PATH = r"(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)"
+_HERMES_CONFIG_PATH = r"(?:(?:\$HOME/|~/)?\.hermes/(?:config\.yaml|SOUL\.md))"
+_READ_ACTION = rf"{_NON_NEGATED_ACTION}\b(?:cat|read|open|load|source|dump|copy|upload|send|transmit|grep|less|more|head|tail)\b"
+_WRITE_ACTION = rf"{_NON_NEGATED_ACTION}\b(?:update|modify|edit|write|change|append|replace|overwrite|add\s+to)\b"
+
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
@@ -135,9 +142,9 @@ THREAT_PATTERNS = [
     (r'\$HOME/\.docker|\~/\.docker',
      "docker_dir_access", "high", "exfiltration",
      "references Docker config (may contain registry creds)"),
-    (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env',
+    (rf'{_READ_ACTION}[^\n]{{0,256}}{_HERMES_ENV_PATH}|{_HERMES_ENV_PATH}[^\n]{{0,256}}{_READ_ACTION}',
      "hermes_env_access", "critical", "exfiltration",
-     "directly references Hermes secrets file"),
+     "reads or transmits Hermes secrets file"),
     # Match `cat <secrets-file>` (reading credentials) but NOT `cat > <file>`
     # or `cat >> <file>`, which are output redirections that WRITE a file
     # (e.g. a setup doc telling the user to write their own keys into their
@@ -458,12 +465,12 @@ THREAT_PATTERNS = [
      "sets SUID/SGID bit on a file"),
 
     # ── Agent config persistence ──
-    (r'AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules',
+    (rf'{_WRITE_ACTION}[^\n]{{0,256}}{_AGENT_CONFIG_PATH}|{_AGENT_CONFIG_PATH}[^\n]{{0,256}}{_WRITE_ACTION}|(?:echo|printf|cat)\b[^\n]{{0,256}}>>?\s*{_AGENT_CONFIG_PATH}|\btee\b[^\n]{{0,256}}{_AGENT_CONFIG_PATH}',
      "agent_config_mod", "critical", "persistence",
-     "references agent config files (could persist malicious instructions across sessions)"),
-    (r'\.hermes/config\.yaml|\.hermes/SOUL\.md',
+     "modifies agent config files (could persist malicious instructions across sessions)"),
+    (rf'{_WRITE_ACTION}[^\n]{{0,256}}{_HERMES_CONFIG_PATH}|{_HERMES_CONFIG_PATH}[^\n]{{0,256}}{_WRITE_ACTION}|(?:echo|printf|cat)\b[^\n]{{0,256}}>>?\s*{_HERMES_CONFIG_PATH}|\btee\b[^\n]{{0,256}}{_HERMES_CONFIG_PATH}',
      "hermes_config_mod", "critical", "persistence",
-     "references Hermes configuration files directly"),
+     "modifies Hermes configuration files directly"),
     (r'\.claude/settings|\.codex/config',
      "other_agent_config", "high", "persistence",
      "references other agent configuration files"),

@@ -413,6 +413,45 @@ class TestFalsePositiveReductions:
         assert sec
         assert all(fi.severity == "critical" for fi in sec)
 
+    def test_sensitive_paths_require_dangerous_actions(self, tmp_path):
+        policy = tmp_path / "policy.md"
+        policy.write_text(
+            "`~/.hermes/.env` must stay absent or empty.\n"
+            "Is `~/.hermes/.env` still absent-or-empty?\n"
+            "Do not read ~/.hermes/.env.\n"
+            "Do not ever read ~/.hermes/.env.\n"
+            "Never copy ~/.hermes/.env.\n"
+            "~/.hermes/.env must not be read.\n"
+            "Read ~/.hermes/config.yaml to inspect web.extract_backend.\n"
+            "Document how AGENTS.md controls workspace instructions.\n"
+            "Do not append instructions to AGENTS.md.\n"
+            "Never overwrite ~/.hermes/config.yaml.\n"
+        )
+
+        assert scan_file(policy, "policy.md") == []
+
+    @pytest.mark.parametrize(
+        ("line", "pattern_id"),
+        [
+            ("cat ~/.hermes/.env", "hermes_env_access"),
+            ("grep TOKEN ~/.hermes/.env", "hermes_env_access"),
+            ("append unsafe instructions to AGENTS.md", "agent_config_mod"),
+            ("AGENTS.md: append unsafe instructions", "agent_config_mod"),
+            ("echo unsafe instructions >> AGENTS.md", "agent_config_mod"),
+            ("overwrite ~/.hermes/config.yaml with this payload", "hermes_config_mod"),
+            ("~/.hermes/config.yaml: overwrite with this payload", "hermes_config_mod"),
+            ("printf payload > ~/.hermes/config.yaml", "hermes_config_mod"),
+        ],
+    )
+    def test_sensitive_path_actions_remain_blocked(self, tmp_path, line, pattern_id):
+        payload = tmp_path / "payload.md"
+        payload.write_text(line + "\n")
+
+        findings = scan_file(payload, "payload.md")
+
+        assert any(fi.pattern_id == pattern_id for fi in findings)
+        assert any(fi.severity == "critical" for fi in findings if fi.pattern_id == pattern_id)
+
 
 # ---------------------------------------------------------------------------
 # .skillignore / .clawhubignore support

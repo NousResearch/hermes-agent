@@ -120,6 +120,47 @@ _CRON_SKILL_ASSEMBLED_PATTERNS = [
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
 ]
 
+_MARKDOWN_LITERAL_RE = re.compile(r'`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\'')
+_DOCUMENTATION_CUE_RE = re.compile(
+    r'\b(?:detect|detection|recognize|recognition|example|language|literal|'
+    r'match|pattern|flag|block|quote|document|describe|look\s+for)\b',
+    re.IGNORECASE,
+)
+
+
+def _mask_documented_markdown_literals(markdown: str) -> str:
+    """Mask attack strings only when markdown labels them as documentation."""
+    masked: list[str] = []
+    in_documented_fence = False
+    previous_line = ""
+    lines = markdown.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            if in_documented_fence:
+                in_documented_fence = False
+                masked.append("\n" if line.endswith("\n") else "")
+            else:
+                marker = stripped[:3]
+                has_closing_fence = any(
+                    later.lstrip().startswith(marker) for later in lines[index + 1:]
+                )
+                in_documented_fence = (
+                    has_closing_fence
+                    and bool(_DOCUMENTATION_CUE_RE.search(previous_line))
+                )
+                masked.append("\n" if in_documented_fence and line.endswith("\n") else line)
+            previous_line = line
+            continue
+        if in_documented_fence:
+            masked.append("\n" if line.endswith("\n") else "")
+        elif _DOCUMENTATION_CUE_RE.search(line):
+            masked.append(_MARKDOWN_LITERAL_RE.sub(" ", line))
+        else:
+            masked.append(line)
+        previous_line = line
+    return "".join(masked)
+
 _CRON_SECRET_VAR_RE = r'\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)\w*\}?'
 _CRON_EXFIL_COMMAND_PATTERNS = [
     # Tighten exfil detection to obvious leak paths: embedding a secret
@@ -307,6 +348,10 @@ def _scan_cron_skill_assembled(assembled: str) -> tuple[str, str]:
             len(removed), ", ".join(removed),
         )
     prompt_to_scan = _strip_cron_safe_constructs(cleaned)
+    # Mask markdown literals only when the surrounding prose explicitly marks
+    # them as detection/documentation examples. A quoted directive without
+    # that context remains a payload and still trips the runtime defense.
+    prompt_to_scan = _mask_documented_markdown_literals(prompt_to_scan)
     for pattern, pid in _CRON_SKILL_ASSEMBLED_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):
             return cleaned, f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."

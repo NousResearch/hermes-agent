@@ -2,6 +2,7 @@
 
 import concurrent.futures
 import json
+import threading
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -549,6 +550,71 @@ class TestHubLockFile:
         assert len(installed) == 2
         names = {e["name"] for e in installed}
         assert names == {"s1", "s2"}
+
+    def test_hub_initialization_does_not_erase_concurrent_install(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_hub as hub
+
+        skills_dir = tmp_path / "skills"
+        hub_dir = skills_dir / ".hub"
+        lock_path = hub_dir / "lock.json"
+        checked_missing = threading.Event()
+        continue_initialization = threading.Event()
+        original_exists = Path.exists
+        paused = False
+
+        def _pause_missing_check(path):
+            nonlocal paused
+            if (
+                path == lock_path
+                and threading.current_thread().name == "hub-initializer"
+                and not paused
+            ):
+                paused = True
+                checked_missing.set()
+                assert continue_initialization.wait(timeout=5)
+                return False
+            return original_exists(path)
+
+        monkeypatch.setattr(Path, "exists", _pause_missing_check)
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+                patch.object(hub, "HUB_DIR", hub_dir), \
+                patch.object(hub, "LOCK_FILE", lock_path), \
+                patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+                patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+                patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+                patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            initializer = threading.Thread(
+                target=hub.ensure_hub_dirs,
+                name="hub-initializer",
+            )
+            initializer.start()
+            assert checked_missing.wait(timeout=5)
+
+            recorded = threading.Event()
+
+            def _record():
+                HubLockFile(path=lock_path).record_install(
+                    name="demo",
+                    source="community",
+                    identifier="owner/repo/demo",
+                    trust_level="community",
+                    scan_verdict="safe",
+                    skill_hash="hash",
+                    install_path="demo",
+                    files=["SKILL.md"],
+                )
+                recorded.set()
+
+            recorder = threading.Thread(target=_record, name="hub-recorder")
+            recorder.start()
+            recorded.wait(timeout=0.2)
+            continue_initialization.set()
+            initializer.join(timeout=5)
+            recorder.join(timeout=5)
+
+        assert HubLockFile(path=lock_path).get_installed("demo") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1605,6 +1671,88 @@ def test_parallel_reinstalls_are_serialized_and_leave_complete_skill(tmp_path):
     entry = HubLockFile(path=hub_dir / "lock.json").get_installed("demo")
     assert entry is not None
     assert entry["content_hash"] == hub.content_hash(existing)
+
+
+def test_uninstall_cannot_delete_concurrently_published_reinstall(
+    monkeypatch, tmp_path
+):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    skills_dir = tmp_path / "skills"
+    hub_dir = skills_dir / ".hub"
+    lock_path = hub_dir / "lock.json"
+    existing = skills_dir / "demo"
+    existing.mkdir(parents=True)
+    (existing / "SKILL.md").write_text("# Existing\n")
+    HubLockFile(path=lock_path).record_install(
+        name="demo",
+        source="community",
+        identifier="owner/repo/demo-v1",
+        trust_level="community",
+        scan_verdict="safe",
+        skill_hash="v1",
+        install_path="demo",
+        files=["SKILL.md"],
+    )
+    quarantine_root = hub_dir / "quarantine"
+    q_dir = quarantine_root / "demo-v2"
+    q_dir.mkdir(parents=True)
+    (q_dir / "SKILL.md").write_text("# Version 2\n")
+    bundle = hub.SkillBundle(
+        name="demo",
+        files={"SKILL.md": "# Version 2\n"},
+        source="community",
+        identifier="owner/repo/demo-v2",
+        trust_level="community",
+    )
+    result = guard.ScanResult(
+        skill_name="demo",
+        source="community",
+        trust_level="community",
+        verdict="safe",
+    )
+    uninstall_resolved = threading.Event()
+    continue_uninstall = threading.Event()
+    original_resolve = hub._resolve_lock_install_path
+
+    def _pause_uninstall(*args, **kwargs):
+        resolved = original_resolve(*args, **kwargs)
+        if threading.current_thread().name == "skill-uninstaller":
+            uninstall_resolved.set()
+            assert continue_uninstall.wait(timeout=5)
+        return resolved
+
+    monkeypatch.setattr(hub, "_resolve_lock_install_path", _pause_uninstall)
+    with patch.object(hub, "SKILLS_DIR", skills_dir), \
+            patch.object(hub, "HUB_DIR", hub_dir), \
+            patch.object(hub, "LOCK_FILE", lock_path), \
+            patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
+            patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"):
+        uninstaller = threading.Thread(
+            target=lambda: hub.uninstall_skill("demo"),
+            name="skill-uninstaller",
+        )
+        uninstaller.start()
+        assert uninstall_resolved.wait(timeout=5)
+
+        install_done = threading.Event()
+
+        def _install():
+            hub.install_from_quarantine(q_dir, "demo", "", bundle, result)
+            install_done.set()
+
+        installer = threading.Thread(target=_install, name="skill-installer")
+        installer.start()
+        install_done.wait(timeout=0.2)
+        continue_uninstall.set()
+        uninstaller.join(timeout=5)
+        installer.join(timeout=5)
+
+    assert (existing / "SKILL.md").read_text() == "# Version 2\n"
+    entry = HubLockFile(path=lock_path).get_installed("demo")
+    assert entry is not None
+    assert entry["identifier"] == "owner/repo/demo-v2"
 
 
 def test_install_does_not_follow_parent_swapped_after_resolution(

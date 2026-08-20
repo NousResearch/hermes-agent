@@ -22,6 +22,7 @@ Update logic:
 The manifest lives at ~/.hermes/skills/.bundled_manifest.
 """
 
+import copy
 import hashlib
 import json
 import logging
@@ -428,8 +429,17 @@ def _optional_skill_index() -> Dict[str, Tuple[str, str, Path]]:
     return index
 
 
-def _move_to_restore_backup(path: Path, backup_root: Path) -> str:
-    """Move an existing skill directory into a restore backup, preserving rel path."""
+def _move_to_restore_backup(
+    path: Path,
+    backup_root: Path,
+) -> Tuple[str, Path]:
+    """Move one active skill to a handle-bound restore backup path."""
+    from tools.skills_hub import (
+        _bound_directory,
+        _directory_binding_matches,
+        _replace_bound_directory_entry,
+    )
+
     rel = path.relative_to(_skills_dir())
     target = backup_root / rel
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -438,8 +448,34 @@ def _move_to_restore_backup(path: Path, backup_root: Path) -> str:
         while target.with_name(f"{target.name}-{suffix}").exists():
             suffix += 1
         target = target.with_name(f"{target.name}-{suffix}")
-    shutil.move(str(path), str(target))
-    return rel.as_posix()
+    with _bound_directory(path.parent) as source_binding, \
+            _bound_directory(target.parent) as target_binding:
+        if not _directory_binding_matches(path.parent, source_binding):
+            raise ValueError(f"Active skill path changed: {path}")
+        _replace_bound_directory_entry(
+            path,
+            target,
+            source_binding,
+            target_binding,
+        )
+    return rel.as_posix(), target
+
+
+def _restore_from_backup(backup: Path, original: Path) -> None:
+    from tools.skills_hub import (
+        _bound_directory,
+        _replace_bound_directory_entry,
+    )
+
+    original.parent.mkdir(parents=True, exist_ok=True)
+    with _bound_directory(backup.parent) as source_binding, \
+            _bound_directory(original.parent) as target_binding:
+        _replace_bound_directory_entry(
+            backup,
+            original,
+            source_binding,
+            target_binding,
+        )
 
 
 def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict:
@@ -485,6 +521,8 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
         _directory_binding_matches,
         _replace_bound_directory_entry,
         _resolve_lock_install_path,
+        _rmtree_bound,
+        _target_install_lock,
     )
 
     verified_targets = []
@@ -556,82 +594,116 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                     matches.append(candidate)
 
         if restore:
-            for match in matches:
-                if match.exists():
-                    try:
-                        _safe_rel_install_path(match, _skills_dir())
-                    except (OSError, ValueError):
-                        return {
-                            "ok": False,
-                            "message": f"Unsafe active skill path: {match.name}",
-                            "restored": restored,
-                            "backfilled": [],
-                            "backed_up": backed_up,
-                        }
-                    backed_up.append(_move_to_restore_backup(match, backup_root))
-            if dest.exists() and not canonical_ok:
+            stage_context = None
+            staged: Optional[Path] = None
+            if not canonical_ok:
                 try:
-                    _safe_rel_install_path(dest, _skills_dir())
+                    stage_context = tempfile.TemporaryDirectory(
+                        prefix=".restore-stage-",
+                        dir=str(_skills_dir()),
+                    )
+                    staged_path = Path(stage_context.name) / folder_name
+                    _write_restored_bundle(files, staged_path)
+                    if full_content_hash(staged_path) != authoritative_hash:
+                        raise ValueError("Restore staging differs from verified bytes")
+                    staged = staged_path
                 except (OSError, ValueError):
+                    if stage_context is not None:
+                        stage_context.cleanup()
                     return {
                         "ok": False,
-                        "message": f"Unsafe restore destination for: {folder_name}",
+                        "message": f"Could not stage restore for: {folder_name}",
                         "restored": restored,
                         "backfilled": [],
                         "backed_up": backed_up,
                     }
-                backed_up.append(_move_to_restore_backup(dest, backup_root))
-            if not dest.exists():
-                final_dest = _resolve_lock_install_path(
+
+            moved: List[Tuple[Path, Path, str]] = []
+            published = False
+            try:
+                with _target_install_lock(
                     install_path,
                     folder_name,
                     skills_dir=_skills_dir(),
-                )
-                if final_dest != dest:
-                    return {
-                        "ok": False,
-                        "message": f"Restore destination changed for: {folder_name}",
-                        "restored": restored,
-                        "backfilled": [],
-                        "backed_up": backed_up,
-                    }
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    with tempfile.TemporaryDirectory(
-                        prefix=".restore-stage-",
-                        dir=str(_skills_dir()),
-                    ) as stage_root:
-                        staged = Path(stage_root) / folder_name
-                        _write_restored_bundle(files, staged)
+                ):
+                    final_dest = _resolve_lock_install_path(
+                        install_path,
+                        folder_name,
+                        skills_dir=_skills_dir(),
+                    )
+                    if final_dest != dest:
+                        raise ValueError("Restore destination changed")
+                    canonical_now = (
+                        dest.exists()
+                        and full_content_hash(dest) == authoritative_hash
+                    )
+                    for match in matches:
+                        if not match.exists():
+                            continue
+                        _safe_rel_install_path(match, _skills_dir())
+                        rel, backup = _move_to_restore_backup(match, backup_root)
+                        moved.append((match, backup, rel))
+                    if dest.exists() and not canonical_now:
+                        _safe_rel_install_path(dest, _skills_dir())
+                        rel, backup = _move_to_restore_backup(dest, backup_root)
+                        moved.append((dest, backup, rel))
+                    if not canonical_now:
+                        if staged is None:
+                            raise ValueError("Verified restore staging is missing")
+                        dest.parent.mkdir(parents=True, exist_ok=True)
                         with _bound_directory(staged.parent) as source_binding, \
                                 _bound_directory(dest.parent) as destination_binding:
-                            if not _directory_binding_matches(
-                                dest.parent, destination_binding
-                            ):
-                                raise ValueError(
-                                    "Restore destination changed before publish"
+                            try:
+                                if not _directory_binding_matches(
+                                    dest.parent, destination_binding
+                                ):
+                                    raise ValueError(
+                                        "Restore destination changed before publish"
+                                    )
+                                _replace_bound_directory_entry(
+                                    staged,
+                                    dest,
+                                    source_binding,
+                                    destination_binding,
                                 )
-                            _replace_bound_directory_entry(
-                                staged,
-                                dest,
-                                source_binding,
-                                destination_binding,
-                            )
-                            if not _directory_binding_matches(
-                                dest.parent, destination_binding
-                            ):
-                                raise ValueError(
-                                    "Restore destination changed after publish"
-                                )
-                except (OSError, ValueError):
-                    return {
-                        "ok": False,
-                        "message": f"Unsafe restore destination for: {folder_name}",
-                        "restored": restored,
-                        "backfilled": [],
-                        "backed_up": backed_up,
-                    }
-                restored.append(folder_name)
+                                published = True
+                                if (
+                                    not _directory_binding_matches(
+                                        dest.parent, destination_binding
+                                    )
+                                    or full_content_hash(dest) != authoritative_hash
+                                ):
+                                    raise ValueError(
+                                        "Restored bytes or destination changed"
+                                    )
+                            except Exception:
+                                if published:
+                                    _rmtree_bound(
+                                        dest.parent,
+                                        dest.name,
+                                        destination_binding,
+                                    )
+                                    published = False
+                                raise
+                        restored.append(folder_name)
+            except (OSError, TimeoutError, ValueError):
+                for original, backup, _rel in reversed(moved):
+                    if backup.exists() and not original.exists():
+                        _restore_from_backup(backup, original)
+                if stage_context is not None:
+                    stage_context.cleanup()
+                return {
+                    "ok": False,
+                    "message": f"Official restore rolled back for: {folder_name}",
+                    "restored": restored,
+                    "backfilled": [],
+                    "backed_up": backed_up,
+                }
+            else:
+                backed_up.extend(rel for _original, _backup, rel in moved)
+            finally:
+                if stage_context is not None:
+                    stage_context.cleanup()
         elif not canonical_ok:
             continue
 
@@ -707,11 +779,16 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
         )
         return []
 
+    from tools.skills_guard import build_install_attestation, full_content_hash
+    from tools.skills_hub import (
+        HubLockFile,
+        _exclusive_file_lock,
+        _resolve_lock_install_path,
+    )
+
     lock_path = _skills_dir() / ".hub" / "lock.json"
-    try:
-        data = json.loads(lock_path.read_text(encoding="utf-8")) if lock_path.exists() else {"version": 1, "installed": {}}
-    except (json.JSONDecodeError, OSError):
-        data = {"version": 1, "installed": {}}
+    hub_lock = HubLockFile(path=lock_path)
+    data = hub_lock.load()
     installed_value = data.get("installed")
     installed: Dict[str, Dict[str, Any]]
     if isinstance(installed_value, dict):
@@ -719,8 +796,7 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
     else:
         installed = {}
         data["installed"] = installed
-    from tools.skills_guard import build_install_attestation, full_content_hash
-    from tools.skills_hub import _resolve_lock_install_path
+    original_installed = copy.deepcopy(installed)
 
     existing_paths = {
         entry.get("install_path")
@@ -841,30 +917,40 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
                 optional_dir,
             )
             return []
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic write so a crash mid-write can't silently wipe all provenance
-        # via the JSONDecodeError fallback above (which resets `installed` to
-        # an empty dict).
-        import tempfile
 
-        payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(lock_path.parent),
-            prefix=".lock_",
-            suffix=".tmp",
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(payload)
-                f.flush()
-                os.fsync(f.fileno())
-            atomic_replace(tmp_path, lock_path)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        committed: List[str] = []
+        with _exclusive_file_lock(hub_lock.mutex_path):
+            latest = hub_lock._load_unlocked()
+            latest_value = latest.get("installed")
+            if isinstance(latest_value, dict):
+                latest_installed = latest_value
+            else:
+                latest_installed = {}
+                latest["installed"] = latest_installed
+            latest_paths = {
+                entry.get("install_path")
+                for entry in latest_installed.values()
+                if isinstance(entry, dict)
+            }
+            for lock_name in backfilled:
+                proposed = installed.get(lock_name)
+                if not isinstance(proposed, dict):
+                    continue
+                proposed_path = proposed.get("install_path")
+                if lock_name in original_installed:
+                    if latest_installed.get(lock_name) != original_installed[lock_name]:
+                        continue
+                elif (
+                    lock_name in latest_installed
+                    or proposed_path in latest_paths
+                ):
+                    continue
+                latest_installed[lock_name] = proposed
+                latest_paths.add(proposed_path)
+                committed.append(lock_name)
+            if committed:
+                hub_lock._save_unlocked(latest)
+        backfilled = committed
         if not quiet:
             for lock_name in backfilled:
                 print(

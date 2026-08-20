@@ -851,6 +851,38 @@ def _resolve_lock_install_path(
     return target
 
 
+def _target_install_lock_path(
+    install_path: str,
+    skill_name: str,
+    *,
+    skills_dir: Optional[Path] = None,
+) -> Path:
+    _normalize_lock_install_path(install_path, skill_name)
+    safe_name = _validate_skill_name(skill_name)
+    # Lock by logical lockfile key, not category path: the same hub skill can
+    # move categories across an update but must remain one serialized target.
+    lock_key = hashlib.sha256(safe_name.casefold().encode("utf-8")).hexdigest()
+    lock_root = Path(skills_dir) / ".hub" if skills_dir is not None else _hub_dir()
+    return lock_root / "install-locks" / f"{lock_key}.lock"
+
+
+@contextmanager
+def _target_install_lock(
+    install_path: str,
+    skill_name: str,
+    *,
+    skills_dir: Optional[Path] = None,
+):
+    with _exclusive_file_lock(
+        _target_install_lock_path(
+            install_path,
+            skill_name,
+            skills_dir=skills_dir,
+        )
+    ):
+        yield
+
+
 @contextmanager
 def _bound_directory(path: Path):
     """Hold a directory identity across rename operations.
@@ -4718,8 +4750,10 @@ def ensure_hub_dirs() -> None:
     hub_dir.mkdir(parents=True, exist_ok=True)
     _quarantine_dir().mkdir(exist_ok=True)
     _index_cache_dir().mkdir(exist_ok=True)
-    if not lock_file.exists():
-        lock_file.write_text('{"version": 1, "installed": {}}\n', encoding="utf-8")
+    hub_lock = HubLockFile(path=lock_file)
+    with _exclusive_file_lock(hub_lock.mutex_path):
+        if not lock_file.exists():
+            hub_lock._save_unlocked({"version": 1, "installed": {}})
     if not audit_log.exists():
         audit_log.touch()
     if not taps_file.exists():
@@ -4922,11 +4956,9 @@ def install_from_quarantine(
     if not quarantine_path.is_relative_to(quarantine_root):
         raise ValueError("Quarantine staging escaped its verified root")
 
-    target_lock_name = hashlib.sha256(install_rel_path.encode("utf-8")).hexdigest()
-    target_lock_path = _hub_dir() / "install-locks" / f"{target_lock_name}.lock"
     backup_dir: Optional[Path] = None
     published = False
-    with _exclusive_file_lock(target_lock_path):
+    with _target_install_lock(install_rel_path, safe_skill_name):
         final_install_dir = _resolve_lock_install_path(
             install_rel_path,
             safe_skill_name,
@@ -5091,27 +5123,45 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     if not entry:
         return False, f"'{skill_name}' is not a hub-installed skill (may be a builtin)"
 
-    # Validate the lock entry's install_path against the skill name. This is
-    # the destructive boundary — anything that falls through to the rmtree
-    # below MUST be inside SKILLS_DIR and MUST NOT be SKILLS_DIR itself
-    # (an empty/"."/"/" install_path would otherwise wipe the entire tree).
-    # _resolve_lock_install_path enforces a relative path ending in
-    # <skill_name>, rejects absolute/traversal paths, and walks the path
-    # component-by-component refusing symlink/junction redirects.
+    install_rel_path = entry.get("install_path", "")
     try:
-        install_path = _resolve_lock_install_path(
-            entry.get("install_path", ""), skill_name
-        )
-    except ValueError as exc:
+        with _target_install_lock(install_rel_path, skill_name):
+            # Reload only after taking the same target lock used by install.
+            # Otherwise a concurrent reinstall could publish a new version
+            # between this read and the destructive removal below.
+            entry = lock.get_installed(skill_name)
+            if not entry:
+                return False, f"'{skill_name}' is no longer hub-installed"
+            install_rel_path = entry.get("install_path", "")
+            install_path = _resolve_lock_install_path(
+                install_rel_path,
+                skill_name,
+            )
+            if install_path.exists():
+                with _bound_directory(install_path.parent) as parent_binding:
+                    if not _directory_binding_matches(
+                        install_path.parent, parent_binding
+                    ):
+                        raise ValueError("Uninstall destination changed")
+                    _rmtree_bound(
+                        install_path.parent,
+                        install_path.name,
+                        parent_binding,
+                    )
+            # Lock order is target lock -> lock.json mutex, matching install.
+            lock.record_uninstall(skill_name)
+    except (OSError, TimeoutError, ValueError) as exc:
         return False, f"Refusing to uninstall '{skill_name}': {exc}"
 
-    if install_path.exists():
-        shutil.rmtree(install_path)
-
-    lock.record_uninstall(skill_name)
-    append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
-
-    return True, f"Uninstalled '{skill_name}' from {entry['install_path']}"
+    append_audit_log(
+        "UNINSTALL",
+        skill_name,
+        entry["source"],
+        entry["trust_level"],
+        "n/a",
+        "user_request",
+    )
+    return True, f"Uninstalled '{skill_name}' from {install_rel_path}"
 
 
 def bundle_content_hash(bundle: SkillBundle) -> str:

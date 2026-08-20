@@ -976,6 +976,43 @@ class TestRestoreOfficialOptionalSkill:
         assert (installed / "SKILL.md").read_text() == "# Existing one\n"
         assert not (skills_dir / ".restore-backups").exists()
 
+    def test_restore_failure_keeps_existing_skill_active(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Official\n")
+        skills_dir = tmp_path / "skills"
+        existing = skills_dir / "devops" / "demo"
+        existing.mkdir(parents=True)
+        (existing / "SKILL.md").write_text("# Existing modified\n")
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(
+            ss,
+            "_optional_root_identity",
+            lambda _path: "git:NousResearch/hermes-agent@" + "a" * 40,
+        )
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda *_args: {"SKILL.md": b"# Verified\n"},
+        )
+        monkeypatch.setattr(
+            ss,
+            "_write_restored_bundle",
+            lambda *_args: (_ for _ in ()).throw(OSError("disk full")),
+        )
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is False
+        assert (existing / "SKILL.md").read_text() == "# Existing modified\n"
+
     def test_restore_rejects_unverified_optional_override(self, monkeypatch, tmp_path):
         import tools.skills_sync as ss
 
@@ -1324,6 +1361,48 @@ class TestOptionalProvenanceAttestation:
             "origin_identity": "git:NousResearch/hermes-agent@" + "e" * 40,
             "bundle_hash": full_content_hash(installed),
         }
+
+    def test_backfill_preserves_concurrent_install_record(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_sync as ss
+        from tools.skills_hub import HubLockFile
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+        skills_dir = tmp_path / "home" / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Demo\n")
+        lock_path = skills_dir / ".hub" / "lock.json"
+        identity = "git:NousResearch/hermes-agent@" + "e" * 40
+        identity_calls = 0
+
+        def _identity_with_concurrent_install(_path):
+            nonlocal identity_calls
+            identity_calls += 1
+            if identity_calls == 2:
+                HubLockFile(path=lock_path).record_install(
+                    name="concurrent",
+                    source="community",
+                    identifier="owner/repo/concurrent",
+                    trust_level="community",
+                    scan_verdict="safe",
+                    skill_hash="concurrent",
+                    install_path="concurrent",
+                    files=["SKILL.md"],
+                )
+            return identity
+
+        monkeypatch.setattr(ss, "_optional_root_identity", _identity_with_concurrent_install)
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == ["demo"]
+
+        entries = HubLockFile(path=lock_path).load()["installed"]
+        assert set(entries) == {"demo", "concurrent"}
 
     def test_backfill_repairs_malformed_installed_mapping(self, tmp_path):
         import tools.skills_sync as ss

@@ -189,6 +189,10 @@ interface ModelSettingsProps {
 export function ModelSettings({ onMainModelChanged, scopeProfile = null }: ModelSettingsProps) {
   const { t } = useI18n()
   const m = t.settings.model
+  // `null` means "follow the active profile" at the settings layer. The
+  // Hermes API helpers use `undefined` for that contract; passing null would
+  // deliberately suppress the active profile and read the primary/default.
+  const requestProfile = scopeProfile ?? undefined
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [mainModel, setMainModel] = useState<{ model: string; provider: string } | null>(null)
@@ -235,10 +239,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
 
       try {
         const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
-          getGlobalModelInfo(scopeProfile),
-          getGlobalModelOptions(undefined, scopeProfile),
-          getAuxiliaryModels(scopeProfile),
-          getMoaModels(scopeProfile).catch(() => null)
+          getGlobalModelInfo(requestProfile),
+          getGlobalModelOptions(undefined, requestProfile),
+          getAuxiliaryModels(requestProfile),
+          getMoaModels(requestProfile).catch(() => null)
         ])
 
         if (profileEpoch.current !== epoch) {
@@ -276,7 +280,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
         }
       }
     },
-    [scopeProfile]
+    [requestProfile, scopeProfile]
   )
 
   useEffect(() => {

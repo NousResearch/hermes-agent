@@ -490,11 +490,14 @@ class Mem0MemoryProvider(MemoryProvider):
                     {"role": "user", "content": user_content},
                     {"role": "assistant", "content": assistant_content},
                 ]
+                # OSS: local LLMs rarely support json_object response_format, so skip
+                # LLM extraction to avoid 400 errors. Platform/self-hosted can infer.
+                _infer = True if self._mode != "oss" else False
                 backend.add(
                     messages,
                     user_id=self._user_id,
                     agent_id=self._agent_id,
-                    infer=True,
+                    infer=_infer,
                     metadata=self._write_metadata(),
                 )
                 self._record_success()

@@ -3974,9 +3974,10 @@ def _handoff_reapable_backend_pids(
       from THIS install's venv qualify; a non-backend holder (operator REPL,
       stray script) disqualifies the whole set → ``None`` (keep refusing), so
       we never widen the blast radius during a hand-off.
-    - Requires ``handoff`` True (caller passes ``args.gateway`` AND a claimed
-      marker) — outside a hand-off this returns ``None`` and the stricter
-      orphan-only path stands.
+    - Only runs when the CALLER has confirmed the hand-off context
+      (``args.gateway`` AND a claimed update-incomplete marker AND no live
+      ``hermes.exe`` shim) — outside that gate this function is never called
+      and the stricter orphan-only path stands.
     - psutil unavailable → ``None`` (can't re-read argv to classify → refuse).
 
     Returns the backend root PIDs to tree-reap, or ``None`` to leave the
@@ -4910,13 +4911,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _handoff = bool(getattr(args, "gateway", False)) and _m()._update_marker_path().exists()
             except Exception:
                 _handoff = False
-            _no_live_shim = True
+            # Fail closed: if we cannot positively verify the shim state
+            # (scripts dir unresolvable, detection raised), assume a live
+            # shim exists and keep refusing rather than reap.
+            _no_live_shim = False
             try:
                 _scripts_dir = _m()._venv_scripts_dir()
                 if _scripts_dir is not None:
                     _no_live_shim = not _m()._detect_concurrent_hermes_instances(_scripts_dir)
             except Exception:
-                _no_live_shim = True
+                _no_live_shim = False
             if _handoff and _no_live_shim:
                 _handoff_backends = _m()._handoff_reapable_backend_pids(_venv_holders)
                 if _handoff_backends:

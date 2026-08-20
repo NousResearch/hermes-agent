@@ -2506,8 +2506,82 @@ def _is_channel_dm_topic(
         )
     return is_channel
 
+def _send_result_message_id(send_result) -> str:
+    """Extract a platform message/event id from adapter/router result shapes."""
+    if isinstance(send_result, dict):
+        for key in ("message_id", "event_id"):
+            value = send_result.get(key)
+            if value:
+                return str(value)
+        raw = send_result.get("raw_response")
+        if isinstance(raw, dict):
+            for key in ("message_id", "event_id"):
+                value = raw.get(key)
+                if value:
+                    return str(value)
+        return ""
+    return str(getattr(send_result, "message_id", "") or getattr(send_result, "event_id", "") or "")
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+
+def _send_result_confirmed(send_result) -> bool:
+    """Return True only when a send result explicitly confirms success."""
+    if isinstance(send_result, dict):
+        return bool(send_result.get("success", False))
+    return _confirm_adapter_delivery(send_result)
+
+
+def _register_matrix_digest_details_if_applicable(
+    *,
+    job: dict,
+    platform,
+    chat_id: str,
+    send_result,
+    output_file: str | Path | None = None,
+) -> None:
+    """Register Matrix digest event metadata for later 🧾 reactions.
+
+    A cron delivery is considered a digest when it was built from one or more
+    upstream cron outputs via ``context_from``.  The registry is written only
+    after an adapter result confirms delivery and exposes the Matrix event id.
+    """
+    try:
+        platform_value = getattr(platform, "value", str(platform)).lower()
+        if platform_value != "matrix":
+            return
+        from cron.digest_reactions import normalize_context_from, register_digest_delivery
+
+        source_job_ids = normalize_context_from(job.get("context_from"))
+        if not source_job_ids:
+            return
+        if not _send_result_confirmed(send_result):
+            return
+        event_id = _send_result_message_id(send_result)
+        if not event_id:
+            return
+        source_names: dict[str, str] = {}
+        try:
+            from cron.jobs import load_jobs
+
+            for candidate in load_jobs():
+                candidate_id = str(candidate.get("id") or "")
+                if candidate_id in source_job_ids:
+                    source_names[candidate_id] = str(candidate.get("name") or candidate_id)
+        except Exception:
+            source_names = {}
+        register_digest_delivery(
+            room_id=str(chat_id),
+            event_id=event_id,
+            digest_job=job,
+            source_job_ids=source_job_ids,
+            output_file=output_file,
+            source_names=source_names,
+        )
+    except Exception as exc:
+        logger.debug("Matrix digest detail registration skipped: %s", exc)
+
+
+def _deliver_result(job: dict, content: str, adapters=None, loop=None, output_file: str | Path | None = None) -> Optional[str]:
+
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -2518,6 +2592,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     Returns None on success, or an error string on failure.
     """
+    if output_file is None:
+        output_file = job.get("_output_file")
     targets = _resolve_delivery_targets(job)
     if not targets:
         deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
@@ -2880,6 +2956,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
                 timed_out = False
+                send_result = None
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
 
@@ -3061,6 +3138,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                    _register_matrix_digest_details_if_applicable(
+                        job=job,
+                        platform=platform,
+                        chat_id=str(chat_id),
+                        send_result=send_result,
+                        output_file=output_file,
+                    )
                     delivered = True
                     # Seed the thread session only now that delivery into it
                     # succeeded (deferred from thread-open above).
@@ -3202,6 +3286,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 delivery_errors.append(msg)
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            _register_matrix_digest_details_if_applicable(
+                job=job,
+                platform=platform,
+                chat_id=str(chat_id),
+                send_result=result,
+                output_file=output_file,
+            )
             _maybe_mirror_cron_delivery(
                 job, platform_name, chat_id, mirror_text,
                 thread_id=thread_id, user_id=origin_user_id,
@@ -6467,8 +6558,10 @@ def _run_one_job_body(
                         if not owns_delivery:
                             raise _FireClaimLostDuringSideEffect
                         delivery_attempted = True
+                        delivery_job = dict(job)
+                        delivery_job["_output_file"] = str(output_file)
                         delivery_error = _deliver_result(
-                            job,
+                            delivery_job,
                             deliver_content,
                             adapters=adapters,
                             loop=loop,

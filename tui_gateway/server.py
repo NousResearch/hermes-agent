@@ -8,6 +8,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import queue
 import subprocess
 import sys
@@ -12782,10 +12783,50 @@ def _non_workspace_dirs() -> set[str]:
     return {os.path.normcase(os.path.realpath(path)) for path in candidates if path}
 
 
+_PROFILE_HOME_RE = re.compile(r"^(.*)[/\\]profiles[/\\][^/\\]+$")
+
+
+def _global_hermes_home() -> str:
+    """The real HERMES_HOME, resolving past a per-profile home override.
+
+    The all-profiles project-tree fan-out drives each profile through
+    ``set_hermes_home_override(<home>/profiles/<name>)``, so inside these junk
+    predicates ``get_hermes_home()`` returns the profile dir — which makes the
+    ``.hermes`` subtree check miss sibling operational dirs (``.hermes/scripts``,
+    ``.hermes/skills``, ``.hermes/kanban``, …). Resolve the global home so the
+    whole ``~/.hermes`` tree is treated as operational plumbing in every profile.
+    """
+    from hermes_constants import get_hermes_home
+
+    home = os.path.realpath(str(get_hermes_home()))
+    m = _PROFILE_HOME_RE.match(home)
+    return m.group(1) if m else home
+
+
+def _is_operational_junk_path(real: str) -> bool:
+    """Transient/operational dirs that must never surface as an auto project.
+
+    5ac patch (2026-08-16): the OS temp tree, the Hermes agent's own source
+    checkout, and the global ~/.hermes operational subtree are plumbing, not
+    user workspaces — cron/agents run in /tmp and skills/scripts/plugins/kanban
+    live under ~/.hermes, so without this check every such cwd mints a ghost
+    project in the desktop "All projects" overview.
+    """
+    global_home = os.path.normcase(os.path.realpath(_global_hermes_home()))
+    for op_root in ("/tmp", "/usr/local/lib/hermes-agent"):
+        op = os.path.normcase(os.path.realpath(op_root))
+        if real == op or real.startswith(op + os.sep):
+            return True
+    if real == global_home or real.startswith(global_home + os.sep):
+        return True
+    return False
+
+
 def _is_repo_junk(root: str) -> bool:
     """A git root we never auto-surface as a project: a non-workspace dir (see
-    :func:`_non_workspace_dirs`) or anything under HERMES_HOME (~/.hermes by
-    default) — config/sessions/skills, not a workspace. User-created projects
+    :func:`_non_workspace_dirs`), anything under HERMES_HOME (~/.hermes by
+    default), or a transient/operational dir (see :func:`_is_operational_junk_path`)
+    — config/sessions/skills, not a workspace. User-created projects
     pointing there are still honored."""
     if not root:
         return True
@@ -12799,17 +12840,20 @@ def _is_repo_junk(root: str) -> bool:
         os.path.normcase(real) in _non_workspace_dirs()
         or real == hermes_home
         or real.startswith(hermes_home + os.sep)
+        or _is_operational_junk_path(real)
     )
 
 
 def _is_session_cwd_junk(cwd: str) -> bool:
     """A non-git cwd that should stay in flat Recents rather than auto-group.
 
-    Unlike discovered git roots, an explicitly selected descendant of
-    HERMES_HOME may be an intentional prose/data workspace. The pre-Projects
-    desktop surfaced every such cwd, so exclude only the broad defaults that
-    would create catch-all projects: HERMES_HOME itself and the dirs in
-    :func:`_non_workspace_dirs`.
+    5ac patch (2026-08-16): the stock policy only excluded HERMES_HOME itself
+    and the broad non-workspace dirs, so internal descendants of HERMES_HOME
+    (skills/, plugins/, scripts/, social/, cache/, profiles/, and every
+    kanban workspace under kanban/workspaces/t_*) plus /tmp and the agent
+    source tree all leaked into the desktop overview as ghost auto-projects.
+    Those are operational plumbing, not intentional workspaces — keep them in
+    flat Recents instead. Real user workspaces (e.g. /root/5ac) are unaffected.
     """
     if not cwd:
         return True
@@ -12818,7 +12862,12 @@ def _is_session_cwd_junk(cwd: str) -> bool:
 
     real = os.path.normcase(os.path.realpath(cwd))
     hermes_home = os.path.normcase(os.path.realpath(str(get_hermes_home())))
-    return real in _non_workspace_dirs() or real == hermes_home
+    return (
+        real in _non_workspace_dirs()
+        or real == hermes_home
+        or real.startswith(hermes_home + os.sep)
+        or _is_operational_junk_path(real)
+    )
 
 
 def _repo_discovery_policy(raw: dict | None = None) -> dict:

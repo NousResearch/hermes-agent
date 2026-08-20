@@ -950,10 +950,17 @@ install_node() {
     fi
 
     log_info "Extracting to ~/.hermes/node/..."
+    # --no-same-owner: the official nodejs.org tarballs record iojs uid/gid
+    # 1001, and GNU tar running as root defaults to restoring archive
+    # ownership (--same-owner). That would leave ~/.hermes/node owned by
+    # whatever user gets uid 1001 next on a multi-user host. Extract with
+    # the current user's ownership instead. Accepted by both GNU tar and
+    # bsdtar; a no-op for non-root users (ownership can't be restored
+    # without privileges anyway). (#81525)
     if [[ "$tarball_name" == *.tar.xz ]]; then
-        tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir"
+        tar xf --no-same-owner "$tmp_dir/$tarball_name" -C "$tmp_dir"
     else
-        tar xzf "$tmp_dir/$tarball_name" -C "$tmp_dir"
+        tar xzf --no-same-owner "$tmp_dir/$tarball_name" -C "$tmp_dir"
     fi
 
     local extracted_dir

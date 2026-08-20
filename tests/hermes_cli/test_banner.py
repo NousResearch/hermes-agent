@@ -19,6 +19,54 @@ def test_cprint_falls_back_to_plain_print_when_prompt_toolkit_has_no_console(cap
     assert capsys.readouterr().out == "fallback text\n"
 
 
+def test_render_notice_ansi_emits_escape_codes():
+    """The deferred-notice renderer expands Rich markup to real ANSI escapes."""
+    ansi = banner._render_notice_ansi("[bold yellow]⚠ 3 commits behind[/]")
+    assert "\x1b[1;33m" in ansi, "bold-yellow notice should carry a SGR 1;33 sequence"
+    assert ansi.endswith("\x1b[0m"), "notice should reset styling"
+    assert "3 commits behind" in ansi
+
+
+def test_defer_update_notice_routes_through_cprint_not_raw_console():
+    """A deferred notice must print via cprint (prompt_toolkit-safe ANSI path),
+    not console.print (which writes raw escapes into patch_stdout and shows up
+    as literal '\\x1b[1;33m…' garbage once the TUI owns the terminal)."""
+    import threading
+    import time as _time
+    from unittest.mock import patch as _patch
+
+    from rich.console import Console
+
+    captured = {}
+
+    class _FakeEvent:
+        def wait(self, timeout=None):
+            return True
+
+    def _fake_cprint(text):
+        captured["text"] = text
+
+    with (
+        _patch.object(banner, "_update_check_done", _FakeEvent()),
+        _patch.object(banner, "_update_result", 3),
+        _patch.object(banner, "cprint", side_effect=_fake_cprint),
+    ):
+        banner._deferred_update_notice_started = False
+        console = Console(force_terminal=True, color_system="truecolor")
+        banner._defer_update_notice(console, max_wait=5)
+
+        # Wait for the background thread to run.
+        deadline = _time.time() + 3
+        while "text" not in captured and _time.time() < deadline:
+            _time.sleep(0.05)
+
+    assert "text" in captured, "deferred notice should have printed"
+    assert "3 commits behind" in captured["text"]
+    assert "\x1b[1;33m" in captured["text"], (
+        "cprint must receive the ANSI-rendered notice, not raw Rich markup"
+    )
+
+
 
 
 

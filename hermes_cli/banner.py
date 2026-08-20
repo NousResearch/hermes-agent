@@ -710,6 +710,28 @@ def _format_update_notice(behind: int) -> str:
     return line
 
 
+def _render_notice_ansi(markup: str) -> str:
+    """Render Rich ``markup`` to a raw ANSI string.
+
+    The deferred update notice is printed from a background thread that may
+    run after prompt_toolkit's TUI owns the terminal.  Rich's plain
+    ``console.print()`` would emit raw ANSI into ``patch_stdout``'s
+    ``StdoutProxy`` and come out as literal escape garbage, so we render the
+    markup to an ANSI string here and hand it to ``cprint`` (which parses
+    ANSI through prompt_toolkit's native renderer).  ``force_terminal``
+    guarantees markup is expanded to escape codes even when stdout is not a
+    TTY; a bare ``print``/``cprint`` fallback keeps the line from being lost.
+    """
+    from io import StringIO
+
+    from rich.console import Console
+
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=True, color_system="truecolor", highlight=False)
+    console.print(markup, end="")
+    return buf.getvalue()
+
+
 _deferred_update_notice_started = False
 
 
@@ -718,6 +740,18 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
 
     Used when the banner rendered before the update prefetch finished so
     startup never blocks on git/network. Prints at most once per process.
+
+    The notice is emitted from a background thread, which can outlive the
+    banner render and land *after* prompt_toolkit's TUI (and its
+    ``patch_stdout``/``StdoutProxy``) takes over the terminal.  A plain
+    ``console.print()`` at that point writes raw ANSI escapes to the
+    ``StdoutProxy``, which passes them through unparsed — the notice shows
+    up as literal ``\\x1b[1;33m…`` garbage instead of colored text.  Route
+    the output through ``cprint`` instead: it renders via prompt_toolkit's
+    native ANSI renderer and safely coordinates with a running TUI from a
+    background thread.  ``console`` is kept as a parameter for callers that
+    want the banner's console (e.g. non-TUI paths), but the actual print
+    always goes through ``cprint``.
     """
     global _deferred_update_notice_started
     if _deferred_update_notice_started:
@@ -731,7 +765,7 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
             behind = _update_result
             if behind is None or behind == 0:
                 return
-            console.print(_format_update_notice(behind))
+            cprint(_render_notice_ansi(_format_update_notice(behind)))
         except Exception:
             pass  # never break the session over an update notice
 

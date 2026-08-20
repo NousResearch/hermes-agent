@@ -175,15 +175,19 @@ class TestBannerUpdateCheckNonBlocking:
 
         printed = []
 
-        class _Console:
-            def print(self, msg, *a, **k):
-                printed.append(msg)
+        def _capture_cprint(text):
+            printed.append(text)
+
+        class _NullConsole:
+            def print(self, *a, **k):
+                pass
 
         done = threading.Event()
         with patch.object(banner, "_update_check_done", done), \
              patch.object(banner, "_update_result", None), \
-             patch.object(banner, "_deferred_update_notice_started", False):
-            banner._defer_update_notice(_Console(), max_wait=5.0)
+             patch.object(banner, "_deferred_update_notice_started", False), \
+             patch.object(banner, "cprint", side_effect=_capture_cprint):
+            banner._defer_update_notice(_NullConsole(), max_wait=5.0)
             banner._update_result = 3
             done.set()
             deadline = time.time() + 5

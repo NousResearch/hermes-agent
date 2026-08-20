@@ -915,6 +915,12 @@ def resolve_provider_full(
     canonical = normalize_provider(name)
     raw = name.strip().lower()
 
+    # Picker-only display slug. Selecting a free OpenRouter model still
+    # routes through the real OpenRouter provider.
+    if raw == "openrouter-free":
+        canonical = "openrouter"
+        raw = "openrouter"
+
     # 0. User-defined config providers win over the built-in alias table.
     #    A user who declares ``providers.<name>`` in config.yaml has stated
     #    explicit intent for that name — it must not be hijacked by a legacy

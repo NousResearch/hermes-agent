@@ -9314,10 +9314,14 @@ def _define_discord_view_classes() -> None:
                 return
 
             provider_slug = interaction.data["values"][0]
-            self._selected_provider = provider_slug
             provider = next(
                 (p for p in self.providers if p["slug"] == provider_slug), None
             )
+            try:
+                from hermes_cli.models import picker_runtime_slug
+                self._selected_provider = picker_runtime_slug(provider or provider_slug)
+            except Exception:
+                self._selected_provider = provider_slug
             pname = provider.get("name", provider_slug) if provider else provider_slug
 
             self._build_model_select(provider_slug)

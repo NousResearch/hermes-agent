@@ -247,6 +247,72 @@ def _model_flow_openrouter(config, current_model=""):
         print("No change.")
 
 
+def _model_flow_openrouter_free(config, current_model=""):
+    """OpenRouter free-models picker: live zero-priced catalog, runtime OpenRouter."""
+    from hermes_cli.main import _prompt_api_key
+    from hermes_constants import OPENROUTER_BASE_URL
+    from hermes_cli.auth import (
+        ProviderConfig,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+
+    pconfig = ProviderConfig(
+        id="openrouter",
+        name="OpenRouter",
+        auth_type="api_key",
+        api_key_env_vars=("OPENROUTER_API_KEY",),
+    )
+    existing_key, existing_source = _existing_api_key_for_model_flow("openrouter", pconfig)
+    if not existing_key:
+        print("Get one at: https://openrouter.ai/keys")
+        print()
+    _resolved, abort = _prompt_api_key(
+        pconfig,
+        existing_key,
+        provider_id="openrouter",
+        existing_source=existing_source,
+    )
+    if abort:
+        return
+
+    from hermes_cli.models import fetch_openrouter_free_models, get_pricing_for_provider
+
+    free_model_ids = [mid for mid, _ in fetch_openrouter_free_models(force_refresh=True)]
+    if not free_model_ids:
+        print("No free, tool-capable OpenRouter models are available right now.")
+        return
+
+    pricing = get_pricing_for_provider("openrouter", force_refresh=True)
+    selected = _prompt_model_selection(
+        free_model_ids,
+        current_model=current_model,
+        pricing=pricing,
+        confirm_provider="openrouter",
+        confirm_base_url=OPENROUTER_BASE_URL,
+        confirm_api_key=_resolved or existing_key,
+    )
+    if selected:
+        _save_model_choice(selected)
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "openrouter"
+        model["base_url"] = OPENROUTER_BASE_URL
+        model["api_mode"] = "chat_completions"
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
+        save_config(cfg)
+        deactivate_provider()
+        print(f"Default model set to: {selected} (via OpenRouter Free Models)")
+    else:
+        print("No change.")
+
+
 def _print_moa_preset(name: str, preset: dict) -> None:
     """Print the full reference-models + aggregator breakdown for a preset."""
     print(f"  Preset: {name}")

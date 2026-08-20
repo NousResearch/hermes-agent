@@ -3111,6 +3111,50 @@ def list_authenticated_providers(
         seen_slugs.add(hermes_slug.lower())
         _record_builtin_endpoint(hermes_slug)
 
+    # --- 2a. OpenRouter live-free picker row ---
+    # Unique display slug so Telegram/Discord can keep the curated OpenRouter
+    # row and a live free-only catalog as two buttons. Runtime switching
+    # still uses provider ``openrouter`` (see picker_runtime_slug).
+    if (
+        "openrouter-free" not in _excluded
+        and "openrouter" not in _excluded
+        and "openrouter-free" not in seen_slugs
+    ):
+        try:
+            from hermes_cli.models import (
+                OPENROUTER_FREE_PICKER_LABEL,
+                OPENROUTER_FREE_PICKER_SLUG,
+                OPENROUTER_FREE_RUNTIME_SLUG,
+                fetch_openrouter_free_models,
+            )
+            _or_cfg = _auth_registry.get("openrouter")
+            _or_has_creds = bool(
+                _or_cfg
+                and _or_cfg.api_key_env_vars
+                and any(os.environ.get(ev) for ev in _or_cfg.api_key_env_vars)
+            )
+            if not _or_has_creds:
+                try:
+                    _or_has_creds = _credential_pool_is_usable("openrouter")
+                except Exception:
+                    _or_has_creds = False
+            if _or_has_creds:
+                free_ids = [mid for mid, _ in fetch_openrouter_free_models()]
+                if free_ids:
+                    results.append({
+                        "slug": OPENROUTER_FREE_PICKER_SLUG,
+                        "runtime_slug": OPENROUTER_FREE_RUNTIME_SLUG,
+                        "name": OPENROUTER_FREE_PICKER_LABEL,
+                        "is_current": False,
+                        "is_user_defined": False,
+                        "models": list(free_ids),
+                        "total_models": len(free_ids),
+                        "source": "hermes",
+                    })
+                    seen_slugs.add(OPENROUTER_FREE_PICKER_SLUG)
+        except Exception:
+            pass
+
     # --- 2b. Cross-check canonical provider list ---
     # Catches providers that are in CANONICAL_PROVIDERS but weren't found
     # in PROVIDER_TO_MODELS_DEV or HERMES_OVERLAYS (keeps /model in sync
@@ -3947,7 +3991,11 @@ def list_picker_providers(
     The typed ``/model <name>`` path is unaffected -- only the interactive
     picker payload is narrowed.
     """
-    from hermes_cli.models import fetch_openrouter_models
+    from hermes_cli.models import (
+        OPENROUTER_FREE_PICKER_SLUG,
+        fetch_openrouter_free_models,
+        fetch_openrouter_models,
+    )
 
     providers = list_authenticated_providers(
         current_provider=current_provider,
@@ -3974,6 +4022,18 @@ def list_picker_providers(
             p = dict(p)
             p["models"] = live_ids[:max_models] if max_models is not None else live_ids
             p["total_models"] = len(live_ids)
+        elif slug == OPENROUTER_FREE_PICKER_SLUG:
+            try:
+                free_live = fetch_openrouter_free_models()
+                free_ids = [mid for mid, _ in free_live]
+            except Exception:
+                free_ids = list(p.get("models", []))
+            p = dict(p)
+            # Live free catalog is the whole point of this row — do not
+            # truncate it with max_models.
+            p["models"] = free_ids
+            p["total_models"] = len(free_ids)
+            p.setdefault("runtime_slug", "openrouter")
 
         has_models = bool(p.get("models"))
         is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))

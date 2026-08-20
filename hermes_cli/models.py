@@ -132,6 +132,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("sakana/fugu-ultra",                      ""),
     # OpenRouter routers
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
+    ("openrouter/free",                        "auto-routes to a free OpenRouter model"),
     # Free tier
     ("openrouter/elephant-alpha",              "free"),
     ("poolside/laguna-m.1:free",               "free"),
@@ -2040,6 +2041,97 @@ def fetch_openrouter_models(
 def model_ids(*, force_refresh: bool = False) -> list[str]:
     """Return just the OpenRouter model-id strings."""
     return [mid for mid, _ in fetch_openrouter_models(force_refresh=force_refresh)]
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter free-models picker group
+#
+# Display slug is unique so Telegram/Discord can index two OpenRouter rows
+# (curated vs live-free). Runtime switching always uses ``openrouter``.
+# ---------------------------------------------------------------------------
+OPENROUTER_FREE_PICKER_SLUG = "openrouter-free"
+OPENROUTER_FREE_RUNTIME_SLUG = "openrouter"
+OPENROUTER_FREE_PICKER_LABEL = "OpenRouter Free Models"
+OPENROUTER_FREE_PICKER_DESC = (
+    "All zero-priced, tool-capable OpenRouter models (live catalog)"
+)
+
+_openrouter_free_cache: list[tuple[str, str]] | None = None
+_openrouter_free_cache_time: float = 0.0
+_OPENROUTER_FREE_CACHE_TTL = 3600.0
+
+
+def picker_runtime_slug(provider: Any) -> str:
+    """Return the runtime provider slug for a picker row or slug.
+
+    Picker display identifiers (``openrouter-free``) are not runtime
+    providers. Prefer an explicit ``runtime_slug`` field on a row dict.
+    """
+    if isinstance(provider, dict):
+        runtime = str(provider.get("runtime_slug") or "").strip()
+        if runtime:
+            return runtime
+        slug = str(provider.get("slug") or "").strip()
+    else:
+        slug = str(provider or "").strip()
+    if slug == OPENROUTER_FREE_PICKER_SLUG:
+        return OPENROUTER_FREE_RUNTIME_SLUG
+    return slug
+
+
+def fetch_openrouter_free_models(
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> list[tuple[str, str]]:
+    """Return every live OpenRouter model that is free and tool-capable.
+
+    Filters ``/api/v1/models`` for zero prompt+completion pricing. Tool
+    support uses :func:`_openrouter_model_supports_tools` (permissive when
+    ``supported_parameters`` is missing). NVIDIA and every other vendor
+    that meets those two rules is kept.
+    """
+    global _openrouter_free_cache, _openrouter_free_cache_time
+
+    now = time.time()
+    if (
+        not force_refresh
+        and _openrouter_free_cache is not None
+        and (now - _openrouter_free_cache_time) < _OPENROUTER_FREE_CACHE_TTL
+    ):
+        return list(_openrouter_free_cache)
+
+    try:
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/models",
+            headers={"Accept": "application/json"},
+        )
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        return list(_openrouter_free_cache or [])
+
+    live_items = payload.get("data", [])
+    if not isinstance(live_items, list):
+        return list(_openrouter_free_cache or [])
+
+    free_models: list[tuple[str, str]] = []
+    for item in live_items:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("id") or "").strip()
+        if not mid:
+            continue
+        if not _openrouter_model_is_free(item.get("pricing")):
+            continue
+        if not _openrouter_model_supports_tools(item):
+            continue
+        free_models.append((mid, "free"))
+
+    free_models.sort(key=lambda row: row[0])
+    _openrouter_free_cache = free_models
+    _openrouter_free_cache_time = now
+    return list(free_models)
 
 
 def get_curated_nous_model_ids() -> list[str]:

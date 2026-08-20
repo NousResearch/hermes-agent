@@ -154,6 +154,10 @@
           "description": "auto-routes to cheapest coder meeting openrouter.min_coding_score"
         },
         {
+          "id": "openrouter/free",
+          "description": "auto-routes to a free OpenRouter model"
+        },
+        {
           "id": "openrouter/elephant-alpha",
           "description": "free"
         },

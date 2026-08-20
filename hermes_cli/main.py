@@ -796,6 +796,7 @@ from hermes_cli import __version__, __release_date__
 from hermes_cli.model_setup_flows import (
     _prompt_auth_credentials_choice,
     _model_flow_openrouter,
+    _model_flow_openrouter_free,
     _model_flow_nous,
     _model_flow_openai_codex,
     _model_flow_xai_oauth,
@@ -3808,6 +3809,7 @@ def select_provider_and_model(args=None):
     )
 
     provider_labels = dict(_PROVIDER_LABELS)  # derive from canonical list
+    provider_labels["openrouter-free"] = "OpenRouter Free Models"
     if active and active in _custom_provider_map:
         active_label = _custom_provider_map[active]["name"]
     else:
@@ -3826,6 +3828,9 @@ def select_provider_and_model(args=None):
     # resolves back to a concrete slug, so the dispatch chain below is
     # unchanged. Custom providers and the trailing actions stay flat.
     canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
+    canonical_descs["openrouter-free"] = (
+        "OpenRouter Free Models (live zero-priced, tool-capable catalog)"
+    )
     # Honor ``model_catalog.excluded_providers`` so the CLI ``hermes model``
     # picker hides the same providers the gateway/TUI pickers do. A canonical
     # provider is hidden if its slug OR any of its aliases appears in the
@@ -3849,6 +3854,9 @@ def select_provider_and_model(args=None):
         ]
     else:
         _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS]
+    if "openrouter" in _visible_slugs and "openrouter-free" not in _visible_slugs:
+        _or_idx = _visible_slugs.index("openrouter")
+        _visible_slugs.insert(_or_idx + 1, "openrouter-free")
     grouped_rows = group_providers(_visible_slugs)
 
     # The group/slug that should be pre-selected: the active provider's group
@@ -3943,6 +3951,8 @@ def select_provider_and_model(args=None):
     # Step 2: Provider-specific setup + model selection
     if selected_provider == "openrouter":
         _model_flow_openrouter(config, current_model)
+    elif selected_provider == "openrouter-free":
+        _model_flow_openrouter_free(config, current_model)
     elif selected_provider == "moa":
         _model_flow_moa(config, current_model)
     elif selected_provider == "ai-gateway":

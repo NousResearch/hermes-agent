@@ -1,4 +1,15 @@
 [
+    {
+    "id": "hermes-on-local-vllm-instance",
+    "source": "github",
+    "author": "@pl247",
+    "url": "https://github.com/pl247/hermes-agent-on-ai-toolkit",
+    "date": "2026-05-21",
+    "category": "privacy",
+    "headline": "'Running Hermes on-premise using a distributed LLM hosted on vLLM'",
+    "quote": "This repository provides instructions for running Hermes Agent with a custom LLM served via vLLM on the AI Toolkit. It uses Ray clustering so you can use larger models that do not fit in a single GPU or single host. Instructions are shown for two hosts and four GPU running Nemotron 3 120B.",
+    "size": "sm"
+  },
   {
     "id": "anthony-inbox-cron",
     "source": "blog",

@@ -239,11 +239,31 @@ describe('watchInPage', () => {
     const huge = document.createElement('button')
 
     flush.getBoundingClientRect = () =>
-      ({ bottom: 40, height: 40, left: 100, right: 300, toJSON: () => ({}), top: 0, width: 200, x: 100, y: 0 }) as DOMRect
+      ({
+        bottom: 40,
+        height: 40,
+        left: 100,
+        right: 300,
+        toJSON: () => ({}),
+        top: 0,
+        width: 200,
+        x: 100,
+        y: 0
+      }) as DOMRect
     // Taller than the viewport: no room above it and none below it either, so
     // the tab has nowhere left to go but inside.
     huge.getBoundingClientRect = () =>
-      ({ bottom: 900, height: 900, left: 100, right: 300, toJSON: () => ({}), top: 0, width: 200, x: 100, y: 0 }) as DOMRect
+      ({
+        bottom: 900,
+        height: 900,
+        left: 100,
+        right: 300,
+        toJSON: () => ({}),
+        top: 0,
+        width: 200,
+        x: 100,
+        y: 0
+      }) as DOMRect
     document.body.append(roomy, flush, huge)
 
     watchInPage(document, { field: [roomy, flush, huge] }, 'sweep')
@@ -266,7 +286,17 @@ describe('watchInPage', () => {
     const edge = document.createElement('button')
 
     edge.getBoundingClientRect = () =>
-      ({ bottom: 140, height: 40, left: 990, right: 1020, toJSON: () => ({}), top: 100, width: 30, x: 990, y: 100 }) as DOMRect
+      ({
+        bottom: 140,
+        height: 40,
+        left: 990,
+        right: 1020,
+        toJSON: () => ({}),
+        top: 100,
+        width: 30,
+        x: 990,
+        y: 100
+      }) as DOMRect
     document.body.append(inboard, edge)
 
     watchInPage(document, { field: [inboard, edge] }, 'sweep')

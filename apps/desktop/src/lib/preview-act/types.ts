@@ -66,18 +66,7 @@ export interface PreviewActAction {
   /** `pin`/`unpin`/`hold` never reach the engine — they resolve their targets
    *  through `locate`/`elements` and then talk to the overlay — but they arrive
    *  on the same wire. */
-  kind:
-    | 'click'
-    | 'elements'
-    | 'hold'
-    | 'hover'
-    | 'locate'
-    | 'pin'
-    | 'press'
-    | 'scroll'
-    | 'strobe'
-    | 'type'
-    | 'unpin'
+  kind: 'click' | 'elements' | 'hold' | 'hover' | 'locate' | 'pin' | 'press' | 'scroll' | 'strobe' | 'type' | 'unpin'
   /** locate: also give the target keyboard focus, for a key press that must not
    *  be preceded by a click (which would activate the control instead). */
   focus?: boolean

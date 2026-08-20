@@ -73,11 +73,7 @@ export function namingKit(doc: Document): NamingKit {
   /** The strongest identity signal the page offers, if it offers one. Nothing a
    *  re-render does to the surrounding markup disturbs these. */
   const stableOf = (el: Element): string =>
-    el.id ||
-    el.getAttribute('data-testid') ||
-    el.getAttribute('name') ||
-    el.getAttribute('aria-label') ||
-    ''
+    el.id || el.getAttribute('data-testid') || el.getAttribute('name') || el.getAttribute('aria-label') || ''
 
   /** Handle stems by role, so a handle says what it is before it says which
    *  one. Anything unrecognised is `el`. */

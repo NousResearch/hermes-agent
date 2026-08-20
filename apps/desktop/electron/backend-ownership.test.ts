@@ -285,7 +285,6 @@ test('shutdown coordinator returns one promise and awaits teardown exactly once'
   assert.equal(coordinator.run(), first)
 })
 
-
 // #89298: a corrupt ownership file must never be silently rewritten as [] —
 // that permanently erases the only record of still-running backends. The reap
 // sweep quarantines the file and skips; a later healthy write recreates it.
@@ -321,6 +320,7 @@ test('reapOrphans on a corrupt file quarantines and does not rewrite', async () 
 
 test('reapOrphans on a corrupt file without a quarantine hook still skips the rewrite', async () => {
   const writes: string[] = []
+
   const store = {
     read: () => 'garbage{{{',
     value: () => 'garbage{{{',
@@ -337,6 +337,7 @@ test('reapOrphans on a corrupt file without a quarantine hook still skips the re
 
 test('an empty or missing ownership file is NOT corrupt — reap sweeps normally', async () => {
   const writes: string[] = []
+
   const store = {
     read: () => '',
     value: () => '',

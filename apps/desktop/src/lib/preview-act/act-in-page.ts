@@ -102,7 +102,6 @@ export function actInPageCore(
   const still = !!(win && win.matchMedia && win.matchMedia('(prefers-reduced-motion: reduce)').matches)
   const glide: ScrollBehavior = still ? 'auto' : 'smooth'
 
-
   /** Walk the page and hand back what is interactable, in document order. The
    *  handles are assigned afterwards, by `survey`. */
   const sight = (max: number) => {
@@ -139,7 +138,8 @@ export function actInPageCore(
       }
 
       const tag = el.tagName.toLowerCase()
-      const role = el.getAttribute('role') || (tag === 'input' ? 'input:' + ((el as HTMLInputElement).type || 'text') : tag)
+      const role =
+        el.getAttribute('role') || (tag === 'input' ? 'input:' + ((el as HTMLInputElement).type || 'text') : tag)
       const label = labelOf(el)
       const value = valueOf(el)
 
@@ -183,7 +183,6 @@ export function actInPageCore(
 
     return { elements, nodes }
   }
-
 
   /** Look at the page and say what is there — or, once there is something to
    *  compare against, only what moved.
@@ -374,7 +373,10 @@ export function actInPageCore(
 
     if (ref) {
       if (holder.url !== here) {
-        return { error: 'The page navigated since the last snapshot, so ' + ref + ' no longer points anywhere. Call elements again.' }
+        return {
+          error:
+            'The page navigated since the last snapshot, so ' + ref + ' no longer points anywhere. Call elements again.'
+        }
       }
 
       const bound = (holder.book || []).filter(entry => entry.ref === ref)[0]

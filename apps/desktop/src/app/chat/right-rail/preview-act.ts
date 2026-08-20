@@ -63,7 +63,8 @@ const CLICKS: readonly string[] = ['click', 'type']
 
 const NOTHING_OPEN = 'No live page is open in the in-app browser — open one with open_preview first.'
 
-const NAVIGATED = 'The page stopped answering right after — it is probably navigating. Call elements to see where you landed.'
+const NAVIGATED =
+  'The page stopped answering right after — it is probably navigating. Call elements to see where you landed.'
 
 /** A fingerprint of the overlay's source, so the guest page can tell that the
  *  code it is running has changed underneath it.
@@ -265,11 +266,7 @@ function buildScriptedScript(action: PreviewActAction, settleMs: number): string
   return `(function () {
 ${preamble()}
   var result = act(${JSON.stringify(action)});
-  ${
-    action.kind === 'elements'
-      ? "if (result.success) { watch('strobe'); }"
-      : ''
-  }
+  ${action.kind === 'elements' ? "if (result.success) { watch('strobe'); }" : ''}
   if (!result.success || ${settleMs} <= 0) { return Promise.resolve(JSON.stringify(result)); }
   return wait(${settleMs}).then(function () {
     try {
@@ -421,9 +418,7 @@ async function driveAction(
 /** Flag a click the overlay intercepted, which would otherwise look like a page
  *  that simply ignored it. */
 function hitNote(hit?: { tag: string; trusted: boolean } | null): string | undefined {
-  return hit && hit.tag === 'HERMES-WATCH'
-    ? 'The action overlay intercepted the click instead of the page.'
-    : undefined
+  return hit && hit.tag === 'HERMES-WATCH' ? 'The action overlay intercepted the click instead of the page.' : undefined
 }
 
 /** How far a screenful is, whether there is anywhere to go, and a spot to wheel
@@ -449,14 +444,11 @@ ${preamble()}
 async function driveScroll(
   run: PreviewScriptRunner,
   input: PreviewInputHandle,
-  action: PreviewActAction,
+  action: PreviewActAction
 ): Promise<PreviewActResult> {
   const far = action.amount ?? 0
 
-  const trip = await runJson(
-    run,
-    buildScrollAnchorScript()
-  )
+  const trip = await runJson(run, buildScrollAnchorScript())
 
   if (trip.kind === 'failed') {
     return { error: trip.error, success: false }

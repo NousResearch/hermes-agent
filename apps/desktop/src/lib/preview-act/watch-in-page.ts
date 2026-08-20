@@ -71,17 +71,7 @@ export interface WatchHolder {
  * - `hold` — promote the whole field to pins, so the scan stops decaying.
  */
 export type WatchStage =
-  | 'aim'
-  | 'clear'
-  | 'hold'
-  | 'pin'
-  | 'read'
-  | 'rest'
-  | 'strike'
-  | 'strobe'
-  | 'sweep'
-  | 'think'
-  | 'unpin'
+  'aim' | 'clear' | 'hold' | 'pin' | 'read' | 'rest' | 'strike' | 'strobe' | 'sweep' | 'think' | 'unpin'
 
 /** What a mark means. Everything else about it is shared. */
 type WatchKind = 'candidate' | 'flash' | 'held' | 'hit' | 'lock'
@@ -607,10 +597,16 @@ export function watchInPage(doc: Document, holder: WatchHolder, stage: WatchStag
     const beam = spec.kind === 'lock' ? (skin.firstElementChild as HTMLElement | null) : null
 
     if (beam && typeof beam.animate === 'function') {
-      beam.animate([{ opacity: 1, top: '-2px' }, { opacity: 1, top: '100%' }], {
-        duration: dwell,
-        easing: 'linear'
-      })
+      beam.animate(
+        [
+          { opacity: 1, top: '-2px' },
+          { opacity: 1, top: '100%' }
+        ],
+        {
+          duration: dwell,
+          easing: 'linear'
+        }
+      )
     }
   }
 
@@ -774,6 +770,7 @@ export function watchInPage(doc: Document, holder: WatchHolder, stage: WatchStag
       for (let node = el.firstChild; node; node = node.nextSibling) {
         if (node.nodeType === 3 && (node.nodeValue || '').trim()) {
           words = true
+
           break
         }
       }
@@ -788,6 +785,7 @@ export function watchInPage(doc: Document, holder: WatchHolder, stage: WatchStag
       while (up) {
         if (bag.has(up)) {
           inside = true
+
           break
         }
 
@@ -1013,6 +1011,7 @@ export function watchInPage(doc: Document, holder: WatchHolder, stage: WatchStag
     // clump sizes and the picks are independent of each other. Read in a fixed
     // order below: reordering these calls changes the sequence.
     let seed = 0
+
     const roll = () => {
       const noise = Math.sin(++seed * 78.233) * 43758.5453
 
@@ -1026,7 +1025,7 @@ export function watchInPage(doc: Document, holder: WatchHolder, stage: WatchStag
       // field it was going to rattle through instead.
       outline(field, 'candidate', () => 0)
     } else {
-      for (let at = 0; at < burst; ) {
+      for (let at = 0; at < burst;) {
         const clump = roll() < 0.62 ? 1 : roll() < 0.7 ? 2 : 3
 
         for (let k = 0; k < clump; k++) {

@@ -123,8 +123,7 @@ export function visibilityKit(doc: Document, win: null | Window): VisibilityKit 
     const midX = rect.left + rect.width / 2
     const midY = rect.top + rect.height / 2
 
-    const under = (doc as Document & { elementFromPoint?: (x: number, y: number) => Element | null })
-      .elementFromPoint
+    const under = (doc as Document & { elementFromPoint?: (x: number, y: number) => Element | null }).elementFromPoint
 
     if (
       typeof under === 'function' &&

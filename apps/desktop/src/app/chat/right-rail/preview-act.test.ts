@@ -238,7 +238,9 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     )
     cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send: vi.fn() }))
 
-    expect(await actOnActivePreview({ kind: 'scroll' })).toMatchObject({ note: expect.stringContaining('nothing to scroll') })
+    expect(await actOnActivePreview({ kind: 'scroll' })).toMatchObject({
+      note: expect.stringContaining('nothing to scroll')
+    })
   })
 
   it('fails loudly when the pointer input never reaches the page', async () => {

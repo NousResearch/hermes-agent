@@ -1153,6 +1153,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
+        self._decision_reactions_seen: set[str] = set()
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
@@ -1409,6 +1410,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 await adapter_self._on_platform_message_delete(message)
 
             @self._client.event
+            async def on_raw_reaction_add(payload):
+                await adapter_self._on_raw_reaction_add(payload)
+
+            @self._client.event
             async def on_thread_create(thread):
                 await adapter_self._on_platform_thread_create(thread)
 
@@ -1636,6 +1641,111 @@ class DiscordAdapter(BasePlatformAdapter):
         return await self._handle_message(
             message, role_authorized=role_authorized,
         )
+
+    def _decision_reaction_channels(self) -> set[str]:
+        """Return channels where 👍/👎 create isolated decision turns."""
+        configured = self.config.extra.get("decision_reaction_channels")
+        if configured is None:
+            return set()
+        if isinstance(configured, str):
+            configured = configured.split(",")
+        if not isinstance(configured, (list, tuple, set)):
+            return set()
+        return {str(value).strip() for value in configured if str(value).strip()}
+
+    async def _on_raw_reaction_add(self, payload: Any) -> None:
+        """Route configured decision reactions without interrupting another turn.
+
+        The reacted-to message id becomes a synthetic participant discriminator,
+        giving every decision message its own session while preserving the real
+        actor id for authorization and audit context.
+        """
+        decision = {"👍": "approve", "👎": "reject"}.get(str(getattr(payload, "emoji", "")))
+        channel_id = str(getattr(payload, "channel_id", "") or "")
+        message_id = str(getattr(payload, "message_id", "") or "")
+        user_id = str(getattr(payload, "user_id", "") or "")
+        if not decision or not channel_id or not message_id or not user_id:
+            return
+        if channel_id not in self._decision_reaction_channels():
+            return
+        if self._client is None or str(getattr(self._client.user, "id", "")) == user_id:
+            return
+        member = getattr(payload, "member", None)
+        if member is not None and getattr(member, "bot", False):
+            return
+        ignored = self._get_ignored_channels()
+        if "*" in ignored or channel_id in ignored:
+            return
+        try:
+            channel_id_int = int(channel_id)
+            message_id_int = int(message_id)
+        except (TypeError, ValueError):
+            return
+
+        channel = self._client.get_channel(channel_id_int)
+        if channel is None:
+            try:
+                channel = await self._client.fetch_channel(channel_id_int)
+            except Exception:
+                return
+        if not hasattr(channel, "fetch_message"):
+            return
+        try:
+            target = await channel.fetch_message(message_id_int)
+        except Exception:
+            logger.debug("[%s] Could not fetch decision reaction target", self.name, exc_info=True)
+            return
+
+        target_author = getattr(target, "author", None)
+        if str(getattr(target_author, "id", "")) != str(getattr(self._client.user, "id", "")):
+            return
+        target_text = str(getattr(target, "content", "") or "")
+        if not re.search(r"\b(?:DEC-[A-Z0-9-]+|Q-\d{3,})\b", target_text, re.IGNORECASE):
+            return
+
+        guild = getattr(target, "guild", None)
+        channel_ids = {channel_id}
+        if not self._is_allowed_user(
+            user_id,
+            member,
+            guild=guild,
+            is_dm=False,
+            channel_ids=channel_ids,
+        ):
+            return
+        decision_key = f"decision-reaction:{user_id}:{message_id}"
+        seen = getattr(self, "_decision_reactions_seen", None)
+        if seen is None:
+            seen = self._decision_reactions_seen = set()
+        if decision_key in seen:
+            return
+
+        source = self.build_source(
+            chat_id=channel_id,
+            chat_type="group",
+            user_id=user_id,
+            user_name=getattr(member, "display_name", None),
+            guild_id=str(getattr(payload, "guild_id", "") or "") or None,
+            message_id=message_id,
+        )
+        source.user_id_alt = f"decision-reaction:{user_id}:{message_id}"
+        source.prospective_thread_id = f"decision-reaction:{message_id}"
+        event = MessageEvent(
+            text=decision,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=target,
+            message_id=message_id,
+            reply_to_message_id=message_id,
+            reply_to_text=target_text,
+            channel_prompt=self._resolve_channel_prompt(channel_id),
+        )
+        seen.add(decision_key)
+        try:
+            await self.handle_message(event)
+        except Exception:
+            seen.discard(decision_key)
+            raise
 
     # ------------------------------------------------------------------
     # gateway_platform_event fire-sites (#64176)
@@ -10404,6 +10514,15 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+    decision_reaction_channels = discord_cfg.get("decision_reaction_channels")
+    if isinstance(decision_reaction_channels, str):
+        decision_reaction_channels = [
+            value.strip() for value in decision_reaction_channels.split(",") if value.strip()
+        ]
+    if isinstance(decision_reaction_channels, (list, tuple, set)):
+        seeded_extra["decision_reaction_channels"] = [
+            str(value).strip() for value in decision_reaction_channels if str(value).strip()
+        ]
     backfill_cfg = discord_cfg.get("missed_message_backfill")
     if isinstance(backfill_cfg, dict):
         seeded_extra["missed_message_backfill"] = dict(backfill_cfg)

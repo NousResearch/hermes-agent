@@ -337,6 +337,7 @@ discord:
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
   reactions: true                 # Add emoji reactions during processing
+  decision_reaction_channels: []  # 👍 approve / 👎 reject on bot decision messages
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
@@ -420,6 +421,18 @@ Controls whether the bot adds emoji reactions to messages as visual feedback:
 - ❌ added if an error occurs during processing
 
 Disable this if you find the reactions distracting or if the bot's role doesn't have the **Add Reactions** permission.
+
+#### `discord.decision_reaction_channels`
+
+**Type:** list of channel IDs — **Default:** `[]`
+
+Enables lightweight decisions on bot-authored messages in the listed channels.
+React with 👍 to approve or 👎 to reject. Hermes only routes reactions from an
+authorized user and only when the target message contains a decision identifier
+such as `DEC-P1-04` or `Q-004`. Each target message gets an isolated session, so
+rapid reactions on different decisions do not interrupt one another. The first
+supported reaction from a user on a decision wins; add context or corrections as
+a written reply.
 
 #### `discord.ignored_channels`
 

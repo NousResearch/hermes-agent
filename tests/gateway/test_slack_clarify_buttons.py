@@ -153,6 +153,39 @@ class TestSlackSendClarify:
         assert "&amp;" in section_text
 
 
+    @pytest.mark.asyncio
+    async def test_long_choice_renders_full_text_with_numbered_button(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1.2"})
+        long_choice = "Deploy the production migration after the backup and <rollback> checks have completed successfully"
+        escaped_long_choice = long_choice.replace("<", "&lt;").replace(">", "&gt;")
+
+        await adapter.send_clarify(
+            chat_id="C1",
+            question="Which rollout should run?",
+            choices=[long_choice, "Skip this release"],
+            clarify_id="cid3",
+            session_key="sk3",
+        )
+
+        kwargs = mock_client.chat_postMessage.call_args[1]
+        blocks = kwargs["blocks"]
+        choice_texts = [
+            block["text"]["text"]
+            for block in blocks
+            if block["type"] == "section"
+        ]
+        assert f"*1.* {escaped_long_choice}" in choice_texts
+        assert "*2.* Skip this release" in choice_texts
+        assert escaped_long_choice in kwargs["text"]
+
+        action_blocks = [block for block in blocks if block["type"] == "actions"]
+        elements = action_blocks[0]["elements"]
+        assert elements[0]["text"]["text"] == "Choose 1"
+        assert elements[1]["text"]["text"] == "Choose 2"
+
+
 # ===========================================================================
 # _handle_clarify_action — choice click resolves (b)
 # ===========================================================================

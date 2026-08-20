@@ -1,7 +1,8 @@
-"""xAI Grok OAuth upstream adapter."""
+"""xAI Grok OAuth upstream adapter; handles TTS path and body translation."""
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from typing import FrozenSet, Optional
@@ -14,9 +15,7 @@ logger = logging.getLogger(__name__)
 
 _POOL_PROVIDER = "xai-oauth"
 
-# xAI's public API is OpenAI-compatible for the endpoints Hermes commonly
-# uses. The Responses endpoint is included because Hermes' native xAI runtime
-# uses codex_responses mode.
+# Supported paths
 _ALLOWED_PATHS: FrozenSet[str] = frozenset(
     {
         "/responses",
@@ -24,6 +23,8 @@ _ALLOWED_PATHS: FrozenSet[str] = frozenset(
         "/completions",
         "/embeddings",
         "/models",
+        "/audio/speech",
+        "/tts",
     }
 )
 
@@ -107,6 +108,62 @@ class XAIGrokAdapter(UpstreamAdapter):
                 status_code,
             )
             return retry_cred
+
+    # PATH REWRITING - Grok uses /tts instead of /audio/speech
+    def map_path(self, requested_path: str) -> str:
+        """
+        Translate incoming paths to what xAI actually expects.
+        """
+        path = requested_path.lower().rstrip("/")
+
+        if path == "/audio/speech":
+            logger.debug("proxy: rewriting /audio/speech → /tts for xAI")
+            return "/tts"
+
+        if path == "/tts":
+            return "/tts"
+
+        return requested_path
+
+    # REQUEST BODY TRANSFORMATION - OpenAI TTS → xAI TTS
+    def transform_request_body(self, path: str, body: bytes) -> bytes:
+        normalized_path = path.lower().rstrip("/")
+
+        # Only transform TTS paths
+        if normalized_path not in {"/audio/speech", "/tts"}:
+            return body
+
+        if not body:
+            return body
+
+        try:
+            data = json.loads(body)
+            if not isinstance(data, dict):
+                return body
+
+            # input -> text
+            if "input" in data:
+                data["text"] = data.pop("input")
+
+            # voice -> voice_id
+            if "voice" in data:
+                data["voice_id"] = data.pop("voice")
+
+            # model is not used by xAI TTS
+            data.pop("model", None)
+
+            # Add text_normalization
+            data.setdefault("text_normalization", True)
+
+            # Add language
+            data.setdefault("language", "auto")
+
+            transformed = json.dumps(data, ensure_ascii=False).encode("utf-8")
+            return transformed
+
+        except (json.JSONDecodeError, TypeError, KeyError) as exc:
+            logger.warning("proxy: failed to transform TTS body, forwarding original: %s", exc)
+            return body
 
     def _load_pool(self) -> Optional[CredentialPool]:
         try:

@@ -62,7 +62,9 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.redact import redact_cdp_url
@@ -609,7 +611,12 @@ def _get_dialog_policy_config() -> Tuple[str, float]:
         return DEFAULT_DIALOG_POLICY, DEFAULT_DIALOG_TIMEOUT_S
 
 
-def _ensure_cdp_supervisor(task_id: str) -> None:
+def _ensure_cdp_supervisor(
+    task_id: str,
+    target_id: Optional[str] = None,
+    *,
+    expected_generation: Optional[int] = None,
+) -> None:
     """Start a CDP supervisor for ``task_id`` if an endpoint is reachable.
 
     Idempotent — delegates to ``SupervisorRegistry.get_or_start`` which skips
@@ -624,16 +631,31 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
       2. ``_active_sessions[task_id]["cdp_url"]`` — covers Browserbase + any
          other cloud provider whose ``create_session`` returns a raw CDP URL.
 
+    A fixed shared-CDP endpoint deliberately waits for ``target_id`` instead
+    of adopting its first page. The command path resolves the task-owned
+    pinned target before calling again; if pinning never succeeds, supervisor
+    features stay unavailable rather than observing another task's page.
+
     Swallows all errors — failing to attach the supervisor must not break
     the browser session itself.  The agent simply won't see
     ``pending_dialogs`` / ``frame_tree`` fields in snapshots.
     """
+    with _cleanup_lock:
+        session_info = _active_sessions.get(task_id, {})
+        if expected_generation is None:
+            raw_generation = session_info.get("_lifecycle_generation")
+            if isinstance(raw_generation, int) and not isinstance(raw_generation, bool):
+                expected_generation = raw_generation
+
     cdp_url = _get_cdp_override()
+    # A fixed CDP endpoint can already contain unrelated user/task pages. Do
+    # not let the supervisor attach to the endpoint's first page before
+    # agent-browser has created and pinned this task's own target.
+    if cdp_url and target_id is None:
+        return
     if not cdp_url:
         # Fallback: active session may carry a per-session CDP URL from a
         # cloud provider (Browserbase sets this).
-        with _cleanup_lock:
-            session_info = _active_sessions.get(task_id, {})
         maybe = str(session_info.get("cdp_url") or "")
         if maybe:
             cdp_url = _resolve_cdp_override(maybe)
@@ -643,11 +665,32 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
 
         policy, timeout_s = _get_dialog_policy_config()
+
+        def _publication_allowed() -> bool:
+            bare_task_id = _bare_task_id_for_session_key(task_id)
+            with _cleanup_lock:
+                current = _active_sessions.get(task_id)
+                if current is None:
+                    return False
+                if _task_state_locked(bare_task_id) in {
+                    BrowserTaskState.RETIRING,
+                    BrowserTaskState.RETIRED,
+                }:
+                    return False
+                if expected_generation is None:
+                    return True
+                return (
+                    _task_generation_locked(bare_task_id) == expected_generation
+                    and current.get("_lifecycle_generation") == expected_generation
+                )
+
         SUPERVISOR_REGISTRY.get_or_start(
             task_id=task_id,
             cdp_url=cdp_url,
+            target_id=target_id,
             dialog_policy=policy,
             dialog_timeout_s=timeout_s,
+            publish_guard=_publication_allowed,
         )
     except Exception as exc:
         logger.debug(
@@ -665,6 +708,83 @@ def _stop_cdp_supervisor(task_id: str) -> None:
         SUPERVISOR_REGISTRY.stop(task_id)
     except Exception as exc:
         logger.debug("CDP supervisor stop for task=%s failed (non-fatal): %s", task_id, exc)
+
+
+def _pinned_cdp_target_id(task_id: str) -> Optional[str]:
+    """Return agent-browser's active pinned page target for ``task_id``."""
+    result = _run_browser_command(task_id, "tab", ["list"], timeout=10)
+    if not result.get("success"):
+        return None
+    tabs = result.get("data", {}).get("tabs", [])
+    for tab in tabs if isinstance(tabs, list) else []:
+        if isinstance(tab, dict) and tab.get("active") and tab.get("type") == "page":
+            target_id = str(tab.get("targetId") or "").strip()
+            if target_id:
+                return target_id
+    return None
+
+
+def _close_shared_cdp_target_confirmed(cdp_url: str, target_id: str) -> bool:
+    """Close one shared-CDP target and verify that exact ID disappeared.
+
+    ``agent-browser tab close`` is not authoritative: agent-browser v0.34.0
+    removes the target from its own local list before it sends
+    ``Target.closeTarget`` and ignores that CDP call's error.  Hermes therefore
+    performs the destructive operation at browser level and checks the browser's
+    target list before releasing ownership metadata.  A transport or protocol
+    error is only accepted when a follow-up target list proves that this exact
+    target is gone; otherwise the caller must retain the session for retry.
+    """
+    target_id = str(target_id or "").strip()
+    cdp_url = str(cdp_url or "").strip()
+    if not target_id or not cdp_url:
+        return False
+    try:
+        from tools.browser_cdp_tool import _cdp_call, _run_async
+    except Exception:
+        return False
+
+    def _targets() -> Optional[list[dict[str, Any]]]:
+        try:
+            result = _run_async(
+                _cdp_call(cdp_url, "Target.getTargets", {}, None, 10.0)
+            )
+            raw = result.get("targetInfos", [])
+            return raw if isinstance(raw, list) else None
+        except Exception as exc:
+            logger.debug("Could not verify shared-CDP target %s: %s", target_id, exc)
+            return None
+
+    try:
+        _run_async(
+            _cdp_call(
+                cdp_url,
+                "Target.closeTarget",
+                {"targetId": target_id},
+                None,
+                10.0,
+            )
+        )
+    except Exception as exc:
+        # The close response may have been lost after Chrome performed the
+        # operation.  Exact absence is enough to prove ownership was released;
+        # anything else remains ambiguous and must be retried.
+        logger.debug("Shared-CDP close for target %s was uncertain: %s", target_id, exc)
+
+    deadline = time.monotonic() + 2.0
+    while True:
+        targets = _targets()
+        if targets is not None:
+            if not any(
+                isinstance(target, dict) and target.get("targetId") == target_id
+                for target in targets
+            ):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+        elif time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
 
 
 # ============================================================================
@@ -705,6 +825,9 @@ _allow_private_urls_resolved = False
 _cached_allow_private_urls: Optional[bool] = None
 _cached_agent_browser: Optional[str] = None
 _agent_browser_resolved = False
+_cached_pin_tab_agent_browser: Optional[str] = None
+_pin_tab_agent_browser_resolved = False
+_pin_tab_failure_cache: Optional[tuple[float, str]] = None
 
 # Lightpanda engine support — cached like _get_cloud_provider().
 # agent-browser v0.25.3+ supports ``--engine lightpanda`` natively.
@@ -912,9 +1035,10 @@ from hermes_constants import is_termux as _is_termux_environment
 
 
 def _browser_install_hint() -> str:
+    package = f"'{AGENT_BROWSER_NPX_SPEC}'"
     if _is_termux_environment():
-        return "npm install -g agent-browser && agent-browser install"
-    return "npm install -g agent-browser && agent-browser install --with-deps"
+        return f"npm install -g {package} && agent-browser install"
+    return f"npm install -g {package} && agent-browser install --with-deps"
 
 
 # Sentinel _find_agent_browser returns/caches to mean "resolve via npx" rather
@@ -924,11 +1048,46 @@ def _browser_install_hint() -> str:
 # changes.
 NPX_AGENT_BROWSER_SENTINEL = "npx agent-browser"
 
-# Pinned to match scripts/install.sh / scripts/install.ps1's
-# "agent-browser@^0.26.0" managed install so a git-clone install resolving
-# agent-browser via bare npx gets the same version as a managed install,
-# instead of floating latest with no integrity check. Update both together.
-AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.26.0"
+# Ordinary local/non-CDP browsing keeps the Node-22-compatible package line.
+# Shared-CDP sessions select the separate capability package below only after
+# a Node >=24 + agent-browser >=0.34 preflight. This keeps Hermes's documented
+# Node >=22.22 floor honest instead of making every browser command inherit the
+# newer package's Node requirement.
+AGENT_BROWSER_NPX_SPEC = "agent-browser@0.26.0"
+
+# v0.34.0 is the first release with official named-session CDP tab pinning.
+# Keep automatic acquisition exact: the package is newer than the normal
+# release-age gate, and a future patch must not inherit the scoped exception.
+AGENT_BROWSER_PIN_TAB_NPX_SPEC = "agent-browser@0.34.0"
+AGENT_BROWSER_PIN_TAB_MIN_VERSION = (0, 34, 0)
+AGENT_BROWSER_PIN_TAB_MIN_NODE_MAJOR = 24
+AGENT_BROWSER_NPX_MIN_RELEASE_AGE_DAYS = 14
+
+# Failed capability probes are briefly cached so an unsupported shared-CDP
+# setup does not fork agent-browser + Node probes on every model command.
+AGENT_BROWSER_PIN_TAB_FAILURE_TTL_SECONDS = 5.0
+
+
+class AgentBrowserCapabilityError(RuntimeError):
+    """The discovered CLI/runtime cannot provide strict shared-CDP pinning."""
+
+
+def _apply_agent_browser_npm_policy(
+    env: Dict[str, str], *, pin_tab_acquisition: bool = False
+) -> Dict[str, str]:
+    """Apply Hermes's npm policy to one agent-browser npx subprocess.
+
+    Ordinary acquisition keeps the repository's 14-day gate. Strict CDP
+    pinning uses the exact, clean-room-tested 0.34.0 package and temporarily
+    sets the gate to zero for that one acquisition. Otherwise an empty cache
+    cannot install the security capability until wall-clock age crosses the
+    cutoff.
+    """
+    env["npm_config_engine_strict"] = "true"
+    env["npm_config_min_release_age"] = str(
+        0 if pin_tab_acquisition else AGENT_BROWSER_NPX_MIN_RELEASE_AGE_DAYS
+    )
+    return env
 
 
 def _is_npx_agent_browser_sentinel(browser_cmd: str) -> bool:
@@ -1181,7 +1340,13 @@ def _annotate_lightpanda_fallback(result: Dict[str, Any], reason: str) -> Dict[s
 
 
 def _copy_fallback_warning(target: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
-    """Copy browser fallback metadata from an internal result into a tool response."""
+    """Copy browser metadata that must survive high-level response shaping."""
+    # Preserve terminal ownership failures for the model, but do not
+    # automatically adopt, create, or open a replacement tab.
+    if result.get("code") in {"tab_gone", "browser_session_retired"}:
+        target["code"] = result["code"]
+        if "data" in result:
+            target["data"] = result["data"]
     if result.get("fallback_warning"):
         target["fallback_warning"] = result["fallback_warning"]
         target["browser_engine"] = result.get("browser_engine")
@@ -1249,9 +1414,8 @@ def _run_chrome_fallback_command(
     # WinError 193.
     if _is_npx_agent_browser_sentinel(browser_cmd):
         _npx_bin = _resolve_npx_bin() or "npx"
-        # --ignore-scripts: AGENT_BROWSER_NPX_SPEC is a floating ^0.26.0 range,
-        # not an exact pin — a compromised future 0.26.x patch must not get to
-        # run its own install-time lifecycle scripts on this machine.
+        # --ignore-scripts is retained as defense in depth even though Hermes
+        # acquires one exact, reviewed agent-browser version here.
         cmd_prefix = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
     else:
         cmd_prefix = [browser_cmd]
@@ -1260,6 +1424,8 @@ def _run_chrome_fallback_command(
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
     os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
     browser_env = _build_browser_env()
+    if _is_npx_agent_browser_sentinel(browser_cmd):
+        _apply_agent_browser_npm_policy(browser_env)
     browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
     browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
 
@@ -1524,10 +1690,10 @@ def _last_session_key(task_id: str) -> str:
 
     ``browser_navigate`` records which concrete session key served a task's
     most recent successful navigation. Non-navigation tools must reuse that key
-    so click/fill/snapshot land in the same browser. If the recorded owner was
-    later cleaned up or ownership metadata no longer matches, fail closed by
-    dropping the stale binding instead of silently recreating or mutating the
-    wrong browser.
+    so click/fill/snapshot land in the same browser. If ownership metadata no
+    longer matches, drop the stale binding instead of mutating the wrong
+    browser. Successful terminal cleanup separately tombstones the bare task,
+    so falling back to that key cannot recreate a blank replacement session.
     """
     if task_id is None:
         task_id = "default"
@@ -1622,6 +1788,47 @@ _recording_sessions: set = set()  # session_keys with active recordings
 _last_active_session_key: Dict[str, str] = {}  # task_id -> session_key
 _LOCAL_SUFFIX = "::local"
 
+
+class BrowserCleanupReason(str, Enum):
+    """Why browser ownership is being torn down."""
+
+    TERMINAL = "terminal"
+    INACTIVITY = "inactivity"
+    PROVIDER_EXPIRY = "provider_expiry"
+    RESTART_ROLLBACK = "restart_rollback"
+
+
+class BrowserTaskState(str, Enum):
+    """Process-local lifecycle for one bare browser task."""
+
+    STARTING = "starting"
+    ACTIVE = "active"
+    RETIRING = "retiring"
+    RETIRED = "retired"
+
+
+class OrphanTargetOwnership(str, Enum):
+    """Confidence in exact target ownership recovered from daemon metadata."""
+
+    PINNED = "pinned"
+    CONFIRMED_UNPINNED = "confirmed_unpinned"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class _PendingProviderCleanup:
+    """Provider session identity retained until close is confirmed."""
+
+    task_id: str
+    provider: Any
+    session_id: str
+
+# Successful terminal cleanup leaves a task tombstone so a later non-navigation
+# command cannot silently recreate a blank session. Explicit browser_navigate
+# is the only operation that clears the tombstone. Process-local by design:
+# task/session ownership is process-local too, and no state must survive restart.
+_retired_browser_tasks: set[str] = set()
+
 # Flag to track if cleanup has been done
 _cleanup_done = False
 
@@ -1674,9 +1881,200 @@ _session_last_activity: Dict[str, float] = {}
 # Background cleanup thread state
 _cleanup_thread = None
 _cleanup_running = False
-# Protects _session_last_activity AND _active_sessions for thread safety
+# Protects browser lifecycle, activity, and ownership maps for thread safety.
 # (subagents run concurrently via ThreadPoolExecutor)
 _cleanup_lock = threading.Lock()
+
+# Bare-task lifecycle and generation fencing. ``_retired_browser_tasks`` stays
+# as the compatibility tombstone surface, while these maps model transient
+# STARTING/RETIRING states that a set alone cannot represent.
+_browser_task_states: Dict[str, BrowserTaskState] = {}
+_browser_task_generations: Dict[str, int] = {}
+_browser_task_cleanup_reasons: Dict[str, BrowserCleanupReason] = {}
+_browser_task_cleanup_locks: Dict[str, Any] = {}
+
+# Page/daemon ownership lives in ``_active_sessions``. Provider-account
+# ownership is separate because a provider close can fail after the page and
+# local daemon have already been removed.
+_pending_provider_cleanups: Dict[
+    Tuple[str, int, str], _PendingProviderCleanup
+] = {}
+
+
+class _BrowserSessionRetiredError(RuntimeError):
+    """Raised when an implicit session lookup targets a retired browser task."""
+
+
+def _task_state_locked(bare_task_id: str) -> BrowserTaskState:
+    """Read lifecycle state while ``_cleanup_lock`` is held."""
+    if bare_task_id in _retired_browser_tasks:
+        return BrowserTaskState.RETIRED
+    state = _browser_task_states.get(bare_task_id, BrowserTaskState.ACTIVE)
+    # The tombstone set remains authoritative for RETIRED so older tests and
+    # hot-reload callers that replace/clear it cannot inherit a stale map row.
+    if state is BrowserTaskState.RETIRED:
+        return BrowserTaskState.ACTIVE
+    return state
+
+
+def _set_task_state_locked(
+    bare_task_id: str,
+    state: BrowserTaskState,
+    *,
+    cleanup_reason: Optional[BrowserCleanupReason] = None,
+) -> None:
+    """Write lifecycle state and keep the compatibility tombstone in sync."""
+    _browser_task_states[bare_task_id] = state
+    if state is BrowserTaskState.RETIRED:
+        _retired_browser_tasks.add(bare_task_id)
+    else:
+        _retired_browser_tasks.discard(bare_task_id)
+    if cleanup_reason is None:
+        if state is not BrowserTaskState.RETIRING:
+            _browser_task_cleanup_reasons.pop(bare_task_id, None)
+    else:
+        _browser_task_cleanup_reasons[bare_task_id] = cleanup_reason
+
+
+def _task_generation_locked(bare_task_id: str) -> int:
+    return _browser_task_generations.get(bare_task_id, 0)
+
+
+def _advance_task_generation_locked(bare_task_id: str) -> int:
+    generation = _task_generation_locked(bare_task_id) + 1
+    _browser_task_generations[bare_task_id] = generation
+    return generation
+
+
+def _task_has_active_sessions_locked(bare_task_id: str) -> bool:
+    return any(
+        _bare_task_id_for_session_key(session_key) == bare_task_id
+        for session_key in _active_sessions
+    )
+
+
+def _task_cleanup_operation_lock(bare_task_id: str) -> Any:
+    """Return the re-entrant per-task lock shared by commands and cleanup."""
+    with _cleanup_lock:
+        return _browser_task_cleanup_locks.setdefault(
+            bare_task_id, threading.RLock()
+        )
+
+
+def _cleanup_reason_retires_task(reason: BrowserCleanupReason) -> bool:
+    return reason in {
+        BrowserCleanupReason.TERMINAL,
+        BrowserCleanupReason.RESTART_ROLLBACK,
+    }
+
+
+def _coerce_cleanup_reason(reason: BrowserCleanupReason | str) -> BrowserCleanupReason:
+    if isinstance(reason, BrowserCleanupReason):
+        return reason
+    return BrowserCleanupReason(str(reason))
+
+
+def _is_browser_task_unavailable(task_id: str) -> bool:
+    bare_task_id = _bare_task_id_for_session_key(task_id or "default")
+    with _cleanup_lock:
+        return _task_state_locked(bare_task_id) in {
+            BrowserTaskState.RETIRING,
+            BrowserTaskState.RETIRED,
+        }
+
+
+def _is_task_owned_shared_cdp_session(session_info: Dict[str, Any]) -> bool:
+    """Return whether Hermes attached a task-owned tab to an external CDP.
+
+    Cloud providers also expose CDP URLs, but carry a provider session id and
+    retain their existing inactivity lifecycle. A fixed/user-supplied CDP
+    override has no provider session id: Hermes owns only its pinned target,
+    while the shared browser itself is externally owned.
+    """
+    return bool(session_info.get("cdp_url")) and not session_info.get("bb_session_id")
+
+
+def _is_browser_task_retired(task_id: str) -> bool:
+    bare_task_id = _bare_task_id_for_session_key(task_id or "default")
+    with _cleanup_lock:
+        return _task_state_locked(bare_task_id) is BrowserTaskState.RETIRED
+
+
+def _browser_session_retired_result(task_id: str) -> Dict[str, Any]:
+    bare_task_id = _bare_task_id_for_session_key(task_id or "default")
+    with _cleanup_lock:
+        state = _task_state_locked(bare_task_id)
+        reason = _browser_task_cleanup_reasons.get(bare_task_id)
+    cleanup_pending = state is BrowserTaskState.RETIRING
+    terminal = state is BrowserTaskState.RETIRED or (
+        cleanup_pending
+        and reason is not None
+        and _cleanup_reason_retires_task(reason)
+    )
+    return {
+        "success": False,
+        "error": (
+            "Browser session cleanup is still pending; normal browser commands "
+            "are blocked until exact ownership is released."
+            if cleanup_pending
+            else (
+                "Browser session ownership for this task has been retired. "
+                "Call browser_navigate to start a fresh owned session."
+            )
+        ),
+        "code": "browser_session_retired",
+        "data": {
+            "task_id": bare_task_id,
+            "state": state.value,
+            "terminal": terminal,
+            "cleanup_pending": cleanup_pending,
+            "cleanup_reason": reason.value if reason is not None else None,
+            "recovery": (
+                "retry_cleanup"
+                if cleanup_pending
+                else "browser_navigate"
+            ),
+        },
+    }
+
+
+def _clear_retired_browser_task_for_navigation(task_id: str) -> bool:
+    """Allow an explicit navigation attempt to start a fresh owned session.
+
+    Returns whether the task was retired so a failed attempt can restore the
+    terminal boundary after cleaning any partially-created replacement.
+    """
+    bare_task_id = _bare_task_id_for_session_key(task_id or "default")
+    with _cleanup_lock:
+        state = _task_state_locked(bare_task_id)
+        if state is BrowserTaskState.RETIRING:
+            raise _BrowserSessionRetiredError(bare_task_id)
+        was_retired = state is BrowserTaskState.RETIRED
+        if was_retired:
+            _advance_task_generation_locked(bare_task_id)
+            _set_task_state_locked(bare_task_id, BrowserTaskState.STARTING)
+    if was_retired:
+        logger.info(
+            "Explicit navigation is restarting retired browser task: %s",
+            bare_task_id,
+        )
+    return was_retired
+
+
+def _restore_retired_browser_task_after_failed_navigation(
+    task_id: str,
+    session_key: str,
+) -> None:
+    """Fail closed when an explicit restart did not complete navigation.
+
+    The rollback enters RETIRING before physical cleanup. If exact cleanup
+    fails, ownership remains retryable but every normal command stays blocked;
+    successful cleanup transitions to RETIRED.
+    """
+    cleanup_browser(
+        session_key,
+        reason=BrowserCleanupReason.RESTART_ROLLBACK,
+    )
 
 
 def _session_expiry_timestamp(session_info: Dict[str, Any]) -> Optional[float]:
@@ -1731,9 +2129,11 @@ def _emergency_cleanup_all_sessions():
 
     # Clean up this process's own sessions first, so their owner_pid files
     # are removed before the reaper scans.
-    if _active_sessions:
-        logger.info("Emergency cleanup: closing %s active session(s)...",
-                    len(_active_sessions))
+    if _active_sessions or _pending_provider_cleanups:
+        logger.info(
+            "Emergency cleanup: closing %s active/pending browser ownership(s)...",
+            len(_active_sessions) + len(_pending_provider_cleanups),
+        )
         try:
             cleanup_all_browsers()
         except Exception as e:
@@ -1779,6 +2179,18 @@ def _cleanup_inactive_browser_sessions():
 
     with _cleanup_lock:
         for task_id, last_time in list(_session_last_activity.items()):
+            session_info = _active_sessions.get(task_id)
+            # Fixed/external CDP sessions own an exact target in a shared
+            # browser. Browser-command silence does not mean the overall agent
+            # turn is idle (the model may be waiting on the page), so the
+            # normal end-of-turn cleanup owns their lifecycle. Local and cloud
+            # sessions keep the ordinary inactivity policy below.
+            if (
+                session_info
+                and _is_task_owned_shared_cdp_session(session_info)
+                and not session_info.get("_cleanup_retry_pending")
+            ):
+                continue
             if current_time - last_time > BROWSER_SESSION_INACTIVITY_TIMEOUT:
                 sessions_to_cleanup.append(task_id)
 
@@ -1786,10 +2198,18 @@ def _cleanup_inactive_browser_sessions():
         try:
             elapsed = int(current_time - _session_last_activity.get(task_id, current_time))
             logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
-            cleanup_browser(task_id)
-            with _cleanup_lock:
-                if task_id in _session_last_activity:
-                    del _session_last_activity[task_id]
+            if cleanup_browser(
+                task_id,
+                reason=BrowserCleanupReason.INACTIVITY,
+            ):
+                with _cleanup_lock:
+                    _session_last_activity.pop(task_id, None)
+            else:
+                # Keep ownership retryable without hammering the same failed
+                # close on every cleanup-loop tick.
+                with _cleanup_lock:
+                    if task_id in _session_last_activity:
+                        _session_last_activity[task_id] = current_time
         except Exception as e:
             logger.warning("Error cleaning up inactive session %s: %s", task_id, e)
 
@@ -1810,6 +2230,31 @@ def _write_owner_pid(socket_dir: str, session_name: str) -> None:
     except OSError as exc:
         logger.debug("Could not write owner_pid file for %s: %s",
                      session_name, exc)
+
+
+def _write_shared_cdp_endpoint(
+    socket_dir: str,
+    session_name: str,
+    cdp_url: str,
+) -> None:
+    """Persist the browser-level endpoint needed for exact orphan cleanup.
+
+    The endpoint may contain authentication material, so the file is created
+    with mode 0600 inside the already private per-session socket directory.
+    Failure is safe: the orphan reaper will preserve the daemon and target
+    metadata rather than falling back to ambiguous tab discovery.
+    """
+    cdp_url = str(cdp_url or "").strip()
+    if not cdp_url:
+        return
+    path = os.path.join(socket_dir, f"{session_name}.cdp_endpoint")
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(cdp_url)
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        logger.debug("Could not persist shared-CDP endpoint for %s: %s", session_name, exc)
 
 
 def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
@@ -1932,6 +2377,71 @@ def _socket_dir_idle_seconds(socket_dir: str) -> Optional[float]:
     return max(0.0, time.time() - latest)
 
 
+def _orphan_target_ownership(
+    socket_dir: str,
+    session_name: str,
+) -> OrphanTargetOwnership:
+    """Classify exact target ownership without guessing from broken metadata.
+
+    ``cdp_*`` names are task-owned shared-CDP sessions. Missing, unreadable,
+    malformed, or wrong-shaped metadata for those sessions is UNKNOWN: deleting
+    the directory or daemon would erase the last place exact ownership may be
+    recovered. Legacy local/provider sessions are confirmed unpinned when they
+    have no target record.
+    """
+    target_file = Path(socket_dir) / f"{session_name}.target"
+    if not target_file.exists():
+        if session_name.startswith("cdp_"):
+            return OrphanTargetOwnership.UNKNOWN
+        return OrphanTargetOwnership.CONFIRMED_UNPINNED
+    try:
+        payload = json.loads(target_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return OrphanTargetOwnership.UNKNOWN
+    if not isinstance(payload, dict):
+        return OrphanTargetOwnership.UNKNOWN
+    target_id = payload.get("targetId")
+    if payload.get("pinned") is True and isinstance(target_id, str) and target_id:
+        return OrphanTargetOwnership.PINNED
+    if payload.get("pinned") is False:
+        return OrphanTargetOwnership.CONFIRMED_UNPINNED
+    return OrphanTargetOwnership.UNKNOWN
+
+
+def _orphan_has_pinned_target(socket_dir: str, session_name: str) -> bool:
+    """Compatibility wrapper; the reaper itself uses tri-state ownership."""
+    return (
+        _orphan_target_ownership(socket_dir, session_name)
+        is OrphanTargetOwnership.PINNED
+    )
+
+
+def _close_orphaned_pinned_target(socket_dir: str, session_name: str) -> bool:
+    """Close an orphan's recorded target through its persisted CDP endpoint.
+
+    No target discovery is performed. If the exact close cannot be confirmed,
+    return False so the caller preserves both daemon and ownership metadata for
+    a later retry instead of converting a sensitive page leak into an
+    untracked one. There is deliberately no age-based daemon-kill fallback:
+    the target belongs to an external shared browser, so killing its helper
+    daemon cannot close the page and would destroy the last automatic
+    exact-close path.
+    """
+    try:
+        target_payload = json.loads(
+            (Path(socket_dir) / f"{session_name}.target").read_text(encoding="utf-8")
+        )
+        target_id = target_payload.get("targetId") if isinstance(target_payload, dict) else None
+        cdp_url = (
+            Path(socket_dir) / f"{session_name}.cdp_endpoint"
+        ).read_text(encoding="utf-8").strip()
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(target_id, str) or not target_id.strip() or not cdp_url:
+        return False
+    return _close_shared_cdp_target_confirmed(cdp_url, target_id.strip())
+
+
 def _reap_orphaned_browser_sessions():
     """Scan for orphaned agent-browser daemon processes from previous runs.
 
@@ -2032,9 +2542,28 @@ def _reap_orphaned_browser_sessions():
                 continue
 
         # owner_alive is False (dead owner) OR legacy daemon not tracked here.
+        target_ownership = _orphan_target_ownership(socket_dir, session_name)
+        if target_ownership is OrphanTargetOwnership.UNKNOWN:
+            logger.warning(
+                "Orphaned shared-CDP target metadata for session %s is missing "
+                "or unreadable; retaining daemon and ownership directory",
+                session_name,
+            )
+            continue
+        pinned_target_owned = target_ownership is OrphanTargetOwnership.PINNED
+        if pinned_target_owned and not _close_orphaned_pinned_target(
+            socket_dir, session_name
+        ):
+            logger.warning(
+                "Could not confirm exact pinned target close for orphaned session %s; "
+                "retaining daemon and ownership metadata for retry",
+                session_name,
+            )
+            continue
+
         pid_file = os.path.join(socket_dir, f"{session_name}.pid")
         if not os.path.isfile(pid_file):
-            # No daemon PID file — just a stale dir, remove it
+            # Exact target ownership is either absent or already released.
             shutil.rmtree(socket_dir, ignore_errors=True)
             continue
 
@@ -2338,7 +2867,127 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
     }
 
 
-def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
+def _provider_cleanup_key(
+    task_id: str,
+    provider: Any,
+    session_id: str,
+) -> Tuple[str, int, str]:
+    return (task_id, id(provider) if provider is not None else 0, session_id)
+
+
+def _remember_pending_provider_cleanup(
+    task_id: str,
+    provider: Any,
+    session_id: str,
+) -> None:
+    bare_task_id = _bare_task_id_for_session_key(task_id)
+    record = _PendingProviderCleanup(bare_task_id, provider, session_id)
+    with _cleanup_lock:
+        # One provider session has exactly one retry owner. A legacy record may
+        # initially lack a provider object and later resolve one; replace that
+        # record instead of accumulating duplicate close attempts.
+        stale_keys = [
+            key
+            for key, pending in _pending_provider_cleanups.items()
+            if pending.task_id == bare_task_id
+            and pending.session_id == session_id
+        ]
+        for key in stale_keys:
+            _pending_provider_cleanups.pop(key, None)
+        _pending_provider_cleanups[
+            _provider_cleanup_key(bare_task_id, provider, session_id)
+        ] = record
+        # A late stale creator can finish after terminal cleanup already
+        # reported no published session and moved to RETIRED. If disposing its
+        # provider session then fails, reopen only the cleanup state (never the
+        # browser command surface) and make the retry visible to the reaper.
+        if _task_state_locked(bare_task_id) is BrowserTaskState.RETIRED:
+            _set_task_state_locked(
+                bare_task_id,
+                BrowserTaskState.RETIRING,
+                cleanup_reason=BrowserCleanupReason.TERMINAL,
+            )
+        _session_last_activity.setdefault(bare_task_id, time.time())
+
+
+def _clear_pending_provider_cleanup(task_id: str, session_id: str) -> None:
+    bare_task_id = _bare_task_id_for_session_key(task_id)
+    with _cleanup_lock:
+        stale_keys = [
+            key
+            for key, record in _pending_provider_cleanups.items()
+            if record.task_id == bare_task_id and record.session_id == session_id
+        ]
+        for key in stale_keys:
+            _pending_provider_cleanups.pop(key, None)
+
+
+def _attempt_provider_session_close(
+    task_id: str,
+    provider: Any,
+    session_id: str,
+) -> bool:
+    """Close a provider session once and retain identity on any failure."""
+    bare_task_id = _bare_task_id_for_session_key(task_id)
+    owner = provider
+    if owner is None:
+        try:
+            owner = _get_cloud_provider()
+        except Exception as exc:
+            logger.warning("Could not resolve cloud browser provider for cleanup: %s", exc)
+    if owner is None:
+        _remember_pending_provider_cleanup(bare_task_id, provider, session_id)
+        return False
+    try:
+        closed = owner.close_session(session_id)
+    except Exception as exc:
+        logger.warning("Could not close cloud browser session: %s", exc)
+        _remember_pending_provider_cleanup(bare_task_id, owner, session_id)
+        return False
+    if closed is not True:
+        logger.warning("Cloud browser provider did not confirm session close")
+        _remember_pending_provider_cleanup(bare_task_id, owner, session_id)
+        return False
+    _clear_pending_provider_cleanup(bare_task_id, session_id)
+    return True
+
+
+def _dispose_unpublished_session(
+    task_id: str,
+    session_info: Any,
+    provider: Any = None,
+) -> bool:
+    """Dispose resources created by a stale or losing session creator."""
+    if not isinstance(session_info, dict):
+        return True
+    session_id = session_info.get("bb_session_id")
+    if not session_id:
+        # Local and shared-CDP candidates are metadata-only until their first
+        # command, so there is no daemon or target to release before publication.
+        return True
+    owner = session_info.get("_provider_cleanup_owner", provider)
+    return _attempt_provider_session_close(task_id, owner, str(session_id))
+
+
+def _abandon_session_creation(
+    bare_task_id: str,
+    generation: int,
+) -> None:
+    """Return a failed creator's STARTING state to ACTIVE when still current."""
+    with _cleanup_lock:
+        if (
+            _task_generation_locked(bare_task_id) == generation
+            and _task_state_locked(bare_task_id) is BrowserTaskState.STARTING
+            and not _task_has_active_sessions_locked(bare_task_id)
+        ):
+            _set_task_state_locked(bare_task_id, BrowserTaskState.ACTIVE)
+
+
+def _get_session_info(
+    task_id: Optional[str] = None,
+    *,
+    _for_cleanup: bool = False,
+) -> Dict[str, Any]:
     """
     Get or create session info for the given session key.
 
@@ -2358,38 +3007,57 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     """
     if task_id is None:
         task_id = "default"
+    bare_task_id = _bare_task_id_for_session_key(task_id)
 
     # Start the cleanup thread if not running (handles inactivity timeouts)
     _start_browser_cleanup_thread()
 
-    # Update activity timestamp for this session
-    _update_session_activity(task_id)
-
     with _cleanup_lock:
-        # Check if we already have a session for this task
+        state = _task_state_locked(bare_task_id)
         existing_session = _active_sessions.get(task_id)
+        cleanup_lookup = (
+            _for_cleanup
+            and state is BrowserTaskState.RETIRING
+            and existing_session is not None
+        )
+        if state in {BrowserTaskState.RETIRING, BrowserTaskState.RETIRED} and not cleanup_lookup:
+            raise _BrowserSessionRetiredError(task_id)
+        if not _for_cleanup:
+            # Update activity and read ownership in one critical section so a
+            # cleanup cannot retire the task between those operations.
+            _session_last_activity[task_id] = time.time()
 
     if existing_session is not None:
-        if not _session_has_expired(existing_session):
+        if _for_cleanup or not _session_has_expired(existing_session):
             return existing_session
 
         logger.info(
             "Replacing expired cloud browser session for task %s",
             task_id,
         )
-        _cleanup_single_browser_session(task_id)
-        # Cleanup removes the activity entry. The replacement session must be
-        # tracked by the inactivity reaper just like an initial session.
-        _update_session_activity(task_id)
+        if not _cleanup_browser_session_keys(
+            task_id,
+            [task_id],
+            reason=BrowserCleanupReason.PROVIDER_EXPIRY,
+        ):
+            raise _BrowserSessionRetiredError(task_id)
+        return _get_session_info(task_id)
 
-        # Guard against a concurrent replacement: another thread may have
-        # already cleaned up the expired session and created a fresh one
-        # while we were waiting.  If so, return the live replacement instead
-        # of falling through to create yet another session.
-        with _cleanup_lock:
-            replacement = _active_sessions.get(task_id)
-        if replacement is not None and replacement is not existing_session:
-            return replacement
+    if _for_cleanup:
+        raise _BrowserSessionRetiredError(task_id)
+
+    with _cleanup_lock:
+        # Recheck after the unlocked expiry/lookup path. Terminal cleanup may
+        # have advanced the generation while this creator was entering.
+        state = _task_state_locked(bare_task_id)
+        if state in {BrowserTaskState.RETIRING, BrowserTaskState.RETIRED}:
+            raise _BrowserSessionRetiredError(task_id)
+        winner = _active_sessions.get(task_id)
+        if winner is not None:
+            return winner
+        creation_generation = _task_generation_locked(bare_task_id)
+        if not _task_has_active_sessions_locked(bare_task_id):
+            _set_task_state_locked(bare_task_id, BrowserTaskState.STARTING)
 
     # Hybrid routing: session keys ending with ``::local`` force a local
     # Chromium regardless of the globally-configured cloud provider.  Public
@@ -2397,66 +3065,103 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     # the bare task_id key.
     force_local = _is_local_sidecar_key(task_id)
 
-    # Create session outside the lock (network call in cloud mode)
-    cdp_override = _get_cdp_override()
-    if cdp_override and not force_local:
-        session_info = _create_cdp_session(task_id, cdp_override)
-    elif force_local:
-        session_info = _create_local_session(task_id)
-    else:
-        provider = _get_cloud_provider()
-        if provider is None:
+    # Create session outside the lock (network call in cloud mode). Publication
+    # below is fenced by the bare-task generation captured above.
+    provider = None
+    session_info: Dict[str, Any]
+    try:
+        cdp_override = _get_cdp_override()
+        if cdp_override and not force_local:
+            session_info = _create_cdp_session(task_id, cdp_override)
+        elif force_local:
             session_info = _create_local_session(task_id)
         else:
-            try:
-                session_info = provider.create_session(task_id)
-                # Validate cloud provider returned a usable session
-                if not session_info or not isinstance(session_info, dict):
-                    raise ValueError(f"Cloud provider returned invalid session: {session_info!r}")
-                if session_info.get("cdp_url"):
-                    # Some cloud providers (including Browser-Use v3) return an HTTP
-                    # CDP discovery URL instead of a raw websocket endpoint.
-                    session_info = dict(session_info)
-                    session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
-            except Exception as e:
-                provider_name = type(provider).__name__
-                logger.warning(
-                    "Cloud provider %s failed (%s); attempting fallback to local "
-                    "Chromium for task %s",
-                    provider_name, e, task_id,
-                    exc_info=True,
-                )
+            provider = _get_cloud_provider()
+            if provider is None:
+                session_info = _create_local_session(task_id)
+            else:
+                provider_candidate: Any = None
                 try:
-                    session_info = _create_local_session(task_id)
-                except Exception as local_error:
-                    raise RuntimeError(
-                        f"Cloud provider {provider_name} failed ({e}) and local "
-                        f"fallback also failed ({local_error})"
-                    ) from e
-                # Mark session as degraded for observability
-                if isinstance(session_info, dict):
+                    provider_candidate = provider.create_session(task_id)
+                    if not provider_candidate or not isinstance(provider_candidate, dict):
+                        raise ValueError(
+                            "Cloud provider returned invalid session: "
+                            f"{provider_candidate!r}"
+                        )
+                    session_info = dict(provider_candidate)
+                    session_info["_provider_cleanup_owner"] = provider
+                    if session_info.get("cdp_url"):
+                        # Some providers return an HTTP discovery URL instead
+                        # of a raw websocket endpoint.
+                        session_info["cdp_url"] = _resolve_cdp_override(
+                            str(session_info["cdp_url"])
+                        )
+                except Exception as exc:
+                    _dispose_unpublished_session(
+                        task_id,
+                        provider_candidate,
+                        provider,
+                    )
+                    provider_name = type(provider).__name__
+                    logger.warning(
+                        "Cloud provider %s failed (%s); attempting fallback to "
+                        "local Chromium for task %s",
+                        provider_name,
+                        exc,
+                        task_id,
+                        exc_info=True,
+                    )
+                    try:
+                        session_info = _create_local_session(task_id)
+                    except Exception as local_error:
+                        raise RuntimeError(
+                            f"Cloud provider {provider_name} failed ({exc}) and local "
+                            f"fallback also failed ({local_error})"
+                        ) from exc
                     session_info = dict(session_info)
                     session_info["fallback_from_cloud"] = True
-                    session_info["fallback_reason"] = str(e)
+                    session_info["fallback_reason"] = str(exc)
                     session_info["fallback_provider"] = provider_name
+    except BaseException:
+        _abandon_session_creation(bare_task_id, creation_generation)
+        raise
 
     with _cleanup_lock:
-        # Double-check: another thread may have created a session while we
-        # were doing the network call. Use the existing one to avoid leaking
-        # orphan cloud sessions.
-        if task_id in _active_sessions:
-            return _active_sessions[task_id]
-        session_info = dict(session_info)
-        session_info.setdefault("session_key", task_id)
-        session_info.setdefault("owner_task_id", _bare_task_id_for_session_key(task_id))
-        _active_sessions[task_id] = session_info
+        current_state = _task_state_locked(bare_task_id)
+        stale_creator = (
+            _task_generation_locked(bare_task_id) != creation_generation
+            or current_state in {
+                BrowserTaskState.RETIRING,
+                BrowserTaskState.RETIRED,
+            }
+        )
+        winner = _active_sessions.get(task_id)
+        if not stale_creator and winner is None:
+            session_info = dict(session_info)
+            session_info.setdefault("session_key", task_id)
+            session_info.setdefault("owner_task_id", bare_task_id)
+            session_info["_lifecycle_generation"] = creation_generation
+            _active_sessions[task_id] = session_info
+            _set_task_state_locked(bare_task_id, BrowserTaskState.ACTIVE)
+            published = True
+        else:
+            published = False
+
+    if not published:
+        _dispose_unpublished_session(task_id, session_info, provider)
+        if stale_creator:
+            raise _BrowserSessionRetiredError(task_id)
+        return winner
 
     # Lazy-start the CDP supervisor now that the session exists (if the
     # backend surfaces a CDP URL via override or session_info["cdp_url"]).
     # Idempotent; swallows errors. See _ensure_cdp_supervisor for details.
     # Skip for local sidecars — they have no CDP URL.
     if not force_local:
-        _ensure_cdp_supervisor(task_id)
+        _ensure_cdp_supervisor(
+            task_id,
+            expected_generation=creation_generation,
+        )
 
     return session_info
 
@@ -2491,7 +3196,99 @@ def _resolve_npx_bin() -> Optional[str]:
     return None
 
 
-def _find_agent_browser(*, validate: bool = True) -> str:
+_SEMVER_TRIPLE_RE = re.compile(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?![\d-])")
+_NODE_MAJOR_RE = re.compile(r"(?m)^\s*v?(\d+)(?:\.\d+){1,2}\s*$")
+
+
+def _version_probe_env() -> Dict[str, str]:
+    env = _build_browser_env()
+    _apply_agent_browser_npm_policy(env)
+    env["PATH"] = _merge_browser_path(env.get("PATH", ""))
+    return env
+
+
+def _probe_agent_browser_version(path: str) -> Optional[tuple[int, int, int]]:
+    """Run a concrete CLI's real ``--version`` entrypoint and parse semver."""
+    if not os.path.exists(path) or (os.name != "nt" and not os.access(path, os.X_OK)):
+        return None
+    try:
+        result = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            env=_version_probe_env(),
+            creationflags=windows_hide_flags(),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if result.returncode != 0:
+        return None
+    match = _SEMVER_TRIPLE_RE.search(f"{result.stdout}\n{result.stderr}")
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def _effective_node_major(executable: str) -> Optional[int]:
+    """Return the Node major the browser subprocess PATH would resolve."""
+    env = _version_probe_env()
+    search_parts = [str(Path(executable).parent)]
+    search_parts.extend(part for part in env.get("PATH", "").split(os.pathsep) if part)
+    search_path = os.pathsep.join(dict.fromkeys(search_parts))
+    node_bin = shutil.which("node", path=search_path)
+    if not node_bin:
+        return None
+    try:
+        result = subprocess.run(
+            [node_bin, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            env=env,
+            creationflags=windows_hide_flags(),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if result.returncode != 0:
+        return None
+    match = _NODE_MAJOR_RE.search(f"{result.stdout}\n{result.stderr}")
+    return int(match.group(1)) if match is not None else None
+
+
+def _pin_tab_candidate_status(
+    path: str,
+) -> tuple[bool, Optional[tuple[int, int, int]], Optional[int]]:
+    """Return compatibility plus observed CLI/Node versions for one candidate."""
+    version = _probe_agent_browser_version(path)
+    if version is None or version < AGENT_BROWSER_PIN_TAB_MIN_VERSION:
+        return False, version, None
+    node_major = _effective_node_major(path)
+    return (
+        node_major is not None and node_major >= AGENT_BROWSER_PIN_TAB_MIN_NODE_MAJOR,
+        version,
+        node_major,
+    )
+
+
+def _pin_tab_capability_error(node_major: Optional[int] = None) -> str:
+    detected = f" Detected Node.js {node_major}." if node_major is not None else ""
+    return (
+        "Shared-CDP page isolation requires agent-browser >=0.34.0 and "
+        f"Node.js >={AGENT_BROWSER_PIN_TAB_MIN_NODE_MAJOR}.{detected} "
+        "Hermes and ordinary non-CDP browser commands remain supported on "
+        "Node.js >=22.22. Use Node.js 24+ (Node.js 26 also qualifies) and "
+        "install agent-browser >=0.34.0, then retry."
+    )
+
+
+def _find_agent_browser(*, validate: bool = True, require_pin_tab: bool = False) -> str:
     """
     Find the agent-browser CLI executable.
 
@@ -2501,18 +3298,64 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     Returns:
         Path to agent-browser executable
 
+    ``require_pin_tab`` is a fail-closed capability lookup: concrete candidates
+    must report agent-browser >=0.34.0 and resolve Node >=24; the npx fallback
+    is offered only under the same Node floor.
+
     Raises:
-        FileNotFoundError: If agent-browser is not installed
+        FileNotFoundError: If agent-browser is not installed.
+        AgentBrowserCapabilityError: If strict CDP tab pinning is unavailable.
     """
     global _cached_agent_browser, _agent_browser_resolved
+    global _cached_pin_tab_agent_browser, _pin_tab_agent_browser_resolved
+    global _pin_tab_failure_cache
+    if (
+        require_pin_tab
+        and _pin_tab_agent_browser_resolved
+        and _cached_pin_tab_agent_browser is not None
+    ):
+        return _cached_pin_tab_agent_browser
+    if require_pin_tab and _pin_tab_failure_cache is not None:
+        retry_at, message = _pin_tab_failure_cache
+        if time.monotonic() < retry_at:
+            raise AgentBrowserCapabilityError(message)
+        _pin_tab_failure_cache = None
     if _agent_browser_resolved:
-        if _cached_agent_browser is None:
+        if not require_pin_tab and _cached_agent_browser is None:
             raise FileNotFoundError(
                 "agent-browser CLI not found (cached). Install it with: "
                 f"{_browser_install_hint()}\n"
                 "Or ensure npx is available in your PATH."
             )
-        return _cached_agent_browser
+        if not require_pin_tab:
+            return _cached_agent_browser
+
+    detected_node_major: Optional[int] = None
+
+    def candidate_usable(path: str) -> bool:
+        nonlocal detected_node_major
+        if require_pin_tab:
+            usable, _version, node_major = _pin_tab_candidate_status(path)
+            if node_major is not None:
+                detected_node_major = node_major
+            return usable
+        return agent_browser_runnable(path) if validate else _agent_browser_candidate_present(path)
+
+    def cache_candidate(path: str) -> str:
+        global _cached_agent_browser, _agent_browser_resolved
+        global _cached_pin_tab_agent_browser, _pin_tab_agent_browser_resolved
+        global _pin_tab_failure_cache
+        if require_pin_tab:
+            _cached_pin_tab_agent_browser = path
+            _pin_tab_agent_browser_resolved = True
+            _pin_tab_failure_cache = None
+            if not _agent_browser_resolved:
+                _cached_agent_browser = path
+                _agent_browser_resolved = True
+        else:
+            _cached_agent_browser = path
+            _agent_browser_resolved = True
+        return path
 
     # Note: _agent_browser_resolved is set at each return site below
     # (not before the search) to prevent a race where a concurrent thread
@@ -2529,28 +3372,20 @@ def _find_agent_browser(*, validate: bool = True) -> str:
 
     # Check if it's in PATH (global install)
     which_result = shutil.which("agent-browser")
-    if which_result and (
-        agent_browser_runnable(which_result) if validate else _agent_browser_candidate_present(which_result)
-    ):
+    if which_result and candidate_usable(which_result):
         if not validate:
             return which_result
-        _cached_agent_browser = which_result
-        _agent_browser_resolved = True
-        return which_result
+        return cache_candidate(which_result)
 
     # Build an extended search PATH including Hermes-managed Node, macOS
     # versioned Homebrew installs, and fallback system dirs like Termux.
     extended_path = _merge_browser_path("")
     if extended_path:
         which_result = shutil.which("agent-browser", path=extended_path)
-        if which_result and (
-            agent_browser_runnable(which_result) if validate else _agent_browser_candidate_present(which_result)
-        ):
+        if which_result and candidate_usable(which_result):
             if not validate:
                 return which_result
-            _cached_agent_browser = which_result
-            _agent_browser_resolved = True
-            return which_result
+            return cache_candidate(which_result)
 
     # Check local node_modules/.bin/ (npm install in repo root).
     # On Windows, npm drops three shims in .bin: an extensionless POSIX shell
@@ -2564,23 +3399,33 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     local_bin_dir = repo_root / "node_modules" / ".bin"
     if local_bin_dir.is_dir():
         local_which = shutil.which("agent-browser", path=str(local_bin_dir))
-        if local_which and (
-            agent_browser_runnable(local_which) if validate else _agent_browser_candidate_present(local_which)
-        ):
+        if local_which and candidate_usable(local_which):
             if not validate:
                 return local_which
-            _cached_agent_browser = local_which
-            _agent_browser_resolved = True
-            return _cached_agent_browser
+            return cache_candidate(local_which)
 
     # Check common npx locations (also search the extended fallback PATH)
     npx_path = _resolve_npx_bin()
     if npx_path:
-        if not validate:
+        if require_pin_tab:
+            detected_node_major = _effective_node_major(npx_path)
+            if (
+                detected_node_major is not None
+                and detected_node_major >= AGENT_BROWSER_PIN_TAB_MIN_NODE_MAJOR
+            ):
+                return cache_candidate(NPX_AGENT_BROWSER_SENTINEL)
+        elif not validate:
             return NPX_AGENT_BROWSER_SENTINEL
-        _cached_agent_browser = NPX_AGENT_BROWSER_SENTINEL
-        _agent_browser_resolved = True
-        return _cached_agent_browser
+        else:
+            return cache_candidate(NPX_AGENT_BROWSER_SENTINEL)
+
+    if require_pin_tab:
+        message = _pin_tab_capability_error(detected_node_major)
+        _pin_tab_failure_cache = (
+            time.monotonic() + AGENT_BROWSER_PIN_TAB_FAILURE_TTL_SECONDS,
+            message,
+        )
+        raise AgentBrowserCapabilityError(message)
 
     if not validate:
         raise FileNotFoundError("agent-browser CLI not found")
@@ -2706,6 +3551,7 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
         return False
 
     env = _build_browser_env()
+    _apply_agent_browser_npm_policy(env)
     env["PATH"] = _merge_browser_path(env.get("PATH", ""))
 
     popen_kwargs: dict = {
@@ -2722,9 +3568,8 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
 
     cmd = [
         npx_bin,
-        # --ignore-scripts: AGENT_BROWSER_NPX_SPEC is a floating ^0.26.0
-        # range, not an exact pin — a compromised future 0.26.x patch must
-        # not get to run its own install-time lifecycle scripts here.
+        # Defense in depth for the exact reviewed acquisition: package
+        # lifecycle scripts are not needed for this version probe/warmup.
         "--ignore-scripts",
         # --prefer-offline: once cached, repeat `hermes update`/`doctor
         # --fix` runs shouldn't hit the registry just to re-confirm
@@ -2775,12 +3620,48 @@ def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
     return None
 
 
+def _serialize_browser_task_command(func):
+    """Fence browser subprocess dispatch against terminal task cleanup."""
+
+    @functools.wraps(func)
+    def _wrapped(
+        task_id: str,
+        command: str,
+        args: List[str] = None,
+        timeout: Optional[int] = None,
+        _engine_override: Optional[str] = None,
+        _allow_cleanup: bool = False,
+    ) -> Dict[str, Any]:
+        if _allow_cleanup:
+            # Cleanup already owns the per-task operation lock.
+            return func(
+                task_id,
+                command,
+                args,
+                timeout,
+                _engine_override,
+                _allow_cleanup=True,
+            )
+
+        bare_task_id = _bare_task_id_for_session_key(task_id or "default")
+        with _task_cleanup_operation_lock(bare_task_id):
+            # Close the gap where cleanup could enter RETIRING after the last
+            # state check but before subprocess dispatch.
+            if _is_browser_task_unavailable(task_id):
+                return _browser_session_retired_result(task_id)
+            return func(task_id, command, args, timeout, _engine_override)
+
+    return _wrapped
+
+
+@_serialize_browser_task_command
 def _run_browser_command(
     task_id: str,
     command: str,
     args: List[str] = None,
     timeout: Optional[int] = None,
     _engine_override: Optional[str] = None,
+    _allow_cleanup: bool = False,
 ) -> Dict[str, Any]:
     """
     Run an agent-browser CLI command using our pre-created Browserbase session.
@@ -2798,6 +3679,12 @@ def _run_browser_command(
     Returns:
         Parsed JSON response from agent-browser
     """
+    # Fail before executable discovery or session lookup. This is the hard
+    # boundary that prevents snapshot/click/eval/etc. from launching a daemon
+    # or adopting a fresh page after cleanup retired exact target ownership.
+    if not _allow_cleanup and _is_browser_task_unavailable(task_id):
+        return _browser_session_retired_result(task_id)
+
     if timeout is None:
         timeout = _safe_command_timeout()
     args = args or []
@@ -2839,24 +3726,65 @@ def _run_browser_command(
         return {"success": False, "error": hint}
 
     from tools.interrupt import is_interrupted
-    if is_interrupted():
+    # A turn cancellation must stop new browser work, but it must not cancel
+    # the exact close commands that establish the turn's ownership boundary.
+    if not _allow_cleanup and is_interrupted():
         return {"success": False, "error": "Interrupted"}
 
     # Get session info (creates Browserbase session with proxies if needed)
     try:
-        session_info = _get_session_info(task_id)
+        if _allow_cleanup:
+            session_info = _get_session_info(task_id, _for_cleanup=True)
+        else:
+            session_info = _get_session_info(task_id)
+    except _BrowserSessionRetiredError:
+        # Covers a cleanup racing between the early check above and lookup.
+        return _browser_session_retired_result(task_id)
     except Exception as e:
         logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
 
-    # Build the command with the appropriate backend flag.
-    # Cloud mode: --cdp <websocket_url> connects to Browserbase.
+    # Session creation/publication happens outside the lifecycle lock. Cleanup
+    # may have entered RETIRING immediately after publication, so recheck before
+    # any capability probe, daemon spawn, or browser command dispatch.
+    if not _allow_cleanup and _is_browser_task_unavailable(task_id):
+        return _browser_session_retired_result(task_id)
+
+    task_owned_shared_cdp = _is_task_owned_shared_cdp_session(session_info)
+    if task_owned_shared_cdp:
+        try:
+            browser_cmd = _find_agent_browser(require_pin_tab=True)
+        except AgentBrowserCapabilityError as exc:
+            logger.warning("browser CDP command blocked: %s", exc)
+            return {
+                "success": False,
+                "error": str(exc),
+                "code": "pin_tab_unavailable",
+                "data": {
+                    "required_agent_browser": ">=0.34.0",
+                    "required_node": ">=24",
+                    "non_cdp_available": True,
+                },
+            }
+
+    # Build the command with the appropriate backend flags.
+    # CDP mode: the per-task named session pins one target on the shared endpoint.
     # Local mode: --session <name> launches a local headless Chromium.
     # The rest of the command (--json, command, args) is identical.
-    if session_info.get("cdp_url"):
-        # Cloud mode — connect to remote Browserbase browser via CDP
-        # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
-        # --session creates a local browser instance and silently ignores --cdp.
+    if task_owned_shared_cdp:
+        # agent-browser 0.34+ supports this combination: --pin-tab persists a
+        # target binding for the named session instead of adopting another tab.
+        backend_args = [
+            "--session",
+            session_info["session_name"],
+            "--cdp",
+            session_info["cdp_url"],
+            "--pin-tab",
+        ]
+    elif session_info.get("cdp_url"):
+        # Provider-backed browsers retain the pre-pinning contract: their
+        # provider session owns the remote browser, so generic --cdp support is
+        # sufficient and must remain compatible with Node 22/agent-browser 0.26.
         backend_args = ["--cdp", session_info["cdp_url"]]
     else:
         # Local mode — launch Chromium (headless by default, headed when configured)
@@ -2880,7 +3808,12 @@ def _run_browser_command(
     if _is_npx_agent_browser_sentinel(browser_cmd):
         _npx_bin = _resolve_npx_bin() or "npx"
         # --ignore-scripts: see _run_chrome_fallback_command's identical comment.
-        cmd_prefix = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
+        npx_spec = (
+            AGENT_BROWSER_PIN_TAB_NPX_SPEC
+            if task_owned_shared_cdp
+            else AGENT_BROWSER_NPX_SPEC
+        )
+        cmd_prefix = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", npx_spec]
     else:
         cmd_prefix = [browser_cmd]
 
@@ -2901,22 +3834,35 @@ def _run_browser_command(
         # Record this hermes PID as the session owner (cross-process safe
         # orphan detection — see _write_owner_pid).
         _write_owner_pid(task_socket_dir, session_info['session_name'])
+        if task_owned_shared_cdp:
+            _write_shared_cdp_endpoint(
+                task_socket_dir,
+                session_info["session_name"],
+                str(session_info.get("cdp_url") or ""),
+            )
         logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                      command, task_id, task_socket_dir, len(task_socket_dir))
 
         browser_env = _build_browser_env()
+        if _is_npx_agent_browser_sentinel(browser_cmd):
+            _apply_agent_browser_npm_policy(
+                browser_env,
+                pin_tab_acquisition=task_owned_shared_cdp,
+            )
 
         # Ensure subprocesses inherit the same browser-specific PATH fallbacks
         # used during CLI discovery.
         browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
 
-        # Tell the agent-browser daemon to self-terminate after being idle
-        # for our configured inactivity timeout.  This is the daemon-side
-        # counterpart to our Python-side _cleanup_inactive_browser_sessions
-        # — the daemon kills itself and its Chrome children when no CLI
-        # commands arrive within the window.  Added in agent-browser 0.24.
-        if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
+        # A named session attached to an externally-owned shared CDP must keep
+        # its exact target binding for the whole turn. agent-browser documents
+        # 0 as disabled; force that value so an inherited short timeout cannot
+        # discard ownership while Hermes is waiting on the page. Local and
+        # provider-backed sessions retain the configured inactivity policy.
+        if _is_task_owned_shared_cdp_session(session_info):
+            browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = "0"
+        elif "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
             idle_ms = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
             browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = idle_ms
 
@@ -3314,6 +4260,19 @@ def evaluate_url_safety(url: str) -> Optional[dict]:
     return None
 
 
+def _serialize_browser_navigation(func):
+    """Keep navigation, target binding, publication, and snapshot atomic."""
+
+    @functools.wraps(func)
+    def _wrapped(url: str, task_id: Optional[str] = None) -> str:
+        bare_task_id = _bare_task_id_for_session_key(task_id or "default")
+        with _task_cleanup_operation_lock(bare_task_id):
+            return func(url, task_id)
+
+    return _wrapped
+
+
+@_serialize_browser_navigation
 def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     """
     Navigate to a URL in the browser.
@@ -3406,7 +4365,20 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
         })
 
-    # Camofox backend — delegate after safety checks pass
+    # An explicit navigation may restart a task after terminal cleanup, but the
+    # terminal boundary is only cleared permanently after a successful,
+    # non-blocked navigation. Failed attempts clean any partial replacement and
+    # restore the tombstone so follow-up snapshot/click/eval cannot see blank.
+    try:
+        restarting_retired_task = _clear_retired_browser_task_for_navigation(
+            effective_task_id
+        )
+    except _BrowserSessionRetiredError:
+        return json.dumps(
+            _browser_session_retired_result(effective_task_id),
+            ensure_ascii=False,
+        )
+
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_navigate
         return camofox_navigate(url, task_id)
@@ -3422,7 +4394,15 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
 
     # Get session info to check if this is a new session
     # (will create one with features logged if not exists)
-    session_info = _get_session_info(nav_session_key)
+    try:
+        session_info = _get_session_info(nav_session_key)
+    except Exception:
+        if restarting_retired_task:
+            _restore_retired_browser_task_after_failed_navigation(
+                effective_task_id,
+                nav_session_key,
+            )
+        raise
     is_first_nav = session_info.get("_first_nav", True)
 
     # Auto-start recording if configured and this is first navigation
@@ -3442,6 +4422,25 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         title = data.get("title", "")
         final_url = data.get("url", url)
 
+        # Bind dialog/frame/eval supervision to the same target that
+        # agent-browser pinned. Without this, a shared CDP endpoint's
+        # supervisor attaches to the first unrelated page and browser_console
+        # can read or mutate another task's tab.
+        if _is_task_owned_shared_cdp_session(session_info):
+            pinned_target_id = _pinned_cdp_target_id(nav_session_key)
+            if pinned_target_id:
+                # Keep the opaque target ID in Hermes-owned state. Cleanup must
+                # never rediscover a page by URL or active-tab position.
+                with _cleanup_lock:
+                    current_session = _active_sessions.get(nav_session_key)
+                    if isinstance(current_session, dict) and current_session is session_info:
+                        current_session["target_id"] = pinned_target_id
+                _ensure_cdp_supervisor(
+                    nav_session_key,
+                    target_id=pinned_target_id,
+                    expected_generation=session_info.get("_lifecycle_generation"),
+                )
+
         # Post-redirect SSRF check — if the browser followed a redirect to a
         # private/internal address, block the result so the model can't read
         # internal content via subsequent browser_snapshot calls.
@@ -3457,6 +4456,11 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             and _is_always_blocked_url(final_url)
         ):
             _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
+            if restarting_retired_task:
+                _restore_retired_browser_task_after_failed_navigation(
+                    effective_task_id,
+                    nav_session_key,
+                )
             return json.dumps({
                 "success": False,
                 "error": "Blocked: redirect landed on a cloud metadata endpoint",
@@ -3470,6 +4474,11 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         ):
             # Navigate away to a blank page to prevent snapshot leaks
             _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
+            if restarting_retired_task:
+                _restore_retired_browser_task_after_failed_navigation(
+                    effective_task_id,
+                    nav_session_key,
+                )
             return json.dumps({
                 "success": False,
                 "error": "Blocked: redirect landed on a private/internal address",
@@ -3519,6 +4528,24 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # without a separate browser_snapshot call.
         try:
             snap_result = _run_browser_command(nav_session_key, "snapshot", ["-c"])
+            if snap_result.get("code") == "tab_gone":
+                if restarting_retired_task:
+                    _restore_retired_browser_task_after_failed_navigation(
+                        effective_task_id,
+                        nav_session_key,
+                    )
+                snapshot_failure = {
+                    "success": False,
+                    "error": snap_result.get(
+                        "error", "Pinned browser tab disappeared after navigation"
+                    ),
+                    "url": final_url,
+                    "title": title,
+                }
+                return json.dumps(
+                    _copy_fallback_warning(snapshot_failure, snap_result),
+                    ensure_ascii=False,
+                )
             if snap_result.get("success"):
                 snap_data = snap_result.get("data", {})
                 snapshot_text = snap_data.get("snapshot", "")
@@ -3534,10 +4561,16 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
 
         return json.dumps(response, ensure_ascii=False)
     else:
-        return json.dumps({
+        if restarting_retired_task:
+            _restore_retired_browser_task_after_failed_navigation(
+                effective_task_id,
+                nav_session_key,
+            )
+        response = {
             "success": False,
             "error": result.get("error", "Navigation failed")
-        }, ensure_ascii=False)
+        }
+        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
 def browser_snapshot(
@@ -3937,6 +4970,23 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     console_result = _run_browser_command(effective_task_id, "console", console_args)
     errors_result = _run_browser_command(effective_task_id, "errors", error_args)
 
+    # The normal console path tolerates one unavailable stream and returns the
+    # other. A pinned tab disappearing is different: both streams refer to the
+    # same invalid binding, so surface its structured recovery metadata.
+    for command_result in (console_result, errors_result):
+        if command_result.get("code") in {
+            "tab_gone",
+            "browser_session_retired",
+        }:
+            response = {
+                "success": False,
+                "error": command_result.get("error", "Pinned browser tab is gone"),
+            }
+            return json.dumps(
+                _copy_fallback_warning(response, command_result),
+                ensure_ascii=False,
+            )
+
     messages = []
     if console_result.get("success"):
         for msg in console_result.get("data", {}).get("messages", []):
@@ -4192,6 +5242,15 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate a JavaScript expression in the page context and return the result."""
     effective_task_id = _last_session_key(task_id or "default")
 
+    # The supervisor is a direct CDP fast path that bypasses
+    # _run_browser_command. Apply the same terminal ownership gate before a
+    # stale supervisor can evaluate against a task that cleanup retired.
+    if _is_browser_task_unavailable(effective_task_id):
+        return json.dumps(
+            _browser_session_retired_result(effective_task_id),
+            ensure_ascii=False,
+        )
+
     if _eval_ssrf_guard_active(effective_task_id):
         blocked_literal = _expression_targets_private_url(expression)
         if blocked_literal:
@@ -4221,61 +5280,122 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     # --- Fast path: route through the supervisor's persistent CDP WS ---------
     # When a CDPSupervisor is alive for this task_id, ``Runtime.evaluate`` runs
     # on the already-connected WebSocket — zero subprocess startup cost vs
-    # spawning an ``agent-browser eval`` CLI process.  Falls through to the
-    # subprocess path on any error so behaviour is unchanged when no
-    # supervisor is running (e.g. plain agent-browser without a CDP backend).
+    # spawning an ``agent-browser eval`` CLI process. The subprocess remains a
+    # compatibility path when no supervisor exists or the supervisor proves it
+    # could not dispatch. Ambiguous post-dispatch failures are never replayed.
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
-        if supervisor is not None:
-            sup_result = supervisor.evaluate_runtime(expression)
-            if sup_result.get("ok"):
-                raw_result = sup_result.get("result")
-                # Match the agent-browser path: if the value is a JSON string,
-                # parse it so the model gets structured data.
-                parsed = raw_result
-                if isinstance(raw_result, str):
-                    try:
-                        parsed = json.loads(raw_result)
-                    except (json.JSONDecodeError, ValueError):
-                        pass  # keep as string
-                # Post-eval page-URL recheck: if this (or a prior) eval
-                # navigated the page to a private address, withhold the result.
-                if _eval_ssrf_guard_active(effective_task_id):
-                    _blocked_url = _current_page_private_url(effective_task_id)
-                    if _blocked_url:
-                        return json.dumps({
-                            "success": False,
-                            "error": (
-                                "Blocked: page URL targets a private or internal "
-                                f"address ({_blocked_url}). This may have been "
-                                "caused by a JavaScript navigation via "
-                                "browser_console."
-                            ),
-                        }, ensure_ascii=False)
-                response = {
-                    "success": True,
-                    "result": _redact_browser_output(parsed),
-                    "result_type": type(parsed).__name__,
-                    "method": "cdp_supervisor",
-                }
-                return json.dumps(response, ensure_ascii=False, default=str)
-            # JS exception is a real failure — surface it instead of falling
-            # through to the subprocess path (which would just re-run and
-            # produce the same exception, but slower).
-            err = sup_result.get("error") or "evaluate_runtime failed"
-            if "supervisor" not in err.lower():
-                # Real JS-side error — return it.
-                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
-            # Supervisor-side failure (loop down, no session) — fall through.
-            logger.debug(
-                "browser_eval: supervisor path unavailable (%s), falling back to subprocess",
-                err,
-            )
     except ImportError:
-        pass
-    except Exception as exc:  # pragma: no cover — defensive
-        logger.debug("browser_eval: supervisor path errored (%s), falling back", exc)
+        supervisor = None
+    except Exception as exc:  # Registry lookup happens before JS dispatch.
+        logger.debug("browser_eval: supervisor lookup failed (%s), falling back", exc)
+        supervisor = None
+
+    if supervisor is not None:
+        # Hold the same per-task operation lock used by subprocess commands.
+        # Without it, cleanup could enter RETIRING after the state check but
+        # before Runtime.evaluate reached Chrome.
+        bare_task_id = _bare_task_id_for_session_key(effective_task_id)
+        with _task_cleanup_operation_lock(bare_task_id):
+            if _is_browser_task_unavailable(effective_task_id):
+                return json.dumps(
+                    _browser_session_retired_result(effective_task_id),
+                    ensure_ascii=False,
+                )
+            try:
+                sup_result = supervisor.evaluate_runtime(expression)
+            except Exception as exc:
+                # A supervisor exists, so an exception may have happened after
+                # the expression reached Chrome. Never turn an ambiguous
+                # exception into a second execution through agent-browser.
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "code": "cdp_evaluate_failed",
+                        "data": {"exception_type": type(exc).__name__},
+                    },
+                    ensure_ascii=False,
+                )
+
+        if sup_result.get("ok"):
+            raw_result = sup_result.get("result")
+            # Match the agent-browser path: if the value is a JSON string,
+            # parse it so the model gets structured data.
+            parsed = raw_result
+            if isinstance(raw_result, str):
+                try:
+                    parsed = json.loads(raw_result)
+                except (json.JSONDecodeError, ValueError):
+                    pass  # keep as string
+            # Post-eval page-URL recheck: if this (or a prior) eval
+            # navigated the page to a private address, withhold the result.
+            if _eval_ssrf_guard_active(effective_task_id):
+                _blocked_url = _current_page_private_url(effective_task_id)
+                if _blocked_url:
+                    return json.dumps({
+                        "success": False,
+                        "error": (
+                            "Blocked: page URL targets a private or internal "
+                            f"address ({_blocked_url}). This may have been "
+                            "caused by a JavaScript navigation via "
+                            "browser_console."
+                        ),
+                    }, ensure_ascii=False)
+            response = {
+                "success": True,
+                "result": _redact_browser_output(parsed),
+                "result_type": type(parsed).__name__,
+                "method": "cdp_supervisor",
+            }
+            return json.dumps(response, ensure_ascii=False, default=str)
+        # Replay decisions use the supervisor's structured failure kind, never
+        # page-controlled exception text. A JS exception can contain arbitrary
+        # phrases such as "Target closed" and must still execute exactly once.
+        err = sup_result.get("error") or "evaluate_runtime failed"
+        failure_kind = sup_result.get("kind")
+        failure_data = sup_result.get("data")
+        if failure_kind == "js_exception":
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": err,
+                    "code": "javascript_exception",
+                    "data": failure_data or {},
+                },
+                ensure_ascii=False,
+            )
+        if (
+            failure_kind == "cdp_protocol"
+            and isinstance(failure_data, dict)
+            and failure_data.get("session_lost") is True
+        ):
+            # The pinned page was closed after the supervisor attached. Drop
+            # the stale WS session and ask agent-browser, which owns the pin and
+            # returns the structured ``tab_gone`` result.
+            _stop_cdp_supervisor(effective_task_id)
+        elif failure_kind == "supervisor_unavailable":
+            # The expression was never dispatched, so the CLI owner is a safe
+            # compatibility fallback.
+            pass
+        else:
+            # Transport/protocol failures after dispatch are ambiguous: the
+            # page may have executed the expression before the response was
+            # lost. Surface the failure instead of replaying side effects.
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": err,
+                    "code": failure_kind or "cdp_evaluate_failed",
+                    "data": failure_data or {},
+                },
+                ensure_ascii=False,
+            )
+        logger.debug(
+            "browser_eval: supervisor path unavailable (%s), falling back to subprocess",
+            err,
+        )
 
     # --- Fallback: agent-browser CLI subprocess (original path) -------------
     result = _run_browser_command(effective_task_id, "eval", [expression])
@@ -4290,10 +5410,10 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
             }
             return json.dumps(_copy_fallback_warning(response, result))
         # A live DOM node / NodeList / Window can't be JSON-serialized by CDP
-        # and fails the eval with "Object reference chain is too long".  The
-        # supervisor fast path retries with returnByValue=false, but the CLI
-        # subprocess can't, so turn the cryptic protocol error into actionable
-        # guidance instead of surfacing it raw.
+        # and fails the eval with "Object reference chain is too long". Turn
+        # the cryptic protocol error into actionable guidance. Neither
+        # path replays the expression: serialization can fail after JavaScript
+        # side effects have already happened.
         if "reference chain is too long" in err.lower():
             response = {
                 "success": False,
@@ -4889,7 +6009,210 @@ def _cleanup_old_recordings(max_age_hours=72):
 # Cleanup and Management Functions
 # ============================================================================
 
-def cleanup_browser(task_id: Optional[str] = None) -> None:
+def _retry_provider_cleanup_records(
+    records: List[_PendingProviderCleanup],
+) -> bool:
+    all_closed = True
+    for record in records:
+        if not _attempt_provider_session_close(
+            record.task_id,
+            record.provider,
+            record.session_id,
+        ):
+            all_closed = False
+    return all_closed
+
+
+def _begin_task_cleanup_locked(
+    bare_task_id: str,
+    reason: BrowserCleanupReason,
+) -> BrowserCleanupReason:
+    """Enter RETIRING and advance the generation before inspecting sessions."""
+    state = _task_state_locked(bare_task_id)
+    previous_reason = _browser_task_cleanup_reasons.get(bare_task_id)
+    if state is BrowserTaskState.RETIRED:
+        effective_reason = BrowserCleanupReason.TERMINAL
+    elif (
+        state is BrowserTaskState.RETIRING
+        and previous_reason is not None
+        and _cleanup_reason_retires_task(previous_reason)
+        and not _cleanup_reason_retires_task(reason)
+    ):
+        effective_reason = previous_reason
+    else:
+        effective_reason = reason
+    _advance_task_generation_locked(bare_task_id)
+    _set_task_state_locked(
+        bare_task_id,
+        BrowserTaskState.RETIRING,
+        cleanup_reason=effective_reason,
+    )
+    return effective_reason
+
+
+def _is_hermes_owned_local_browser_session(session_info: Dict[str, Any]) -> bool:
+    """Return whether headed cross-turn persistence may retain this session."""
+    return not session_info.get("cdp_url") and not session_info.get("bb_session_id")
+
+
+def _cleanup_browser_session_keys(
+    task_id: str,
+    session_keys: Optional[List[str]] = None,
+    *,
+    reason: BrowserCleanupReason | str,
+    preserve_local_headed: bool = False,
+) -> bool:
+    """Cleanup selected ownership under one bare-task lifecycle transition."""
+    reason = _coerce_cleanup_reason(reason)
+    bare_task_id = _bare_task_id_for_session_key(task_id or "default")
+    include_camofox = session_keys is None and _is_camofox_mode()
+
+    # Conversation turns call the per-turn boundary even when no browser tool
+    # ran.  Do not manufacture a lifecycle generation/state/lock row for that
+    # no-op case; otherwise a long-lived process accumulates one entry per
+    # browser-free task forever.  STARTING/RETIRING are deliberately excluded:
+    # those states represent an in-flight creator or retry that still needs the
+    # generation fence below.
+    with _cleanup_lock:
+        state = _task_state_locked(bare_task_id)
+        if session_keys is None:
+            has_selected_session = any(
+                _bare_task_id_for_session_key(key) == bare_task_id
+                for key in _active_sessions
+            )
+        else:
+            has_selected_session = any(
+                key in _active_sessions for key in dict.fromkeys(session_keys)
+            )
+        has_pending_provider = any(
+            record.task_id == bare_task_id
+            for record in _pending_provider_cleanups.values()
+        )
+        if (
+            not include_camofox
+            and not has_selected_session
+            and not has_pending_provider
+            and bare_task_id not in _browser_task_cleanup_locks
+            and state in {BrowserTaskState.ACTIVE, BrowserTaskState.RETIRED}
+        ):
+            return True
+
+    operation_lock = _task_cleanup_operation_lock(bare_task_id)
+    with operation_lock:
+        with _cleanup_lock:
+            effective_reason = _begin_task_cleanup_locked(bare_task_id, reason)
+            if session_keys is None:
+                if _is_local_sidecar_key(task_id):
+                    selected_keys = [task_id] if task_id in _active_sessions else []
+                else:
+                    selected_keys = [
+                        key
+                        for key, info in _active_sessions.items()
+                        if _bare_task_id_for_session_key(key) == bare_task_id
+                        and not (
+                            preserve_local_headed
+                            and _is_hermes_owned_local_browser_session(info)
+                        )
+                    ]
+            else:
+                selected_keys = list(dict.fromkeys(session_keys))
+            # Camofox keeps task ownership in its own module rather than in
+            # ``_active_sessions``. Preserve the pre-lifecycle hard-cleanup
+            # path by scheduling its bare task even when no agent-browser
+            # session key exists.
+            if include_camofox and task_id not in selected_keys:
+                selected_keys.append(task_id)
+            pending_before = [
+                record
+                for record in _pending_provider_cleanups.values()
+                if record.task_id == bare_task_id
+            ]
+
+        # Fence supervisor publication even when no browser session has been
+        # published yet. Per-session cleanup repeats this stop harmlessly.
+        for supervisor_key in set(selected_keys) | {task_id}:
+            _stop_cdp_supervisor(supervisor_key)
+
+        pending_retries_closed = _retry_provider_cleanup_records(pending_before)
+        cleanup_results = {
+            session_key: _cleanup_single_browser_session(session_key)
+            for session_key in selected_keys
+        }
+        failed_keys = [
+            key
+            for key, cleaned in cleanup_results.items()
+            if cleaned is False
+        ]
+
+        with _cleanup_lock:
+            retained_failed_keys = []
+            for failed_key in failed_keys:
+                retained = _active_sessions.get(failed_key)
+                if retained is not None:
+                    retained["_cleanup_retry_pending"] = True
+                    retained_failed_keys.append(failed_key)
+
+            recorded_key = _last_active_session_key.get(bare_task_id)
+            if retained_failed_keys:
+                if recorded_key not in retained_failed_keys:
+                    _last_active_session_key[bare_task_id] = retained_failed_keys[0]
+            elif recorded_key in selected_keys:
+                # If the primary was cleaned while a headed local sidecar was
+                # deliberately retained, keep normal commands on that survivor.
+                sidecar_key = f"{bare_task_id}{_LOCAL_SUFFIX}"
+                if (
+                    task_id == bare_task_id
+                    and sidecar_key not in selected_keys
+                    and sidecar_key in _active_sessions
+                ):
+                    _last_active_session_key[bare_task_id] = sidecar_key
+                else:
+                    _last_active_session_key.pop(bare_task_id, None)
+            elif (
+                not failed_keys
+                and not _is_local_sidecar_key(task_id)
+                and not _task_has_active_sessions_locked(bare_task_id)
+            ):
+                _last_active_session_key.pop(bare_task_id, None)
+
+            has_active_sessions = _task_has_active_sessions_locked(bare_task_id)
+            has_pending_provider = any(
+                record.task_id == bare_task_id
+                for record in _pending_provider_cleanups.values()
+            )
+            cleanup_confirmed = (
+                not failed_keys
+                and pending_retries_closed
+                and not has_pending_provider
+            )
+            if cleanup_confirmed:
+                if has_active_sessions:
+                    _set_task_state_locked(bare_task_id, BrowserTaskState.ACTIVE)
+                elif _cleanup_reason_retires_task(effective_reason):
+                    _set_task_state_locked(bare_task_id, BrowserTaskState.RETIRED)
+                else:
+                    _set_task_state_locked(bare_task_id, BrowserTaskState.ACTIVE)
+                if not has_active_sessions:
+                    for activity_key in list(_session_last_activity):
+                        if _bare_task_id_for_session_key(activity_key) == bare_task_id:
+                            _session_last_activity.pop(activity_key, None)
+            else:
+                _set_task_state_locked(
+                    bare_task_id,
+                    BrowserTaskState.RETIRING,
+                    cleanup_reason=effective_reason,
+                )
+                # Keep provider-only retry ownership visible to the background
+                # reaper even after page metadata has been removed.
+                _session_last_activity.setdefault(bare_task_id, time.time())
+        return cleanup_confirmed
+
+
+def cleanup_browser(
+    task_id: Optional[str] = None,
+    *,
+    reason: BrowserCleanupReason | str = BrowserCleanupReason.TERMINAL,
+) -> bool:
     """
     Clean up browser session(s) for a task.
 
@@ -4905,40 +6228,71 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     Args:
         task_id: Task identifier (or explicit session key)
     """
-    if task_id is None:
-        task_id = "default"
-
-    # Expand to the full set of session keys to reap. For a bare task_id
-    # that includes the cloud/primary key + the local sidecar if one exists.
-    if _is_local_sidecar_key(task_id):
-        session_keys = [task_id]
-        bare_task_id = task_id[: -len(_LOCAL_SUFFIX)]
-    else:
-        session_keys = [task_id]
-        sidecar_key = f"{task_id}{_LOCAL_SUFFIX}"
-        with _cleanup_lock:
-            if sidecar_key in _active_sessions:
-                session_keys.append(sidecar_key)
-        bare_task_id = task_id
-
-    for session_key in session_keys:
-        _cleanup_single_browser_session(session_key)
-
-    # Drop stale last-active ownership. Cleaning a bare task drops its binding;
-    # cleaning a sidecar drops the binding only if that sidecar was still the
-    # recorded owner. This prevents a later click/snapshot from resurrecting a
-    # cleaned sidecar on about:blank while preserving a primary-session binding.
-    if _is_local_sidecar_key(task_id):
-        if _last_active_session_key.get(bare_task_id) == task_id:
-            _last_active_session_key.pop(bare_task_id, None)
-    else:
-        _last_active_session_key.pop(bare_task_id, None)
+    return _cleanup_browser_session_keys(
+        task_id or "default",
+        reason=reason,
+    )
 
 
-def _cleanup_single_browser_session(task_id: str) -> None:
+def cleanup_browser_for_turn(task_id: Optional[str] = None) -> bool:
+    """Enforce the per-turn boundary while retaining only local headed state."""
+    task_id = task_id or "default"
+    preserve_local = _is_headed_mode()
+    if _is_camofox_mode():
+        # Camofox owns sessions outside ``_active_sessions``. Preserve headed
+        # sessions, and avoid manufacturing lifecycle rows for turns that never
+        # created process-local Camofox ownership. Hard cleanup still goes
+        # through ``cleanup_browser`` and retains its untracked-session sweep.
+        if preserve_local:
+            return True
+        try:
+            from tools.browser_camofox import camofox_has_session
+
+            if not camofox_has_session(task_id):
+                # ``browser_navigate`` publishes its task lock before
+                # Camofox creates process-local session state.  Do not let
+                # the browser-free fast path bypass that in-flight owner;
+                # the ordinary cleanup path will wait for navigation to
+                # finish, then retire the Camofox task.
+                bare_task_id = _bare_task_id_for_session_key(task_id)
+                with _cleanup_lock:
+                    if bare_task_id not in _browser_task_cleanup_locks:
+                        return True
+        except Exception:
+            pass
+    return _cleanup_browser_session_keys(
+        task_id,
+        reason=BrowserCleanupReason.TERMINAL,
+        preserve_local_headed=preserve_local,
+    )
+
+
+def _cleanup_single_browser_session(
+    task_id: str,
+) -> bool:
     """Internal: reap a single browser session by its exact session key."""
-    # Stop the CDP supervisor for this task FIRST so we close our WebSocket
-    # before the backend tears down the underlying CDP endpoint.
+    with _cleanup_lock:
+        session_info = _active_sessions.get(task_id)
+
+    # An owned shared-CDP page must be closed through the browser-level CDP
+    # endpoint and verified by exact target ID before any local ownership is
+    # removed. Do this before stopping the supervisor; it may be the only live
+    # connection available for a reliable close.
+    task_owned_shared_cdp = bool(
+        session_info and _is_task_owned_shared_cdp_session(session_info)
+    )
+    if task_owned_shared_cdp and session_info:
+        target_id = str(session_info.get("target_id") or "").strip()
+        cdp_url = str(session_info.get("cdp_url") or _get_cdp_override()).strip()
+        if not target_id or not _close_shared_cdp_target_confirmed(cdp_url, target_id):
+            logger.warning(
+                "Exact shared-CDP target close could not be confirmed for task %s; "
+                "retaining session ownership for retry",
+                task_id,
+            )
+            return False
+
+    # Stop the CDP supervisor only after the exact target is gone.
     _stop_cdp_supervisor(task_id)
 
     # Also clean up Camofox session if running in Camofox mode.
@@ -4962,7 +6316,7 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         session_info = _active_sessions.get(task_id)
 
     if session_info:
-        bb_session_id = session_info.get("bb_session_id", "unknown")
+        bb_session_id = session_info.get("bb_session_id")
         logger.debug("Found session for task %s: bb_session_id=%s", task_id, bb_session_id)
 
         # Stop auto-recording before closing (saves the file)
@@ -4978,7 +6332,22 @@ def _cleanup_single_browser_session(task_id: str) -> None:
             )
         else:
             try:
-                _run_browser_command(task_id, "close", [], timeout=10)
+                # For shared-CDP sessions, the real page was already closed and
+                # verified above. This command only disconnects the named local
+                # agent-browser session; it must not perform another tab close.
+                close_result = _run_browser_command(
+                    task_id,
+                    "close",
+                    [],
+                    timeout=10,
+                    _allow_cleanup=True,
+                )
+                if not close_result.get("success"):
+                    logger.warning(
+                        "agent-browser session close failed for task %s: %s",
+                        task_id,
+                        close_result.get("error", close_result),
+                    )
                 logger.debug(
                     "agent-browser close command completed for task %s",
                     task_id,
@@ -4986,20 +6355,23 @@ def _cleanup_single_browser_session(task_id: str) -> None:
             except Exception as e:
                 logger.warning("agent-browser close failed for task %s: %s", task_id, e)
 
-        # Now remove from tracking under lock
+        # Page/target ownership is now gone (or provider-authoritative close
+        # below will release it). Remove it independently from provider API
+        # ownership so a failed provider close cannot resurrect/adopt a page.
         with _cleanup_lock:
             _active_sessions.pop(task_id, None)
             _session_last_activity.pop(task_id, None)
 
         # Cloud mode: close the cloud browser session via provider API.
         # Local sidecars have bb_session_id=None so this no-ops for them.
+        provider_closed = True
         if bb_session_id:
-            provider = _get_cloud_provider()
-            if provider is not None:
-                try:
-                    provider.close_session(bb_session_id)
-                except Exception as e:
-                    logger.warning("Could not close cloud browser session: %s", e)
+            provider = session_info.get("_provider_cleanup_owner")
+            provider_closed = _attempt_provider_session_close(
+                task_id,
+                provider,
+                str(bb_session_id),
+            )
 
         # Kill the daemon process and clean up socket directory
         session_name = session_info.get("session_name", "")
@@ -5019,8 +6391,10 @@ def _cleanup_single_browser_session(task_id: str) -> None:
                 shutil.rmtree(socket_dir, ignore_errors=True)
 
         logger.debug("Removed task %s from active sessions", task_id)
+        return provider_closed
     else:
         logger.debug("No active session found for task_id: %s", task_id)
+    return True
 
 
 def cleanup_all_browsers() -> None:
@@ -5030,7 +6404,13 @@ def cleanup_all_browsers() -> None:
     Useful for cleanup on shutdown.
     """
     with _cleanup_lock:
-        task_ids = list(_active_sessions.keys())
+        task_ids = {
+            _bare_task_id_for_session_key(task_id)
+            for task_id in _active_sessions
+        }
+        task_ids.update(
+            record.task_id for record in _pending_provider_cleanups.values()
+        )
     for task_id in task_ids:
         cleanup_browser(task_id)
 
@@ -5043,11 +6423,16 @@ def cleanup_all_browsers() -> None:
 
     # Reset cached lookups so they are re-evaluated on next use.
     global _cached_agent_browser, _agent_browser_resolved
+    global _cached_pin_tab_agent_browser, _pin_tab_agent_browser_resolved
+    global _pin_tab_failure_cache
     global _cached_command_timeout, _command_timeout_resolved
     global _cached_chromium_installed
     global _cached_browser_engine, _browser_engine_resolved
     _cached_agent_browser = None
     _agent_browser_resolved = False
+    _pin_tab_agent_browser_resolved = False
+    _cached_pin_tab_agent_browser = None
+    _pin_tab_failure_cache = None
     _discover_homebrew_node_dirs.cache_clear()
     # Flip the resolved flag BEFORE nulling the cache so a concurrent
     # reader never sees ``resolved=True`` with ``cache=None`` (#14331).
@@ -5208,12 +6593,15 @@ def _maybe_autoinstall_chromium() -> bool:
         "(one-time ~170MB; disable via security.allow_lazy_installs)"
     )
     try:
+        install_env = _build_browser_env()
+        if _is_npx_agent_browser_sentinel(browser_cmd):
+            _apply_agent_browser_npm_policy(install_env)
         proc = subprocess.run(
             install_cmd,
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
             timeout=600,
-            env=_build_browser_env(),
+            env=install_env,
         )
     except (OSError, subprocess.SubprocessError) as e:
         logger.warning("browser: Chromium auto-install failed to start: %s", e)

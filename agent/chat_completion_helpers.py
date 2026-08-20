@@ -3203,10 +3203,10 @@ def cleanup_task_resources(agent, task_id: str) -> None:
     torn down per-turn as before to prevent resource leakage (the original
     intent of this hook for the Morph backend, see commit fbd3a2fd).
 
-    Skips ``cleanup_browser`` in headed mode so the browser window stays
-    visible between turns. The inactivity reaper in
-    ``browser_tool._cleanup_inactive_browser_sessions`` still handles
-    idle sessions.
+    Browser cleanup is ownership-aware: local headed sessions may persist
+    across turns, while provider-backed and task-owned shared-CDP sessions are
+    always finalized. This avoids applying one global headed flag to unrelated
+    backends.
     """
     try:
         if is_persistent_env(task_id):
@@ -3220,24 +3220,27 @@ def cleanup_task_resources(agent, task_id: str) -> None:
     except Exception as e:
         if agent.verbose_logging:
             logger.warning("Failed to cleanup VM for task %s: %s", task_id, e)
+    browser_boundary_completed = False
     try:
-        headed = False
-        try:
-            from tools.browser_tool import _is_headed_mode
-            headed = _is_headed_mode()
-        except Exception:
-            headed = bool(os.environ.get("AGENT_BROWSER_HEADED"))
-        if headed:
-            if agent.verbose_logging:
-                logging.debug(
-                    f"Skipping per-turn cleanup_browser for headed session {task_id}; "
-                    f"idle reaper will handle it."
-                )
+        cleanup_for_turn = getattr(_ra(), "cleanup_browser_for_turn", None)
+        if callable(cleanup_for_turn):
+            cleanup_result = cleanup_for_turn(task_id)
         else:
-            _ra().cleanup_browser(task_id)
+            # Compatibility for old embedders that expose only cleanup_browser.
+            cleanup_result = _ra().cleanup_browser(task_id)
+        # ``False`` means exact ownership is still pending cleanup. Leave the
+        # outer turn boundary armed so it gets one more immediate attempt;
+        # ``None`` remains compatible with older embedders that reported no
+        # status after completing cleanup.
+        browser_boundary_completed = cleanup_result is not False
     except Exception as e:
         if agent.verbose_logging:
             logger.warning("Failed to cleanup browser for task %s: %s", task_id, e)
+    finally:
+        if browser_boundary_completed:
+            mark_complete = getattr(_ra(), "_mark_browser_turn_cleanup_complete", None)
+            if callable(mark_complete):
+                mark_complete()
 
 
 def _build_partial_stream_stub(

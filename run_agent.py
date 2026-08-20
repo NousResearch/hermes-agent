@@ -46,6 +46,8 @@ import time
 import threading
 import uuid
 import warnings
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import List, Dict, Any, Optional, Callable
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
@@ -143,7 +145,41 @@ from model_tools import (
 )
 from tools.terminal_tool import cleanup_vm, get_active_env
 from tools.interrupt import set_interrupt as _set_interrupt
-from tools.browser_tool import cleanup_browser
+from tools.browser_tool import cleanup_browser, cleanup_browser_for_turn
+
+
+_browser_turn_cleanup_completed: ContextVar[bool] = ContextVar(
+    "browser_turn_cleanup_completed",
+    default=False,
+)
+
+
+def _mark_browser_turn_cleanup_complete() -> None:
+    """Record that the current synchronous turn already ran its browser boundary."""
+    _browser_turn_cleanup_completed.set(True)
+
+
+@contextmanager
+def _browser_turn_cleanup_boundary(task_id: str):
+    """Guarantee browser finalization for every conversation-loop exit."""
+    token = _browser_turn_cleanup_completed.set(False)
+    try:
+        yield
+    finally:
+        try:
+            if not _browser_turn_cleanup_completed.get():
+                cleanup_browser_for_turn(task_id)
+        except Exception as exc:
+            # A cleanup failure must not replace a completed response or mask
+            # the original exception/cancellation. RETIRING state remains the
+            # logical fail-closed boundary for a later retry.
+            logger.warning(
+                "Browser turn cleanup failed for task %s: %s",
+                task_id,
+                exc,
+            )
+        finally:
+            _browser_turn_cleanup_completed.reset(token)
 
 
 # Agent internals extracted to agent/ package for modularity
@@ -8522,6 +8558,8 @@ class AIAgent:
         task_started = False
         task_finished = False
         relay_outcome = "failed"
+        browser_cleanup_scope = _browser_turn_cleanup_boundary(effective_task_id)
+        browser_cleanup_scope.__enter__()
 
         def _stop_durable_turn_lease_refresher() -> None:
             nonlocal durable_turn_lease_turn_active
@@ -8896,6 +8934,7 @@ class AIAgent:
                         )
                 finally:
                     _stop_durable_turn_lease_refresher()
+                    browser_cleanup_scope.__exit__(None, None, None)
                     if (
                         durable_turn_lease_thread is not None
                         and durable_turn_lease_thread.is_alive()

@@ -200,6 +200,66 @@ def _fire_on_page(cdp_url: str, expression: str) -> None:
     asyncio.run(run())
 
 
+def _browser_level_call(cdp_url: str, method: str, params=None):
+    """Call one browser-level CDP method without listing or adopting targets."""
+    import websockets as _ws_mod
+
+    async def run():
+        async with _ws_mod.connect(cdp_url, max_size=50 * 1024 * 1024) as ws:
+            await ws.send(json.dumps({"id": 1, "method": method, "params": params or {}}))
+            async for raw in ws:
+                message = json.loads(raw)
+                if message.get("id") != 1:
+                    continue
+                if "error" in message:
+                    raise RuntimeError(f"CDP {method} failed: {message['error']}")
+                return message.get("result", {})
+        raise RuntimeError(f"CDP {method} connection closed without a response")
+
+    return asyncio.run(run())
+
+
+def _evaluate_exact_target(cdp_url: str, target_id: str, expression: str):
+    """Attach to exactly ``target_id`` and evaluate without target discovery."""
+    import websockets as _ws_mod
+
+    async def run():
+        async with _ws_mod.connect(cdp_url, max_size=50 * 1024 * 1024) as ws:
+            next_id = 1
+
+            async def call(method, params=None, session_id=None):
+                nonlocal next_id
+                call_id = next_id
+                next_id += 1
+                payload = {"id": call_id, "method": method}
+                if params:
+                    payload["params"] = params
+                if session_id:
+                    payload["sessionId"] = session_id
+                await ws.send(json.dumps(payload))
+                async for raw in ws:
+                    message = json.loads(raw)
+                    if message.get("id") != call_id:
+                        continue
+                    if "error" in message:
+                        raise RuntimeError(f"CDP {method} failed: {message['error']}")
+                    return message
+
+            attached = await call(
+                "Target.attachToTarget",
+                {"targetId": target_id, "flatten": True},
+            )
+            session_id = attached["result"]["sessionId"]
+            evaluated = await call(
+                "Runtime.evaluate",
+                {"expression": expression, "returnByValue": True},
+                session_id=session_id,
+            )
+            return evaluated["result"]["result"].get("value")
+
+    return asyncio.run(run())
+
+
 @pytest.fixture
 def supervisor_registry():
     """Yield the global registry and tear down any supervisors after the test."""
@@ -351,3 +411,59 @@ def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):
     out = supervisor.evaluate_runtime("Infinity")
     assert out["ok"] is True
     assert out["result"] == "Infinity"
+
+
+def test_supervisor_real_cdp_contract_pins_only_owned_target(
+    chrome_cdp, supervisor_registry
+):
+    """Opt-in contract: explicit pinning never adopts or closes another page."""
+    cdp_url, _port = chrome_cdp
+    owned_target_ids = []
+    task_id = "pytest-owned-target-contract"
+
+    try:
+        for title in ("HERMES-OWNED-A", "HERMES-OWNED-B"):
+            page_url = "data:text/html;base64," + base64.b64encode(
+                f"<!doctype html><title>{title}</title><body>{title}</body>".encode()
+            ).decode()
+            created = _browser_level_call(
+                cdp_url,
+                "Target.createTarget",
+                {"url": page_url},
+            )
+            owned_target_ids.append(created["targetId"])
+
+        supervisor = supervisor_registry.get_or_start(
+            task_id=task_id,
+            cdp_url=cdp_url,
+            target_id=owned_target_ids[0],
+        )
+
+        deadline = time.monotonic() + 5
+        evaluated = None
+        while time.monotonic() < deadline:
+            evaluated = supervisor.evaluate_runtime("document.title")
+            if evaluated.get("ok") and evaluated.get("result") == "HERMES-OWNED-A":
+                break
+            time.sleep(0.05)
+
+        assert evaluated == {
+            "ok": True,
+            "result": "HERMES-OWNED-A",
+            "result_type": "string",
+        }
+        assert (
+            _evaluate_exact_target(cdp_url, owned_target_ids[1], "document.title")
+            == "HERMES-OWNED-B"
+        )
+    finally:
+        supervisor_registry.stop(task_id)
+        for target_id in owned_target_ids:
+            try:
+                _browser_level_call(
+                    cdp_url,
+                    "Target.closeTarget",
+                    {"targetId": target_id},
+                )
+            except Exception:
+                pass

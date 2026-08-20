@@ -21,7 +21,13 @@ import tools.browser_tool as browser_tool
 def _reset_routing_state(monkeypatch):
     """Clear module-level caches so each test starts clean."""
     monkeypatch.setattr(browser_tool, "_active_sessions", {})
+    monkeypatch.setattr(browser_tool, "_session_last_activity", {})
     monkeypatch.setattr(browser_tool, "_last_active_session_key", {})
+    monkeypatch.setattr(browser_tool, "_retired_browser_tasks", set())
+    monkeypatch.setattr(browser_tool, "_browser_task_states", {})
+    monkeypatch.setattr(browser_tool, "_browser_task_generations", {})
+    monkeypatch.setattr(browser_tool, "_browser_task_cleanup_reasons", {})
+    monkeypatch.setattr(browser_tool, "_pending_provider_cleanups", {})
     monkeypatch.setattr(browser_tool, "_cached_cloud_provider", None)
     monkeypatch.setattr(browser_tool, "_cloud_provider_resolved", False)
     monkeypatch.setattr(browser_tool, "_auto_local_for_private_urls_resolved", False)
@@ -102,7 +108,7 @@ class TestHybridRoutingSessionCreation:
             "cdp_url": "wss://fake.browserbase.com/ws",
         }
         monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: provider)
-        monkeypatch.setattr(browser_tool, "_ensure_cdp_supervisor", lambda t: None)
+        monkeypatch.setattr(browser_tool, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
 
         session = browser_tool._get_session_info("default::local")
 
@@ -122,7 +128,7 @@ class TestHybridRoutingSessionCreation:
             "cdp_url": "wss://real.browserbase.com/ws",
         }
         monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: provider)
-        monkeypatch.setattr(browser_tool, "_ensure_cdp_supervisor", lambda t: None)
+        monkeypatch.setattr(browser_tool, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
         monkeypatch.setattr(browser_tool, "_resolve_cdp_override", lambda u: u)
 
         session = browser_tool._get_session_info("default")

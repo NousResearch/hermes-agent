@@ -27,10 +27,16 @@ def _clear_browser_caches():
     _discover_homebrew_node_dirs.cache_clear()
     _bt._cached_agent_browser = None
     _bt._agent_browser_resolved = False
+    _bt._cached_pin_tab_agent_browser = None
+    _bt._pin_tab_agent_browser_resolved = False
+    _bt._pin_tab_failure_cache = None
     yield
     _discover_homebrew_node_dirs.cache_clear()
     _bt._cached_agent_browser = None
     _bt._agent_browser_resolved = False
+    _bt._cached_pin_tab_agent_browser = None
+    _bt._pin_tab_agent_browser_resolved = False
+    _bt._pin_tab_failure_cache = None
 
 
 class TestSanePath:

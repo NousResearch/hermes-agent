@@ -336,6 +336,13 @@ _sessions: Dict[str, Dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
 
 
+def camofox_has_session(task_id: Optional[str] = None) -> bool:
+    """Return whether this process currently tracks a Camofox task session."""
+    task_id = task_id or "default"
+    with _sessions_lock:
+        return task_id in _sessions
+
+
 def _adopt_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
     """Attach process-local state to an already-open managed Camofox tab.
 
@@ -966,6 +973,5 @@ def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
         "note": "Console log capture is not available with the Camofox backend. "
                 "Use browser_snapshot or browser_vision to inspect page state.",
     })
-
 
 

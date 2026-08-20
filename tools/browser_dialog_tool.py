@@ -87,25 +87,42 @@ def browser_dialog(
 ) -> str:
     """Respond to a pending dialog on the active task's CDP supervisor."""
     effective_task_id = task_id or "default"
-    supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
-    if supervisor is None:
-        return json.dumps(
-            {
-                "success": False,
-                "error": (
-                    "No CDP supervisor is attached to this task. Either the "
-                    "browser backend doesn't expose CDP (Camofox, default "
-                    "Playwright) or no browser session has been started yet. "
-                    "Call browser_navigate or /browser connect first."
-                ),
-            }
-        )
+    # Dialog response is part of the same task-owned lifecycle as eval and
+    # cleanup.  Resolve the concrete session key under the per-task lock so a
+    # concurrent retirement cannot respond on a stale supervisor/target.
+    try:
+        from tools import browser_tool
 
-    result = supervisor.respond_to_dialog(
-        action=action,
-        prompt_text=prompt_text,
-        dialog_id=dialog_id,
-    )
+        bare_task_id = browser_tool._bare_task_id_for_session_key(effective_task_id)
+        with browser_tool._task_cleanup_operation_lock(bare_task_id):
+            if browser_tool._is_browser_task_unavailable(effective_task_id):
+                return json.dumps(
+                    browser_tool._browser_session_retired_result(effective_task_id),
+                    ensure_ascii=False,
+                )
+            session_key = browser_tool._last_session_key(effective_task_id)
+            supervisor = SUPERVISOR_REGISTRY.get(session_key)
+            if supervisor is None:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            "No CDP supervisor is attached to this task. Either the "
+                            "browser backend doesn't expose CDP (Camofox, default "
+                            "Playwright) or no browser session has been started yet. "
+                            "Call browser_navigate or /browser connect first."
+                        ),
+                    }
+                )
+
+            result = supervisor.respond_to_dialog(
+                action=action,
+                prompt_text=prompt_text,
+                dialog_id=dialog_id,
+            )
+    except Exception as exc:
+        logger.debug("browser_dialog lifecycle guard failed: %s", exc)
+        return json.dumps({"success": False, "error": str(exc)})
     if result.get("ok"):
         return json.dumps(
             {

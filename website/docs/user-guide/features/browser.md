@@ -380,6 +380,23 @@ In the CLI, use:
 
 If a browser isn't already running with remote debugging, Hermes will attempt to auto-launch a supported Chromium-family browser with `--remote-debugging-port=9222`. Detection includes Brave, Google Chrome, Chromium, and Microsoft Edge, with common Linux install paths such as `/opt/brave-bin/brave` and `/snap/bin/brave`.
 
+:::caution Shared-CDP runtime requirement
+Page-isolated `/browser connect` sessions require **Node.js 24 or newer** and
+**agent-browser 0.34.0 or newer**, because `--pin-tab` first shipped in
+agent-browser 0.34 and that package declares Node.js 24 as its minimum. The
+same capability also works on newer supported releases such as Node.js 26.
+
+Hermes itself and ordinary non-CDP browser sessions remain supported on
+Node.js 22.22 or newer; those sessions use the Node-22-compatible
+`agent-browser@0.26.0` acquisition path. On Node.js 22, a shared-CDP command
+fails after the read-only version preflight but before any `--pin-tab` command
+or daemon starts, and reports the two prerequisites instead of running an
+unsupported package. The capability-scoped npx path uses the exact audited
+`agent-browser@0.34.0` package, enforces npm's engine check, and overrides the
+normal 14-day release-age gate only for that one exact acquisition. Future
+0.34.x releases do not inherit that exception automatically.
+:::
+
 :::tip
 To start a Chromium-family browser manually with CDP enabled, use a dedicated user-data-dir so the debug port actually comes up even if the browser is already running with your normal profile:
 
@@ -420,7 +437,16 @@ Then launch the Hermes CLI and run `/browser connect`.
 **Chrome 136+ makes the dedicated profile mandatory.** As a security hardening change, Chrome 136 and later silently refuse to open the remote debugging port when `--remote-debugging-port` is combined with the *default* user-data-dir — even from a cold start with no other Chrome running. The browser launches normally but nothing ever listens on 9222, so `/browser connect` (and any manual `curl http://127.0.0.1:9222/json/version`) fails with connection refused. There is no error message. The fix is exactly the commands above: always pass a `--user-data-dir` pointing somewhere other than your default profile directory (e.g. `$HOME/.hermes/chrome-debug`). This applies to Chrome, Chromium, Edge, and Brave builds that have picked up the change.
 :::
 
-When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live browser instance instead of spinning up a cloud session.
+When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live browser instance instead of spinning up a cloud session. Each Hermes task pins the page target it creates and does not adopt another task's existing tab. Cookies, storage, and signed-in account state still belong to the shared browser profile and are intentionally shared.
+
+A shared external-CDP target is not closed merely because no browser command was
+issued during `browser.inactivity_timeout`; model reasoning or another long tool
+call can legitimately exceed that interval. Hermes closes its owned target at
+terminal task cleanup instead. After that cleanup, non-navigation tools fail
+with `browser_session_retired` rather than creating or adopting a replacement
+page. A new lifecycle begins only with an explicit, policy-checked
+`browser_navigate`; if that navigation fails, Hermes cleans the partial
+replacement and keeps the task retired.
 
 ### WSL2 + Windows Chrome: prefer MCP over `/browser connect`
 
@@ -479,11 +505,15 @@ AGENT_BROWSER_ARGS=--no-sandbox
 ### Install agent-browser CLI
 
 You don't need to install anything — `agent-browser` resolves automatically via
-`npx agent-browser` on first browser-tool use. To avoid the one-time npx fetch,
-you can install it globally ahead of time (optional):
+npx on first browser-tool use. To avoid the one-time fetch, install the package
+line for the browser mode you use (optional):
 
 ```bash
-npm install -g agent-browser
+# Ordinary local/non-CDP browser sessions (Node.js >=22.22)
+npm install -g 'agent-browser@0.26.0'
+
+# Shared-CDP /browser connect sessions (Node.js >=24)
+npm install -g 'agent-browser@0.34.0'
 ```
 
 :::info

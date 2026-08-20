@@ -365,3 +365,107 @@ class TestSuppressPlatformVerConsole:
             if original is not None:
                 platform._syscmd_ver = original
 
+
+class _FakeVersionInfo:
+    """Minimal stand-in for sys.version_info (which can't be instantiated)."""
+
+    def __init__(self, major, minor):
+        self.major = major
+        self.minor = minor
+
+
+class TestHardenUserSiteVersion:
+    """harden_user_site_version() must strip a mismatched-Python-version
+    site-packages dir off sys.path — the cross-version user-site leak that
+    broke pet.generate's PIL import (cannot import name '_imaging' from
+    'PIL', resolved from a python3.12 user-site inside a python3.11 process)."""
+
+    def _run(self, hb, path_seed, major, minor):
+        original = sys.path[:]
+        try:
+            sys.path[:] = path_seed
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(hb.sys, "version_info", _FakeVersionInfo(major, minor))
+                hb.harden_user_site_version()
+            return sys.path[:]
+        finally:
+            sys.path[:] = original
+
+    def test_mismatched_version_site_packages_removed(self):
+        hb = _fresh_import()
+        result = self._run(
+            hb,
+            [
+                "/opt/hermes",
+                "/home/user/.local/lib/python3.12/site-packages",
+                "/opt/hermes/venv/lib/python3.11/site-packages",
+            ],
+            3,
+            11,
+        )
+        assert "/home/user/.local/lib/python3.12/site-packages" not in result
+        assert "/opt/hermes/venv/lib/python3.11/site-packages" in result
+        assert "/opt/hermes" in result
+
+    def test_matching_version_site_packages_kept(self):
+        hb = _fresh_import()
+        seed = [
+            "/opt/hermes",
+            "/home/user/.local/lib/python3.11/site-packages",
+        ]
+        result = self._run(hb, seed, 3, 11)
+        assert result == seed
+
+    def test_non_site_packages_paths_untouched(self):
+        hb = _fresh_import()
+        seed = ["/opt/hermes", "/home/user/.local/lib/python3.12/scripts"]
+        result = self._run(hb, seed, 3, 11)
+        assert result == seed
+
+    def test_no_crash_on_unusual_path_entries(self):
+        hb = _fresh_import()
+        seed = ["", ".", "not-a-path::weird"]
+        # Should not raise even with odd/empty entries.
+        result = self._run(hb, seed, 3, 11)
+        assert isinstance(result, list)
+
+    def test_site_packages_substring_elsewhere_not_stripped(self):
+        """A path that independently contains "pythonX.Y/" and
+        "site-packages" as two *unrelated* components — rather than the
+        complete "pythonX.Y/site-packages" pair — must not be treated as a
+        mismatched-version site-packages dir."""
+        hb = _fresh_import()
+        seed = ["/opt/hermes", "/data/python3.12/config/site-packages-notes"]
+        result = self._run(hb, seed, 3, 11)
+        assert result == seed
+
+
+class TestBootstrapImportOrder:
+    """Regression test: harden_user_site_version() must run BEFORE
+    activate_durable_lazy_target() at module import time. A configured
+    HERMES_LAZY_INSTALL_TARGET is a trusted, arbitrary path that can
+    legitimately be named like a versioned site-packages dir (e.g.
+    "/data/python3.12/site-packages") for a reason unrelated to the
+    running interpreter's own version. If the durable target were
+    activated (appended to sys.path) before the version sanitizer ran,
+    the sanitizer would immediately strip it back off."""
+
+    def test_version_named_lazy_target_survives_bootstrap(self, tmp_path, monkeypatch):
+        # Name the target for a minor version that is guaranteed to differ
+        # from the *actual* running interpreter (no version_info faking —
+        # faking it would also make harden_user_site_version() misidentify
+        # this venv's own real site-packages dir as mismatched, which is a
+        # test artifact, not the scenario under test).
+        other_minor = 5 if sys.version_info.minor != 5 else 6
+        target = tmp_path / f"python3.{other_minor}" / "site-packages"
+        target.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_LAZY_INSTALL_TARGET", str(target))
+
+        original_path = sys.path[:]
+        try:
+            _fresh_import()
+            assert str(target) in sys.path
+        finally:
+            sys.path[:] = original_path
+            sys.modules.pop("hermes_bootstrap", None)
+

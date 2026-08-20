@@ -108,7 +108,8 @@ SIGNAL_ALLOWED_USERS=+1234567890,+0987654321    # Comma-separated E.164 numbers 
 
 # Optional
 SIGNAL_GROUP_ALLOWED_USERS=groupId1,groupId2     # Enable groups (omit to disable, * for all)
-SIGNAL_HOME_CHANNEL=+1234567890                  # Default delivery target for cron jobs
+SIGNAL_REQUIRE_MENTION=true                       # Only respond to @mentions in groups (default: false)
+SIGNAL_HOME_CHANNEL=+123****7890                  # Default delivery target for cron jobs
 ```
 
 Then start the gateway:
@@ -140,6 +141,35 @@ Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
 | Not set (default) | All group messages are ignored. The bot only responds to DMs. |
 | Set with group IDs | Only listed groups are monitored (e.g., `groupId1,groupId2`). |
 | Set to `*` | The bot responds in any group it's a member of. |
+
+### Mention Filter (Group Chat)
+
+By default, when groups are enabled the bot responds to **every message** it sees. For family or community groups, you can restrict the bot to only respond when it's directly addressed by setting `SIGNAL_REQUIRE_MENTION=true` (or `require_mention: true` in the platform `extra` config).
+
+When enabled, group messages are only processed if they contain an `@mention` of the bot's phone number. The adapter checks both the rendered message text and Signal's native mention metadata, so `@+123****7890` mentions are detected reliably regardless of how the Signal client formats them.
+
+**Configuration options:**
+
+```bash
+# Environment variable
+SIGNAL_REQUIRE_MENTION=true
+```
+
+```yaml
+# In config.yaml under gateway.platforms.signal.extra
+gateway:
+  platforms:
+    signal:
+      extra:
+        require_mention: true
+```
+
+| Setting | Behavior |
+|---------|----------|
+| `false` (default) | Bot responds to all group messages it can see |
+| `true` | Bot only responds when @mentioned in the group |
+
+This is ideal for family chats, community groups, or any scenario where you want the bot present but not interrupting normal conversation.
 
 ---
 
@@ -227,6 +257,7 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | **"signal-cli not found on PATH"** | Install signal-cli and ensure it's in your PATH, or use Docker |
 | **Connection keeps dropping** | Check signal-cli logs for errors. Ensure Java 17+ is installed. |
 | **Group messages ignored** | Configure `SIGNAL_GROUP_ALLOWED_USERS` with specific group IDs, or `*` to allow all groups. |
+| **Bot responds to every message in group** | Set `SIGNAL_REQUIRE_MENTION=true` to restrict responses to @mentions only. See [Mention Filter](#mention-filter-group-chat). |
 | **Bot responds to no one** | Configure `SIGNAL_ALLOWED_USERS`, use DM pairing, or explicitly allow all users through gateway policy if you want broader access. |
 | **Duplicate messages** | Ensure only one signal-cli instance is listening on your phone number |
 
@@ -254,5 +285,6 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | `SIGNAL_ACCOUNT` | Yes | — | Bot phone number (E.164) |
 | `SIGNAL_ALLOWED_USERS` | No | — | Comma-separated phone numbers/UUIDs |
 | `SIGNAL_GROUP_ALLOWED_USERS` | No | — | Group IDs to monitor, or `*` for all (omit to disable groups) |
+| `SIGNAL_REQUIRE_MENTION` | No | `false` | Only respond to @mentions in group chats |
 | `SIGNAL_ALLOW_ALL_USERS` | No | `false` | Allow any user to interact (skip allowlist) |
 | `SIGNAL_HOME_CHANNEL` | No | — | Default delivery target for cron jobs |

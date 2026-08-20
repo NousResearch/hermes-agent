@@ -7628,21 +7628,31 @@ def _desktop_macos_has_valid_real_signature(app: Path) -> bool:
         return False
 
 
-def _desktop_macos_update_keychain_acl(app: Path) -> None:
-    """Update the 'Hermes Safe Storage' keychain item's ACL after re-signing.
+def _desktop_macos_reset_keychain_safe_storage(app: Path) -> None:
+    """Delete the 'Hermes Safe Storage' keychain item after an ad-hoc re-sign.
+
+    NOTE: this does NOT update the item's ACL — it deletes the item, which
+    permanently orphans every credential encrypted under it. It is only safe
+    on the LEGACY AD-HOC fallback path, where every rebuild produces a new
+    cdhash so the keychain ACL can never match and the alternative is a
+    recurring prompt. It MUST NOT be called on the stable signing path: there
+    the designated requirement is certificate-anchored and stable, so after
+    the first launch under the new identity the ACL already matches and
+    deleting the item only destroys credentials that were working fine.
 
     Electron's ``safeStorage`` stores its encryption key in a Keychain item
     named ``<productName> Safe Storage`` (here: "Hermes Safe Storage").  macOS
-    ties each keychain item's Access Control List to the Designated Requirement
-    of the app that created it.  When the self-updater rebuilds and re-signs
-    the bundle (ad-hoc or with a different identity), the new DR no longer
-    matches the stored ACL, so macOS re-prompts on every launch.
+    ties each keychain item's Access Control List to the code signature of
+    the app that created it.  When the self-updater rebuilds and re-signs the
+    bundle ad-hoc, the new cdhash no longer matches the stored ACL, so macOS
+    re-prompts on every launch.
 
-    After re-signing, delete the existing keychain item so Electron recreates
-    it with the correct ACL for the newly-signed app on next launch.  The
-    trade-off: previously encrypted tokens become unreadable (the user
-    re-enters the gateway token once), but the keychain prompt stops appearing
-    on every launch.
+    Deleting the item makes Electron recreate it with the correct ACL for the
+    newly-signed app on next launch.  The trade-off: previously encrypted
+    tokens become unreadable (the user re-enters the gateway token once), but
+    the keychain prompt stops appearing on every launch.  The durable fix is
+    a stable signing identity (``desktop.macos_signing_identity``), which
+    makes this path unreachable.
 
     If the item doesn't exist yet (first launch), this is a no-op.
 
@@ -7815,7 +7825,6 @@ def _desktop_macos_relaunchable_fixup(
         if _desktop_macos_local_codesign(app, desktop_dir=desktop_dir, identity=identity):
             label = "keychain identity" if identity != "-" else "stable ad-hoc identity"
             print(f"  → macOS desktop signed with {label}; TCC grants persist across rebuilds")
-            _desktop_macos_update_keychain_acl(app)
             return True
     except Exception as exc:
         if identity != "-":
@@ -7826,7 +7835,13 @@ def _desktop_macos_relaunchable_fixup(
         print(f"  (warning: stable macOS signing failed ({exc}); using legacy ad-hoc sign)")
     try:
         subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
-        _desktop_macos_update_keychain_acl(app)
+        # Legacy ad-hoc fallback only: every rebuild produces a new cdhash, so
+        # the keychain ACL can never match and the alternative is a recurring
+        # prompt. This deletes the item (credentials are re-entered once per
+        # update); it is intentionally NOT called on the stable identity path
+        # above, where the cert-anchored DR is stable and the deletion would
+        # destroy working credentials on every update.
+        _desktop_macos_reset_keychain_safe_storage(app)
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
     return False

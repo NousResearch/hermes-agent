@@ -741,6 +741,82 @@ def test_cmd_gui_setup_tcc_identity_exits_before_build(tmp_path, monkeypatch):
     mock_install.assert_not_called()
 
 
+def test_relaunchable_fixup_stable_identity_skips_keychain_reset(tmp_path, monkeypatch):
+    """A successful stable-identity re-sign must NOT delete the safeStorage item.
+
+    Regression for review feedback on #90961: the keychain reset deletes the
+    item, permanently orphaning every safeStorage-backed credential (gateway
+    token, native OAuth access/refresh tokens — see electron/main.ts). On the
+    stable path the cert-anchored designated requirement is stable across
+    rebuilds, so after the first launch the keychain ACL already matches and
+    deleting the item would destroy working credentials on every update.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    exe = _make_packaged_executable(root, monkeypatch)
+    app = exe.parents[2]
+
+    resets: list[Path] = []
+    monkeypatch.setattr(cli_main, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(
+        cli_main, "_desktop_macos_local_signing_identity", lambda: "Developer ID Application: Example"
+    )
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", lambda app, **kw: True)
+    monkeypatch.setattr(
+        cli_main, "_desktop_macos_reset_keychain_safe_storage", lambda app: resets.append(app)
+    )
+
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
+    assert resets == []
+
+
+def test_relaunchable_fixup_legacy_adhoc_still_resets_keychain_item(tmp_path, monkeypatch):
+    """The legacy ad-hoc fallback keeps the keychain reset (documented trade-off).
+
+    On the ad-hoc path every rebuild produces a new cdhash, so the keychain
+    ACL can never match and the alternative is a recurring prompt. The reset
+    is the documented trade-off there (re-enter credentials once per update);
+    the durable fix is a stable signing identity, which makes this path
+    unreachable.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    exe = _make_packaged_executable(root, monkeypatch)
+    app = exe.parents[2]
+
+    calls: list[list[str]] = []
+    resets: list[Path] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(
+        cli_main.shutil, "which", lambda name: "/usr/bin/codesign" if name == "codesign" else None
+    )
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_main, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_signing_identity", lambda: None)
+
+    def boom(*a, **kw):
+        raise subprocess.CalledProcessError(1, ["codesign"])
+
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", boom)
+    monkeypatch.setattr(
+        cli_main, "_desktop_macos_reset_keychain_safe_storage", lambda app: resets.append(app)
+    )
+
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is False
+    assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
+    assert resets == [app]
+
+
 # --- desktop.* launch options (config.yaml) -------------------------------
 
 

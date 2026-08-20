@@ -8,7 +8,7 @@ const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf
 /** Load the plugin in a vm with a scripted cli.exec so member turns are
  *  deterministic. `turnScript(profile, prompt)` returns the member's reply
  *  text (or throws to simulate a failed turn). */
-function load(turnScript, { busyUntilResumeCall } = {}) {
+function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall } = {}) {
   const values = new Map()
   const atom = initial => {
     const slot = { get: () => values.get(slot), set: value => values.set(slot, value) }
@@ -16,6 +16,7 @@ function load(turnScript, { busyUntilResumeCall } = {}) {
     return slot
   }
   const calls = []
+  const clarifyResponds = []
   const sessions = new Map()
   const runtimeToStored = new Map()
   const titleToStored = new Map()
@@ -63,13 +64,19 @@ function load(turnScript, { busyUntilResumeCall } = {}) {
           resumeCallCounts.set(profile, seen)
           const limit = busyUntilResumeCall && busyUntilResumeCall[profile]
           const busy = Boolean(limit && seen <= limit)
+          // clarifyUntilResumeCall[profile] = {payload, until}: the resume
+          // snapshot carries pending_clarify for the first `until` calls —
+          // simulating a member blocked on its clarify tool (#90694).
+          const clarify = clarifyUntilResumeCall && clarifyUntilResumeCall[profile]
+          const pendingClarify = clarify && seen <= clarify.until ? clarify.payload : null
           return {
             session_id: session.runtime,
             session_key: session.stored,
             message_count: session.messages.length,
             messages: [...session.messages],
             inflight: busy,
-            running: busy
+            running: busy,
+            ...(pendingClarify ? { pending_clarify: pendingClarify } : {})
           }
         }
         if (method === 'prompt.submit') {
@@ -89,6 +96,10 @@ function load(turnScript, { busyUntilResumeCall } = {}) {
           session.messages.push({ role: 'assistant', content: reply })
           return {}
         }
+        if (method === 'clarify.respond') {
+          clarifyResponds.push({ ...params })
+          return { ok: true }
+        }
         return {}
       },
       state: { profile: { get: () => 'default', listen: () => undefined }, gateway: { listen: () => undefined } },
@@ -104,7 +115,7 @@ function load(turnScript, { busyUntilResumeCall } = {}) {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, disbandGroupChat, updateGroupChat, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, disbandGroupChat, updateGroupChat, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -112,7 +123,7 @@ function load(turnScript, { busyUntilResumeCall } = {}) {
     storage: { get: () => null, set: (key, value) => storageWrites.set(key, value) },
     register: () => undefined
   })
-  return { ...context.__gc, calls, host: context.host, sessions, storageWrites }
+  return { ...context.__gc, calls, clarifyResponds, host: context.host, sessions, storageWrites }
 }
 
 const MEMBERS = [{ name: 'research', title: '' }, { name: 'builder', title: '' }, { name: 'ops', title: 'The Ops' }]
@@ -884,4 +895,130 @@ test('group room preview renders the bot HANDLE, not the raw profile name', () =
   assert.match(pluginSource, /const lastHandle = botHandle\(lastFrom \|\| 'bot', members\.find\(/)
   assert.match(pluginSource, /\? `\$\{last\.from\?\.kind === 'user' \? 'You' : `@\$\{lastHandle\}`\}/)
   assert.doesNotMatch(pluginSource, /`@\$\{last\.from\?\.name \|\| 'bot'\}`/)
+})
+
+// ── group clarify (#90694): member questions surface in the room ──────────
+
+const CLARIFY_PAYLOAD = {
+  request_id: 'req-clarify-1',
+  question: 'Which env should I target?',
+  choices: ['staging', 'prod'],
+  multi_select: false
+}
+
+test('a member blocked on clarify surfaces its question and holds the turn open', async () => {
+  // research reports pending_clarify on its first two resumes after the
+  // submit; the turn must NOT read it as done/pass while the question waits.
+  const gc = load(() => 'targeting staging', {
+    clarifyUntilResumeCall: { research: { payload: CLARIFY_PAYLOAD, until: 3 } }
+  })
+
+  const thread = gc.sendToGroupChat('Core', [MEMBERS[0]], '@research deploy it', null, [])
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  // Mirrored while blocked, cleared once the resume stops reporting it.
+  const log = gc.$groupChats.get().Core.log.filter(e => e.thread === thread)
+  const replies = log.filter(e => e.from.kind === 'member')
+
+  assert.equal(replies.length, 1, 'the finished reply still lands after the clarify clears')
+  assert.equal(replies[0].text, 'targeting staging')
+  assert.equal(Object.keys(gc.$groupClarify.get()).length, 0, 'the mirrored question is cleared once resolved')
+  // The mirror pass ran while the question was blocking: it badges the room
+  // needs-you. The sabotaged (pre-fix) poll never inspects pending_clarify,
+  // so this stays unset — the observable proof the gate executed.
+  assert.equal(gc.$groupNeedsYou.get().Core, true, 'the blocking question badged the room')
+})
+
+test('syncGroupClarify mirrors, badges needs-you, and is idempotent per request', () => {
+  const gc = load(() => '(pass)')
+  const member = { name: 'research', title: '' }
+
+  const blocked = gc.syncGroupClarify('Core', member, { pending_clarify: CLARIFY_PAYLOAD })
+  assert.equal(blocked, true)
+
+  const mirrored = Object.values(gc.$groupClarify.get())
+  assert.equal(mirrored.length, 1)
+  assert.equal(mirrored[0].requestId, 'req-clarify-1')
+  assert.equal(mirrored[0].question, 'Which env should I target?')
+  assert.equal(JSON.stringify(mirrored[0].choices), JSON.stringify(['staging', 'prod']))
+  assert.equal(gc.$groupNeedsYou.get().Core, true)
+
+  // Same request again: no new entry, identity preserved.
+  const first = mirrored[0]
+  gc.syncGroupClarify('Core', member, { pending_clarify: CLARIFY_PAYLOAD })
+  assert.equal(Object.values(gc.$groupClarify.get())[0], first)
+
+  // Question resolved server-side: the mirror clears.
+  const still = gc.syncGroupClarify('Core', member, {})
+  assert.equal(still, false)
+  assert.equal(Object.keys(gc.$groupClarify.get()).length, 0)
+})
+
+test('older backends without pending_clarify never mirror a question', () => {
+  const gc = load(() => '(pass)')
+
+  assert.equal(gc.syncGroupClarify('Core', { name: 'research' }, { messages: [] }), false)
+  assert.equal(Object.keys(gc.$groupClarify.get()).length, 0)
+})
+
+test('answerGroupClarify routes clarify.respond and clears the mirror', async () => {
+  const gc = load(() => '(pass)')
+  const member = { name: 'research', title: '' }
+
+  gc.syncGroupClarify('Core', member, { pending_clarify: CLARIFY_PAYLOAD })
+  const entry = Object.values(gc.$groupClarify.get())[0]
+
+  await gc.answerGroupClarify(entry, member, 'staging')
+
+  assert.equal(JSON.stringify(gc.clarifyResponds), JSON.stringify([{ request_id: 'req-clarify-1', answer: 'staging' }]))
+  assert.equal(Object.keys(gc.$groupClarify.get()).length, 0)
+})
+
+test('answerGroupClarify sends one respond per batch question, in order', async () => {
+  const gc = load(() => '(pass)')
+  const member = { name: 'research', title: '' }
+  const batch = {
+    request_id: 'req-batch-1',
+    questions: [
+      { qid: 'q0', question: 'Env?', choices: ['staging', 'prod'] },
+      { qid: 'q1', question: 'Region?', choices: [] }
+    ]
+  }
+
+  gc.syncGroupClarify('Core', member, { pending_clarify: batch })
+  const entry = Object.values(gc.$groupClarify.get())[0]
+
+  await gc.answerGroupClarify(entry, member, { q0: 'staging', q1: 'eu-west' })
+
+  assert.equal(
+    JSON.stringify(gc.clarifyResponds),
+    JSON.stringify([
+      { request_id: 'req-batch-1', question_id: 'q0', answer: 'staging' },
+      { request_id: 'req-batch-1', question_id: 'q1', answer: 'eu-west' }
+    ])
+  )
+  assert.equal(Object.keys(gc.$groupClarify.get()).length, 0)
+})
+
+test('disband clears the room mirrored questions', async () => {
+  const gc = load(() => '(pass)')
+
+  gc.syncGroupClarify('Core', { name: 'research' }, { pending_clarify: CLARIFY_PAYLOAD })
+  gc.syncGroupClarify('Other', { name: 'ops' }, { pending_clarify: { ...CLARIFY_PAYLOAD, request_id: 'req-2' } })
+
+  await gc.disbandGroupChat('Core', [])
+
+  const remaining = Object.values(gc.$groupClarify.get())
+  assert.equal(remaining.length, 1)
+  assert.equal(remaining[0].group, 'Other')
+})
+
+test('source contract: room renders clarify cards and the poll gates on them', () => {
+  assert.match(pluginSource, /function GroupClarifyCard\(/)
+  assert.match(pluginSource, /syncGroupClarify\(group, member, state\)/)
+  assert.match(pluginSource, /const done = !busy && !awaitingUser/)
+  assert.match(pluginSource, /busy \|\| awaitingUser/)
+  assert.match(pluginSource, /roomClarifies\.map\(entry =>/)
+  assert.match(pluginSource, /'clarify\.respond'/)
 })

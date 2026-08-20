@@ -205,6 +205,13 @@ const $groupChats = atom({})
 const $groupChatWorkspace = atom(null)
 /** Groups whose latest room activity mentions @user — the needs-you badge. */
 const $groupNeedsYou = atom({})
+// Pending clarify questions raised inside hidden group-member sessions,
+// keyed `${group}::${memberKey}` (#90694). Members run in invisible plumbing
+// sessions, so a member's clarify tool used to block server-side with no
+// surface to answer it — the user saw "is thinking…" until the clarify
+// timeout. The turn poll mirrors each member's `pending_clarify` resume
+// field in here; the room renders answer cards from it.
+const $groupClarify = atom({})
 
 // ── group activity feed ─────────────────────────────────────────────────────
 // Runtime-only, bounded per-room record of turn events that feeds the
@@ -4139,6 +4146,7 @@ async function disbandGroupChat(group, members) {
 
   delete needs[group]
   $groupNeedsYou.set(needs)
+  clearGroupClarify(group)
 
   // Persist the room map WITHOUT the disbanded room so it can't come back
   // on the next window load.
@@ -4234,6 +4242,10 @@ async function renameGroupChat(oldName, newName, members) {
     delete needs[oldName]
     $groupNeedsYou.set(needs)
   }
+
+  // Mirrored clarify cards key by group name; drop the old room's — the
+  // next poll re-mirrors any still-blocking question under the new name.
+  clearGroupClarify(oldName)
 
   // Local memberships: swap the name inside each member's canonical groups
   // list (syncs cross-machine via ui_meta). Remote members' seating lives in
@@ -4347,6 +4359,109 @@ const GROUP_TURN_POLL_MS = 2000
 // reached the room (db's Aug 2026 report).
 const GROUP_TURN_HARD_CAP_MS = 20 * 60000
 
+/** Mirror a member's pending clarify (if any) from its resume snapshot into
+ *  the room store, keyed `${group}::${memberKey}` (#90694). Returns true
+ *  while a question is blocking, so the turn poll can extend its deadline —
+ *  a waiting question must not be eaten by the group-turn timeout. Feature-
+ *  detected: older backends without `pending_clarify` in the resume payload
+ *  always sync to "no question". */
+function syncGroupClarify(group, member, state) {
+  const key = `${group}::${groupMemberKey(member)}`
+  const pending = state && typeof state.pending_clarify === 'object' ? state.pending_clarify : null
+  const requestId = pending?.request_id || null
+  const all = $groupClarify.get()
+  const current = all[key]
+
+  if (!requestId) {
+    if (current) {
+      const next = { ...all }
+      delete next[key]
+      $groupClarify.set(next)
+    }
+
+    return false
+  }
+
+  // Same request already mirrored — keep the object identity so the card
+  // doesn't lose its draft to a re-render.
+  if (current?.requestId === requestId) {
+    return true
+  }
+
+  $groupClarify.set({
+    ...all,
+    [key]: {
+      requestId,
+      group,
+      member: member.name,
+      memberKey: groupMemberKey(member),
+      question: typeof pending.question === 'string' ? pending.question : '',
+      choices: Array.isArray(pending.choices) ? pending.choices.filter(c => typeof c === 'string' && c) : [],
+      multiSelect: Boolean(pending.multi_select),
+      // Batch clarifies carry `questions`; the room card answers them
+      // one wire call per question, mirroring the 1:1 batch contract.
+      questions: Array.isArray(pending.questions) ? pending.questions : null,
+      at: Date.now()
+    }
+  })
+  // A blocked member is a question for the human — badge the room.
+  $groupNeedsYou.set({ ...$groupNeedsYou.get(), [group]: true })
+
+  return true
+}
+
+/** Drop every mirrored clarify belonging to `group` (disband/rename). */
+function clearGroupClarify(group) {
+  const all = $groupClarify.get()
+  const next = {}
+  let changed = false
+
+  for (const [key, value] of Object.entries(all)) {
+    if (value?.group === group) {
+      changed = true
+    } else {
+      next[key] = value
+    }
+  }
+
+  if (changed) {
+    $groupClarify.set(next)
+  }
+}
+
+/** Answer a member's pending clarify from the room. Routes clarify.respond
+ *  to the member's OWN source (requestForBot), so cross-connection members
+ *  work. Batch questions send one respond per question, sequentially — the
+ *  LAST lock resolves the blocked tool server-side (same contract as the
+ *  1:1 batch card). allow_expired server-side makes racing the timeout
+ *  harmless. */
+async function answerGroupClarify(entry, member, answers) {
+  if (entry.questions && entry.questions.length) {
+    for (const question of entry.questions) {
+      const qid = question?.qid ?? question?.id
+      await requestForBot(member, 'clarify.respond', {
+        request_id: entry.requestId,
+        question_id: qid,
+        answer: answers?.[qid] ?? ''
+      })
+    }
+  } else {
+    await requestForBot(member, 'clarify.respond', {
+      request_id: entry.requestId,
+      answer: typeof answers === 'string' ? answers : ''
+    })
+  }
+
+  const all = $groupClarify.get()
+  const key = `${entry.group}::${entry.memberKey}`
+
+  if (all[key]?.requestId === entry.requestId) {
+    const next = { ...all }
+    delete next[key]
+    $groupClarify.set(next)
+  }
+}
+
 /** One member turn, gateway-native: submit the room delta as a prompt into
  *  the member's per-group session, then poll the session until a NEW
  *  assistant message lands (or timeout → pass). While the session visibly
@@ -4446,7 +4561,11 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
 
     const messages = Array.isArray(state?.messages) ? state.messages : []
     const busy = Boolean(state?.inflight || state?.running)
-    const done = !busy
+    // A clarify blocking inside the member's session is a question for the
+    // HUMAN (#90694) — mirror it into the room store so a card renders, and
+    // hold the turn open: the member isn't stalling, it's waiting on us.
+    const awaitingUser = syncGroupClarify(group, member, state)
+    const done = !busy && !awaitingUser
 
     if (messages.length > before && done) {
       for (let i = messages.length - 1; i >= 0; i--) {
@@ -4475,16 +4594,20 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
       return null
     }
 
-    // Still visibly working: extend the deadline (never past the hard cap).
-    if (busy) {
+    // Still visibly working — or waiting on the user's answer to a clarify:
+    // extend the deadline (never past the hard cap). A pending question must
+    // outlive the base turn timeout or it dies unanswered at 3 minutes.
+    if (busy || awaitingUser) {
       deadline = Math.min(started + GROUP_TURN_HARD_CAP_MS, Math.max(deadline, Date.now() + GROUP_TURN_TIMEOUT_MS))
     }
   }
 
-  // Timeout — reads as a pass, but remember the baseline + thread
+  // Timeout — clear any still-mirrored question card (the server-side
+  // clarify timeout runs its own course) and read as a pass, but remember the baseline + thread
   // (runtime-only) so the finished reply can be posted late into the RIGHT
   // thread instead of vanishing.
   recordGroupActivity(group, { kind: 'timed-out', member: member.name, thread })
+  syncGroupClarify(group, member, null)
   updateGroupChat(group, r => {
     r.stranded = { ...(r.stranded || {}), [groupMemberKey(member)]: { before, thread } }
     return r
@@ -4522,6 +4645,12 @@ async function harvestStrandedGroupReply(group, member) {
 
   if (state?.inflight || state?.running) {
     return // still grinding — keep waiting
+  }
+
+  // A stranded member blocked on a clarify is not "grinding" — surface the
+  // question card (#90694) and keep the marker until it resolves.
+  if (syncGroupClarify(group, member, state)) {
+    return
   }
 
   // Done (or dead): the marker is consumed either way.
@@ -8758,6 +8887,150 @@ function GroupMentionInput({ members, onChange, value, ...inputProps }) {
   })
 }
 
+/** One member's pending question, rendered in the room (#90694). Choices
+ *  render as tap buttons (multi-select stages; single-select stages one);
+ *  free text always available; Answer sends via the member's own source.
+ *  Batch clarifies render every sub-question with its own input. */
+function GroupClarifyCard({ entry, members }) {
+  const { group } = entry
+  const member = members.find(m => groupMemberKey(m) === entry.memberKey) || members.find(m => m.name === entry.member)
+  const [drafts, setDrafts] = useState({})
+  const [picked, setPicked] = useState({})
+  const [sending, setSending] = useState(false)
+  const questions = entry.questions && entry.questions.length
+    ? entry.questions.map((q, i) => ({
+        qid: q?.qid ?? q?.id ?? `q${i}`,
+        question: typeof q?.question === 'string' ? q.question : '',
+        choices: Array.isArray(q?.choices) ? q.choices.filter(c => typeof c === 'string' && c) : [],
+        multiSelect: Boolean(q?.multi_select ?? q?.multiSelect)
+      }))
+    : [{ qid: '__single__', question: entry.question, choices: entry.choices, multiSelect: entry.multiSelect }]
+
+  const answerFor = q => {
+    const chosen = picked[q.qid] || []
+
+    if (chosen.length) {
+      return q.multiSelect ? JSON.stringify(chosen) : chosen[0]
+    }
+
+    return (drafts[q.qid] || '').trim()
+  }
+
+  const allAnswered = questions.every(q => answerFor(q))
+
+  const submit = async () => {
+    if (!member || sending || !allAnswered) {
+      return
+    }
+
+    setSending(true)
+
+    try {
+      if (entry.questions && entry.questions.length) {
+        const answers = {}
+
+        for (const q of questions) {
+          answers[q.qid] = answerFor(q)
+        }
+
+        await answerGroupClarify(entry, member, answers)
+      } else {
+        await answerGroupClarify(entry, member, answerFor(questions[0]))
+      }
+
+      // Echo the exchange into the room log so the thread reads complete.
+      const summary = questions
+        .map(q => (questions.length > 1 ? `${q.question}: ${answerFor(q)}` : answerFor(q)))
+        .join('\n')
+      appendGroupChatEntry(group, { kind: 'user', name: 'You' }, summary, entry.thread || 'legacy')
+    } catch (err) {
+      host.notify({ kind: 'error', message: `Could not send the answer to @${botHandle(entry.member, member)}: ${err?.message || err}` })
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return jsxs('div', {
+    className:
+      'grid gap-1.5 rounded-md border border-(--ui-accent,#4f9cf9)/50 bg-(--ui-accent,#4f9cf9)/5 px-2.5 py-2',
+    children: [
+      jsxs('div', {
+        className: 'flex items-center gap-1.5 text-xs font-medium',
+        children: [
+          jsx(Codicon, { name: 'question', className: 'shrink-0 text-(--ui-accent,#4f9cf9)' }),
+          `@${botHandle(entry.member, member)} asks:`
+        ]
+      }),
+      ...questions.map(q =>
+        jsxs('div', {
+          className: 'grid gap-1',
+          children: [
+            q.question
+              ? jsx('div', { className: 'text-xs whitespace-pre-wrap', children: q.question })
+              : null,
+            q.choices.length
+              ? jsx('div', {
+                  className: 'flex flex-wrap gap-1',
+                  children: q.choices.map(choice => {
+                    const chosen = (picked[q.qid] || []).includes(choice)
+
+                    return jsx(Button, {
+                      size: 'sm',
+                      variant: chosen ? 'default' : 'secondary',
+                      className: 'h-6 px-2 text-[0.7rem]',
+                      onClick: () => {
+                        setDrafts(prev => ({ ...prev, [q.qid]: '' }))
+                        setPicked(prev => {
+                          const current = prev[q.qid] || []
+                          const next = q.multiSelect
+                            ? chosen
+                              ? current.filter(c => c !== choice)
+                              : [...current, choice]
+                            : chosen
+                              ? []
+                              : [choice]
+
+                          return { ...prev, [q.qid]: next }
+                        })
+                      },
+                      children: choice
+                    }, `choice:${q.qid}:${choice}`)
+                  })
+                })
+              : null,
+            jsx(Input, {
+              'aria-label': `Answer @${entry.member}`,
+              placeholder: q.choices.length ? 'Or type your own answer…' : 'Type your answer…',
+              value: drafts[q.qid] || '',
+              onChange: event => {
+                const value = event.target.value
+                setPicked(prev => ({ ...prev, [q.qid]: [] }))
+                setDrafts(prev => ({ ...prev, [q.qid]: value }))
+              },
+              onKeyDown: event => {
+                if (event.key === 'Enter' && questions.length === 1) {
+                  event.preventDefault()
+                  void submit()
+                }
+              },
+              className: 'h-7 text-xs'
+            }, `input:${q.qid}`)
+          ]
+        }, `q:${q.qid}`)
+      ),
+      jsx('div', {
+        className: 'flex justify-end',
+        children: jsx(Button, {
+          size: 'sm',
+          disabled: sending || !allAnswered || !member,
+          onClick: () => void submit(),
+          children: sending ? 'Sending…' : 'Answer'
+        })
+      })
+    ]
+  })
+}
+
 function GroupChatWorkspace({ group, members, onBack }) {
   const rooms = useValue($groupChats)
   const allMeta = useValue($botMeta)
@@ -8838,6 +9111,11 @@ function GroupChatWorkspace({ group, members, onBack }) {
   const [activityOpen, setActivityOpen] = useState(false)
   // Subscribe: activity rows re-render as turn events land.
   useValue($groupActivity)
+  // Pending member questions for THIS room (#90694), oldest first.
+  const clarifyAll = useValue($groupClarify)
+  const roomClarifies = Object.values(clarifyAll || {})
+    .filter(entry => entry?.group === group)
+    .sort((a, b) => (a.at || 0) - (b.at || 0))
 
   const header = jsxs('div', {
     className: 'flex items-center gap-2 px-2.5 pt-2.5 pb-2',
@@ -9358,12 +9636,17 @@ function GroupChatWorkspace({ group, members, onBack }) {
                     children: 'Say something — every bot in this group hears the room.'
                   }, 'empty')
                 ]),
+            ...roomClarifies.map(entry =>
+              jsx(GroupClarifyCard, { entry, members }, `clarify:${entry.memberKey}:${entry.requestId}`)
+            ),
             room.running
               ? jsx('div', {
                   className: 'px-2 py-1 text-[0.7rem] italic text-(--ui-text-quaternary)',
-                  children: room.turn
-                    ? `${groupSpeakerLabel(room.turn)} is thinking…`
-                    : 'The room is working…'
+                  children: roomClarifies.length
+                    ? 'Waiting for your answer…'
+                    : room.turn
+                      ? `${groupSpeakerLabel(room.turn)} is thinking…`
+                      : 'The room is working…'
                 }, 'working')
               : null
           ]

@@ -14,6 +14,7 @@ Used by hermes_cli/skills_hub.py for CLI commands and the /skills slash command.
 """
 
 import hashlib
+import io
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ import re
 import shutil
 import stat
 import subprocess
+import tarfile
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -255,16 +257,11 @@ def _git_checkout_optional_identity(path: Path, repo_root: Path) -> str:
             timeout=10,
         ).stdout
         ignored_paths = [
-            Path(raw.decode("utf-8", errors="surrogateescape"))
+            PurePosixPath(raw.decode("utf-8", errors="surrogateescape"))
             for raw in ignored_untracked.split(b"\0")
             if raw
         ]
-        if any(
-            not path.name.startswith(".")
-            and "__pycache__" not in path.parts
-            and path.suffix != ".pyc"
-            for path in ignored_paths
-        ):
+        if any(_optional_bundle_file_is_included(path) for path in ignored_paths):
             return ""
         remote_output = subprocess.run(
             ["git", "-C", str(repo_root), "remote", "-v"],
@@ -347,7 +344,10 @@ def optional_skills_root_identity(path: Path) -> str:
     nix_identity = _nix_store_optional_identity(path)
     if nix_identity:
         return nix_identity
-    repo_root = Path(__file__).parent.parent
+    try:
+        repo_root = path.resolve().parent
+    except OSError:
+        return ""
     return _git_checkout_optional_identity(path, repo_root)
 
 
@@ -360,6 +360,72 @@ def optional_skills_root_is_authoritative(path: Path) -> bool:
     shipped Nix tree is bound to an immutable, content-addressed store item.
     """
     return bool(optional_skills_root_identity(path))
+
+
+def _optional_bundle_file_is_included(path: PurePosixPath) -> bool:
+    return (
+        bool(path.parts)
+        and not path.name.startswith(".")
+        and "__pycache__" not in path.parts
+        and path.suffix != ".pyc"
+    )
+
+
+def _git_optional_skill_files(
+    repo_root: Path,
+    skill_rel: str,
+    origin_identity: str,
+) -> Optional[Dict[str, Union[str, bytes]]]:
+    """Read an official skill from the immutable Git commit, not its worktree."""
+    match = re.fullmatch(
+        r"git:NousResearch/hermes-agent@([0-9a-f]{40})",
+        origin_identity,
+    )
+    if not match:
+        return None
+    try:
+        safe_rel = _normalize_bundle_path(
+            skill_rel,
+            field_name="optional skill path",
+            allow_nested=True,
+        )
+        prefix = f"optional-skills/{safe_rel}"
+        archive = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "archive",
+                "--format=tar",
+                match.group(1),
+                "--",
+                prefix,
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        ).stdout
+        if len(archive) > 64 * 1024 * 1024:
+            return None
+        files: Dict[str, Union[str, bytes]] = {}
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+            for member in tar.getmembers():
+                name = member.name.rstrip("/")
+                if name == prefix or member.isdir():
+                    continue
+                if not name.startswith(f"{prefix}/") or not member.isfile():
+                    return None
+                rel_path = _validate_bundle_rel_path(name[len(prefix) + 1 :])
+                posix_path = PurePosixPath(rel_path)
+                if not _optional_bundle_file_is_included(posix_path):
+                    continue
+                extracted = tar.extractfile(member)
+                if extracted is None:
+                    return None
+                files[rel_path] = extracted.read()
+        return files or None
+    except (OSError, subprocess.SubprocessError, tarfile.TarError, ValueError):
+        return None
 
 
 _ALLOWED_SUPPORT_DIRS = frozenset({"references", "templates", "scripts", "assets", "examples"})
@@ -3659,39 +3725,45 @@ class OptionalSkillSource(SkillSource):
             skill_dir = resolved
 
         origin_identity_before = optional_skills_root_identity(self._optional_dir)
-        files: Dict[str, Union[str, bytes]] = {}
-        for f in skill_dir.rglob("*"):
-            if (
-                f.is_file()
-                and not f.name.startswith(".")
-                and "__pycache__" not in f.parts
-                and f.suffix != ".pyc"
-            ):
-                rel_path = str(f.relative_to(skill_dir))
-                try:
-                    files[rel_path] = f.read_bytes()
-                except OSError:
-                    continue
+        skill_rel = skill_dir.resolve().relative_to(optional_root).as_posix()
+        if origin_identity_before.startswith("git:NousResearch/hermes-agent@"):
+            files = _git_optional_skill_files(
+                optional_root.parent,
+                skill_rel,
+                origin_identity_before,
+            )
+            if files is None:
+                return None
+            origin_identity = origin_identity_before
+        else:
+            files = {}
+            for f in skill_dir.rglob("*"):
+                rel_path = PurePosixPath(f.relative_to(skill_dir).as_posix())
+                if f.is_file() and _optional_bundle_file_is_included(rel_path):
+                    try:
+                        files[rel_path.as_posix()] = f.read_bytes()
+                    except OSError:
+                        continue
 
-        if not files:
-            return None
+            if not files:
+                return None
+
+            origin_identity_after = optional_skills_root_identity(self._optional_dir)
+            origin_identity = (
+                origin_identity_after
+                if origin_identity_before
+                and origin_identity_before == origin_identity_after
+                else ""
+            )
 
         # Determine category from directory structure
         name = skill_dir.name
-
-        origin_identity_after = optional_skills_root_identity(self._optional_dir)
-        origin_identity = (
-            origin_identity_after
-            if origin_identity_before
-            and origin_identity_before == origin_identity_after
-            else ""
-        )
         origin_verified = bool(origin_identity)
         return SkillBundle(
             name=name,
             files=files,
             source="official",
-            identifier=f"official/{skill_dir.resolve().relative_to(self._optional_dir.resolve()).as_posix()}",
+            identifier=f"official/{skill_rel}",
             trust_level="builtin" if origin_verified else "community",
             origin_verified=origin_verified,
             origin_identity=origin_identity,

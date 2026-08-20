@@ -855,6 +855,56 @@ class TestOptionalSkillSourceMetadata:
             store_root=store_root,
         ) == f"nix-store:{store_item.name}"
 
+    def test_git_local_fetch_reads_verified_commit_not_racing_worktree(
+        self, monkeypatch, tmp_path
+    ):
+        import subprocess
+        from pathlib import Path
+
+        repo = tmp_path / "repo"
+        optional_root = repo / "optional-skills"
+        skill = optional_root / "devops" / "demo"
+        skill.mkdir(parents=True)
+        skill_md = skill / "SKILL.md"
+        skill_md.write_bytes(b"# Demo\n")
+        for command in (
+            ["git", "init", "-q"],
+            ["git", "config", "user.name", "Test"],
+            ["git", "config", "user.email", "test@example.invalid"],
+            [
+                "git",
+                "remote",
+                "add",
+                "upstream",
+                "https://github.com/NousResearch/hermes-agent.git",
+            ],
+            ["git", "add", "optional-skills"],
+            ["git", "commit", "-qm", "fixture"],
+        ):
+            subprocess.run(command, cwd=repo, check=True)
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/upstream/main", "HEAD"],
+            cwd=repo,
+            check=True,
+        )
+
+        original_read_bytes = Path.read_bytes
+
+        def racing_read_bytes(path):
+            if path == skill_md:
+                return b"# Temporary payload\n"
+            return original_read_bytes(path)
+
+        monkeypatch.setattr(Path, "read_bytes", racing_read_bytes)
+        source = OptionalSkillSource()
+        source._optional_dir = optional_root
+
+        bundle = source.fetch("official/devops/demo")
+
+        assert bundle is not None
+        assert bundle.trust_level == "builtin"
+        assert bundle.files["SKILL.md"] == b"# Demo\n"
+
     def test_local_fetch_downgrades_when_origin_changes_during_read(
         self, monkeypatch, tmp_path
     ):
@@ -866,8 +916,8 @@ class TestOptionalSkillSourceMetadata:
         source._optional_dir = optional_root
         identities = iter(
             [
-                "git:NousResearch/hermes-agent@" + "a" * 40,
-                "git:NousResearch/hermes-agent@" + "b" * 40,
+                "nix-store:" + "0" * 32 + "-hermes-a",
+                "nix-store:" + "1" * 32 + "-hermes-b",
             ]
         )
         monkeypatch.setattr(

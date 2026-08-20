@@ -1611,6 +1611,20 @@ def _stash_apply_failed_only_on_existing_untracked(stderr: str) -> bool:
             return False
     return saw_untracked_error
 
+def _park_stashed_changes(stash_ref: str) -> None:
+    """Leave a pre-update autostash parked instead of re-applying it.
+
+    Used by ``hermes update --keep-stash`` (the desktop updater's mode): the
+    stash made the update possible on a dirty tree, but local source edits
+    must never be silently re-applied onto the updated code. Nothing is
+    lost — the entry stays in ``git stash`` with printed recovery guidance.
+    """
+    print()
+    print("ℹ️  Local changes were stashed before updating and were NOT re-applied (--keep-stash).")
+    print(f"  Stash ref: {stash_ref}")
+    print(f"  Restore manually with: git stash apply {stash_ref}")
+
+
 def _restore_stashed_changes(
     git_cmd: list[str],
     cwd: Path,
@@ -4828,6 +4842,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else None
     )
     assume_yes = bool(getattr(args, "yes", False))
+    # --keep-stash (desktop updater): stash local changes so the update can
+    # proceed, but never re-apply them afterward — they stay parked in git
+    # stash. Only applies when an update actually landed; abort/no-op paths
+    # still restore, since the tree they restore onto is unchanged.
+    keep_stash = bool(getattr(args, "keep_stash", False))
 
     # Whether this update is running without a human at the keyboard.
     # Interactive terminal updates always stash-and-ask (unchanged behavior);
@@ -5508,6 +5527,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         _m().PROJECT_ROOT,
                         auto_stash_ref,
                     )
+                elif keep_stash:
+                    # --keep-stash (desktop updater): the update landed; leave
+                    # local edits parked in the stash instead of silently
+                    # re-applying them onto the updated code.
+                    _m()._park_stashed_changes(auto_stash_ref)
                 else:
                     _m()._restore_stashed_changes(
                         git_cmd,

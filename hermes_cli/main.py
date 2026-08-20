@@ -4870,6 +4870,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_defer_update_for_self_lock",
         "_discard_lockfile_churn",
         "_discard_stashed_changes",
+        "_park_stashed_changes",
         "_ensure_acp_launcher",
         "_ensure_fhs_path_guard",
         "_ensure_uv_for_termux",

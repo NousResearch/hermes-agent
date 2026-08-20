@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 from pathlib import Path
@@ -32,9 +33,14 @@ import pytest
 
 
 # Both tests share the same handoff file: the leaker writes here, the
-# verifier reads here. We park it in $TMPDIR with a unique-per-run name
-# so concurrent invocations of the suite don't clobber each other.
-_HANDOFF_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "hermes-isolation-probe"
+# verifier reads here. We park it in the platform temp dir with a
+# unique-per-run name so concurrent invocations of the suite don't clobber
+# each other. gettempdir() still honours $TMPDIR first, so POSIX behaviour is
+# unchanged; on Windows TMPDIR is normally unset and the old "/tmp" fallback
+# resolved to a non-existent \tmp on the current drive, raising here at import
+# time — before the skipif below could be evaluated — which aborts collection
+# for the entire suite.
+_HANDOFF_DIR = Path(tempfile.gettempdir()) / "hermes-isolation-probe"
 _HANDOFF_DIR.mkdir(exist_ok=True)
 
 

@@ -720,8 +720,10 @@ The Microsoft Teams platform adapter (Bot Framework / Azure AD), distinct from t
 | `TEAMS_TENANT_ID` | Azure AD tenant ID hosting the bot application. |
 | `TEAMS_HOST` | Webhook bind host (default: unset → dual-stack, all interfaces IPv4+IPv6). |
 | `TEAMS_PORT` | Webhook listen port (Bot Framework default: `3978`). |
-| `TEAMS_ALLOWED_USERS` | Comma-separated Teams user IDs / UPNs allowed to talk to the bot. |
+| `TEAMS_ALLOWED_USERS` | Comma-separated Teams AAD object IDs allowed to talk to the bot. UPNs are not matched — the adapter identifies senders by `aad_object_id`, never by UPN/email. |
 | `TEAMS_ALLOW_ALL_USERS` | Allow any Teams user to trigger the bot (dev only). |
+| `TEAMS_ALLOWED_CHANNELS` | Comma-separated channel/team IDs the bot may respond in (empty: unrestricted, but still gated by normal user authorization). `*` allows every channel and bypasses normal Hermes user authorization entirely — not the same as leaving this unset. Equivalent to `teams.allowed_channels` in `config.yaml`. |
+| `TEAMS_REQUIRE_MENTION` | Require an explicit @mention in channel messages (default: `true`). Equivalent to `teams.require_mention` in `config.yaml`. |
 | `TEAMS_HOME_CHANNEL` | Default chat/channel ID for cron / notification delivery. |
 | `TEAMS_HOME_CHANNEL_NAME` | Display name for the Teams home channel. |
 

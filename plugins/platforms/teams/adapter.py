@@ -19,6 +19,15 @@ Configuration in config.yaml:
           client_secret: "your-secret"      # or TEAMS_CLIENT_SECRET env var
           tenant_id: "your-tenant-id"       # or TEAMS_TENANT_ID env var
           port: 3978                        # or TEAMS_PORT env var
+
+Channel access control (optional; empty/unset means unrestricted, exactly as
+before these keys existed):
+        allowed_channels:                   # or TEAMS_ALLOWED_CHANNELS (CSV)
+          - "19:abc123@thread.tacv2"        # a channel's conversation id
+          - "19:def456@thread.tacv2"        # channelData.channel.id / .team.id also match
+        require_mention: true               # or TEAMS_REQUIRE_MENTION (default: true)
+    Only conversationType == "channel" is gated by allowed_channels — DMs stay
+    governed by TEAMS_ALLOWED_USERS and ad-hoc group chats are unaffected.
 """
 
 from __future__ import annotations
@@ -149,6 +158,111 @@ def _coerce_port(value: Any, *, default: int = _DEFAULT_PORT) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _scoped_gate_env(name: str, default: str = "") -> str:
+    """Read a TEAMS_*/GATEWAY_* authorization gate env var per-profile.
+
+    Under gateway.multiplex_profiles the process env is first-writer-wins
+    (the YAML→env bridge in ``_apply_yaml_config``), so a raw ``os.getenv``
+    can return ANOTHER profile's allowlist (issue #72348, mirrors the
+    identical Telegram/DingTalk helper). Reads the active profile's secret
+    scope when installed; falls back to ``os.getenv`` outside multiplex —
+    identical single-profile behavior.
+    """
+    try:
+        from gateway.authz_mixin import _platform_gate_env
+
+        return _platform_gate_env(name, default)
+    except Exception:
+        return (os.getenv(name) or default).strip()
+
+
+def _coerce_id_set(raw: Any) -> "set[str]":
+    """Parse a channel-id allowlist from a YAML list or a CSV string.
+
+    Compared exactly (only whitespace-trimmed) — deliberately NOT
+    case-folded. Teams/Bot Framework conversation, channel, and team ids are
+    opaque platform-issued strings (``19:<encoded-data>@thread.tacv2``) with
+    no documented case-insensitive contract; the encoded segment can be
+    base64-shaped, where case carries meaning. Folding case could collapse
+    two genuinely distinct ids and let a message from an unintended channel
+    match the allowlist, widening it rather than narrowing it — the wrong
+    direction to guess for a security boundary. An operator must copy the id
+    exactly, matching the precedent of Telegram's own ``allowed_chats``
+    (``plugins/platforms/telegram/adapter.py``), which also compares exactly.
+    """
+    if raw is None:
+        return set()
+    if isinstance(raw, list):
+        return {str(part).strip() for part in raw if str(part).strip()}
+    return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+
+def _base_conversation_id(conv_id: str) -> str:
+    """Strip the ``;messageid=<id>`` suffix Teams appends to channel replies.
+
+    A reply inside a channel thread carries the parent channel's
+    ``conversation.id`` plus a ``;messageid=<rootActivityId>`` suffix — same
+    channel, different string. Without stripping this, an allowlist of base
+    channel ids would silently stop matching on every threaded reply. Only
+    whitespace is trimmed beyond that — see ``_coerce_id_set`` for why case
+    is never folded.
+    """
+    return conv_id.split(";", 1)[0].strip()
+
+
+def _channel_data_ids(activity: Any) -> "set[str]":
+    """Pull ``channelData.channel.id`` / ``channelData.team.id`` off an activity.
+
+    Tolerates both an SDK object graph (attribute access) and a raw dict, the
+    same defensive dict-or-object pattern used for attachment content in
+    ``TeamsAdapter._on_message``. Lets an operator allowlist a channel by
+    channel id or by team id (allowing every channel in that team) in
+    addition to the raw conversation id.
+    """
+    channel_data = getattr(activity, "channel_data", None)
+    if channel_data is None and isinstance(activity, dict):
+        channel_data = activity.get("channelData")
+    if not isinstance(channel_data, dict):
+        channel_data = getattr(channel_data, "__dict__", None)
+    if not isinstance(channel_data, dict):
+        return set()
+
+    ids: set[str] = set()
+    for key in ("channel", "team"):
+        node = channel_data.get(key)
+        if not isinstance(node, dict):
+            node = getattr(node, "__dict__", None)
+        if not isinstance(node, dict):
+            continue
+        node_id = node.get("id")
+        if node_id:
+            ids.add(str(node_id).strip())
+    return ids
+
+
+def _apply_yaml_config(yaml_cfg: dict, teams_cfg: dict) -> "dict | None":
+    """Translate config.yaml ``teams:`` keys into ``PlatformConfig.extra``.
+
+    Implements the ``apply_yaml_config_fn`` contract
+    (``gateway/platform_registry.py``). Unlike the Telegram/DingTalk/Matrix
+    siblings, which bridge into a process-global ``os.environ`` var, this
+    returns the seeded dict directly: ``extra.update(seeded)``
+    (``gateway/config.py``) writes straight into *this profile's own*
+    ``PlatformConfig.extra``. Bridging through ``os.environ`` instead would
+    reproduce the exact multiplex bug ``_platform_gate_env`` documents
+    (#72348): under multiplexing, a secondary profile's secret scope is
+    authoritative and does NOT fall through to a process-global env write, so
+    a YAML-configured allowlist would silently vanish for that profile —
+    ``_teams_allowed_channels()`` would see an empty set and fail OPEN
+    (every channel admitted). Returning the dict sidesteps env entirely.
+    """
+    del yaml_cfg  # unused — no cross-platform lookups needed for this key
+    allowed_channels = teams_cfg.get("allowed_channels")
+    if allowed_channels is None:
+        return None
+    return {"allowed_channels": allowed_channels}
 
 
 class _StaticAccessTokenProvider:
@@ -775,6 +889,149 @@ class TeamsAdapter(BasePlatformAdapter):
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
 
+    # -- Channel access control -----------------------------------------------
+
+    def _teams_allowed_channels(self) -> "set[str]":
+        """Return the whitelist of Teams channel/team ids this bot answers in.
+
+        Empty means unrestricted — fully backward compatible with every
+        existing deployment (mirrors Telegram's ``allowed_chats``). When
+        non-empty, a channel message whose base conversation id,
+        ``channelData.channel.id``, and ``channelData.team.id`` all miss the
+        set is dropped before ``handle_message()`` ever sees it. DMs and
+        ad-hoc group chats are never filtered by this list — only
+        ``conversationType == "channel"`` is in scope
+        (``_should_process_message``).
+
+        ``config.extra`` (config.yaml) is checked before the env var
+        deliberately, not by oversight: this matches Telegram's own
+        ``_telegram_allowed_chats`` and this adapter's own pre-existing
+        ``client_id``/``client_secret``/``tenant_id`` handling. config.yaml
+        is the richer, version-controlled surface; the env var is the
+        fallback for a key not yet present in config.yaml, not a
+        higher-priority override once it is (see
+        ``TestTeamsConfigPrecedence`` in ``tests/gateway/test_teams.py``).
+        """
+        extra = self.config.extra or {}
+        raw = extra.get("allowed_channels")
+        if raw is None:
+            raw = _scoped_gate_env("TEAMS_ALLOWED_CHANNELS")
+        return _coerce_id_set(raw)
+
+    def _teams_require_mention(self) -> bool:
+        """Whether ANY channel message must carry an explicit @mention.
+
+        Applies to every channel — allowlisted or not (see
+        ``_should_process_message``). Defaults to True. For a standard
+        tenant this is a no-op — Teams only delivers mentioned channel
+        activities to a bot in the first place — but it closes the gap when
+        a tenant grants the bot broader ``ChannelMessage.Read.Group`` RSC
+        permission and starts delivering every channel message regardless of
+        mention.
+        """
+        extra = self.config.extra or {}
+        configured = extra.get("require_mention")
+        if configured is None:
+            env_val = _scoped_gate_env("TEAMS_REQUIRE_MENTION")
+            configured = env_val if env_val else None
+        if configured is None:
+            return True
+        return _parse_bool(configured, default=True)
+
+    def _activity_mentions_bot(self, activity: Any) -> bool:
+        """Whether *activity* explicitly @mentions the recipient bot.
+
+        Compares against ``activity.recipient.id`` — the addressee Teams
+        itself stamped on this specific activity — NOT ``self._app.id`` (the
+        OAuth client id used for the self-message filter above). The two can
+        differ: a channel can address the bot by a scoped recipient id
+        distinct from the Bot Framework app registration's client id, so
+        comparing against ``self._app.id`` can silently drop a genuinely
+        mentioned message. Mirrors the SDK's own
+        ``Activity.is_recipient_mentioned()``
+        (``microsoft_teams.api.activities.message.message``), reimplemented
+        here (rather than called directly) so a bare mock activity in tests
+        behaves predictably instead of auto-vivifying a truthy callable.
+        """
+        recipient = getattr(activity, "recipient", None)
+        recipient_id = getattr(recipient, "id", None)
+        if recipient_id is None and isinstance(recipient, dict):
+            recipient_id = recipient.get("id")
+        if not recipient_id:
+            return False
+        entities = getattr(activity, "entities", None)
+        if not isinstance(entities, (list, tuple)):
+            entities = []
+        for entity in entities:
+            entity_type = getattr(entity, "type", None)
+            if entity_type is None and isinstance(entity, dict):
+                entity_type = entity.get("type")
+            if entity_type != "mention":
+                continue
+            mentioned = getattr(entity, "mentioned", None)
+            if mentioned is None and isinstance(entity, dict):
+                mentioned = entity.get("mentioned")
+            mentioned_id = getattr(mentioned, "id", None)
+            if mentioned_id is None and isinstance(mentioned, dict):
+                mentioned_id = mentioned.get("id")
+            if mentioned_id and str(mentioned_id) == str(recipient_id):
+                return True
+        return False
+
+    def _should_process_message(self, activity: Any, chat_type: str) -> "tuple[bool, bool]":
+        """Decide whether to dispatch *activity*, and whether it was channel-authorized.
+
+        Returns ``(process, channel_authorized)``. Only ``chat_type ==
+        "channel"`` is gated here — DMs stay governed by ``TEAMS_ALLOWED_USERS``
+        and ad-hoc group chats are unchanged. ``channel_authorized`` becomes
+        ``SessionSource.role_authorized`` so the gateway's central
+        ``_is_user_authorized`` (``gateway/authz_mixin.py``) admits the sender
+        without requiring them to also appear in ``TEAMS_ALLOWED_USERS`` —
+        mirrors the precedent Discord sets after it verifies
+        ``DISCORD_ALLOWED_ROLES`` itself. Only a matched allowlist entry
+        grants it — never the mention check alone.
+
+        The mention check (``_teams_require_mention`` / ``_activity_mentions_bot``)
+        applies to every channel message, WITH or WITHOUT an
+        ``allowed_channels`` restriction — it is not a bonus that only
+        activates once an allowlist is configured. Teams itself normally
+        only delivers a mentioned channel activity to a bot in the first
+        place, so for a standard tenant this is a no-op; it exists to close
+        the gap for a tenant that grants the bot broader
+        ``ChannelMessage.Read.Group`` RSC permission and starts delivering
+        every channel message regardless of mention — a gap that exists
+        for every Teams channel, allowlisted or not.
+
+        An empty allowlist leaves the CHANNEL-SCOPING behavior byte-identical
+        to before this method existed (every channel is in scope, none
+        excluded) — only the mention requirement is new.
+        """
+        if chat_type != "channel":
+            return True, False
+
+        channel_authorized = False
+        allowed_channels = self._teams_allowed_channels()
+        if allowed_channels:
+            if "*" in allowed_channels:
+                channel_authorized = True
+            else:
+                conv = getattr(activity, "conversation", None)
+                conv_id = _base_conversation_id(str(getattr(conv, "id", "") or ""))
+                candidate_ids = {conv_id} | _channel_data_ids(activity)
+                if not (candidate_ids & allowed_channels):
+                    logger.info(
+                        "[teams] ignoring channel message: conversation not in "
+                        "TEAMS_ALLOWED_CHANNELS"
+                    )
+                    return False, False
+                channel_authorized = True
+
+        if self._teams_require_mention() and not self._activity_mentions_bot(activity):
+            logger.info("[teams] ignoring channel message: bot not @mentioned")
+            return False, False
+
+        return True, channel_authorized
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Defensive re-check: create_adapter() already ran the installer
         # (ensure_deps_fn) if deps were missing, but connect() can also be
@@ -933,8 +1190,23 @@ class TeamsAdapter(BasePlatformAdapter):
             chat_type = "group"
         elif conv_type == "channel":
             chat_type = "channel"
+        elif _channel_data_ids(activity):
+            # conversationType is missing/unrecognized but channelData names a
+            # channel or team — treat as a channel rather than falling into
+            # the DM default below, so the channel allowlist below still
+            # applies instead of silently skipping it (hardening; a standard
+            # Bot Framework activity always sets conversationType).
+            chat_type = "channel"
         else:
             chat_type = "dm"
+
+        # Channel access control: gate on the configured channel allowlist and
+        # (when one is set) require an explicit @mention. No-op for DMs and
+        # group chats, and a no-op for channels too when no allowlist is
+        # configured — see _should_process_message for the exact matrix.
+        process, channel_authorized = self._should_process_message(activity, chat_type)
+        if not process:
+            return
 
         # Build source
         from_account = activity.from_
@@ -948,6 +1220,7 @@ class TeamsAdapter(BasePlatformAdapter):
             user_id=str(user_id),
             user_name=user_name,
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
+            role_authorized=channel_authorized,
         )
 
         # Handle attachments (images, documents, video, audio)
@@ -1522,6 +1795,10 @@ def register(ctx) -> None:
         # Auth env vars for _is_user_authorized() integration
         allowed_users_env="TEAMS_ALLOWED_USERS",
         allow_all_env="TEAMS_ALLOW_ALL_USERS",
+        # config.yaml `teams: allowed_channels: [...]` → PlatformConfig.extra.
+        # `require_mention` needs no hook here — the generic shared-key loop
+        # (gateway/config.py) already bridges it into extra for every platform.
+        apply_yaml_config_fn=_apply_yaml_config,
         # Teams supports up to ~28 KB per message
         max_message_length=28000,
         # Display

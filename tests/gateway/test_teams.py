@@ -1,6 +1,7 @@
 """Tests for the Microsoft Teams platform adapter plugin."""
 
 import json
+import os
 import sys
 import types
 from types import SimpleNamespace
@@ -494,6 +495,554 @@ class TestTeamsMessageHandling:
 
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "group"
+
+
+# ---------------------------------------------------------------------------
+# Tests: chat-type classification (channel + channelData hardening)
+# ---------------------------------------------------------------------------
+
+class TestTeamsChannelClassification:
+    def _make_activity(
+        self,
+        *,
+        conversation_type="",
+        conversation_id="19:abc@thread.tacv2",
+        channel_data=None,
+    ):
+        activity = MagicMock()
+        activity.text = "Hello"
+        activity.id = "activity-001"
+        activity.from_ = MagicMock()
+        activity.from_.id = "user-123"
+        activity.from_.aad_object_id = "aad-456"
+        activity.from_.name = "Test User"
+        activity.conversation = MagicMock()
+        activity.conversation.id = conversation_id
+        activity.conversation.conversation_type = conversation_type
+        activity.conversation.name = "Test Channel"
+        activity.conversation.tenant_id = "tenant-789"
+        activity.attachments = []
+        activity.entities = []
+        if channel_data is not None:
+            activity.channel_data = channel_data
+        else:
+            del activity.channel_data  # MagicMock: make getattr(..., None) really return None
+        return activity
+
+    def _make_ctx(self, activity):
+        ctx = MagicMock()
+        ctx.activity = activity
+        return ctx
+
+    def _make_adapter(self):
+        # require_mention=False: this class tests conversationType ->
+        # chat_type classification only. Mention-gating is an independent
+        # axis (see TestTeamsRequireMention) and would otherwise drop these
+        # activities before chat_type is ever observable, since none of them
+        # carry a mention entity.
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+            require_mention=False,
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    @pytest.mark.anyio
+    async def test_conversation_type_channel_maps_to_channel(self):
+        """conversationType == "channel" was previously untested end to end."""
+        adapter = self._make_adapter()
+        activity = self._make_activity(conversation_type="channel")
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.source.chat_type == "channel"
+
+    @pytest.mark.anyio
+    async def test_missing_conversation_type_with_channel_data_is_channel(self):
+        """Hardening: a missing/unrecognized conversationType with channelData
+        naming a channel/team must not fall through to the DM default, or the
+        channel allowlist below would never see it."""
+        adapter = self._make_adapter()
+        activity = self._make_activity(
+            conversation_type="",
+            channel_data={"channel": {"id": "19:abc@thread.tacv2"}},
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.source.chat_type == "channel"
+
+    @pytest.mark.anyio
+    async def test_missing_conversation_type_without_channel_data_is_dm(self):
+        """Preserves the pre-existing fail-toward-DM default when there is no
+        channelData signal to classify by either."""
+        adapter = self._make_adapter()
+        activity = self._make_activity(conversation_type="", channel_data=None)
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.source.chat_type == "dm"
+
+
+# ---------------------------------------------------------------------------
+# Tests: channel allowlist (TEAMS_ALLOWED_CHANNELS / allowed_channels)
+# ---------------------------------------------------------------------------
+
+class TestTeamsChannelAllowlist:
+    def _make_activity(
+        self,
+        *,
+        conversation_id="19:abc@thread.tacv2",
+        channel_data=None,
+        mentions_bot=True,
+        bot_id="bot-id",
+    ):
+        activity = MagicMock()
+        activity.text = "<at>Hermes</at> hello"
+        activity.id = "activity-001"
+        activity.from_ = MagicMock()
+        activity.from_.id = "user-123"
+        activity.from_.aad_object_id = "aad-456"
+        activity.from_.name = "Test User"
+        activity.conversation = MagicMock()
+        activity.conversation.id = conversation_id
+        activity.conversation.conversation_type = "channel"
+        activity.conversation.name = "Test Channel"
+        activity.conversation.tenant_id = "tenant-789"
+        activity.attachments = []
+        if channel_data is not None:
+            activity.channel_data = channel_data
+        else:
+            del activity.channel_data
+        activity.recipient = MagicMock()
+        activity.recipient.id = bot_id
+        mention_entity = MagicMock()
+        mention_entity.type = "mention"
+        mention_entity.mentioned = MagicMock()
+        mention_entity.mentioned.id = bot_id if mentions_bot else "someone-else"
+        activity.entities = [mention_entity]
+        return activity
+
+    def _make_ctx(self, activity):
+        ctx = MagicMock()
+        ctx.activity = activity
+        return ctx
+
+    def _make_adapter(self, **extra):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant", **extra,
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    @pytest.mark.anyio
+    async def test_empty_allowlist_is_unchanged_and_not_role_authorized(self):
+        """Empty allowed_channels leaves the CHANNEL-SCOPING behavior
+        byte-identical to before this feature existed -- no channel is
+        excluded, and role_authorized stays False (TEAMS_ALLOWED_USERS is
+        still what gates it). The mention requirement is a separate,
+        independent default (see TestTeamsRequireMention) -- this activity
+        is mentioned so it isolates the channel-scoping behavior alone."""
+        adapter = self._make_adapter()
+        activity = self._make_activity(mentions_bot=True)
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.source.role_authorized is False
+
+    @pytest.mark.anyio
+    async def test_channel_not_in_allowlist_is_dropped_silently(self):
+        adapter = self._make_adapter(allowed_channels=["19:other@thread.tacv2"])
+        activity = self._make_activity(conversation_id="19:abc@thread.tacv2")
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_channel_in_allowlist_dispatches_role_authorized(self):
+        adapter = self._make_adapter(allowed_channels=["19:abc@thread.tacv2"])
+        activity = self._make_activity(conversation_id="19:abc@thread.tacv2")
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.source.role_authorized is True
+
+    @pytest.mark.anyio
+    async def test_threaded_reply_still_matches_base_channel_id(self):
+        """A channel reply's conversation.id carries a ;messageid=<root>
+        suffix — the same channel, different string. Must still match."""
+        adapter = self._make_adapter(allowed_channels=["19:abc@thread.tacv2"])
+        activity = self._make_activity(
+            conversation_id="19:abc@thread.tacv2;messageid=1699999999999"
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_matches_by_channel_data_channel_id(self):
+        adapter = self._make_adapter(allowed_channels=["channel-xyz"])
+        activity = self._make_activity(
+            conversation_id="19:different@thread.tacv2",
+            channel_data={"channel": {"id": "channel-xyz"}},
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_matches_by_channel_data_team_id(self):
+        adapter = self._make_adapter(allowed_channels=["team-xyz"])
+        activity = self._make_activity(
+            conversation_id="19:different@thread.tacv2",
+            channel_data={"team": {"id": "team-xyz"}},
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_wildcard_allows_any_channel(self):
+        adapter = self._make_adapter(allowed_channels=["*"])
+        activity = self._make_activity(conversation_id="19:whatever@thread.tacv2")
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.source.role_authorized is True
+
+    @pytest.mark.anyio
+    async def test_allowlist_match_is_case_sensitive(self):
+        """Deliberately case-sensitive: Teams ids are opaque platform strings
+        with no documented case-insensitive contract, and folding case could
+        collapse two genuinely distinct ids -- widening the allowlist rather
+        than narrowing it. A differently-cased id must NOT match."""
+        adapter = self._make_adapter(allowed_channels=["19:ABC@Thread.Tacv2"])
+        activity = self._make_activity(conversation_id="19:abc@thread.tacv2")
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_allowlist_match_is_exact(self):
+        adapter = self._make_adapter(allowed_channels=["19:ABC@Thread.Tacv2"])
+        activity = self._make_activity(conversation_id="19:ABC@Thread.Tacv2")
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_dm_is_unaffected_by_channel_allowlist(self):
+        adapter = self._make_adapter(allowed_channels=["19:only-this-channel@thread.tacv2"])
+        activity = self._make_activity(conversation_id="19:some-dm-conversation")
+        activity.conversation.conversation_type = "personal"
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.source.chat_type == "dm"
+        assert event.source.role_authorized is False
+
+    @pytest.mark.anyio
+    async def test_group_chat_is_unaffected_by_channel_allowlist(self):
+        adapter = self._make_adapter(allowed_channels=["19:only-this-channel@thread.tacv2"])
+        activity = self._make_activity(conversation_id="19:some-group-chat")
+        activity.conversation.conversation_type = "groupChat"
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.source.chat_type == "group"
+        assert event.source.role_authorized is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: mention gate (require_mention / TEAMS_REQUIRE_MENTION)
+# ---------------------------------------------------------------------------
+
+class TestTeamsRequireMention:
+    def _make_activity(self, *, mentioned_id=None, recipient_id="recipient-id"):
+        activity = MagicMock()
+        activity.text = "hello"
+        activity.id = "activity-001"
+        activity.from_ = MagicMock()
+        activity.from_.id = "user-123"
+        activity.from_.aad_object_id = "aad-456"
+        activity.from_.name = "Test User"
+        activity.conversation = MagicMock()
+        activity.conversation.id = "19:abc@thread.tacv2"
+        activity.conversation.conversation_type = "channel"
+        activity.conversation.name = "Test Channel"
+        activity.conversation.tenant_id = "tenant-789"
+        activity.attachments = []
+        del activity.channel_data
+        activity.recipient = MagicMock()
+        activity.recipient.id = recipient_id
+        if mentioned_id is not None:
+            mention_entity = MagicMock()
+            mention_entity.type = "mention"
+            mention_entity.mentioned = MagicMock()
+            mention_entity.mentioned.id = mentioned_id
+            activity.entities = [mention_entity]
+        else:
+            activity.entities = []
+        return activity
+
+    def _make_ctx(self, activity):
+        ctx = MagicMock()
+        ctx.activity = activity
+        return ctx
+
+    def _make_adapter(self, **extra):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+            allowed_channels=["19:abc@thread.tacv2"], **extra,
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    @pytest.mark.anyio
+    async def test_mentioned_channel_message_dispatches(self):
+        adapter = self._make_adapter()
+        activity = self._make_activity(mentioned_id="recipient-id")
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_mention_matches_activity_recipient_not_oauth_client_id(self):
+        """Regression: an earlier version compared the mention entity against
+        self._app.id (the OAuth client id used for the self-message filter),
+        not activity.recipient.id (the addressee Teams actually stamped on
+        this activity, per the SDK's own is_recipient_mentioned()). The two
+        can differ -- a genuinely mentioned message must not be dropped just
+        because those ids don't match."""
+        adapter = self._make_adapter()
+        adapter._app.id = "oauth-client-id"  # deliberately NOT the recipient id
+        activity = self._make_activity(
+            recipient_id="channel-scoped-recipient-id",
+            mentioned_id="channel-scoped-recipient-id",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_unmentioned_channel_message_is_dropped_by_default(self):
+        adapter = self._make_adapter()
+        activity = self._make_activity(mentioned_id=None)
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_require_mention_false_lets_unmentioned_message_through(self):
+        adapter = self._make_adapter(require_mention=False)
+        activity = self._make_activity(mentioned_id=None)
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_mention_of_a_different_user_does_not_count(self):
+        adapter = self._make_adapter()
+        activity = self._make_activity(mentioned_id="someone-else")
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_dm_never_requires_a_mention(self):
+        adapter = self._make_adapter()
+        activity = self._make_activity(mentioned_id=None)
+        activity.conversation.conversation_type = "personal"
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_require_mention_applies_even_without_an_allowlist(self):
+        """require_mention is independent of allowed_channels -- it is not a
+        bonus that only activates once a channel allowlist is configured.
+        An unmentioned channel message must be dropped by default even when
+        TEAMS_ALLOWED_CHANNELS/allowed_channels is unset entirely, closing
+        the RSC-delivered-unmentioned-message gap for every Teams channel,
+        not just allowlisted ones."""
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(mentioned_id=None)
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Tests: config.yaml -> env bridging (apply_yaml_config_fn)
+# ---------------------------------------------------------------------------
+
+class TestTeamsYamlConfigBridge:
+    def test_seeds_allowed_channels_into_extra_from_list(self):
+        result = _teams_mod._apply_yaml_config(
+            {}, {"allowed_channels": ["19:abc@thread.tacv2", "19:def@thread.tacv2"]}
+        )
+        assert result == {"allowed_channels": ["19:abc@thread.tacv2", "19:def@thread.tacv2"]}
+
+    def test_seeds_allowed_channels_into_extra_from_csv_string(self):
+        result = _teams_mod._apply_yaml_config({}, {"allowed_channels": "19:abc@thread.tacv2"})
+        assert result == {"allowed_channels": "19:abc@thread.tacv2"}
+
+    def test_absent_key_is_a_no_op(self):
+        assert _teams_mod._apply_yaml_config({}, {}) is None
+
+    def test_does_not_touch_os_environ(self, monkeypatch):
+        """Regression: an earlier version bridged through a process-global env
+        var, which silently dropped a multiplexed secondary profile's
+        allowlist (_platform_gate_env treats its own scope as authoritative
+        and does not fall through to another profile's env write, #72348
+        mirror) -- letting every channel through unrestricted. Seeding
+        PlatformConfig.extra directly instead means this key must never touch
+        os.environ at all."""
+        monkeypatch.delenv("TEAMS_ALLOWED_CHANNELS", raising=False)
+        _teams_mod._apply_yaml_config({}, {"allowed_channels": ["19:abc@thread.tacv2"]})
+        assert "TEAMS_ALLOWED_CHANNELS" not in os.environ
+
+    def test_allowed_channels_survive_a_multiplexed_profile_scope(self, monkeypatch):
+        """Reproduces the exact failure class _platform_gate_env's docstring
+        warns about (#72348): under multiplexing, a secondary profile's own
+        secret scope is authoritative and does NOT fall through to a
+        process-global env write. Bridging allowed_channels through
+        os.environ (like the Telegram/DingTalk/Matrix siblings do) would
+        silently return an empty set there -- and an empty set means
+        UNRESTRICTED, not "deny all" (_teams_allowed_channels /
+        _should_process_message) -- admitting every channel. Seeding
+        PlatformConfig.extra directly must survive this scenario."""
+        from agent import secret_scope
+
+        seeded = _teams_mod._apply_yaml_config(
+            {}, {"allowed_channels": ["19:abc@thread.tacv2"]}
+        )
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant", **seeded,
+        ))
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        token = secret_scope.set_secret_scope({})  # this profile's scope: no such key
+        try:
+            assert adapter._teams_allowed_channels() == {"19:abc@thread.tacv2"}
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+    def test_real_config_loader_wires_allowed_channels_through_to_the_adapter(
+        self, tmp_path, monkeypatch
+    ):
+        """Exercises the actual wiring end to end, not just _apply_yaml_config
+        in isolation: the module's real register() -> PlatformEntry(
+        apply_yaml_config_fn=_apply_yaml_config) -> gateway/config.py's real
+        load_gateway_config() dispatch loop -> PlatformConfig.extra ->
+        _teams_allowed_channels(), surviving a multiplexed secret scope at
+        the end. Registering through register() itself (not a hand-built
+        PlatformEntry) means this test would fail if register() ever forgot
+        the apply_yaml_config_fn kwarg -- a prior version of this test built
+        the PlatformEntry directly and would have missed exactly that.
+        Mirrors the harness tests/gateway/test_platform_registry.py already
+        uses for the generic apply_yaml_config_fn contract.
+        """
+        from agent import secret_scope
+        from gateway.config import Platform, load_gateway_config
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        class _RealCtx:
+            """Forwards register_platform(...) into the real platform_registry,
+            building the same PlatformEntry the production PluginContext
+            would -- but without needing a full PluginContext/manifest."""
+
+            def register_platform(
+                self, name, label, adapter_factory, check_fn,
+                validate_config=None, required_env=None, install_hint="",
+                **entry_kwargs,
+            ):
+                entry_kwargs.setdefault("plugin_name", "teams-platform")
+                platform_registry.register(PlatformEntry(
+                    name=name, label=label, adapter_factory=adapter_factory,
+                    check_fn=check_fn, validate_config=validate_config,
+                    required_env=required_env or [], install_hint=install_hint,
+                    source="plugin", **entry_kwargs,
+                ))
+
+        _teams_mod.register(_RealCtx())
+        try:
+            hermes_home = tmp_path / ".hermes"
+            hermes_home.mkdir()
+            (hermes_home / "config.yaml").write_text(
+                'teams:\n  allowed_channels:\n    - "19:abc@thread.tacv2"\n',
+                encoding="utf-8",
+            )
+            monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+            config = load_gateway_config()
+            platform_cfg = config.platforms[Platform("teams")]
+            assert platform_cfg.extra["allowed_channels"] == ["19:abc@thread.tacv2"]
+
+            adapter = TeamsAdapter(platform_cfg)
+            monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+            token = secret_scope.set_secret_scope({})  # this profile's scope: no such key
+            try:
+                assert adapter._teams_allowed_channels() == {"19:abc@thread.tacv2"}
+            finally:
+                secret_scope.reset_secret_scope(token)
+        finally:
+            platform_registry.unregister("teams")
+
+
+# ---------------------------------------------------------------------------
+# Tests: config.yaml vs env precedence (explicit contract, not an accident)
+# ---------------------------------------------------------------------------
+
+class TestTeamsConfigPrecedence:
+    """config.yaml (PlatformConfig.extra) wins over the env var when both
+    are set for the same key. This is a DELIBERATE, precedented choice, not
+    an oversight: it matches Telegram's own channel/chat allowlist
+    (``_telegram_allowed_chats`` — ``plugins/platforms/telegram/adapter.py``
+    checks ``extra.get("allowed_chats")`` before ``TELEGRAM_ALLOWED_CHATS``),
+    DingTalk's own ``require_mention`` (``_dingtalk_require_mention`` —
+    ``plugins/platforms/dingtalk/adapter.py`` checks extra before
+    ``DINGTALK_REQUIRE_MENTION``), and this same Teams adapter's own
+    pre-existing ``client_id``/``client_secret``/``tenant_id`` handling
+    (``extra.get(...) or os.getenv(...)``). config.yaml is the richer,
+    version-controlled surface; env vars are the fallback for operators who
+    haven't migrated a given key to config.yaml yet -- not a
+    higher-priority override once a key IS in config.yaml.
+    """
+
+    def test_allowed_channels_extra_wins_over_conflicting_env(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOWED_CHANNELS", "19:from-env@thread.tacv2")
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+            allowed_channels=["19:from-extra@thread.tacv2"],
+        ))
+        assert adapter._teams_allowed_channels() == {"19:from-extra@thread.tacv2"}
+
+    def test_require_mention_extra_wins_over_conflicting_env(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_REQUIRE_MENTION", "true")
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+            require_mention=False,
+        ))
+        assert adapter._teams_require_mention() is False
 
 
 class TestTeamsAttachmentClassification:

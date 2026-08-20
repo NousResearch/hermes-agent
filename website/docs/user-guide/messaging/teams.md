@@ -16,11 +16,50 @@ Need meeting summaries from Microsoft Graph events rather than normal bot conver
 
 | Context | Behavior |
 |---------|----------|
-| **Personal chat (DM)** | Bot responds to every message. No @mention needed. |
-| **Group chat** | Bot only responds when @mentioned. |
-| **Channel** | Bot only responds when @mentioned. |
+| **Personal chat (DM)** | Bot responds to every message from an authorized user (`TEAMS_ALLOWED_USERS`, `TEAMS_ALLOW_ALL_USERS`, an approved pairing, or a global `GATEWAY_ALLOWED_USERS`/`GATEWAY_ALLOW_ALL_USERS` grant). No @mention needed. |
+| **Group chat** | Teams itself only delivers a group message to the bot once it's @mentioned — Hermes doesn't additionally enforce this. |
+| **Channel** | Bot only responds when @mentioned (Hermes enforces this directly — see below), and, if `allowed_channels` is configured, only in a listed channel. |
 
 Teams delivers @mentions as regular messages with `<at>BotName</at>` tags, which Hermes strips automatically before processing.
+
+### Restricting which channels the bot answers in
+
+By default the bot answers in any team channel it has been added to, as long as it's @mentioned and the sender passes normal user authorization (see the matrix below) — this is unchanged from before. Set `allowed_channels` in `~/.hermes/config.yaml` to restrict it to specific channels.
+
+```yaml
+platforms:
+  teams:
+    enabled: true
+    extra:
+      client_id: "your-client-id"
+      client_secret: "your-secret"
+      tenant_id: "your-tenant-id"
+    # A channel's conversation ID, its channelData.channel.id, or its
+    # channelData.team.id (which allows every channel in that team). Copy
+    # the id exactly — matching is case-sensitive, not case-folded.
+    # "*" instead of a list of ids allows every channel and bypasses normal
+    # Hermes user authorization entirely -- see the matrix below; it is not
+    # the same as leaving allowed_channels empty/unset, which still requires
+    # some applicable authorization grant (TEAMS_ALLOWED_USERS,
+    # TEAMS_ALLOW_ALL_USERS, an approved pairing, or a global grant).
+    allowed_channels:
+      - "19:abc123@thread.tacv2"
+      - "19:def456@thread.tacv2"
+```
+
+The exact authorization matrix for a channel message:
+
+| `allowed_channels` | Channel matches | Channel does NOT match |
+|---|---|---|
+| Empty / unset (default) | Sender still needs normal Hermes user authorization (`TEAMS_ALLOWED_USERS`, `TEAMS_ALLOW_ALL_USERS`, an approved pairing, or a global grant) — same as before this setting existed | n/a — no channel is excluded |
+| Specific channel/team ids | Anyone may interact by @mentioning the bot — being in the channel is the access signal, no further user authorization is consulted | Dropped silently before the message ever reaches the agent or any user authorization check |
+| `"*"` (every channel) | Anyone may interact by @mentioning the bot in ANY channel — bypasses normal Hermes user authorization entirely | n/a — every channel matches |
+
+So once a channel is listed (or `allowed_channels` is `"*"`), you don't need to also add every teammate in that channel to `TEAMS_ALLOWED_USERS`. Channel authorization only ever widens access to channels — it never affects DMs, which are still governed by the normal Hermes user-authorization chain regardless. When `allowed_channels` names specific ids, a channel that isn't one of them is dropped outright — no user-authorization check is ever consulted for it, so adding a sender to `TEAMS_ALLOWED_USERS` cannot grant access from an unlisted channel.
+
+Independently of `allowed_channels`, every channel message needs an explicit @mention by default (`require_mention`, default `true`) — this applies whether or not a channel is listed, and is what makes the **Channel** row above true even without `allowed_channels` configured. Set `require_mention: false` to disable it. This has no effect on group chats — see the table above.
+
+Channel authorization covers ordinary messages only. Clicking an [Adaptive Card approval button](#interactive-approval-cards) is a separate check that requires `TEAMS_ALLOWED_USERS` or `TEAMS_ALLOW_ALL_USERS` regardless of `allowed_channels` — someone who can message the bot in a listed channel but is neither in `TEAMS_ALLOWED_USERS` nor covered by `TEAMS_ALLOW_ALL_USERS` can ask the agent to do something, but can't click Allow/Deny on the resulting approval card.
 
 ---
 
@@ -171,7 +210,7 @@ Open the printed link in your browser — it opens directly in the Teams client.
 
 ### config.yaml
 
-Alternatively, configure via `~/.hermes/config.yaml`:
+Alternatively, configure credentials via `~/.hermes/config.yaml`:
 
 ```yaml
 platforms:
@@ -182,6 +221,16 @@ platforms:
       client_secret: "your-secret"
       tenant_id: "your-tenant-id"
       port: 3978
+```
+
+`config.yaml` is the documented, primary way to set the channel allowlist and mention requirement — see [Restricting which channels the bot answers in](#restricting-which-channels-the-bot-answers-in). `TEAMS_ALLOWED_CHANNELS` (comma-separated) and `TEAMS_REQUIRE_MENTION` also work as an internal fallback, but `config.yaml` wins whenever both are set for the same key:
+
+```yaml
+platforms:
+  teams:
+    allowed_channels:
+      - "19:abc123@thread.tacv2"   # empty/unset: unrestricted (default)
+    require_mention: true          # default: true
 ```
 
 ---
@@ -198,6 +247,8 @@ When the agent needs to run a potentially dangerous command, it sends an Adaptiv
 - **Deny** — reject the command
 
 Clicking a button resolves the approval inline and replaces the card with the decision.
+
+Clicking a button requires `TEAMS_ALLOWED_USERS` or `TEAMS_ALLOW_ALL_USERS` — a channel allowlist does not grant this. See [the note above](#restricting-which-channels-the-bot-answers-in) if you're using `allowed_channels`. (This check reads those two env vars directly rather than through the profile-scoped resolution the rest of Hermes uses, so it is not multiplex-profile-aware — a pre-existing adapter limitation, not something introduced by `allowed_channels`.)
 
 ### Meeting Summary Delivery (Teams Meeting Pipeline)
 
@@ -273,13 +324,14 @@ Make sure the public HTTPS endpoint is reachable from the internet and uses a va
 ## Security
 
 :::warning
-**Always set `TEAMS_ALLOWED_USERS`** with the AAD object IDs of authorized users. Without this, anyone who can find or install your bot can interact with it.
+**Set `TEAMS_ALLOWED_USERS`** with the AAD object IDs of authorized users, for a fixed, known list of who can DM the bot, rather than relying on `TEAMS_ALLOW_ALL_USERS`.
 
 Treat `TEAMS_CLIENT_SECRET` like a password — rotate it periodically via the Azure portal or Teams CLI.
 :::
 
 - Store credentials in `~/.hermes/.env` with permissions `600` (`chmod 600 ~/.hermes/.env`)
-- The bot only accepts messages from users in `TEAMS_ALLOWED_USERS`; unauthorized messages are silently dropped
+- DMs are governed by the normal Hermes user-authorization chain (`TEAMS_ALLOWED_USERS`, `TEAMS_ALLOW_ALL_USERS`, an approved pairing, or a global `GATEWAY_ALLOWED_USERS`/`GATEWAY_ALLOW_ALL_USERS` grant). An unrecognized sender is offered a pairing code by default rather than being silently ignored, even with `TEAMS_ALLOWED_USERS` set — Teams isn't wired into the automatic switch-to-silent-drop some other platforms get from having an allowlist configured. Set `platforms.teams.unauthorized_dm_behavior: ignore` in config.yaml if you want unapproved DMs dropped with no reply at all.
+- When `allowed_channels` names specific channel/team ids, a channel message from any other channel is dropped before the agent ever sees it, regardless of who sent it — but `allowed_channels: ["*"]` authorizes every channel sender outright, bypassing user authorization entirely (see the matrix above)
 - Your public endpoint (`/api/messages`) is authenticated by the Teams Bot Framework — requests without valid JWTs are rejected
 
 ## Related Docs

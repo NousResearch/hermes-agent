@@ -194,6 +194,111 @@ class TestMattermostSend:
         payload = self.adapter._session.post.call_args[1]["json"]
         assert payload["root_id"] == "root_post"
 
+    @pytest.mark.asyncio
+    async def test_send_thread_uses_metadata_thread_id(self):
+        """metadata['thread_id'] should be used as root_id (MM API requires
+        true thread root — child post IDs are rejected with 400
+        api.post.create_post.root_id.app_error)."""
+        self.adapter._reply_mode = "thread"
+
+        # Mock _api_get for _resolve_root_id: post is already a root (no root_id)
+        async def _mock_api_get(path):
+            if path.startswith("posts/"):
+                return {"id": "ROOT_POST_ID", "root_id": ""}
+            return {}
+        self.adapter._api_get = _mock_api_get
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_new"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "channel_1", "Reply!", reply_to="ROOT_POST_ID",
+            metadata={"thread_id": "ROOT_POST_ID"}
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "ROOT_POST_ID"
+
+    @pytest.mark.asyncio
+    async def test_send_thread_metadata_overrides_reply_to(self):
+        """When metadata['thread_id'] and reply_to differ, the true root
+        (metadata['thread_id']) should win over the child post id in reply_to.
+        We pass root_id as reply_to so _resolve_root_id returns it directly."""
+        self.adapter._reply_mode = "thread"
+
+        # Mock GET for _resolve_root_id: pretend ROOT is already a root (no root_id field)
+        get_resp = AsyncMock()
+        get_resp.status = 200
+        get_resp.json = AsyncMock(return_value={"id": "ROOT_POST_ID", "root_id": ""})
+        get_resp.text = AsyncMock(return_value="")
+        get_resp.__aenter__ = AsyncMock(return_value=get_resp)
+        get_resp.__aexit__ = AsyncMock(return_value=False)
+
+        post_resp = AsyncMock()
+        post_resp.status = 200
+        post_resp.json = AsyncMock(return_value={"id": "post_new"})
+        post_resp.text = AsyncMock(return_value="")
+        post_resp.__aenter__ = AsyncMock(return_value=post_resp)
+        post_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.get = MagicMock(return_value=get_resp)
+        self.adapter._session.post = MagicMock(return_value=post_resp)
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Reply!",
+            reply_to="ROOT_POST_ID",
+            metadata={"thread_id": "ROOT_POST_ID"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "ROOT_POST_ID"
+
+    @pytest.mark.asyncio
+    async def test_send_without_thread_no_root_id(self):
+        """When reply_mode is 'off', reply_to should NOT set root_id."""
+        self.adapter._reply_mode = "off"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post789"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send("channel_1", "Reply!", reply_to="root_post")
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert "root_id" not in payload
+
+
+    @pytest.mark.asyncio
+    async def test_send_uses_metadata_thread_id_for_progress_messages(self):
+        """Progress/status messages pass Mattermost thread context via metadata."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(return_value={"id": "root_post_123", "root_id": ""})
+        self.adapter._api_post = AsyncMock(return_value={"id": "progress_post"})
+
+        result = await self.adapter.send(
+            "channel_1",
+            "⚡ terminal...",
+            metadata={"thread_id": "root_post_123"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._api_post.call_args_list[0][0][1]
+        assert payload["root_id"] == "root_post_123"
 
     @pytest.mark.asyncio
     async def test_progress_send_with_invalid_thread_root_never_falls_back_flat(self):

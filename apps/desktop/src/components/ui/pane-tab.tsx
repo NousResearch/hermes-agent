@@ -224,7 +224,7 @@ export const PaneTabLabel = React.forwardRef<HTMLElement, PaneTabLabelProps>(fun
       ref={ref}
       {...props}
     >
-      <span className={cn('block min-w-0 truncate text-[9px] font-medium tracking-wide uppercase', className)}>
+      <span className={cn('block min-w-0 truncate font-medium tracking-wide uppercase', className)}>
         {children}
       </span>
     </Comp>

@@ -37,6 +37,37 @@ export function applyVoiceStopPhraseFromConfig(
   $voiceStopPhrase.set(first ?? null)
 }
 
+// `voice.silence_duration` (seconds) — how long the user must stay quiet before
+// the conversation loop treats the utterance as finished. This was hardcoded to
+// 1250 ms in the loop, so the config key existed but only ever drove the CLI
+// path (tools/voice_mode.py); the desktop never consulted it. Every millisecond
+// here is dead air the user sits through on EVERY turn, so it is the cheapest
+// latency in the whole voice pipeline to tune.
+//
+// Clamped: below ~300 ms normal mid-sentence pauses cut the user off, and above
+// ~3 s the conversation stops feeling responsive at all.
+const SILENCE_MS_DEFAULT = 700
+const SILENCE_MS_MIN = 300
+const SILENCE_MS_MAX = 3_000
+
+export const $voiceSilenceMs = atom<number>(SILENCE_MS_DEFAULT)
+
+/** Seed the silence window from a loaded config payload (mount / refresh). */
+export function applyVoiceSilenceFromConfig(
+  config: { voice?: { silence_duration?: unknown } | null } | null | undefined
+) {
+  const raw = config?.voice?.silence_duration
+  const seconds = typeof raw === 'number' ? raw : Number.parseFloat(String(raw ?? ''))
+
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    $voiceSilenceMs.set(SILENCE_MS_DEFAULT)
+
+    return
+  }
+
+  $voiceSilenceMs.set(Math.min(SILENCE_MS_MAX, Math.max(SILENCE_MS_MIN, Math.round(seconds * 1_000))))
+}
+
 // `voice.thinking_sound` — ambient bubble blips while the agent works during a
 // voice conversation (default on, matching the backend default).
 export const $thinkingSoundEnabled = atom<boolean>(true)

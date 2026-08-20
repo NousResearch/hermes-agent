@@ -349,7 +349,17 @@ class HostSupervisor:
         if not self._hello_event.wait(timeout=10.0):
             self._terminate_process(proc)
             raise RuntimeError(f"compute host did not send hello; stderr={self._stderr_tail[-5:]}")
-        self._validate_hello()
+        try:
+            self._validate_hello()
+        except Exception:
+            # The guard must not leak the child it just rejected: leaving
+            # _proc set makes is_running() True, so later start() calls
+            # early-return and the supervisor *adopts* the mismatched host,
+            # while the process itself stays alive with no owner to reap it
+            # (start_new_session=True). Terminate and detach before raising.
+            self._terminate_process(proc)
+            self._proc = None
+            raise
         self._persist_registry()
         logger.info("compute host started pid=%s reason=%s", proc.pid, reason)
 

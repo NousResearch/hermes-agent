@@ -34,7 +34,7 @@ Usage:
     hermes honcho identity                 # Show AI peer identity representation
     hermes honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
     hermes honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
-    hermes version             Show version
+    hermes --version           Show version and update status
     hermes update              Update to latest version
     hermes uninstall           Uninstall Hermes Agent
     hermes acp                 Run as an ACP server for editor integration
@@ -468,7 +468,6 @@ from hermes_cli.subcommands.import_agent import build_import_agent_parser
 from hermes_cli.subcommands.config import build_config_parser
 from hermes_cli.subcommands.skin import build_skin_parser
 from hermes_cli.subcommands.console import build_console_parser
-from hermes_cli.subcommands.version import build_version_parser
 from hermes_cli.subcommands.update import build_update_parser
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
 from hermes_cli.subcommands.dashboard import build_dashboard_parser
@@ -5700,58 +5699,14 @@ def cmd_import(args):
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:
-    from hermes_cli.config import detect_install_method
-    from hermes_cli.slash_exec import CommandContext, execute_command
-
-    # Core version line is registry-owned (shared with the gateway /version);
-    # the install/python/SDK detail below is CLI-only decoration.
-    print(execute_command("version", CommandContext(surface="cli")).text)
-    print(f"Install directory: {PROJECT_ROOT}")
-    print(f"Install method: {detect_install_method(PROJECT_ROOT)}")
-
-    # Show Python version
-    print(f"Python: {sys.version.split()[0]}")
-
-    # Check for key dependencies.  Use importlib.metadata rather than
-    # ``import openai`` — the SDK drags in ~800ms of pydantic-backed type
-    # modules just to expose ``__version__``.  Metadata lookup is ~2ms.
-    try:
-        from importlib.metadata import version as _pkg_version, PackageNotFoundError
-
-        try:
-            print(f"OpenAI SDK: {_pkg_version('openai')}")
-        except PackageNotFoundError:
-            print("OpenAI SDK: Not installed")
-    except ImportError:
-        print("OpenAI SDK: Not installed")
-
-    if not check_updates:
-        return
-
-    # Show update status (synchronous — acceptable since user asked for version info)
-    try:
-        from hermes_cli.banner import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
-        from hermes_cli.config import recommended_update_command
-
-        behind = check_for_updates()
-        if behind == UPDATE_AVAILABLE_NO_COUNT:
-            print(
-                f"Update available — run '{recommended_update_command()}'"
-            )
-        elif behind and behind > 0:
-            commits_word = "commit" if behind == 1 else "commits"
-            print(
-                f"Update available: {behind} {commits_word} behind — "
-                f"run '{recommended_update_command()}'"
-            )
-        elif behind == 0:
-            print("Up to date")
-    except Exception:
-        pass
+    # Single source of truth for version output — shared with the
+    # `hermes --version` pre-import fast path (the `version` subcommand
+    # was consolidated into `--version`).
+    _startup_fast.print_fast_version_info(check_updates=check_updates)
 
 
 def cmd_version(args):
-    """Show version."""
+    """Show version (--version/-V flag)."""
     _print_version_info(check_updates=True)
 
 
@@ -10198,7 +10153,6 @@ def _coalesce_session_name_args(argv: list) -> list:
         "mcp",
         "sessions",
         "insights",
-        "version",
         "update",
         "uninstall",
         "profile",
@@ -11644,7 +11598,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "resume",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
-        "version", "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
+        "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "verify",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -12004,7 +11958,7 @@ def _try_termux_fast_cli_launch() -> bool:
         return False
 
     if _is_termux_fast_version_argv(argv):
-        _print_version_info(check_updates=False)
+        _print_version_info(check_updates=True)
         return True
 
     first = _first_positional_argv()
@@ -12022,7 +11976,7 @@ def _try_termux_fast_cli_launch() -> bool:
     args = parser.parse_args(_coalesce_session_name_args(argv))
 
     if getattr(args, "version", False):
-        _print_version_info(check_updates=False)
+        _print_version_info(check_updates=True)
         return True
 
     if getattr(args, "oneshot", None):
@@ -12926,7 +12880,7 @@ def main():
     # own argparse tree.  No hardcoded plugin commands in main.py.
     #
     # Skipped when the invocation is already targeting a known built-in
-    # subcommand — ``hermes --help``, ``hermes version``, ``hermes logs``,
+    # subcommand — ``hermes --help``, ``hermes logs``,
     # etc.  This avoids eagerly importing every bundled plugin module
     # (google.cloud.pubsub_v1, aiohttp, grpc, PIL …) which costs
     # 500-650ms on typical installs.
@@ -13801,10 +13755,8 @@ def main():
     # =========================================================================
     build_claw_parser(subparsers, cmd_claw=cmd_claw)
 
-    # =========================================================================
-    # version command  (parser built in hermes_cli/subcommands/version.py)
-    # =========================================================================
-    build_version_parser(subparsers, cmd_version=cmd_version)
+    # NOTE: the `hermes version` subcommand was removed — `hermes --version`
+    # / `-V` now carries the full output including update status.
 
     # =========================================================================
     # update command  (parser built in hermes_cli/subcommands/update.py)

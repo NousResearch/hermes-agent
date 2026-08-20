@@ -97,7 +97,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes desktop` (alias `gui`) | Build and launch the native Electron desktop app. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh/fish). |
-| `hermes version` | Show version information. |
+| `hermes --version` | Show version information. |
 | `hermes update` | Pull latest code and reinstall dependencies. `--check` previews without installing; `--backup` takes a pre-pull `HERMES_HOME` snapshot. |
 | `hermes uninstall` | Remove Hermes from the system. |
 
@@ -1758,7 +1758,7 @@ Additional behavior:
 
 | Command | Description |
 |---------|-------------|
-| `hermes version` | Print version information. |
+| `hermes --version` | Print version information. |
 | `hermes update` | Pull latest changes and reinstall dependencies. |
 
 | `hermes uninstall [--full] [--gui] [--dry-run] [--yes]` | Remove Hermes, optionally deleting all config/data. `--gui` removes only the desktop Chat GUI, leaving the agent intact; `--full` also deletes config/data; `--dry-run` prints what would be removed without changing anything; `--yes` skips prompts. |

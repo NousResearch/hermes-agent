@@ -454,6 +454,7 @@ from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
 from hermes_cli.subcommands.pause import build_pause_parser
+from hermes_cli.subcommands.recipe import build_recipe_parser
 from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
@@ -12710,6 +12711,7 @@ def main():
     # pause / resume commands  (parser built in hermes_cli/subcommands/pause.py)
     # =========================================================================
     build_pause_parser(subparsers)
+    build_recipe_parser(subparsers)
 
     # =========================================================================
     # cron command  (parser built in hermes_cli/subcommands/cron.py)

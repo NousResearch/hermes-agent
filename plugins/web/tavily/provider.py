@@ -43,7 +43,17 @@ def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
 
     from agent.web_search_provider import get_provider_env
 
-    api_key = get_provider_env("TAVILY_API_KEY")
+    # Prefer a deliberate ~/.hermes/.env edit over a stale value inherited
+    # from the parent shell: rotating TAVILY_API_KEY mid-session otherwise
+    # leaves long-lived processes serving the old key until restart
+    # (persistent 432/401s). Mirrors the credential-pool seeding path in
+    # hermes_cli.auth, which uses get_env_value_prefer_dotenv for the same
+    # reason.
+    try:
+        from hermes_cli.config import get_env_value_prefer_dotenv
+        api_key = get_env_value_prefer_dotenv("TAVILY_API_KEY") or ""
+    except ImportError:
+        api_key = get_provider_env("TAVILY_API_KEY")
     if not api_key:
         raise ValueError(
             "TAVILY_API_KEY environment variable not set. "

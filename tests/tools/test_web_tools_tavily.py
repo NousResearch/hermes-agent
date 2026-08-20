@@ -61,6 +61,46 @@ class TestTavilyRequest:
                 with pytest.raises(_httpx.HTTPStatusError):
                     _tavily_request("search", {"query": "test"})
 
+    def test_dotenv_edit_wins_over_stale_environ(self, monkeypatch, tmp_path):
+        """Rotating TAVILY_API_KEY in .env mid-session takes effect without a
+        restart: the .env value must win over a stale inherited shell value
+        (long-lived gateway process seeded from the old .env at startup)."""
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True)
+        (home / ".env").write_text("TAVILY_API_KEY=tvly-fresh-dotenv-key\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        # Simulate the stale in-process value the fix targets.
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-stale-shell-key")
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"results": []}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("tools.web_tools.httpx.post", return_value=mock_response) as mock_post:
+            from tools.web_tools import _tavily_request
+            _tavily_request("search", {"query": "hello"})
+            payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+            assert payload["api_key"] == "tvly-fresh-dotenv-key"
+
+    def test_environ_still_used_when_dotenv_has_no_key(self, monkeypatch, tmp_path):
+        """Fallback ordering is unchanged: no .env entry → os.environ wins,
+        so plain ``export TAVILY_API_KEY=...`` workflows keep working."""
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True)
+        (home / ".env").write_text("OTHER_KEY=irrelevant\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-from-shell")
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"results": []}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("tools.web_tools.httpx.post", return_value=mock_response) as mock_post:
+            from tools.web_tools import _tavily_request
+            _tavily_request("search", {"query": "hello"})
+            payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+            assert payload["api_key"] == "tvly-from-shell"
+
 
 # ─── _normalize_tavily_search_results ─────────────────────────────────────────
 

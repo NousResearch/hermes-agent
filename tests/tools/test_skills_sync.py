@@ -946,6 +946,18 @@ class TestOptionalProvenanceAttestation:
             lambda _path: "git:NousResearch/hermes-agent@" + "e" * 40,
         )
 
+        def _authoritative_hash(_origin_identity, identifier):
+            import tools.skills_guard as guard
+            import tools.skills_sync as ss
+
+            rel = identifier.split("/", 1)[1]
+            return guard.full_content_hash(ss._get_optional_dir() / rel)
+
+        monkeypatch.setattr(
+            "tools.skills_sync._official_origin_bundle_hash",
+            _authoritative_hash,
+        )
+
     def test_safe_relative_path_rejects_intermediate_redirect(self, tmp_path):
         import tools.skills_sync as ss
 
@@ -960,6 +972,41 @@ class TestOptionalProvenanceAttestation:
 
         with pytest.raises(ValueError, match="redirect"):
             ss._safe_rel_install_path(alias / "demo", skills_dir)
+
+    def test_backfill_compares_installed_bytes_to_authoritative_origin(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_guard as guard
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "package" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Official\n")
+
+        skills_dir = tmp_path / "home" / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Temporary payload\n")
+        official_hash = guard.full_content_hash(source)
+        payload_hash = guard.full_content_hash(installed)
+
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_hash",
+            lambda *_args: official_hash,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            guard,
+            "full_content_hash",
+            lambda _path: payload_hash,
+        )
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional_dir), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            assert ss._backfill_optional_provenance(quiet=True) == []
+
+        assert not (skills_dir / ".hub" / "lock.json").exists()
 
     def test_backfill_rejects_origin_change_during_scan(self, tmp_path):
         import tools.skills_sync as ss

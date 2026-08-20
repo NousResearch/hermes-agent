@@ -131,6 +131,7 @@ def _audit_scan_identity_for_lock_entry(
     The record is same-user metadata, not a cryptographic package signature.
     """
     from tools.skills_guard import TREE_HASH_SCHEME, full_content_hash
+    from tools.skills_hub import official_origin_bundle_hash
 
     identifier = str(entry.get("identifier") or "")
     if (
@@ -153,6 +154,11 @@ def _audit_scan_identity_for_lock_entry(
         and attestation.get("trust_level") == "builtin"
         and _audit_origin_identity_is_valid(attestation.get("origin_identity"))
         and not _audit_tree_has_redirect(skill_path)
+        and attestation.get("bundle_hash")
+        == official_origin_bundle_hash(
+            str(attestation.get("origin_identity")),
+            identifier,
+        )
         and attestation.get("bundle_hash") == full_content_hash(skill_path)
     ):
         return "official", True

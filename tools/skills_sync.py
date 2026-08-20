@@ -126,6 +126,12 @@ def _optional_root_identity(path: Path) -> str:
     return optional_skills_root_identity(path)
 
 
+def _official_origin_bundle_hash(origin_identity: str, identifier: str) -> Optional[str]:
+    from tools.skills_hub import official_origin_bundle_hash
+
+    return official_origin_bundle_hash(origin_identity, identifier)
+
+
 def _build_external_skill_index() -> Set[str]:
     """Index every skill available in external_dirs by name and frontmatter name.
 
@@ -566,6 +572,13 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
         except ValueError as e:
             logger.debug("Skipping optional skill with unsafe path %s: %s", src, e)
             continue
+        identifier = f"official/{install_path}"
+        authoritative_hash = _official_origin_bundle_hash(
+            origin_identity,
+            identifier,
+        )
+        if authoritative_hash is None:
+            continue
         lock_name = src.name
         existing_entry = installed.get(lock_name)
         if isinstance(existing_entry, dict):
@@ -578,17 +591,15 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
                 )
             except (OSError, ValueError):
                 continue
-            identifier = str(existing_entry.get("identifier") or "")
             if (
                 not existing_entry.get("install_attestation")
                 and existing_entry.get("source") == "official"
                 and existing_entry.get("trust_level") == "builtin"
-                and identifier.startswith("official/")
                 and existing_dest.is_dir()
-                and not _tree_has_redirect(src)
                 and not _tree_has_redirect(existing_dest)
-                and full_content_hash(existing_dest) == full_content_hash(src)
+                and full_content_hash(existing_dest) == authoritative_hash
             ):
+                existing_entry["identifier"] = identifier
                 existing_entry["install_attestation"] = build_install_attestation(
                     existing_dest,
                     source="official",
@@ -625,14 +636,12 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
         if install_path in existing_paths:
             continue
         if (
-            _tree_has_redirect(src)
-            or _tree_has_redirect(dest)
-            or full_content_hash(dest) != full_content_hash(src)
+            _tree_has_redirect(dest)
+            or full_content_hash(dest) != authoritative_hash
         ):
             continue
 
         timestamp = datetime.now(timezone.utc).isoformat()
-        identifier = f"official/{install_path}"
         installed[lock_name] = {
             "source": "official",
             "identifier": identifier,

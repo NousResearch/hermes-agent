@@ -221,7 +221,14 @@ class TestSkillsShSource:
                 resp.status_code = 200
                 resp.json = lambda: {"default_branch": "main"}
                 return resp
-            if "/git/trees/main" in url:
+            if "/commits/main" in url:
+                resp.status_code = 200
+                resp.json = lambda: {
+                    "sha": "a" * 40,
+                    "commit": {"tree": {"sha": "b" * 40}},
+                }
+                return resp
+            if f"/git/trees/{'b' * 40}" in url:
                 resp.status_code = 200
                 resp.json = lambda: {"tree": tree_entries}
                 return resp
@@ -258,6 +265,39 @@ class TestFindSkillInRepoTree:
         return GitHubSource(auth=auth)
 
     @patch("tools.skills_hub.httpx.get")
+    def test_repo_tree_records_commit_sha_not_tree_sha(self, mock_get):
+        commit_sha = "a" * 40
+        tree_sha = "b" * 40
+        tree_entries = [{"path": "SKILL.md", "type": "blob"}]
+
+        def _side_effect(url, **_kwargs):
+            response = MagicMock(status_code=200)
+            if url.endswith("/owner/repo"):
+                response.json.return_value = {"default_branch": "main"}
+            elif url.endswith("/commits/main"):
+                response.json.return_value = {
+                    "sha": commit_sha,
+                    "commit": {"tree": {"sha": tree_sha}},
+                }
+            elif url.endswith(f"/git/trees/{tree_sha}"):
+                response.json.return_value = {"sha": tree_sha, "tree": tree_entries}
+            elif url.endswith("/git/trees/main"):
+                response.json.return_value = {"sha": tree_sha, "tree": tree_entries}
+            else:
+                response.status_code = 404
+            return response
+
+        mock_get.side_effect = _side_effect
+        source = self._source()
+
+        assert source._get_repo_tree("owner/repo") == ("main", tree_entries)
+        assert source._tree_revisions["owner/repo"] == commit_sha
+        assert any(
+            call.args[0].endswith(f"/git/trees/{tree_sha}")
+            for call in mock_get.call_args_list
+        )
+
+    @patch("tools.skills_hub.httpx.get")
     def test_finds_deeply_nested_skill(self, mock_get):
         tree_entries = [
             {"path": "README.md", "type": "blob"},
@@ -270,7 +310,13 @@ class TestFindSkillInRepoTree:
             if url.endswith("/davila7/claude-code-templates"):
                 resp.status_code = 200
                 resp.json = lambda: {"default_branch": "main"}
-            elif "/git/trees/main" in url:
+            elif "/commits/main" in url:
+                resp.status_code = 200
+                resp.json = lambda: {
+                    "sha": "a" * 40,
+                    "commit": {"tree": {"sha": "b" * 40}},
+                }
+            elif f"/git/trees/{'b' * 40}" in url:
                 resp.status_code = 200
                 resp.json = lambda: {"tree": tree_entries}
             else:
@@ -1344,6 +1390,10 @@ class TestDownloadDirectoryViaTree:
     def test_tree_api_downloads_subdirectories(self, mock_get, mock_fetch):
         """Tree API returns files from nested subdirectories."""
         repo_resp = MagicMock(status_code=200, json=lambda: {"default_branch": "main"})
+        commit_resp = MagicMock(status_code=200, json=lambda: {
+            "sha": "a" * 40,
+            "commit": {"tree": {"sha": "b" * 40}},
+        })
         tree_resp = MagicMock(status_code=200, json=lambda: {
             "truncated": False,
             "tree": [
@@ -1354,7 +1404,7 @@ class TestDownloadDirectoryViaTree:
                 {"type": "blob", "path": "other/file.txt"},
             ],
         })
-        mock_get.side_effect = [repo_resp, tree_resp]
+        mock_get.side_effect = [repo_resp, commit_resp, tree_resp]
         mock_fetch.side_effect = lambda repo, path: f"content-of-{path}"
 
         src = self._source()
@@ -1371,8 +1421,12 @@ class TestDownloadDirectoryViaTree:
     def test_falls_back_on_truncated_tree(self, mock_get, mock_fallback):
         """When tree is truncated, fall back to recursive Contents API."""
         repo_resp = MagicMock(status_code=200, json=lambda: {"default_branch": "main"})
+        commit_resp = MagicMock(status_code=200, json=lambda: {
+            "sha": "a" * 40,
+            "commit": {"tree": {"sha": "b" * 40}},
+        })
         tree_resp = MagicMock(status_code=200, json=lambda: {"truncated": True, "tree": []})
-        mock_get.side_effect = [repo_resp, tree_resp]
+        mock_get.side_effect = [repo_resp, commit_resp, tree_resp]
 
         src = self._source()
         files = src._download_directory("owner/repo", "skills/my-skill")

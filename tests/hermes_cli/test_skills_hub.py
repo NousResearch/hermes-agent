@@ -227,6 +227,11 @@ def test_do_audit_replays_matching_install_attestation_without_refetch(
         )
 
     monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([entry]))
+    monkeypatch.setattr(
+        hub,
+        "official_origin_bundle_hash",
+        lambda *_args: guard.full_content_hash(skill_dir),
+    )
     monkeypatch.setattr(hub.OptionalSkillSource, "fetch", lambda *_args: None)
     monkeypatch.setattr(guard, "scan_skill", _scan_skill)
     monkeypatch.setattr(
@@ -249,6 +254,7 @@ def test_do_audit_replays_matching_install_attestation_without_refetch(
     [
         "asserted-by-lock",
         "nix-store:" + "0" * 32 + "-../../forged",
+        "git:NousResearch/hermes-agent@" + "0" * 40,
     ],
 )
 def test_audit_rejects_unknown_origin_identity(tmp_path, origin_identity):
@@ -342,6 +348,11 @@ def test_do_audit_scans_verified_official_snapshot(monkeypatch, tmp_path, hub_en
         )
 
     monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([entry]))
+    monkeypatch.setattr(
+        hub,
+        "official_origin_bundle_hash",
+        lambda *_args: guard.full_content_hash(skill_dir),
+    )
     monkeypatch.setattr(guard, "scan_skill", _scan_skill)
     monkeypatch.setattr(guard, "format_scan_report", lambda _result: "scan complete")
 
@@ -761,8 +772,11 @@ def test_audit_install_attestation_downgrades_changed_or_redirected_content(
     )
 
 
-def test_audit_install_attestation_does_not_reject_executable_mode(tmp_path):
+def test_audit_install_attestation_does_not_reject_executable_mode(
+    monkeypatch, tmp_path
+):
     import tools.skills_guard as guard
+    import tools.skills_hub as hub
     from hermes_cli.skills_hub import _audit_scan_identity_for_lock_entry
 
     skill_path = tmp_path / "demo"
@@ -784,6 +798,11 @@ def test_audit_install_attestation_does_not_reject_executable_mode(tmp_path):
             origin_identity="git:NousResearch/hermes-agent@" + "c" * 40,
         ),
     }
+    monkeypatch.setattr(
+        hub,
+        "official_origin_bundle_hash",
+        lambda *_args: guard.full_content_hash(skill_path),
+    )
 
     assert _audit_scan_identity_for_lock_entry(entry, skill_path) == (
         "official",

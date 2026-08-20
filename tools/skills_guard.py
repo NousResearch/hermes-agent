@@ -29,7 +29,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Mapping, Tuple, Union
 
 
 SCANNER_VERSION = "skills-guard-v2"
@@ -763,6 +763,17 @@ def _framed_content_digest(skill_path: Path) -> str:
 def full_content_hash(skill_path: Path) -> str:
     """Full v2 canonical digest used to bind scanner attestations."""
     return f"sha256:{_framed_content_digest(skill_path)}"
+
+
+def full_content_hash_for_files(
+    files: Mapping[str, Union[str, bytes]],
+) -> str:
+    """Full v2 digest for an immutable in-memory bundle tree."""
+    records = (
+        (path, content if isinstance(content, bytes) else content.encode("utf-8"))
+        for path, content in files.items()
+    )
+    return f"sha256:{_framed_tree_digest(records)}"
 
 
 def build_install_attestation(

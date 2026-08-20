@@ -38,7 +38,8 @@ import httpx
 import yaml
 
 from tools.skills_guard import (
-    ScanResult, build_install_attestation, content_hash, TRUSTED_REPOS,
+    ScanResult, build_install_attestation, content_hash,
+    full_content_hash_for_files, TRUSTED_REPOS,
 )
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
@@ -371,6 +372,55 @@ def _optional_bundle_file_is_included(path: PurePosixPath) -> bool:
     )
 
 
+def _git_origin_commit_is_official(repo_root: Path, revision: str) -> bool:
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        return False
+    official_urls = {
+        "https://github.com/NousResearch/hermes-agent",
+        "https://github.com/NousResearch/hermes-agent.git",
+        "git@github.com:NousResearch/hermes-agent.git",
+        "ssh://git@github.com/NousResearch/hermes-agent.git",
+    }
+    try:
+        remote_output = subprocess.run(
+            ["git", "-C", str(repo_root), "remote", "-v"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    remotes = {
+        parts[0]
+        for line in remote_output.splitlines()
+        if (parts := line.split())
+        and len(parts) >= 3
+        and parts[1] in official_urls
+        and parts[2] == "(fetch)"
+    }
+    for remote in sorted(remotes):
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo_root),
+                    "merge-base",
+                    "--is-ancestor",
+                    revision,
+                    f"{remote}/main",
+                ],
+                capture_output=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode == 0:
+            return True
+    return False
+
+
 def _git_optional_skill_files(
     repo_root: Path,
     skill_rel: str,
@@ -382,6 +432,8 @@ def _git_optional_skill_files(
         origin_identity,
     )
     if not match:
+        return None
+    if not _git_origin_commit_is_official(repo_root, match.group(1)):
         return None
     try:
         safe_rel = _normalize_bundle_path(
@@ -426,6 +478,54 @@ def _git_optional_skill_files(
         return files or None
     except (OSError, subprocess.SubprocessError, tarfile.TarError, ValueError):
         return None
+
+
+def official_origin_bundle_hash(
+    origin_identity: str,
+    identifier: str,
+) -> Optional[str]:
+    """Resolve official bytes independently of the same-user lock record."""
+    if not identifier.startswith("official/"):
+        return None
+    try:
+        skill_rel = _normalize_bundle_path(
+            identifier.split("/", 1)[1],
+            field_name="official identifier",
+            allow_nested=True,
+        )
+    except ValueError:
+        return None
+
+    from hermes_constants import get_optional_skills_dir
+
+    optional_root = get_optional_skills_dir(
+        Path(__file__).parent.parent / "optional-skills"
+    )
+    if origin_identity.startswith("github:NousResearch/hermes-agent@"):
+        origin_identity = "git:" + origin_identity[len("github:") :]
+    if origin_identity.startswith("git:NousResearch/hermes-agent@"):
+        files = _git_optional_skill_files(
+            optional_root.resolve().parent,
+            skill_rel,
+            origin_identity,
+        )
+        return full_content_hash_for_files(files) if files else None
+    if not origin_identity.startswith("nix-store:"):
+        return None
+    if optional_skills_root_identity(optional_root) != origin_identity:
+        return None
+    try:
+        source_path = (optional_root / Path(*skill_rel.split("/"))).resolve()
+        if not source_path.is_relative_to(optional_root.resolve()):
+            return None
+        from tools.skills_guard import full_content_hash
+
+        digest = full_content_hash(source_path)
+    except (OSError, ValueError):
+        return None
+    if optional_skills_root_identity(optional_root) != origin_identity:
+        return None
+    return digest
 
 
 _ALLOWED_SUPPORT_DIRS = frozenset({"references", "templates", "scripts", "assets", "examples"})
@@ -1121,10 +1221,36 @@ class GitHubSource(SkillSource):
         except (httpx.HTTPError, ValueError):
             return None
 
-        # Fetch recursive tree
+        # Resolve the branch to one immutable commit and its root tree.  The
+        # Git Trees endpoint returns a tree-object SHA, which is not a valid
+        # commit provenance identity for later Contents API `ref=` reads.
         try:
             resp = httpx.get(
-                f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
+                f"https://api.github.com/repos/{repo}/commits/{default_branch}",
+                headers=headers, timeout=15, follow_redirects=True,
+            )
+            if resp.status_code != 200:
+                self._check_rate_limit_response(resp)
+                return None
+            commit_data = resp.json()
+            revision = commit_data.get("sha")
+            tree_revision = (
+                commit_data.get("commit", {}).get("tree", {}).get("sha")
+            )
+            if not (
+                isinstance(revision, str)
+                and re.fullmatch(r"[0-9a-f]{40}", revision)
+                and isinstance(tree_revision, str)
+                and re.fullmatch(r"[0-9a-f]{40}", tree_revision)
+            ):
+                return None
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return None
+
+        # Fetch the recursive tree belonging to that exact commit.
+        try:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{repo}/git/trees/{tree_revision}",
                 params={"recursive": "1"},
                 headers=headers, timeout=30, follow_redirects=True,
             )
@@ -1139,9 +1265,7 @@ class GitHubSource(SkillSource):
             return None
 
         entries = tree_data.get("tree", [])
-        revision = tree_data.get("sha")
-        if isinstance(revision, str) and revision:
-            self._tree_revisions[repo] = revision
+        self._tree_revisions[repo] = revision
         self._tree_cache[repo] = (default_branch, entries)
         return (default_branch, entries)
 

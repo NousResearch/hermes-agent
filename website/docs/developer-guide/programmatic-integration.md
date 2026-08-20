@@ -149,6 +149,12 @@ Use `/v1/models` for OpenAI-client compatibility. Use `/api/model/options` or
 
 A `200` (and the `run.steered` event) means the text was **queued**, not that the agent consumed it. If a steer lands after the agent's final response — with no later tool boundary to deliver it at — the undelivered text is returned as `pending_steer` on the terminal `run.completed` event and run status, so the client can replay it as the next user turn instead of losing it.
 
+For caller-managed conversation state, send `include: ["conversation_history"]`
+when creating a run. The terminal event and pollable status return Hermes'
+effective post-run history, including a compressed transcript when context
+compression fired. Persist that value as the next request's baseline instead
+of rebuilding the entire conversation from an external message archive.
+
 ---
 
 ## Which one should I use?

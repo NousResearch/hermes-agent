@@ -355,6 +355,29 @@ Create a new agent run. Returns a `run_id` that can be used to subscribe to prog
 
 Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
 
+Callers that persist conversation state outside Hermes can request the
+effective post-run continuation history with `include`. Hermes returns the
+field only when explicitly requested because it may contain prompts and tool
+results that should be stored as sensitive data.
+
+```json
+{
+  "input": "What should I investigate next?",
+  "conversation_history": [
+    {"role": "user", "content": "Inspect the slow query"},
+    {"role": "assistant", "content": "The query is missing an index."}
+  ],
+  "include": ["conversation_history"]
+}
+```
+
+The terminal `run.completed` event and pollable run status then contain the
+same `conversation_history`. When context compression occurs during the turn,
+this is the compressed effective transcript rather than the uncompressed
+input plus a summary. Submit it unchanged with the next user message;
+structured tool-call fields are preserved so recent tool calls and results
+remain paired.
+
 ### GET /v1/runs/\{run_id\}
 
 Poll the current run state. This is useful for dashboards that need status without holding an SSE connection open, or for UIs that reconnect after navigation.
@@ -367,6 +390,11 @@ Poll the current run state. This is useful for dashboards that need status witho
   "session_id": "space-session",
   "model": "hermes-agent",
   "output": "Done.",
+  "conversation_history": [
+    {"role": "user", "content": "[Compressed summary of earlier turns]"},
+    {"role": "user", "content": "What should I investigate next?"},
+    {"role": "assistant", "content": "Done."}
+  ],
   "usage": {"input_tokens": 50, "output_tokens": 200, "total_tokens": 250}
 }
 ```

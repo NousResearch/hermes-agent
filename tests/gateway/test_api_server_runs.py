@@ -10,6 +10,7 @@ Covers:
 """
 
 import asyncio
+import json
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -146,6 +147,73 @@ class TestStartRun:
                 assert status["run_id"] == data["run_id"]
                 assert status["status"] in {"queued", "running", "completed"}
                 assert status["object"] == "hermes.run"
+
+    @pytest.mark.asyncio
+    async def test_start_preserves_structured_conversation_history(self, adapter):
+        """Caller-managed history must retain tool-call linkage on the way in."""
+        app = _create_runs_app(adapter)
+        history = [
+            {"role": "user", "content": "Inspect the orders table"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"schema.sql"}',
+                        },
+                    }
+                ],
+                "reasoning": "I should inspect the schema first.",
+            },
+            {
+                "role": "tool",
+                "name": "read_file",
+                "tool_name": "read_file",
+                "tool_call_id": "call_123",
+                "content": "CREATE TABLE orders (...)",
+            },
+        ]
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "What indexes should I add?", "conversation_history": history},
+                )
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+                for _ in range(40):
+                    if adapter._run_statuses.get(run_id, {}).get("status") == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        passed_history = mock_agent.run_conversation.call_args.kwargs["conversation_history"]
+        assert passed_history == history
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_non_array_include(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={"input": "hello", "include": "conversation_history"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 400
+        assert "array of strings" in data["error"]["message"]
+        assert adapter._run_statuses == {}
 
     @pytest.mark.asyncio
     async def test_start_binds_chat_id_for_delegation_wake_target(self, adapter):
@@ -298,6 +366,95 @@ class TestRunStatus:
                 assert mock_agent.run_conversation.call_args.kwargs["task_id"] == "space-session"
                 assert status["session_id"] == "space-session"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("compacted_in_place", "effective_session_id"),
+        [(True, "managed-session"), (False, "rotated-session")],
+    )
+    async def test_status_returns_opt_in_effective_compressed_history(
+        self,
+        adapter,
+        compacted_in_place,
+        effective_session_id,
+    ):
+        """The terminal status must expose the compacted continuation baseline."""
+        prior_history = [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+        ] * 10
+        compacted_history = [
+            {"role": "user", "content": "[Compressed summary of earlier conversation]"},
+            {"role": "user", "content": "latest question"},
+            {"role": "assistant", "content": "latest answer"},
+        ]
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {
+                    "final_response": "latest answer",
+                    "messages": compacted_history,
+                }
+                mock_agent._last_compaction_in_place = compacted_in_place
+                mock_agent.session_id = effective_session_id
+                mock_agent.session_prompt_tokens = 10
+                mock_agent.session_completion_tokens = 5
+                mock_agent.session_total_tokens = 15
+                mock_create.return_value = mock_agent
+
+                start_resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "latest question",
+                        "session_id": "managed-session",
+                        "conversation_history": prior_history,
+                        "include": ["conversation_history"],
+                    },
+                )
+                assert start_resp.status == 202
+                run_id = (await start_resp.json())["run_id"]
+
+                for _ in range(40):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert status["conversation_history"] == compacted_history
+        assert not any(message in status["conversation_history"] for message in prior_history)
+
+    @pytest.mark.asyncio
+    async def test_status_omits_history_without_include(self, adapter):
+        """Existing clients must not receive the potentially sensitive transcript."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {
+                    "final_response": "done",
+                    "messages": [
+                        {"role": "user", "content": "hello"},
+                        {"role": "assistant", "content": "done"},
+                    ],
+                }
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                start_resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await start_resp.json())["run_id"]
+                for _ in range(40):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert "conversation_history" not in status
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id}/events — SSE event stream
@@ -332,6 +489,73 @@ class TestRunEvents:
                 # Should contain run.completed
                 assert "run.completed" in body
                 assert "Hello!" in body
+
+    @pytest.mark.asyncio
+    async def test_completed_event_returns_opt_in_conversation_history(self, adapter):
+        """SSE and pollable terminal state must carry the same continuation baseline."""
+        internal_history = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_456",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "read_file",
+                "tool_name": "read_file",
+                "tool_call_id": "call_456",
+                "content": "result",
+            },
+            {
+                "role": "assistant",
+                "content": "done",
+                "_db_persisted": True,
+                "_api_content": "private cache payload",
+            },
+        ]
+        public_history = [
+            *internal_history[:-1],
+            {"role": "assistant", "content": "done"},
+        ]
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {
+                    "final_response": "done",
+                    "messages": internal_history,
+                }
+                mock_agent._last_compaction_in_place = False
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                start_resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "include": ["conversation_history"]},
+                )
+                run_id = (await start_resp.json())["run_id"]
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                body = await events_resp.text()
+
+        completed = None
+        for line in body.splitlines():
+            if line.startswith("data: "):
+                payload = json.loads(line[len("data: "):])
+                if payload.get("event") == "run.completed":
+                    completed = payload
+                    break
+        assert completed is not None
+        assert completed["conversation_history"] == public_history
+        assert adapter._run_statuses[run_id]["conversation_history"] == public_history
 
 
     @pytest.mark.asyncio

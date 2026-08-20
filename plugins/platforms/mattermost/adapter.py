@@ -430,10 +430,22 @@ class MattermostAdapter(BasePlatformAdapter):
     async def send_typing(
         self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Send a typing indicator."""
+        """Send a typing indicator.
+
+        When metadata carries a thread anchor (``thread_id`` / ``root_id``),
+        scope the typing bubble to that thread — Mattermost's user_typing
+        WebSocket event accepts a ``parent_id`` so clients only render the
+        bubble inside the matching thread panel instead of the channel-wide
+        composer footer.
+        """
+        payload: Dict[str, Any] = {"channel_id": chat_id}
+        if isinstance(metadata, dict):
+            root = metadata.get("thread_id") or metadata.get("root_id")
+            if root:
+                payload["parent_id"] = str(root)
         await self._api_post(
             f"users/{self._bot_user_id}/typing",
-            {"channel_id": chat_id},
+            payload,
         )
 
     async def edit_message(

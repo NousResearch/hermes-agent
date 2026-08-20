@@ -24,9 +24,15 @@ A quick search before you build saves your time and keeps the PR queue clean —
 
 - **Search both open *and* merged PRs and issues** for your topic or error symptom — the duplicate-check in the PR template fires at review time, after you've already done the work:
   ```bash
-  gh search issues --repo NousResearch/hermes-agent "<your terms>"
-  gh search prs --repo NousResearch/hermes-agent --state all "<your terms>"
+  gh search issues --repo NousResearch/hermes-agent --state open   "<your terms>"
+  gh search issues --repo NousResearch/hermes-agent --state closed "<your terms>"
+  gh search prs    --repo NousResearch/hermes-agent --state open   "<your terms>"
+  gh search prs    --repo NousResearch/hermes-agent --state closed "<your terms>"
   ```
+  Run each state explicitly. A search with no `--state` is ranked, not state-filtered: on a
+  broad query the open results fill the result limit and merged and closed ones never appear.
+  `--state closed` on PRs covers merged *and* closed-unmerged, so a rejected earlier attempt
+  shows up too.
   Or use the web UI: [issues](https://github.com/NousResearch/hermes-agent/issues?q=) · [PRs (all states)](https://github.com/NousResearch/hermes-agent/pulls?q=is%3Apr).
 - **The issue tracker can lag the code.** Many requested features are already implemented in-tree, so also search the source (`search_files`, or your editor's grep) for the capability before proposing it.
 - **If an open PR already addresses it**, consider reviewing or improving that one instead of opening a competing duplicate.

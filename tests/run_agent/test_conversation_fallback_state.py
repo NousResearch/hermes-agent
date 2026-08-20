@@ -205,3 +205,69 @@ def test_bare_tool_marker_is_not_reused_as_final_response():
         f"Expected 3 API calls (including nudge), got: {result['api_calls']}."
     )
 
+
+def test_last_resort_fallback_surfaces_prior_content_after_exhaustion():
+    """E2E: when nudge fails, prior-turn content is surfaced as last-resort.
+
+    Sequence:
+    1. Content + terminal (substantive) → cached, not housekeeping
+    2. Empty → enters nudge path (housekeeping shortcut skipped)
+    3. Empty after nudge → retries exhausted
+    4. Last-resort fallback surfaces prior-turn content
+    """
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_tool_defs("terminal")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1/",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent.valid_tool_names = {"terminal"}
+    agent.client = MagicMock()
+    agent.client.chat.completions.create.side_effect = [
+        # Turn 1: Content + substantive tool (sets _last_content_with_tools,
+        # but NOT housekeeping because terminal is substantive).
+        _response(
+            content="Let me check the config...",
+            finish_reason="tool_calls",
+            tool_calls=[_tool_call("terminal", "term1")],
+        ),
+        # Turn 2: Empty → enters nudge path (housekeeping shortcut skipped).
+        _response(content="", finish_reason="stop"),
+        # Turn 3: Nudge response also empty → empty-content retry 1/3
+        _response(content="", finish_reason="stop"),
+        # Turn 4: Retry 2/3
+        _response(content="", finish_reason="stop"),
+        # Turn 5: Retry 3/3
+        _response(content="", finish_reason="stop"),
+        # Turn 6: After exhaustion → last-resort fires
+        _response(content="", finish_reason="stop"),
+    ]
+
+    with (
+        patch("run_agent.handle_function_call", return_value="ok"),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("check the server config")
+
+    assert result["final_response"] == "Let me check the config...", (
+        f"Expected last-resort fallback to surface prior-turn content, "
+        f"got: {result['final_response']!r}"
+    )
+    assert result["turn_exit_reason"] == "fallback_prior_turn_content", (
+        f"Expected fallback_prior_turn_content exit reason, "
+        f"got: {result['turn_exit_reason']}"
+    )
+

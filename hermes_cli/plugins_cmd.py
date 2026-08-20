@@ -1336,14 +1336,14 @@ def _save_enabled_set(enabled: set) -> None:
 def _resolve_plugin_key(name: str) -> Optional[str]:
     """Resolve a user-supplied plugin identifier to its canonical registry key.
 
-    Accepts either the bare manifest name (``nemo_relay``), the directory
-    name, or the full path-derived key (``observability/nemo_relay``) and
+    Accepts either the bare manifest name (``langfuse``), the directory
+    name, or the full path-derived key (``observability/langfuse``) and
     returns the canonical key the loader gates on (``manifest.key`` or, for a
     flat plugin, the bare name). Returns ``None`` when no plugin matches.
 
     This is the single normalization point so ``hermes plugins enable`` /
     ``disable`` write the same key that ``PluginManager`` matches against —
-    nested category plugins (e.g. ``observability/nemo_relay``) included.
+    nested category plugins (e.g. ``observability/langfuse``) included.
     """
     entries = _discover_all_plugins()
     # 1. Exact match on canonical key or manifest name — always unambiguous.
@@ -1351,8 +1351,8 @@ def _resolve_plugin_key(name: str) -> Optional[str]:
         # entry = (name, version, description, source, dir_path, key)
         if name == entry[5] or name == entry[0]:
             return entry[5]
-    # 2. Fall back to a bare leaf-name match (e.g. "nemo_relay" ->
-    #    "observability/nemo_relay"), but only when it resolves to exactly one
+    # 2. Fall back to a bare leaf-name match (e.g. "langfuse" ->
+    #    "observability/langfuse"), but only when it resolves to exactly one
     #    plugin so we never silently pick the wrong same-named nested plugin.
     leaf_matches = [entry[5] for entry in entries if name == entry[5].split("/")[-1]]
     if len(leaf_matches) == 1:
@@ -1412,8 +1412,19 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     trusted and never prompted.
     """
     from rich.console import Console
+    from hermes_cli.relay_plugin_cutover import (
+        LEGACY_RELAY_PLUGIN_KEYS,
+        RELAY_PLUGINS_CONFIG_ENV,
+    )
 
     console = Console()
+    if name in LEGACY_RELAY_PLUGIN_KEYS:
+        console.print(
+            f"[red]Plugin '{name}' was removed.[/red] Relay lifecycle is owned "
+            f"by Hermes core; configure {RELAY_PLUGINS_CONFIG_ENV} instead."
+        )
+        sys.exit(1)
+
     # Discover the plugin — check installed (user) AND bundled, including
     # nested category plugins — and normalize to its canonical registry key.
     resolved = _resolve_plugin_key_and_source(name)
@@ -1421,6 +1432,13 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
     key, source = resolved
+
+    if key in LEGACY_RELAY_PLUGIN_KEYS:
+        console.print(
+            f"[red]Plugin '{key}' was removed.[/red] Relay lifecycle is owned "
+            f"by Hermes core; configure {RELAY_PLUGINS_CONFIG_ENV} instead."
+        )
+        sys.exit(1)
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()

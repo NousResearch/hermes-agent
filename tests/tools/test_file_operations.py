@@ -20,6 +20,8 @@ from tools.file_operations import (
     normalize_read_pagination,
     normalize_search_pagination,
 )
+from tools.environments.local import LocalEnvironment
+from tools.environments.ssh import SSHEnvironment
 
 
 # =========================================================================
@@ -230,8 +232,8 @@ class TestLintResult:
 
 @pytest.fixture()
 def mock_env():
-    """Create a mock terminal environment."""
-    env = MagicMock()
+    """Create a mock local terminal environment."""
+    env = MagicMock(spec=LocalEnvironment)
     env.cwd = "/tmp/test"
     env.execute.return_value = {"output": "", "returncode": 0}
     return env
@@ -835,6 +837,62 @@ class TestEscapeNativeToolArg:
         ops = self._ops(mock_env)
         out = ops._escape_native_tool_arg("/c/Users/alice/project")
         assert out == "'C:/Users/alice/project'"
+
+    def test_remote_posix_path_is_not_converted_on_windows_controller(self, monkeypatch):
+        """A Windows controller must preserve paths sent to an SSH backend."""
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        remote_env = MagicMock(spec=SSHEnvironment)
+        remote_env.cwd = "/c/remote/project"
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append(command)
+            if "test -e" in command:
+                return {"output": "exists", "returncode": 0}
+            if "command -v" in command:
+                return {"output": "yes", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        remote_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(remote_env)
+        result = ops.search("needle", path="/c/remote/project", target="files")
+
+        assert result.error is None
+        rg_commands = [c for c in commands if c.startswith("rg ")]
+        assert rg_commands, f"no rg command captured in: {commands}"
+        assert all("'/c/remote/project'" in c for c in rg_commands)
+        assert all("'C:/remote/project'" not in c for c in rg_commands)
+
+    @pytest.mark.windows_only
+    def test_local_windows_search_keeps_native_path_spellings(self, monkeypatch):
+        """The #84378 local boundary remains native for both spellings."""
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        local_env = MagicMock(spec=LocalEnvironment)
+        local_env.cwd = "/tmp/test"
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append(command)
+            if "test -e" in command:
+                return {"output": "exists", "returncode": 0}
+            if "command -v" in command:
+                return {"output": "yes", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        local_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(local_env)
+        for path in (r"C:\Users\fixture\target", "C:/Users/fixture/target"):
+            commands.clear()
+            result = ops.search("needle", path=path, target="files")
+            assert result.error is None
+            rg_commands = [c for c in commands if c.startswith("rg ")]
+            assert rg_commands, f"no rg command captured in: {commands}"
+            assert any("'C:/Users/fixture/target'" in c for c in rg_commands)
+            assert all("'/c/Users/fixture/target'" not in c for c in rg_commands)
 
     def test_posix_path_untouched_on_windows(self, mock_env, monkeypatch):
         """Multi-segment POSIX paths (/home/x, /tmp/y) are not drive paths."""

@@ -1167,11 +1167,17 @@ class ShellFileOperations(FileOperations):
 
         On non-Windows hosts this is exactly ``_escape_shell_arg``.
         """
-        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
+        from tools.environments.local import LocalEnvironment, _IS_WINDOWS, _msys_to_windows_path
 
-        if _IS_WINDOWS and arg:
+        # The controller's OS is not the execution domain.  A Windows Hermes
+        # process can drive SSH/Docker/other POSIX backends, where ``/c/...``
+        # is a remote POSIX path and must not be reverse-converted.  Only the
+        # local backend invokes a native Windows binary against the host
+        # filesystem, so keep the #84378 conversion at that boundary.
+        if _IS_WINDOWS and isinstance(self.env, LocalEnvironment) and arg:
             arg = _msys_to_windows_path(arg).replace("\\", "/")
-        return "'" + arg.replace("'", "'\"'\"'") + "'"
+            return "'" + arg.replace("'", "'\"'\"'") + "'"
+        return self._escape_shell_arg(arg)
 
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
         """Write ``content`` to ``path`` atomically via temp-file + rename.

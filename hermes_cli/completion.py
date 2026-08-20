@@ -3,7 +3,7 @@
 Walks the live argparse parser tree to generate accurate, always-up-to-date
 completion scripts — no hardcoded subcommand lists, no extra dependencies.
 
-Supports bash, zsh, and fish.
+Supports bash, zsh, fish, and PowerShell.
 """
 
 from __future__ import annotations
@@ -241,6 +241,113 @@ _hermes() {{
 }}
 
 compdef _hermes hermes
+"""
+
+
+
+# ---------------------------------------------------------------------------
+# PowerShell
+# ---------------------------------------------------------------------------
+def _ps_quote(value: str) -> str:
+    """Single-quote a value for PowerShell source."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def generate_powershell(parser: argparse.ArgumentParser) -> str:
+    """Generate a PowerShell argument completer script."""
+    tree = _walk(parser)
+    top_cmds = sorted(tree["subcommands"])
+    top_cmds_str = ", ".join(_ps_quote(cmd) for cmd in top_cmds)
+
+    sub_lines: list[str] = []
+    help_lines: list[str] = []
+    for cmd in top_cmds:
+        info = tree["subcommands"][cmd]
+        help_text = _clean(info.get("help", ""))
+        help_lines.append(f"    {_ps_quote(cmd)} = {_ps_quote(help_text)}")
+        if info["subcommands"]:
+            values = ", ".join(_ps_quote(sc) for sc in sorted(info["subcommands"]))
+            sub_lines.append(f"    {_ps_quote(cmd)} = @({values})")
+    subcommands_str = "\n".join(sub_lines)
+    help_str = "\n".join(help_lines)
+
+    return f"""# Hermes Agent PowerShell completion
+# Add to your PowerShell profile:
+#   hermes completion powershell | Out-String | Invoke-Expression
+
+function __HermesProfiles {{
+    'default'
+    $profilesDir = Join-Path $HOME '.hermes/profiles'
+    if (Test-Path -LiteralPath $profilesDir -PathType Container) {{
+        Get-ChildItem -LiteralPath $profilesDir -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object {{ $_.Name }}
+    }}
+}}
+
+$script:HermesTopCommands = @({top_cmds_str})
+$script:HermesSubcommands = @{{
+{subcommands_str}
+}}
+$script:HermesCommandHelp = @{{
+{help_str}
+}}
+$script:HermesProfileNameActions = @('use', 'delete', 'show', 'alias', 'rename', 'export')
+
+Register-ArgumentCompleter -Native -CommandName hermes -ScriptBlock {{
+    param($wordToComplete, $commandAst, $cursorPosition)
+
+    $tokens = @($commandAst.CommandElements | ForEach-Object {{ $_.Extent.Text }})
+    $args = @($tokens | Select-Object -Skip 1)
+    $current = if ($null -ne $wordToComplete) {{ $wordToComplete }} else {{ '' }}
+
+    if ($args.Count -ge 2) {{
+        $previous = $args[$args.Count - 2]
+        if ($previous -eq '-p' -or $previous -eq '--profile') {{
+            __HermesProfiles |
+                Where-Object {{ $_ -like "$current*" }} |
+                ForEach-Object {{ [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', 'Profile name') }}
+            return
+        }}
+    }}
+
+    $command = $null
+    foreach ($arg in $args) {{
+        if ($script:HermesTopCommands -contains $arg) {{
+            $command = $arg
+            break
+        }}
+    }}
+
+    if ($command -eq 'profile') {{
+        $profileAction = $null
+        foreach ($arg in $args) {{
+            if ($script:HermesProfileNameActions -contains $arg) {{
+                $profileAction = $arg
+                break
+            }}
+        }}
+        if ($null -ne $profileAction) {{
+            __HermesProfiles |
+                Where-Object {{ $_ -like "$current*" }} |
+                ForEach-Object {{ [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', 'Profile name') }}
+            return
+        }}
+    }}
+
+    if ($null -ne $command -and $script:HermesSubcommands.ContainsKey($command)) {{
+        $script:HermesSubcommands[$command] |
+            Where-Object {{ $_ -like "$current*" }} |
+            ForEach-Object {{ [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', "$command command") }}
+        return
+    }}
+
+    $script:HermesTopCommands |
+        Where-Object {{ $_ -like "$current*" }} |
+        ForEach-Object {{
+            $help = $script:HermesCommandHelp[$_]
+            [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $help)
+        }}
+}}
 """
 
 

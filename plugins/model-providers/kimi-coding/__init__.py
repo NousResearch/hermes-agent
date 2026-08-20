@@ -2,32 +2,18 @@
 redirected to api.kimi.com/coding by core)."""
 
 from typing import Any
-from urllib.parse import urlparse
 
 from agent.reasoning_effort import KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, clamp_effort, requested_effort
 from hermes_cli import __version__ as _HERMES_VERSION
 from providers import register_provider
 from providers.base import OMIT_TEMPERATURE, ProviderProfile
+from utils import is_kimi_coding_base_url
 
 _HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Hermes Agent",
     "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
 }
-
-
-def _is_confirmed_kimi_coding_url(base_url: str) -> bool:
-    """True only for Kimi Code's canonical HTTPS API surfaces."""
-    try:
-        p = urlparse(base_url)
-        port = p.port
-    except ValueError:
-        return False
-    return (
-        p.scheme.lower() == "https" and (p.hostname or "").lower() == "api.kimi.com" and port in (None, 443)
-        and p.username is None and p.password is None
-        and p.path.rstrip("/") in {"/coding", "/coding/v1"} and not p.query and not p.fragment
-    )
 
 
 class KimiProfile(ProviderProfile):
@@ -39,8 +25,8 @@ class KimiProfile(ProviderProfile):
         """Use Kimi Code's OpenAI-compatible surface for model discovery; the bare
         ``k3`` slug is only served there, so it is filtered off other endpoints."""
         effective_base = (base_url or self.base_url or "").rstrip("/")
-        confirmed_coding_endpoint = _is_confirmed_kimi_coding_url(effective_base)
-        if confirmed_coding_endpoint and urlparse(effective_base).path.rstrip("/") == "/coding":
+        confirmed_coding_endpoint = is_kimi_coding_base_url(effective_base)
+        if confirmed_coding_endpoint and effective_base.endswith("/coding"):
             effective_base += "/v1"
         models = super().fetch_models(api_key=api_key, base_url=effective_base or None, timeout=timeout)
         if models is None or confirmed_coding_endpoint:

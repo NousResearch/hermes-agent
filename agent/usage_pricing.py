@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
-from utils import base_url_host_matches, base_url_hostname
+from utils import base_url_host_matches, base_url_hostname, is_kimi_coding_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +301,10 @@ _SNAPSHOT_PROVIDER_ALIASES = {
 # AI Studio and Vertex host the same Gemini models (the Vertex "google/" vendor
 # prefix is stripped with the rest of the path).
 _GOOGLE_PROVIDER_NAMES = {"google", "gemini", "vertex", "google-gemini", "google-ai-studio", "google-vertex", "vertex-ai"}
+# Every picker/alias spelling that may resolve to a Kimi runtime; the Coding
+# Plan gate is the resolved base URL (utils.is_kimi_coding_base_url), not the alias.
+_KIMI_CN_PROVIDER_NAMES = {"kimi-coding-cn", "kimi-cn", "moonshot-cn"}
+_KIMI_PROVIDER_NAMES = {"kimi-coding", "kimi", "moonshot", *_KIMI_CN_PROVIDER_NAMES}
 
 
 def resolve_billing_route(
@@ -325,6 +329,11 @@ def resolve_billing_route(
 
     if provider_name == "openai-codex":
         return BillingRoute(provider="openai-codex", model=model, base_url=url, billing_mode="subscription_included")
+    # Only the confirmed api.kimi.com/coding runtime is a flat weekly-quota
+    # subscription. Legacy Moonshot and custom routes retain unknown billing.
+    if provider_name in _KIMI_PROVIDER_NAMES and is_kimi_coding_base_url(url):
+        kimi_provider = "kimi-coding-cn" if provider_name in _KIMI_CN_PROVIDER_NAMES else "kimi-coding"
+        return BillingRoute(provider=kimi_provider, model=bare, base_url=url, billing_mode="subscription_included")
     if provider_name == "openrouter" or host("openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=url, billing_mode="official_models_api")
     if provider_name == "nous" or host("inference-api.nousresearch.com"):

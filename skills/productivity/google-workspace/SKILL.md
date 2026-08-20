@@ -160,6 +160,7 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 
 ### Notes
 
+- Headless recovery: if a previously-authorized token is lost, deleted, or expired, Steps 2-5 above are the full fix — this flow requires no local webserver and no browser on the Hermes host itself. Don't fall back to the raw Python API or a CLI's own local-callback auth flow; they aren't designed for headless environments and will fail.
 - Token is stored at `~/.hermes/google_token.json` and auto-refreshes.
 - Pending OAuth session state/verifier are stored temporarily at `~/.hermes/google_oauth_pending.json` until exchange completes.
 - If `gws` is installed, `google_api.py` points it at the same `~/.hermes/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.

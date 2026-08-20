@@ -104,6 +104,7 @@ import shutil
 import sys
 import threading
 import time
+from collections import OrderedDict
 from types import SimpleNamespace
 from typing import Callable
 from datetime import datetime
@@ -783,8 +784,10 @@ def _cache_mcp_image_block(block) -> str:
 
 # Session-scoped dedupe cache: MCP image cache filenames are content hashes,
 # so the same image re-returned by a tool is never re-analyzed within one
-# process lifetime.
-_MCP_IMAGE_SUMMARY_CACHE: Dict[str, str] = {}
+# process lifetime. Bounded LRU — a long-lived gateway process that sees many
+# unique images must not grow this monotonically forever.
+_MCP_IMAGE_SUMMARY_CACHE_MAX = 512
+_MCP_IMAGE_SUMMARY_CACHE: "OrderedDict[str, str]" = OrderedDict()
 
 
 async def _summarize_mcp_image(image_tag: str) -> str:
@@ -813,6 +816,7 @@ async def _summarize_mcp_image(image_tag: str) -> str:
 
         cached = _MCP_IMAGE_SUMMARY_CACHE.get(image_path)
         if cached is not None:
+            _MCP_IMAGE_SUMMARY_CACHE.move_to_end(image_path)
             return cached
 
         from hermes_cli.config import cfg_get, load_config
@@ -861,6 +865,8 @@ async def _summarize_mcp_image(image_tag: str) -> str:
 
         summary = f"[图片内容摘要] {analysis.strip()}"
         _MCP_IMAGE_SUMMARY_CACHE[image_path] = summary
+        if len(_MCP_IMAGE_SUMMARY_CACHE) > _MCP_IMAGE_SUMMARY_CACHE_MAX:
+            _MCP_IMAGE_SUMMARY_CACHE.popitem(last=False)
         return summary
     except asyncio.TimeoutError:
         logger.debug("MCP image summary timed out for %s", image_tag)

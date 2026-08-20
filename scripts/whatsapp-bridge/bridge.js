@@ -468,6 +468,47 @@ async function startSocket() {
       if (!PAIR_JSON) {
         console.log('✅ WhatsApp connected!');
       }
+      // Read receipts need TWO account-side conditions beyond the /read
+      // endpoint, or SEND_READ_RECEIPTS half-works forever:
+      //
+      //  1. PRIVACY: the account's readreceipts privacy setting must be
+      //     'all' — otherwise readMessages() silently downgrades a real
+      //     'read' receipt to 'read-self' and the sender never sees blue
+      //     ticks.
+      //  2. PRESENCE: Baileys holds an internal sendActiveReceipts=false
+      //     until a GLOBAL 'available' presence is sent (messages-recv.js
+      //     flips it only on connection.update{isOnline}, which only
+      //     sendPresenceUpdate('available') emits — the per-chat
+      //     'composing' typing indicator takes the chatstate branch and
+      //     never touches it). With markOnlineOnConnect:false and no
+      //     presence assert, every inbound auto-ack goes out as
+      //     type='inactive': the sender never even sees the delivered
+      //     double-tick, and reads can't upgrade to blue — regardless of
+      //     the privacy setting or the /read flow.
+      //
+      // Both re-run on every reconnect because Baileys resets the flag on
+      // socket close. Trade-off, documented: while the bridge is up the
+      // account shows "online" — gated behind the same opt-in so default
+      // installs are unaffected.
+      if (SEND_READ_RECEIPTS && !PAIR_ONLY) {
+        (async () => {
+          try {
+            const privacy = await sock.fetchPrivacySettings(true);
+            if (privacy?.readreceipts !== 'all') {
+              await sock.updateReadReceiptsPrivacy('all');
+              console.log(`🔵 Read receipts privacy was '${privacy?.readreceipts}', set to 'all' (blue ticks enabled).`);
+            }
+          } catch (err) {
+            console.error('[bridge] Could not verify/set read-receipts privacy:', err?.message || err);
+          }
+          try {
+            await sock.sendPresenceUpdate('available');
+            console.log('🟢 Presence asserted available (delivery/read receipts active).');
+          } catch (err) {
+            console.error('[bridge] Could not assert available presence:', err?.message || err);
+          }
+        })();
+      }
       if (PAIR_ONLY) {
         if (!PAIR_JSON) {
           console.log('✅ Pairing complete. Credentials saved.');

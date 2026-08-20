@@ -4182,7 +4182,8 @@ def stream_tts_to_speaker(
 
         def _playback_worker() -> None:
             """Single consumer: play audio segments from the queue in order."""
-            assert streamer is not None
+            if streamer is None:
+                return
             if output_stream is not None:
                 import numpy as _np
 
@@ -4289,7 +4290,8 @@ def stream_tts_to_speaker(
 
         def _enqueue_audio(text_to_speak: str) -> None:
             """Synthesize *text_to_speak* and start prefetching immediately."""
-            assert streamer is not None
+            if streamer is None:
+                return
             try:
                 audio_iter = streamer.stream(text_to_speak)
             except Exception as exc:

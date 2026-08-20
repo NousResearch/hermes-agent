@@ -16,6 +16,67 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
+class TestOpenCodeGoCredentialBaseUrlNormalization:
+    """OpenCode Go pool rotation must preserve the endpoint shape for the active API mode."""
+
+    def _make_agent(self, *, api_mode="chat_completions", base_url="https://opencode.ai/zen/go/v1"):
+        from run_agent import AIAgent
+
+        with patch.object(AIAgent, "__init__", lambda self, **kw: None):
+            agent = AIAgent()
+
+        agent.provider = "opencode-go"
+        agent.model = "glm-5.2"
+        agent.api_mode = api_mode
+        agent.base_url = base_url
+        agent.api_key = "old-key"
+        agent._client_kwargs = {}
+        agent._apply_client_headers_for_base_url = MagicMock()
+        agent._replace_primary_openai_client = MagicMock()
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_api_key = "old-key"
+        agent._anthropic_base_url = base_url
+        agent._is_anthropic_oauth = False
+        return agent
+
+    def test_chat_completions_rotation_adds_v1_to_stripped_opencode_go_base_url(self):
+        """GLM/Kimi/MiMo-style OpenCode Go models must retry against /v1/chat/completions."""
+        entry = SimpleNamespace(
+            runtime_api_key="new-key",
+            access_token="new-key",
+            runtime_base_url="https://opencode.ai/zen/go",
+            base_url="https://opencode.ai/zen/go",
+        )
+        agent = self._make_agent(api_mode="chat_completions", base_url="https://opencode.ai/zen/go")
+
+        agent._swap_credential(entry)
+
+        assert agent.base_url == "https://opencode.ai/zen/go/v1"
+        assert agent._client_kwargs["base_url"] == "https://opencode.ai/zen/go/v1"
+        agent._replace_primary_openai_client.assert_called_once_with(reason="credential_rotation")
+
+    def test_anthropic_rotation_strips_v1_from_opencode_go_base_url(self):
+        """MiniMax/Claude-style OpenCode Go models must not build /v1/v1/messages."""
+        entry = SimpleNamespace(
+            runtime_api_key="new-key",
+            access_token="new-key",
+            runtime_base_url="https://opencode.ai/zen/go/v1",
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        agent = self._make_agent(api_mode="anthropic_messages", base_url="https://opencode.ai/zen/go/v1")
+        agent.model = "minimax-m2.7"
+
+        with patch("agent.anthropic_adapter.build_anthropic_client") as build_client:
+            build_client.return_value = MagicMock()
+            agent._swap_credential(entry)
+
+        assert agent.base_url == "https://opencode.ai/zen/go"
+        assert agent._anthropic_base_url == "https://opencode.ai/zen/go"
+        build_client.assert_called_once()
+        assert build_client.call_args.args[:2] == ("new-key", "https://opencode.ai/zen/go")
+
+
+
 # ---------------------------------------------------------------------------
 # 1. CLI _resolve_turn_agent_config includes credential_pool
 # ---------------------------------------------------------------------------

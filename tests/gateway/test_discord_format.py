@@ -43,6 +43,15 @@ class TestDiscordFormatMessage:
         assert out.rstrip().endswith("Done.")
         assert "|---" not in out
 
+    def test_markdown_preserved_in_format_message(self):
+        adapter = _make_discord_adapter()
+        text = (
+            "**Bold** and *italic* with `code`, ~~strike~~, and "
+            "[docs](https://example.com/docs)."
+        )
+        out = adapter.format_message(text)
+        assert out == text
+
 
 class TestDiscordToolPreviewFormatting:
     def test_truncated_url_keeps_full_click_target(self):

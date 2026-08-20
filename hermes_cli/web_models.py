@@ -195,7 +195,37 @@ class MoaPresetPayload(_MoaReferenceControls):
     # that round-trip the GET payload don't silently erase hand-set values.
     reference_max_tokens: Optional[int] = None
     fanout: Optional[str] = None
+    # Cap on concurrent advisor calls during the fan-out. None (default) = no
+    # user cap (module _MAX_REFERENCE_WORKERS ceiling); 1 = fully sequential,
+    # required for local JIT-loaded inference servers (LM Studio, #78011).
+    max_concurrent_references: Optional[int] = None
     enabled: bool = True
+
+    @field_validator("max_concurrent_references", mode="before")
+    @classmethod
+    def _validate_max_concurrent_references(cls, value: Any) -> Optional[int]:
+        """Reject bools/non-integral values before int coercion."""
+        if value is None or value == "":
+            return None
+        if isinstance(value, bool):
+            raise ValueError(
+                "max_concurrent_references must be a positive integer or null"
+            )
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(
+                "max_concurrent_references must be a positive integer or null"
+            )
+        try:
+            n = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "max_concurrent_references must be a positive integer or null"
+            ) from exc
+        if n <= 0:
+            raise ValueError(
+                "max_concurrent_references must be a positive integer or null"
+            )
+        return n
 
 
 class MoaConfigPayload(_MoaReferenceControls):

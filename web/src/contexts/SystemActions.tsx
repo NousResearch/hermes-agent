@@ -11,6 +11,8 @@ import {
 const ACTION_NAMES: Record<SystemAction, string> = {
   restart: "gateway-restart",
   update: "hermes-update",
+  start: "gateway-start",
+  stop: "gateway-stop",
 };
 
 export function SystemActionsProvider({
@@ -71,6 +73,12 @@ export function SystemActionsProvider({
       try {
         if (action === "restart") {
           await api.restartGateway();
+          setActiveAction(action);
+        } else if (action === "start") {
+          await api.startGateway();
+          setActiveAction(action);
+        } else if (action === "stop") {
+          await api.stopGateway();
           setActiveAction(action);
         } else {
           const resp = await api.updateHermes();

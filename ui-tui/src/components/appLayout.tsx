@@ -18,7 +18,8 @@ import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
   inputVisualHeight,
-  stableComposerColumns
+  stableComposerColumns,
+  transcriptPaneColumns
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
 import { composerPromptText } from '../lib/prompt.js'
@@ -151,7 +152,15 @@ const TranscriptPane = memo(function TranscriptPane({
   //  - narrow terminals: keep full width and reserve bottom rows instead, so
   //    the newest lines sit above the pet rather than getting cramped.
   const useGutter = !!petBox && composer.cols - railCols - petBox.width >= MIN_GUTTER_BODY_COLS
-  const bodyCols = Math.max(28, (useGutter && petBox ? composer.cols - petBox.width : composer.cols) - railCols)
+
+  const bodyCols = transcriptPaneColumns(
+    composer.cols,
+    railCols,
+    petBox?.width ?? 0,
+    useGutter,
+    TERMUX_TUI_MODE
+  )
+
   const petBandRows = petBox && !useGutter ? petBox.height : 0
 
   // LiveTodoPanel rides as a child of the latest user-message row so it

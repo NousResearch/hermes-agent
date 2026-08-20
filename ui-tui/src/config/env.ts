@@ -23,6 +23,8 @@ const parseToggle = (v?: string): boolean | null => {
   return null
 }
 
+// Startup-time constant by design: terminal mode is derived once before the TUI mounts.
+// It is not a reactive setting and must not change during a rendered session.
 export const TERMUX_TUI_MODE = isTermuxTuiMode()
 
 export const STARTUP_RESUME_ID = (process.env.HERMES_TUI_RESUME ?? '').trim()

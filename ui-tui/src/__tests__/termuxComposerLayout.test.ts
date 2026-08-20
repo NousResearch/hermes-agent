@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { stableComposerColumns, transcriptBodyWidth } from '../lib/inputMetrics.js'
+import { stableComposerColumns, terminalFloor, transcriptBodyWidth, transcriptPaneColumns } from '../lib/inputMetrics.js'
 import { composerPromptText } from '../lib/prompt.js'
 
 describe('Termux composer prompt + width guards', () => {
@@ -36,5 +36,29 @@ describe('Termux composer prompt + width guards', () => {
   it('keeps legacy desktop floor outside Termux mode', () => {
     expect(transcriptBodyWidth(24, 'assistant', '>')).toBe(20)
     expect(transcriptBodyWidth(24, 'user', 'upstr >')).toBe(20)
+  })
+
+  it('never widens the real transcript pane past a narrow Termux window', () => {
+    // Regression: TranscriptPane used to apply Math.max(28, ...) after the
+    // Termux-aware message helper had already removed its own width floor.
+    // The contradictory 28-column claim overflowed 18–24 column phone panes
+    // and caused resize/reflow oscillation (visible as UI bouncing).
+    for (const cols of [24, 21, 18, 16, 21, 24]) {
+      const pane = transcriptPaneColumns(cols, 2, 0, false, true)
+      expect(pane).toBe(cols - 2)
+      expect(pane).toBeLessThanOrEqual(cols)
+    }
+  })
+
+  it('keeps the desktop transcript readability floor outside Termux', () => {
+    expect(transcriptPaneColumns(18, 2, 0, false, false)).toBe(28)
+  })
+
+  it('lets every narrow Termux surface honor its physical dimension', () => {
+    for (const available of [24, 18, 12, 8, 1]) {
+      expect(terminalFloor(available, 64, true)).toBe(available)
+    }
+
+    expect(terminalFloor(18, 64, false)).toBe(64)
   })
 })

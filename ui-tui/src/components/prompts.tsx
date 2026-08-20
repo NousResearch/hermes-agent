@@ -1,6 +1,8 @@
 import { Box, Text, useInput, wrapAnsi } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
+import { TERMUX_TUI_MODE } from '../config/env.js'
+import { terminalFloor } from '../lib/inputMetrics.js'
 import { isMac } from '../lib/platform.js'
 import { clarifyBatchRevisitState } from '../lib/text.js'
 import type { Theme } from '../theme.js'
@@ -98,7 +100,7 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
   // Wrap long single-line commands to the panel width instead of clipping the
   // tail (mirrors the CLI approval panel fix — the full command must be
   // reviewable before approving). Border + paddingX + inner padding ≈ 8 cols.
-  const innerWidth = Math.max(20, cols - 8)
+  const innerWidth = terminalFloor(cols - 8, 20, TERMUX_TUI_MODE)
 
   const rawLines = req.command
     .split('\n')
@@ -381,7 +383,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
           <Text color={t.color.label}>{'> '}</Text>
           <TextInput
             color={t.color.text}
-            columns={Math.max(20, cols - 6)}
+            columns={terminalFloor(cols - 6, 20, TERMUX_TUI_MODE)}
             onChange={setCustom}
             onSubmit={onAnswer}
             value={custom}

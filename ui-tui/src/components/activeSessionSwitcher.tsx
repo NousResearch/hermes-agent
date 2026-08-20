@@ -1,6 +1,7 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { TERMUX_TUI_MODE } from '../config/env.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type {
@@ -11,6 +12,7 @@ import type {
   SessionListItem,
   SessionListResponse
 } from '../gatewayTypes.js'
+import { terminalFloor } from '../lib/inputMetrics.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -324,9 +326,9 @@ export function ActiveSessionSwitcher({
   const historyDisplayRef = useRef<SessionListItem[]>([])
   const { stdout } = useStdout()
   // Optional maxWidth lets grid layouts hand the switcher its cell budget.
-  const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const preferredWidth = terminalFloor(Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6), MIN_WIDTH, TERMUX_TUI_MODE)
   const width = clampOverlayWidth(preferredWidth, maxWidth)
-  const promptColumns = Math.max(20, width - 11)
+  const promptColumns = terminalFloor(width - 11, 20, TERMUX_TUI_MODE)
 
   // Rows are [new][live…][history…]: the "+ new" row is pinned first (index 0,
   // always rendered) and the live+history list is windowed below it. `total`

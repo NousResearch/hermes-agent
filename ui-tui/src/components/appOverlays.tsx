@@ -6,6 +6,8 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, hasFloatingPanel, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
+import { TERMUX_TUI_MODE } from '../config/env.js'
+import { terminalFloor } from '../lib/inputMetrics.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
@@ -336,7 +338,7 @@ export function FloatingOverlays({
               surface painting its own background, which is why it could
               disagree with every other overlay). Only the ACTIVE row carries
               a selection chip, mirroring the session switcher. */}
-          <Box flexDirection="column" width={Math.max(28, cols - 6)}>
+          <Box flexDirection="column" width={terminalFloor(cols - 6, 28, TERMUX_TUI_MODE)}>
             {(() => {
               const visible = completions.slice(start, start + viewportSize)
               // Two-column grid: the name track auto-sizes to the widest

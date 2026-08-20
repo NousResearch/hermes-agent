@@ -37,9 +37,12 @@ _WARNED_UTF32_PATHS: set[str] = set()
 # directly (otherwise the "credentials detected ✓" line looks identical to
 # the .env case and they don't know Bitwarden is wired up).
 _SECRET_SOURCES: dict[str, str] = {}
-# Applied values are immutable per-home snapshots.  ``os.environ`` is shared
-# across profiles and may be overwritten by a later home's source apply.
+# Stash for restore on failed refresh: a long-running gateway process
+# must keep serving existing secrets while secret-source backends are
+# temporarily unreachable.
+_SECRET_SOURCES_SNAPSHOT: dict[str, str] = {}
 _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
+_SECRET_SOURCE_VALUES_SNAPSHOT: dict[str, dict[str, str]] = {}
 
 # HERMES_HOME paths we've already pulled external secrets for during this
 # process.  ``load_hermes_dotenv()`` is called at module-import time from
@@ -247,10 +250,38 @@ def reset_secret_source_cache() -> None:
     subsequent calls in the same process are no-ops.  Call this to force the
     next call to re-pull — useful for tests, and for long-running processes
     that want to refresh after a config change.
+
+    Snapshots the current state before clearing so callers can restore it
+    via ``restore_cached_secret_sources()`` if the refresh fails.
     """
+    global _SECRET_SOURCES_SNAPSHOT, _SECRET_SOURCE_VALUES_SNAPSHOT
+    _SECRET_SOURCES_SNAPSHOT = dict(_SECRET_SOURCES)
+    _SECRET_SOURCE_VALUES_SNAPSHOT = {
+        k: dict(v) for k, v in _SECRET_SOURCE_VALUES_BY_HOME.items()
+    }
     _APPLIED_HOMES.clear()
     _SECRET_SOURCES.clear()
     _SECRET_SOURCE_VALUES_BY_HOME.clear()
+
+
+def restore_cached_secret_sources() -> None:
+    """Restore secret source state from the snapshot taken by the last
+    ``reset_secret_source_cache()`` call.
+
+    Call this when a refresh attempt fails so that existing secrets
+    keep their provenance.  The snapshot is deliberately NOT cleared
+    so it survives multiple restore-at-most-once patterns.
+    """
+    global _SECRET_SOURCES, _SECRET_SOURCE_VALUES_BY_HOME
+    if _SECRET_SOURCES_SNAPSHOT:
+        _SECRET_SOURCES.update(
+            {k: v for k, v in _SECRET_SOURCES_SNAPSHOT.items()
+             if k not in _SECRET_SOURCES}
+        )
+    if _SECRET_SOURCE_VALUES_SNAPSHOT:
+        for home_key, snap in _SECRET_SOURCE_VALUES_SNAPSHOT.items():
+            if home_key not in _SECRET_SOURCE_VALUES_BY_HOME:
+                _SECRET_SOURCE_VALUES_BY_HOME[home_key] = dict(snap)
 
 
 def format_secret_source_suffix(env_var: str) -> str:

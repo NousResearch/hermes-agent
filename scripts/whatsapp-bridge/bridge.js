@@ -7,6 +7,7 @@
  *
  * Endpoints (matches gateway/platforms/whatsapp.py expectations):
  *   GET  /messages       - Long-poll for new incoming messages
+ *   POST /resolve        - Validate a phone number and return its WhatsApp JID
  *   POST /send           - Send a message { chatId, message, replyTo? }
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
@@ -33,6 +34,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { resolveWhatsAppNumber } from './phone-resolver.js';
 import {
   buildPollPayload,
   createReconnectScheduler,
@@ -817,6 +819,23 @@ app.use((req, res, next) => {
 app.get('/messages', (req, res) => {
   const msgs = messageQueue.splice(0, messageQueue.length);
   res.json(msgs);
+});
+
+// Resolve a phone number through WhatsApp before storing it in an allowlist
+// or using it as a delivery target. WhatsApp numbers are not reliably inferred
+// from a national-format number because some countries have optional/mobile
+// prefixes; callers must use the returned JID.
+app.post('/resolve', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  try {
+    res.json(await resolveWhatsAppNumber(sock, req.body?.number));
+  } catch (err) {
+    const status = err instanceof TypeError ? 400 : 500;
+    res.status(status).json({ error: err.message });
+  }
 });
 
 // Send a message

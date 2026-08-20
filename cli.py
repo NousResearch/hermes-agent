@@ -11655,6 +11655,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 return True
             if cmd.name == "goal":
                 sub = tokens[1].lower() if len(tokens) > 1 else ""
+                # Control verbs intentionally own the first-token namespace:
+                # `/goal pause the rollout` is a pause command, not new goal
+                # prose. New goal text must use a non-control first token.
                 if sub in {"gate", "wait", "unwait", "pause", "resume", "status", "show"}:
                     return True
                 if len(tokens) == 1:

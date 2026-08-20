@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -141,3 +142,27 @@ class TestGoalInlineDetector:
         cli._agent_running = True
         assert cli._should_handle_goal_command_inline("goal gate add test") is False
         assert cli._should_handle_goal_command_inline("") is False
+
+    def test_goal_controls_do_not_touch_running_agent(self):
+        """Inline goal controls mutate GoalState only, never the active agent."""
+        cli = _make_cli()
+        cli._agent_running = True
+        cli.agent = MagicMock()
+        manager = MagicMock()
+        manager.add_gate.return_value = SimpleNamespace(
+            command="pytest -q",
+            max_retries=1,
+            timeout_seconds=30,
+        )
+        manager.has_goal.return_value = True
+        manager.add_subgoal.return_value = "keep the API stable"
+        manager.state = SimpleNamespace(subgoals=["keep the API stable"])
+        cli._get_goal_manager = lambda: manager
+
+        with patch("cli._cprint"):
+            cli._handle_goal_command("/goal gate add pytest -q")
+            cli._handle_subgoal_command("/subgoal keep the API stable")
+
+        manager.add_gate.assert_called_once_with("pytest -q")
+        manager.add_subgoal.assert_called_once_with("keep the API stable")
+        assert cli.agent.method_calls == []

@@ -10,12 +10,73 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import agent.copilot_acp_client as acp_client
 from agent.copilot_acp_client import CopilotACPClient
 
 
 class _FakeProcess:
     def __init__(self) -> None:
         self.stdin = io.StringIO()
+
+
+class _FakePyWinTypes:
+    error = OSError
+
+
+class _FakeWin32Con:
+    GENERIC_READ = 0x80000000
+    OPEN_EXISTING = 3
+    FILE_ATTRIBUTE_NORMAL = 0x80
+    FILE_ATTRIBUTE_DIRECTORY = 0x10
+    FILE_SHARE_READ = 1
+    FILE_SHARE_WRITE = 2
+    FILE_SHARE_DELETE = 4
+
+
+class _FakeWin32File:
+    def __init__(
+        self,
+        expected: Path,
+        *,
+        actual: Path | None = None,
+        attributes: int = 0,
+        number_of_links: int = 1,
+        chunks: list[bytes] | None = None,
+    ) -> None:
+        self.expected = expected
+        self.actual = actual or expected
+        self.attributes = attributes
+        self.number_of_links = number_of_links
+        self.chunks = list(chunks or [])
+        self.read_called = False
+        self.closed = False
+
+    def CreateFile(self, *_args):
+        return object()
+
+    def GetFinalPathNameByHandle(self, _handle, _flags):
+        return str(self.actual)
+
+    def GetFileInformationByHandle(self, _handle):
+        return (
+            self.attributes,
+            None,
+            None,
+            None,
+            0,
+            0,
+            0,
+            self.number_of_links,
+            0,
+            0,
+        )
+
+    def ReadFile(self, _handle, _size):
+        self.read_called = True
+        return 0, self.chunks.pop(0) if self.chunks else b""
+
+    def CloseHandle(self, _handle):
+        self.closed = True
 
 
 class CopilotACPClientSafetyTests(unittest.TestCase):
@@ -133,7 +194,213 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertIn("中文标题", content)
         self.assertIn("em dash —", content)
 
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(os, "O_NOFOLLOW"),
+        "POSIX symlink race",
+    )
+    def test_read_text_file_rejects_target_swapped_to_symlink_after_policy_check(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "note.txt"
+            target.write_text("inside", encoding="utf-8")
+            outside = root.parent / f"{root.name}-outside-read.txt"
+            outside.write_text("must-not-leak", encoding="utf-8")
 
+            def swap_target(_path: str) -> None:
+                target.unlink()
+                target.symlink_to(outside)
+
+            try:
+                with patch(
+                    "agent.copilot_acp_client.get_read_block_error",
+                    side_effect=swap_target,
+                ):
+                    response = self._dispatch(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 12,
+                            "method": "fs/read_text_file",
+                            "params": {"path": str(target)},
+                        },
+                        cwd=str(root),
+                    )
+            finally:
+                outside.unlink(missing_ok=True)
+
+        self.assertEqual((response.get("error") or {}).get("code"), -32602)
+        self.assertNotIn("must-not-leak", json.dumps(response))
+
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(os, "O_NOFOLLOW"),
+        "POSIX symlink race",
+    )
+    def test_read_text_file_rejects_parent_swapped_to_symlink_after_policy_check(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            parent = root / "subdir"
+            parent.mkdir()
+            target = parent / "note.txt"
+            target.write_text("inside", encoding="utf-8")
+            outside_dir = root.parent / f"{root.name}-outside-read-dir"
+            outside_dir.mkdir()
+            outside = outside_dir / "note.txt"
+            outside.write_text("must-not-leak-parent", encoding="utf-8")
+
+            def swap_parent(_path: str) -> None:
+                target.unlink()
+                parent.rmdir()
+                parent.symlink_to(outside_dir, target_is_directory=True)
+
+            try:
+                with patch(
+                    "agent.copilot_acp_client.get_read_block_error",
+                    side_effect=swap_parent,
+                ):
+                    response = self._dispatch(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 13,
+                            "method": "fs/read_text_file",
+                            "params": {"path": str(target)},
+                        },
+                        cwd=str(root),
+                    )
+            finally:
+                outside.unlink(missing_ok=True)
+                outside_dir.rmdir()
+
+        self.assertEqual((response.get("error") or {}).get("code"), -32602)
+        self.assertNotIn("must-not-leak-parent", json.dumps(response))
+
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(os, "link"),
+        "POSIX hardlink",
+    )
+    def test_read_text_file_rejects_hardlinked_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            outside = root.parent / f"{root.name}-outside-hardlink.txt"
+            outside.write_text("must-not-leak-hardlink", encoding="utf-8")
+            target = root / "note.txt"
+            os.link(outside, target)
+
+            try:
+                response = self._dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 14,
+                        "method": "fs/read_text_file",
+                        "params": {"path": str(target)},
+                    },
+                    cwd=str(root),
+                )
+            finally:
+                outside.unlink(missing_ok=True)
+
+        self.assertEqual((response.get("error") or {}).get("code"), -32602)
+        self.assertNotIn("must-not-leak-hardlink", json.dumps(response))
+
+    def test_read_text_file_uses_secure_windows_reader(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "note.txt"
+            target.write_text("inside", encoding="utf-8")
+
+            with (
+                patch("sys.platform", "win32"),
+                patch.object(
+                    acp_client,
+                    "_read_text_file_secure_windows",
+                    return_value="inside",
+                    create=True,
+                ) as secure_windows_read,
+            ):
+                response = self._dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 15,
+                        "method": "fs/read_text_file",
+                        "params": {"path": str(target)},
+                    },
+                    cwd=str(root),
+                )
+
+        self.assertNotIn("error", response)
+        self.assertEqual((response.get("result") or {}).get("content"), "inside")
+        secure_windows_read.assert_called_once_with(target.resolve(), str(root))
+
+    def test_windows_secure_reader_rejects_escaped_handle_before_reading(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = (Path(tmpdir) / "note.txt").resolve()
+            target.write_text("inside", encoding="utf-8")
+            fake_file = _FakeWin32File(
+                target,
+                actual=Path(tempfile.gettempdir()) / "escaped" / "secret.txt",
+                chunks=[b"must-not-leak"],
+            )
+            with patch.object(
+                acp_client,
+                "_win32_file_api",
+                return_value=(_FakePyWinTypes, _FakeWin32Con, fake_file),
+            ):
+                with self.assertRaisesRegex(PermissionError, "escaped"):
+                    acp_client._read_text_file_secure_windows(target, tmpdir)
+
+        self.assertFalse(fake_file.read_called)
+        self.assertTrue(fake_file.closed)
+
+    def test_windows_secure_reader_decodes_utf8_from_verified_handle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = (Path(tmpdir) / "note.txt").resolve()
+            target.write_text("ignored by fake handle", encoding="utf-8")
+            fake_file = _FakeWin32File(
+                target,
+                chunks=["中文 — ok".encode(), b""],
+            )
+            with patch.object(
+                acp_client,
+                "_win32_file_api",
+                return_value=(_FakePyWinTypes, _FakeWin32Con, fake_file),
+            ):
+                content = acp_client._read_text_file_secure_windows(target, tmpdir)
+
+        self.assertEqual(content, "中文 — ok")
+        self.assertTrue(fake_file.closed)
+
+    def test_windows_secure_reader_rejects_unsafe_handle_metadata(self) -> None:
+        cases = (
+            ("directory", _FakeWin32Con.FILE_ATTRIBUTE_DIRECTORY, 1),
+            ("reparse-point", 0x400, 1),
+            ("multiple-links", 0, 2),
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = (Path(tmpdir) / "note.txt").resolve()
+            target.write_text("inside", encoding="utf-8")
+            for label, attributes, number_of_links in cases:
+                with self.subTest(label=label):
+                    fake_file = _FakeWin32File(
+                        target,
+                        attributes=attributes,
+                        number_of_links=number_of_links,
+                        chunks=[b"must-not-leak"],
+                    )
+                    with patch.object(
+                        acp_client,
+                        "_win32_file_api",
+                        return_value=(_FakePyWinTypes, _FakeWin32Con, fake_file),
+                    ):
+                        with self.assertRaisesRegex(
+                            PermissionError,
+                            "regular, non-reparse, single-link",
+                        ):
+                            acp_client._read_text_file_secure_windows(target, tmpdir)
+
+                    self.assertFalse(fake_file.read_called)
+                    self.assertTrue(fake_file.closed)
 
     def test_write_text_file_respects_safe_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

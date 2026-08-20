@@ -111,7 +111,7 @@ Skill 必须先安装才能附加到 cron 任务。若 skill 缺失，先用 `he
 
 ### 检查 2：检查 skill 名称与 skill 文件夹名称
 
-Skill 名称区分大小写，必须与已安装 skill 的文件夹名称完全匹配。若任务指定的是 `ai-funding-daily-report`，但 skill 文件夹也是 `ai-funding-daily-report`，请从 `hermes skills list` 确认确切名称。
+Skill 名称区分大小写，必须与已安装 skill 的文件夹名称完全匹配。若任务指定的是 `ai-funding-report`，但 skill 文件夹是 `ai-funding-daily-report`，请从 `hermes skills list` 确认确切名称。
 
 ### 检查 3：依赖交互式工具的 skill
 

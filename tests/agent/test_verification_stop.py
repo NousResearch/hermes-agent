@@ -169,6 +169,11 @@ def test_no_suite_nudge_uses_canonical_temp_dir(tmp_path, monkeypatch):
     linked_temp = tmp_path / "linked-temp"
     linked_temp.symlink_to(real_temp, target_is_directory=True)
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(linked_temp))
+    # The workspace must have recorded edits in the DB for a nudge to fire.
+    # An unverified workspace with empty changed_paths is now skipped entirely.
+    mark_workspace_edited(
+        session_id="s1", cwd=project, paths=[str(project / "src" / "app.ts")]
+    )
 
     nudge = build_verify_on_stop_nudge(
         session_id="s1",
@@ -248,3 +253,62 @@ def test_is_non_code_path_classification():
     assert _is_non_code_path("src/app.ts") is False
     assert _is_non_code_path("config.yaml") is False
     assert _is_non_code_path("run_agent.py") is False
+
+
+def test_snapshot_returns_none_for_clean_unverified_workspace(tmp_path, monkeypatch):
+    """Lone workspace with unverified status and empty changed_paths →
+    _verification_snapshot returns None.  No nudge should fire."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    project = tmp_path / "project"
+    _make_project(project)
+    changed_path = str(project / "src" / "app.ts")
+
+    from agent.verification_stop import _verification_snapshot
+
+    # Workspace was edited but verification has never recorded any paths
+    # (the DB entry exists but changed_paths_json is '[]').
+    mark_workspace_edited(session_id="s2", cwd=project, paths=[])
+
+    # Build a non-empty changed_paths list (these came from the IDE event)
+    # to exercise the join of [changed from editor] ∪ [stored in DB].
+    snapshot = _verification_snapshot(
+        session_id="s2",
+        changed_paths=[changed_path],
+    )
+    assert snapshot is None, (
+        f"expected None for clean unverified workspace, got {snapshot}"
+    )
+
+
+def test_snapshot_none_when_all_skipped_passed_or_empty(tmp_path, monkeypatch):
+    """Multiple workspaces, all either passed or unverified-empty →
+    _verification_snapshot returns None."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    proj_a = tmp_path / "a"
+    proj_b = tmp_path / "b"
+    _make_project(proj_a)
+    _make_project(proj_b)
+
+    changed_a = str(proj_a / "src" / "app.ts")
+    changed_b = str(proj_b / "src" / "app.ts")
+
+    # proj_a: verified with record_terminal_result
+    record_terminal_result(
+        command="pnpm test",
+        cwd=proj_a,
+        session_id="s3",
+        exit_code=0,
+        output="green",
+    )
+    # proj_b: unverified with no recorded paths
+    mark_workspace_edited(session_id="s3", cwd=proj_b, paths=[])
+
+    from agent.verification_stop import _verification_snapshot
+
+    snapshot = _verification_snapshot(
+        session_id="s3",
+        changed_paths=[changed_a, changed_b],
+    )
+    assert snapshot is None, (
+        f"expected None when all workspaces are passed/clean, got {snapshot}"
+    )

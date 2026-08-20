@@ -2506,6 +2506,67 @@ class TestCronContinuableSurfaceInChannel:
             "does not match where the brief actually landed"
         )
 
+    def test_origin_scope_id_rides_delivery_metadata(self):
+        """REGRESSION (restart-shaped): the connector's fail-closed tenant
+        guard resolves the workspace from metadata.scope_id. After a gateway
+        restart the RelayAdapter's per-chat scope cache is cold, and
+        DeliveryRouter stamps scope only for the configured HOME channel —
+        so a scoped Slack origin that is NOT the home chat egressed with no
+        scope_id and could be rejected before delivery. The scheduler must
+        stamp the persisted origin scope onto origin-matching routing
+        metadata (and never onto fan-out targets, which the origin-match
+        gate already excludes)."""
+        captured = {}
+
+        class _SpyRouter:
+            def __init__(self, *a, **k):
+                pass
+
+            async def _deliver_to_platform(self, target, text, metadata):
+                captured["metadata"] = metadata
+                return {"success": True, "message_id": "msg_1"}
+
+        adapter = self._slack_adapter(supports_inchannel=True)
+        scoped_origin = {
+            "platform": "slack", "chat_id": "C123", "user_id": "U_HUMAN",
+            # Persisted workspace scope (captured at job creation). C123 is
+            # not any configured home channel in this harness.
+            "scope_id": "T0AAAA111",
+        }
+        with patch("gateway.delivery.DeliveryRouter", _SpyRouter), \
+             patch("cron.scheduler._seed_cron_channel_session", return_value=True):
+            self._run_inchannel_delivery(
+                {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
+                attach_to_session=False, origin=scoped_origin,
+            )
+        assert captured["metadata"].get("scope_id") == "T0AAAA111", (
+            "persisted origin scope_id did not reach the delivery metadata — "
+            "a cold-cache relay egress has no tenant discriminator"
+        )
+
+    def test_legacy_origin_without_scope_stamps_nothing(self):
+        """Legacy jobs (origin persisted before scope capture) must not gain
+        a scope_id key — the relay's per-chat cache / home-channel stamping
+        remain the only sources, exactly today's behavior."""
+        captured = {}
+
+        class _SpyRouter:
+            def __init__(self, *a, **k):
+                pass
+
+            async def _deliver_to_platform(self, target, text, metadata):
+                captured["metadata"] = metadata
+                return {"success": True, "message_id": "msg_1"}
+
+        adapter = self._slack_adapter(supports_inchannel=True)
+        with patch("gateway.delivery.DeliveryRouter", _SpyRouter), \
+             patch("cron.scheduler._seed_cron_channel_session", return_value=True):
+            self._run_inchannel_delivery(
+                {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
+                attach_to_session=False,
+            )
+        assert "scope_id" not in captured["metadata"]
+
     def test_seed_mirrors_into_exact_created_session_on_populated_chat(self):
         """REGRESSION (live, Alice 2026-08-19 19:17): 'in_channel seed did NOT
         land'. The seed created the flat session row, then mirror_to_session

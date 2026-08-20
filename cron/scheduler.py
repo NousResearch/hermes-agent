@@ -2996,6 +2996,22 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     route_metadata["thread_id"] = route_thread_id
                 media_metadata = {"thread_id": thread_id} if thread_id else None
 
+            # Relay egress needs a tenant discriminator on the frame: the
+            # connector's fail-closed guard resolves the workspace/guild from
+            # metadata.scope_id, and after a gateway restart the RelayAdapter's
+            # per-chat scope cache is COLD (learned only from inbound), while
+            # DeliveryRouter stamps scope only for the configured HOME channel
+            # (gateway/delivery.py). A scoped origin that is not the home chat
+            # therefore egressed with no scope_id at all and could be rejected
+            # before delivery — the delivery-leg sibling of the seed-key scope
+            # fix. Origin-matching targets only: a fan-out/broadcast target's
+            # tenant is NOT the origin's, and stamping the wrong scope is worse
+            # than none (the router/home path handles fan-out home targets).
+            if origin_target and origin.get("scope_id"):
+                route_metadata.setdefault("scope_id", str(origin["scope_id"]))
+                media_metadata = dict(media_metadata or {})
+                media_metadata.setdefault("scope_id", str(origin["scope_id"]))
+
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.
                 # Route through the gateway's DeliveryRouter so the live send

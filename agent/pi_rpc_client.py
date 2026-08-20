@@ -71,15 +71,22 @@ class PendingQuestion:
         self.created_at = time.time()
 
     def answer_with(self, text: str) -> dict[str, Any]:
-        """Map free text to the pi-ask-user response shape (AskResponse)."""
+        """Map free text onto pi's extension_ui_response dialog shapes.
+
+        Pi's RPC dialogs resolve via:
+          input/select -> ``r.cancelled ? undefined : r.value``
+          confirm      -> ``r.cancelled ? false : r.confirmed``
+        So the wire payload is ``{value}`` / ``{confirmed}`` / ``{cancelled}``
+        — NOT the third-party pi-ask-user ``{kind: ...}`` shape.
+        """
         cleaned = (text or "").strip()
         low = cleaned.lower()
         if self.method == "confirm":
-            # yes/no/true/false → selection with "yes" or "no".
             is_yes = low in ("y", "yes", "true", "ok", "confirm", "t", "1", "yeah", "yep")
-            payload = {"kind": "selection", "selections": ["yes"] if is_yes else ["no"]}
+            payload = {"confirmed": is_yes}
         elif self.method == "select":
-            # Match by option text first, then by 1‑based index.
+            # Match by option text first, then by 1‑based index, else pass the
+            # raw text through as a freeform selection.
             match = None
             for option in self.options:
                 if option and option.lower() == low:
@@ -89,12 +96,9 @@ class PendingQuestion:
                 idx = int(low)
                 if 1 <= idx <= len(self.options):
                     match = self.options[idx - 1]
-            if match is None and self.options:
-                match = self.options[0]
-            selections = [match] if match is not None else (self.options[:1] if self.options else [cleaned])
-            payload = {"kind": "selection", "selections": selections}
+            payload = {"value": match if match is not None else cleaned} if (match is not None or cleaned) else {"cancelled": True}
         else:  # input, editor — free text.
-            payload = {"kind": "freeform", "text": cleaned} if cleaned else {"cancelled": True}
+            payload = {"value": cleaned} if cleaned else {"cancelled": True}
         self.answer = payload
         self.answered.set()
         return payload
@@ -102,9 +106,9 @@ class PendingQuestion:
     def auto_answer(self) -> dict[str, Any]:
         """Default answer for fallback policy."""
         if self.method == "confirm":
-            return {"kind": "selection", "selections": ["yes"]}
+            return {"confirmed": True}
         if self.method == "select":
-            return {"kind": "selection", "selections": self.options[:1]} if self.options else {"cancelled": True}
+            return {"value": self.options[0]} if self.options else {"cancelled": True}
         return {"cancelled": True}
 
 
@@ -272,13 +276,19 @@ class PiRPCClient:
         tools = os.getenv("HERMES_PI_TOOLS", "").strip()
         if tools:
             argv += ["--tools", tools]
-        # Auto-load pi-ask-user (interactive questions) if installed; users can
-        # force extra extensions with HERMES_PI_EXTENSIONS (colon-separated).
+        # Auto-load the first-party hermes_ask_user extension (ships with this
+        # repo) and optionally pi-ask-user; users can force extra extensions
+        # with HERMES_PI_EXTENSIONS (colon-separated).
+        exts = []
+        first_party = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "extensions", "hermes_ask_user.ts"
+        )
+        if os.path.isfile(first_party):
+            exts.append(first_party)
         ask_user = os.path.join(
             os.path.expanduser("~"), ".pi", "agent", "npm", "node_modules",
             "pi-ask-user", "index.ts",
         )
-        exts = []
         if os.path.isfile(ask_user):
             exts.append(ask_user)
         exts += [p for p in os.getenv("HERMES_PI_EXTENSIONS", "").split(":") if p]

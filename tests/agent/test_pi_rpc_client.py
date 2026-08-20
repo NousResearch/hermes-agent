@@ -60,7 +60,7 @@ FAKE_PI = "\n".join([
     "    while True:",
     "        r = json.loads(sys.stdin.readline())",
     '        if r.get("type") == "extension_ui_response":',
-    '            ans = r.get("text"); break',
+    '            ans = r.get("value"); break',
     '    footer = \'{"status": "end_turn", "duration_s": 1.5, "touched_files": []}\'',
     '    send({"type": "assistant", "text": "answered with: %s\\n```pi-delegation-result\\n%s\\n```" % (ans, footer)})',
     '    last_text = "answered with: %s" % ans',
@@ -101,9 +101,9 @@ def create(client, content, timeout=120):
 @pytest.mark.parametrize(
     "method,steer,expected",
     [
-        ("input", "PostgreSQL on 5432", {"text": "PostgreSQL on 5432"}),
-        ("editor", "line1\nline2", {"text": "line1\nline2"}),
-        ("input", "  trimmed  ", {"text": "trimmed"}),
+        ("input", "PostgreSQL on 5432", {"value": "PostgreSQL on 5432"}),
+        ("editor", "line1\nline2", {"value": "line1\nline2"}),
+        ("input", "  trimmed  ", {"value": "trimmed"}),
         ("select", "2", {"value": "Use REST"}),
         ("select", "use grpc", {"value": "Use gRPC"}),
         ("confirm", "yes", {"confirmed": True}),
@@ -117,11 +117,11 @@ def test_answer_with_maps_per_method(method, steer, expected):
 
 
 def test_select_fallbacks_never_crash():
-    # non-matching, non-numeric text -> first option; empty options -> cancel
+    # non-matching, non-numeric text passes through as freeform value; empty text -> cancel
     q = PendingQuestion("select", "t", ["a", "b"])
-    assert q.answer_with("whatever") == {"value": "a"}
+    assert q.answer_with("whatever") == {"value": "whatever"}
     q2 = PendingQuestion("select", "t", [])
-    assert q2.answer_with("anything") == {"cancelled": True}
+    assert q2.answer_with("  ") == {"cancelled": True}
 
 
 def test_empty_input_is_cancelled_not_empty_text():
@@ -146,7 +146,7 @@ def test_answer_oldest_routes_to_oldest(clean_registry):
     assert answer_oldest_pending_question("the answer") is True
     assert old.id not in pending_questions
     assert new.id in pending_questions
-    assert old.answer == {"text": "the answer"}
+    assert old.answer == {"value": "the answer"}
     assert old.answered.is_set()
 
 

@@ -1808,12 +1808,50 @@ def suppress_credential_source(provider_id: str, source: str) -> None:
         _save_auth_store(auth_store)
 
 
+def _suppressed_sources_for(store: Dict[str, Any], provider_id: str) -> List[str]:
+    """The source names suppressed for ``provider_id`` in one auth store.
+
+    Both shapes of the per-provider entry are accepted: the writers above store a
+    list, but an older store may hold a mapping whose keys are the source names
+    (both migrate it in place the next time they touch it).
+    """
+    suppressed = store.get("suppressed_sources")
+    if not isinstance(suppressed, dict):
+        return []
+    entries = suppressed.get(provider_id)
+    if isinstance(entries, dict):
+        return [str(name) for name in entries]
+    if isinstance(entries, (list, tuple, set)):
+        return [str(name) for name in entries]
+    return []
+
+
 def is_source_suppressed(provider_id: str, source: str) -> bool:
-    """Check if a credential source has been suppressed by the user."""
+    """Check if a credential source has been suppressed by the user.
+
+    Consults the profile store AND the global root, and answers their UNION.
+
+    ``read_credential_pool`` and ``_load_provider_state_with_source`` already fall
+    back to the global root so a provider authed there is visible to a profile
+    process that has not configured it locally. This one did not, which left the
+    deny-list as the one piece of auth state a profile escaped by simply not
+    repeating it: ``hermes auth remove`` at the root writes a suppression marker
+    meaning "stop seeding this source", and every profile then re-seeded it anyway.
+
+    Union rather than shadow, deliberately. For a credential pool, a profile's own
+    answer should win when it has one — that is what shadowing is for. A deny-list
+    is the opposite: it must not be escapable by omission, or it is not a list. The
+    cost is that a global suppression can no longer be overridden in one profile;
+    expressing that now means unsuppressing globally and suppressing in the others,
+    which states the intent explicitly instead of relying on an absent key.
+
+    """
     try:
-        auth_store = _load_auth_store()
-        suppressed = auth_store.get("suppressed_sources", {})
-        return source in suppressed.get(provider_id, [])
+        if source in _suppressed_sources_for(_load_auth_store(), provider_id):
+            return True
+        # Returns {} in classic mode and never raises, so this is a no-op when
+        # there is no global root distinct from the profile.
+        return source in _suppressed_sources_for(_load_global_auth_store(), provider_id)
     except Exception:
         return False
 
@@ -1845,6 +1883,42 @@ def unsuppress_credential_source(provider_id: str, source: str) -> bool:
             auth_store.pop("suppressed_sources", None)
         _save_auth_store(auth_store)
         return True
+
+
+def lift_provider_suppressions(provider_id: str) -> List[str]:
+    """Lift every suppression marker this scope can write for ``provider_id``.
+
+    Re-adding a credential is an explicit re-engagement signal, so ``hermes auth
+    add`` and the dashboard's pool-add both clear the provider's whole deny-list
+    rather than only the source being re-added.
+
+    Writes stay scoped to this process's store — a profile must not rewrite the
+    global root on the other profiles' behalf — so in profile mode a marker set at
+    the root survives, and because ``is_source_suppressed`` answers the union of
+    both scopes it stays in force. Those names are RETURNED rather than dropped so
+    the caller can say so, instead of reporting a clean re-engagement and leaving
+    the user to wonder why a provider they just re-added still will not seed from
+    that source. Always empty in classic mode, where there is no global scope
+    distinct from this one.
+    """
+    try:
+        local = _suppressed_sources_for(_load_auth_store(), provider_id)
+    except Exception:
+        logger.debug(
+            "auth: could not read suppression markers for %s", provider_id, exc_info=True
+        )
+        return []
+    for source in local:
+        try:
+            unsuppress_credential_source(provider_id, source)
+        except Exception:
+            logger.debug(
+                "auth: could not lift suppression %s/%s", provider_id, source, exc_info=True
+            )
+    try:
+        return _suppressed_sources_for(_load_global_auth_store(), provider_id)
+    except Exception:
+        return []
 
 
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:

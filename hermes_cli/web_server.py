@@ -13889,13 +13889,19 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
         # Mirrors the `hermes auth add` behaviour in auth_commands.py.
         if not provider.startswith(CUSTOM_POOL_PREFIX):
             try:
-                from hermes_cli.auth import (
-                    _load_auth_store,
-                    unsuppress_credential_source,
-                )
-                suppressed = _load_auth_store().get("suppressed_sources", {})
-                for src in list(suppressed.get(provider, []) or []):
-                    unsuppress_credential_source(provider, src)
+                from hermes_cli.auth import lift_provider_suppressions
+
+                still_suppressed = lift_provider_suppressions(provider)
+                if still_suppressed:
+                    # A profile cannot rewrite the global root and
+                    # is_source_suppressed answers the union of both scopes, so
+                    # name the sources that stay denied instead of logging a
+                    # re-engagement that only partly happened.
+                    _log.warning(
+                        "pool add: %s stays suppressed at the global root for %s",
+                        provider,
+                        ", ".join(sorted(still_suppressed)),
+                    )
             except Exception:
                 _log.exception("unsuppress after pool add failed (non-fatal)")
     except HTTPException:

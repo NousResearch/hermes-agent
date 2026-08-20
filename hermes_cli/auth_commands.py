@@ -178,20 +178,23 @@ def auth_add_command(args) -> None:
 
     pool = load_pool(provider)
 
-    # Clear ALL suppressions for this provider — re-adding a credential is
-    # a strong signal the user wants auth re-enabled.  This covers env:*
-    # (shell-exported vars), gh_cli (copilot), claude_code, qwen-cli,
+    # Clear every suppression this scope can write for the provider — re-adding a
+    # credential is a strong signal the user wants auth re-enabled.  This covers
+    # env:* (shell-exported vars), gh_cli (copilot), claude_code, qwen-cli,
     # device_code (codex), etc.  One consistent re-engagement pattern.
     # Matches the Codex device_code re-link pattern that predates this.
     if not provider.startswith(CUSTOM_POOL_PREFIX):
         try:
-            from hermes_cli.auth import (
-                _load_auth_store,
-                unsuppress_credential_source,
-            )
-            suppressed = _load_auth_store().get("suppressed_sources", {})
-            for src in list(suppressed.get(provider, []) or []):
-                unsuppress_credential_source(provider, src)
+            from hermes_cli.auth import lift_provider_suppressions
+
+            still_suppressed = lift_provider_suppressions(provider)
+            if still_suppressed:
+                print(
+                    f"Note: {provider} stays suppressed at the global root for "
+                    f"{', '.join(sorted(still_suppressed))} — a profile cannot lift a "
+                    f"marker it does not own.  Re-run outside the profile to seed "
+                    f"from those sources."
+                )
         except Exception:
             pass
 

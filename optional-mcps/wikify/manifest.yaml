@@ -1,0 +1,52 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: wikify
+description: Search your study vault, list due flashcards, fetch official exam questions, and get the weekly study plan from your Wikify account.
+source: https://wikify.studio/docs/mcp
+
+# Wikify ships a remote MCP server with native OAuth 2.1 + PKCE + Dynamic
+# Client Registration (RFC 7591) over Streamable HTTP. Hermes's MCP client
+# + mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh
+# — nothing to install locally. A static Bearer token (wkfy_...) generated
+# at /app/settings/mcp is also accepted for headless usage.
+transport:
+  type: http
+  url: https://wikify.studio/api/mcp
+
+auth:
+  type: oauth
+  # Native MCP OAuth (case 1). The MCP client triggers the browser flow on
+  # the first probe / first connect, redirecting to wikify.studio/login.
+  # Scope: `mcp`. Discovery at:
+  #   https://wikify.studio/.well-known/oauth-authorization-server
+  #   https://wikify.studio/.well-known/oauth-protected-resource
+
+# Tool surface (7 read/write tools):
+#   wikify_search_vault         — semantic search across the user vault
+#   wikify_get_page             — fetch a page (markdown + frontmatter)
+#   wikify_list_due_flashcards  — SRS flashcards due for review now
+#   wikify_review_flashcard     — register a review (again/hard/good/easy)
+#   wikify_save_concept         — create a new concept page in the vault
+#   wikify_get_question         — fetch an official exam question by slug
+#   wikify_get_study_plan       — weekly study plan for a saved exam
+#
+# All tools declare `title` + `readOnlyHint` + `destructiveHint` +
+# `idempotentHint` + `openWorldHint` per MCP spec 2025-06-18. We leave
+# `default_enabled` unset so the install-time checklist starts with
+# everything pre-checked — users prune what they don't want.
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with
+  Wikify. Sign in with your Wikify account (Plus or Pro plan required)
+  and approve the connection.
+
+  After auth, restart your Hermes session so the Wikify tools are loaded.
+
+  Headless alternative: generate a personal token at
+  https://wikify.studio/app/settings/mcp and export it as
+  WIKIFY_MCP_TOKEN — Hermes will use it as a Bearer fallback.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure wikify

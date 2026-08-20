@@ -449,6 +449,29 @@ describe('visible user ordinals', () => {
 })
 
 describe('renderRpcResult', () => {
+  describe('reload.mcp', () => {
+    it('renders the confirmation warning', () => {
+      expect(
+        renderRpcResult(
+          { status: 'confirm_required', message: 'Reply `/reload-mcp now` to proceed.' },
+          'reload-mcp'
+        )
+      ).toBe('Reply `/reload-mcp now` to proceed.')
+    })
+
+    it('renders a successful reload confirmation', () => {
+      expect(renderRpcResult({ status: 'reloaded', loaded_rev: 'abc123' }, 'reload-mcp')).toBe(
+        '✓ MCP servers reloaded.'
+      )
+    })
+
+    it('reports a coalesced reload without exposing the revision hash', () => {
+      expect(renderRpcResult({ status: 'reloaded', coalesced: true, loaded_rev: 'abc123' }, 'reload-mcp')).toBe(
+        '✓ MCP servers reloaded (coalesced with another reload).'
+      )
+    })
+  })
+
   describe('session.compress (summary shape)', () => {
     it('renders the summary headline with token line and note', () => {
       expect(

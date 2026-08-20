@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
+from hermes_cli.dashboard_auth.middleware import _path_is_public
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
@@ -106,6 +107,68 @@ def test_other_public_api_paths_are_public_under_gate(gated_app, path):
             f"{path} redirected to {location} — should be public, "
             "not bounced to /login"
         )
+
+
+@pytest.mark.parametrize("path", [
+    "/auth/login",
+    "/auth/callback",
+    "/auth/password-login",
+    "/auth/logout",
+    "/login",
+    "/api/auth/providers",
+    "/favicon.ico",
+])
+def test_exact_public_entries_stay_public(path):
+    """Non-directory entries must still match themselves exactly.
+
+    Guards the fix below from over-correcting: tightening the matcher
+    must not lock operators out of the login page or the OAuth round
+    trip.
+    """
+    assert _path_is_public(path)
+
+
+@pytest.mark.parametrize("path", [
+    "/assets/index.css",
+    "/fonts/Collapse-Regular.woff2",
+    "/fonts-terminal/x.woff2",
+    "/ds-assets/icon.svg",
+    "/api/mcp/oauth/callback/abc123",
+])
+def test_directory_public_entries_still_match_children(path):
+    """Entries ending in ``/`` keep their prefix semantics."""
+    assert _path_is_public(path)
+
+
+@pytest.mark.parametrize("path", [
+    # Suffix extensions of exact entries must NOT inherit publicness.
+    "/loginX",
+    "/favicon.icox",
+    "/api/auth/providersX",
+    "/auth/loginX",
+    "/auth/logout-all",
+    # Directory entries were already safe (the trailing slash stops
+    # ``/assets/`` matching ``/assetsleak/``); pinned so the fix doesn't
+    # regress them.
+    "/assetsleak/secret.js",
+    "/fonts-terminalX/x.woff2",
+    # Genuinely gated routes stay gated.
+    "/api/config",
+    "/api/secrets",
+    "/sessions",
+    "/",
+])
+def test_public_entries_do_not_leak_prefixed_siblings(path):
+    """Regression pin for the ``startswith`` wildcard bug.
+
+    ``path == prefix or path.startswith(prefix)`` made every
+    non-directory entry a wildcard: ``/login`` exempted ``/loginX``,
+    ``/favicon.ico`` exempted ``/favicon.icox``. Any request whose path
+    merely started with such an entry bypassed the gate. Directory
+    entries were already safe — their trailing slash does the work —
+    and are pinned here so the fix doesn't regress them.
+    """
+    assert not _path_is_public(path)
 
 
 # ---------------------------------------------------------------------------

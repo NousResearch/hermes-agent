@@ -75,13 +75,18 @@ def _path_is_public(path: str) -> bool:
       exactly (no prefix expansion) so adding ``/api/status`` doesn't
       accidentally expose ``/api/status/secret-extension``.
     * :data:`_GATE_PUBLIC_PREFIXES` — auth-bootstrap routes and static
-      mounts. Prefix-matched so ``/assets/foo.css`` lights up via
-      ``/assets/``.
+      mounts. An entry ending in ``/`` is a directory prefix
+      (``/assets/`` lights up ``/assets/foo.css``); every other entry
+      is an exact path. Without that split a bare ``startswith`` turns
+      each non-directory entry into a wildcard, so ``/login`` also
+      exempts ``/loginX`` and ``/favicon.ico`` also exempts
+      ``/favicon.icox`` — any path that merely *starts with* a public
+      entry bypasses the gate.
     """
     if path in PUBLIC_API_PATHS:
         return True
     return any(
-        path == prefix or path.startswith(prefix)
+        path.startswith(prefix) if prefix.endswith("/") else path == prefix
         for prefix in _GATE_PUBLIC_PREFIXES
     )
 

@@ -164,18 +164,29 @@ def test_catalog_accepts_declared_credential(
     ).read_text(encoding="utf-8")
 
 
-def test_generic_env_endpoint_rejects_yolo_control_key(
+@pytest.mark.parametrize(
+    "protected_key",
+    ["HERMES_YOLO_MODE", "HERMES_OPTIONAL_MCPS"],
+)
+def test_generic_env_endpoint_rejects_protected_key(
     client: TestClient,
     catalog_env: Path,
+    protected_key: str,
 ):
     response = client.put(
         "/api/env",
         headers=HEADERS,
-        json={"key": "HERMES_YOLO_MODE", "value": "1"},
+        json={"key": protected_key, "value": "must-not-land"},
     )
 
     assert response.status_code == 400
     env_path = catalog_env / ".env"
-    assert not env_path.exists() or "HERMES_YOLO_MODE" not in env_path.read_text(
+    assert not env_path.exists() or protected_key not in env_path.read_text(
         encoding="utf-8"
     )
+
+
+def test_process_supplied_catalog_root_remains_supported(catalog_env: Path):
+    from hermes_cli.mcp_catalog import get_entry
+
+    assert get_entry("demo") is not None

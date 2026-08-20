@@ -259,6 +259,19 @@ class TestSlashCommandSessionIsolation:
         assert event.source.user_id == "U123"
         assert event.source.scope_id == "T123"
 
+    @pytest.mark.asyncio
+    async def test_channel_slash_command_obeys_allowed_channels(self, adapter):
+        adapter.config.extra["allowed_channels"] = ["C_ALLOWED"]
+
+        await adapter._handle_slash_command({
+            "text": "hello",
+            "user_id": "U123",
+            "channel_id": "C_BLOCKED",
+            "team_id": "T123",
+        })
+
+        adapter.handle_message.assert_not_awaited()
+
 
 class TestSlackWorkspaceCollisionIsolation:
     @pytest.mark.asyncio

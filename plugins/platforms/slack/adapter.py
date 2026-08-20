@@ -6048,6 +6048,7 @@ class SlackAdapter(BasePlatformAdapter):
                 chat_type="dm" if is_dm else "group",
                 user_id=user_id,
                 user_name="",
+                is_bot=sender_is_bot,
             )
             if not _auth_fn(_source):
                 logger.warning(
@@ -7173,12 +7174,11 @@ class SlackAdapter(BasePlatformAdapter):
         auth_fn = getattr(runner, "_is_user_authorized", None)
         if callable(auth_fn):
             try:
-                from gateway.session import SessionSource
-
-                source = SessionSource(
-                    platform=Platform.SLACK,
+                source = self.build_source(
                     chat_id=str(channel_id or normalized_user_id),
-                    chat_type="dm" if str(channel_id or "").startswith("D") else "group",
+                    # Interactive approval/confirmation authority must remain
+                    # distinct from ordinary channel-message initiation.
+                    chat_type="interaction",
                     user_id=normalized_user_id,
                     user_name=str(user_name).strip() if user_name else None,
                     scope_id=str(team_id) if team_id else None,
@@ -7529,6 +7529,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Handle a clarify button click (a choice or "Other") from Block Kit."""
         await ack()
 
+        team_id = self._event_team_id({}, body)
         action_id = action.get("action_id", "")
         value = action.get("value", "")
         message = body.get("message", {})
@@ -7541,6 +7542,7 @@ class SlackAdapter(BasePlatformAdapter):
             user_id,
             channel_id=channel_id,
             user_name=user_name,
+            team_id=team_id,
         ):
             logger.warning(
                 "[Slack] Unauthorized clarify click by %s (%s) - ignoring",
@@ -8240,6 +8242,14 @@ class SlackAdapter(BasePlatformAdapter):
                 user_id,
             )
             return
+        if not is_dm:
+            allowed_channels = self._slack_allowed_channels()
+            if allowed_channels and channel_id not in allowed_channels:
+                logger.info(
+                    "[Slack] Ignoring slash command from non-allowed channel: %s",
+                    channel_id,
+                )
+                return
         source = self.build_source(
             chat_id=channel_id,
             chat_type="dm" if is_dm else "group",
@@ -9492,14 +9502,12 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
     legacy ``slack_cfg`` block that used to live in
     ``gateway/config.py::load_gateway_config()`` before this migration.
 
-    The SlackAdapter reads its runtime configuration via ``os.getenv()``
-    throughout the connect / handle code paths, so rather than rewrite those
-    call sites to read from ``PlatformConfig.extra``, this hook keeps the
-    existing env-driven model and owns the YAML→env translation here, next to
-    the adapter that consumes it. Env vars take precedence over YAML — every
-    assignment is guarded by ``not os.getenv(...)`` so explicit env vars
-    survive a config.yaml update. Returns ``None`` because no extras are
-    seeded into ``PlatformConfig.extra`` directly (everything flows through env).
+    Most SlackAdapter runtime settings remain env-driven, so this hook owns
+    their YAML→env translation next to the adapter that consumes them. Env vars
+    take precedence over YAML — every env assignment is guarded by
+    ``not os.getenv(...)`` so explicit env vars survive a config.yaml update.
+    Security policy that must stay adapter/profile scoped is returned for
+    seeding into ``PlatformConfig.extra`` instead of process-global env.
     """
     if "require_mention" in slack_cfg and not os.getenv("SLACK_REQUIRE_MENTION"):
         os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
@@ -9551,7 +9559,17 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         if isinstance(ic, list):
             ic = ",".join(str(v) for v in ic)
         os.environ["SLACK_IGNORED_CHANNELS"] = str(ic)
-    return None  # all settings flow through env; nothing to merge into extras
+
+    # Keep channel-scoped user authorization in PlatformConfig.extra. Unlike
+    # legacy presentation/routing toggles above, this security boundary must
+    # never flow through process-global env in a multiplex gateway.
+    open_user_channels = slack_cfg.get("open_user_channels")
+    nested_extra = slack_cfg.get("extra")
+    if open_user_channels is None and isinstance(nested_extra, dict):
+        open_user_channels = nested_extra.get("open_user_channels")
+    if open_user_channels is not None:
+        return {"open_user_channels": open_user_channels}
+    return None
 
 
 def _is_connected(config) -> bool:
@@ -9590,8 +9608,8 @@ def register(ctx) -> None:
         # keys (require_mention, strict_mention, ignore_other_user_mentions,
         # thread_require_mention, allow_bots, free_response_channels,
         # reactions, disable_dms, allowed_channels, ignored_channels) into
-        # SLACK_* env vars that
-        # the adapter reads via os.getenv(). Replaces the
+        # SLACK_* env vars that the adapter reads via os.getenv(), while
+        # open_user_channels is returned as adapter-scoped extra config. Replaces the
         # hardcoded block in gateway/config.py. Hook contract: #24849.
         apply_yaml_config_fn=_apply_yaml_config,
         # Auth env vars for _is_user_authorized() integration

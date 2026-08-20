@@ -210,11 +210,14 @@ class TestSlackInteractiveAuth:
     def test_delegates_to_gateway_runner_auth(self):
         adapter = _make_adapter()
         runner = _attach_auth_runner(adapter, auth_fn=lambda source: source.user_id == "U_OK")
+        runner._profile_name_for_source = MagicMock(return_value="coder")
+        adapter.gateway_runner = runner
 
         assert adapter._is_interactive_user_authorized(
             "U_OK",
             channel_id="C1",
             user_name="operator",
+            team_id="T1",
         ) is True
         assert adapter._is_interactive_user_authorized(
             "U_BAD",
@@ -225,7 +228,30 @@ class TestSlackInteractiveAuth:
         assert len(runner.seen_sources) == 2
         assert runner.seen_sources[0].platform == Platform.SLACK
         assert runner.seen_sources[0].chat_id == "C1"
-        assert runner.seen_sources[0].chat_type == "group"
+        assert runner.seen_sources[0].chat_type == "interaction"
+        assert runner.seen_sources[0].scope_id == "T1"
+        assert runner.seen_sources[0].profile == "coder"
+        assert runner.seen_sources[0]._transport_adapter_ref() is adapter
+
+    @pytest.mark.asyncio
+    async def test_clarify_action_forwards_workspace_to_authorization(self):
+        adapter = _make_adapter()
+        adapter._is_interactive_user_authorized = MagicMock(return_value=False)
+
+        await adapter._handle_clarify_action(
+            AsyncMock(),
+            {
+                "team": {"id": "T1"},
+                "channel": {"id": "C1"},
+                "user": {"id": "U1", "name": "operator"},
+                "message": {"ts": "1.2"},
+            },
+            {"action_id": "hermes_clarify_0", "value": "clarify-1|0"},
+        )
+
+        adapter._is_interactive_user_authorized.assert_called_once_with(
+            "U1", channel_id="C1", user_name="operator", team_id="T1"
+        )
 
 
 class TestSlackSlashConfirmAction:

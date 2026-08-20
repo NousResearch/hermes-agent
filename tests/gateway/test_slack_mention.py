@@ -331,6 +331,8 @@ def test_config_bridges_slack_free_response_channels(monkeypatch, tmp_path):
     (hermes_home / "config.yaml").write_text(
         "slack:\n"
         "  require_mention: false\n"
+        "  open_user_channels:\n"
+        "    - C0AQWDLHY9M\n"
         "  free_response_channels:\n"
         "    - C0AQWDLHY9M\n"
         "    - C9999999999\n",
@@ -346,6 +348,7 @@ def test_config_bridges_slack_free_response_channels(monkeypatch, tmp_path):
     assert config is not None
     slack_extra = config.platforms[Platform.SLACK].extra
     assert slack_extra.get("require_mention") is False
+    assert slack_extra.get("open_user_channels") == ["C0AQWDLHY9M"]
     assert slack_extra.get("free_response_channels") == ["C0AQWDLHY9M", "C9999999999"]
     # Verify env vars were set by config bridging
     import os as _os
@@ -353,6 +356,30 @@ def test_config_bridges_slack_free_response_channels(monkeypatch, tmp_path):
     assert _os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C0AQWDLHY9M,C9999999999"
     _os.environ.pop("SLACK_REQUIRE_MENTION", None)
     _os.environ.pop("SLACK_FREE_RESPONSE_CHANNELS", None)
+
+
+def test_config_preserves_nested_slack_open_user_channels(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "platforms:\n"
+        "  slack:\n"
+        "    enabled: true\n"
+        "    extra:\n"
+        "      open_user_channels:\n"
+        "        - C0AQWDLHY9M\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    config = load_gateway_config()
+
+    assert config.platforms[Platform.SLACK].extra["open_user_channels"] == [
+        "C0AQWDLHY9M"
+    ]
 
 
 def test_top_level_slack_settings_do_not_disable_env_token_setup(monkeypatch, tmp_path):

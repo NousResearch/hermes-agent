@@ -512,6 +512,26 @@ class GatewayAuthorizationMixin:
         if not user_id:
             return False
 
+        # Slack can grant ordinary message initiation to every human in an
+        # exact channel without also granting DM or interactive-action access.
+        # Resolve the live adapter rather than process-global config/env so
+        # multiplexed profiles keep independent policies.  Deliberately do not
+        # special-case "*": this capability is exact-channel-only.
+        if (
+            source.platform == Platform.SLACK
+            and source.chat_type in {"group", "channel"}
+            and source.chat_id
+            and getattr(source, "is_bot", False) is not True
+        ):
+            adapter = self._adapter_for_source(source)
+            extra = getattr(getattr(adapter, "config", None), "extra", None)
+            if isinstance(extra, dict):
+                open_user_channels = _coerce_allow_set(
+                    extra.get("open_user_channels")
+                )
+                if source.chat_id in open_user_channels:
+                    return True
+
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",

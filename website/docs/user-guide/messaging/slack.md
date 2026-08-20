@@ -793,6 +793,33 @@ Behavior:
 
 See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
 
+### Channel-scoped initiator authorization (`open_user_channels`)
+
+Allow any human in specific channels to start ordinary Hermes work without
+adding them to the global `SLACK_ALLOWED_USERS` list:
+
+```yaml
+slack:
+  open_user_channels:
+    - "C0123456789"   # #team-assistant
+```
+
+This is an exact-channel initiator grant, not an administrator grant:
+
+- The listed channel's human participants may send ordinary messages, subject
+  to the existing `allowed_channels`, mention, strict-mention, and bot-sender
+  gates.
+- Their 1:1 DMs and group DMs remain governed by `SLACK_ALLOWED_USERS` and
+  pairing.
+- Approval and confirmation buttons remain governed by the global user
+  allowlists; channel-scoped initiators cannot approve privileged actions.
+- `"*"` is not a wildcard. List each Slack channel ID explicitly.
+- Each multiplexed profile uses its selected Slack adapter's own list.
+
+`allowed_channels` and `open_user_channels` solve different problems: the
+former restricts where the bot may run, while the latter grants ordinary
+message initiation to humans in an exact channel.
+
 ### Unauthorized User Handling
 
 ```yaml

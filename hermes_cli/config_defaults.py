@@ -2156,6 +2156,7 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
+        "open_user_channels": "",      # Exact channels where non-allowlisted humans may initiate ordinary work
         # Channel IDs where @mention is ALWAYS required, even when
         # require_mention is false globally (per-channel force-mention override).
         "require_mention_channels": "",

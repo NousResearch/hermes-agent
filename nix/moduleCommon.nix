@@ -557,6 +557,39 @@ let
       };
     };
 
+  # ── Named profile options ────────────────────────────────────────────────
+  # A named profile is another HERMES_HOME managed by the same module and
+  # package. Reuse the default-profile option declarations where their
+  # semantics stay profile-local, and omit process/package options that only
+  # make sense for the installation as a whole.
+  profileOptions =
+    {
+      defaultPackage,
+      defaultPackageText,
+      defaultWorkingDirectory,
+      defaultWorkingDirectoryText,
+    }:
+    builtins.removeAttrs
+      (sharedOptions {
+        inherit
+          defaultPackage
+          defaultPackageText
+          defaultWorkingDirectory
+          defaultWorkingDirectoryText
+          ;
+      })
+      [
+        "enable"
+        "package"
+        "extraPackages"
+        "extraPythonPackages"
+        "extraDependencyGroups"
+        "backend"
+      ]
+    // {
+      gateway.enable = lib.mkEnableOption "the messaging gateway service for this profile";
+    };
+
   # ── Package resolution ──────────────────────────────────────────────────
   effectivePackage =
     cfg:
@@ -651,8 +684,10 @@ let
   #
   #   run       the command prefix ("" on NixOS, "$DRY_RUN_CMD " on
   #             Home Manager)
-  #   owner     "user:group" that owns each file, or null for the user that
-  #             runs the activation
+  #   configRun command prefix for generated config merges; defaults to run
+  #   owner     "user:group" that owns installed files, or null for the user
+  #             that runs the activation
+  #   manageConfig whether this helper should write config.yaml
   #   modes     the file mode for each kind of file
   mkStateScript =
     {
@@ -666,7 +701,9 @@ let
       # activation writes to the path on the host.
       configWorkingDirectory ? workingDirectory,
       run ? "",
+      configRun ? run,
       owner ? null,
+      manageConfig ? true,
       modes,
       stateDirs ? [ ],
       # The module writes this value into the .managed marker. An
@@ -728,15 +765,22 @@ let
       # writes this file at runtime. A read-only symlink to the Nix store
       # breaks each save from the application. The Nix keys replace the keys
       # on disk, and the module keeps all other keys.
-      ${
+      ${lib.optionalString manageConfig (
         if cfg.configFile != null then
           "${inst} -m ${modes.config} -D ${configFiles.effective} ${hermesHome}/config.yaml"
         else
           ''
-            ${run}${configFiles.mergeScript} ${configFiles.generated} ${hermesHome}/config.yaml
-            ${run}chmod ${modes.config} ${hermesHome}/config.yaml
+            ${configRun}${configFiles.mergeScript} ${
+              lib.escapeShellArgs (
+                [
+                  (toString configFiles.generated)
+                  "${hermesHome}/config.yaml"
+                  modes.config
+                ]
+              )
+            }
           ''
-      }
+      )}
 
       # The managed-mode marker. It makes an interactive shell also refuse to
       # change the configuration that Nix owns.
@@ -869,6 +913,28 @@ let
       }
     ];
 
+  profileNameAssertions =
+    { profiles, optionPath }:
+    let
+      reserved = [
+        "default"
+        "hermes"
+        "root"
+        "sudo"
+        "test"
+        "tmp"
+      ];
+      valid = name: builtins.match "^[a-z0-9][a-z0-9_-]{0,63}$" name != null && !(lib.elem name reserved);
+    in
+    lib.mapAttrsToList (name: _profile: {
+      assertion = valid name;
+      message = ''
+        ${optionPath}: invalid profile name '${name}'. Names must match
+        [a-z0-9][a-z0-9_-]{0,63} and must not be one of:
+        ${lib.concatStringsSep ", " reserved}.
+      '';
+    }) profiles;
+
   # Two plugins with the same name use one nix-managed-<name> symlink. One of
   # the plugins then disappears without a message. Both modules assert
   # against this condition.
@@ -907,8 +973,10 @@ in
     mkEnvScript
     mkStateScript
     pluginNameAssertions
+    profileNameAssertions
     processEnvironment
     processPath
+    profileOptions
     sharedOptions
     stateSubdirs
     workspaceFilesAssertions

@@ -4969,6 +4969,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # post-update cron-jobs safety net uses it to detect job loss.
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
 
+    # A repository may carry a sealed downstream capability that an ordinary
+    # update would otherwise overwrite. Refuse before pausing services or
+    # mutating checkout/install state; the backup above remains recoverable.
+    _m()._enforce_downstream_update_guard(
+        _m().PROJECT_ROOT,
+        _m()._resolve_update_branch(args),
+        force_downstream_guard=getattr(args, "force_downstream_guard", False),
+    )
+
     _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
     if _windows_gateway_resume:
         import atexit as _atexit

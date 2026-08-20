@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import hashlib
 import json
 import os
@@ -1141,6 +1142,10 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Optional generic host-owned worker restriction/completion policy.
+    # Stored as JSON so plugins can opt tasks into exact tool and lifecycle
+    # constraints without core code naming a specific plugin or profile.
+    worker_policy: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1234,6 +1239,11 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            worker_policy=(
+                json.loads(row["worker_policy"])
+                if "worker_policy" in keys and row["worker_policy"]
+                else None
             ),
         )
 
@@ -1422,7 +1432,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Generic host-owned worker restriction/completion policy (JSON).
+    worker_policy        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1475,6 +1487,20 @@ CREATE TABLE IF NOT EXISTS task_runs (
     summary             TEXT,
     metadata            TEXT,
     error               TEXT
+);
+
+CREATE TABLE IF NOT EXISTS governed_worker_lifecycle (
+    task_id              TEXT PRIMARY KEY,
+    run_id               INTEGER NOT NULL,
+    worker_pid           INTEGER NOT NULL,
+    process_group        INTEGER NOT NULL,
+    start_identity       TEXT NOT NULL,
+    completion_lease     TEXT NOT NULL,
+    state                TEXT NOT NULL,
+    terminal_callback_at REAL,
+    exit_kind            TEXT,
+    exit_code            INTEGER,
+    cleanup_confirmed_at REAL
 );
 
 -- Files attached to a task (PDFs, images, source documents). The blob
@@ -2678,6 +2704,8 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
+    if "worker_policy" not in cols:
+        _add_column_if_missing(conn, "tasks", "worker_policy", "worker_policy TEXT")
 
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
@@ -3182,6 +3210,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    worker_policy: Optional[dict] = None,
     project_source_task_id: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
@@ -3229,6 +3258,25 @@ def create_task(
     if provider_override and not model_override:
         raise ValueError("provider_override requires a model_override")
     assignee = _canonical_assignee(assignee)
+    if worker_policy is not None:
+        if (
+            not isinstance(worker_policy, dict)
+            or not isinstance(worker_policy.get("policy_id"), str)
+            or not worker_policy["policy_id"]
+            or not isinstance(worker_policy.get("tool_allowlist"), list)
+            or not worker_policy["tool_allowlist"]
+            or not all(
+                isinstance(name, str) and name
+                for name in worker_policy["tool_allowlist"]
+            )
+            or worker_policy.get("completion_requires_exit_proof") is not True
+        ):
+            raise ValueError("invalid worker_policy")
+        worker_policy = {
+            "policy_id": worker_policy["policy_id"],
+            "tool_allowlist": sorted(set(worker_policy["tool_allowlist"])),
+            "completion_requires_exit_proof": True,
+        }
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -3497,8 +3545,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, worker_policy
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3524,6 +3572,11 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        (
+                            json.dumps(worker_policy, sort_keys=True)
+                            if worker_policy is not None
+                            else None
+                        ),
                     ),
                 )
                 for pid in parents:
@@ -3550,6 +3603,11 @@ def create_task(
                         "project_id": project_id,
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
+                        "worker_policy": (
+                            worker_policy.get("policy_id")
+                            if worker_policy is not None
+                            else None
+                        ),
                         "model_override": model_override,
                         "provider_override": provider_override,
                     },
@@ -5429,16 +5487,51 @@ def complete_task(
         conn, task_id, metadata, summary=summary, result=result,
     )
     with write_txn(conn):
-        # Parent completion is a hard invariant even for direct human review
-        # approval. A parent may have been reopened after this task entered
-        # ``review`` or ``running``.
+        # Parent completion remains a hard invariant even when governed
+        # completion first transitions into the exit-proof holding state.
         if not _parents_satisfied(conn, task_id):
             return False
-        prior = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?",
+        completion_policy = conn.execute(
+            "SELECT worker_policy, status FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
-        prior_status = prior["status"] if prior else None
+        prior_status = completion_policy["status"] if completion_policy else None
+        policy = (
+            json.loads(completion_policy["worker_policy"])
+            if completion_policy is not None
+            and completion_policy["worker_policy"]
+            else None
+        )
+        if (
+            completion_policy is not None
+            and completion_policy["status"] == "running"
+            and isinstance(policy, dict)
+            and policy.get("completion_requires_exit_proof") is True
+        ):
+            params: list[object] = [result, task_id]
+            run_guard = ""
+            if expected_run_id is not None:
+                run_guard = " AND current_run_id = ?"
+                params.append(int(expected_run_id))
+            cur = conn.execute(
+                "UPDATE tasks SET status='completion_pending', result=? "
+                "WHERE id=? AND status='running'" + run_guard,
+                params,
+            )
+            if cur.rowcount != 1:
+                return False
+            _append_event(
+                conn,
+                task_id,
+                "completion_requested",
+                {
+                    "worker_pid_retained": True,
+                    "claim_retained": True,
+                    "result_len": len(result) if result else 0,
+                },
+                run_id=expected_run_id,
+            )
+            return True
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -8094,7 +8187,82 @@ class DispatchResult:
 # belt-and-braces against unbounded growth on exotic platforms).
 _RECENT_WORKER_EXIT_TTL_SECONDS = 600
 _RECENT_WORKER_EXITS_MAX = 4096
-_recent_worker_exits: "dict[int, tuple[int, float]]" = {}
+_recent_worker_exits: "dict[int, tuple[int, float, Optional[str], Optional[int]]]" = {}
+_worker_process_identities: "dict[int, tuple[str, int]]" = {}
+
+
+class _DarwinProcBsdInfo(ctypes.Structure):
+    _fields_ = [
+        ("pbi_flags", ctypes.c_uint32),
+        ("pbi_status", ctypes.c_uint32),
+        ("pbi_xstatus", ctypes.c_uint32),
+        ("pbi_pid", ctypes.c_uint32),
+        ("pbi_ppid", ctypes.c_uint32),
+        ("pbi_uid", ctypes.c_uint32),
+        ("pbi_gid", ctypes.c_uint32),
+        ("pbi_ruid", ctypes.c_uint32),
+        ("pbi_rgid", ctypes.c_uint32),
+        ("pbi_svuid", ctypes.c_uint32),
+        ("pbi_svgid", ctypes.c_uint32),
+        ("rfu_1", ctypes.c_uint32),
+        ("pbi_comm", ctypes.c_char * 16),
+        ("pbi_name", ctypes.c_char * 32),
+        ("pbi_nfiles", ctypes.c_uint32),
+        ("pbi_pgid", ctypes.c_uint32),
+        ("pbi_pjobc", ctypes.c_uint32),
+        ("e_tdev", ctypes.c_uint32),
+        ("e_tpgid", ctypes.c_uint32),
+        ("pbi_nice", ctypes.c_int32),
+        ("pbi_start_tvsec", ctypes.c_uint64),
+        ("pbi_start_tvusec", ctypes.c_uint64),
+    ]
+
+
+def _linux_proc_start_time(raw: str) -> str:
+    """Return field 22 from one Linux ``/proc/<pid>/stat`` record."""
+    close = raw.rfind(")")
+    open_ = raw.find("(")
+    if open_ <= 0 or close <= open_:
+        raise ProcessLookupError("invalid Linux process stat identity")
+    # The process name in field 2 is parenthesized and may itself contain
+    # whitespace or parentheses. Fields after its final ')' begin with state
+    # (field 3), making starttime (field 22) index 19 in this suffix.
+    suffix = raw[close + 1 :].split()
+    if len(suffix) < 20:
+        raise ProcessLookupError("incomplete Linux process stat identity")
+    return suffix[19]
+
+
+def _kernel_process_start_identity(pid: int) -> str:
+    """Return a kernel-issued process incarnation identity for *pid*."""
+    if not pid or pid <= 0:
+        raise ProcessLookupError(pid)
+    if sys.platform == "darwin":
+        libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        proc_pidinfo = libproc.proc_pidinfo
+        proc_pidinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        proc_pidinfo.restype = ctypes.c_int
+        info = _DarwinProcBsdInfo()
+        size = proc_pidinfo(
+            int(pid),
+            3,  # PROC_PIDTBSDINFO
+            0,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        )
+        if size != ctypes.sizeof(info):
+            raise ProcessLookupError(pid)
+        return f"darwin-bsdinfo-v1:{info.pbi_start_tvsec}:{info.pbi_start_tvusec}"
+    if sys.platform.startswith("linux"):
+        raw = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8")
+        return f"linux-proc-stat-v1:{_linux_proc_start_time(raw)}"
+    raise OSError("kernel process-start identity unavailable")
 
 
 def _record_worker_exit(pid: int, raw_status: int) -> None:
@@ -8106,11 +8274,21 @@ def _record_worker_exit(pid: int, raw_status: int) -> None:
     if not pid or pid <= 0:
         return
     now = time.time()
-    _recent_worker_exits[int(pid)] = (int(raw_status), now)
+    identity, run_id = _worker_process_identities.pop(
+        int(pid), (None, None)
+    )
+    _recent_worker_exits[int(pid)] = (
+        int(raw_status),
+        now,
+        identity,
+        run_id,
+    )
     # Age-based trim: drop entries older than the TTL.
     if len(_recent_worker_exits) > _RECENT_WORKER_EXITS_MAX // 2:
         cutoff = now - _RECENT_WORKER_EXIT_TTL_SECONDS
-        for _pid in [p for p, (_s, t) in _recent_worker_exits.items() if t < cutoff]:
+        for _pid in [
+            p for p, entry in _recent_worker_exits.items() if entry[1] < cutoff
+        ]:
             _recent_worker_exits.pop(_pid, None)
     # Size cap as a final guard.
     if len(_recent_worker_exits) > _RECENT_WORKER_EXITS_MAX:
@@ -8118,6 +8296,22 @@ def _record_worker_exit(pid: int, raw_status: int) -> None:
         ordered = sorted(_recent_worker_exits.items(), key=lambda kv: kv[1][1])
         for _pid, _ in ordered[: len(ordered) // 2]:
             _recent_worker_exits.pop(_pid, None)
+
+
+def _process_group_terminated(process_group: int) -> bool:
+    """Positive POSIX proof that the controlled worker process group is gone."""
+    if os.name == "nt" or process_group <= 0:
+        return False
+    try:
+        os.killpg(int(process_group), 0)
+    except ProcessLookupError:
+        return True
+    except (PermissionError, OSError):
+        # A reused process-group id and an inaccessible live group are both
+        # indistinguishable from here.  Fail closed: only ESRCH is positive
+        # proof that the governed worker's complete process group is gone.
+        return False
+    return False
 
 
 def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
@@ -8147,7 +8341,7 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     entry = _recent_worker_exits.get(int(pid))
     if entry is None:
         return ("unknown", None)
-    raw, _ = entry
+    raw = entry[0]
     try:
         if os.WIFEXITED(raw):
             code = os.WEXITSTATUS(raw)
@@ -8894,7 +9088,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
         rows = conn.execute(
             "SELECT id, worker_pid, claim_lock, started_at, assignee "
             "FROM tasks "
-            "WHERE status = 'running' AND worker_pid IS NOT NULL"
+            "WHERE status IN ('running', 'completion_pending') "
+            "AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
         for row in rows:
@@ -8910,11 +9105,93 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 grace = _resolve_crash_grace_seconds()
                 if time.time() - started_at < grace:
                     continue
-            if _pid_alive(row["worker_pid"]):
-                continue
-
             pid = int(row["worker_pid"])
+            lifecycle = conn.execute(
+                "SELECT * FROM governed_worker_lifecycle WHERE task_id=?",
+                (row["id"],),
+            ).fetchone()
+            current_start_identity = None
+            if _pid_alive(pid):
+                if lifecycle is None:
+                    continue
+                try:
+                    current_start_identity = _kernel_process_start_identity(pid)
+                except (OSError, ProcessLookupError):
+                    current_start_identity = None
+                if current_start_identity == lifecycle["start_identity"]:
+                    continue
+                # PID reuse: the original worker is absent. Never signal or
+                # trust the replacement process that now owns the numeric PID.
+
             kind, code = _classify_worker_exit(pid)
+            current = conn.execute(
+                "SELECT status FROM tasks WHERE id=?", (row["id"],)
+            ).fetchone()
+            if current and current["status"] == "completion_pending":
+                callback = _recent_worker_exits.get(pid)
+                identity_matches = bool(
+                    lifecycle
+                    and lifecycle["worker_pid"] == pid
+                    and lifecycle["run_id"] == _current_run_id(conn, row["id"])
+                    and callback is not None
+                    and callback[2] == lifecycle["start_identity"]
+                    and callback[3] == lifecycle["run_id"]
+                )
+                cleanup_confirmed = bool(
+                    identity_matches
+                    and _process_group_terminated(lifecycle["process_group"])
+                )
+                if kind != "clean_exit" or not cleanup_confirmed:
+                    _append_event(
+                        conn,
+                        row["id"],
+                        "completion_exit_unconfirmed",
+                        {
+                            "pid": pid,
+                            "exit_kind": kind,
+                            "exit_code": code,
+                            "terminal_callback": callback is not None,
+                            "identity_matches": identity_matches,
+                            "process_group_terminated": cleanup_confirmed,
+                        },
+                    )
+                    continue
+                conn.execute(
+                    "UPDATE governed_worker_lifecycle SET state='terminated', "
+                    "terminal_callback_at=?, exit_kind=?, exit_code=?, "
+                    "cleanup_confirmed_at=? WHERE task_id=? AND start_identity=?",
+                    (
+                        callback[1],
+                        kind,
+                        code,
+                        time.time(),
+                        row["id"],
+                        lifecycle["start_identity"],
+                    ),
+                )
+                cur = conn.execute(
+                    "UPDATE tasks SET status='done', completed_at=?, "
+                    "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL "
+                    "WHERE id=? AND status='completion_pending' "
+                    "AND worker_pid=? AND claim_lock IS ?",
+                    (int(time.time()), row["id"], pid, row["claim_lock"]),
+                )
+                if cur.rowcount == 1:
+                    run_id = _end_run(
+                        conn,
+                        row["id"],
+                        outcome="completed",
+                        status="done",
+                        summary="worker exited after structured completion request",
+                    )
+                    _append_event(
+                        conn,
+                        row["id"],
+                        "completed_after_process_exit",
+                        {"pid": pid, "exit_code": code},
+                        run_id=run_id,
+                    )
+                continue
             rate_limited_exit = False
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
@@ -9360,6 +9637,49 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
             conn.execute(
                 "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
                 (int(pid), run_id),
+            )
+        task = conn.execute(
+            "SELECT worker_policy, claim_lock FROM tasks WHERE id=?",
+            (task_id,),
+        ).fetchone()
+        policy = (
+            json.loads(task["worker_policy"])
+            if task is not None and task["worker_policy"]
+            else None
+        )
+        if (
+            run_id is not None
+            and task is not None
+            and isinstance(policy, dict)
+            and policy.get("completion_requires_exit_proof") is True
+        ):
+            try:
+                start_identity = _kernel_process_start_identity(int(pid))
+            except (OSError, ProcessLookupError) as exc:
+                raise RuntimeError(
+                    "unable to attest spawned worker process identity"
+                ) from exc
+            try:
+                process_group = os.getpgid(int(pid))
+            except OSError:
+                process_group = int(pid)
+            conn.execute(
+                "INSERT OR REPLACE INTO governed_worker_lifecycle("
+                "task_id,run_id,worker_pid,process_group,start_identity,"
+                "completion_lease,state) VALUES (?,?,?,?,?,?,?)",
+                (
+                    task_id,
+                    int(run_id),
+                    int(pid),
+                    int(process_group),
+                    start_identity,
+                    str(task["claim_lock"] or secrets.token_hex(16)),
+                    "running",
+                ),
+            )
+            _worker_process_identities[int(pid)] = (
+                start_identity,
+                int(run_id),
             )
         _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
 
@@ -10250,6 +10570,7 @@ def _dispatch_once_locked(
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        pid = None
         try:
             # Back-compat: older spawn_fn signatures accept only
             # (task, workspace). Test stubs in the suite rely on that.
@@ -10289,6 +10610,23 @@ def _dispatch_once_locked(
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
         except Exception as exc:
+            if pid:
+                termination = _terminate_reclaimed_worker(
+                    int(pid), claimed.claim_lock
+                )
+                if _worker_survived_termination(termination):
+                    with write_txn(conn):
+                        _append_event(
+                            conn,
+                            claimed.id,
+                            "spawn_cleanup_unconfirmed",
+                            {
+                                "pid": int(pid),
+                                "error": str(exc)[:500],
+                                "termination": termination,
+                            },
+                        )
+                    continue
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
@@ -10385,6 +10723,7 @@ def _dispatch_once_locked(
             dict.fromkeys([*(claimed.skills or []), "sdlc-review"])
         )
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        pid = None
         try:
             import inspect
             try:
@@ -10409,6 +10748,23 @@ def _dispatch_once_locked(
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
         except Exception as exc:
+            if pid:
+                termination = _terminate_reclaimed_worker(
+                    int(pid), claimed.claim_lock
+                )
+                if _worker_survived_termination(termination):
+                    with write_txn(conn):
+                        _append_event(
+                            conn,
+                            claimed.id,
+                            "spawn_cleanup_unconfirmed",
+                            {
+                                "pid": int(pid),
+                                "error": str(exc)[:500],
+                                "termination": termination,
+                            },
+                        )
+                    continue
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
@@ -10680,6 +11036,19 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _worker_policy_env(task: Task) -> dict[str, str]:
+    policy = task.worker_policy
+    if isinstance(policy, dict) and policy.get("tool_allowlist"):
+        return {
+            "HERMES_INTERNAL_WORKER_POLICY": str(policy.get("policy_id", "")),
+            "HERMES_INTERNAL_WORKER_TOOL_ALLOWLIST": json.dumps(
+                sorted(set(policy["tool_allowlist"])),
+                separators=(",", ":"),
+            ),
+        }
+    return {}
+
+
 _retagged_workspace_roots: set[str] = set()
 
 
@@ -10762,6 +11131,10 @@ def _default_spawn(
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
+    # Narrow, Hermes-owned marker consumed only by model_tools when
+    # constructing the governed builder's schema. It grants no task,
+    # filesystem, or lifecycle authority by itself.
+    env.update(_worker_policy_env(task))
     env["HERMES_KANBAN_WORKSPACE"] = workspace
     # Tag the worker's session so it lands in state.db as `kanban`, not as an
     # untitled `cli` row. A worker is a dispatcher-owned run whose transcript is

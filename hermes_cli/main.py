@@ -484,6 +484,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.orchestrate import build_orchestrate_parser, cmd_orchestrate
 
 
 def _require_tty(command_name: str) -> None:
@@ -10058,6 +10059,114 @@ def _size_delta_label(saved_mb: float) -> str:
     return f"grew by {-saved_mb:.1f} MB"
 
 
+def _downstream_update_guard_status(
+    repo_root: Path, target_branch: str
+) -> list[str]:
+    """Return downstream guards that are present locally but absent upstream."""
+    guard_path = Path(repo_root) / ".hermes-update-guard.json"
+    git_dir = Path(repo_root) / ".git"
+    if guard_path.is_symlink():
+        raise RuntimeError("downstream update guard must not be a symlink")
+    if not guard_path.is_file():
+        raise RuntimeError("downstream update guard is missing")
+    if not git_dir.exists():
+        raise RuntimeError("downstream update guard Git metadata is missing")
+    try:
+        value = json.loads(guard_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("downstream update guard is unreadable") from exc
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema_version", "guards"}
+        or value.get("schema_version") != "1.0.0"
+        or not isinstance(value.get("guards"), list)
+        or not value["guards"]
+    ):
+        raise RuntimeError("downstream update guard is invalid")
+    safe_env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": "/nonexistent",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.fsmonitor",
+        "GIT_CONFIG_VALUE_0": "false",
+    }
+    target = f"refs/remotes/origin/{target_branch}"
+    blocked = []
+    for guard in value["guards"]:
+        if (
+            not isinstance(guard, dict)
+            or set(guard) != {"guard_id", "anchor_commit"}
+            or not isinstance(guard.get("guard_id"), str)
+            or not guard["guard_id"]
+            or not re.fullmatch(r"[0-9a-f]{40}", str(guard.get("anchor_commit", "")))
+        ):
+            raise RuntimeError("downstream update guard entry is invalid")
+        anchor = guard["anchor_commit"]
+        try:
+            local = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", anchor, "HEAD"],
+                cwd=repo_root,
+                env=safe_env,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError("downstream update guard Git probe failed") from exc
+        if local.returncode == 1:
+            continue
+        if local.returncode != 0:
+            raise RuntimeError("downstream update guard anchor is unavailable")
+        try:
+            upstream = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", anchor, target],
+                cwd=repo_root,
+                env=safe_env,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError("downstream update guard upstream probe failed") from exc
+        if upstream.returncode != 0:
+            blocked.append(guard["guard_id"])
+    return blocked
+
+
+def _enforce_downstream_update_guard(
+    repo_root: Path,
+    target_branch: str,
+    *,
+    force_downstream_guard: bool = False,
+) -> None:
+    try:
+        blocked = _downstream_update_guard_status(repo_root, target_branch)
+    except RuntimeError as exc:
+        if force_downstream_guard:
+            print(f"WARNING: overriding downstream update guard error: {exc}.")
+            return
+        print(f"Refusing update: {exc}.")
+        sys.exit(2)
+    if blocked:
+        if force_downstream_guard:
+            print(
+                "WARNING: overriding protected downstream update guard(s): "
+                f"{', '.join(blocked)}."
+            )
+            return
+        print("Refusing update while protected downstream commits are not upstream.")
+        print(f"  Guard(s): {', '.join(blocked)}")
+        print(
+            "  Rebase the protected Stage 1 history or incorporate it into "
+            f"origin/{target_branch} before updating."
+        )
+        sys.exit(2)
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -12759,6 +12868,8 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    build_orchestrate_parser(subparsers, cmd_orchestrate=cmd_orchestrate)
 
     # =========================================================================
     # project command — named, multi-folder workspaces

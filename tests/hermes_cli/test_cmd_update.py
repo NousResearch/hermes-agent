@@ -916,6 +916,7 @@ class TestNodeRuntimeNpmResolution:
         monkeypatch.setattr(hm, "PROJECT_ROOT", project_root)
         monkeypatch.setattr(hm, "_is_windows", lambda: True)
         monkeypatch.setattr(hm, "_run_pre_update_backup", lambda _args: None)
+        monkeypatch.setattr(hm, "_enforce_downstream_update_guard", lambda *a, **k: None)
         monkeypatch.setattr(hm, "_pause_windows_gateways_for_update", lambda: None)
         monkeypatch.setattr(hm, "_get_origin_url", lambda *_args: "")
         monkeypatch.setattr(

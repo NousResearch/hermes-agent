@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -1514,6 +1515,16 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Board-scoped key/value metadata. Rows are write-once. The only key today
+-- is the activity-ref salt: the HMAC key that pseudonymizes task and event
+-- ids in board_activity. It lives inside the board's own DB file so it
+-- travels with backups, copies, VACUUM INTO, and container remounts; a
+-- sidecar file would desync from the DB and churn every ref.
+CREATE TABLE IF NOT EXISTS kanban_meta (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -2833,6 +2844,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "UPDATE task_events SET kind = ? WHERE kind = ?",
             (new, old),
         )
+
+    # Eagerly seed the activity-ref salt so board_activity (documented as
+    # read-only) never has to write on its own path. The sqlite_master
+    # probe is mandatory, not defensive padding: this function is also
+    # called directly by legacy-migration tests against hand-built
+    # schemas that never ran SCHEMA_SQL and have no kanban_meta table.
+    meta_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_meta'"
+    ).fetchone() is not None
+    if meta_table_exists:
+        _activity_ref_salt(conn)
 
     _rebuild_drifted_tables(conn)
 
@@ -11286,6 +11308,169 @@ def board_stats(conn: sqlite3.Connection) -> dict:
         "by_assignee": by_assignee,
         "oldest_ready_age_seconds": oldest_ready_age,
         "now": now,
+    }
+
+
+DASHBOARD_ACTIVITY_KINDS = frozenset({
+    "created",
+    "assigned",
+    "claimed",
+    "spawned",
+    "completed",
+    "blocked",
+    "unblocked",
+    "promoted",
+    "crashed",
+    "timed_out",
+    "gave_up",
+    "released",
+    "scheduled",
+    "archived",
+})
+
+
+_ACTIVITY_SALT_META_KEY = "activity_ref_salt_v1"
+_ACTIVITY_SALT_BYTES = 32
+
+
+def _activity_ref_salt(conn: sqlite3.Connection) -> bytes:
+    """Return the per-board HMAC key that pseudonymizes activity refs.
+
+    Write-once: the row is seeded on first use and never updated or
+    deleted (see kanban_meta in SCHEMA_SQL). That keeps board_activity
+    refs stable for as long as the underlying row ids are stable. A
+    legacy board rebuilt by _rebuild_drifted_tables reassigns
+    task_events ids, so its refs churn once even though the salt
+    survives.
+
+    Concurrency: several processes can race to seed this row on a
+    freshly created board. ``INSERT OR IGNORE`` lets exactly one writer
+    win; the unconditional re-SELECT afterward -- not the locally
+    generated candidate -- is what every racing process returns, so
+    they all converge on the same salt regardless of who won. Do not
+    optimize that re-SELECT away.
+
+    Not wrapped in write_txn: _sqlite_connect() opens with
+    isolation_level=None (autocommit), so the single INSERT OR IGNORE is
+    already its own atomic transaction. write_txn additionally calls
+    _assert_not_delegated_child_mutation(), which would break a
+    delegate_task child that only reads the activity projection, and
+    issues BEGIN IMMEDIATE, which cannot nest inside a caller's open
+    transaction.
+    """
+    row = conn.execute(
+        "SELECT value FROM kanban_meta WHERE key = ?", (_ACTIVITY_SALT_META_KEY,)
+    ).fetchone()
+    if row is None:
+        if _board_has_activity_history(conn):
+            # A board with recorded history should already own a salt. Losing it
+            # reseeds silently and churns every ref exactly once, which a consumer
+            # that dedupes on event_ref reads as "everything is new". Say so.
+            _log.warning(
+                "kanban: activity ref salt missing on a board with recorded "
+                "history; reseeding, so activity refs will change once"
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO kanban_meta (key, value) VALUES (?, ?)",
+            (_ACTIVITY_SALT_META_KEY, secrets.token_hex(32)),
+        )
+        row = conn.execute(
+            "SELECT value FROM kanban_meta WHERE key = ?", (_ACTIVITY_SALT_META_KEY,)
+        ).fetchone()
+    salt = bytes.fromhex(row[0])
+    if len(salt) != _ACTIVITY_SALT_BYTES:
+        # bytes.fromhex("") returns b"", and HMAC under an empty key is no key at
+        # all: the 32-bit task id space becomes brute-forceable again. This is the
+        # one function whose whole job is to withhold that, so it fails closed.
+        raise ValueError("kanban activity ref salt is malformed")
+    return salt
+
+
+def _board_has_activity_history(conn: sqlite3.Connection) -> bool:
+    return (
+        conn.execute("SELECT 1 FROM task_events LIMIT 1").fetchone() is not None
+    )
+
+
+def _dashboard_activity_ref(prefix: str, salt: bytes, value: object) -> str:
+    digest = hmac.new(
+        salt, f"hermes-kanban-activity-v1\x1f{prefix}\x1f{value}".encode("utf-8"), hashlib.sha256
+    ).hexdigest()[:16]
+    return f"{prefix}_{digest}"
+
+
+def board_activity(conn: sqlite3.Connection, *, limit: int = 80) -> dict:
+    """Return a bounded lifecycle projection without task content or raw IDs.
+
+    This is the read-only source contract for operator dashboards. Event
+    payloads are consulted only to recover the assignee recorded at creation or
+    reassignment; payloads, task content, run metadata, claim data, and raw
+    identifiers never leave this function.
+
+    event_ref and work_ref are HMAC-SHA256 digests keyed by a per-board
+    secret stored write-once in kanban_meta (see _activity_ref_salt), so
+    they are stable regardless of where the file is mounted or how it is
+    reached. Independently created boards therefore hold different keys
+    and their refs cannot be compared. A board copied from another one
+    carries that board's key, so refs stay comparable between the two --
+    which is what makes a copy still readable by a dashboard, and why
+    the key must be treated as board-identifying material.
+    """
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+        raise ValueError("activity limit must be an integer between 1 and 200")
+
+    salt = _activity_ref_salt(conn)
+    kinds = sorted(DASHBOARD_ACTIVITY_KINDS)
+    placeholders = ",".join("?" for _ in kinds)
+    rows = conn.execute(
+        "SELECT e.id, e.task_id, e.kind, e.payload, e.created_at, "
+        "       r.profile AS run_profile "
+        "FROM task_events e "
+        "LEFT JOIN task_runs r ON r.id = e.run_id "
+        f"WHERE e.kind IN ({placeholders}) "
+        "ORDER BY e.id DESC LIMIT ?",
+        (*kinds, limit),
+    ).fetchall()
+
+    events = []
+    last_profile_by_work: dict[str, Optional[str]] = {}
+    for row in reversed(rows):
+        payload = None
+        if row["payload"]:
+            try:
+                candidate = json.loads(row["payload"])
+                payload = candidate if isinstance(candidate, dict) else None
+            except (TypeError, ValueError):
+                payload = None
+        payload_profile = payload.get("assignee") if payload else None
+        profile = (
+            payload_profile
+            if row["kind"] in {"created", "assigned"} and isinstance(payload_profile, str)
+            else row["run_profile"]
+        )
+        profile = profile if isinstance(profile, str) and profile else None
+        work_ref = _dashboard_activity_ref("work", salt, row["task_id"])
+        previous_profile = last_profile_by_work.get(work_ref)
+        events.append({
+            "event_ref": _dashboard_activity_ref("event", salt, row["id"]),
+            "work_ref": work_ref,
+            "kind": row["kind"],
+            "occurred_at": int(row["created_at"]),
+            "profile": profile,
+            "previous_profile": (
+                previous_profile
+                if row["kind"] == "assigned" and previous_profile != profile
+                else None
+            ),
+        })
+        if profile is not None:
+            last_profile_by_work[work_ref] = profile
+
+    return {
+        "contract_version": "hermes-kanban-activity-v1",
+        "retention_limit": limit,
+        "now": int(time.time()),
+        "events": events,
     }
 
 

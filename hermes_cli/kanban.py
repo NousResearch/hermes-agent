@@ -805,6 +805,21 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_stats.add_argument("--json", action="store_true")
 
+    # --- activity ---
+    p_activity = sub.add_parser(
+        "activity",
+        help="Privacy-safe bounded lifecycle projection for operator dashboards",
+    )
+    p_activity.add_argument(
+        "--limit",
+        type=int,
+        default=80,
+        choices=range(1, 201),
+        metavar="1..200",
+        help="Maximum recent lifecycle events to return (default: 80)",
+    )
+    p_activity.add_argument("--json", action="store_true")
+
     # --- notify subscribe / list / remove ---
     p_nsub = sub.add_parser(
         "notify-subscribe",
@@ -1140,6 +1155,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "daemon":   _cmd_daemon,
             "watch":    _cmd_watch,
             "stats":    _cmd_stats,
+            "activity": _cmd_activity,
             "log":      _cmd_log,
             "runs":     _cmd_runs,
             "heartbeat": _cmd_heartbeat,
@@ -2934,6 +2950,22 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     age = stats["oldest_ready_age_seconds"]
     if age is not None:
         print(f"\nOldest ready task age: {int(age)}s")
+    return 0
+
+
+def _cmd_activity(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        activity = kb.board_activity(conn, limit=args.limit)
+    if getattr(args, "json", False):
+        print(json.dumps(activity, indent=2, ensure_ascii=False))
+        return 0
+    print("Recent privacy-safe lifecycle activity:")
+    for event in activity["events"]:
+        profile = event["profile"] or "unresolved"
+        print(
+            f"  {_fmt_ts(event['occurred_at'])}  {event['kind']:10s}  "
+            f"{event['work_ref']}  @{profile}"
+        )
     return 0
 
 

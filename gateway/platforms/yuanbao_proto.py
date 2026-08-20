@@ -92,6 +92,8 @@ BIZ_SERVICES = {
     "SendPrivateHeartbeatRsp": f"{_BIZ_PKG}.SendPrivateHeartbeatRsp",
     "SendGroupHeartbeatReq": f"{_BIZ_PKG}.SendGroupHeartbeatReq",
     "SendGroupHeartbeatRsp": f"{_BIZ_PKG}.SendGroupHeartbeatRsp",
+    "QueryBotInfoReq": f"{_BIZ_PKG}.QueryBotInfoReq",
+    "QueryBotInfoRsp": f"{_BIZ_PKG}.QueryBotInfoRsp",
 }
 
 # openclaw instance_id（固定值 17）
@@ -1414,5 +1416,76 @@ def decode_get_group_member_list_rsp(data: bytes) -> Optional[dict]:
             "next_offset": _get_varint(fdict, 4),
             "is_complete": bool(_get_varint(fdict, 5)),
         }
+    except Exception:
+        return None
+
+
+# ============================================================
+# Bot 信息查询
+# ============================================================
+
+def encode_query_bot_info(bot_id: str) -> bytes:
+    """
+    编码 QueryBotInfoReq，返回完整 ConnMsg bytes。
+
+    QueryBotInfoReq fields:
+      1: bot_id (string)
+    """
+    buf = _encode_field(1, WT_LEN, _encode_string(bot_id))
+    req_id = f"qbi_{next_seq_no()}"
+    return encode_biz_msg(
+        service=_BIZ_PKG,
+        method="query_bot_info",
+        req_id=req_id,
+        body=buf,
+    )
+
+
+def decode_query_bot_info_rsp(data: bytes) -> Optional[dict]:
+    """
+    解码 QueryBotInfoRsp biz payload。
+
+    Proto 结构：
+
+      message BotInfo {
+        string bot_id            = 1;
+        string encrypt_owner_id  = 2;
+      }
+
+      message QueryBotInfoRsp {
+        int32   code     = 1;
+        string  message  = 2;
+        BotInfo bot_info = 3;
+      }
+
+    Returns:
+        {
+          "code": int,
+          "message": str,
+          "bot_id": str,
+          "encrypt_owner_id": str,
+        }
+        或 None（解析失败）
+    """
+    try:
+        fdict = _fields_to_dict(_parse_fields(data))
+        code = _get_varint(fdict, 1, 0)
+        msg = _get_string(fdict, 2)
+
+        result: dict = {"code": code}
+        if msg:
+            result["message"] = msg
+
+        bi_entries = fdict.get(3, [])
+        bi_bytes = bi_entries[0][1] if bi_entries else b""
+        if bi_bytes and isinstance(bi_bytes, (bytes, bytearray)):
+            bi = _fields_to_dict(_parse_fields(bi_bytes))
+            result["bot_id"] = _get_string(bi, 1) or ""
+            result["encrypt_owner_id"] = _get_string(bi, 2) or ""
+        else:
+            result["bot_id"] = ""
+            result["encrypt_owner_id"] = ""
+
+        return result
     except Exception:
         return None

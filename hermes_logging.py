@@ -325,6 +325,7 @@ def setup_logging(
         max_bytes=max_bytes,
         backup_count=backups,
         formatter=RedactingFormatter(_LOG_FORMAT),
+        refresh_existing=force,
     )
 
     # --- errors.log (WARNING+) — quick triage log --------------------------
@@ -335,6 +336,7 @@ def setup_logging(
         max_bytes=2 * 1024 * 1024,
         backup_count=2,
         formatter=RedactingFormatter(_LOG_FORMAT),
+        refresh_existing=force,
     )
 
     # --- gateway.log (INFO+, gateway component only) ------------------------
@@ -347,6 +349,7 @@ def setup_logging(
             backup_count=3,
             formatter=RedactingFormatter(_LOG_FORMAT),
             log_filter=_ComponentFilter(COMPONENT_PREFIXES["gateway"]),
+            refresh_existing=force,
         )
 
     # --- gui.log (INFO+, dashboard/tui-gateway components) -----------------
@@ -359,6 +362,7 @@ def setup_logging(
             backup_count=5,
             formatter=RedactingFormatter(_LOG_FORMAT),
             log_filter=_ComponentFilter(COMPONENT_PREFIXES["gui"]),
+            refresh_existing=force,
         )
 
     if _logging_initialized and not force:
@@ -727,15 +731,21 @@ def _add_rotating_handler(
     backup_count: int,
     formatter: logging.Formatter,
     log_filter: Optional[logging.Filter] = None,
+    refresh_existing: bool = False,
 ) -> None:
-    """Add a ``RotatingFileHandler`` to *logger*, skipping if one already
-    exists for the same resolved file path (idempotent).
+    """Add or update a ``RotatingFileHandler`` on *logger*.
+
+    The function is idempotent by resolved file path: re-calls do not attach
+    duplicate handlers, and requested refreshes update handler settings so
+    forced logging reconfiguration can change the file log level at runtime.
 
     Parameters
     ----------
     log_filter
         Optional filter to attach to the handler (e.g. ``_ComponentFilter``
         for gateway.log).
+    refresh_existing
+        Update a matching handler instead of preserving its current settings.
     """
     resolved = path.resolve()
     for existing in _queued_file_handlers:
@@ -743,6 +753,18 @@ def _add_rotating_handler(
             isinstance(existing, RotatingFileHandler)
             and Path(getattr(existing, "baseFilename", "")).resolve() == resolved
         ):
+            if refresh_existing:
+                existing.setLevel(level)
+                existing.setFormatter(formatter)
+                if hasattr(existing, "maxBytes"):
+                    existing.maxBytes = max_bytes
+                if hasattr(existing, "backupCount"):
+                    existing.backupCount = backup_count
+                if log_filter is not None and not _has_equivalent_filter(
+                    existing,
+                    log_filter,
+                ):
+                    existing.addFilter(log_filter)
             return  # already attached
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -757,6 +779,22 @@ def _add_rotating_handler(
     # Route through the async queue instead of ``logger.addHandler(handler)`` so
     # the rotation-lock wait never runs on the caller's (often event-loop) thread.
     _register_queued_handler(handler)
+
+
+def _has_equivalent_filter(
+    handler: logging.Handler,
+    log_filter: logging.Filter,
+) -> bool:
+    for existing in handler.filters:
+        if existing is log_filter:
+            return True
+        if (
+            isinstance(existing, _ComponentFilter)
+            and isinstance(log_filter, _ComponentFilter)
+            and existing._prefixes == log_filter._prefixes
+        ):
+            return True
+    return False
 
 
 def _read_logging_config():

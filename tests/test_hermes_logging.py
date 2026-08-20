@@ -100,6 +100,42 @@ class TestSetupLogging:
 
 
 
+    def test_force_updates_existing_async_agent_handler(self, hermes_home):
+        hermes_logging.setup_logging(
+            hermes_home=hermes_home,
+            log_level="INFO",
+            max_size_mb=1,
+            backup_count=1,
+        )
+        agent_handlers = [
+            h for h in hermes_logging.rotating_file_handlers()
+            if isinstance(h, RotatingFileHandler)
+            and "agent.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(agent_handlers) == 1
+
+        hermes_logging.setup_logging(hermes_home=hermes_home, log_level="DEBUG")
+        assert agent_handlers[0].level == logging.INFO
+
+        hermes_logging.setup_logging(
+            hermes_home=hermes_home,
+            log_level="DEBUG",
+            max_size_mb=2,
+            backup_count=4,
+            force=True,
+        )
+
+        assert agent_handlers[0].level == logging.DEBUG
+        assert agent_handlers[0].maxBytes == 2 * 1024 * 1024
+        assert agent_handlers[0].backupCount == 4
+
+        logging.getLogger("plugins.platforms.matrix.adapter").debug(
+            "debug after forced log-level change"
+        )
+        hermes_logging.flush_log_queue()
+
+        content = (hermes_home / "logs" / "agent.log").read_text(encoding="utf-8")
+        assert "debug after forced log-level change" in content
 
 
     def test_writes_to_agent_log(self, hermes_home):

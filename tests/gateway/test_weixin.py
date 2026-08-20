@@ -545,6 +545,43 @@ class TestWeixinContentDedup:
         event = adapter.handle_message.await_args[0][0]
         assert event.text == "hello world"
 
+    def test_same_content_can_be_resent_after_short_fallback_window(self):
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        adapter._text_batch_delay_seconds = 0.01
+        adapter._text_batch_split_delay_seconds = 0.01
+
+        text = "run the same search again"
+        base_msg = {
+            "from_user_id": "wxid_user1",
+            "item_list": [{"type": 1, "text_item": {"text": text}}],
+        }
+
+        async def _drive():
+            with patch("gateway.platforms.helpers.time.time", return_value=100.0):
+                await adapter._process_message(
+                    {**base_msg, "message_id": "msg-1"}
+                )
+            await asyncio.sleep(0.05)
+
+            after_window = 101.0 + weixin.CONTENT_DEDUP_TTL_SECONDS
+            with patch(
+                "gateway.platforms.helpers.time.time",
+                return_value=after_window,
+            ):
+                await adapter._process_message(
+                    {**base_msg, "message_id": "msg-2"}
+                )
+            await asyncio.sleep(0.05)
+
+        asyncio.run(_drive())
+
+        assert adapter.handle_message.await_count == 2
+        assert [
+            call.args[0].text for call in adapter.handle_message.await_args_list
+        ] == [text, text]
+
 
 class TestWeixinTextDebounce:
     """Text-debounce batching for rapid multi-message bursts (issue #35301).

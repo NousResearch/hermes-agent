@@ -113,6 +113,11 @@ BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
 RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
 MESSAGE_DEDUP_TTL_SECONDS = 300
+# iLink can occasionally redeliver identical content under a fresh message ID.
+# Keep that fallback window short: unlike a platform message ID, text is not a
+# stable event identity and users legitimately resend the same prompt after a
+# stop, retry, or correction.
+CONTENT_DEDUP_TTL_SECONDS = 5
 
 
 def _is_stale_session_ret(
@@ -1192,6 +1197,9 @@ class WeixinAdapter(BasePlatformAdapter):
         self._send_session: Optional[aiohttp.ClientSession] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
+        self._content_dedup = MessageDeduplicator(
+            ttl_seconds=CONTENT_DEDUP_TTL_SECONDS
+        )
 
         self._account_id = str(extra.get("account_id") or _wx_secret("WEIXIN_ACCOUNT_ID", "")).strip()
         self._token = str(config.token or extra.get("token") or _wx_secret("WEIXIN_TOKEN", "")).strip()
@@ -1481,8 +1489,13 @@ class WeixinAdapter(BasePlatformAdapter):
         text = _extract_text(item_list)
         if text:
             content_key = f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"
-            if self._dedup.is_duplicate(content_key):
-                logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
+            if self._content_dedup.is_duplicate(content_key):
+                logger.info(
+                    "[%s] Content-dedup: skipping near-simultaneous duplicate "
+                    "message from %s",
+                    self.name,
+                    _safe_id(sender_id),
+                )
                 return
 
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)

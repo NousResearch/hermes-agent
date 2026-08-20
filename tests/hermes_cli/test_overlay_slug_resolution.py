@@ -8,7 +8,7 @@ Covers: #5223, #6492
 """
 
 import os
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 from hermes_cli.model_switch import list_authenticated_providers
@@ -31,6 +31,42 @@ def test_copilot_uses_hermes_slug():
     assert gh_copilot is None, "github-copilot slug should not appear (resolved to copilot)"
 
 
+
+
+def test_suppressed_copilot_extra_env_uses_hermes_slug(monkeypatch):
+    """Mapped overlays check suppression against the resolved Hermes slug."""
+    monkeypatch.setenv("GH_TOKEN", "fake-ghu")
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_source_suppressed",
+        lambda provider, source: (
+            provider == "copilot" and source == "env:GH_TOKEN"
+        ),
+    )
+    empty_pool = Mock()
+    empty_pool.has_credentials.return_value = False
+    empty_pool.has_available.return_value = False
+
+    with patch("agent.models_dev.fetch_models_dev", return_value={}), \
+         patch(
+             "agent.credential_pool.load_pool",
+             return_value=empty_pool,
+         ), \
+         patch(
+             "hermes_cli.models.get_curated_nous_model_ids",
+             return_value=[],
+         ), \
+         patch(
+             "hermes_cli.models.fetch_ollama_cloud_models",
+             return_value=[],
+         ), \
+         patch(
+             "hermes_cli.models.cached_provider_model_ids",
+             return_value=["gpt-test"],
+         ):
+        providers = list_authenticated_providers(current_provider="openrouter")
+
+    assert "copilot" not in {provider["slug"] for provider in providers}
 
 
 # -- kimi-for-coding alias in auth.py ----------------------------------------

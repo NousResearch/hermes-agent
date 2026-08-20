@@ -3779,8 +3779,12 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         if live:
             return live
     if normalized in ("openai", "openai-api"):
+        from hermes_cli.auth import is_source_suppressed
+
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        if api_key:
+        if api_key and not is_source_suppressed(
+            "openai-api", "env:OPENAI_API_KEY"
+        ):
             base = _openai_discovery_base_url(normalized)
             # Custom OpenAI-compatible endpoints (proxies, gateways, self-hosted)
             # may serve a small curated catalog — use the live list verbatim so
@@ -3795,23 +3799,23 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 
             is_default_openai = is_official_openai_host(base)
             try:
-                live = fetch_api_models(api_key, base)
-                if live:
-                    if is_default_openai:
-                        live_lower = {m.lower() for m in live}
-                        curated = list(_PROVIDER_MODELS.get(normalized, []))
-                        # Keep curated order; only surface curated models the
-                        # account actually has access to.
-                        filtered = [m for m in curated if m.lower() in live_lower]
-                        if filtered:
-                            return filtered
-                        # Account serves none of the curated models (rare —
-                        # e.g. org without GPT-5 access). Fall back to curated
-                        # so the picker still offers sane defaults.
-                        return curated or live
-                    return live
+               live = fetch_api_models(api_key, base)
+               if live:
+                   if is_default_openai:
+                       live_lower = {m.lower() for m in live}
+                       curated = list(_PROVIDER_MODELS.get(normalized, []))
+                       # Keep curated order; only surface curated models the
+                       # account actually has access to.
+                       filtered = [m for m in curated if m.lower() in live_lower]
+                       if filtered:
+                           return filtered
+                       # Account serves none of the curated models (rare —
+                       # e.g. org without GPT-5 access). Fall back to curated
+                       # so the picker still offers sane defaults.
+                       return curated or live
+                   return live
             except Exception:
-                pass
+               pass
     if normalized == "gmi":
         try:
             from hermes_cli.auth import resolve_api_key_provider_credentials

@@ -9390,6 +9390,108 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_refine_uses_live_agent_and_persisted_history_without_spawning_worker(monkeypatch):
+    captured = {}
+
+    class _Agent:
+        valid_tool_names = {"memory", "skill_manage"}
+
+        def _spawn_background_review(self, **kwargs):
+            captured.update(kwargs)
+
+    class _DB:
+        def get_messages_as_conversation(self, key, include_ancestors=True, **_kwargs):
+            assert key == "session-key"
+            assert include_ancestors is True
+            return [
+                {"role": "user", "content": "persisted question"},
+                {"role": "assistant", "content": "persisted answer"},
+            ]
+
+    class _ExplodingWorker:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("/refine must not run in the isolated slash worker")
+
+    server._sessions["sid"] = _session(
+        agent=_Agent(),
+        history=[{"role": "user", "content": "stale in-memory history"}],
+        slash_worker=None,
+    )
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "refine",
+                "method": "slash.exec",
+                "params": {
+                    "command": "refine save the workflow",
+                    "session_id": "sid",
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "Reviewing this conversation" in response["result"]["output"]
+    assert captured == {
+        "messages_snapshot": [
+            {"role": "user", "content": "persisted question"},
+            {"role": "assistant", "content": "persisted answer"},
+        ],
+        "review_memory": True,
+        "review_skills": True,
+        "focus": "save the workflow",
+    }
+
+
+def test_refine_forwards_to_compute_host_owner_without_spawning_worker(monkeypatch):
+    calls = []
+
+    class _ExplodingWorker:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("/refine must not run in the isolated slash worker")
+
+    session = _session(_compute_host_active=True)
+    session["agent"] = None
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+
+    def send_control(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"type": "control.ack", "output": "host review started"}
+
+    monkeypatch.setattr(server, "_send_compute_host_control", send_control)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "refine-host",
+                "method": "slash.exec",
+                "params": {
+                    "command": "refine save the workflow",
+                    "session_id": "sid",
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert response["result"]["output"] == "host review started"
+    assert calls == [
+        (
+            ("sid",),
+            {
+                "route_name": "slash.refine",
+                "command": "/refine save the workflow",
+                "wait": True,
+            },
+        )
+    ]
+
+
 def test_prompt_submit_sets_approval_session_key(monkeypatch):
     from tools.approval import get_current_session_key
 

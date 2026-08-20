@@ -60,9 +60,58 @@ def test_mutator_route_table_matches_prd_inventory():
         "slash.personality": "idle-gated",
         "slash.prompt": "idle-gated",
         "slash.compress": "idle-gated",
+        "slash.refine": "idle-gated",
         "session.reset": "idle-gated",
         "session.history.reload": "idle-gated",
         "slash.retry": "idle-gated",
+    }
+
+
+def test_compute_host_refine_control_uses_host_owned_agent(monkeypatch):
+    captured = {}
+
+    class _Agent:
+        valid_tool_names = {"memory", "skill_manage"}
+
+        def _spawn_background_review(self, **kwargs):
+            captured.update(kwargs)
+
+    session = {
+        "agent": _Agent(),
+        "session_key": "host-session",
+        "history": [
+            {"role": "user", "content": "host question"},
+            {"role": "assistant", "content": "host answer"},
+        ],
+        "history_lock": threading.Lock(),
+        "history_version": 2,
+        "running": False,
+    }
+    monkeypatch.setattr(server, "_sessions", {"sid": session})
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    stdout = io.StringIO()
+    host = ComputeHost(stdout=stdout, heartbeat_secs=0)
+    try:
+        host._handle_control(
+            {
+                "type": "control",
+                "sid": "sid",
+                "request_id": "refine",
+                "route_name": "slash.refine",
+                "command": "/refine save the workflow",
+            }
+        )
+    finally:
+        host.close()
+
+    ack = _json_lines(stdout)[-1]
+    assert ack["type"] == "control.ack"
+    assert "Reviewing this conversation" in ack["output"]
+    assert captured == {
+        "messages_snapshot": session["history"],
+        "review_memory": True,
+        "review_skills": True,
+        "focus": "save the workflow",
     }
 
 

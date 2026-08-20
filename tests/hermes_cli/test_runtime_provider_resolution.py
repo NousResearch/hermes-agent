@@ -223,6 +223,148 @@ def test_resolve_runtime_provider_lmstudio_uses_token_when_present(monkeypatch):
     assert resolved["base_url"] == "http://127.0.0.1:1234/v1"
 
 
+def test_resolve_runtime_provider_lmstudio_honors_configured_key_env(monkeypatch):
+    """Built-in providers can point at a custom secret env var."""
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+    monkeypatch.setenv("LAN_LMSTUDIO_KEY", "lm-configured-token")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "lmstudio")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "lmstudio",
+            "base_url": "http://127.0.0.1:1234/v1",
+            "default": "publisher/model-a",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+
+    def _config():
+        return {
+            "model": {"provider": "lmstudio"},
+            "providers": {"lmstudio": {"key_env": "LAN_LMSTUDIO_KEY"}},
+        }
+
+    monkeypatch.setattr("hermes_cli.config.load_config", _config)
+    monkeypatch.setattr(rp, "load_config", _config)
+
+    resolved = rp.resolve_runtime_provider(requested="lmstudio")
+
+    assert resolved["provider"] == "lmstudio"
+    assert resolved["api_key"] == "lm-configured-token"
+    assert resolved["source"] == "LAN_LMSTUDIO_KEY"
+
+
+def test_configured_key_env_takes_priority_over_default_provider_env(monkeypatch):
+    monkeypatch.setenv("LM_API_KEY", "lm-default-token")
+    monkeypatch.setenv("LAN_LMSTUDIO_KEY", "lm-configured-token")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "lmstudio")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "lmstudio",
+            "base_url": "http://127.0.0.1:1234/v1",
+            "default": "publisher/model-a",
+        },
+    )
+
+    class _PoolEntry:
+        source = "LM_API_KEY"
+        base_url = "http://127.0.0.1:1234/v1"
+        runtime_base_url = "http://127.0.0.1:1234/v1"
+
+        @property
+        def access_token(self):
+            return "lm-default-token"
+
+        @property
+        def runtime_api_key(self):
+            return "lm-default-token"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _PoolEntry()
+
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+
+    def _config():
+        return {
+            "model": {"provider": "lmstudio"},
+            "providers": {"lmstudio": {"key_env": "LAN_LMSTUDIO_KEY"}},
+        }
+
+    monkeypatch.setattr("hermes_cli.config.load_config", _config)
+    monkeypatch.setattr(rp, "load_config", _config)
+
+    resolved = rp.resolve_runtime_provider(requested="lmstudio")
+
+    assert resolved["api_key"] == "lm-configured-token"
+    assert resolved["source"] == "LAN_LMSTUDIO_KEY"
+
+
+def test_openrouter_provider_key_env_does_not_bypass_openrouter_resolver(monkeypatch):
+    monkeypatch.setenv("LAN_OPENROUTER_KEY", "or-configured-token")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "openrouter", "default": "openrouter/auto"},
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: type("Pool", (), {"has_credentials": lambda self: False})())
+
+    def _config():
+        return {
+            "model": {"provider": "openrouter"},
+            "providers": {"openrouter": {"key_env": "LAN_OPENROUTER_KEY"}},
+        }
+
+    monkeypatch.setattr(rp, "load_config", _config)
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["provider"] == "openrouter"
+
+
+def test_opencode_configured_key_env_keeps_model_derived_api_mode(monkeypatch):
+    monkeypatch.setenv("LAN_OPENCODE_GO_KEY", "opencode-configured-token")
+    monkeypatch.delenv("OPENCODE_GO_API_KEY", raising=False)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-go",
+            "default": "minimax-m2.5",
+            "api_mode": "chat_completions",
+        },
+    )
+
+    def _config():
+        return {
+            "model": {"provider": "opencode-go"},
+            "providers": {"opencode-go": {"key_env": "LAN_OPENCODE_GO_KEY"}},
+        }
+
+    monkeypatch.setattr("hermes_cli.config.load_config", _config)
+    monkeypatch.setattr(rp, "load_config", _config)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go")
+
+    assert resolved["api_key"] == "opencode-configured-token"
+    assert resolved["source"] == "LAN_OPENCODE_GO_KEY"
+    assert resolved["api_mode"] == "anthropic_messages"
+
+
 def test_resolve_runtime_provider_lmstudio_honors_saved_base_url(monkeypatch):
     """Pre-existing configs with `provider: lmstudio` + custom base_url must keep working.
 

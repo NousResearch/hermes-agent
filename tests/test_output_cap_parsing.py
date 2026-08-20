@@ -191,3 +191,64 @@ class TestParseVllmTokenBasedOutputCap:
             cap = available
         assert real_input + cap <= window, f"did not converge: cap={cap}"
 
+
+
+class TestParseCompletionSplitOutputCap:
+    """OpenAI-compatible servers report the split as "(A in the messages,
+    B in the completion)".  vLLM and llama-cpp-python both inherit this
+    wording, and it names neither max_tokens nor "output tokens", so it used to
+    miss every branch and land on the compression path.  Compression cannot fix
+    an output-cap error: the retry re-sends the same max_tokens and collects the
+    identical 400 until "cannot compress further" (#55546)."""
+
+    def test_vllm_completion_split_format(self):
+        msg = ("Error code: 400 - This model's maximum context length is 102400 "
+               "tokens. However, you requested 102401 tokens (36865 in the "
+               "messages, 65536 in the completion). Please reduce the length of "
+               "the messages or completion.")
+        # available output = 102400 - 36865 = 65535
+        assert parse_available_output_tokens_from_error(msg) == 65535
+
+    def test_openai_legacy_prompt_split_format(self):
+        msg = ("This model's maximum context length is 4097 tokens, however you "
+               "requested 4771 tokens (771 in your prompt; 4000 for the "
+               "completion). Please reduce your prompt; or completion length.")
+        # available output = 4097 - 771 = 3326
+        assert parse_available_output_tokens_from_error(msg) == 3326
+
+    def test_completion_split_is_output_cap_error(self):
+        msg = ("This model's maximum context length is 102400 tokens. However, "
+               "you requested 102401 tokens (36865 in the messages, 65536 in "
+               "the completion). Please reduce the length of the messages or "
+               "completion.")
+        assert is_output_cap_error(msg) is True
+
+    def test_completion_split_retry_cap_fits_the_window(self):
+        # The whole point: the retried cap plus the measured prompt must fit.
+        window, prompt = 102400, 36865
+        available = parse_available_output_tokens_from_error(
+            f"This model's maximum context length is {window} tokens. However, "
+            f"you requested {window + 1} tokens ({prompt} in the messages, "
+            f"{window + 1 - prompt} in the completion)."
+        )
+        assert available is not None
+        assert available + prompt <= window
+
+    def test_split_with_oversized_prompt_stays_on_compression_path(self):
+        # The prompt alone fills the window, so this is a genuine input
+        # overflow.  Trimming max_tokens cannot help; compression can.
+        msg = ("This model's maximum context length is 8192 tokens. However, you "
+               "requested 20000 tokens (20000 in the messages, 0 in the "
+               "completion). Please reduce the length of the messages or "
+               "completion.")
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert is_output_cap_error(msg) is False
+
+    def test_plain_overflow_without_split_is_untouched(self):
+        # No parenthetical breakdown -> still an input overflow, still routed
+        # to compression.
+        msg = ("This endpoint's maximum context length is 128000 tokens. "
+               "However, you requested about 200000 tokens. Please reduce the "
+               "length of the messages.")
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert is_output_cap_error(msg) is False

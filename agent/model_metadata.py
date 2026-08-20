@@ -1614,6 +1614,34 @@ def get_context_length_from_provider_error(
     return None
 
 
+# OpenAI-compatible servers word an output-cap rejection as a two-part split
+# inside parentheses.  vLLM and llama-cpp-python both inherit OpenAI's original
+# text:
+#   "This model's maximum context length is 102400 tokens. However, you
+#    requested 102401 tokens (36865 in the messages, 65536 in the completion).
+#    Please reduce the length of the messages or completion."
+# The legacy completions endpoint words the same split as
+#   "(771 in your prompt; 4000 for the completion)".
+# Either way the first number is the MEASURED prompt size and the second is the
+# max_tokens that was requested, so window - prompt is a real output budget.
+_COMPLETION_SPLIT_RE = re.compile(
+    r'\((\d+)\s+(?:tokens\s+)?in (?:the messages|your prompt|the prompt)\s*[;,]\s*'
+    r'(\d+)\s+(?:tokens\s+)?(?:in|for) the completion\)'
+)
+
+
+def _parse_completion_split(error_lower: str) -> Optional[Tuple[int, int]]:
+    """Return (prompt_tokens, requested_output_tokens) from an OpenAI-style split.
+
+    ``error_lower`` must already be lowercased.  Returns None when the error
+    does not carry the parenthetical breakdown.
+    """
+    match = _COMPLETION_SPLIT_RE.search(error_lower)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
 def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     """Detect an "output cap too large" error and return how many output tokens are available.
 
@@ -1666,6 +1694,14 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         # This is independent of the input context window.
         "exceeds model" in error_lower
         and "maximum output tokens" in error_lower
+    ) or (
+        # OpenAI-compatible split form, e.g. vLLM / llama-cpp-python:
+        #   "... (36865 in the messages, 65536 in the completion)".
+        # This wording never mentions max_tokens by name, so none of the
+        # clauses above fire and the error used to fall through to the
+        # compression path -- which re-sends the same oversized max_tokens and
+        # collects the identical 400 until "cannot compress further" (#55546).
+        _parse_completion_split(error_lower) is not None
     )
     if not is_output_cap_error:
         return None
@@ -1718,6 +1754,19 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         _available = int(_m_ctx.group(1)) - int(_m_parts.group(1)) - int(_m_parts.group(2))
         if _available >= 1:
             return _available
+
+    # OpenAI-compatible split form: "(A in the messages, B in the completion)".
+    # A is the prompt size the server actually measured, so the rest of the
+    # window is a trustworthy output budget.  When the prompt alone fills the
+    # window this stays None and the caller falls through to compression, which
+    # is the correct remedy for a genuine input overflow.
+    _split = _parse_completion_split(error_lower)
+    if _split is not None:
+        _m_ctx_split = re.search(r'maximum context length is (\d+)', error_lower)
+        if _m_ctx_split:
+            _available = int(_m_ctx_split.group(1)) - _split[0]
+            if _available >= 1:
+                return _available
 
     # LM Studio / llama.cpp style: context window is reported in tokens but the
     # prompt size is reported in CHARACTERS, e.g.
@@ -1796,6 +1845,19 @@ def is_output_cap_error(error_msg: str) -> bool:
     path (a real input overflow can also mention max_tokens).
     """
     error_lower = error_msg.lower()
+
+    # OpenAI-style split form: "(36865 in the messages, 65536 in the
+    # completion)".  It names neither max_tokens nor any of its aliases, so the
+    # mentions_output_param gate below rejects it outright even though it is
+    # exactly the deterministic output-cap 400 this function exists to catch.
+    # Only claim it when the measured prompt still leaves room in the window:
+    # if the prompt alone fills the window the request is a genuine input
+    # overflow and belongs on the compression path.
+    _split = _parse_completion_split(error_lower)
+    if _split is not None:
+        _m_ctx_split = re.search(r'maximum context length is (\d+)', error_lower)
+        if _m_ctx_split and int(_m_ctx_split.group(1)) - _split[0] >= 1:
+            return True
 
     mentions_output_param = (
         "max_tokens" in error_lower

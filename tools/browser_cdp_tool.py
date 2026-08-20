@@ -53,7 +53,20 @@ def _redact_cdp_output(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(_redact_cdp_output(item) for item in value)
     if isinstance(value, dict):
-        return {key: _redact_cdp_output(item) for key, item in value.items()}
+        redacted = {}
+        for key, item in value.items():
+            redacted_key = (
+                redact_sensitive_text(key, force=True)
+                if isinstance(key, str)
+                else key
+            )
+            unique_key = redacted_key
+            duplicate = 2
+            while unique_key in redacted:
+                unique_key = f"{redacted_key} [duplicate {duplicate}]"
+                duplicate += 1
+            redacted[unique_key] = _redact_cdp_output(item)
+        return redacted
     return value
 
 # ``websockets`` is a direct hermes-agent dependency because the browser CDP
@@ -386,7 +399,9 @@ def _browser_cdp_via_supervisor(
         "method": method,
         "frame_id": frame_id,
         "session_id": child_sid,
-        "result": result_msg.get("result", {}),
+        # Same redaction as the stateless/target_id path — frame_id routing
+        # must not leak secrets that sibling path would scrub.
+        "result": _redact_cdp_output(result_msg.get("result", {})),
     }
     return json.dumps(payload, ensure_ascii=False)
 

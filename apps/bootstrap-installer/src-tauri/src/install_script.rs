@@ -313,6 +313,25 @@ fn upgrade_cached_script(kind: ScriptKind, cached: &Path, emit_log: &impl Fn(&st
     }
 }
 
+/// Rejects a download whose body is shorter (or longer) than the advertised
+/// `Content-Length`. Only enforced when the length is known — a decompressed
+/// response reports `None` and is passed through unchecked. See #68163.
+fn verify_download_length(
+    filename: &str,
+    url: &str,
+    content_length: Option<u64>,
+    body_len: usize,
+) -> Result<()> {
+    if let Some(expected) = content_length {
+        if body_len as u64 != expected {
+            return Err(anyhow!(
+                "Truncated download of {filename}: got {body_len} bytes, expected {expected} (Content-Length) from {url}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Downloads to `dest_path` via reqwest with rustls. Atomically renames
 /// `dest_path.tmp` → `dest_path` so partial writes don't poison the cache.
 ///
@@ -363,10 +382,25 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
         ));
     }
 
+    // Capture the advertised length before the body is consumed. reqwest
+    // returns `None` when the response was transparently decompressed (the
+    // decoded length no longer matches the header), in which case the guard
+    // below is skipped — we only assert equality when the length is known.
+    let content_length = response.content_length();
+
     let bytes = response
         .bytes()
         .await
         .with_context(|| format!("reading body of {url}"))?;
+
+    // A truncated body that still returns HTTP 200 must never be promoted into
+    // the cache: it would fail every subsequent `install.ps1 -Manifest` run
+    // with parser errors and, for immutable pins, be trusted forever (#68163).
+    // Validate the raw download length against Content-Length before BOM prep
+    // changes the size, so a short read errors out and the atomic rename never
+    // happens.
+    verify_download_length(kind.filename(), &url, content_length, bytes.len())?;
+
     let bytes = prepare_cached_script_bytes(kind, &bytes);
 
     let mut file = tokio::fs::File::create(&tmp_path)
@@ -498,5 +532,27 @@ mod tests {
         assert_eq!(std::fs::read(&cached).unwrap(), b"#!/bin/bash\n");
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn verify_download_length_accepts_matching_length() {
+        assert!(verify_download_length("install.ps1", "http://x", Some(42), 42).is_ok());
+    }
+
+    #[test]
+    fn verify_download_length_rejects_truncated_body() {
+        // The #68163 failure mode: HTTP 200 with a body ~5 KB short of the
+        // advertised length. It must error so the atomic rename never fires.
+        let err = verify_download_length("install.ps1", "http://x", Some(184266), 179412)
+            .expect_err("truncated body must be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("179412"), "error names the received length: {msg}");
+        assert!(msg.contains("184266"), "error names the expected length: {msg}");
+    }
+
+    #[test]
+    fn verify_download_length_skips_when_length_unknown() {
+        // Decompressed responses report `None`; the guard must pass through.
+        assert!(verify_download_length("install.ps1", "http://x", None, 1).is_ok());
     }
 }

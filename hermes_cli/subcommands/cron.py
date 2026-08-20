@@ -31,7 +31,27 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "schedule", help="Schedule like '30m', 'every 2h', or '0 9 * * *'"
     )
     cron_create.add_argument(
-        "prompt", nargs="?", help="Optional self-contained prompt or task instruction"
+        "prompt_positional",
+        nargs="?",
+        metavar="prompt",
+        help=(
+            "Optional self-contained prompt or task instruction. Must come "
+            "immediately after schedule with no --flags in between — "
+            "argparse cannot fill this slot from a token that appears "
+            "after any optional flag (e.g. --name/--deliver). Use --prompt "
+            "instead if you need to combine it with other flags."
+        ),
+    )
+    cron_create.add_argument(
+        "--prompt",
+        dest="prompt_flag",
+        help=(
+            "Same as the positional prompt, as a flag — use this whenever "
+            "you're also passing --name/--deliver/etc., since argparse "
+            "can't reliably fill the positional once a flag appears first "
+            "on the command line. Takes precedence over the positional if "
+            "both are given."
+        ),
     )
     cron_create.add_argument("--name", help="Optional human-friendly job name")
     cron_create.add_argument(

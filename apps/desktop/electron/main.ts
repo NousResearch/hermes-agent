@@ -12669,7 +12669,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
   // reported like any other unreachable source and retried on the next poll.
   const perSourceTimeoutMs = 10_000
 
-  const withEnumerationDeadline = async <T,>(work: Promise<T>): Promise<T> => {
+  const withEnumerationDeadline = async <T>(work: Promise<T>): Promise<T> => {
     let timer: ReturnType<typeof setTimeout> | null = null
 
     try {

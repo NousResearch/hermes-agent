@@ -95,9 +95,7 @@ test('FIX host-key change: classified from the kind tag and from stringified ssh
   )
   assert.equal(isHostKeyChangedBootFailure(new Error('Host key verification failed.')), true)
   assert.equal(
-    isHostKeyChangedBootFailure(
-      new Error('The host key for root@203.0.113.7 has CHANGED since you last connected.')
-    ),
+    isHostKeyChangedBootFailure(new Error('The host key for root@203.0.113.7 has CHANGED since you last connected.')),
     true
   )
   assert.equal(isHostKeyChangedBootFailure(new Error('Connection refused')), false)
@@ -113,8 +111,14 @@ test('FIX host-key change: latches and is never auto-retried (157-failure loop, 
 })
 
 test('host-key latch never fires for local failures or ordinary remote faults', () => {
-  assert.equal(shouldLatchHostKeyChangedFailure({ attemptedRemote: false, isReauth: false, isHostKeyChanged: true }), false)
-  assert.equal(shouldLatchHostKeyChangedFailure({ attemptedRemote: true, isReauth: false, isHostKeyChanged: false }), false)
+  assert.equal(
+    shouldLatchHostKeyChangedFailure({ attemptedRemote: false, isReauth: false, isHostKeyChanged: true }),
+    false
+  )
+  assert.equal(
+    shouldLatchHostKeyChangedFailure({ attemptedRemote: true, isReauth: false, isHostKeyChanged: false }),
+    false
+  )
   assert.equal(shouldLatchHostKeyChangedFailure({ attemptedRemote: true, isReauth: false }), false)
 })
 

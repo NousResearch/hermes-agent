@@ -11925,6 +11925,23 @@ function createWindow() {
   mainWindow.on('unmaximize', schedulePersistWindowState)
   mainWindow.on('close', () => schedulePersistWindowState.flush())
 
+  // heldQuitForActiveWork's own `before-quit` hook only protects the macOS
+  // quit gesture (Cmd-Q fires `before-quit` while every window is still
+  // alive). On Windows/Linux the primary quit gesture is the title-bar
+  // close button: closing the last window destroys it (and its webContents,
+  // which clears its `activeWorkByWebContents` entry) BEFORE `window-all-
+  // closed` reactively calls `app.quit()` below — by the time `before-quit`
+  // runs, there is no parent window left to anchor a dialog on and no
+  // active-work report left to read, so the guard silently no-ops and a
+  // turn in flight is killed without asking. Run the same check here, while
+  // this (about to become the last) window and its active-work report are
+  // still alive, so "Quit Anyway" can re-enter `before-quit` normally.
+  mainWindow.on('close', event => {
+    if (process.platform !== 'darwin' && BrowserWindow.getAllWindows().length === 1) {
+      heldQuitForActiveWork(event)
+    }
+  })
+
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   mainWindow.on('closed', () => {
     closePetOverlay()

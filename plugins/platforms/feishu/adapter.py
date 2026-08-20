@@ -3866,6 +3866,23 @@ class FeishuAdapter(BasePlatformAdapter):
         inbound_type = self._resolve_normalized_message_type(normalized, media_types)
         text = normalized.text_content
 
+        # Keep attachment-only turns observable when Feishu accepted the
+        # message metadata but the resource could not be downloaded. Without
+        # this, the agent receives only the filename from the UI and can
+        # incorrectly conclude that the file is available for reading.
+        if normalized.media_refs and not media_urls:
+            failed_names = [
+                ref.file_name.strip()
+                for ref in normalized.media_refs
+                if ref.file_name and ref.file_name.strip()
+            ]
+            label = ", ".join(failed_names) if failed_names else "Feishu attachment"
+            failure_note = (
+                f"[Attachment could not be downloaded: {label}. "
+                "The file content and local path are unavailable.]"
+            )
+            text = "\n\n".join(part for part in (failure_note, text) if part).strip()
+
         if (
             inbound_type in {MessageType.DOCUMENT, MessageType.AUDIO, MessageType.VIDEO, MessageType.PHOTO}
             and len(media_urls) == 1

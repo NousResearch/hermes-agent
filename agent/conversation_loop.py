@@ -5304,6 +5304,21 @@ def run_conversation(
                     FailoverReason.billing,
                     FailoverReason.upstream_rate_limit,
                 }
+                # Relay-wrapped output-cap errors: some gateways wrap an
+                # upstream "[400]: max_tokens (...) exceeds model's maximum
+                # output tokens (...)" as HTTP 429, which classifies as
+                # rate_limit. The failure is a deterministic request-shape
+                # problem — falling back to another provider (or burning
+                # generic retries) can't fix it, but the output-cap clamp
+                # below can, in one retry (#72281). Parse once here; the
+                # result gates both the eager-fallback exemption and the
+                # widened is_context_length_error entry, and is reused as
+                # available_out inside the handler.
+                _wrapped_output_cap_budget = (
+                    parse_available_output_tokens_from_error(error_msg)
+                    if classified.reason == FailoverReason.rate_limit
+                    else None
+                )
                 _is_transport_failure = classified.reason in {
                     FailoverReason.timeout,
                     FailoverReason.overloaded,
@@ -5321,7 +5336,7 @@ def run_conversation(
                 if _is_zai_coding_overload:
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
                 _should_fallback = (
-                    is_rate_limited
+                    (is_rate_limited and _wrapped_output_cap_budget is None)
                     or (_is_transport_failure and retry_count >= 2)
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
@@ -5614,6 +5629,11 @@ def run_conversation(
                 # server disconnect + large session pattern (#2153).
                 is_context_length_error = (
                     classified.reason == FailoverReason.context_overflow
+                    # Relay-wrapped output-cap 429s (parsed once above, where
+                    # the eager-fallback exemption is gated) route into the
+                    # output-cap clamp below instead of provider failover or
+                    # generic retries (#72281).
+                    or _wrapped_output_cap_budget is not None
                 )
 
                 if is_context_length_error:

@@ -82,6 +82,71 @@ class TestWriteDenyPrefixes:
             assert _is_write_denied(target) is True
 
 
+class TestWriteDenyPairingBothLayouts:
+    """gateway/pairing.py resolves the live store via
+    get_hermes_dir("platforms/pairing", "pairing") — new installs (and any
+    install whose legacy pairing/ is empty) use platforms/pairing/, not the
+    legacy pairing/. Both layouts must be write-denied regardless of which
+    one is currently active on disk."""
+
+    def test_legacy_pairing_dir_denied(self):
+        from hermes_constants import get_hermes_home
+
+        path = get_hermes_home() / "pairing" / "telegram-approved.json"
+        assert _is_write_denied(str(path)) is True
+
+    def test_consolidated_platforms_pairing_dir_denied(self):
+        from hermes_constants import get_hermes_home
+
+        path = get_hermes_home() / "platforms" / "pairing" / "telegram-approved.json"
+        assert _is_write_denied(str(path)) is True
+
+
+class TestWriteDenyProfileScopedPairingDir:
+    """Multiplex gateways serve secondary profiles via
+    ``PairingStore(profile=name)`` (gateway/pairing.py), which stores
+    per-profile DM-pairing credentials at
+    ``<HERMES_HOME>/profiles/<name>/pairing/`` — a third layout distinct
+    from the legacy and consolidated global stores above, and one the
+    fixed checks can't enumerate since profile names aren't known ahead
+    of time."""
+
+    def test_profile_scoped_pairing_dir_denied(self):
+        from hermes_constants import get_default_hermes_root
+
+        root = get_default_hermes_root()
+        path = root / "profiles" / "coder" / "pairing" / "telegram-approved.json"
+        assert _is_write_denied(str(path)) is True
+
+    def test_profile_scoped_consolidated_platforms_pairing_dir_denied(self):
+        """A profile's pairing store may also live at the consolidated
+        platforms/pairing/ layout (gateway/pairing.py resolves it via
+        get_hermes_dir("platforms/pairing", "pairing")) — same credential
+        material as the legacy profiles/<name>/pairing/ layout above, must
+        be equally write-denied."""
+        from hermes_constants import get_default_hermes_root
+
+        root = get_default_hermes_root()
+        path = (
+            root
+            / "profiles"
+            / "coder"
+            / "platforms"
+            / "pairing"
+            / "telegram-approved.json"
+        )
+        assert _is_write_denied(str(path)) is True
+
+    def test_profile_scoped_other_subdir_not_denied(self):
+        """Only the pairing/ credential store within a profile is denied —
+        a profile's other subdirectories must stay writable."""
+        from hermes_constants import get_default_hermes_root
+
+        root = get_default_hermes_root()
+        path = root / "profiles" / "coder" / "skills" / "note.md"
+        assert _is_write_denied(str(path)) is False
+
+
 class TestWriteAllowed:
     def test_tmp_file(self):
         assert _is_write_denied("/tmp/safe_file.txt") is False

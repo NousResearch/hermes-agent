@@ -3665,7 +3665,17 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
           HERMES_HOME,
           PATH: pathWithHermesManagedNode(venvBin)
         },
-        detached: true,
+        // Windows: DO NOT use detached:true here — Node's detached on
+        // Windows spawns with DETACHED_PROCESS + NULL stdio and PowerShell
+        // 5.1 then exits(0) immediately WITHOUT executing the -File script
+        // (silent no-op — no hand-off log, no update, marker left to
+        // expire). A plain child would ALSO die with us: the Chromium Job
+        // Object reaps it when the main process exits (kill-on-close).
+        // spawnUpdaterProcess re-shapes the Windows hand-off into
+        // `cmd /c start /min` (see updater-process.ts), which creates a
+        // fresh console process outside the Job that outlives this exit.
+        // POSIX keeps detached for the bash/other updaters.
+        ...(IS_WINDOWS ? {} : { detached: true }),
         stdio: 'ignore'
       })
 
@@ -3691,7 +3701,11 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
           HERMES_HOME,
           PATH: pathWithHermesManagedNode(venvBin)
         },
-        detached: true,
+        // Windows: no detached:true — see applyUpdates script hand-off
+        // comment (#75797). NULL stdio + DETACHED_PROCESS makes console
+        // apps (incl. the Tauri updater's PowerShell bootstrap steps)
+        // misbehave or exit silently.
+        ...(IS_WINDOWS ? {} : { detached: true }),
         stdio: 'ignore'
       })
 
@@ -3826,7 +3840,10 @@ async function handOffWindowsBootstrapRecovery(reason) {
       HERMES_HOME,
       PATH: pathWithHermesManagedNode(venvBin)
     },
-    detached: true,
+    // Windows: no detached:true — same PowerShell/NULL-stdio hazard as the
+    // applyUpdates hand-off (#75797). Windows children outlive the parent
+    // without detached; POSIX keeps it.
+    ...(IS_WINDOWS ? {} : { detached: true }),
     stdio: 'ignore'
   })
 

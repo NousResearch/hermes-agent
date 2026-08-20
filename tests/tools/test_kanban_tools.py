@@ -76,8 +76,245 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "task" in d
     assert d["task"]["id"] == worker_env
     assert d["task"]["status"] == "running"
-    assert "worker_context" in d
+    assert "orientation" in d
+    assert "worker_context" not in d
     assert "runs" in d
+
+
+def test_show_bound_preserves_long_task_handle_and_recovers_by_emitted_id(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    task_id = "t_" + ("i" * 8_000)
+    with kb.connect() as conn:
+        source_id = kb.create_task(conn, title="copy source", assignee="peer")
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(tasks)")]
+        copied = ", ".join(f'"{column}"' for column in columns)
+        selected = ", ".join(
+            "?" if column == "id" else f'"{column}"' for column in columns
+        )
+        conn.execute(
+            f"INSERT INTO tasks ({copied}) "
+            f"SELECT {selected} FROM tasks WHERE id = ?",
+            (task_id, source_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET body = ? WHERE id = ?",
+            ("long task body " + ("B" * 80_000), task_id),
+        )
+        for index in range(5):
+            kb.add_comment(
+                conn,
+                task_id,
+                "reviewer",
+                f"comment-{index} " + ("C" * 80_000),
+            )
+        conn.commit()
+
+    raw = kt._handle_show({"task_id": task_id})
+    shown = json.loads(raw)
+
+    assert len(raw) <= 30_000
+    assert shown["task"]["id"] == task_id
+    assert shown["task"]["body_truncated"] is True
+    assert shown["task"]["body_full_chars"] > 80_000
+    assert shown["orientation"]["task_id"] == task_id
+    assert shown["omitted"]["comments"] == 2
+    assert all(len(comment["body"]) <= 300 for comment in shown["comments"])
+    assert [comment["body"][:9] for comment in shown["comments"]] == [
+        "comment-2", "comment-3", "comment-4",
+    ]
+    recovered = json.loads(kt._handle_show({"task_id": shown["task"]["id"]}))
+    assert recovered["task"]["id"] == task_id
+
+
+def test_show_does_not_expose_internal_claim_or_idempotency_tokens(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET idempotency_key = ? WHERE id = ?",
+            ("private-dedup-token", worker_env),
+        )
+        conn.commit()
+
+    shown = json.loads(kt._handle_show({"task_id": worker_env}))
+
+    assert "claim_lock" not in shown["task"]
+    assert "idempotency_key" not in shown["task"]
+    assert all("claim_lock" not in run for run in shown["runs"])
+
+
+def test_show_redacts_claim_tokens_from_event_and_run_aliases(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    secret = "claim-secret-that-must-not-leak"
+    with kb.connect() as conn:
+        run = kb.latest_run(conn, worker_env)
+        assert run is not None
+        conn.execute(
+            "UPDATE task_runs SET claim_lock = ?, error = ?, metadata = ? WHERE id = ?",
+            (secret, secret, json.dumps({"claim_lock": secret}), run.id),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                worker_env,
+                run.id,
+                "reclaimed",
+                json.dumps({
+                    "stale_lock": secret,
+                    "prev_lock": secret,
+                    "prev_pid": 4242,
+                    "claimer": "worker-a",
+                }),
+                1,
+            ),
+        )
+        conn.commit()
+
+    raw = kt._handle_show({"task_id": worker_env})
+
+    assert secret not in raw
+    assert "[redacted internal claim field]" in raw
+
+
+def test_show_preserves_long_parent_child_handles_during_compaction(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    parent_id = "parent-" + ("P" * 13_000)
+    child_id = "child-" + ("C" * 13_000)
+    with kb.connect() as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(tasks)")]
+        copied = ", ".join(columns)
+        selected = ", ".join("?" if column == "id" else column for column in columns)
+        for linked_id in (parent_id, child_id):
+            conn.execute(
+                f"INSERT INTO tasks ({copied}) "
+                f"SELECT {selected} FROM tasks WHERE id = ?",
+                (linked_id, worker_env),
+            )
+        conn.execute(
+            "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+            (parent_id, worker_env),
+        )
+        conn.execute(
+            "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+            (worker_env, child_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET body = ? WHERE id = ?",
+            ("B" * 80_000, worker_env),
+        )
+        conn.commit()
+
+    shown = json.loads(kt._handle_show({"task_id": worker_env}))
+
+    assert shown["parents"] == [parent_id]
+    assert shown["children"] == [child_id]
+
+
+def test_show_redacts_claim_tokens_from_parent_handoff_metadata(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    secret = "parent-claim-secret"
+    with kb.connect() as conn:
+        parent_id = kb.create_task(
+            conn,
+            title="completed parent",
+            assignee="worker",
+            initial_status="running",
+        )
+        assert kb.complete_task(
+            conn,
+            parent_id,
+            summary=f"safe handoff without {secret}",
+            metadata={"claim_lock": secret},
+            fire_lifecycle_hook=False,
+        )
+        run = kb.latest_run(conn, parent_id)
+        assert run is not None
+        conn.execute(
+            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+            "VALUES (?, ?, 'claimed', ?, ?)",
+            (parent_id, run.id, json.dumps({"lock": secret}), 1),
+        )
+        conn.execute(
+            "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+            (parent_id, worker_env),
+        )
+        conn.commit()
+
+    raw = kt._handle_show({"task_id": worker_env})
+
+    assert secret not in raw
+    assert "[redacted internal claim field]" in raw
+
+
+def test_show_selects_latest_completed_handoff_before_graph_id_limit(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(tasks)")]
+        copied = ", ".join(columns)
+        selected = ", ".join("?" if column == "id" else column for column in columns)
+        parent_ids = ["a-latest"] + [f"z-{index:02d}" for index in range(20)]
+        for parent_id in parent_ids:
+            conn.execute(
+                f"INSERT INTO tasks ({copied}) "
+                f"SELECT {selected} FROM tasks WHERE id = ?",
+                (parent_id, worker_env),
+            )
+            conn.execute(
+                "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                (parent_id, worker_env),
+            )
+        conn.execute(
+            "UPDATE tasks SET status = 'done', completed_at = 999, "
+            "result = 'latest handoff' WHERE id = 'a-latest'",
+        )
+        conn.commit()
+
+    shown = json.loads(kt._handle_show({"task_id": worker_env}))
+
+    assert shown["parent_handoffs"][0]["task_id"] == "a-latest"
+    assert shown["omitted"]["parents"] == 1
+
+
+def test_show_limits_history_queries_before_materializing_rows(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    observed = {}
+    for name in (
+        "list_comments", "list_events", "list_runs", "list_attachments",
+        "parent_ids", "child_ids",
+    ):
+        original = getattr(kb, name)
+
+        def capture(*args, _name=name, _original=original, **kwargs):
+            observed[_name] = kwargs["limit"]
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(kb, name, capture)
+
+    shown = json.loads(kt._handle_show({"task_id": worker_env}))
+
+    assert shown["task"]["id"] == worker_env
+    assert observed == {
+        "list_comments": kt._KANBAN_SHOW_MAX_COMMENTS,
+        "list_events": kt._KANBAN_SHOW_MAX_EVENTS,
+        "list_runs": kt._KANBAN_SHOW_MAX_RUNS,
+        "list_attachments": kt._KANBAN_SHOW_MAX_ATTACHMENTS,
+        "parent_ids": kt._KANBAN_SHOW_MAX_GRAPH_IDS,
+        "child_ids": kt._KANBAN_SHOW_MAX_GRAPH_IDS,
+    }
 
 
 def test_list_filters_tasks(monkeypatch, worker_env):

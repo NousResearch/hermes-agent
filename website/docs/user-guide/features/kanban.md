@@ -294,7 +294,7 @@ parent, missing input, unmet capability) before unblocking, or raise
 
 | Tool | Purpose | Required params |
 |---|---|---|
-| `kanban_show` | Read the current task (title, body, prior attempts, parent handoffs, comments, full pre-formatted `worker_context`). Defaults to the env's task id. | — |
+| `kanban_show` | Read a bounded orientation view of the current task: task-field previews, latest attempts, parent handoffs, attachment metadata, comments/events, and explicit omitted counts. Task/file recovery handles stay exact. Defaults to the env's task id. | — |
 | `kanban_list` | List task summaries with filters for `assignee`, `status`, `tenant`, archived visibility, and limit. Intended for orchestrators discovering board work. | — |
 | `kanban_complete` | Finish with `summary` + `metadata` structured handoff. | at least one of `summary` / `result` |
 | `kanban_request_review` | Start same-card review with a durable `summary`, optional `metadata`, and optional reviewer profile. The task moves to `review`; this is not a block. | `summary` |
@@ -314,7 +314,7 @@ A typical worker turn looks like:
 ```
 # Model's tool calls, in order:
 kanban_show()                                     # no args — uses HERMES_KANBAN_TASK
-# (model reads the returned worker_context, does the work via terminal/file tools)
+# (model reads the bounded orientation, then uses terminal/file tools)
 kanban_heartbeat(note="halfway through — 4 of 8 files transformed")
 # (more work)
 kanban_complete(
@@ -396,7 +396,7 @@ does exist, such as source URLs, issue ids, or manual review steps.
 
 Every profile that works kanban tasks automatically gets the worker lifecycle — it's injected into the worker's system prompt at spawn (the `KANBAN_GUIDANCE` block), so there is **nothing to install or configure**. It teaches the worker the full lifecycle in **tool calls**, not CLI commands:
 
-1. On spawn, call `kanban_show()` to read title + body + parent handoffs + prior attempts + full comment thread.
+1. On spawn, call `kanban_show()` to read the bounded orientation view: task previews plus latest parent handoffs, attempts, attachments, comments, and events. `totals`/`omitted` disclose hidden history; use the exact emitted task id with the dashboard/CLI, and `kanban_attachments` for the full file manifest.
 2. `cd $HERMES_KANBAN_WORKSPACE` (via the terminal tool) and do the work there.
 3. Call `kanban_heartbeat(note="...")` every few minutes during long operations. **If your work may run longer than 1 hour, call `kanban_heartbeat` at least once an hour** — the dispatcher reclaims tasks that have been running past `kanban.dispatch_stale_timeout_seconds` (default 4 h) with no heartbeat in the last hour, on the assumption the worker crashed without cleanup. A reclaim is benign (the task goes back to `ready` for re-dispatch without a failure-counter tick) but you lose your current run's progress.
 4. Complete with `kanban_complete(summary="...", metadata={...})`, or `kanban_block(reason="...")` if stuck.
@@ -922,7 +922,7 @@ For worked examples of each, see `docs/hermes-kanban-v1-spec.pdf`.
 A parent link is not just a scheduling gate — it is the context handoff channel from a **completed** card to a new one. When you create a card with `--parent <done-card-id>`, two things happen:
 
 1. **It's immediately eligible.** `create_task` sets status by parent state: a child whose parents are all `done` is created directly in `ready` — no waiting, no manual promotion. (Children of still-open parents sit in `todo` until `recompute_ready` promotes them when the last parent finishes.)
-2. **The parent's handoff rides along.** The worker context assembled for the child (`build_worker_context`, what `kanban_show()` returns) contains a `## Parent task results` section with each parent's completion `summary` and `metadata`, verbatim:
+2. **The parent's handoff rides along.** The spawn-time worker context assembled for the child (`build_worker_context`) contains a `## Parent task results` section with each parent's completion `summary` and `metadata`. `kanban_show()` separately returns bounded latest parent-handoff records and explicit omitted counts:
 
 ```
 ## Parent task results

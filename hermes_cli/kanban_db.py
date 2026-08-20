@@ -3901,19 +3901,37 @@ def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
     return removed
 
 
-def parent_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
-    rows = conn.execute(
-        "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
-        (task_id,),
-    ).fetchall()
+def parent_ids(
+    conn: sqlite3.Connection, task_id: str, *, limit: Optional[int] = None
+) -> list[str]:
+    if limit is None:
+        rows = conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
+            (task_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT parent_id FROM (SELECT parent_id FROM task_links "
+            "WHERE child_id = ? ORDER BY parent_id DESC LIMIT ?) ORDER BY parent_id",
+            (task_id, max(0, int(limit))),
+        ).fetchall()
     return [r["parent_id"] for r in rows]
 
 
-def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
-    rows = conn.execute(
-        "SELECT child_id FROM task_links WHERE parent_id = ? ORDER BY child_id",
-        (task_id,),
-    ).fetchall()
+def child_ids(
+    conn: sqlite3.Connection, task_id: str, *, limit: Optional[int] = None
+) -> list[str]:
+    if limit is None:
+        rows = conn.execute(
+            "SELECT child_id FROM task_links WHERE parent_id = ? ORDER BY child_id",
+            (task_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT child_id FROM (SELECT child_id FROM task_links "
+            "WHERE parent_id = ? ORDER BY child_id DESC LIMIT ?) ORDER BY child_id",
+            (task_id, max(0, int(limit))),
+        ).fetchall()
     return [r["child_id"] for r in rows]
 
 
@@ -4003,11 +4021,22 @@ def add_comment(
         return int(cur.lastrowid or 0)
 
 
-def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
-    rows = conn.execute(
-        "SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC",
-        (task_id,),
-    ).fetchall()
+def list_comments(
+    conn: sqlite3.Connection, task_id: str, *, limit: Optional[int] = None
+) -> list[Comment]:
+    if limit is None:
+        rows = conn.execute(
+            "SELECT * FROM task_comments WHERE task_id = ? "
+            "ORDER BY created_at ASC, id ASC",
+            (task_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM (SELECT * FROM task_comments WHERE task_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT ?) "
+            "ORDER BY created_at ASC, id ASC",
+            (task_id, max(0, int(limit))),
+        ).fetchall()
     return [
         Comment(
             id=r["id"],
@@ -4211,11 +4240,22 @@ def add_attachment(
         return int(cur.lastrowid or 0)
 
 
-def list_attachments(conn: sqlite3.Connection, task_id: str) -> list[Attachment]:
-    rows = conn.execute(
-        "SELECT * FROM task_attachments WHERE task_id = ? ORDER BY created_at ASC, id ASC",
-        (task_id,),
-    ).fetchall()
+def list_attachments(
+    conn: sqlite3.Connection, task_id: str, *, limit: Optional[int] = None
+) -> list[Attachment]:
+    if limit is None:
+        rows = conn.execute(
+            "SELECT * FROM task_attachments WHERE task_id = ? "
+            "ORDER BY created_at ASC, id ASC",
+            (task_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM (SELECT * FROM task_attachments WHERE task_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT ?) "
+            "ORDER BY created_at ASC, id ASC",
+            (task_id, max(0, int(limit))),
+        ).fetchall()
     return [
         Attachment(
             id=r["id"],
@@ -4273,11 +4313,22 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
     return att
 
 
-def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
-    rows = conn.execute(
-        "SELECT * FROM task_events WHERE task_id = ? ORDER BY created_at ASC, id ASC",
-        (task_id,),
-    ).fetchall()
+def list_events(
+    conn: sqlite3.Connection, task_id: str, *, limit: Optional[int] = None
+) -> list[Event]:
+    if limit is None:
+        rows = conn.execute(
+            "SELECT * FROM task_events WHERE task_id = ? "
+            "ORDER BY created_at ASC, id ASC",
+            (task_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM (SELECT * FROM task_events WHERE task_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT ?) "
+            "ORDER BY created_at ASC, id ASC",
+            (task_id, max(0, int(limit))),
+        ).fetchall()
     out = []
     for r in rows:
         try:
@@ -12036,6 +12087,7 @@ def list_runs(
     include_active: bool = True,
     state_type: Optional[str] = None,
     state_name: Optional[str] = None,
+    limit: Optional[int] = None,
 ) -> list[Run]:
     """Return all runs for ``task_id`` in start order.
 
@@ -12059,8 +12111,14 @@ def list_runs(
     if state_type is not None:
         q += f" AND {state_type} = ?"
         params.append(state_name)
-    q += " ORDER BY started_at ASC, id ASC"
+    if limit is None:
+        q += " ORDER BY started_at ASC, id ASC"
+    else:
+        q += " ORDER BY started_at DESC, id DESC LIMIT ?"
+        params.append(max(0, int(limit)))
     rows = conn.execute(q, params).fetchall()
+    if limit is not None:
+        rows = list(reversed(rows))
     return [Run.from_row(r) for r in rows]
 
 

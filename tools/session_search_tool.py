@@ -61,6 +61,131 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
 
+# Recall is navigational, not a bulk transcript export. Recovery handles are
+# opaque values and must never be shortened: a truncated session id or link is
+# worse than omitting a verbose preview because it advertises unusable recovery.
+_TOTAL_OUTPUT_MAX_CHARS = 90_000
+_COMPACT_MESSAGE_CONTENT_CHARS = 256
+_RECOVERY_HANDLE_KEYS = frozenset({"session_id", "parent_session_id", "link"})
+
+
+def _compact_search_value(
+    value: Any, *, key: Optional[str] = None, string_limit: int = 256
+) -> Any:
+    """Bound verbose payloads while preserving opaque recovery handles exactly."""
+    if isinstance(value, list):
+        return [
+            _compact_search_value(item, string_limit=string_limit)
+            for item in value
+        ]
+    if not isinstance(value, dict):
+        if (
+            isinstance(value, str)
+            and key not in _RECOVERY_HANDLE_KEYS
+            and len(value) > string_limit
+        ):
+            return value[:string_limit] + "…"
+        return value
+
+    compacted = {
+        item_key: _compact_search_value(
+            item, key=item_key, string_limit=string_limit
+        )
+        for item_key, item in value.items()
+        if item_key != "content"
+    }
+    if "content" in value:
+        content = value.get("content")
+        if isinstance(content, str) and len(content) > _COMPACT_MESSAGE_CONTENT_CHARS:
+            original_chars = value.get(
+                "original_content_chars",
+                value.get("full_content_chars", len(content)),
+            )
+            marker = (
+                "\n[session_search preview truncated for aggregate bound; "
+                f"full content is {original_chars:,} chars]"
+            )
+            compacted["content"] = (
+                content[:max(0, _COMPACT_MESSAGE_CONTENT_CHARS - len(marker))]
+                + marker
+            )
+            compacted["content_truncated"] = True
+            compacted["original_content_chars"] = original_chars
+        else:
+            compacted["content"] = content
+    return compacted
+
+
+def _recovery_only_response(response: Dict[str, Any]) -> Dict[str, Any]:
+    """Last-resort envelope retaining only complete handles and navigation ids."""
+    keep = {
+        "success", "mode", "session_id", "parent_session_id", "link",
+        "count", "sessions_searched", "message_count", "messages_before",
+        "messages_after", "match_message_id", "results", "messages",
+        "bookend_start", "bookend_end",
+    }
+
+    def reduce_value(value: Any) -> Any:
+        if isinstance(value, list):
+            return [reduce_value(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                item_key: reduce_value(item)
+                for item_key, item in value.items()
+                if item_key in keep or item_key == "id"
+            }
+        return value
+
+    reduced = reduce_value(response)
+    if not isinstance(reduced, dict):
+        reduced = {}
+    reduced.update({
+        "output_truncated": True,
+        "recovery": (
+            "Verbose fields were omitted for the aggregate bound. Every emitted "
+            "session_id and link remains exact and can be passed back to session_search."
+        ),
+    })
+    return reduced
+
+
+def _finalize_response(response: Dict[str, Any]) -> str:
+    """Serialize under a hard cap without producing truncated recovery handles."""
+    response = dict(response)
+    response.setdefault(
+        "recovery",
+        "Canonical session rows are unchanged. Use session_search with session_id "
+        "and around_message_id (the message id) to navigate adjacent content.",
+    )
+    raw = json.dumps(response, ensure_ascii=False)
+    if len(raw) <= _TOTAL_OUTPUT_MAX_CHARS:
+        return raw
+
+    full_output_chars = len(raw)
+    for string_limit in (256, 64):
+        compacted = _compact_search_value(response, string_limit=string_limit)
+        compacted["output_truncated"] = True
+        compacted["full_output_chars"] = full_output_chars
+        raw = json.dumps(compacted, ensure_ascii=False)
+        if len(raw) <= _TOTAL_OUTPUT_MAX_CHARS:
+            return raw
+
+    reduced = _recovery_only_response(response)
+    reduced["full_output_chars"] = full_output_chars
+    raw = json.dumps(reduced, ensure_ascii=False)
+    if len(raw) <= _TOTAL_OUTPUT_MAX_CHARS:
+        return raw
+
+    # No bounded representation can contain a single opaque handle larger than
+    # the cap. Fail closed rather than returning a plausible-looking fragment.
+    return json.dumps({
+        "success": False,
+        "output_truncated": True,
+        "full_output_chars": full_output_chars,
+        "error": "Recovery handles exceed the model-facing output limit.",
+        "recovery": "Inspect the original source or session database directly.",
+    }, ensure_ascii=False)
+
 # Raw FTS rows are only a discovery-plan input. The final response hydrates
 # its own anchored message window and bookends after lineage deduplication.
 _DISCOVER_SEARCH_FIELDS = (
@@ -479,7 +604,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
             f"Session has {total} messages; showing first {head} + last {tail}. "
             "Pass around_message_id (any id above) to scroll the middle."
         )
-    return json.dumps(response, ensure_ascii=False)
+    return _finalize_response(response)
 
 
 def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
@@ -527,13 +652,13 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_p
             if len(results) >= limit:
                 break
 
-        return json.dumps({
+        return _finalize_response({
             "success": True,
             "mode": "browse",
             "results": results,
             "count": len(results),
             "message": f"Showing {len(results)} most recent sessions. Pass a query= to search, or session_id+around_message_id to scroll.",
-        }, ensure_ascii=False)
+        })
     except Exception as e:
         logging.error("Error listing recent sessions: %s", e, exc_info=True)
         return tool_error(f"Failed to list recent sessions: {e}", success=False)
@@ -673,7 +798,7 @@ def _scroll(
     }
     if rebind_warning:
         response["warning"] = rebind_warning
-    return json.dumps(response, ensure_ascii=False)
+    return _finalize_response(response)
 
 
 def _normalize_title_query(query: str) -> str:
@@ -800,7 +925,7 @@ def _discover(
             "message": "No matching sessions found.",
         }
         _annotate_rebuild_status(db, _empty_payload)
-        return json.dumps(_empty_payload, ensure_ascii=False)
+        return _finalize_response(_empty_payload)
 
     # Dedupe by lineage. Keep the raw owning session_id on the surviving
     # row — only that pairs validly with the FTS5 match id for the anchored
@@ -930,7 +1055,7 @@ def _discover(
         "sessions_searched": len(seen_sessions),
     }
     _annotate_rebuild_status(db, _final_payload)
-    return json.dumps(_final_payload, ensure_ascii=False)
+    return _finalize_response(_final_payload)
 
 
 def _session_search_impl(
@@ -1017,7 +1142,7 @@ def _session_search_impl(
                 located.close()
             if found.get("success"):
                 found["profile"] = owner
-                return json.dumps(found, ensure_ascii=False)
+                return _finalize_response(found)
         return result
 
     # Limit clamp [1, 10]
@@ -1129,6 +1254,8 @@ SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
         "Search past sessions stored in the local session DB, or scroll inside one. "
+        "Model-facing results are bounded while emitted session IDs and links remain "
+        "complete and directly reusable for recovery. "
         "FTS5-backed retrieval over the SQLite message store. No LLM calls — every "
         "shape returns actual messages from the DB.\n\n"
         "SOURCE-FIRST LIMIT\n\n"

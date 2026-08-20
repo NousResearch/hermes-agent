@@ -75,7 +75,7 @@ The dispatcher writes per-task worker stdout/stderr to `<board-root>/logs/<task_
 
 - `task_runs` rows carry the `log_path`, exit code (where available), summary, and metadata.
 - `task_events` rows carry every state transition (`promoted`, `claimed`, `heartbeat`, `completed`, `blocked`, `review_requested`, `changes_requested`, `review_reopened`, `gave_up`, `crashed`, `timed_out`, `reclaimed`, `claim_extended`).
-- `kanban_show` returns both, so a reviewer (or a follow-up worker) reading the task gets the full history without needing dashboard access.
+- `kanban_show` returns bounded latest slices of both with totals and omitted counts. Use the exact task handle with the dashboard, `hermes kanban runs <task_id>` for attempt history, or `hermes kanban log <task_id>` for the event log when complete history is required.
 
 The dashboard renders run history with summaries, metadata blocks, and exit-status badges. CLI users can run `hermes kanban tail <task_id>` to follow live, or `hermes kanban runs <task_id>` for the historical attempt list.
 

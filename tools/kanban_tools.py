@@ -48,6 +48,208 @@ logger = logging.getLogger(__name__)
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
 
+_KANBAN_SHOW_MAX_OUTPUT_CHARS = 30_000
+_KANBAN_SHOW_BODY_PREVIEW_CHARS = 4_000
+_KANBAN_SHOW_FIELD_PREVIEW_CHARS = 300
+_KANBAN_SHOW_MAX_GRAPH_IDS = 20
+_KANBAN_SHOW_MAX_PARENT_HANDOFFS = 3
+_KANBAN_SHOW_MAX_ATTACHMENTS = 5
+_KANBAN_SHOW_MAX_COMMENTS = 3
+_KANBAN_SHOW_MAX_EVENTS = 5
+_KANBAN_SHOW_MAX_RUNS = 3
+_KANBAN_HANDLE_KEYS = frozenset({"id", "task_id", "stored_path"})
+_KANBAN_HANDLE_LIST_KEYS = frozenset({"parents", "children"})
+_INTERNAL_CLAIM_FIELDS = frozenset({
+    "lock", "claim_lock", "stale_lock", "claimer", "claim_expires",
+    "worker_pid", "last_heartbeat_at", "prev_lock", "previous_lock",
+    "prev_pid", "previous_pid", "pid",
+})
+_INTERNAL_CLAIM_VALUE_FIELDS = frozenset({
+    "lock", "claim_lock", "stale_lock", "prev_lock", "previous_lock", "claimer",
+})
+_REDACTED_CLAIM_VALUE = "[redacted internal claim field]"
+
+
+def _bounded_preview(value: str, limit: int) -> tuple[str, Optional[int]]:
+    if len(value) <= limit:
+        return value, None
+    marker = f"… [preview truncated; full field is {len(value):,} chars]"
+    return value[:max(0, limit - len(marker))] + marker, len(value)
+
+
+def _put_bounded_text(
+    target: dict[str, Any], key: str, value: Optional[str], *,
+    limit: int = _KANBAN_SHOW_FIELD_PREVIEW_CHARS,
+) -> None:
+    if value is None:
+        target[key] = None
+        return
+    preview, full_chars = _bounded_preview(str(value), limit)
+    target[key] = preview
+    if full_chars is not None:
+        target[f"{key}_truncated"] = True
+        target[f"{key}_full_chars"] = full_chars
+
+
+def _put_bounded_json(target: dict[str, Any], key: str, value: Any) -> None:
+    if value is None:
+        target[key] = None
+        return
+    serialized = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    preview, full_chars = _bounded_preview(
+        serialized, _KANBAN_SHOW_FIELD_PREVIEW_CHARS
+    )
+    target[key] = value if full_chars is None else preview
+    if full_chars is not None:
+        target[f"{key}_truncated"] = True
+        target[f"{key}_full_chars"] = full_chars
+
+
+def _redact_internal_claim_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): (
+                _REDACTED_CLAIM_VALUE
+                if str(key).lower() in _INTERNAL_CLAIM_FIELDS
+                else _redact_internal_claim_fields(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_internal_claim_fields(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_internal_claim_fields(item) for item in value)
+    return value
+
+
+def _redact_known_claim_values(
+    value: Optional[str], *claims: Optional[str],
+) -> Optional[str]:
+    if value is None:
+        return None
+    redacted = value
+    for claim in claims:
+        if claim:
+            redacted = redacted.replace(claim, _REDACTED_CLAIM_VALUE)
+    return redacted
+
+
+def _collect_internal_claim_values(value: Any) -> list[str]:
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if (
+                str(key).lower() in _INTERNAL_CLAIM_VALUE_FIELDS
+                and isinstance(item, str)
+                and item
+            ):
+                found.append(str(item))
+            else:
+                found.extend(_collect_internal_claim_values(item))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            found.extend(_collect_internal_claim_values(item))
+    return found
+
+
+def _historical_claim_values(conn: Any, task_id: str, run_id: Optional[int]) -> list[str]:
+    if run_id is None:
+        return []
+    rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND run_id = ? "
+        "ORDER BY created_at DESC, id DESC LIMIT 20",
+        (task_id, run_id),
+    ).fetchall()
+    found: list[str] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else None
+        except (TypeError, ValueError):
+            continue
+        found.extend(_collect_internal_claim_values(payload))
+    return found
+
+
+def _compact_show_value(
+    value: Any, *, key: Optional[str] = None, string_limit: int = 96,
+    depth: int = 0,
+) -> Any:
+    """Compact verbose fields without shortening opaque retrieval handles."""
+    if depth >= 8:
+        serialized = json.dumps(value, ensure_ascii=False, default=str)
+        preview, _ = _bounded_preview(serialized, string_limit)
+        return preview
+    if isinstance(value, str):
+        if key in _KANBAN_HANDLE_KEYS:
+            return value
+        preview, _ = _bounded_preview(value, string_limit)
+        return preview
+    if isinstance(value, list):
+        shown = value[:100]
+        item_key = "id" if key in _KANBAN_HANDLE_LIST_KEYS else None
+        compacted_list = [
+            _compact_show_value(
+                item, key=item_key, string_limit=string_limit, depth=depth + 1,
+            )
+            for item in shown
+        ]
+        if len(value) > len(shown):
+            compacted_list.append(
+                {"items_omitted_for_output_bound": len(value) - len(shown)}
+            )
+        return compacted_list
+    if isinstance(value, dict):
+        compacted: dict[str, Any] = {}
+        for item_key, item in list(value.items())[:100]:
+            compacted[str(item_key)] = _compact_show_value(
+                item,
+                key=str(item_key),
+                string_limit=string_limit,
+                depth=depth + 1,
+            )
+        if len(value) > 100:
+            compacted["fields_omitted_for_output_bound"] = len(value) - 100
+        return compacted
+    return value
+
+
+def _finalize_kanban_show(response: dict[str, Any]) -> str:
+    """Serialize a show response under one cap without corrupting task handles."""
+    raw = json.dumps(response, ensure_ascii=False)
+    if len(raw) <= _KANBAN_SHOW_MAX_OUTPUT_CHARS:
+        return raw
+
+    full_output_chars = len(raw)
+    compacted = _compact_show_value(response)
+    compacted["output_truncated"] = True
+    compacted["full_output_chars"] = full_output_chars
+    raw = json.dumps(compacted, ensure_ascii=False)
+    if len(raw) <= _KANBAN_SHOW_MAX_OUTPUT_CHARS:
+        return raw
+
+    task = response.get("task")
+    task_id = task.get("id") if isinstance(task, dict) else None
+    emergency = {
+        "task": {"id": task_id} if task_id is not None else None,
+        "totals": response.get("totals"),
+        "omitted": response.get("omitted"),
+        "output_truncated": True,
+        "full_output_chars": full_output_chars,
+        "recovery": (
+            "Verbose fields were omitted. The emitted task.id remains exact; pass "
+            "it back to kanban_show or use the dashboard for canonical data."
+        ),
+    }
+    raw = json.dumps(emergency, ensure_ascii=False)
+    if len(raw) <= _KANBAN_SHOW_MAX_OUTPUT_CHARS:
+        return raw
+    return json.dumps({
+        "error": "Task handle exceeds the model-facing output limit.",
+        "output_truncated": True,
+        "full_output_chars": full_output_chars,
+        "recovery": "Inspect the dashboard for the canonical task identifier.",
+    }, ensure_ascii=False)
+
 
 def _profile_has_kanban_toolset() -> bool:
     # Uses load_config() which has mtime-based caching, so this adds
@@ -515,8 +717,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _handle_show(args: dict, **kw) -> str:
-    """Read a task's full state: task row, parents, children, comments,
-    runs (attempt history), and the last N events."""
+    """Return a bounded model-facing orientation view of one canonical task."""
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         return tool_error(
@@ -529,57 +730,238 @@ def _handle_show(args: dict, **kw) -> str:
             task = kb.get_task(conn, tid)
             if task is None:
                 return tool_error(f"task {tid} not found")
-            comments = kb.list_comments(conn, tid)
-            events = kb.list_events(conn, tid)
-            runs = kb.list_runs(conn, tid)
-            parents = kb.parent_ids(conn, tid)
-            children = kb.child_ids(conn, tid)
+            counts = {
+                "comments": int(conn.execute(
+                    "SELECT COUNT(*) FROM task_comments WHERE task_id = ?", (tid,),
+                ).fetchone()[0]),
+                "events": int(conn.execute(
+                    "SELECT COUNT(*) FROM task_events WHERE task_id = ?", (tid,),
+                ).fetchone()[0]),
+                "runs": int(conn.execute(
+                    "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (tid,),
+                ).fetchone()[0]),
+                "attachments": int(conn.execute(
+                    "SELECT COUNT(*) FROM task_attachments WHERE task_id = ?", (tid,),
+                ).fetchone()[0]),
+                "parents": int(conn.execute(
+                    "SELECT COUNT(*) FROM task_links WHERE child_id = ?", (tid,),
+                ).fetchone()[0]),
+                "children": int(conn.execute(
+                    "SELECT COUNT(*) FROM task_links WHERE parent_id = ?", (tid,),
+                ).fetchone()[0]),
+                "parent_handoffs": int(conn.execute(
+                    "SELECT COUNT(*) FROM task_links AS link "
+                    "JOIN tasks AS parent ON parent.id = link.parent_id "
+                    "WHERE link.child_id = ? AND parent.status = 'done'",
+                    (tid,),
+                ).fetchone()[0]),
+            }
+            shown_comments = kb.list_comments(
+                conn, tid, limit=_KANBAN_SHOW_MAX_COMMENTS,
+            )
+            shown_events = kb.list_events(
+                conn, tid, limit=_KANBAN_SHOW_MAX_EVENTS,
+            )
+            shown_runs = kb.list_runs(
+                conn, tid, limit=_KANBAN_SHOW_MAX_RUNS,
+            )
+            shown_attachments = kb.list_attachments(
+                conn, tid, limit=_KANBAN_SHOW_MAX_ATTACHMENTS,
+            )
+            parents = kb.parent_ids(
+                conn, tid, limit=_KANBAN_SHOW_MAX_GRAPH_IDS,
+            )
+            children = kb.child_ids(
+                conn, tid, limit=_KANBAN_SHOW_MAX_GRAPH_IDS,
+            )
+            handoff_parent_ids = [
+                row["parent_id"]
+                for row in conn.execute(
+                    "SELECT link.parent_id FROM task_links AS link "
+                    "JOIN tasks AS parent ON parent.id = link.parent_id "
+                    "WHERE link.child_id = ? AND parent.status = 'done' "
+                    "ORDER BY parent.completed_at DESC, link.parent_id DESC LIMIT ?",
+                    (tid, _KANBAN_SHOW_MAX_PARENT_HANDOFFS),
+                ).fetchall()
+            ]
 
             def _task_dict(t):
-                return {
-                    "id": t.id, "title": t.title, "body": t.body,
-                    "assignee": t.assignee, "status": t.status,
-                    "tenant": t.tenant, "priority": t.priority,
-                    "workspace_kind": t.workspace_kind,
-                    "workspace_path": t.workspace_path,
-                    "created_by": t.created_by, "created_at": t.created_at,
+                # Keep the public shape explicit. Task also carries internal
+                # claim/session/idempotency fields that are not orientation data
+                # and include bearer values used to prove worker ownership.
+                entry: dict[str, Any] = {
+                    "id": t.id,
+                    "status": t.status,
+                    "priority": t.priority,
+                    "created_at": t.created_at,
                     "started_at": t.started_at,
                     "completed_at": t.completed_at,
-                    "result": t.result,
                     "current_run_id": t.current_run_id,
-                    "model_override": t.model_override,
-                    "provider_override": t.provider_override,
                 }
+                for key in (
+                    "title", "body", "assignee", "tenant", "workspace_kind",
+                    "workspace_path", "created_by", "result", "model_override",
+                    "provider_override",
+                ):
+                    _put_bounded_text(
+                        entry,
+                        key,
+                        getattr(t, key),
+                        limit=(
+                            _KANBAN_SHOW_BODY_PREVIEW_CHARS
+                            if key == "body"
+                            else _KANBAN_SHOW_FIELD_PREVIEW_CHARS
+                        ),
+                    )
+                return entry
+
+            def _comment_dict(comment):
+                entry = {
+                    "id": comment.id,
+                    "created_at": comment.created_at,
+                }
+                _put_bounded_text(entry, "author", comment.author)
+                _put_bounded_text(entry, "body", comment.body)
+                return entry
+
+            def _event_dict(event):
+                entry = {
+                    "id": event.id,
+                    "kind": event.kind,
+                    "created_at": event.created_at,
+                    "run_id": event.run_id,
+                }
+                _put_bounded_json(
+                    entry,
+                    "payload",
+                    _redact_internal_claim_fields(event.payload),
+                )
+                return entry
 
             def _run_dict(r):
-                return {
+                historical_claims = _historical_claim_values(conn, tid, r.id)
+                entry = {
                     "id": r.id, "profile": r.profile,
                     "status": r.status, "outcome": r.outcome,
-                    "summary": r.summary, "error": r.error,
-                    "metadata": r.metadata,
                     "started_at": r.started_at, "ended_at": r.ended_at,
                 }
+                _put_bounded_text(entry, "summary", r.summary)
+                _put_bounded_text(
+                    entry,
+                    "error",
+                    _redact_known_claim_values(
+                        r.error, task.claim_lock, r.claim_lock, *historical_claims,
+                    ),
+                )
+                _put_bounded_json(
+                    entry,
+                    "metadata",
+                    _redact_internal_claim_fields(r.metadata),
+                )
+                return entry
 
-            return json.dumps({
+            def _attachment_dict(attachment):
+                entry = {
+                    "id": attachment.id,
+                    "stored_path": attachment.stored_path,
+                    "size": attachment.size,
+                    "created_at": attachment.created_at,
+                }
+                _put_bounded_text(entry, "filename", attachment.filename)
+                _put_bounded_text(entry, "content_type", attachment.content_type)
+                _put_bounded_text(entry, "uploaded_by", attachment.uploaded_by)
+                return entry
+
+            parent_handoffs = []
+            for parent_id in handoff_parent_ids:
+                parent = kb.get_task(conn, parent_id)
+                if parent is None or parent.status != "done":
+                    continue
+                completed = kb.list_runs(
+                    conn,
+                    parent_id,
+                    state_type="outcome",
+                    state_name="completed",
+                    limit=1,
+                )
+                latest = completed[0] if completed else None
+                historical_claims = _historical_claim_values(
+                    conn, parent_id, latest.id if latest else None,
+                )
+                handoff: dict[str, Any] = {
+                    "task_id": parent_id,
+                    "completed_at": parent.completed_at,
+                    "run_id": latest.id if latest else None,
+                }
+                _put_bounded_text(handoff, "title", parent.title)
+                _put_bounded_text(
+                    handoff,
+                    "summary",
+                    _redact_known_claim_values(
+                        latest.summary if latest and latest.summary else parent.result,
+                        parent.claim_lock,
+                        latest.claim_lock if latest else None,
+                        *historical_claims,
+                    ),
+                )
+                _put_bounded_json(
+                    handoff,
+                    "metadata",
+                    _redact_internal_claim_fields(
+                        latest.metadata if latest else None
+                    ),
+                )
+                parent_handoffs.append(handoff)
+            parent_handoffs.sort(
+                key=lambda handoff: (
+                    handoff.get("completed_at") or 0,
+                    handoff["task_id"],
+                )
+            )
+
+            shown_handoffs = parent_handoffs[-_KANBAN_SHOW_MAX_PARENT_HANDOFFS:]
+            totals = dict(counts)
+            omitted = {
+                "parents": counts["parents"] - len(parents),
+                "children": counts["children"] - len(children),
+                "parent_handoffs": (
+                    counts["parent_handoffs"] - len(shown_handoffs)
+                ),
+                "attachments": counts["attachments"] - len(shown_attachments),
+                "comments": counts["comments"] - len(shown_comments),
+                "events": counts["events"] - len(shown_events),
+                "runs": counts["runs"] - len(shown_runs),
+            }
+
+            return _finalize_kanban_show({
                 "task": _task_dict(task),
                 "parents": parents,
                 "children": children,
-                "comments": [
-                    {"author": c.author, "body": c.body,
-                     "created_at": c.created_at}
-                    for c in comments
+                "parent_handoffs": shown_handoffs,
+                "attachments": [
+                    _attachment_dict(attachment) for attachment in shown_attachments
                 ],
-                "events": [
-                    {"kind": e.kind, "payload": e.payload,
-                     "created_at": e.created_at, "run_id": e.run_id}
-                    for e in events[-50:]   # cap; full log via CLI
-                ],
-                "runs": [_run_dict(r) for r in runs],
-                # Also surface the worker's own context block so the
-                # agent can include it directly if it wants. This is
-                # the same string build_worker_context returns to the
-                # dispatcher at spawn time.
-                "worker_context": kb.build_worker_context(conn, tid),
+                "comments": [_comment_dict(comment) for comment in shown_comments],
+                "events": [_event_dict(event) for event in shown_events],
+                "runs": [_run_dict(run) for run in shown_runs],
+                "totals": totals,
+                "omitted": omitted,
+                "orientation": {
+                    "task_id": tid,
+                    "read_order": [
+                        "task", "attachments", "parent_handoffs", "runs",
+                        "comments", "events",
+                    ],
+                    "note": (
+                        "Verbose fields and history are bounded. Handles are exact; "
+                        "totals and omitted counts describe canonical data not shown."
+                    ),
+                },
+                "recovery": (
+                    "Canonical board data is unchanged. Pass task.id back to "
+                    "kanban_show, use kanban_attachments for every file, or inspect "
+                    "the dashboard/CLI for complete history."
+                ),
             })
         finally:
             conn.close()
@@ -1696,12 +2078,10 @@ def _board_schema_prop() -> dict[str, str]:
 KANBAN_SHOW_SCHEMA = {
     "name": "kanban_show",
     "description": (
-        "Read a task's full state — title, body, assignee, parent task "
-        "handoffs, your prior attempts on this task if any, comments, "
-        "and recent events. Use this to (re)orient yourself before "
-        "starting work, especially on retries. The response includes a "
-        "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning."
+        "Read a bounded orientation view of a task: task-field previews, latest "
+        "attachment metadata and parent handoffs, recent attempts/comments/events, "
+        "and explicit truncation and omitted counts. Opaque task and file handles "
+        "remain exact for recovery; canonical board data is never changed."
     ),
     "parameters": {
         "type": "object",

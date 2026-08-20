@@ -454,6 +454,92 @@ class TestReadShape:
         assert result["truncated"] is True
         assert len(result["messages"]) == 30  # head 20 + tail 10
 
+    def test_aggregate_bound_preserves_long_recovery_handle(self, db):
+        session_id = "s_" + ("i" * 20_000)
+        db.create_session(session_id, source="cli")
+        for index in range(3):
+            db.append_message(
+                session_id,
+                role="user" if index % 2 == 0 else "assistant",
+                content=f"message-{index} " + ("C" * 80_000),
+            )
+        db._conn.commit()
+
+        raw = session_search(session_id=session_id, db=db)
+        result = json.loads(raw)
+
+        assert len(raw) <= 90_000
+        assert result["output_truncated"] is True
+        assert result["session_id"] == session_id
+        assert _linked_session_id(result["link"]) == session_id
+        for message in result["messages"]:
+            assert len(message["content"]) <= 256
+            assert message["content_truncated"] is True
+            assert message["original_content_chars"] > 80_000
+        recovered = json.loads(
+            session_search(session_id=_linked_session_id(result["link"]), db=db)
+        )
+        assert recovered["success"] is True
+        assert recovered["session_id"] == session_id
+
+    def test_multi_record_aggregate_bound_keeps_each_emitted_handle_valid(self, db):
+        session_ids = []
+        for index in range(4):
+            session_id = f"s_{index}_" + (str(index) * 6_000)
+            session_ids.append(session_id)
+            db.create_session(session_id, source="cli")
+            db.append_message(
+                session_id,
+                role="user",
+                content="aggregate-handle-needle " + ("D" * 80_000),
+            )
+        db._conn.commit()
+
+        raw = session_search(query="aggregate-handle-needle", limit=4, db=db)
+        result = json.loads(raw)
+
+        assert len(raw) <= 90_000
+        assert result["output_truncated"] is True
+        assert result["count"] == 4
+        assert {entry["session_id"] for entry in result["results"]} == set(session_ids)
+        for entry in result["results"]:
+            emitted_id = _linked_session_id(entry["link"])
+            assert emitted_id == entry["session_id"]
+            assert all(
+                len(message["content"]) <= 256
+                for message in entry["messages"]
+            )
+            recovered = json.loads(session_search(session_id=emitted_id, db=db))
+            assert recovered["success"] is True
+
+    def test_recovery_only_fallback_keeps_results_container_and_exact_handles(self):
+        from tools.session_search_tool import _finalize_response
+
+        session_ids = ["session-" + (str(index) * 200) for index in range(2)]
+        response = {
+            "success": True,
+            "mode": "discover",
+            "results": [
+                {
+                    "session_id": session_id,
+                    "link": f"@session:default/{session_id}",
+                    "messages": [
+                        {"id": item, "content": "payload-" + ("X" * 2_000)}
+                        for item in range(500)
+                    ],
+                }
+                for session_id in session_ids
+            ],
+        }
+
+        raw = _finalize_response(response)
+        bounded = json.loads(raw)
+
+        assert len(raw) <= 90_000
+        assert [result["session_id"] for result in bounded["results"]] == session_ids
+        assert [result["link"] for result in bounded["results"]] == [
+            f"@session:default/{session_id}" for session_id in session_ids
+        ]
 
 # =========================================================================
 # Session links — the value the agent writes to point the user at a session

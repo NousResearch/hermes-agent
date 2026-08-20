@@ -66,9 +66,10 @@ On the next dispatcher tick (60s by default, or immediately if you hit **Nudge d
 ```python
 # worker tool calls — NOT commands you run
 kanban_show()
-# → returns title, body, worker_context, parents, prior attempts, comments
+# → returns bounded task previews, parent handoffs, recent attempts/comments,
+#   exact recovery handles, and totals/omitted counts
 
-# (worker reads worker_context, uses terminal/file tools to design the schema,
+# (worker reads the orientation, uses terminal/file tools to design the schema,
 #  write migrations, run its own checks, commit — the real work happens here)
 
 kanban_heartbeat(note="schema drafted, writing migrations now")
@@ -175,7 +176,7 @@ kanban_request_changes(
 #   to backend-dev in ready/todo without touching block-loop accounting
 
 # --- Engineer: second implementation attempt ---
-kanban_show()  # prior review evidence is in worker_context
+kanban_show()  # recent review evidence is in the bounded orientation view
 # (apply feedback and re-run tests)
 kanban_request_review(
     summary="added zxcvbn validation and single-use reset tokens",
@@ -202,7 +203,7 @@ If you intentionally use the downstream-card model shown in the screenshot, the 
 
 ![Reviewer's drawer view of the pipeline](/img/kanban-tutorial/09-drawer-pipeline-review.png)
 
-The reviewer card's `worker_context` includes the completed implementation handoff. That is a separate card workflow; do not combine it with same-card `kanban_request_review` or you will duplicate the review lane.
+The reviewer card's spawn-time context includes the completed implementation handoff, and `kanban_show()` exposes a bounded latest parent-handoff record. That is a separate card workflow; do not combine it with same-card `kanban_request_review` or you will duplicate the review lane.
 
 ## Story 4 — Circuit breaker and crash recovery
 
@@ -263,10 +264,10 @@ Run 1 — `crashed`, with the error `OOM kill at row 2.3M (process 99999 gone)`.
 
 In every story above, workers called `kanban_complete(summary=..., metadata=...)` at the end. That's not decoration — it's the primary handoff channel between stages of a workflow.
 
-When a worker on task B is spawned and calls `kanban_show()`, the `worker_context` it gets back includes:
+When a worker on task B is spawned, its injected context includes the canonical handoff. A later `kanban_show()` returns bounded latest slices containing:
 
-- B's **prior attempts** (previous runs: outcome, summary, error, metadata) so a retrying worker doesn't repeat a failed path.
-- **Parent task results** — for each parent, the most-recent completed run's summary and metadata — so downstream workers see why and how the upstream work was done.
+- B's **latest prior attempts** (outcome plus bounded summary/error/metadata previews) so a retrying worker doesn't repeat a failed path; `totals` and `omitted` signal when older runs require canonical recovery.
+- **Latest parent task results** — bounded summary and metadata previews from the most-recent completed runs — so downstream workers see why and how upstream work was done without rebuilding incident-scale context.
 
 This replaces the "dig through comments and the work output" dance that plagues flat kanban systems. A PM writes acceptance criteria in the spec's metadata, and the engineer's worker sees them structurally in the parent handoff. An engineer records which tests they ran and how many passed, and the reviewer's worker has that list in hand before opening a diff.
 

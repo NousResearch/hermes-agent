@@ -1250,6 +1250,87 @@ class TestDoctorXaiOAuthStatus:
 
 
 # ---------------------------------------------------------------------------
+# ◆ Auth Providers — dashboard OAuth client_id configured without login
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorDashboardClientIdWithoutLogin:
+    """A dashboard.oauth.client_id / HERMES_DASHBOARD_OAUTH_CLIENT_ID value
+    can only have been minted by Nous Portal via `hermes dashboard
+    register`, which itself requires an active Portal login. A client_id
+    present while logged out is therefore always a phantom Portal has never
+    seen — the local OAuth handshake still initiates fine (redirect_uri,
+    PKCE, and the 302 are all constructed locally), so nothing else in
+    doctor flags it. Regression coverage for the missing-Local-Dashboard
+    root cause: doctor should say so explicitly instead of the operator
+    discovering it only when Portal's /local-dashboards page is empty.
+    """
+
+    def _run(self, monkeypatch, tmp_path, *, client_id: str, logged_in: bool) -> str:
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        if client_id:
+            (home / "config.yaml").write_text(
+                f"dashboard:\n  oauth:\n    client_id: {client_id}\n",
+                encoding="utf-8",
+            )
+        else:
+            (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        monkeypatch.delenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", raising=False)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": logged_in})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": False})
+
+        # `_resolve_client_id` reads config.yaml fresh via `load_config()`, so
+        # point it at the per-test HERMES_HOME instead of monkeypatching the
+        # plugin module directly (keeps this test exercising the real
+        # config-resolution path doctor relies on).
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
+    def test_warns_when_client_id_configured_and_logged_out(self, monkeypatch, tmp_path):
+        out = self._run(
+            monkeypatch, tmp_path,
+            client_id="agent:cmsjbv9b2000wja09ew5igg2u",
+            logged_in=False,
+        )
+        assert "Dashboard OAuth client_id configured without Portal login" in out
+        assert "agent:cmsjbv9b2000wja09ew5igg2u" in out
+        assert "hermes dashboard register" in out
+
+    def test_silent_when_client_id_configured_and_logged_in(self, monkeypatch, tmp_path):
+        out = self._run(
+            monkeypatch, tmp_path,
+            client_id="agent:cmsjbv9b2000wja09ew5igg2u",
+            logged_in=True,
+        )
+        assert "Dashboard OAuth client_id configured without Portal login" not in out
+
+    def test_silent_when_no_client_id_configured(self, monkeypatch, tmp_path):
+        out = self._run(monkeypatch, tmp_path, client_id="", logged_in=False)
+        assert "Dashboard OAuth client_id configured without Portal login" not in out
+
+
+# ---------------------------------------------------------------------------
 # ◆ Auth Providers — codex CLI import hint placement (issue #27975)
 # ---------------------------------------------------------------------------
 

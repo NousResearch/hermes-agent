@@ -1658,6 +1658,37 @@ def run_doctor(args):
         else:
             check_warn("Nous Portal auth", "(not logged in)")
 
+        # Dashboard OAuth client_id configured but Portal login never
+        # completed: a self-hosted dashboard client_id only becomes a real
+        # Portal-side "Local Dashboard" row via `hermes dashboard register`
+        # (POST /api/oauth/self-hosted-client), which itself requires being
+        # logged in. A client_id sitting in config.yaml /
+        # HERMES_DASHBOARD_OAUTH_CLIENT_ID while logged out is therefore
+        # always a phantom ID Portal has never minted — yet the local OAuth
+        # handshake still *initiates* correctly (redirect_uri, PKCE, and the
+        # 302 to Portal are all constructed locally and don't touch the
+        # registration state), so nothing else here signals the problem.
+        # Surface it explicitly instead of leaving the operator to discover
+        # it only when Portal's /local-dashboards page comes up empty.
+        try:
+            from plugins.dashboard_auth import nous as _nous_dashboard_plugin
+
+            _dash_client_id = _nous_dashboard_plugin._resolve_client_id()
+        except Exception:
+            _dash_client_id = ""
+        if _dash_client_id and not nous_status.get("logged_in"):
+            check_warn(
+                "Dashboard OAuth client_id configured without Portal login",
+                f"({_dash_client_id})",
+            )
+            check_info(
+                "This client_id cannot have been registered with Nous "
+                "Portal (registration requires login) — Portal's Local "
+                "Dashboard page will show nothing for it. Run `hermes "
+                "setup --portal` (or `hermes auth add nous`), then `hermes "
+                "dashboard register` to mint a real client_id."
+            )
+
         codex_status = get_codex_auth_status()
         if codex_status.get("logged_in"):
             check_ok("OpenAI Codex auth", "(logged in)")

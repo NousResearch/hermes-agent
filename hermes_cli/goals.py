@@ -995,6 +995,34 @@ def _goal_judge_max_tokens() -> int:
     return DEFAULT_JUDGE_MAX_TOKENS
 
 
+def _goal_judge_timeout() -> float:
+    """Resolve auxiliary.goal_judge.timeout, falling back to the default.
+
+    Mirrors :func:`_goal_judge_max_tokens`. The key is declared in
+    ``DEFAULT_CONFIG`` and surfaces in the auxiliary config UI, but the
+    judge path used to hardcode ``DEFAULT_JUDGE_TIMEOUT`` and never read
+    it — so a user raising the timeout for a slow-but-healthy reasoning
+    endpoint got no effect, and the loop auto-paused on misleading
+    transport failures pointing at provider/key (#91022). A non-positive
+    or non-numeric value falls back rather than crashing the goal loop.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        value = (
+            (cfg.get("auxiliary") or {})
+            .get("goal_judge", {})
+            .get("timeout", DEFAULT_JUDGE_TIMEOUT)
+        )
+        value = float(value)
+        if value > 0:
+            return value
+    except Exception:
+        pass
+    return DEFAULT_JUDGE_TIMEOUT
+
+
 def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, Any]]]:
     """Parse the judge's reply. Fail-open on unusable output.
 
@@ -1142,7 +1170,7 @@ def judge_goal(
     goal: str,
     last_response: str,
     *,
-    timeout: float = DEFAULT_JUDGE_TIMEOUT,
+    timeout: Optional[float] = None,
     subgoals: Optional[List[str]] = None,
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
@@ -1189,6 +1217,10 @@ def judge_goal(
     if not last_response.strip():
         # No substantive reply this turn — almost certainly not done yet.
         return "continue", "empty response (nothing to evaluate)", False, None, False
+    if timeout is None:
+        # The declared default for this path is the config key, not the
+        # module constant — see _goal_judge_timeout (#91022).
+        timeout = _goal_judge_timeout()
 
     try:
         from agent.auxiliary_client import call_llm
@@ -1290,7 +1322,7 @@ def gather_background_processes(task_id: Optional[str] = None) -> List[Dict[str,
     return [s for s in sessions if isinstance(s, dict) and s.get("status") != "exited"]
 
 
-def draft_contract(objective: str, *, timeout: float = DEFAULT_JUDGE_TIMEOUT) -> Optional[GoalContract]:
+def draft_contract(objective: str, *, timeout: Optional[float] = None) -> Optional[GoalContract]:
     """Expand a plain-language objective into a structured completion contract.
 
     Uses the ``goal_judge`` auxiliary task (main-model-first, cache-safe — it
@@ -1303,6 +1335,9 @@ def draft_contract(objective: str, *, timeout: float = DEFAULT_JUDGE_TIMEOUT) ->
     objective = (objective or "").strip()
     if not objective:
         return None
+    if timeout is None:
+        # Same config-backed default as judge_goal (#91022).
+        timeout = _goal_judge_timeout()
 
     try:
         from agent.auxiliary_client import call_llm

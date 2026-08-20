@@ -6,7 +6,7 @@ Usage:
     hermes webhook remove <name>
     hermes webhook test <name> [--payload '{"key": "value"}']
 
-Subscriptions persist to ~/.hermes/webhook_subscriptions.json and are
+Subscriptions persist to the effective profile webhook route store and are
 hot-reloaded by the webhook adapter without a gateway restart.
 """
 
@@ -21,7 +21,6 @@ from typing import Dict
 
 from hermes_constants import display_hermes_home
 from utils import atomic_replace
-
 
 
 def _effective_webhook_config():
@@ -41,7 +40,10 @@ def _hermes_home() -> Path:
 
 
 def _subscriptions_path() -> Path:
-    return _hermes_home() / _SUBSCRIPTIONS_FILENAME
+    try:
+        return _effective_webhook_config().routes_path
+    except Exception:
+        return _hermes_home() / _SUBSCRIPTIONS_FILENAME
 
 
 def _load_subscriptions() -> Dict[str, dict]:
@@ -58,10 +60,8 @@ def _load_subscriptions() -> Dict[str, dict]:
 def _save_subscriptions(subs: Dict[str, dict]) -> None:
     path = _subscriptions_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    # webhook_subscriptions.json contains per-route HMAC secrets — write
-    # via tempfile + chmod 0o600 before the atomic rename so a permissive
-    # umask cannot leave the secrets readable to other local users in the
-    # window between create and rename.
+    # Reference-only routes should not normally contain plaintext secrets, but
+    # keep the route store private during incremental migration as well.
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{path.name}.",
         suffix=".tmp",
@@ -76,8 +76,6 @@ def _save_subscriptions(subs: Dict[str, dict]) -> None:
             os.fsync(fh.fileno())
         os.chmod(tmp_path, _SUBSCRIPTIONS_FILE_MODE)
         atomic_replace(tmp_path, path)
-        # Re-assert after rename in case the destination existed with a
-        # broader mode and atomic_replace preserved it.
         os.chmod(path, _SUBSCRIPTIONS_FILE_MODE)
     except Exception:
         try:
@@ -88,26 +86,22 @@ def _save_subscriptions(subs: Dict[str, dict]) -> None:
 
 
 def _store_route_secret(name: str, value: str) -> str:
-    """Store a route secret in the profile resolver and return its reference."""
+    """Store a route secret through the Task 8 canonical persistence seam."""
+    from hermes_cli.migrations.webhook_secret_refs import store_webhook_secret
+
     ref = "WEBHOOK_ROUTE_" + re.sub(r"[^A-Za-z0-9_]", "_", name.upper())
-    from hermes_cli.config import save_env_value
-    save_env_value(ref, value)
+    store_webhook_secret(ref, value)
     return ref
 
 
 def _resolve_route_secret(route: dict) -> str:
+    """Resolve a route through the same helper used by migration/runtime."""
     ref = route.get("secret_ref")
     if not ref:
         return str(route.get("secret", "") or "")
-    from agent.secret_scope import get_secret
-    value = get_secret(str(ref), "")
-    if value:
-        return str(value)
-    try:
-        from hermes_cli.config import get_env_value_prefer_dotenv
-        return str(get_env_value_prefer_dotenv(str(ref)) or "")
-    except Exception:
-        return ""
+    from hermes_cli.migrations.webhook_secret_refs import resolve_webhook_secret
+
+    return str(resolve_webhook_secret(str(ref)) or "")
 
 
 def _get_webhook_config() -> dict:
@@ -156,19 +150,15 @@ def _setup_hint() -> str:
          enabled: true
          extra:
            port: 8644
-           secret: "your-global-hmac-secret"
+           secret_ref: WEBHOOK_SECRET
 
-  3. Or set environment variables in {_dhh}/.env:
-     WEBHOOK_ENABLED=true
-     WEBHOOK_PORT=8644
-     WEBHOOK_SECRET=your-global-secret
+  3. Or configure the profile secret backend with WEBHOOK_SECRET.
 
   Then start the gateway: hermes gateway run
 """
 
 
 def _require_webhook_enabled() -> bool:
-    """Check webhook is enabled. Print setup guide and return False if not."""
     if _is_webhook_enabled():
         return True
     print(_setup_hint())
@@ -180,10 +170,12 @@ def webhook_command(args):
     sub = getattr(args, "webhook_action", None)
 
     if not sub:
-        print("Usage: hermes webhook {subscribe|list|remove|test}")
+        print("Usage: hermes webhook {subscribe|list|remove|test|migrate-secrets}")
         print("Run 'hermes webhook --help' for details.")
         return
 
+    # Migration must remain available when a broken legacy route prevents the
+    # runtime platform from becoming enabled.
     if sub == "migrate-secrets":
         _cmd_migrate_secrets(args)
         return
@@ -209,22 +201,26 @@ def _cmd_subscribe(args):
 
     subs = _load_subscriptions()
     is_update = name in subs
-
     existing_route = subs.get(name) if is_update else None
     supplied_secret = bool(args.secret)
     secret = args.secret or ("" if is_update else secrets.token_urlsafe(32))
     events = [e.strip() for e in args.events.split(",")] if args.events else []
 
+    secret_ref = None
     if is_update and not supplied_secret and isinstance(existing_route, dict):
         secret_ref = existing_route.get("secret_ref")
         if not secret_ref:
             secret = str(existing_route.get("secret", "") or "")
-            if secret:
-                # Incrementally migrate a legacy route at the next write while
-                # keeping the old route usable if secure persistence fails.
-                secret_ref = _store_route_secret(name, secret)
+            if not secret:
+                # A previously malformed/no-secret route must never be saved
+                # back into an unusable state. Mint a fresh credential and
+                # surface it once just like a new subscription.
+                secret = secrets.token_urlsafe(32)
+                supplied_secret = True
+            secret_ref = _store_route_secret(name, secret)
     else:
         secret_ref = _store_route_secret(name, secret)
+
     route = {
         "description": args.description or f"Agent-created subscription: {name}",
         "events": events,
@@ -235,8 +231,10 @@ def _cmd_subscribe(args):
     }
     if secret_ref:
         route["secret_ref"] = secret_ref
-    elif secret:
-        route["secret"] = secret
+    else:
+        # Fail closed rather than persisting a route that will die at startup.
+        print("Error: webhook secret persistence did not return a reference")
+        return
 
     if getattr(args, "deliver_only", False):
         if route["deliver"] == "log":
@@ -335,9 +333,11 @@ def _cmd_test(args):
 
     route = subs[name]
     secret = _resolve_route_secret(route)
+    if not secret:
+        print("  Error: webhook secret reference could not be resolved")
+        return
     base_url = _get_webhook_base_url()
     url = f"{base_url}/webhooks/{name}"
-
     payload = args.payload or '{"test": true, "event_type": "test", "message": "Hello from hermes webhook test"}'
 
     import hmac
@@ -366,9 +366,9 @@ def _cmd_test(args):
         print(f"  Error: {e}")
         print("  Is the gateway running? (hermes gateway run)")
 
-# WEBHOOK_REVOLUTION_TASK8_MIGRATION_COMMAND_V1
+
 def _cmd_migrate_secrets(args):
-    """Migrate every legacy webhook secret, returning value-free receipts."""
+    """Migrate legacy webhook secrets, returning value-free receipts."""
     from hermes_cli.migrations.webhook_secret_refs import (
         migrate_webhook_config,
         migrate_webhook_routes,
@@ -382,10 +382,7 @@ def _cmd_migrate_secrets(args):
     }
     if route_path.exists():
         backups = tuple(route_path.parent.glob(route_path.name + ".bak*"))
-        route_result = migrate_webhook_routes(
-            route_path,
-            backup_paths=backups,
-        )
+        route_result = migrate_webhook_routes(route_path, backup_paths=backups)
 
     config_path = _hermes_home() / "config.yaml"
     config_result = {"migrated": False, "receipts": []}

@@ -1,0 +1,174 @@
+name: Desktop Windows Install/Update E2E
+
+# Can a real Windows user (a) install the commit BEFORE this one from
+# scratch, (b) update that install TO this commit through the Desktop GUI
+# update path, and (c) update FROM this commit to a future main?
+#
+# The driver (tests/install/windows-desktop-e2e.ps1) stages a local bare
+# repo serving BASE (HEAD~1) -> CURRENT (HEAD) -> NEXT (synthetic same-tree
+# child of HEAD) and redirects the canonical GitHub URLs at it via git
+# insteadOf env config. The install runs BASE's own scripts/install.ps1
+# with -IncludeDesktop (real uv/Python/Node/venv/Electron build); each
+# update leg runs the installed checkout's scripts/desktop-update.ps1 --
+# the exact hand-off the Desktop Update button spawns -- headless (-NoUi),
+# including the desktop-exit and venv-lock fail-closed gates, the real
+# `hermes update`, marker lifecycle, and the result JSON the relaunched
+# Desktop surfaces.
+#
+# before -> current proves this commit can be updated TO.
+# current -> next proves this commit can update FROM (its updater code is
+# the one that runs when the NEXT commit ships).
+#
+# Triggers: every push to main (concurrency-coalesced), release tags,
+# nightly, and manual dispatch. Deliberately NOT on pull_request: a leg
+# does ~30-60 minutes of real toolchain + Electron work on a 2x-cost
+# Windows runner; breakage on main pages within one commit either way.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly, off the hour to dodge the top-of-hour runner crunch.
+    - cron: '40 6 * * *'
+  push:
+    branches: [main]
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-windows-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: install BASE, update to CURRENT, update to NEXT
+    runs-on: windows-latest
+    timeout-minutes: 180
+
+    env:
+      # Sibling of the checkout (D:\a\hermes-agent\hermes-desktop-e2e): outside
+      # the repo so the staged bare clone and the install never collide with
+      # the checkout itself. NOTE: ${{ runner.temp }} is NOT available in
+      # job-level env (only github/inputs/matrix/needs/secrets/strategy/vars);
+      # that exact mistake made the whole workflow file invalid on first push.
+      HERMES_E2E_WORKROOT: ${{ github.workspace }}\..\hermes-desktop-e2e
+
+    steps:
+      # Full history: the driver resolves HEAD~1 and bare-clones this
+      # checkout as the repo the installer/updater talk to. A shallow
+      # checkout cannot be served as a clone source.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Stage serve repo (BASE / CURRENT / NEXT)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-desktop-e2e.ps1 -Phase stage
+
+      - name: Install BASE from scratch (real install.ps1, with Desktop)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-desktop-e2e.ps1 -Phase install
+
+      - name: Update BASE -> CURRENT (Desktop GUI update path)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-desktop-e2e.ps1 -Phase update-to-current
+
+      - name: Update CURRENT -> NEXT (Desktop GUI update path)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-desktop-e2e.ps1 -Phase update-to-next
+
+      - name: Collect logs
+        if: always()
+        shell: powershell
+        run: |
+          $out = "e2e-logs"
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $home_ = Join-Path $env:HERMES_E2E_WORKROOT "hermes-home"
+          foreach ($p in @("logs", ".hermes-update-result.json")) {
+            $src = Join-Path $home_ $p
+            if (Test-Path $src) { Copy-Item $src (Join-Path $out $p) -Recurse -Force }
+          }
+          $shas = Join-Path $env:HERMES_E2E_WORKROOT "shas.json"
+          if (Test-Path $shas) { Copy-Item $shas $out -Force }
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-windows-e2e-logs-${{ github.sha }}
+          path: e2e-logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ── The REAL user flow ──────────────────────────────────────────────────
+  # Same staging, but every leg is the surface a user touches: the website's
+  # Hermes-Setup.exe run HEADED with AutoHotkey clicking Install/Launch, then
+  # the installed Electron app driven by Playwright clicking Settings →
+  # About → "Update now" twice (→ CURRENT, → synthetic NEXT), asserting the
+  # detached updater chain end-to-end (result JSON, marker, sha, relaunch).
+  # Proof artifacts: per-step renderer screenshots, full-desktop frames every
+  # 3s, ahk.log, bootstrap-installer.log, desktop-update-handoff.log.
+  #
+  # GitHub's windows-latest runners have an interactive desktop session, so
+  # headed GUI automation works without RDP tricks (same substrate the prior
+  # AutoHotkey attempt in #68183 targeted).
+  gui-e2e:
+    name: "REAL flow: website setup.exe → GUI update → GUI update"
+    runs-on: windows-latest
+    timeout-minutes: 240
+    # Deliberately NOT `needs: e2e` — the jobs run independently, so each
+    # provides rollback coverage for the other and a GUI-layer flake cannot
+    # mask a machinery regression.
+
+    env:
+      HERMES_E2E_WORKROOT: ${{ github.workspace }}\..\hermes-desktop-gui-e2e
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Stage serve repo (BASE / CURRENT / NEXT)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-desktop-gui-e2e.ps1 -Phase stage
+
+      - name: Install via website Hermes-Setup.exe (headed, AHK-clicked)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-desktop-gui-e2e.ps1 -Phase install-gui
+
+      - name: GUI update to CURRENT (real Update-now click)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-desktop-gui-e2e.ps1 -Phase update-gui-to-current
+
+      - name: GUI update to NEXT (real Update-now click)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-desktop-gui-e2e.ps1 -Phase update-gui-to-next
+
+      - name: Collect proof + logs
+        if: always()
+        shell: powershell
+        run: |
+          $out = "gui-e2e-proof"
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $work = $env:HERMES_E2E_WORKROOT
+          $home_ = Join-Path $work "hermes-home"
+          foreach ($pair in @(
+            @{ src = (Join-Path $work "proof");                          dst = "proof" },
+            @{ src = (Join-Path $work "shas.json");                      dst = "shas.json" },
+            @{ src = (Join-Path $home_ "logs");                          dst = "logs" },
+            @{ src = (Join-Path $home_ ".hermes-update-result.json");    dst = ".hermes-update-result.json" }
+          )) {
+            if (Test-Path $pair.src) { Copy-Item $pair.src (Join-Path $out $pair.dst) -Recurse -Force }
+          }
+
+      - name: Upload proof + logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-windows-gui-e2e-proof-${{ github.sha }}
+          path: gui-e2e-proof
+          retention-days: 14
+          if-no-files-found: ignore

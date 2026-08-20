@@ -589,7 +589,11 @@ test('source health stays descriptive without changing a bot owner', () => {
 
   assert.equal(status({ sourceReachable: true }).label, 'Ready')
   assert.equal(status({ sourceError: 'connect-on-demand', sourceReachable: false }).label, 'On demand')
-  assert.equal(status({ sourceError: '401 unauthorized', sourceReachable: false }).label, 'Sign-in required')
+  assert.equal(
+    status({ sourceError: '401 unauthorized', sourceReachable: false }).label,
+    'Unavailable',
+    'OAuth remediation belongs to the exact classifier in #90253; generic roster errors stay generic'
+  )
   assert.equal(status({ sourceError: 'timeout', sourceReachable: false }).label, 'Unavailable')
   assert.equal(status({ sourceMissing: true }).label, 'Gateway removed')
 })

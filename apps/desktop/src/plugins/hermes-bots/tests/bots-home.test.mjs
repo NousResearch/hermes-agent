@@ -652,6 +652,22 @@ test('the home shows a loading state rather than flashing “No bots”', () => 
   assert.ok(spinnerAt >= 0 && emptyAt > spinnerAt, 'the empty state is only reachable after both hydrations')
 })
 
+test('roster hydration and selection reconciliation run after render', () => {
+  const start = pluginSource.indexOf('function BotsPane(')
+  const pane = pluginSource.slice(start, pluginSource.indexOf('// ── registration'))
+
+  assert.match(
+    pane,
+    /useEffect\(\(\) => \{[\s\S]{0,500}?\$rosterHydrated\.set\(true\)[\s\S]{0,300}?reconcileRosterSelection\(roster, sourceSnapshot, allMeta\)[\s\S]{0,220}?\}, \[data, error, selectionHydrated, roster, sourceSnapshot, allMeta\]\)/,
+    'persisted roster ownership must reconcile from an effect, never from a replayable render'
+  )
+  assert.equal(
+    (pane.match(/reconcileRosterSelection\(roster, sourceSnapshot, allMeta\)/g) || []).length,
+    1,
+    'BotsPane has one effect-bound reconciliation path'
+  )
+})
+
 test('an unavailable owner offers retry instead of a dead Open chat button', () => {
   const start = pluginSource.indexOf('function BotsHomeView(')
   const view = pluginSource.slice(start, pluginSource.indexOf('function closeBotsHomeWorkspace('))
@@ -660,10 +676,16 @@ test('an unavailable owner offers retry instead of a dead Open chat button', () 
   // Retry re-polls the roster; it must not activate or route anything.
   assert.match(view, /queryClient\.invalidateQueries\(\{ queryKey: ROSTER_KEY \}\)/)
   assert.doesNotMatch(view, /ensureAgent|requestProfile|newChat/)
+  assert.match(view, /This bot remains selected; retry when the gateway is available\./)
+  assert.doesNotMatch(view, /its work keeps running on that gateway/)
 })
 
 test('Bot Mode copy says bot, not agent', () => {
   assert.doesNotMatch(pluginSource, /Name the agent first/)
   assert.doesNotMatch(pluginSource, /create agents first/)
+  assert.doesNotMatch(pluginSource, /children: busy \? 'Creating…' : 'Create Agent'/)
+  assert.doesNotMatch(pluginSource, /`Agent "\$\{displayName\(\{ name: slug, title \}\)\}" created/)
   assert.match(pluginSource, /Name the bot first/)
+  assert.match(pluginSource, /children: busy \? 'Creating…' : 'Create Bot'/)
+  assert.match(pluginSource, /`Bot "\$\{displayName\(\{ name: slug, title \}\)\}" created/)
 })

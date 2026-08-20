@@ -4091,7 +4091,6 @@ function annotateBotSource(bot, sources) {
 
 function botSourceStatus(bot) {
   const error = String(bot?.sourceError || '').trim()
-  const lower = error.toLowerCase()
 
   if (bot?.sourceMissing) {
     return { available: false, key: 'missing', label: 'Gateway removed', tone: 'bad' }
@@ -4102,10 +4101,6 @@ function botSourceStatus(bot) {
   }
 
   if (error || bot?.sourceReachable === false) {
-    if (/auth|login|sign.?in|token|unauthor|forbidden|401|403/.test(lower)) {
-      return { available: false, key: 'auth', label: 'Sign-in required', tone: 'warn' }
-    }
-
     return { available: false, key: 'unavailable', label: 'Unavailable', tone: 'warn' }
   }
 
@@ -6449,9 +6444,9 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
                 label: `${gatewayLabel || 'Gateway'} · ${sourceStatus.label}`,
                 children: jsx('span', {
                   className:
-                    'absolute -bottom-0.5 -right-0.5 flex size-4 items-center justify-center rounded-full bg-(--ui-bg-primary,#111) text-[0.625rem] text-amber-600 ring-1 ring-(--ui-stroke-secondary) dark:text-amber-300',
+                    'absolute -bottom-0.5 -right-0.5 flex size-4 items-center justify-center rounded-full bg-(--ui-bg-primary) text-[0.625rem] text-amber-600 ring-1 ring-(--ui-stroke-tertiary) dark:text-amber-300',
                   'aria-label': `${gatewayLabel || 'Gateway'}: ${sourceStatus.label}`,
-                  children: jsx(Codicon, { name: sourceStatus.key === 'auth' ? 'key' : 'debug-disconnect' })
+                  children: jsx(Codicon, { name: 'debug-disconnect' })
                 })
               })
             : null
@@ -6495,7 +6490,7 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
               }),
               unread
                 ? jsx('span', {
-                    className: 'size-2 shrink-0 rounded-full bg-(--ui-accent,#4f9cf9)',
+                    className: 'size-2 shrink-0 rounded-full bg-(--ui-accent)',
                     'aria-label': 'unread'
                   })
                 : null,
@@ -7935,8 +7930,8 @@ function CreateAgentDialog({ open, onClose, roster }) {
       host.notify({
         kind: 'success',
         message: remoteTarget
-          ? `Agent "${displayName({ name: slug, title })}" created on ${targetLabel}`
-          : `Agent "${displayName({ name: slug, title })}" created`
+          ? `Bot "${displayName({ name: slug, title })}" created on ${targetLabel}`
+          : `Bot "${displayName({ name: slug, title })}" created`
       })
       const wasRemote = remoteTarget
       reset()
@@ -8471,7 +8466,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
             jsx(Button, {
               disabled: busy || !valid || taken,
               onClick: submit,
-              children: busy ? 'Creating…' : 'Create Agent'
+              children: busy ? 'Creating…' : 'Create Bot'
             })
           ]
         })
@@ -11151,7 +11146,7 @@ function BotsHomeView() {
     children: [
       jsxs('header', {
         className:
-          'flex min-w-0 items-center gap-3 border-b border-(--ui-stroke-secondary) px-5 py-3.5',
+          'flex min-w-0 items-center gap-3 border-b border-(--ui-stroke-tertiary) px-5 py-3.5',
         children: [
           jsx(BotFace, { shape, color, image: photo, size: 38, name: bot.name, mood: 'idle' }),
           jsxs('div', {
@@ -11182,7 +11177,7 @@ function BotsHomeView() {
                 jsx(Codicon, { name: gatewayKindIcon(gatewayKind), className: 'shrink-0' }),
                 jsx('span', { className: 'min-w-0 truncate', children: gateway }),
                 jsx(Codicon, {
-                  name: unavailable ? (status.key === 'auth' ? 'key' : 'debug-disconnect') : 'pass-filled',
+                  name: unavailable ? 'debug-disconnect' : 'pass-filled',
                   className: cn(
                     'shrink-0',
                     unavailable ? 'text-amber-600 dark:text-amber-300' : 'text-emerald-600 dark:text-emerald-400'
@@ -11215,7 +11210,7 @@ function BotsHomeView() {
                 unavailable ? 'text-amber-700 dark:text-amber-300' : 'text-(--ui-text-tertiary)'
               ),
               children: unavailable
-                ? `${gateway} is ${status.label.toLowerCase()}. This bot stays selected and its work keeps running on that gateway.`
+                ? `${gateway} is ${status.label.toLowerCase()}. This bot remains selected; retry when the gateway is available.`
                 : bot.remoteSource
                   ? `This bot lives on ${gateway}. Mention @${handle} from a Bot Chat to send it a message.`
                   : 'Open this bot’s continuous chat. Its background work keeps running when you switch away.'
@@ -11511,7 +11506,7 @@ function GroupRow({ active, group, members, needsYou, onOpen, onDisband }) {
                 src: room.image,
                 alt: '',
                 className: cn(
-                  'size-8 rounded-md object-cover ring-1 ring-(--ui-stroke-secondary)',
+                  'size-8 rounded-md object-cover ring-1 ring-(--ui-stroke-tertiary)',
                   availableMembers === 0 && 'grayscale opacity-60'
                 )
               })
@@ -11527,7 +11522,7 @@ function GroupRow({ active, group, members, needsYou, onOpen, onDisband }) {
                 label: availabilityLabel,
                 children: jsx('span', {
                   className:
-                    'absolute -bottom-0.5 -right-0.5 flex size-4 items-center justify-center rounded-full bg-(--ui-bg-primary,#111) text-[0.625rem] text-amber-600 ring-1 ring-(--ui-stroke-secondary) dark:text-amber-300',
+                    'absolute -bottom-0.5 -right-0.5 flex size-4 items-center justify-center rounded-full bg-(--ui-bg-primary) text-[0.625rem] text-amber-600 ring-1 ring-(--ui-stroke-tertiary) dark:text-amber-300',
                   'aria-label': availabilityLabel,
                   children: jsx(Codicon, { name: 'debug-disconnect' })
                 })
@@ -11550,7 +11545,7 @@ function GroupRow({ active, group, members, needsYou, onOpen, onDisband }) {
                     label: 'A bot in this group chat needs your input',
                     children: jsx(Codicon, {
                       name: 'question',
-                      className: 'shrink-0 text-(--ui-accent,#4f9cf9)',
+                      className: 'shrink-0 text-(--ui-accent)',
                       'aria-label': 'Needs your input'
                     })
                   })
@@ -11612,7 +11607,7 @@ function RosterSectionHeader({ collapsed, count, icon, label, onToggle, status, 
       }),
       status && !status.available
         ? jsx(Codicon, {
-            name: status.key === 'auth' ? 'key' : 'debug-disconnect',
+            name: 'debug-disconnect',
             className: 'shrink-0 text-amber-600 dark:text-amber-300'
           })
         : null
@@ -11666,6 +11661,7 @@ function BotsPane() {
   const groupRooms = useValue($groupChats)
   const rememberedSources = useValue($lastSources)
   useValue($botRosterPrefs)
+  const selectionHydrated = useValue($selectedRosterHydrated)
 
   // The socket opening (boot, SSH reconnect, sleep/wake) is the signal to
   // retry immediately instead of waiting out the poll interval.
@@ -11841,12 +11837,20 @@ function BotsPane() {
 
   // The roster has ANSWERED once data or a terminal error exists — that, not
   // row count, is what lets the home stop showing its loading state (an empty
-  // answer is a real answer; a pending one must not flash "No bots").
-  if (data || error) {
-    $rosterHydrated.set(true)
-  }
+  // answer is a real answer; a pending one must not flash "No bots"). Keep the
+  // persisted-selection writes out of render: React may replay a render, but
+  // an abandoned render must never become a storage mutation.
+  useEffect(() => {
+    if (!data && !error) {
+      return
+    }
 
-  reconcileRosterSelection(roster, sourceSnapshot, allMeta)
+    $rosterHydrated.set(true)
+
+    if (selectionHydrated) {
+      reconcileRosterSelection(roster, sourceSnapshot, allMeta)
+    }
+  }, [data, error, selectionHydrated, roster, sourceSnapshot, allMeta])
 
   const staleNotice = error && !live && roster.length
     ? 'Roster refresh failed — showing the last good list.' + (gatewayUp ? '' : ' Waiting for the gateway to reconnect…')
@@ -12059,7 +12063,7 @@ function BotsPane() {
                             'aria-label': activeFilterCount ? `Filter roster, ${activeFilterCount} active` : 'Filter roster',
                             className: cn(
                               'flex size-7 shrink-0 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
-                              activeFilterCount && 'text-(--ui-accent,#4f9cf9)'
+                              activeFilterCount && 'text-(--ui-accent)'
                             ),
                             children: jsx(Codicon, { name: 'filter' })
                           })
@@ -12252,7 +12256,7 @@ function BotsPane() {
                         showHiddenSection
                           ? jsxs('div', {
                               ref: hiddenSectionRef,
-                              className: 'mt-1 border-t border-(--ui-stroke-secondary) pt-1',
+                              className: 'mt-1 border-t border-(--ui-stroke-tertiary) pt-1',
                               children: [
                                 hasRosterConstraint
                                   ? jsxs('div', {

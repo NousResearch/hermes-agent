@@ -393,6 +393,29 @@ class TestMattermostMentionBehavior:
             await self.adapter._handle_ws_event(self._make_event("hello", channel_id="chan_456"))
             assert self.adapter.handle_message.called
 
+    @pytest.mark.asyncio
+    async def test_dm_leading_mention_slash_command_is_normalized(self):
+        """DMs strip a leading bot mention so @bot /status dispatches as /status."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            await self.adapter._handle_ws_event(
+                self._make_event("@hermes-bot /status", channel_type="D")
+            )
+            assert self.adapter.handle_message.called
+            msg = self.adapter.handle_message.call_args[0][0]
+            assert msg.text == "/status"
+            assert msg.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_mid_message_mention_is_preserved(self):
+        """Only leading mentions are stripped; ordinary body mentions remain."""
+        with patch.dict(os.environ, {"MATTERMOST_REQUIRE_MENTION": "false"}):
+            await self.adapter._handle_ws_event(
+                self._make_event("please ask @hermes-bot later")
+            )
+            assert self.adapter.handle_message.called
+            msg = self.adapter.handle_message.call_args[0][0]
+            assert msg.text == "please ask @hermes-bot later"
 
 # ---------------------------------------------------------------------------
 # File upload (send_image)

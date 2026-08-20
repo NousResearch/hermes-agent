@@ -36,10 +36,14 @@ _CATALOG = (
 
 @pytest.fixture
 def cold_cache(monkeypatch):
+    """A freshly started process that has never mirrored a catalog to disk."""
     import hermes_cli.models as models_mod
 
     monkeypatch.setattr(models_mod, "_nous_reasoning_caps_cache", None)
     monkeypatch.setattr(models_mod, "_nous_reasoning_caps_failed_at", None)
+    monkeypatch.setattr(models_mod, "_nous_caps_disk_checked", False)
+    monkeypatch.setattr(models_mod, "_nous_caps_warm_started", False)
+    models_mod._reasoning_caps_disk_path().unlink(missing_ok=True)
     return models_mod
 
 
@@ -76,7 +80,24 @@ class TestNousModelReasoningCapabilities:
 
         # urllib title-cases header names.
         assert seen[0].get_header("User-agent")
-        assert "nousresearch.com" in seen[0].full_url
+
+    def test_catalog_read_follows_the_configured_endpoint(
+        self, cold_cache, monkeypatch
+    ):
+        """Capabilities come from the deployment we actually talk to.
+
+        Pinned to production, a staging profile would take its
+        reasoning-mandatory verdicts from a different deployment's catalog.
+        """
+        from hermes_cli.models import nous_catalog_url
+
+        monkeypatch.setenv(
+            "NOUS_INFERENCE_BASE_URL", "https://staging.nousresearch.com/v1"
+        )
+        assert nous_catalog_url() == "https://staging.nousresearch.com/v1/models"
+
+        monkeypatch.delenv("NOUS_INFERENCE_BASE_URL")
+        assert nous_catalog_url().endswith("/v1/models")
 
     def test_unlisted_and_empty_models_return_none(self, cold_cache, monkeypatch):
         from hermes_cli.models import nous_model_reasoning_capabilities

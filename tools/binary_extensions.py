@@ -31,6 +31,8 @@ BINARY_EXTENSIONS = frozenset({
     ".swf", ".fla",
     # Lock/profiling data
     ".lockb", ".dat", ".data",
+    # Mail store
+    ".ost", ".pst",
 })
 
 

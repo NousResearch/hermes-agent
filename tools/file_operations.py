@@ -3280,6 +3280,8 @@ class ShellFileOperations(FileOperations):
         # Exclude hidden directories (matching ripgrep's default behavior).
         # This prevents searching inside .hub/index-cache/, .git/, etc.
         cmd_parts.append("--exclude-dir='.*'")
+        # Skip binary files entirely — don't even open them to check.
+        cmd_parts.append("-I")
         
         # Add context if requested
         if context > 0:

@@ -40,6 +40,7 @@ from agent.model_metadata import (
     estimate_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
+from agent.tool_occurrences import tool_result_metadata_by_index
 from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
@@ -3601,21 +3602,10 @@ class ContextCompressor(ContextEngine):
         result = [m.copy() for m in messages]
         pruned = 0
 
-        # Build index: tool_call_id -> (tool_name, arguments_json)
-        call_id_to_tool: Dict[str, tuple] = {}
-        for msg in result:
-            if msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls") or []:
-                    if isinstance(tc, dict):
-                        cid = tc.get("id", "")
-                        fn = tc.get("function", {})
-                        call_id_to_tool[cid] = (fn.get("name", "unknown"), fn.get("arguments", ""))
-                    else:
-                        cid = getattr(tc, "id", "") or ""
-                        fn = getattr(tc, "function", None)
-                        name = getattr(fn, "name", "unknown") if fn else "unknown"
-                        args_str = getattr(fn, "arguments", "") if fn else ""
-                        call_id_to_tool[cid] = (name, args_str)
+        # Provider call IDs can repeat across distinct logical occurrences.
+        # Resolve metadata to each RESULT POSITION instead of collapsing all
+        # history into a last-write-wins {raw_id: metadata} map (#70724 class).
+        tool_metadata_by_result_idx = tool_result_metadata_by_index(result)
 
         # Determine the prune boundary
         if protect_tail_tokens is not None and protect_tail_tokens > 0:
@@ -3727,8 +3717,9 @@ class ContextCompressor(ContextEngine):
             # proactive path raises this floor via min_prune_chars).
             if len(content) <= min_prune_chars:
                 return False
-            call_id = msg.get("tool_call_id", "")
-            tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+            tool_name, tool_args = tool_metadata_by_result_idx.get(
+                idx, ("unknown", "")
+            )
             if spare_protected_skills and tool_name == "skill_view" and protected_skills:
                 # Just-loaded / actively-referenced skills survive verbatim
                 # (#32106). Pass-4 pressure demotion overrides this.
@@ -4135,15 +4126,17 @@ class ContextCompressor(ContextEngine):
             elif isinstance(obj, str):
                 _collect_path_mentions(obj, relevant_files)
 
-        call_id_to_tool: dict[str, tuple[str, str]] = {}
+        tool_metadata_by_result_idx = {
+            idx: (name, _redact_compaction_text(args))
+            for idx, (name, args) in tool_result_metadata_by_index(
+                turns_to_summarize
+            ).items()
+        }
         for msg in turns_to_summarize:
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 for tc in msg.get("tool_calls") or []:
                     name, raw_args = _extract_tool_call_name_and_args(tc)
                     args = _redact_compaction_text(raw_args)
-                    call_id = _extract_tool_call_id(tc)
-                    if call_id:
-                        call_id_to_tool[call_id] = (name, args)
                     if args:
                         try:
                             parsed = json.loads(args)
@@ -4151,7 +4144,7 @@ class ContextCompressor(ContextEngine):
                             parsed = args
                         _collect_paths_from_jsonish(parsed)
 
-        for msg in turns_to_summarize:
+        for msg_idx, msg in enumerate(turns_to_summarize):
             role = msg.get("role", "unknown")
             text = _compact_fallback_turn(msg.get("content"))
             _collect_path_mentions(text, relevant_files)
@@ -4188,8 +4181,9 @@ class ContextCompressor(ContextEngine):
                 elif text:
                     assistant_actions.append(text)
             elif role == "tool":
-                call_id = str(msg.get("tool_call_id") or "")
-                tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+                tool_name, tool_args = tool_metadata_by_result_idx.get(
+                    msg_idx, ("unknown", "")
+                )
                 tool_actions.append(
                     _summarize_tool_result(tool_name, tool_args, text or "")
                 )

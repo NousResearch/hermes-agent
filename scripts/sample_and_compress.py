@@ -17,13 +17,19 @@ Usage:
 
 import json
 import random
+import sys
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 import fire
 
-# Load environment variables
-from dotenv import load_dotenv
-load_dotenv()
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from hermes_cli.env_loader import load_hermes_dotenv
+
+# Load ~/.hermes/.env and repo .env (UTF-8, then latin-1 for Windows cp1252).
+load_hermes_dotenv(project_env=_REPO_ROOT / ".env")
 
 
 # Default datasets to sample from

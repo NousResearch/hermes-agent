@@ -427,6 +427,111 @@ async def test_auto_create_thread_strips_mention_syntax_from_name(adapter):
     assert name == "please help"
 
 
+class _ThreadNotFound(Exception):
+    """Test double for discord.NotFound without constructing an HTTP response."""
+
+
+def _failed_auto_thread_message():
+    return SimpleNamespace(
+        id=123,
+        content="Trip idea",
+        create_thread=AsyncMock(side_effect=ConnectionError("response lost")),
+        thread=None,
+        fetch_thread=AsyncMock(),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_reuses_thread_attached_during_connection_error(adapter):
+    existing = _FakeThreadChannel(channel_id=123, name="already-there")
+    message = _failed_auto_thread_message()
+
+    async def create_then_lose_response(**_kwargs):
+        message.thread = existing
+        raise ConnectionError("response lost after Discord committed the thread")
+
+    message.create_thread.side_effect = create_then_lose_response
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is existing
+    message.create_thread.assert_awaited_once()
+    message.fetch_thread.assert_not_awaited()
+    message.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_reuses_cached_starter_thread(adapter):
+    existing = _FakeThreadChannel(channel_id=123, name="already-there")
+    message = _failed_auto_thread_message()
+    adapter._client.get_channel = MagicMock(return_value=existing)
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is existing
+    adapter._client.get_channel.assert_called_once_with(message.id)
+    message.fetch_thread.assert_not_awaited()
+    message.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_retries_fetch_before_fallback(adapter, monkeypatch):
+    existing = _FakeThreadChannel(channel_id=123, name="eventually-visible")
+    message = _failed_auto_thread_message()
+    adapter._client.get_channel = MagicMock(return_value=None)
+    message.fetch_thread.side_effect = [_ThreadNotFound(), existing]
+    sleep = AsyncMock()
+    monkeypatch.setattr("plugins.platforms.discord.adapter.discord.NotFound", _ThreadNotFound)
+    monkeypatch.setattr("plugins.platforms.discord.adapter.asyncio.sleep", sleep)
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is existing
+    assert message.fetch_thread.await_count == 2
+    sleep.assert_awaited_once_with(0.25)
+    message.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_falls_back_after_confirmed_absence(adapter, monkeypatch):
+    fallback = _FakeThreadChannel(channel_id=456, name="fallback")
+    seed_message = SimpleNamespace(create_thread=AsyncMock(return_value=fallback))
+    message = _failed_auto_thread_message()
+    message.channel.send.return_value = seed_message
+    adapter._client.get_channel = MagicMock(return_value=None)
+    message.fetch_thread.side_effect = [_ThreadNotFound(), _ThreadNotFound()]
+    monkeypatch.setattr("plugins.platforms.discord.adapter.discord.NotFound", _ThreadNotFound)
+    monkeypatch.setattr("plugins.platforms.discord.adapter.asyncio.sleep", AsyncMock())
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is fallback
+    message.create_thread.assert_awaited_once()
+    assert message.fetch_thread.await_count == 2
+    message.channel.send.assert_awaited_once()
+    seed_message.create_thread.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_skips_fallback_when_fetch_is_inconclusive(adapter, monkeypatch):
+    message = _failed_auto_thread_message()
+    adapter._client.get_channel = MagicMock(return_value=None)
+    message.fetch_thread.side_effect = [
+        ConnectionError("lookup failed"),
+        ConnectionError("lookup still failed"),
+    ]
+    monkeypatch.setattr("plugins.platforms.discord.adapter.asyncio.sleep", AsyncMock())
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is None
+    message.create_thread.assert_awaited_once()
+    assert message.fetch_thread.await_count == 2
+    message.channel.send.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_rename_thread_edits_only_when_current_name_matches(adapter):
     thread = SimpleNamespace(

@@ -510,6 +510,84 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+def test_respawn_guard_active_pr_yields_to_later_dependency_promotion(kanban_home):
+    """A deliberate dependency requeue must permit another run on the same PR."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="fresh review", assignee="default")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', ?, ?)",
+            (
+                task_id,
+                "Reviewed https://github.com/NousResearch/hermes-agent/pull/42",
+                now - 1,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, 'promoted', ?)",
+            (task_id, now),
+        )
+
+        assert kb.check_respawn_guard(conn, task_id) is None
+
+
+def test_respawn_guard_active_pr_still_blocks_without_later_requeue(kanban_home):
+    """An old requeue must not disable duplicate-PR protection for a newer PR."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="crashed builder", assignee="default")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, 'promoted', ?)",
+            (task_id, now - 2),
+        )
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', ?, ?)",
+            (
+                task_id,
+                "Opened https://github.com/NousResearch/hermes-agent/pull/42",
+                now - 1,
+            ),
+        )
+
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+def test_dispatch_spawns_active_pr_task_after_explicit_requeue(
+    kanban_home, all_assignees_spawnable
+):
+    """The real dispatcher honors a deliberate same-PR re-review request."""
+    spawned: list[str] = []
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="same-PR re-review", assignee="default")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', ?, ?)",
+            (
+                task_id,
+                "Review https://github.com/NousResearch/hermes-agent/pull/42",
+                now - 1,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, 'unblocked', ?)",
+            (task_id, now),
+        )
+
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, workspace: spawned.append(task.id),
+        )
+
+    assert spawned == [task_id]
+    assert result.respawn_guarded == []
+
+
 
 
 

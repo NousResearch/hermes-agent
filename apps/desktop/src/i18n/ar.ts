@@ -1765,6 +1765,7 @@ export const ar = defineLocale({
     endShort: 'إنهاء',
     stopDictation: 'إيقاف الإملاء',
     transcribingDictation: 'جار تفريغ الإملاء',
+    voiceControls: 'صوت',
     voiceDictation: 'إملاء صوتي',
     lookupLoading: 'جار البحث...',
     lookupNoMatches: 'لا توجد نتائج',

@@ -23,6 +23,7 @@ import {
   glassMaterialsFor,
   glassSupportedOn,
   glassSurfaceKeep,
+  hudFrostFor,
   normalizeMaterial,
   normalizeMode,
   normalizeScope,
@@ -242,6 +243,53 @@ describe('vibrancyFor', () => {
   it('falls back to the long-standing sidebar material otherwise', () => {
     expect(vibrancyFor(glass(0, 'header'))).toBe('sidebar')
     expect(vibrancyFor(clear(60))).toBe('sidebar')
+  })
+})
+
+// The HUD is a transparent window, so its frost has no opaque page to hide
+// behind: every state that isn't "frost wanted" has to resolve to no material
+// at all, or the band leaves a grey slab hanging over another app.
+describe('hudFrostFor', () => {
+  it('wears the chosen frost on both platforms while the band is showing', () => {
+    expect(hudFrostFor(glass(60, 'header'), true)).toEqual({ vibrancy: 'header', backgroundMaterial: 'mica' })
+    expect(hudFrostFor(glass(60, 'under-window'), true)).toEqual({
+      vibrancy: 'under-window',
+      backgroundMaterial: 'acrylic'
+    })
+  })
+
+  // The material is the whole window rectangle and nothing on the page can
+  // clip it, so a hidden band must mean no frost — this is the veto that keeps
+  // idle HUD mode the bar and nothing else.
+  it('is off whenever the band is not covering the window', () => {
+    expect(hudFrostFor(glass(60, 'header'), false)).toEqual({ vibrancy: null, backgroundMaterial: 'none' })
+  })
+
+  // ...and the setting is the other veto: Glass off, or the tint at zero,
+  // means the HUD never frosts however engaged the band is.
+  it('is off whenever glass itself is off', () => {
+    expect(hudFrostFor(clear(60), true)).toEqual({ vibrancy: null, backgroundMaterial: 'none' })
+    expect(hudFrostFor(glass(0, 'header'), true)).toEqual({ vibrancy: null, backgroundMaterial: 'none' })
+  })
+
+  // Unlike a chat window, which keeps 'sidebar' under its titlebar band in
+  // every non-glass state. Pinning this is what stops someone "fixing" the
+  // null into a resting material and painting the slab back.
+  it('resolves off to no material at all, not to a resting one', () => {
+    expect(hudFrostFor(clear(60), true).vibrancy).toBeNull()
+    expect(vibrancyFor(clear(60))).toBe('sidebar')
+  })
+
+  // The tint is painted by the renderer, exactly as it is for a chat window —
+  // dragging it must not re-issue setVibrancy, whose 150ms animation restarts
+  // on every call and never lets the material settle.
+  it('does not move any native property as the tint slider is dragged', () => {
+    for (let intensity = 1; intensity <= 100; intensity += 1) {
+      expect(hudFrostFor(glass(intensity, 'popover'), true)).toEqual({
+        vibrancy: 'popover',
+        backgroundMaterial: 'tabbed'
+      })
+    }
   })
 })
 

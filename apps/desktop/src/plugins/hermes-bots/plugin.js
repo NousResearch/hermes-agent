@@ -3276,12 +3276,19 @@ async function openStoredBotChat(name, storedId, summary) {
     typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)
   const expectHistory = hasAuthoritativeCount ? summary.message_count > 0 : true
 
+  // A profile backend that just woke up can lose the hydration-timeout race
+  // even though the session is fine (hermes-agent#89617) — clicking Retry
+  // succeeds because the backend is warm by then. retryHydrationTimeoutOnce
+  // asks the SDK layer to retry that same wait internally, BEFORE it arms the
+  // core stranded-session overlay: a plugin-side retry can't do this because
+  // only host.openSession sees the resume-exhausted latch that overlay reads.
   await host.openSession(storedId, {
     profile: name,
     intent: 'main',
     awaitHydration: true,
     expectHistory,
-    keepAllProfilesScope: false
+    keepAllProfilesScope: true,
+    retryHydrationTimeoutOnce: true
   })
 
   return storedId
@@ -3321,7 +3328,7 @@ function createCanonicalChat(name) {
 
     if (sid && typeof host.openSession === 'function') {
       try {
-        await host.openSession(sid, { profile: name, intent: 'main', keepAllProfilesScope: false })
+        await host.openSession(sid, { profile: name, intent: 'main', keepAllProfilesScope: true })
         opened = true
       } catch {
         // The stored row may not exist until the kickoff persists it. Retry
@@ -3336,7 +3343,7 @@ function createCanonicalChat(name) {
         await host.request('prompt.submit', { session_id: runtime, text: 'Hey, tell me about yourself!' })
 
         if (!opened && sid && typeof host.openSession === 'function') {
-          await host.openSession(sid, { profile: name, intent: 'main', keepAllProfilesScope: false })
+          await host.openSession(sid, { profile: name, intent: 'main', keepAllProfilesScope: true })
         }
       } catch {
         // The chat already exists. Keep the pin so the next click
@@ -7845,7 +7852,7 @@ async function openProfileSession(botName, session, gatewayGeneration) {
     typeof session?.message_count === 'number' && Number.isFinite(session.message_count)
   const expectHistory = hasAuthoritativeCount ? session.message_count > 0 : Boolean(session?.preview)
 
-  await host.openSession(id, { profile, awaitHydration: true, expectHistory, keepAllProfilesScope: false })
+  await host.openSession(id, { profile, awaitHydration: true, expectHistory, keepAllProfilesScope: true })
   if (gatewayGeneration !== $sessionsGatewayGeneration.get()) return
   $botSelectedSessions.set({ ...$botSelectedSessions.get(), [profile]: id })
 }

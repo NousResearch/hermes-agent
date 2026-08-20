@@ -275,6 +275,33 @@ export function glassMaterialsFor(isWindows: boolean): readonly GlassMaterial[] 
 }
 
 /**
+ * The native frost a HUD-style transparent window should carry.
+ *
+ * Two gates, because the HUD's frost answers to more than the setting. The
+ * material is the WINDOW's — nothing on the page can clip it — so it is only
+ * ever right while the band actually covers the window below the bar;
+ * `showing` is the renderer's answer to that (see `useHudGlass`). The setting
+ * is the other half: Glass off, or the tint at zero, means no frost at all.
+ *
+ * The off answer is `null` rather than a resting material, which is the one
+ * way this differs from `vibrancyFor`. A chat window is opaque and keeps
+ * 'sidebar' under its titlebar band whatever the setting says; a transparent
+ * window has no opaque page to hide an unwanted material behind, so off has
+ * to mean off or the frost is a grey slab hanging over someone else's app.
+ */
+export function hudFrostFor(
+  state: TranslucencyState,
+  showing: boolean
+): { backgroundMaterial: WindowsBackgroundMaterial; vibrancy: GlassMaterial | null } {
+  const active = showing && glassActive(state)
+
+  return {
+    vibrancy: active ? state.material : null,
+    backgroundMaterial: active ? backgroundMaterialFor(state) : 'none'
+  }
+}
+
+/**
  * The rung the picker highlights. A frost with no rung of its own here — a
  * Mac's 'header' read on Windows — folds onto the rung that renders the same
  * backdrop, so the picker shows a truthful selection without rewriting the

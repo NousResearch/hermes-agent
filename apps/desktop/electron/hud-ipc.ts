@@ -4,15 +4,84 @@
 // latch when handing the session back to the app window.
 import { type BrowserWindow, ipcMain } from 'electron'
 
+import { hudFrostFor, type TranslucencyState } from './translucency'
+
 export interface HudIpcDeps {
   isMac: boolean
+  isWindows: boolean
+  glassSupported: boolean
+  /** Main's authoritative translucency state (Settings → Appearance). */
+  getTranslucencyState: () => TranslucencyState
   getHudWindow: () => BrowserWindow | null
   openHudWindow: (sessionId: null | string, profile: null | string) => void
   closeHudWindow: () => void
   setHudSessionId: (sessionId: null | string) => void
 }
 
-export function registerHudIpc({ isMac, getHudWindow, openHudWindow, closeHudWindow, setHudSessionId }: HudIpcDeps) {
+export function registerHudIpc({
+  isMac,
+  isWindows,
+  glassSupported,
+  getTranslucencyState,
+  getHudWindow,
+  openHudWindow,
+  closeHudWindow,
+  setHudSessionId
+}: HudIpcDeps) {
+  // Whether the band currently covers the window below the bar. The renderer
+  // is the only party that can know this (it measures the transcript), and it
+  // is half of the frost decision — the other half is the user's setting,
+  // which main owns. Latched so a Settings change can re-decide without
+  // waiting for the HUD to report again.
+  let bandShowing = false
+  let applied: null | string = null
+  let appliedTo: BrowserWindow | null = null
+
+  // Real frosted glass behind the band — the thing CSS backdrop-filter cannot do,
+  // because Chromium composites a transparent window's page against nothing and
+  // the desktop is not in its backdrop root. The material IS the window's content
+  // view, so it frosts the whole rectangle; the HUD's layout leaves no dead
+  // margins for that reason, and it only turns on while the band is showing
+  // (idle HUD mode must be the bar and nothing else).
+  //
+  // Diffed before issuing: `setVibrancy` carries a 150ms animation that restarts
+  // if re-issued, so a repeated call would keep the material from ever settling
+  // (the same churn the chat windows' native-diff contract exists to prevent).
+  //
+  // The diff is keyed to the WINDOW as well as the value. A HUD respawn (the
+  // profile switch in openHudWindow destroys and rebuilds it) hands back a
+  // fresh window carrying no material, and a latch that only remembered the
+  // value would recognise its own last answer and skip — leaving the new HUD
+  // unfrosted until something else happened to change the signature.
+  const applyHudFrost = () => {
+    const hudWindow = getHudWindow()
+
+    if (!hudWindow || hudWindow.isDestroyed()) {
+      applied = null
+      appliedTo = null
+
+      return
+    }
+
+    const frost = hudFrostFor(getTranslucencyState(), bandShowing)
+    const signature = `${frost.vibrancy ?? 'off'}:${frost.backgroundMaterial}`
+
+    if (applied === signature && appliedTo === hudWindow) {
+      return
+    }
+
+    applied = signature
+    appliedTo = hudWindow
+
+    if (isMac && typeof hudWindow.setVibrancy === 'function') {
+      hudWindow.setVibrancy(frost.vibrancy)
+    }
+
+    if (isWindows && glassSupported && typeof hudWindow.setBackgroundMaterial === 'function') {
+      hudWindow.setBackgroundMaterial(frost.backgroundMaterial)
+    }
+  }
+
   ipcMain.handle('hermes:hud:open', async (_event, request) => {
     openHudWindow(
       typeof request?.sessionId === 'string' ? request.sessionId : null,
@@ -22,18 +91,9 @@ export function registerHudIpc({ isMac, getHudWindow, openHudWindow, closeHudWin
     return { ok: true }
   })
 
-  // Real frosted glass behind the band — the thing CSS backdrop-filter cannot do,
-  // because Chromium composites a transparent window's page against nothing and
-  // the desktop is not in its backdrop root. Vibrancy IS the window's content
-  // view, so it frosts the whole rectangle; the HUD's layout leaves no dead
-  // margins for that reason, and the renderer only turns it on while the band is
-  // showing (idle HUD mode must be the bar and nothing else).
-  ipcMain.handle('hermes:hud:vibrancy', (_event, on) => {
-    const hudWindow = getHudWindow()
-
-    if (hudWindow && !hudWindow.isDestroyed() && isMac) {
-      hudWindow.setVibrancy(on ? 'hud' : null)
-    }
+  ipcMain.handle('hermes:hud:frost', (_event, showing) => {
+    bandShowing = Boolean(showing)
+    applyHudFrost()
 
     return { ok: true }
   })
@@ -125,4 +185,8 @@ export function registerHudIpc({ isMac, getHudWindow, openHudWindow, closeHudWin
 
     return { ok: true }
   })
+
+  // Main re-applies the frost when the translucency SETTING changes, since the
+  // band's own report only fires when the band itself moves.
+  return { applyHudFrost }
 }

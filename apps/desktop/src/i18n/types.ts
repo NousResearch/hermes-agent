@@ -1913,6 +1913,7 @@ export interface Translations {
     endShort: string
     stopDictation: string
     transcribingDictation: string
+    voiceControls: string
     voiceDictation: string
     speakReplies: string
     stopSpeakingReplies: string

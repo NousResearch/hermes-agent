@@ -203,7 +203,20 @@ When a user attaches an image — from the CLI clipboard, the gateway (Telegram/
 | **Vision-capable** (GPT-4V, Claude with vision, Gemini, Qwen-VL, MiMo-VL, etc.) | Sent as **real pixels** using the provider's native image content format above. No text summary layer. |
 | **Text-only** (DeepSeek V3, smaller open-source models, older chat-only endpoints) | Routed through the `vision_analyze` auxiliary tool — an auxiliary vision model describes the image, and the text description is injected into the conversation. |
 
-You don't configure this — Hermes looks up your current model's capability in the provider metadata and picks the right path automatically. The practical effect: you can switch between vision and non-vision models mid-session and image handling "just works" without changing your workflow. Text-only models get coherent context about the image rather than a broken multimodal payload they'd have to reject.
+In most cases you don't configure this — Hermes looks up your current model's capability in the provider metadata and picks the right path automatically. The practical effect: you can switch between vision and non-vision models mid-session and image handling "just works" without changing your workflow. Text-only models get coherent context about the image rather than a broken multimodal payload they'd have to reject.
+
+### Overriding the auto-detected capability
+
+If you're running a vision-capable model on a `provider: custom` endpoint that Hermes can't auto-detect — for example a local llama.cpp or vLLM build serving a model that isn't listed in the bundled `models.dev` metadata — Hermes will fall back to the `vision_analyze` text-pipeline by default. Set `supports_vision: true` on your `model:` block to opt that model into native routing for user-attached images:
+
+```yaml
+model:
+  default: my-llava
+  provider: custom
+  supports_vision: true        # opt this model into native image routing
+```
+
+Use a YAML boolean (`true` or `false`). For user-attached images this single knob is enough — you don't also need to pin `agent.image_input_mode: native`. (Other vision entry points such as `vision_analyze` and `browser_vision` continue to follow their own routing logic — see [`vision_analyze` has the same dual behavior](#vision_analyze-has-the-same-dual-behavior) below.)
 
 Which auxiliary model handles the text-description path is configurable under `auxiliary.vision` — see [Auxiliary Models](/user-guide/configuration#auxiliary-models).
 

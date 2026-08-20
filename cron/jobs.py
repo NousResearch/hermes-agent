@@ -1777,6 +1777,21 @@ def _validate_job_mode_invariants(
         )
 
 
+def _same_recurring_schedule(previous: Any, updated: Any) -> bool:
+    """Return whether two interval/cron schedules have the same cadence."""
+    if not isinstance(previous, dict) or not isinstance(updated, dict):
+        return False
+
+    kind = previous.get("kind")
+    if updated.get("kind") != kind:
+        return False
+    if kind == "interval":
+        return previous.get("minutes") == updated.get("minutes")
+    if kind == "cron":
+        return previous.get("expr") == updated.get("expr")
+    return False
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -2102,6 +2117,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates[_mon_field] = _mv or None
 
             previous_inference_axes = _normalized_inference_axes(job)
+            previous_schedule = job.get("schedule")
             updated = _apply_skill_fields({**job, **updates})
 
             # Re-check execution-mode invariants on the MERGED record when
@@ -2142,7 +2158,10 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     "schedule_display",
                     updated_schedule.get("display", updated.get("schedule_display")),
                 )
-                if updated.get("state") != "paused":
+                preserve_due_run = _same_recurring_schedule(
+                    previous_schedule, updated_schedule
+                )
+                if not preserve_due_run and updated.get("state") != "paused":
                     updated_next_run = compute_next_run(updated_schedule)
                     # Same guard as create_job: an UPDATE that sets a one-shot
                     # to a time >ONESHOT_GRACE_SECONDS in the past would store

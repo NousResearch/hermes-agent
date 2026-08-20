@@ -277,6 +277,86 @@ class TestUpdateJob:
         fetched = get_job(job["id"])
         assert fetched["name"] == "New Name"
 
+    def test_resaving_same_interval_schedule_preserves_due_run(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        base = datetime(2026, 6, 29, 12, 0, tzinfo=timezone.utc)
+        due_at = (base + timedelta(hours=1)).isoformat()
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: base)
+        job = create_job(prompt="Hourly report", schedule="every 1h")
+
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = due_at
+        save_jobs(jobs)
+
+        monkeypatch.setattr(
+            "cron.jobs._hermes_now",
+            lambda: base + timedelta(hours=1, seconds=10),
+        )
+        updated = update_job(
+            job["id"],
+            {
+                "name": "Hourly report v2",
+                "schedule": parse_schedule("every 1h"),
+            },
+        )
+
+        assert updated["next_run_at"] == due_at
+        assert get_job(job["id"])["next_run_at"] == due_at
+
+    def test_resaving_same_cron_schedule_preserves_due_run(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        base = datetime(2026, 6, 29, 12, 0, tzinfo=timezone.utc)
+        due_at = (base + timedelta(hours=1)).isoformat()
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: base)
+        job = create_job(prompt="Hourly cron report", schedule="0 * * * *")
+
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = due_at
+        save_jobs(jobs)
+
+        monkeypatch.setattr(
+            "cron.jobs._hermes_now",
+            lambda: base + timedelta(hours=1, seconds=10),
+        )
+        updated = update_job(
+            job["id"],
+            {
+                "name": "Hourly cron report v2",
+                "schedule": parse_schedule("0 * * * *"),
+            },
+        )
+
+        assert updated["next_run_at"] == due_at
+        assert get_job(job["id"])["next_run_at"] == due_at
+
+    def test_resaving_same_stale_oneshot_still_rejected(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        base = datetime(2026, 6, 29, 12, 0, tzinfo=timezone.utc)
+        run_at = base + timedelta(minutes=5)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: base)
+        job = create_job(prompt="One-time report", schedule=run_at.isoformat())
+
+        monkeypatch.setattr(
+            "cron.jobs._hermes_now",
+            lambda: run_at + timedelta(minutes=5),
+        )
+
+        with pytest.raises(ValueError, match="past and cannot be scheduled"):
+            update_job(
+                job["id"],
+                {
+                    "name": "One-time report v2",
+                    "schedule": parse_schedule(run_at.isoformat()),
+                },
+            )
+
+        persisted = get_job(job["id"])
+        assert persisted["name"] == "One-time report"
+        assert persisted["next_run_at"] == run_at.isoformat()
+
 
 class TestPauseResumeJob:
     def test_pause_sets_state(self, tmp_cron_dir):

@@ -320,6 +320,38 @@ def _clear_tool_defs_cache() -> None:
         _tool_defs_cache.clear()
 
 
+def _apply_browser_retrieval_hints(
+    definitions: List[Dict[str, Any]],
+    available_tool_names: set[str],
+) -> None:
+    """Name retrieval helpers in browser schemas only when they are available.
+
+    Static tool schemas must stay toolset-neutral because registry availability is
+    resolved at runtime. This layer may safely add concrete names after check_fn
+    filtering has produced ``available_tool_names``.
+    """
+    web_tools = [name for name in ("web_search", "web_extract") if name in available_tool_names]
+
+    for index, tool_definition in enumerate(definitions):
+        function = tool_definition.get("function", {})
+        name = function.get("name")
+        description = str(function.get("description") or "")
+        hint = ""
+
+        if name == "browser_navigate" and web_tools:
+            joined = " and ".join(web_tools)
+            noun = "tool" if len(web_tools) == 1 else "tools"
+            hint = f" Available lightweight retrieval {noun}: {joined}."
+        elif name == "browser_cdp" and "web_extract" in available_tool_names:
+            hint = " The web_extract tool is available for fetching CDP documentation URLs."
+
+        if hint and hint not in description:
+            definitions[index] = {
+                **tool_definition,
+                "function": {**function, "description": description + hint},
+            }
+
+
 def get_tool_definitions(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
@@ -557,25 +589,9 @@ def _compute_tool_definitions(
                         filtered_tools[i] = {"type": "function", "function": dynamic}
                         break
 
-    # Strip web tool cross-references from browser_navigate description when
-    # web_search / web_extract are not available.  The static schema says
-    # "prefer web_search or web_extract" which causes the model to hallucinate
-    # those tools when they're missing.
-    if "browser_navigate" in available_tool_names:
-        web_tools_available = {"web_search", "web_extract"} & available_tool_names
-        if not web_tools_available:
-            for i, td in enumerate(filtered_tools):
-                if td.get("function", {}).get("name") == "browser_navigate":
-                    desc = td["function"].get("description", "")
-                    desc = desc.replace(
-                        " For simple information retrieval, prefer web_search or web_extract (faster, cheaper).",
-                        "",
-                    )
-                    filtered_tools[i] = {
-                        "type": "function",
-                        "function": {**td["function"], "description": desc},
-                    }
-                    break
+    # Static schemas stay toolset-neutral. Add concrete retrieval tool names
+    # only after check_fn filtering has established what is actually available.
+    _apply_browser_retrieval_hints(filtered_tools, available_tool_names)
 
     # browser_exec (Browser Use mode) runs arbitrary Python on the host via
     # the browser-use CLI subprocess.  A session whose toolset selection

@@ -509,3 +509,43 @@ class TestDisabledToolsetsPostureToolset:
             )
         }
         assert "write_file" not in no_file
+
+
+class TestBrowserRetrievalHints:
+    @staticmethod
+    def _definitions():
+        return [
+            {"type": "function", "function": {"name": "browser_navigate", "description": "Navigate."}},
+            {"type": "function", "function": {"name": "browser_cdp", "description": "CDP docs."}},
+        ]
+
+    def test_names_only_tools_that_are_available(self):
+        from model_tools import _apply_browser_retrieval_hints
+
+        definitions = self._definitions()
+        _apply_browser_retrieval_hints(definitions, {"browser_navigate", "browser_cdp", "web_search"})
+
+        navigate = definitions[0]["function"]["description"]
+        cdp = definitions[1]["function"]["description"]
+        assert "web_search" in navigate
+        assert "web_extract" not in navigate
+        assert "web_extract" not in cdp
+
+    def test_adds_extract_hint_only_when_extract_is_available(self):
+        from model_tools import _apply_browser_retrieval_hints
+
+        definitions = self._definitions()
+        _apply_browser_retrieval_hints(definitions, {"browser_navigate", "browser_cdp", "web_extract"})
+
+        assert "web_extract" in definitions[0]["function"]["description"]
+        assert "web_extract" in definitions[1]["function"]["description"]
+
+    def test_leaves_names_absent_when_web_tools_are_unavailable(self):
+        from model_tools import _apply_browser_retrieval_hints
+
+        definitions = self._definitions()
+        _apply_browser_retrieval_hints(definitions, {"browser_navigate", "browser_cdp"})
+
+        rendered = " ".join(item["function"]["description"] for item in definitions)
+        assert "web_search" not in rendered
+        assert "web_extract" not in rendered

@@ -5670,7 +5670,7 @@ def cmd_config(args):
     """Configuration management."""
     from hermes_cli.config import config_command
 
-    config_command(args)
+    return config_command(args)
 
 
 def cmd_skin(args):

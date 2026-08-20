@@ -58,10 +58,26 @@ logger = logging.getLogger(__name__)
 INDEX_CACHE_TTL = 3600  # 1 hour
 
 
+class _ResolvedDynamicPath(type(Path())):
+    """Path marker returned by ``__getattr__`` for legacy dynamic constants.
+
+    ``monkeypatch`` and ``mock.patch`` restore the exact object returned by
+    ``getattr``.  Marking that object lets ``_override`` distinguish cleanup
+    from a caller's deliberate real-Path override.
+    """
+
+
 # _override lets a test-injected real module attribute (patch.object/monkeypatch
 # on SKILLS_DIR etc.) win over dynamic resolution; None means resolve live.
 def _override(name: str):
-    return globals().get(name)
+    value = globals().get(name)
+    if isinstance(value, _ResolvedDynamicPath):
+        # A patch helper restored the dynamic value it observed before setting
+        # its override. Remove the materialized attribute so future profile
+        # switches continue through __getattr__ instead of freezing that path.
+        globals().pop(name, None)
+        return None
+    return value
 
 
 def _hermes_home() -> Path:
@@ -120,7 +136,7 @@ def __getattr__(name: str):
     active profile override; a test's patch.object-set real attribute shadows it."""
     resolver = _DYNAMIC_PATH_RESOLVERS.get(name)
     if resolver is not None:
-        return resolver()
+        return _ResolvedDynamicPath(resolver())
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}

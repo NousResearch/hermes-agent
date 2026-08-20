@@ -1231,6 +1231,25 @@ class TestOptionalSkillSourceLiveRepoFallback:
         assert src.search("never-heard-of-it") == []
 
 
+def test_dynamic_path_patch_cleanup_does_not_freeze_profile(monkeypatch, tmp_path):
+    import tools.skills_hub as hub
+
+    missing = object()
+    previous = hub.__dict__.pop("SKILLS_DIR", missing)
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(hub, "SKILLS_DIR", tmp_path / "patched" / "skills")
+            assert hub._skills_dir() == tmp_path / "patched" / "skills"
+
+        new_home = tmp_path / "next-profile"
+        monkeypatch.setenv("HERMES_HOME", str(new_home))
+        assert hub._skills_dir() == new_home / "skills"
+    finally:
+        hub.__dict__.pop("SKILLS_DIR", None)
+        if previous is not missing:
+            hub.__dict__["SKILLS_DIR"] = previous
+
+
 class TestQuarantineBundleBinaryAssets:
     def test_quarantine_bundle_writes_binary_files(self, tmp_path):
         import tools.skills_hub as hub

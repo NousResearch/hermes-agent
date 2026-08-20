@@ -1010,7 +1010,16 @@ def display_hermes_home() -> str:
 
 
 def secure_parent_dir(path: Path) -> None:
-    """Chmod ``0o700`` on the parent directory of *path*, but only if safe.
+    """Chmod the parent directory of *path* to ``HERMES_HOME_MODE``, but only
+    if safe.
+
+    Honors the ``HERMES_HOME_MODE`` environment variable (octal string,
+    default ``0o700``) so multi-user hosts that intentionally relax the
+    Hermes home permissions — e.g. POSIX ACL peers granted via
+    ``setfacl u:<peer>:r-x`` — don't have their ACL mask silently reset on
+    every credential write. ``os.chmod`` rewrites the POSIX ACL mask to
+    match the new group bits, which revokes traversal for any peer user
+    holding only a named ACE (no supplemental group membership).
 
     Refuses to chmod ``/`` or any top-level directory (resolved parent with
     fewer than 3 parts, i.e. ``/`` or any direct child like ``/usr``) to
@@ -1024,7 +1033,12 @@ def secure_parent_dir(path: Path) -> None:
     if parent == Path("/") or len(parent.parts) < 3:
         return
     try:
-        os.chmod(parent, 0o700)
+        mode_str = os.environ.get("HERMES_HOME_MODE", "").strip()
+        mode = int(mode_str, 8) if mode_str else 0o700
+    except ValueError:
+        mode = 0o700
+    try:
+        os.chmod(parent, mode)
     except OSError:
         pass
 

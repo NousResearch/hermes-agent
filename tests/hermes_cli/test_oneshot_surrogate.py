@@ -19,7 +19,8 @@ def test_oneshot_replaces_lone_surrogate_and_exits_zero():
             dirty,
             {"final_response": dirty, "failed": False, "partial": False, "completed": True},
         )
-        raise SystemExit(oneshot.run_oneshot("hello"))
+        code, _ = oneshot.run_oneshot("hello")
+        raise SystemExit(code)
         """
     )
 

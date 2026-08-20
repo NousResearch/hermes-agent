@@ -1270,9 +1270,33 @@ class TestBankIdTemplate:
         result = _resolve_bank_id_template(
             "user-{user}", fallback="hermes",
             profile="", workspace="", platform="",
-            user="josh@example.com", session="",
+            user="josh@example.com", chat="", session="",
         )
         assert result == "user-josh-example-com"
+
+    def test_provider_uses_chat_in_bank_id_template(self, tmp_path, monkeypatch):
+        config = {
+            "mode": "cloud",
+            "apiKey": "k",
+            "api_url": "http://x",
+            "bank_id": "fallback-bank",
+            "bank_id_template": "hermes-{profile}-{platform}-{chat}",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        p = HindsightMemoryProvider()
+        p.initialize(
+            session_id="s1",
+            hermes_home=str(tmp_path),
+            platform="telegram",
+            chat_id="-100123",
+            agent_identity="default",
+            agent_workspace="hermes",
+        )
+        assert p._bank_id == "hermes-default-telegram-100123"
 
 
     def test_provider_uses_bank_id_template_from_config(self, tmp_path, monkeypatch):

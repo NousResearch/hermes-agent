@@ -442,6 +442,7 @@ The setup wizard installs dependencies automatically and only installs what's ne
 |-----|---------|-------------|
 | `mode` | `cloud` | `cloud` or `local` |
 | `bank_id` | `hermes` | Memory bank identifier |
+| `bank_id_template` | — | Dynamic bank identifier with `{profile}`, `{workspace}`, `{platform}`, `{user}`, `{chat}`, and `{session}` placeholders. Use `{chat}` to isolate DMs and groups handled by the same profile. |
 | `recall_budget` | `mid` | Recall thoroughness: `low` / `mid` / `high` |
 | `memory_mode` | `hybrid` | `hybrid` (context + tools), `context` (auto-inject only), `tools` (tools only) |
 | `auto_retain` | `true` | Automatically retain conversation turns |

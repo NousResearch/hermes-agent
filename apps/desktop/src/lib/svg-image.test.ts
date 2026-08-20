@@ -43,8 +43,8 @@ describe('normalizeSvgSize', () => {
   })
 
   it('leaves an explicit pixel height when only width is a percentage', () => {
-    const svg =
-      '<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="70" viewBox="0 0 500 200"><rect/></svg>'
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="70" viewBox="0 0 500 200"><rect/></svg>'
+
     const out = normalizeSvgSize(svg)
 
     expect(out).toContain('width="500"')

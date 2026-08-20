@@ -4,7 +4,13 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
 import { $sessions, $unreadFinishedSessionIds, setSessions } from './session'
-import { $delegatingSessionIds, $sessionDotStateById, hasLiveTurn, showsRunningArc, unreadSessionCount } from './session-dot-state'
+import {
+  $delegatingSessionIds,
+  $sessionDotStateById,
+  hasLiveTurn,
+  showsRunningArc,
+  unreadSessionCount
+} from './session-dot-state'
 import { clearAllSessionStates, publishSessionState } from './session-states'
 import { $unreadWriteGuard } from './session-unread-remote'
 import { $subagentsBySession, type SubagentProgress } from './subagents'

@@ -4886,9 +4886,7 @@ function downloadViaTokenToFile(url, token, ctx, options: any = {}) {
       parsed,
       {
         method: 'GET',
-        headers: options.bearer
-          ? { Authorization: `Bearer ${options.bearer}` }
-          : { 'X-Hermes-Session-Token': token }
+        headers: options.bearer ? { Authorization: `Bearer ${options.bearer}` } : { 'X-Hermes-Session-Token': token }
       },
       res => {
         // Headers arrived — the connection phase is done. Drop the idle timeout

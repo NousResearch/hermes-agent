@@ -34,8 +34,18 @@ agent/prompt_builder.py for the salvaged hunks from PR #4562.
 
 from __future__ import annotations
 
+# Install Linux native-Wayland policy before the tool factory first imports the
+# CUA backend. The installer is a no-op off Linux and idempotent on repeated
+# package imports.
+from tools.computer_use.wayland_runtime import (
+    install_wayland_runtime_policy as _install_wayland_runtime_policy,
+)
+
+_install_wayland_runtime_policy()
+del _install_wayland_runtime_policy
+
 # Re-export the public surface so `from tools.computer_use import ...` works.
-from tools.computer_use.tool import (  # noqa: F401
+from tools.computer_use.tool import (  # noqa: F401,E402
     handle_computer_use,
     release_computer_use_session,
     set_approval_callback,

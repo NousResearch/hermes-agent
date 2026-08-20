@@ -3997,12 +3997,24 @@ class ContextCompressor(ContextEngine):
     # carries the full rationale) so subclasses/tests can override per-class.
     _SUMMARY_INPUT_MAX_CHARS = _SUMMARY_INPUT_MAX_CHARS
 
-    def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
+    def _serialize_for_summary(
+        self,
+        turns: List[Dict[str, Any]],
+        pristine: "dict[str, str] | None" = None,
+    ) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
 
         Includes tool call arguments and result content (up to
         ``_CONTENT_MAX`` chars per message) so the summarizer can preserve
         specific details like file paths, commands, and outputs.
+
+        ``pristine`` is the pre-Phase-1 snapshot of tool bodies keyed by
+        ``tool_call_id``. Phase-1 pruning runs before summarization and may
+        already have demoted a tool result to a one-line stub; reading the
+        snapshot instead lets the summary carry the content forward rather
+        than recording only that a tool ran. Per-message truncation to
+        ``_CONTENT_MAX`` still applies, so a restored body cannot crowd the
+        prompt.
 
         All content is redacted before serialization to prevent secrets
         (API keys, tokens, passwords) from leaking into the summary that
@@ -4032,6 +4044,15 @@ class ContextCompressor(ContextEngine):
                     elif isinstance(part, str):
                         text_parts.append(part)
                 content = "\n".join(text_parts)
+            # Phase-1 pruning may already have demoted this tool result to a
+            # one-line stub; summarize from the pristine snapshot instead so
+            # the summary carries the content forward, not just the receipt.
+            # Restoration happens before redaction so a recovered body is
+            # scrubbed on exactly the same path as a live one.
+            if pristine and role == "tool":
+                original = pristine.get(str(msg.get("tool_call_id") or ""))
+                if original and len(original) > len(content or ""):
+                    content = original
             content = _redact_compaction_text(content or "")
             content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
             # Strip inline reasoning blocks (<think>, <reasoning>, etc.) from
@@ -4353,7 +4374,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         main summary.
         """
         text = _serialize_turns_for_digest(
-            turns, getattr(self, "_lean_pristine_tools", None),
+            turns, getattr(self, "_pristine_tools", None),
         )
         if not text:
             return ""
@@ -4531,7 +4552,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             self._previous_summary = _redact_compaction_text(self._previous_summary)
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
-        content_to_summarize = self._serialize_for_summary(turns_to_summarize)
+        content_to_summarize = self._serialize_for_summary(
+            turns_to_summarize, getattr(self, "_pristine_tools", None),
+        )
         # P2 ghost-skill defense (#32106): [SKILL_PRUNED: ...] markers entering
         # the summarizer are prompt INPUT only — LLMs routinely paraphrase them
         # into vague prose ("some skills were loaded"), which erases the reload
@@ -7142,18 +7165,20 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
-        # Lean mode: snapshot pristine tool contents BEFORE Phase-1 pruning so
-        # the chunk digests summarize what actually happened, not the pruned
-        # stubs (#compaction-v2). Bounded per entry to keep memory sane.
-        if getattr(self, "tail_mode", "legacy") == "lean":
-            self._lean_pristine_tools = {
-                str(m.get("tool_call_id") or ""): (m.get("content") or "")[:80_000]
-                for m in messages
-                if m.get("role") == "tool" and isinstance(m.get("content"), str)
-                and len(m.get("content") or "") > 400
-            }
-        else:
-            self._lean_pristine_tools = {}
+        # Snapshot pristine tool contents BEFORE Phase-1 pruning so the
+        # summarizer sees what actually happened, not the pruned stubs
+        # (#compaction-v2). Bounded per entry to keep memory sane.
+        #
+        # This began as a lean-mode-only snapshot feeding the chunk digests,
+        # but the same ordering hurts legacy mode: Phase 1 stubs the very
+        # tool results ``_generate_summary`` is about to read, so the LLM pass
+        # could only ever record *that* a tool ran. Both modes read it now.
+        self._pristine_tools = {
+            str(m.get("tool_call_id") or ""): (m.get("content") or "")[:80_000]
+            for m in messages
+            if m.get("role") == "tool" and isinstance(m.get("content"), str)
+            and len(m.get("content") or "") > 400
+        }
 
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(

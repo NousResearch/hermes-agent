@@ -1370,6 +1370,55 @@ class TestAdapterBehavior(unittest.TestCase):
             ],
         )
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_interactive_card_for_markdown_table(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_table_card"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = "| 名称 | 数量 |\n| --- | --- |\n| 苹果 | 3 |\n| 香蕉 | 5 |"
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content=content,
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        payload = json.loads(captured["request"].request_body.content)
+        self.assertEqual(payload["schema"], "2.0")
+        elements = payload["body"]["elements"]
+        self.assertEqual(elements[0]["tag"], "table")
+        self.assertEqual(
+            [c["name"] for c in elements[0]["columns"]],
+            ["名称", "数量"],
+        )
+        self.assertEqual(len(elements[0]["rows"]), 2)
+
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestHydrateBotIdentity(unittest.TestCase):

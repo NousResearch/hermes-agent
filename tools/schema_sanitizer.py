@@ -419,10 +419,13 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 "with {'type': %r}",
                 path, node, node,
             )
-            return {"type": node} if node != "object" else {
-                "type": "object",
-                "properties": {},
-            }
+            if node == "object":
+                return {"type": "object", "properties": {}}
+            # A bare-string ``"array"`` must gain ``items`` too, or Gemini
+            # rejects the resulting ``{"type": "array"}`` node (#71804).
+            if node == "array":
+                return {"type": "array", "items": {}}
+            return {"type": node}
         # Any other stray string is not a schema — drop it by replacing with
         # a permissive object schema rather than propagate something the
         # backend will reject.
@@ -473,7 +476,17 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 continue
             if len(non_null) >= 2:
                 # Preserve all branches as a union instead of dropping them.
-                out["anyOf"] = [{"type": t} for t in non_null]
+                # Route each synthesized branch back through _sanitize_node so
+                # a branch that is itself hostile gets repaired — notably an
+                # ``"array"`` branch gains ``items: {}`` and an ``"object"``
+                # branch gains ``properties: {}``. A bare ``{"type": "array"}``
+                # here would otherwise skip the array-``items`` injection below
+                # (that runs on ``out.type``, not on anyOf members) and Gemini
+                # would still 400 the declaration (#71804).
+                out["anyOf"] = [
+                    _sanitize_node({"type": t}, f"{path}.anyOf[{i}]")
+                    for i, t in enumerate(non_null)
+                ]
                 if has_null:
                     out.setdefault("nullable", True)
                 continue
@@ -525,6 +538,14 @@ def _sanitize_node(node: Any, path: str) -> Any:
     # llama.cpp's grammar generator can't constrain a free-form object.
     if out.get("type") == "object" and not isinstance(out.get("properties"), dict):
         out["properties"] = {}
+
+    # Array nodes without ``items``: inject a permissive ``items: {}``.
+    # OpenAI-compatible backends tolerate a bare ``{"type": "array"}``, but
+    # Gemini strictly validates function declarations and 400s the whole
+    # request with ``...items: missing field`` (#71804). An empty ``items``
+    # schema is the minimal, universally-accepted form (any element type).
+    if out.get("type") == "array" and "items" not in out:
+        out["items"] = {}
 
     # Prune ``required`` entries that don't exist in properties (defense
     # against malformed MCP schemas; also caught upstream for MCP tools, but

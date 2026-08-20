@@ -219,7 +219,15 @@ function baseSshOptions(controlPath, connectTimeoutMs?) {
     '-o',
     'ExitOnForwardFailure=yes',
     '-o',
-    `ConnectTimeout=${connectSecs}`
+    `ConnectTimeout=${connectSecs}`,
+    // Keepalive: send a message every 15s, drop after 3 missed replies (45s)
+    // so NAT/firewall timeouts don't silently kill an idle connection.
+    '-o',
+    'ServerAliveInterval=15',
+    '-o',
+    'ServerAliveCountMax=3',
+    '-o',
+    'TCPKeepAlive=yes'
   ]
 }
 

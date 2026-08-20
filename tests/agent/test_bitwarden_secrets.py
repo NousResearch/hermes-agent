@@ -701,3 +701,31 @@ def test_configured_server_url_wins_over_inherited(monkeypatch, tmp_path):
         server_url="https://vault.example.com",
     )
     assert env["BWS_SERVER_URL"] == "https://vault.example.com"
+
+
+# ---------------------------------------------------------------------------
+# apply_server_url_to_env is the only writer of BWS_SERVER_URL, so it validates
+# explicit values too — callers that never went through fetch_bitwarden_secrets
+# (the CLI's `bws project list` path) must not be able to skip the check.
+# ---------------------------------------------------------------------------
+
+
+def test_explicit_plaintext_server_url_is_dropped():
+    env = {}
+    warning = bw.apply_server_url_to_env(env, "http://attacker.example")
+    assert "BWS_SERVER_URL" not in env
+    assert warning and "Ignoring the configured Bitwarden server_url" in warning
+
+
+def test_explicit_invalid_server_url_does_not_leave_an_inherited_value():
+    """A rejected explicit value must not fall through to the ambient one."""
+    env = {"BWS_SERVER_URL": "https://vault.bitwarden.eu"}
+    warning = bw.apply_server_url_to_env(env, "http://attacker.example")
+    assert "BWS_SERVER_URL" not in env
+    assert warning is not None
+
+
+def test_explicit_valid_server_url_is_applied_stripped():
+    env = {}
+    assert bw.apply_server_url_to_env(env, "  https://vault.bitwarden.eu  ") is None
+    assert env["BWS_SERVER_URL"] == "https://vault.bitwarden.eu"

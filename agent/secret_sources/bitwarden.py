@@ -130,15 +130,29 @@ def validate_server_url(server_url: str) -> str:
 def apply_server_url_to_env(env: Dict[str, str], server_url: str) -> Optional[str]:
     """Set ``BWS_SERVER_URL`` on ``env`` for a bws child. Returns a warning.
 
+    Every value that reaches ``BWS_SERVER_URL`` passes :func:`validate_server_url` here,
+    whichever way it arrived, because this is the one place that writes the variable. The
+    endpoint it names receives ``BWS_ACCESS_TOKEN``, so an unchecked value is an exfiltration
+    channel, and a caller that forgets to validate must not be able to open one.
+
     ``server_url`` is the configured value and wins when set. When it is empty, ``bws``
     would otherwise inherit whatever ``BWS_SERVER_URL`` the parent shell happened to carry —
-    an ambient value that never passed through :func:`validate_server_url`. Validate it here
-    too and drop it if it fails, so an exported ``http://…`` cannot redirect the token just
-    because it arrived through the environment instead of the config file.
+    an ambient value nothing validated.
 
-    Returns a human-readable warning when an inherited value was dropped, else ``None``."""
+    A value that fails validation is dropped rather than raised on: callers here are status
+    and verification paths that should still report on the rest of the setup. Dropping falls
+    back to the ``bws`` default (US Cloud), Bitwarden's own endpoint, so the fallback cannot
+    leak the token either. Fetch callers validate ahead of this (see
+    :func:`fetch_bitwarden_secrets`) and fail loudly instead.
+
+    Returns a human-readable warning when a value was dropped, else ``None``."""
     if server_url:
-        env["BWS_SERVER_URL"] = server_url
+        try:
+            env["BWS_SERVER_URL"] = validate_server_url(server_url)
+        except ValueError as exc:
+            env.pop("BWS_SERVER_URL", None)
+            return (f"Ignoring the configured Bitwarden server_url: {exc}.  "
+                    "Falling back to the bws default (US Cloud).")
         return None
     inherited = (env.get("BWS_SERVER_URL") or "").strip()
     if not inherited:

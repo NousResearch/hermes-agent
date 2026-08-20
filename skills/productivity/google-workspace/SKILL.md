@@ -189,9 +189,17 @@ $GAPI gmail send --to user@example.com --subject "Hello" --body "Message text"
 $GAPI gmail send --to user@example.com --subject "Report" --body "<h1>Q4</h1><p>Details...</p>" --html
 $GAPI gmail send --to user@example.com --subject "Hello" --from '"Research Agent" <user@example.com>' --body "Message text"
 
-# Reply (automatically threads and sets In-Reply-To)
+# Reply (automatically threads and sets In-Reply-To).
+# Reply All is the default: the original sender goes on To, everyone else on
+# the original To stays on To and the original Cc stays on Cc (your own
+# address is dropped, duplicates removed).
 $GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
 $GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "Thanks"
+# Add extra recipients on top of Reply All
+$GAPI gmail reply MESSAGE_ID --body "Looping in Dana." --cc dana@example.com
+$GAPI gmail reply MESSAGE_ID --body "Adding Sam." --to sam@example.com
+# Reply to the sender only (drop the other To/Cc recipients)
+$GAPI gmail reply MESSAGE_ID --no-reply-all --body "Just between us."
 
 # Labels
 $GAPI gmail labels

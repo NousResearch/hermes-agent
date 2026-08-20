@@ -777,6 +777,7 @@ class TestFeishuModelPicker:
                 current_provider="cc-switch-glm",
                 session_key="sk",
                 on_model_selected=AsyncMock(),
+                metadata={"curated_model_picker": True},
             )
 
         assert result.success is True

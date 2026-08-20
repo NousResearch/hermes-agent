@@ -1752,8 +1752,9 @@ class FeishuAdapter(BasePlatformAdapter):
         # replaces the full provider catalog so the dropdown stays short and
         # relevant (e.g. 3 curated models instead of every GPT variant).
         curated = (self.config.extra or {}).get("model_picker", {})
+        use_curated = bool((metadata or {}).get("curated_model_picker"))
         model_entries: List[tuple] = []
-        if isinstance(curated, dict) and curated.get("enabled") and curated.get("models"):
+        if use_curated and isinstance(curated, dict) and curated.get("enabled") and curated.get("models"):
             for entry in curated["models"]:
                 if not isinstance(entry, dict):
                     continue

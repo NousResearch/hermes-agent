@@ -76,17 +76,17 @@ Resolve paths against this skill's directory. Canonical loop:
 
 ```bash
 # 1a. Capture, LOCAL browser (Hermes launched it)
-python3 scripts/har_capture.py "https://SITE/" out.har \
+python scripts/har_capture.py "https://SITE/" out.har \
   --action "fill:input[name=search]:my query" --action "sleep:3" --wait 2
 
 # 1b. Capture, CDP browser (cloud backend or /browser connect)
 #     get the endpoint from /browser connect or BROWSER_CDP_URL
-python3 scripts/har_capture_cdp.py "ws://HOST/devtools/browser/..." out.har \
+python scripts/har_capture_cdp.py "ws://HOST/devtools/browser/..." out.har \
   --goto "https://SITE/" --action "fill:input[name=search]:my query" \
   --action "sleep:3" --wait 2
 
 # 2. Derive — read the endpoints out of the HAR
-python3 scripts/har_to_client.py out.har --host SITE --max-body 400
+python scripts/har_to_client.py out.har --host SITE --max-body 400
 
 # 3. Replay — write a tiny client from the printed endpoint (see Procedure)
 ```
@@ -153,9 +153,9 @@ for p in r.json()["pages"]:
 End-to-end proof against a live site with no API key:
 
 ```bash
-python3 scripts/har_capture.py "https://en.wikipedia.org/wiki/Main_Page" /tmp/wiki.har \
+python scripts/har_capture.py "https://en.wikipedia.org/wiki/Main_Page" /tmp/wiki.har \
   --action "fill:input[name=search]:dune messiah" --action "sleep:3" --wait 2
-python3 scripts/har_to_client.py /tmp/wiki.har --host wikipedia.org --max-body 200
+python scripts/har_to_client.py /tmp/wiki.har --host wikipedia.org --max-body 200
 ```
 
 Expect the derivation to print `GET https://en.wikipedia.org/w/rest.php/v1/search/title`

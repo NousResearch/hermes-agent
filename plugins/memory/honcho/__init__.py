@@ -78,7 +78,7 @@ PROFILE_SCHEMA = {
         "properties": {
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+                "description": "Peer to query. Use 'user' (default) for the human or 'ai' for the assistant. Do not invent peer IDs — an unrecognized value resolves to the user rather than creating a new peer.",
             },
             "card": {
                 "type": "array",
@@ -116,7 +116,7 @@ SEARCH_SCHEMA = {
             },
             "peer": {
                 "type": "string",
-                "description": "Whose history to search. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace. Spans every session that peer took part in.",
+                "description": "Whose history to search. Built-in aliases: 'user' (default), 'ai'. Or pass a peer ID that already exists in this workspace — do not invent peer IDs; an unrecognized value resolves to the user rather than creating a new peer. Spans every session that peer took part in.",
             },
         },
         "required": ["query"],
@@ -175,7 +175,7 @@ REASONING_SCHEMA = {
             },
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+                "description": "Peer to query. Use 'user' (default) for the human or 'ai' for the assistant. Do not invent peer IDs — an unrecognized value resolves to the user rather than creating a new peer.",
             },
         },
         "required": ["query"],
@@ -199,7 +199,7 @@ CONTEXT_SCHEMA = {
         "properties": {
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+                "description": "Peer to query. Use 'user' (default) for the human or 'ai' for the assistant. Do not invent peer IDs — an unrecognized value resolves to the user rather than creating a new peer.",
             },
         },
         "required": [],
@@ -244,7 +244,7 @@ CONCLUDE_SCHEMA = {
             },
             "peer": {
                 "type": "string",
-                "description": "The peer the conclusion is ABOUT. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+                "description": "The peer the conclusion is ABOUT. Built-in aliases: 'user' (default), 'ai'. Or pass a peer ID that already exists in this workspace — do not invent peer IDs; an unrecognized value resolves to the user rather than creating a new peer.",
             },
         },
         "required": [],
@@ -1366,15 +1366,25 @@ class HonchoMemoryProvider(MemoryProvider):
         reasons: List[str] = []
 
         if cfg is not None:
-            if peer == "user":
-                observe_me = bool(getattr(cfg, "user_observe_me", True))
-                observe_others = bool(getattr(cfg, "user_observe_others", True))
+            # Ask the resolver which peer the request actually targeted instead
+            # of re-deriving it here: a session user peer literally named "AI"
+            # resolves to the user, and the hint must report the same peer the
+            # card lookup used. The label is always resolver-safe — never the
+            # raw, possibly invented, peer string.
+            if self._manager and self._session_key:
+                label = self._manager.resolved_peer_label(self._session_key, peer)
             else:
+                label = "user"
+            is_ai = label == "ai"
+            if is_ai:
                 observe_me = bool(getattr(cfg, "ai_observe_me", True))
                 observe_others = bool(getattr(cfg, "ai_observe_others", True))
+            else:
+                observe_me = bool(getattr(cfg, "user_observe_me", True))
+                observe_others = bool(getattr(cfg, "user_observe_others", True))
             if not (observe_me or observe_others):
                 reasons.append(
-                    f"observation is disabled for peer '{peer}' "
+                    f"observation is disabled for peer '{label}' "
                     f"(user_observe_me/ai_observe_me in config)"
                 )
 
@@ -1658,7 +1668,11 @@ class HonchoMemoryProvider(MemoryProvider):
                     return tool_error(f"Failed to delete conclusion {delete_id}.")
                 ok = self._manager.create_conclusion(self._session_key, conclusion, peer=peer)
                 if ok:
-                    return json.dumps({"result": f"Conclusion saved for {peer}: {conclusion}"})
+                    # Report the *resolved* peer, not the requested one: an
+                    # unrecognized name collapses to the user, so echoing `peer`
+                    # would falsely confirm a write to a peer that doesn't exist.
+                    target = self._manager.resolved_peer_label(self._session_key, peer)
+                    return json.dumps({"result": f"Conclusion saved for {target}: {conclusion}"})
                 return tool_error("Failed to save conclusion.")
 
             return tool_error(f"Unknown tool: {tool_name}")

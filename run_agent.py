@@ -7775,6 +7775,9 @@ class AIAgent:
         DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays
         of assistant tool-call messages that omit ``reasoning_content`` (refs
         #15250, #17400). Xiaomi MiMo thinking mode has the same requirement.
+        z.ai Preserved Thinking (GLM-5 series, ``clear_thinking: false``)
+        soft-requires the replay: no 400 on omission, but replaying real
+        reasoning preserves multi-turn continuity (issue #11483).
 
         Result cached on the AIAgent instance keyed by (provider, model,
         base_url); invalidated whenever ``switch_model()`` /

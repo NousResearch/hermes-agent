@@ -261,6 +261,7 @@ class TestApplyReasoningContentPolicy:
         assert "reasoning_content" not in api
 
 
+
 # ---------------------------------------------------------------------------
 # reapply_reasoning_echo
 # ---------------------------------------------------------------------------

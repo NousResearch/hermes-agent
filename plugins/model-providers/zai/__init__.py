@@ -17,20 +17,29 @@ is omitted so the server default applies, matching prior behavior.  GLM
 models before 4.5 (e.g. ``glm-4-9b``) don't accept ``thinking`` and are left
 untouched.
 
-GLM-5.2 additionally exposes a native ``reasoning_effort`` knob with exactly
-two enabled levels — ``high`` and ``max`` — on the OpenAI-compatible endpoint
-(per Z.AI / BigModel docs).  Hermes' richer effort scale is collapsed onto
-those two so the user's effort preference actually reaches the model instead
-of being silently dropped.
+GLM-5.2 and GLM-5.3 additionally expose a native ``reasoning_effort`` knob
+with exactly two enabled levels — ``high`` and ``max`` — on the
+OpenAI-compatible endpoint (per Z.AI / BigModel docs).  Hermes' richer effort
+scale is collapsed onto those two so the user's effort preference actually
+reaches the model instead of being silently dropped.
+
+z.ai also documents "Preserved Thinking" (``clear_thinking: false`` +
+reasoning replay, issue #11483), but live probes (2026-08-15) show the
+OpenAI-compat endpoint silently drops replayed ``reasoning_content`` from
+model attention — only the Anthropic wire honors it — so it is deliberately
+NOT emitted here.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 from providers import register_provider
 from providers.base import ProviderProfile
+
+logger = logging.getLogger(__name__)
 
 _GLM_VERSION_RE = re.compile(r"^glm-(\d+)(?:\.(\d+))?")
 
@@ -46,26 +55,51 @@ def _model_supports_thinking(model: str | None) -> bool:
     return (major, minor) >= (4, 5)
 
 
-def _is_glm_5_2(model: str | None) -> bool:
-    """Detect GLM-5.2 across the alias spellings providers use.
+def _supports_reasoning_effort(model: str | None) -> bool:
+    """Detect GLM models with the native ``reasoning_effort`` dial (5.2, 5.3).
 
-    Covers the canonical ``glm-5.2`` plus the ``glm-5-2`` / ``glm-5p2``
-    variants seen on relays (Fireworks ``glm-5p2``, etc.) and any
-    vendor-prefixed form (``z-ai/glm-5.2``, ``zai-org-glm-5-2``).
+    Covers the canonical ``glm-5.2``/``glm-5.3`` plus the ``glm-5-2`` /
+    ``glm-5p2``-style variants seen on relays (Fireworks ``glm-5p2``, etc.)
+    and any vendor-prefixed form (``z-ai/glm-5.2``,
+    ``accounts/fireworks/models/glm-5p2``, ``zai-org-glm-5-2``).
+
+    Boundary-safe on purpose: a bare substring check would classify
+    ``glm-5.30`` or ``notglm-5.3`` as known variants.  The version digit
+    must terminate at end-of-string or a non-alphanumeric character, and
+    ``glm`` must not be preceded by another word character.
     """
+    return (
+        _matches_glm_5_minor(model, "2")
+        or _matches_glm_5_minor(model, "3")
+    )
+
+
+_GLM_5_VARIANT_RE = re.compile(r"(?<![a-z0-9])glm-5[.\-p]?(\d)(?![0-9a-z])")
+
+
+def _matches_glm_5_minor(model: str | None, minor: str) -> bool:
+    """True when the model id names GLM-5.<minor> in any alias spelling."""
     m = (model or "").strip().lower()
     if not m:
         return False
-    return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
+    return any(
+        match.group(1) == minor for match in _GLM_5_VARIANT_RE.finditer(m)
+    )
 
 
-def _glm_5_2_reasoning_effort(reasoning_config: dict | None) -> str | None:
-    """Map Hermes reasoning effort onto GLM-5.2's native ``high``/``max``.
+def _is_glm_5_3(model: str | None) -> bool:
+    """Detect GLM-5.3 across the alias spellings providers use."""
+    return _matches_glm_5_minor(model, "3")
 
-    GLM-5.2 only supports two enabled effort levels. ``xhigh``/``max``/``ultra``
-    request the top tier; everything else that is enabled requests ``high``
-    (its minimum thinking level). When reasoning is explicitly disabled, or
-    no effort preference is supplied, the server default is left untouched.
+
+def _reasoning_effort_for_config(reasoning_config: dict | None) -> str | None:
+    """Map Hermes reasoning effort onto GLM-5.2/5.3's native ``high``/``max``.
+
+    These models only expose two enabled effort levels. ``xhigh``/``max``/
+    ``ultra`` request the top tier; everything else that is enabled requests
+    ``high`` (the minimum thinking level). When reasoning is explicitly
+    disabled, or no effort preference is supplied, the server default is
+    left untouched.
     """
     if not isinstance(reasoning_config, dict):
         return None
@@ -78,12 +112,12 @@ def _glm_5_2_reasoning_effort(reasoning_config: dict | None) -> str | None:
 
     if effort in {"xhigh", "max", "ultra"}:
         return "max"
-    # low / medium / minimal / high all clamp to GLM-5.2's minimum: high.
+    # low / medium / minimal / high all clamp to the model's minimum: high.
     return "high"
 
 
 class ZaiProfile(ProviderProfile):
-    """Z.AI / GLM — extra_body.thinking on/off + GLM-5.2 reasoning_effort."""
+    """Z.AI / GLM — thinking on/off + GLM-5.2/5.3 reasoning_effort."""
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
@@ -91,17 +125,35 @@ class ZaiProfile(ProviderProfile):
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
 
-        if not _model_supports_thinking(model) and not _is_glm_5_2(model):
+        if not _model_supports_thinking(model) and not _supports_reasoning_effort(model):
             return extra_body, top_level
 
         # Only emit when the user expressed a preference; omitting the field
         # keeps the server default (enabled) exactly as before.
+        # GLM-5.3 silently ignores thinking.disabled (no error, but thinking
+        # still runs) — don't send a no-op param for it. reasoning_effort
+        # (wired below) is 5.3's actual effort control.
+        # (No clear_thinking here: see module docstring — z.ai's OpenAI-compat
+        # wire drops replayed reasoning_content from model attention.)
         if isinstance(reasoning_config, dict):
             enabled = reasoning_config.get("enabled") is not False
-            extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
+            if enabled or not _is_glm_5_3(model):
+                extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
+            else:
+                # GLM-5.3 ignores thinking.disabled (no error, thinking
+                # still runs server-side).  The user's "disable reasoning"
+                # preference is a silent no-op on this wire — say so at
+                # debug level so it isn't mistaken for a wiring bug
+                # (review point on PR #86433).  reasoning_effort below is
+                # 5.3's actual effort control.
+                logger.debug(
+                    "zai: reasoning disabled for %s but GLM-5.3 ignores "
+                    "thinking.disabled on the OpenAI-compat wire; leaving "
+                    "server default (thinking on)", model,
+                )
 
-        if _is_glm_5_2(model):
-            effort = _glm_5_2_reasoning_effort(reasoning_config)
+        if _supports_reasoning_effort(model):
+            effort = _reasoning_effort_for_config(reasoning_config)
             if effort is not None:
                 top_level["reasoning_effort"] = effort
 

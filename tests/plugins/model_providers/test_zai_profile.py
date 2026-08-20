@@ -96,44 +96,115 @@ class TestZaiGLM52ReasoningEffort:
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {"reasoning_effort": "max"}
 
-    def test_disabled_sends_no_effort(self, zai_profile):
-        """Disabled reasoning still sends the thinking-off marker but never
-        an effort level."""
-        extra_body, top_level = zai_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": False, "effort": "high"},
-            model="glm-5.2",
-        )
-        assert extra_body == {"thinking": {"type": "disabled"}}
-        assert top_level == {}
+class TestZaiGlm53:
+    """GLM-5.3: effort control via reasoning_effort, no thinking param.
 
+    Same 743B base as GLM-5.2 (post-training only), 1M context window.
+    z.ai silently ignores ``thinking.disabled`` for 5.3 — thinking still
+    runs — so the no-op marker must not be emitted; ``reasoning_effort``
+    is 5.3's actual effort dial.
+    """
 
     @pytest.mark.parametrize(
         "model",
-        [
-            "z-ai/glm-5.2",
-            "glm-5-2",
-            "glm-5p2",
-            "accounts/fireworks/models/glm-5p2",
-            "zai-org-glm-5-2",
-        ],
+        ["glm-5.3", "glm-5-3", "glm-5p3", "z-ai/glm-5.3"],
     )
     def test_alias_spellings_recognized(self, zai_profile, model):
-        _, top_level = zai_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "max"},
-            model=model,
-        )
-        assert top_level == {"reasoning_effort": "max"}
-
-    @pytest.mark.parametrize(
-        "model",
-        ["glm-5.1", "glm-5", "glm-4.7", "glm-4-9b", "", None],
-    )
-    def test_non_glm_5_2_models_get_no_effort(self, zai_profile, model):
         _, top_level = zai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "high"},
             model=model,
         )
-        assert top_level == {}
+        assert top_level == {"reasoning_effort": "high"}
+
+    def test_disabled_reasoning_omits_noop_thinking_marker(self, zai_profile):
+        """5.3 ignores thinking.disabled — don't send it.
+        (No clear_thinking either: z.ai's OpenAI-compat wire drops replayed
+        reasoning_content, so preserved mode is not emitted at all.)"""
+        extra_body, _ = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False, "effort": "high"},
+            model="glm-5.3",
+        )
+        assert extra_body == {}
+
+    def test_disabled_on_5_3_logs_noop(self, zai_profile, caplog):
+        """The silent no-op is surfaced at debug level so a config that
+        appears to do nothing isn't mistaken for a wiring bug
+        (review point on PR #86433)."""
+        import logging
+
+        with caplog.at_level(logging.DEBUG, logger="plugins.model_providers.zai"):
+            zai_profile.build_api_kwargs_extras(
+                reasoning_config={"enabled": False},
+                model="glm-5.3",
+            )
+        assert any(
+            "ignores thinking.disabled" in r.message for r in caplog.records
+        ), caplog.records
+
+    def test_no_spurious_log_when_thinking_emitted(self, zai_profile, caplog):
+        """Control: the debug line fires only on the 5.3 no-op path —
+        normal emits (disabled on a model that honors it) stay quiet."""
+        import logging
+
+        with caplog.at_level(logging.DEBUG, logger="plugins.model_providers.zai"):
+            extra_body, _ = zai_profile.build_api_kwargs_extras(
+                reasoning_config={"enabled": False},
+                model="glm-4.5",
+            )
+        assert extra_body == {"thinking": {"type": "disabled"}}
+        assert not any(
+            "ignores thinking.disabled" in r.message for r in caplog.records
+        ), caplog.records
+
+    def test_context_length_registered(self):
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+
+        assert DEFAULT_CONTEXT_LENGTHS["glm-5.3"] == 1_048_576
+
+
+class TestZaiAliasBoundaries:
+    """Version-boundary matching: plausible FUTURE ids must not classify as
+    known variants (a bare substring check would match glm-5.30 as glm-5.3)."""
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "glm-5.30",       # future minor
+            "glm-5.3x",       # suffixed variant
+            "notglm-5.3",     # embedded in another word
+            "glm-5.35",
+            "glm-5p30",
+        ],
+    )
+    def test_future_and_embedded_ids_not_matched(self, zai_profile, model):
+        _, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model=model,
+        )
+        assert top_level == {}  # no reasoning_effort for unknown variants
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "glm-5.2",
+            "glm-5-2",
+            "glm-5p2",
+            "z-ai/glm-5.2",
+            "accounts/fireworks/models/glm-5p2",
+            "zai-org-glm-5-2",
+            "glm-5.3",
+            "glm-5-3",
+            "glm-5p3",
+            "GLM-5.2",  # case-insensitive
+        ],
+    )
+    def test_known_spellings_still_matched(self, zai_profile, model):
+        _, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model=model,
+        )
+        assert top_level == {"reasoning_effort": "high"}
+
 
 
 class TestZaiModelGating:

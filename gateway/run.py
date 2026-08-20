@@ -18953,10 +18953,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # to outer dispatch, or this early exit leaks task-local identity.
                 self._clear_session_env(_session_env_tokens)
                 raise
-            if _lease_token is not None:
-                _lease_state = self._session_state(_quick_key).turn
-                _lease_state.lease_token = _lease_token
-                _lease_state.lease_generation = run_generation
+            self._record_turn_lease(_quick_key, _lease_token, run_generation)
 
         # A turn only becomes durable recovery work after it owns (or has
         # explicitly degraded past) the per-session lease.  Marking before the
@@ -26179,6 +26176,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("Failed to release turn lease", exc_info=True)
             return False
+
+    def _record_turn_lease(
+        self, session_key: str, token: object, run_generation: int
+    ) -> bool:
+        """Record only a token that actually owns the registry lease.
+
+        A fail-open/legacy registry may return a degraded token after timing
+        out. It does not own the registry lock and must never overwrite the
+        held turn's token in shared session state.
+        """
+        if token is None or getattr(token, "degraded", False):
+            return False
+        lease_state = self._session_state(session_key).turn
+        lease_state.lease_token = token
+        lease_state.lease_generation = run_generation
+        return True
 
     def _rebind_turn_lease(
         self, session_key: str, run_generation: int, new_session_id: str

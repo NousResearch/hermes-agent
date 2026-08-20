@@ -20,6 +20,7 @@ Covers:
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -478,3 +479,24 @@ def test_runner_release_turn_lease_is_token_scoped_and_bare_safe():
         assert runner._release_turn_lease("", 1) is False
 
     _run(scenario())
+
+
+def test_runner_does_not_record_degraded_turn_lease():
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    held_token = object()
+    state = SimpleNamespace(
+        turn=SimpleNamespace(lease_token=held_token, lease_generation=1)
+    )
+    runner._session_state = MagicMock(return_value=state)
+    degraded_token = SimpleNamespace(degraded=True)
+
+    assert runner._record_turn_lease("key-a", degraded_token, 2) is False
+    assert state.turn.lease_token is held_token
+    assert state.turn.lease_generation == 1
+    runner._session_state.assert_not_called()
+
+    assert runner._record_turn_lease("key-a", held_token, 2) is True
+    assert state.turn.lease_token is held_token
+    assert state.turn.lease_generation == 2

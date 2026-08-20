@@ -1,5 +1,6 @@
 """Regression tests for browser session cleanup and screenshot recovery."""
 
+import threading
 from unittest.mock import patch
 
 
@@ -21,6 +22,39 @@ class TestScreenshotPathRecovery:
             )
             == "/Users/david/.hermes/browser_screenshots/shot.png"
         )
+
+
+class TestBrowserLane:
+    def test_next_session_waits_until_current_session_releases_lane(self):
+        from tools import browser_tool
+
+        browser_tool._reset_browser_lane_for_tests()
+        browser_tool._claim_browser_lane("session-a")
+        acquired = threading.Event()
+
+        def claim_second_session():
+            browser_tool._claim_browser_lane("session-b")
+            acquired.set()
+
+        waiting = threading.Thread(target=claim_second_session)
+        waiting.start()
+        assert not acquired.wait(0.05)
+
+        browser_tool._release_browser_lane("session-a")
+        assert acquired.wait(1)
+        waiting.join(timeout=1)
+        assert not waiting.is_alive()
+        assert browser_tool._browser_lane_owner() == "session-b"
+
+    def test_sidecar_cleanup_releases_owning_session_lane(self):
+        from tools import browser_tool
+
+        browser_tool._reset_browser_lane_for_tests()
+        browser_tool._claim_browser_lane("session-a")
+
+        browser_tool._release_browser_lane("session-a::local")
+
+        assert browser_tool._browser_lane_owner() is None
 
 
 class TestBrowserCleanup:

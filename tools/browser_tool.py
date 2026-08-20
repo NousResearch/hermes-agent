@@ -1602,6 +1602,55 @@ def _socket_safe_tmpdir() -> str:
     return tempfile.gettempdir()
 
 
+# One physical automation browser is deliberately shared across gateway
+# conversations. Keep it single-lane: a session retains the lane from its first
+# browser call until normal turn cleanup, then the next waiting session may use
+# it. This prevents a burst of Slack conversations from spawning a tab/browser
+# per task and avoids cross-session tab contention.
+_browser_lane_condition = threading.Condition(threading.RLock())
+_browser_lane_owner_task: Optional[str] = None
+
+
+def _browser_lane_task_id(task_id: Optional[str]) -> str:
+    """Map hybrid local-sidecar keys back to their owning conversation."""
+    task_id = task_id or "default"
+    return _bare_task_id_for_session_key(task_id)
+
+
+def _claim_browser_lane(task_id: Optional[str]) -> None:
+    """Wait for exclusive browser ownership, re-entering for the owner."""
+    global _browser_lane_owner_task
+    owner = _browser_lane_task_id(task_id)
+    with _browser_lane_condition:
+        while _browser_lane_owner_task not in (None, owner):
+            _browser_lane_condition.wait()
+        _browser_lane_owner_task = owner
+
+
+def _release_browser_lane(task_id: Optional[str]) -> None:
+    """Release the browser only when its owning conversation has finished."""
+    global _browser_lane_owner_task
+    owner = _browser_lane_task_id(task_id)
+    with _browser_lane_condition:
+        if _browser_lane_owner_task == owner:
+            _browser_lane_owner_task = None
+            _browser_lane_condition.notify_all()
+
+
+def _browser_lane_owner() -> Optional[str]:
+    """Return the current browser owner for diagnostics and unit tests."""
+    with _browser_lane_condition:
+        return _browser_lane_owner_task
+
+
+def _reset_browser_lane_for_tests() -> None:
+    """Clear the process-wide lane between isolated unit tests."""
+    global _browser_lane_owner_task
+    with _browser_lane_condition:
+        _browser_lane_owner_task = None
+        _browser_lane_condition.notify_all()
+
+
 # Track active sessions per "session key".
 #
 # A "session key" is either the bare task_id (cloud/default path) OR a composite
@@ -3397,7 +3446,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             "error": "Blocked: URL targets a private or internal address",
         })
 
-    # Website policy check — block before navigating
+    # Website policy check — block before reserving the shared browser lane.
     blocked = check_website_access(url)
     if blocked:
         return json.dumps({
@@ -3405,6 +3454,11 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             "error": blocked["message"],
             "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
         })
+
+    # Keep one automation browser lane across conversations. The owner holds
+    # it until normal per-turn/session cleanup; waiting conversations resume in
+    # FIFO-ish condition wake order instead of opening more browser/tab sets.
+    _claim_browser_lane(effective_task_id)
 
     # Camofox backend — delegate after safety checks pass
     if _is_camofox_mode():
@@ -4933,6 +4987,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
             _last_active_session_key.pop(bare_task_id, None)
     else:
         _last_active_session_key.pop(bare_task_id, None)
+    _release_browser_lane(task_id)
 
 
 def _cleanup_single_browser_session(task_id: str) -> None:

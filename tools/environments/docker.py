@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -43,6 +44,7 @@ _DOCKER_SEARCH_PATHS = [
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EGRESS_LABEL_KEY = "hermes-egress"
+_MOUNT_ROOT_LABEL_KEY = "hermes-mount-root"
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -98,6 +100,57 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
         normalized[key] = value
 
     return normalized
+
+
+def _daemon_visible_hermes_path(
+    source: str,
+    daemon_hermes_home: str | None,
+) -> str:
+    """Translate a caller-visible HERMES_HOME path for the Docker daemon.
+
+    Docker resolves bind sources in the daemon's filesystem namespace. If
+    Hermes itself is containerized (host socket or DinD sidecar), its
+    ``HERMES_HOME`` path may therefore be meaningless to that daemon. The
+    explicit daemon root preserves the relative path while leaving unrelated
+    operator-supplied paths untouched.
+    """
+    if not daemon_hermes_home:
+        return source
+
+    from hermes_constants import get_hermes_home
+
+    source_path = Path(source)
+    try:
+        relative = source_path.relative_to(get_hermes_home())
+    except ValueError:
+        return source
+    daemon_root = os.path.expanduser(daemon_hermes_home).rstrip("/")
+    if daemon_root.startswith("/"):
+        return posixpath.join(daemon_root, relative.as_posix())
+    return str(Path(daemon_root) / relative)
+
+
+def _translate_volume_sources(
+    volume_args: list[str],
+    daemon_hermes_home: str | None,
+) -> list[str]:
+    """Rewrite ``-v SOURCE:DEST[:MODE]`` sources under HERMES_HOME."""
+    translated = list(volume_args)
+    for index in range(len(translated) - 1):
+        if translated[index] != "-v":
+            continue
+        spec = translated[index + 1]
+        separator_index = spec.find(":", 2 if re.match(r"^[A-Za-z]:[/\\]", spec) else 0)
+        if separator_index < 0:
+            continue
+        source = spec[:separator_index]
+        separator = spec[separator_index:separator_index + 1]
+        remainder = spec[separator_index + 1:]
+        if separator:
+            translated[index + 1] = (
+                f"{_daemon_visible_hermes_path(source, daemon_hermes_home)}:{remainder}"
+            )
+    return translated
 
 
 def _load_hermes_env_vars() -> dict[str, str]:
@@ -887,6 +940,7 @@ class DockerEnvironment(BaseEnvironment):
         extra_args: list = None,
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
+        daemon_hermes_home: str | None = None,
     ):
         if cwd == "~":
             cwd = "/root"
@@ -967,6 +1021,9 @@ class DockerEnvironment(BaseEnvironment):
                 logger.warning("Docker volume '%s' missing colon, skipping", vol)
 
         host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
+        host_cwd_mount_source = _daemon_visible_hermes_path(
+            host_cwd_abs, daemon_hermes_home,
+        )
         bind_host_cwd = (
             auto_mount_cwd
             and bool(host_cwd_abs)
@@ -984,13 +1041,13 @@ class DockerEnvironment(BaseEnvironment):
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
             writable_args.extend([
-                "-v", f"{self._home_dir}:/root",
+                "-v", f"{_daemon_visible_hermes_path(self._home_dir, daemon_hermes_home)}:/root",
             ])
             if not bind_host_cwd and not workspace_explicitly_mounted:
                 self._workspace_dir = str(sandbox / "workspace")
                 os.makedirs(self._workspace_dir, exist_ok=True)
                 writable_args.extend([
-                    "-v", f"{self._workspace_dir}:/workspace",
+                    "-v", f"{_daemon_visible_hermes_path(self._workspace_dir, daemon_hermes_home)}:/workspace",
                 ])
         else:
             if not bind_host_cwd and not workspace_explicitly_mounted:
@@ -1003,8 +1060,8 @@ class DockerEnvironment(BaseEnvironment):
             ])
 
         if bind_host_cwd:
-            logger.info("Mounting configured host cwd to /workspace: %s", host_cwd_abs)
-            volume_args = ["-v", f"{host_cwd_abs}:/workspace", *volume_args]
+            logger.info("Mounting configured host cwd to /workspace: %s", host_cwd_mount_source)
+            volume_args = ["-v", f"{host_cwd_mount_source}:/workspace", *volume_args]
         elif workspace_explicitly_mounted:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
 
@@ -1036,7 +1093,7 @@ class DockerEnvironment(BaseEnvironment):
                     continue
                 volume_args.extend([
                     "-v",
-                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro",
+                    f"{_daemon_visible_hermes_path(mount_entry['host_path'], daemon_hermes_home)}:{mount_entry['container_path']}:ro",
                 ])
                 logger.info(
                     "Docker: mounting credential %s -> %s",
@@ -1056,7 +1113,7 @@ class DockerEnvironment(BaseEnvironment):
                     continue
                 volume_args.extend([
                     "-v",
-                    f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro",
+                    f"{_daemon_visible_hermes_path(skills_mount['host_path'], daemon_hermes_home)}:{skills_mount['container_path']}:ro",
                 ])
                 logger.info(
                     "Docker: mounting skills dir %s -> %s",
@@ -1078,7 +1135,7 @@ class DockerEnvironment(BaseEnvironment):
                     continue
                 volume_args.extend([
                     "-v",
-                    f"{cache_mount['host_path']}:{cache_mount['container_path']}:ro",
+                    f"{_daemon_visible_hermes_path(cache_mount['host_path'], daemon_hermes_home)}:{cache_mount['container_path']}:ro",
                 ])
                 logger.info(
                     "Docker: mounting cache dir %s -> %s",
@@ -1095,8 +1152,15 @@ class DockerEnvironment(BaseEnvironment):
         egress_volume_args, egress_env_overrides, egress_host_args = (
             _egress_proxy_args_for_docker()
         )
+        egress_volume_args = _translate_volume_sources(
+            egress_volume_args, daemon_hermes_home,
+        )
         egress_label = _egress_reuse_fingerprint(
             egress_volume_args, egress_env_overrides, egress_host_args,
+        )
+        mount_root_label = (
+            hashlib.sha256(daemon_hermes_home.encode("utf-8")).hexdigest()[:24]
+            if daemon_hermes_home else "local"
         )
         _enforce_egress = _egress_enforce_on_docker()
         _critical_egress_names = _critical_egress_env_names(egress_env_overrides)
@@ -1375,6 +1439,7 @@ class DockerEnvironment(BaseEnvironment):
             "--label", f"hermes-task-id={task_label}",
             "--label", f"hermes-profile={profile_name}",
             "--label", f"{_EGRESS_LABEL_KEY}={egress_label}",
+            "--label", f"{_MOUNT_ROOT_LABEL_KEY}={mount_root_label}",
         ]
         # Save args for container recreation on "No such container" recovery.
         self._image = image
@@ -1387,6 +1452,7 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
             _EGRESS_LABEL_KEY: egress_label,
+            _MOUNT_ROOT_LABEL_KEY: mount_root_label,
         }
 
         # Cross-process container reuse (issue #20561 — docs claim "ONE long-lived
@@ -1403,7 +1469,7 @@ class DockerEnvironment(BaseEnvironment):
         reused = False
         if persist_across_processes:
             existing = self._find_reusable_container(
-                task_label, profile_name, egress_label,
+                task_label, profile_name, egress_label, mount_root_label,
             )
             if existing is not None:
                 container_id, state = existing
@@ -1664,6 +1730,7 @@ class DockerEnvironment(BaseEnvironment):
         profile_label = self._labels.get("hermes-profile", "")
         existing = self._find_reusable_container(
             task_label, profile_label, self._labels.get(_EGRESS_LABEL_KEY, "off"),
+            self._labels.get(_MOUNT_ROOT_LABEL_KEY, "local"),
         )
         if existing is not None:
             cid, state = existing
@@ -1828,6 +1895,7 @@ class DockerEnvironment(BaseEnvironment):
         task_label: str,
         profile_label: str,
         egress_label: str,
+        mount_root_label: str = "local",
     ) -> Optional[tuple[str, str]]:
         """Look for an existing container labeled for this (task, profile).
 
@@ -1847,6 +1915,11 @@ class DockerEnvironment(BaseEnvironment):
                 "--filter", f"label=hermes-task-id={task_label}",
                 "--filter", f"label=hermes-profile={profile_label}",
             ]
+            local_mount_root = mount_root_label == "local"
+            if not local_mount_root:
+                filters.extend([
+                    "--filter", f"label={_MOUNT_ROOT_LABEL_KEY}={mount_root_label}",
+                ])
             if egress_label != "off":
                 filters.extend(["--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"])
                 fmt = "{{.ID}}\t{{.State}}"
@@ -1859,6 +1932,11 @@ class DockerEnvironment(BaseEnvironment):
                 # reused after the operator runs "hermes egress disable",
                 # preserving baked-in proxy env and CA mounts.
                 fmt = '{{.ID}}\t{{.State}}\t{{.Label "' + _EGRESS_LABEL_KEY + '"}}'
+            if local_mount_root:
+                # Containers created before mount-root identity existed used
+                # the local daemon view. Include them in the probe, but reject
+                # containers carrying a different (remote-daemon) root below.
+                fmt += '\t{{.Label "' + _MOUNT_ROOT_LABEL_KEY + '"}}'
             result = subprocess.run(
                 [
                     self._docker_exe, "ps", "-a",
@@ -1891,24 +1969,29 @@ class DockerEnvironment(BaseEnvironment):
         running = None
         first = None
         for ln in lines:
+            parts = ln.split("\t")
+            expected_fields = 2 + (egress_label == "off") + local_mount_root
+            if len(parts) < expected_fields:
+                continue
+            cid, state = parts[0], parts[1].lower()
+            field_index = 2
             if egress_label == "off":
-                # Format: ID\tState\tEgressLabel — parse all three fields
-                # and reject containers with a non-off egress label.
-                parts = ln.split("\t", 2)
-                if len(parts) < 3:
-                    continue
-                cid, state, egress_val = parts[0], parts[1].lower(), parts[2]
+                egress_val = parts[field_index]
+                field_index += 1
                 if egress_val not in ("", "<no value>", "off"):
                     logger.debug(
                         "skipping container %s for egress=off reuse: "
                         "label %s=%r", cid, _EGRESS_LABEL_KEY, egress_val,
                     )
                     continue
-            else:
-                parts = ln.split("\t", 1)
-                if len(parts) != 2:
+            if local_mount_root:
+                mount_root_val = parts[field_index]
+                if mount_root_val not in ("", "<no value>", "local"):
+                    logger.debug(
+                        "skipping container %s for local mount-root reuse: "
+                        "label %s=%r", cid, _MOUNT_ROOT_LABEL_KEY, mount_root_val,
+                    )
                     continue
-                cid, state = parts[0], parts[1].lower()
             if first is None:
                 first = (cid, state)
             if state == "running" and running is None:

@@ -371,6 +371,9 @@ terminal:
 #   lifetime_seconds: 300
 #   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 #   docker_mount_cwd_to_workspace: true   # Explicit opt-in: mount your launch cwd into /workspace
+#   # For a remote daemon/DinD sidecar, set the path where THAT daemon sees
+#   # this profile's HERMES_HOME. Mount the same data volume there first.
+#   # docker_daemon_hermes_home: "/daemon/hermes-data"
 #   # Optional: run the container as your host user's uid:gid so files written
 #   # into bind-mounted dirs are owned by you, not root. Drops SETUID/SETGID
 #   # caps too since no gosu privilege drop is needed. Leave off if your

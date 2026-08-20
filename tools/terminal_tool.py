@@ -1599,12 +1599,14 @@ def _get_env_config() -> Dict[str, Any]:
         docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
         docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
         docker_shm_size = os.getenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
+        docker_daemon_hermes_home = os.getenv("TERMINAL_DOCKER_DAEMON_HERMES_HOME", "").strip()
     else:
         docker_forward_env = []
         docker_volumes = []
         docker_env = {}
         docker_extra_args = []
         docker_shm_size = "1g"
+        docker_daemon_hermes_home = ""
 
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, Vercel uses its documented workspace root, and everything
@@ -1683,6 +1685,7 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_network": os.getenv("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
         "docker_extra_args": docker_extra_args,
         "docker_shm_size": docker_shm_size,
+        "docker_daemon_hermes_home": docker_daemon_hermes_home,
         # Cross-process container reuse (issue #20561).  The docs claim
         # "ONE long-lived container shared across sessions" — this toggle
         # makes that real by probing for a labeled container at startup and
@@ -1747,6 +1750,7 @@ def _container_config_from_config(config: Dict[str, Any]) -> dict:
         "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
         "docker_extra_args": config.get("docker_extra_args", []),
         "docker_shm_size": config.get("docker_shm_size", "1g"),
+        "docker_daemon_hermes_home": config.get("docker_daemon_hermes_home", ""),
         "docker_network": config.get("docker_network", True),
         "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
         "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
@@ -1825,6 +1829,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                 else cc.get("docker_persist_across_processes", True)
             ),
             shm_size=cc.get("docker_shm_size", "1g"),
+            daemon_hermes_home=cc.get("docker_daemon_hermes_home", ""),
         )
         # Marker read by is_persistent_env(): a session-scoped container
         # survives BETWEEN turns (skip per-turn teardown) but is removed at

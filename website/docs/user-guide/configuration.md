@@ -240,6 +240,7 @@ terminal:
   backend: docker
   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
   docker_mount_cwd_to_workspace: false  # Mount launch dir into /workspace
+  docker_daemon_hermes_home: ""     # Daemon-visible HERMES_HOME for DinD/remote daemons
   docker_run_as_host_user: false   # See "Running container as host user" below
   docker_forward_env:              # Host env vars to forward into container
     - "GITHUB_TOKEN"
@@ -275,6 +276,29 @@ terminal:
 **`terminal.docker_extra_args`** (also overridable via `TERMINAL_DOCKER_EXTRA_ARGS='["--gpus=all"]'`) lets you pass arbitrary `docker run` flags that Hermes doesn't surface as first-class keys — `--gpus`, `--network`, `--add-host`, alternative `--security-opt` overrides, etc. Each entry must be a string; the list is appended last to the assembled `docker run` invocation so it can override Hermes' defaults if needed. Use sparingly — flags that conflict with the sandbox hardening (capability drops, `--user`, the workspace bind mount) will silently weaken isolation.
 
 **`terminal.docker_network`** (default `true`; env: `TERMINAL_DOCKER_NETWORK`) — set to `false` to run the sandbox container with `--network=none`, cutting off all network egress from agent commands. This applies to the execution container used by `terminal`, `execute_code`, and the file tools. Because containers persist across Hermes processes, flipping this to `false` while an older networked container exists will remove that container and start a fresh air-gapped one (a warning is logged); background processes running inside it are lost. Prefer this key over passing `--network=none` through `docker_extra_args`.
+
+**Remote daemon / DinD mounts:** Docker resolves every bind source in the daemon's filesystem namespace, not the Hermes process's namespace. When Hermes runs in one container and connects to a `docker:dind` sidecar (or another remote daemon), mount the same profile data volume into the daemon and set `terminal.docker_daemon_hermes_home` to that daemon-visible path. Hermes then rewrites only its auto-generated paths under `HERMES_HOME` (persistent home/workspace, credentials, skills, caches, and proxy files) before creating the sandbox. User-supplied `docker_volumes` and paths outside `HERMES_HOME` remain operator-owned and are not rewritten. This setting cannot copy data across filesystem boundaries; the volume must already be visible to the daemon.
+
+```yaml
+services:
+  hermes:
+    environment:
+      DOCKER_HOST: tcp://dind:2375
+    volumes:
+      - hermes-data:/opt/data
+  dind:
+    image: docker:dind
+    privileged: true
+    volumes:
+      - hermes-data:/daemon/hermes-data
+      - dind-data:/var/lib/docker
+```
+
+```yaml title="config.yaml"
+terminal:
+  backend: docker
+  docker_daemon_hermes_home: /daemon/hermes-data
+```
 
 **Requirements:** Docker Desktop or Docker Engine installed and running. Hermes probes `$PATH` plus common macOS install locations (`/usr/local/bin/docker`, `/opt/homebrew/bin/docker`, Docker Desktop app bundle). Podman is supported out of the box: set `HERMES_DOCKER_BINARY=podman` (or the full path) to force it when both are installed.
 
@@ -326,6 +350,7 @@ Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_U
 | `TERMINAL_DOCKER_VOLUMES` | `docker_volumes` | JSON array of `"host:container[:ro]"` strings |
 | `TERMINAL_DOCKER_EXTRA_ARGS` | `docker_extra_args` | JSON array |
 | `TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE` | `docker_mount_cwd_to_workspace` | `true` / `false` |
+| `TERMINAL_DOCKER_DAEMON_HERMES_HOME` | `docker_daemon_hermes_home` | Daemon-visible path for this profile's `HERMES_HOME` |
 | `TERMINAL_DOCKER_RUN_AS_HOST_USER` | `docker_run_as_host_user` | `true` / `false` |
 | `TERMINAL_DOCKER_NETWORK` | `docker_network` | `true` / `false` — default `true`; `false` = `--network=none` |
 | `TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES` | `docker_persist_across_processes` | `true` / `false` — default `true` |

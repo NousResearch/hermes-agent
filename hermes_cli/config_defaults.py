@@ -469,6 +469,9 @@ DEFAULT_CONFIG = {
         # lazily allocated so the higher ceiling costs nothing until used.
         # Set to "" (or "0") to omit the flag and use Docker's default.
         "docker_shm_size": "1g",
+        # Filesystem path where the Docker daemon sees this profile's
+        # HERMES_HOME. Empty preserves local-daemon behavior.
+        "docker_daemon_hermes_home": "",
         # Explicit opt-in: run the Docker container as the host user's uid:gid
         # (via `--user`).  When enabled, files written into bind-mounted dirs
         # (docker_volumes, the persistent workspace, or the auto-mounted cwd)

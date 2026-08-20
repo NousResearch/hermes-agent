@@ -845,15 +845,28 @@ class TestEnvironmentHints:
 
         def _fake_create_environment(*, env_type, **kwargs):
             created["env_type"] = env_type
+            created["container_config"] = kwargs.get("container_config")
             return _FakeEnv()
 
         # Patch the REAL factory in tools.terminal_tool — the probe imports it
         # locally, so the import itself must succeed (the bug was here).
         import tools.terminal_tool as _tt
+        monkeypatch.setattr(
+            _tt,
+            "_get_env_config",
+            lambda: {
+                "env_type": "docker",
+                "docker_image": "python:3.11",
+                "docker_daemon_hermes_home": "/daemon/hermes-data",
+                "cwd": "/workspace",
+                "timeout": 180,
+            },
+        )
         monkeypatch.setattr(_tt, "_create_environment", _fake_create_environment)
 
         line = _pb._probe_remote_backend("docker")
         assert created.get("env_type") == "docker"
+        assert created["container_config"]["docker_daemon_hermes_home"] == "/daemon/hermes-data"
         assert line is not None
         assert "Linux 6.8.0" in line
         assert "root" in line

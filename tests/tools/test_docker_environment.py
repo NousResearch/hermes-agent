@@ -55,6 +55,7 @@ def _make_dummy_env(**kwargs):
         extra_args=kwargs.get("extra_args", []),
         persist_across_processes=kwargs.get("persist_across_processes", True),
         shm_size=kwargs.get("shm_size", docker_env._DEFAULT_SHM_SIZE),
+        daemon_hermes_home=kwargs.get("daemon_hermes_home"),
     )
 
 
@@ -99,6 +100,85 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     assert run_calls, "docker run should have been called"
     run_args_str = " ".join(run_calls[0][0])
     assert f"{project_dir}:/workspace" in run_args_str
+
+
+def test_daemon_hermes_home_rewrites_only_automatic_profile_mounts(
+    monkeypatch, tmp_path,
+):
+    """Remote daemons receive their own view of Hermes-managed bind sources."""
+    hermes_home = tmp_path / "caller-home"
+    skills_dir = hermes_home / "skills"
+    cache_dir = hermes_home / "cache" / "documents"
+    credential = hermes_home / "service-token.json"
+    skills_dir.mkdir(parents=True)
+    cache_dir.mkdir(parents=True)
+    credential.write_text("token", encoding="utf-8")
+    external = tmp_path / "external"
+    external.mkdir()
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(hermes_home / "sandboxes"))
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "tools.credential_files.get_credential_file_mounts",
+        lambda: [{
+            "host_path": str(credential),
+            "container_path": "/root/.hermes/service-token.json",
+        }],
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_skills_directory_mount",
+        lambda: [
+            {"host_path": str(skills_dir), "container_path": "/root/.hermes/skills"},
+            {"host_path": str(external), "container_path": "/root/.hermes/external_skills/0"},
+        ],
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_cache_directory_mounts",
+        lambda: [{
+            "host_path": str(cache_dir),
+            "container_path": "/root/.hermes/cache/documents",
+        }],
+    )
+    monkeypatch.setattr(
+        docker_env,
+        "_egress_proxy_args_for_docker",
+        lambda: (["-v", f"{hermes_home}/proxy/ca.crt:/etc/hermes-ca.crt:ro"], {}, []),
+    )
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        persistent_filesystem=True,
+        volumes=[f"{external}:/operator-owned:ro"],
+        daemon_hermes_home="/daemon/hermes-data",
+    )
+
+    run_args = next(
+        call[0] for call in calls
+        if isinstance(call[0], list) and call[0][1:2] == ["run"]
+    )
+    mount_specs = {
+        run_args[index + 1]
+        for index, arg in enumerate(run_args[:-1])
+        if arg == "-v"
+    }
+
+    expected_profile_sources = {
+        "/daemon/hermes-data/sandboxes/docker/test-task/home:/root",
+        "/daemon/hermes-data/sandboxes/docker/test-task/workspace:/workspace",
+        "/daemon/hermes-data/service-token.json:/root/.hermes/service-token.json:ro",
+        "/daemon/hermes-data/skills:/root/.hermes/skills:ro",
+        "/daemon/hermes-data/cache/documents:/root/.hermes/cache/documents:ro",
+        "/daemon/hermes-data/proxy/ca.crt:/etc/hermes-ca.crt:ro",
+    }
+    assert expected_profile_sources <= mount_specs
+    assert f"{external}:/root/.hermes/external_skills/0:ro" in mount_specs
+    assert f"{external}:/operator-owned:ro" in mount_specs
+    assert not any(str(hermes_home) in spec for spec in mount_specs)
+    mount_root_label = docker_env.hashlib.sha256(
+        b"/daemon/hermes-data"
+    ).hexdigest()[:24]
+    assert f"hermes-mount-root={mount_root_label}" in run_args
 
 
 def test_non_persistent_cleanup_removes_container(monkeypatch):
@@ -605,6 +685,7 @@ def test_labels_attribute_populated_after_init(monkeypatch):
         "hermes-task-id": "abc",
         "hermes-profile": "default",
         "hermes-egress": "off",
+        "hermes-mount-root": "local",
     }
 
 
@@ -636,12 +717,11 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
             if sub == "ps":
                 if ps_state is None:
                     return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-                # 3-field format: ID, State, EgressLabel.  When egress_label
-                # is "off" the code parses all three fields; <no value> means
-                # the container has no egress label, which is acceptable.
+                # Local reuse probes include egress and mount-root labels.
+                # <no value> models a container created before either label.
                 return subprocess.CompletedProcess(
                     cmd, 0,
-                    stdout=f"reused-cid\t{ps_state}\t<no value>\n",
+                    stdout=f"reused-cid\t{ps_state}\t<no value>\t<no value>\n",
                     stderr="",
                 )
             if sub == "start":
@@ -683,6 +763,52 @@ def test_reuse_attaches_to_running_container_without_docker_run(monkeypatch):
     assert not start_invocations, (
         f"docker start should be skipped when container already running, got: {start_invocations}"
     )
+
+
+def test_local_reuse_accepts_container_created_before_mount_root_label(monkeypatch):
+    """The new mount identity must not churn legacy local-daemon containers."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = _mock_subprocess_run_with_reuse(monkeypatch, ps_state="running")
+
+    env = _make_dummy_env(task_id="legacy-local")
+
+    assert env._container_id == "reused-cid"
+    ps_args = next(
+        call[0] for call in calls
+        if isinstance(call[0], list) and call[0][1:2] == ["ps"]
+    )
+    assert not any(
+        str(arg).startswith("label=hermes-mount-root=") for arg in ps_args
+    )
+
+
+def test_local_reuse_rejects_container_with_remote_mount_root(monkeypatch):
+    """The legacy fallback must not attach to a remote-root container."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+            if cmd[1] == "ps":
+                return subprocess.CompletedProcess(
+                    cmd, 0,
+                    stdout="remote-cid\trunning\toff\tremote-root-hash\n",
+                    stderr="",
+                )
+            if cmd[1] == "run":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="fresh-cid\n", stderr="",
+                )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    env = _make_dummy_env(task_id="local-root")
+
+    assert env._container_id == "fresh-cid"
 
 
 def test_egress_enabled_does_not_reuse_pre_egress_container(monkeypatch):
@@ -847,8 +973,8 @@ def test_docker_run_timeout_cleans_up_orphaned_container(monkeypatch):
 
 def test_find_reusable_handles_empty_label_string(monkeypatch):
     """Docker CLI v29.5.3 returns an empty string (NOT ``<no value>``)
-    for absent labels.  The trailing tab produces ``cid\\trunning\\t\\n``;
-    we must not strip the trailing tab or the three-field parser drops the
+    for absent labels.  The trailing tabs preserve empty egress and mount-root
+    fields; we must not strip them or the parser drops the
     container.  Regression test for the egilewski review on #48073."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
@@ -861,7 +987,7 @@ def test_find_reusable_handles_empty_label_string(monkeypatch):
                 # Docker v29.5.3: absent label → empty string, trailing tab
                 return subprocess.CompletedProcess(
                     cmd, 0,
-                    stdout="safe-cid\trunning\t\n",
+                    stdout="safe-cid\trunning\t\t\n",
                     stderr="",
                 )
         return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")

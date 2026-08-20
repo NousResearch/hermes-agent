@@ -841,6 +841,7 @@ def _get_or_create_env(task_id: str):
                 "container_persistent": config.get("container_persistent", True),
                 "vercel_runtime": config.get("vercel_runtime", ""),
                 "docker_volumes": config.get("docker_volumes", []),
+                "docker_daemon_hermes_home": config.get("docker_daemon_hermes_home", ""),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                 "docker_network": config.get("docker_network", True),
             }

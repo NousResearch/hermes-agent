@@ -314,6 +314,119 @@ def test_user_assigned_line() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Opt-in routing (ported from qwibitai/nanoclaw#3181)
+
+def test_user_opted_in() -> None:
+    assert photon_auth.user_opted_in({"meta": {"opt_in": True}}) is True
+    # A row without the flag never routes, however it was created.
+    assert photon_auth.user_opted_in({"meta": {}}) is False
+    assert photon_auth.user_opted_in({"meta": None}) is False
+    assert photon_auth.user_opted_in({}) is False
+    assert photon_auth.user_opted_in(None) is False
+
+
+def test_find_routable_user_prefers_opted_in_duplicate() -> None:
+    users = [
+        {"id": "stale", "phoneNumber": "+15551234567", "meta": {}},
+        {"id": "live", "phoneNumber": "+1 (555) 123-4567", "meta": {"opt_in": True}},
+        {"id": "other", "phoneNumber": "+15559999999", "meta": {"opt_in": True}},
+    ]
+    row = photon_auth.find_routable_user(users, "+15551234567")
+    assert row is not None and row["id"] == "live"
+    # No opted-in duplicate → first matching row.
+    row = photon_auth.find_routable_user(users[:1], "+15551234567")
+    assert row is not None and row["id"] == "stale"
+    assert photon_auth.find_routable_user([], "+15551234567") is None
+
+
+def test_wait_for_opted_in_user_polls_until_flag_lands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"n": 0}
+
+    def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
+        calls["n"] += 1
+        meta = {"opt_in": True} if calls["n"] >= 3 else {}
+        return _FakeResponse(json_body={"succeed": True, "data": {"users": [{
+            "id": "u1", "phoneNumber": "+15551234567",
+            "assignedPhoneNumber": "+16282679185", "meta": meta,
+        }]}})
+
+    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
+    waits: list = []
+    user = photon_auth.wait_for_opted_in_user(
+        "proj", "secret", "+15551234567",
+        timeout_s=50, interval_s=5,
+        on_waiting=waits.append, sleep_fn=lambda _s: None,
+    )
+    assert user is not None and photon_auth.user_opted_in(user)
+    assert calls["n"] == 3
+    assert waits == [1, 2]  # progress hook fired for the two missed polls
+
+
+def test_wait_for_opted_in_user_rides_out_transient_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"n": 0}
+
+    def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient")
+        return _FakeResponse(json_body={"succeed": True, "data": {"users": [{
+            "id": "u1", "phoneNumber": "+15551234567", "meta": {"opt_in": True},
+        }]}})
+
+    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
+    user = photon_auth.wait_for_opted_in_user(
+        "proj", "secret", "+15551234567",
+        timeout_s=20, interval_s=5, sleep_fn=lambda _s: None,
+    )
+    assert user is not None
+
+
+def test_wait_for_opted_in_user_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
+        return _FakeResponse(json_body={"succeed": True, "data": {"users": [{
+            "id": "u1", "phoneNumber": "+15551234567", "meta": {},
+        }]}})
+
+    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
+    user = photon_auth.wait_for_opted_in_user(
+        "proj", "secret", "+15551234567",
+        timeout_s=15, interval_s=5, sleep_fn=lambda _s: None,
+    )
+    assert user is None
+
+
+def test_register_user_if_absent_reuses_opted_in_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second create would hand out a fresh row and drop a landed opt-in —
+    the reuse path must pick the OPTED-IN duplicate, not list order."""
+    posted = {"n": 0}
+
+    def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
+        return _FakeResponse(json_body={"succeed": True, "data": {"users": [
+            {"id": "stale", "phoneNumber": "+15551234567", "meta": {}},
+            {"id": "live", "phoneNumber": "+15551234567", "meta": {"opt_in": True}},
+        ]}})
+
+    def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
+        posted["n"] += 1
+        return _FakeResponse(json_body={"success": True, "user": {}})
+
+    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
+    monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
+    user, created = photon_auth.register_user_if_absent(
+        "proj", "secret", phone_number="+15551234567",
+    )
+    assert created is False
+    assert user["id"] == "live"
+    assert posted["n"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Lines (assigned number)
 
 def test_get_imessage_line_returns_existing(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -289,6 +289,57 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         # no dedicated entry in /lines, so this per-user field is the source of
         # truth — and we already have it from the (reused) user object.
         agent_number = photon_auth.user_assigned_line(user)
+        # Opt-in gate (ported from qwibitai/nanoclaw#3181): the delivery
+        # plane only routes numbers whose user row carries meta.opt_in, and
+        # that flag is set server-side when the human sends ONE message from
+        # their phone to the row's assigned line. A row without it looks
+        # registered everywhere but never sends or receives — outbound fails
+        # with "Target not allowed for this project". Client-supplied meta is
+        # ignored on create, so the API cannot produce the flag; the wizard
+        # names the line to text and polls until the opt-in lands. An
+        # already-opted-in row (re-run) short-circuits to success.
+        if photon_auth.user_opted_in(user):
+            print("  ✓ number is opted in — routing is live")
+        else:
+            _line_hint = agent_number or "the line Photon assigns to your number"
+            print()
+            print(color("      One manual step: opt in by texting your agent", Colors.CYAN, Colors.BOLD))
+            print("      Your number only enters iMessage routing after it has")
+            print("      messaged the line Photon assigned to it:")
+            print(f"        1. Open Messages on {phone}.")
+            print(f"        2. Text {_line_hint} — one message of any content is enough.")
+            if not sys.stdin.isatty():
+                # Non-interactive (scripted setup, CI): don't block on a poll
+                # nobody can answer. `hermes photon status` verifies later.
+                print(
+                    "      Non-interactive run — skipping the opt-in wait. "
+                    "Verify later with `hermes photon status`.",
+                )
+            else:
+                print("      Setup waits here (up to 5 minutes) and continues once the opt-in lands.")
+                print("      (Ctrl-C to skip — re-running setup resumes where it left off.)")
+
+                def _on_waiting(attempt: int) -> None:
+                    if attempt % 6 == 0:
+                        print("      ... still waiting for your message to land")
+
+                try:
+                    opted = photon_auth.wait_for_opted_in_user(
+                        spectrum_id, secret, phone, on_waiting=_on_waiting,
+                    )
+                except KeyboardInterrupt:
+                    opted = None
+                    print()
+                if opted is not None:
+                    print("  ✓ opt-in landed — routing is live")
+                    # The assignment can materialize with the opt-in.
+                    agent_number = photon_auth.user_assigned_line(opted) or agent_number
+                else:
+                    print(
+                        f"      ⚠ {phone} is not opted in yet. Send one message from "
+                        f"{phone} to {_line_hint}, then re-run "
+                        "`hermes photon setup` — it resumes where it left off.",
+                    )
         # Allowlist the operator and make their DM the cron home channel —
         # otherwise the gateway denies their own inbound messages
         # ("Unauthorized user") and has no default space for cron delivery.
@@ -390,7 +441,36 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_installed else '✗ run `hermes photon install-sidecar`'}")
     print(f"  telemetry           : {'on' if _telemetry_enabled() else 'off'} (`hermes photon telemetry on|off`)")
+    _print_routing_status()
     return 0
+
+
+def _print_routing_status() -> None:
+    """Live opt-in check: a registered number that never texted its assigned
+    line looks configured everywhere but never routes (Target not allowed).
+    Verify against the API instead of trusting local markers when possible.
+    (Ported from qwibitai/nanoclaw#3181.)"""
+    phone, assigned = photon_auth.load_user_numbers()
+    if not phone:
+        return
+    spectrum_id, project_secret = photon_auth.load_project_credentials()
+    if not spectrum_id or not project_secret:
+        return
+    try:
+        user = photon_auth.find_routable_user(
+            photon_auth.list_users(spectrum_id, project_secret), phone,
+        )
+    except Exception as e:
+        print(f"  routing             : ? could not verify ({e})")
+        return
+    if photon_auth.user_opted_in(user):
+        print("  routing             : ✓ opted in (verified live)")
+    else:
+        line = photon_auth.user_assigned_line(user) or assigned or "your assigned line"
+        print(
+            f"  routing             : ✗ not opted in — text {line} once from "
+            f"{phone}, then re-check"
+        )
 
 
 def _refresh_status_numbers() -> None:

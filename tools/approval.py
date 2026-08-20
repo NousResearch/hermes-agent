@@ -1130,6 +1130,84 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # Detection
 # =========================================================================
 
+_ANSI_C_ESCAPE_RE = re.compile(
+    r'\\(?:'
+    r'x([0-9A-Fa-f]{1,2})'
+    r'|([0-7]{1,3})'
+    r'|u([0-9A-Fa-f]{1,4})'
+    r'|U([0-9A-Fa-f]{1,8})'
+    r'|([abefnrtv\\\'"?])'
+    r')'
+)
+
+_ANSI_C_NAMED = {
+    'a': '\a', 'b': '\b', 'e': '\x1b', 'f': '\f', 'n': '\n',
+    'r': '\r', 't': '\t', 'v': '\v', '\\': '\\', "'": "'", '"': '"', '?': '?',
+}
+
+def _decode_ansi_c_escapes(body: str) -> str:
+    """Decode escape sequences inside one $'...' body for detection matching."""
+
+    def _sub(match) -> str:
+        hex_digits, octal_digits, u_digits, big_u_digits, named = match.groups()
+        try:
+            if hex_digits is not None:
+                return chr(int(hex_digits, 16))
+            if octal_digits is not None:
+                return chr(int(octal_digits, 8) & 0xFF)
+            if u_digits is not None:
+                return chr(int(u_digits, 16))
+            if big_u_digits is not None:
+                code_point = int(big_u_digits, 16)
+                return chr(code_point) if code_point <= 0x10FFFF else match.group(0)
+            if named is not None:
+                return _ANSI_C_NAMED[named]
+        except (ValueError, OverflowError):
+            return match.group(0)
+        return match.group(0)
+
+    return _ANSI_C_ESCAPE_RE.sub(_sub, body)
+
+def _scan_ansi_c_quote_end(text: str, start: int) -> int | None:
+    """Return index past the closing quote of a $'...' span, or None if open.
+
+    *start* must point at the ``$`` of ``$'``. Escaped characters (including
+    ``\\'``) do not terminate the span.
+    """
+    if not text.startswith("$'", start):
+        return None
+    i = start + 2
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2 if i + 1 < len(text) else 1
+            continue
+        if text[i] == "'":
+            return i + 1
+        i += 1
+    return None
+
+def _strip_backslash_escapes_for_detection(command: str) -> str:
+    """Strip ``\\X`` escapes while leaving complete ``$'...'`` spans intact."""
+    out: list[str] = []
+    i = 0
+    while i < len(command):
+        if command.startswith("$'", i):
+            end = _scan_ansi_c_quote_end(command, i)
+            if end is None:
+                out.append(command[i])
+                i += 1
+                continue
+            out.append(command[i:end])
+            i = end
+            continue
+        if command[i] == "\\" and i + 1 < len(command) and command[i + 1] != "\n":
+            out.append(command[i + 1])
+            i += 2
+            continue
+        out.append(command[i])
+        i += 1
+    return "".join(out)
+
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command string before dangerous-pattern matching.
 
@@ -1173,7 +1251,9 @@ def _normalize_command_for_detection(command: str) -> str:
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
     # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
-    command = re.sub(r'\\([^\n])', r'\1', command)
+    # Complete $'...' spans are left intact so command-word ANSI-C decode can
+    # still see \xNN / \t (a blind strip would turn $'\x72\x6d' into $'x72x6d').
+    command = _strip_backslash_escapes_for_detection(command)
     # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
     command = re.sub(r"''|\"\"", '', command)
     # Collapse $IFS / ${IFS} word-separator expansions to a literal space.
@@ -1875,6 +1955,13 @@ def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
                 quote = None
             i += 1
             continue
+        if command.startswith("$'", i):
+            end = _scan_ansi_c_quote_end(command, i)
+            if end is None:
+                i += 1
+            else:
+                i = end
+            continue
         if ch in ("'", '"'):
             quote = ch
             i += 1
@@ -1998,6 +2085,15 @@ def _strip_shell_word_syntax(word: str) -> str:
             chars.append(ch)
             i += 1
             continue
+        if word.startswith("$'", i):
+            end = _scan_ansi_c_quote_end(word, i)
+            if end is None:
+                chars.append(ch)
+                i += 1
+                continue
+            chars.append(_decode_ansi_c_escapes(word[i + 2:end - 1]))
+            i = end
+            continue
         if ch in ("'", '"'):
             quote = ch
             i += 1
@@ -2015,8 +2111,10 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
     """Approximate how shell syntax can spell a command word.
 
     This is intentionally narrow and non-executing: it only collapses shell
-    quoting/escaping plus simple literal command substitutions that appear in
-    the command word itself.
+    quoting/escaping (including bash/zsh ANSI-C ``$'...'``) plus simple
+    literal command substitutions that appear in the command word itself.
+    Decoded ANSI-C whitespace stays inside the word — callers must not
+    re-tokenize it as argument separators.
     """
     deobfuscated = word
     for _ in range(2):
@@ -2026,6 +2124,90 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
         if deobfuscated == previous:
             break
     return deobfuscated
+
+def _expand_ansi_c_quotes_in_word(word: str) -> str:
+    """Expand unquoted ``$'...'`` spans in one word; leave other syntax intact.
+
+    All-argv hardline variants need argument tokens like ``$'\\x2f'`` decoded,
+    but must not strip protective quotes (``"(reboot)"``) or expand
+    ``$(...)`` / ``${...}`` in non-command words (which would promote
+    ``echo $(echo rm)`` into a fake wipe).
+    """
+    chars: list[str] = []
+    quote: str | None = None
+    i = 0
+    changed = False
+    while i < len(word):
+        ch = word[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(word):
+                chars.append(word[i:i + 2])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            chars.append(ch)
+            i += 1
+            continue
+        if word.startswith("$'", i):
+            end = _scan_ansi_c_quote_end(word, i)
+            if end is None:
+                chars.append(ch)
+                i += 1
+                continue
+            chars.append(_decode_ansi_c_escapes(word[i + 2:end - 1]))
+            i = end
+            changed = True
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            chars.append(ch)
+            i += 1
+            continue
+        chars.append(ch)
+        i += 1
+    return "".join(chars) if changed else word
+
+def _deobfuscate_shell_words_preserving_boundaries(command: str) -> str:
+    """Expand ANSI-C quotes in every shell word without re-tokenizing.
+
+    Bash expands ANSI-C quotes in *argument* words too, so a root wipe spelled
+    ``$'\\x72\\x6d' -rf $'\\x2f'`` reaches the shell as ``rm -rf /``. Hardline
+    matching must see those decoded argument tokens. Only ``$'...'`` is
+    expanded here — full word deobfuscation (quote stripping, substitutions)
+    stays scoped to command-position words. Words whose expansion introduces
+    IFS whitespace keep their original spelling so embedded tabs or spaces
+    (``rm$'\\t'-rf$'\\t'/``) cannot become argument separators.
+    """
+    parts: list[str] = []
+    pos = 0
+    changed = False
+    while pos < len(command):
+        word_start, word_end, word = _read_shell_word(command, pos)
+        if word_start == word_end:
+            if pos >= len(command):
+                break
+            parts.append(command[pos])
+            pos += 1
+            continue
+        if word_start > pos:
+            parts.append(command[pos:word_start])
+        expanded = _expand_ansi_c_quotes_in_word(word)
+        if (
+            expanded
+            and expanded != word
+            and not any(ch.isspace() for ch in expanded)
+        ):
+            parts.append(expanded)
+            changed = True
+        else:
+            parts.append(word)
+        pos = word_end
+    if not changed:
+        return command
+    if pos < len(command):
+        parts.append(command[pos:])
+    return "".join(parts)
 
 
 def _iter_shell_command_starts(command: str):
@@ -2062,6 +2244,15 @@ def _iter_shell_command_starts(command: str):
                     i = nested_end if nested_end is not None else end
                     continue
                 i += 1
+                continue
+            # ANSI-C quotes are a distinct quoting form; skip the whole span so
+            # decoded/quoted content cannot invent command starts.
+            if command.startswith("$'", i):
+                ansi_end = _scan_ansi_c_quote_end(command, i)
+                if ansi_end is None:
+                    i += 1
+                else:
+                    i = ansi_end
                 continue
             if ch in ("'", '"'):
                 quote = ch
@@ -2283,12 +2474,48 @@ def _command_detection_variants(command: str):
     if marked != grep_safe and marked not in seen:
         seen.add(marked)
         yield marked
+    # Expand ANSI-C quotes across every argv word (executable AND destructive
+    # arguments/flags) while preserving word boundaries. Command-word-only
+    # decode left `$'\x72\x6d' -rf $'\x2f'` unmatched because the root target
+    # stayed encoded. Intentionally ANSI-C-only: stripping ordinary quotes or
+    # expanding substitutions in argument words false-positives quoted prose
+    # (`echo "(reboot)"`) and promotes `echo $(echo rm)`. Skip words whose
+    # expansion introduces IFS whitespace so embedded tabs/spaces never become
+    # separators.
+    #
+    # Mark command starts on the *pre-decode* spelling, then expand ANSI-C.
+    # Decoding `$'(reboot)'` into `(reboot)` and marking afterward invents a
+    # subshell bash never parsed (`echo $'(reboot)'` only prints text) and
+    # hardline-blocks it. Real `( $'\x72\x6d' -rf / )` still works: mark sees
+    # the opener first, then decode turns the payload into `rm -rf /`.
+    for base in (grep_safe, normalized):
+        fully_decoded = _deobfuscate_shell_words_preserving_boundaries(base)
+        # ANSI-C decoding can reveal an absolute user/Hermes home path only
+        # after the normalization-time folds have already run. Fold again so
+        # a fully encoded home wipe reaches the canonical ~/ hardline rules.
+        fully_decoded = _rewrite_resolved_hermes_home(fully_decoded)
+        fully_decoded = _rewrite_resolved_user_home(fully_decoded)
+        if fully_decoded != base and fully_decoded not in seen:
+            seen.add(fully_decoded)
+            yield fully_decoded
+        marked_base = _mark_command_starts(base)
+        if marked_base == base:
+            continue
+        marked_decoded = _deobfuscate_shell_words_preserving_boundaries(marked_base)
+        if marked_decoded == marked_base or marked_decoded in seen:
+            continue
+        seen.add(marked_decoded)
+        yield marked_decoded
     # Shell quoting/escaping can spell a dangerous executable name in pieces
-    # (for example r\m or r''m). Keep that deobfuscation scoped to command
-    # words so similarly shaped arguments do not become false positives.
+    # (for example r\m, r''m, or $'\x72\x6d'). Keep that deobfuscation scoped
+    # to command words so similarly shaped arguments do not become false
+    # positives. ANSI-C can embed IFS whitespace inside one word — never splice
+    # those decoded tabs/spaces back into the flat string as token separators.
     for word_start, word_end, word in _iter_shell_command_word_spans(normalized):
         deobfuscated = _deobfuscate_shell_word_for_detection(word)
         if not deobfuscated or deobfuscated == word:
+            continue
+        if any(ch.isspace() for ch in deobfuscated):
             continue
         variant = normalized[:word_start] + deobfuscated + normalized[word_end:]
         if variant in seen:

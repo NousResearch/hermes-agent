@@ -4684,6 +4684,29 @@ def run_conversation(
                 )
 
                 if (
+                    classified.reason == FailoverReason.llama_cpp_transient
+                    and _retry.llama_cpp_transient_retries < 10
+                ):
+                    _retry.llama_cpp_transient_retries += 1
+                    _free_n = _retry.llama_cpp_transient_retries
+                    # The failed attempt's stream-error cleanup already
+                    # closed the cached wire client, so the next attempt
+                    # opens a fresh TCP connection onto the healthy server.
+                    agent._buffer_vprint(
+                        f"llama.cpp transient 400 (free retry {_free_n}/10) — "
+                        "sleeping 1.5s"
+                    )
+                    logger.warning(
+                        "%sllama.cpp transient 400 (free retry %d/10) — "
+                        "recycling dead pooled connection",
+                        agent.log_prefix, _free_n,
+                    )
+                    time.sleep(1.5)
+                    if retry_count >= max_retries:
+                        retry_count = max_retries - 1
+                    continue
+
+                if (
                     classified.reason == FailoverReason.billing
                     and _is_nous_inference_route(
                         getattr(agent, "provider", "") or "",

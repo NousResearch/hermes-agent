@@ -30,6 +30,7 @@ EXPECTED_FIELDS = {
     "llama_cpp_grammar_retry_attempted",
     "primary_recovery_attempted",
     "has_retried_429",
+    "llama_cpp_transient_retries",
     "auth_failover_attempted",
     "restart_with_compressed_messages",
     "restart_with_length_continuation",

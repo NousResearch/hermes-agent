@@ -576,6 +576,34 @@ async def _standalone_send(
         return {"error": f"ntfy standalone send failed: {e}"}
 
 
+def _apply_yaml_config(yaml_cfg: dict, ntfy_cfg: dict) -> Optional[dict]:
+    """Bridge ``config.yaml`` ``platforms.ntfy.extra`` into the ``NTFY_*``
+    env variables the adapter reads, so a config.yaml-only setup (no ``NTFY_*``
+    env vars) passes ``check_requirements`` and connects at gateway startup.
+
+    Implements the ``apply_yaml_config_fn`` contract (see
+    ``gateway.platform_registry.PlatformEntry``).  Mirrors the
+    Slack/Telegram/Buzz pattern.  Explicit environment variables win over
+    YAML — every assignment is guarded by ``not os.getenv(...)`` so an env
+    override survives a config.yaml update.  Token/secret material
+    (``token``) is never bridged from config.yaml into the environment.
+    """
+    if not isinstance(ntfy_cfg, dict):
+        return None
+    extra = ntfy_cfg.get("extra", ntfy_cfg) or {}
+    if not isinstance(extra, dict):
+        return None
+    for src, env in (
+        ("topic", "NTFY_TOPIC"),
+        ("server", "NTFY_SERVER_URL"),
+        ("publish_topic", "NTFY_PUBLISH_TOPIC"),
+    ):
+        val = extra.get(src)
+        if val is not None and str(val).strip() and not os.getenv(env):
+            os.environ[env] = str(val).strip()
+    return None
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system at startup."""
     ctx.register_platform(
@@ -591,6 +619,11 @@ def register(ctx) -> None:
         # env-only setups show up in `hermes gateway status` without
         # instantiating the HTTP client.
         env_enablement_fn=_env_enablement,
+        # Bridge config.yaml platforms.ntfy.extra -> NTFY_* env vars so a
+        # config.yaml-only setup passes check_fn at gateway startup (secret
+        # token stays out of the bridge). Mirrors the Slack/Telegram/Buzz
+        # pattern; env vars win over YAML.
+        apply_yaml_config_fn=_apply_yaml_config,
         # Cron home-channel delivery support — `deliver=ntfy` cron jobs
         # route to NTFY_HOME_CHANNEL when set.
         cron_deliver_env_var="NTFY_HOME_CHANNEL",

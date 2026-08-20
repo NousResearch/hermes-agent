@@ -15,6 +15,7 @@ the ``platform_registry``.
 from __future__ import annotations
 
 import asyncio
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -489,5 +490,68 @@ class TestTruncateHelper:
 
     def test_short_message_passes_through(self):
         assert _ntfy._truncate_body("hi", context="test") == b"hi"
+
+
+# ---------------------------------------------------------------------------
+# 13. _apply_yaml_config — config.yaml bridge (apply_yaml_config_fn contract)
+# ---------------------------------------------------------------------------
+
+
+class TestApplyYamlConfig:
+    """``_apply_yaml_config`` bridges ``platforms.ntfy.extra`` into ``NTFY_*``
+    env vars (the ``apply_yaml_config_fn`` contract), so a config.yaml-only
+    setup passes ``check_requirements`` at gateway startup. Explicit env vars
+    win over YAML, and token/secret material is never bridged."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        for var in (
+            "NTFY_TOPIC",
+            "NTFY_SERVER_URL",
+            "NTFY_PUBLISH_TOPIC",
+            "NTFY_TOKEN",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_yaml_topic_satisfies_check_requirements(self, monkeypatch):
+        # No NTFY_TOPIC in env; config carries platforms.ntfy.extra.topic.
+        monkeypatch.setattr(_ntfy, "HTTPX_AVAILABLE", True)
+        assert check_requirements() is False  # env-only gate fails without env
+        _ntfy._apply_yaml_config({}, {"extra": {"topic": "yaml-only-topic"}})
+        assert os.getenv("NTFY_TOPIC") == "yaml-only-topic"
+        assert check_requirements() is True
+
+    def test_env_precedence_over_yaml(self, monkeypatch):
+        monkeypatch.setenv("NTFY_TOPIC", "env-topic")
+        _ntfy._apply_yaml_config({}, {"extra": {"topic": "yaml-topic"}})
+        assert os.getenv("NTFY_TOPIC") == "env-topic"
+
+    def test_server_and_publish_topic_bridge(self):
+        _ntfy._apply_yaml_config(
+            {}, {"extra": {"server": "https://ntfy.example", "publish_topic": "pub"}}
+        )
+        assert os.getenv("NTFY_SERVER_URL") == "https://ntfy.example"
+        assert os.getenv("NTFY_PUBLISH_TOPIC") == "pub"
+
+    def test_token_never_bridged(self):
+        _ntfy._apply_yaml_config({}, {"extra": {"topic": "t", "token": "secret-token"}})
+        assert os.getenv("NTFY_TOPIC") == "t"
+        assert "NTFY_TOKEN" not in os.environ
+
+    def test_malformed_extra_handled_safely(self):
+        assert _ntfy._apply_yaml_config({}, {"extra": "not-a-dict"}) is None
+        assert _ntfy._apply_yaml_config({}, {"extra": None}) is None
+        assert _ntfy._apply_yaml_config({}, None) is None
+        assert os.getenv("NTFY_TOPIC") is None
+
+    def test_register_exposes_bridge(self):
+        captured = {}
+
+        class _Ctx:
+            def register_platform(self, **kwargs):
+                captured.update(kwargs)
+
+        register(_Ctx())
+        assert captured.get("apply_yaml_config_fn") is _ntfy._apply_yaml_config
 
 

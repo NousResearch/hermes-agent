@@ -91,9 +91,9 @@ def test_acquire_lease_without_pending_refresh_does_not_double_select():
     passes = {"n": 0}
     original = pool._acquire_lease_under_lock
 
-    def counting(credential_id):
+    def counting(credential_id, *, entry_filter=None):
         passes["n"] += 1
-        return original(credential_id)
+        return original(credential_id, entry_filter=entry_filter)
 
     pool._acquire_lease_under_lock = counting
 
@@ -113,3 +113,19 @@ def test_acquire_lease_still_none_when_refresh_does_not_help():
     assert pool.acquire_lease() is None
     assert state["refresh_calls"] == 1, "retry must not refresh repeatedly"
     assert pool._active_leases == {}
+
+
+def test_acquire_lease_preserves_filter_after_deferred_refresh():
+    """Post-refresh re-selection must not lease an entry excluded by the caller."""
+    wrong = _entry("wrong")
+    right = _entry("right")
+    pool = _bare_pool([wrong, right])
+    state = _wire_deferred_refresh(pool)
+
+    lease = pool.acquire_lease(entry_filter=lambda entry: entry.id == "right")
+
+    assert state["refresh_calls"] == 1
+    assert lease == "right"
+    assert pool.leased_entry(
+        "right", entry_filter=lambda entry: entry.id == "right"
+    ) is right

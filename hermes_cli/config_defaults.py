@@ -1903,6 +1903,10 @@ DEFAULT_CONFIG = {
         # extras" without silently stripping MCP tools the parent already has.
         # Set to false for strict intersection.
         "inherit_mcp_toolsets": True,
+        # Parent fallback providers are inherited by default. Set false when
+        # delegated work must remain pinned to its primary provider/endpoint
+        # and should fail instead of switching to a fallback backend.
+        "inherit_fallback_providers": True,
         "max_iterations": 250,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         # Subagent summaries return to the parent's context verbatim. A batch

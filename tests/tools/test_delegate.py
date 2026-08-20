@@ -17,6 +17,7 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch
 
+from agent.credential_pool import CredentialPool, PooledCredential
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
@@ -1005,6 +1006,23 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         result = _resolve_child_credential_pool("openrouter", parent)
         self.assertIs(result, mock_pool)
 
+    def test_same_provider_different_endpoint_refuses_parent_pool(self):
+        """An Azure child must not lease an api.openai.com parent pool."""
+        parent = _make_mock_parent()
+        parent.provider = "openai-api"
+        parent.base_url = "https://azure.example.com/openai/v1"
+        parent_pool = MagicMock()
+        parent_pool.provider = "openai-api"
+        parent_entry = MagicMock(runtime_base_url="https://api.openai.com/v1")
+        parent_pool.entries.return_value = [parent_entry]
+        parent._credential_pool = parent_pool
+
+        with patch("agent.credential_pool.load_pool", return_value=None):
+            result = _resolve_child_credential_pool(
+                "openai-api", parent, parent.base_url
+            )
+        self.assertIsNone(result)
+
     # --- Custom-endpoint identity resolution (issue #7833) ---
 
 
@@ -1038,6 +1056,78 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
 
 class TestChildCredentialLeasing(unittest.TestCase):
+    def test_credential_pool_lease_filter_cannot_select_wrong_endpoint(self):
+        """Endpoint filtering wins over normal least-leased pool selection."""
+        wrong = PooledCredential(
+            provider="openai-api", id="wrong", label="wrong", auth_type="api_key",
+            priority=0, source="manual", access_token="wrong",
+            base_url="https://api.openai.com/v1",
+        )
+        right = PooledCredential(
+            provider="openai-api", id="right", label="right", auth_type="api_key",
+            priority=1, source="manual", access_token="right",
+            base_url="https://azure.example.com/openai/v1",
+        )
+        pool = CredentialPool("openai-api", [wrong, right])
+
+        leased = pool.acquire_lease(
+            entry_filter=lambda entry: entry.runtime_base_url
+            == "https://azure.example.com/openai/v1"
+        )
+
+        self.assertEqual(leased, "right")
+        self.assertEqual(pool.current().id, "right")
+
+    def test_run_single_child_binds_exact_lease_id_when_cursor_advances(self):
+        """A concurrent rotation must not change the credential being bound."""
+        from tools.delegate_tool import _run_single_child
+
+        wrong = PooledCredential(
+            provider="openai-api", id="wrong", label="wrong", auth_type="api_key",
+            priority=0, source="manual", access_token="wrong",
+            base_url="https://api.openai.com/v1",
+        )
+        right = PooledCredential(
+            provider="openai-api", id="right", label="right", auth_type="api_key",
+            priority=1, source="manual", access_token="right",
+            base_url="https://azure.example.com/openai/v1",
+        )
+        pool = CredentialPool("openai-api", [wrong, right])
+        original_leased_entry = pool.leased_entry
+
+        def advance_cursor_before_binding(credential_id, *, entry_filter=None):
+            pool.acquire_lease("wrong")
+            return original_leased_entry(
+                credential_id,
+                entry_filter=entry_filter,
+            )
+
+        pool.leased_entry = advance_cursor_before_binding
+        child = MagicMock(
+            provider="openai-api",
+            base_url="https://azure.example.com/openai/v1",
+        )
+        child._credential_pool = pool
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Bind exact credential",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertEqual(result["status"], "completed")
+        child._swap_credential.assert_called_once_with(right)
+        self.assertIs(pool.current(), wrong)
+        pool.release_lease("wrong")
+
     def test_run_single_child_acquires_and_releases_lease(self):
         from tools.delegate_tool import _run_single_child
 
@@ -1828,7 +1918,7 @@ class TestSubagentApprovalCallback(unittest.TestCase):
 
 
 class TestFallbackModelInheritance(unittest.TestCase):
-    """Subagents must inherit the parent's fallback provider chain."""
+    """Subagent fallback inheritance follows delegation policy."""
 
     def test_child_inherits_fallback_chain(self):
         """_build_child_agent passes parent._fallback_chain as fallback_model."""
@@ -1851,6 +1941,58 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertEqual(kwargs["fallback_model"], [fallback_entry])
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={"inherit_fallback_providers": False},
+    )
+    def test_child_can_disable_parent_fallback_chain(self, _mock_cfg):
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [
+            {"provider": "openai-codex", "model": "gpt-5.6-sol"}
+        ]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="stay on the delegated primary",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIsNone(kwargs["fallback_model"])
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={"inherit_fallback_providers": "off"},
+    )
+    def test_child_parses_string_false_for_fallback_inheritance(self, _mock_cfg):
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [
+            {"provider": "openai-codex", "model": "gpt-5.6-sol"}
+        ]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="stay on the delegated primary",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIsNone(kwargs["fallback_model"])
 
     def test_child_gets_no_fallback_when_parent_chain_empty(self):
         """When parent._fallback_chain is empty, fallback_model is None."""

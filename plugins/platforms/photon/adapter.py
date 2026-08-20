@@ -820,6 +820,7 @@ class PhotonAdapter(BasePlatformAdapter):
     """
 
     MAX_MESSAGE_LENGTH = _MAX_MESSAGE_LENGTH
+    splits_long_messages = True
     # Photon (iMessage) has no real edit API for already-sent messages.
     # Mark it explicitly so streaming suppresses the visible cursor instead
     # of leaving a stale tofu square (▉) behind when edit attempts fail.
@@ -2088,7 +2089,27 @@ class PhotonAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self._sidecar_send(chat_id, self.format_message(content))
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        if len(chunks) == 1:
+            return await self._sidecar_send(chat_id, chunks[0])
+
+        sent_message_ids: list[str] = []
+        last_result: Optional[SendResult] = None
+        for chunk in chunks:
+            result = await self._sidecar_send(chat_id, chunk)
+            if not result.success:
+                return result
+            last_result = result
+            if result.message_id:
+                sent_message_ids.append(str(result.message_id))
+
+        return SendResult(
+            success=True,
+            message_id=last_result.message_id if last_result else None,
+            continuation_message_ids=tuple(sent_message_ids[:-1]),
+            raw_response={"message_ids": sent_message_ids},
+        )
 
     # -- Clarify (native iMessage poll) ------------------------------------
     #

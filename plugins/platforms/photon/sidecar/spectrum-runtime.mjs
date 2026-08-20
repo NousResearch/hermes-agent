@@ -1,3 +1,5 @@
+import { patchSpectrumLocalSpaces } from "./patch-spectrum-local-spaces.mjs";
+
 const defaultImporter = (specifier) => import(specifier);
 
 export async function createSpectrumRuntime({
@@ -6,7 +8,9 @@ export async function createSpectrumRuntime({
   projectSecret,
   telemetry,
   importer = defaultImporter,
+  patchLocalSpaces = patchSpectrumLocalSpaces,
 }) {
+  if (localMode) patchLocalSpaces();
   const core = await importer("@spectrum-ts/core");
   const providerModule = await importer(
     localMode ? "@spectrum-ts/imessage-local" : "spectrum-ts/providers/imessage"

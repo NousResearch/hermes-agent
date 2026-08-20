@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { DEFAULT_LOCALE, isLocale, isSupportedLocaleValue, localeConfigValue, normalizeLocale } from './languages'
+import {
+  DEFAULT_LOCALE,
+  isLocale,
+  isSupportedLocaleValue,
+  LOCALE_OPTIONS,
+  localeConfigValue,
+  normalizeLocale
+} from './languages'
 
 describe('desktop i18n languages', () => {
   it('normalizes supported locale aliases', () => {
@@ -18,6 +25,10 @@ describe('desktop i18n languages', () => {
     expect(normalizeLocale('ar')).toBe('ar')
     expect(normalizeLocale('AR-SA')).toBe('ar')
     expect(normalizeLocale(' ar_eg ')).toBe('ar')
+    expect(normalizeLocale('et')).toBe('et')
+    expect(normalizeLocale('ET-EE')).toBe('et')
+    expect(normalizeLocale(' estonian ')).toBe('et')
+    expect(normalizeLocale('eesti')).toBe('et')
   })
 
   it('falls back to English for empty or unsupported values', () => {
@@ -30,12 +41,14 @@ describe('desktop i18n languages', () => {
     expect(isSupportedLocaleValue('zh-CN')).toBe(true)
     expect(isSupportedLocaleValue('zh-TW')).toBe(true)
     expect(isSupportedLocaleValue('ja-JP')).toBe(true)
+    expect(isSupportedLocaleValue('et-ee')).toBe(true)
     expect(isSupportedLocaleValue('de')).toBe(false)
     expect(isLocale('zh-CN')).toBe(false)
     expect(isLocale('zh')).toBe(true)
     expect(isLocale('zh-hant')).toBe(true)
     expect(isLocale('ja')).toBe(true)
     expect(isLocale('ar')).toBe(true)
+    expect(isLocale('et')).toBe(true)
   })
 
   it('returns the persisted config value for supported locales', () => {
@@ -44,5 +57,10 @@ describe('desktop i18n languages', () => {
     expect(localeConfigValue('zh-hant')).toBe('zh-hant')
     expect(localeConfigValue('ja')).toBe('ja')
     expect(localeConfigValue('ar')).toBe('ar')
+    expect(localeConfigValue('et')).toBe('et')
+  })
+
+  it('includes Estonian in LOCALE_OPTIONS', () => {
+    expect(LOCALE_OPTIONS.some(locale => locale.id === 'et')).toBe(true)
   })
 })

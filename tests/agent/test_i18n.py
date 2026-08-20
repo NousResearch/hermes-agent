@@ -75,6 +75,21 @@ def test_catalog_placeholders_match_english(lang: str):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("alias", "expected"),
+    [
+        ("et", "et"),
+        ("et-ee", "et"),
+        ("ET-EE", "et"),
+        ("estonian", "et"),
+        ("eesti", "et"),
+    ],
+)
+def test_estonian_aliases_normalize(alias: str, expected: str):
+    """`et-ee` / `estonian` / `eesti` should all resolve to the `et` catalog."""
+    assert i18n._normalize_lang(alias) == expected
+
+
 
 
 

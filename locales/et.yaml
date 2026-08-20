@@ -1,0 +1,444 @@
+# Hermes staatiliste sõnumite kataloog -- Eesti keel
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  # CLI approval prompt -- shown when a dangerous command needs user review.
+  dangerous_header: "⚠️  OHTLIK KÄSK: {description}"
+  choose_long:     "      [o]üks kord  |  [s]seansiks  |  [a]alati  |  [d]keeldu"
+  choose_short:    "      [o]üks kord  |  [s]seansiks  |  [d]keeldu"
+  prompt_long:     "      Valik [o/s/a/D]: "
+  prompt_short:    "      Valik [o/s/D]: "
+  choose_smart_deny: "      [o]üks kord  |  [d]keeldu"
+  prompt_smart_deny: "      Valik [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
+  timeout:         "      ⏱ Ajalõpp - käsust keeldutakse"
+  allowed_once:    "      ✓ Lubatud ühekordselt"
+  allowed_session: "      ✓ Lubatud selle seansi jaoks"
+  allowed_always:  "      ✓ Lisatud püsivasse lubatud nimekirja"
+  denied:          "      ✗ Keeldutud"
+  cancelled:       "      ✗ Tühistatud"
+  blocklist_message: "See käsk on tingimusteta keelatud nimekirjas ja seda ei saa kinnitada."
+
+gateway:
+  # Messenger replies to slash commands and implicit state changes.
+  approval_expired: "⚠️ Kinnitamise aeg aegus (agent ei oota enam). Palu agendil uuesti proovida."
+  draining:         "⏳ Ootan {count} aktiivse agendi lõpetamist enne taaskäivitust..."
+  goal_cleared:     "✓ Eesmärk tühistatud."
+  no_active_goal:   "Aktiivne eesmärk puudub."
+  config_read_failed: "⚠️ Faili config.yaml ei õnnestunud lugeda: {error}"
+  config_save_failed: "⚠️ Seadistust ei õnnestunud salvestada: {error}"
+
+  # /model command output -- shown after a model switch or when listing models.
+  # Provider names, model IDs, capability strings, and cost figures are NOT
+  # translated -- they're identifiers/values, not prose.  Only the labels
+  # ("Provider:", "Context:", etc.) and the help/footer lines are localized.
+  model:
+    error_prefix:           "Viga: {error}"
+    switched:               "Mudel vahetatud: `{model}`"
+    provider_label:         "Pakkuja: {provider}"
+    context_label:          "Kontekst: {tokens} tokenit"
+    max_output_label:       "Maks. väljund: {tokens} tokenit"
+    cost_label:             "Hind: {cost}"
+    capabilities_label:     "Võimalused: {capabilities}"
+    prompt_caching_enabled: "Vihjete puhverdamine: lubatud"
+    warning_prefix:         "Hoiatus: {warning}"
+    saved_global:           "Salvestatud faili config.yaml (`--global`)"
+    session_only_hint:      "_(ainult seansiks — lisa `--global`, et salvestada püsivalt)_"
+    current_label:          "Praegune: `{model}` pakkujal {provider}"
+    current_tag:            " (praegune)"
+    more_models_suffix:     " (+{count} veel)"
+    usage_switch_model:     "`/model <nimi>` — vaheta mudelit"
+    usage_switch_provider:  "`/model <nimi> --provider <slug>` — vaheta pakkujat"
+    usage_persist:          "`/model <nimi> --global` — salvesta püsivalt"
+
+  agents:
+    header:                "🤖 **Aktiivsed agendid ja ülesanded**"
+    active_agents:         "**Aktiivsed agendid:** {count}"
+    this_chat:             " · see vestlus"
+    more:                  "... ja veel {count}"
+    running_processes:     "**Käivad taustaprotsessid:** {count}"
+    async_jobs:            "**Gateway asünkroonsed tööd:** {count}"
+    background_delegations: "**Taustadelegeeringud:** {count}"
+    none:                  "Aktiivseid agente ega käimasolevaid ülesandeid pole."
+    state_starting:        "käivitub"
+    state_running:         "töötab"
+
+  approve:
+    no_pending:            "Kinnitamist ootavat käsku pole."
+    once_singular:         "✅ Käsk kinnitatud. Agent jätkab..."
+    once_plural:           "✅ Käsud kinnitatud ({count} käsku). Agent jätkab..."
+    session_singular:      "✅ Käsk kinnitatud (muster kinnitatud selle seansi jaoks). Agent jätkab..."
+    session_plural:        "✅ Käsud kinnitatud (muster kinnitatud selle seansi jaoks) ({count} käsku). Agent jätkab..."
+    always_singular:       "✅ Käsk kinnitatud (muster kinnitatud püsivalt). Agent jätkab..."
+    always_plural:         "✅ Käsud kinnitatud (muster kinnitatud püsivalt) ({count} käsku). Agent jätkab..."
+
+  background:
+    usage:                 "Kasutus: /background <vihje>\nNäide: /background Tee kokkuvõte tänastest populaarseimatest HN lugudest\n\nKäivitab vihje eraldi seansis. Võid vestlust jätkata — tulemus ilmub siia, kui valmis."
+    started:               "🔄 Taustaülesanne käivitatud: \"{preview}\"\nÜlesande ID: {task_id}\nVõid vestlust jätkata — tulemused ilmuvad, kui valmis."
+
+  branch:
+    db_unavailable:        "Seansiandmebaas pole saadaval."
+    no_conversation:       "Harustamiseks pole vestlust — saada kõigepealt sõnum."
+    create_failed:         "Haru loomine ebaõnnestus: {error}"
+    switch_failed:         "Haru loodi, kuid sellele lülitumine ebaõnnestus."
+    branched_one:          "⑂ Harustatud **{title}** ({count} sõnum kopeeritud)\nAlgne: `{parent}`\nHaru: `{new}`\nKasuta `/resume`, et lülituda tagasi algse juurde."
+    branched_many:         "⑂ Harustatud **{title}** ({count} sõnumit kopeeritud)\nAlgne: `{parent}`\nHaru: `{new}`\nKasuta `/resume`, et lülituda tagasi algse juurde."
+
+  commands:
+    usage:                 "Kasutus: `/commands [lehekülg]`"
+    skill_header:          "⚡ **Oskuskäsud**:"
+    default_desc:          "Oskuskäsk"
+    none:                  "Käske pole saadaval."
+    header:                "📚 **Käsud** (kokku {total}, lehekülg {page}/{total_pages})"
+    nav_prev:              "`/commands {page}` ← eelmine"
+    nav_next:              "järgmine → `/commands {page}`"
+    out_of_range:          "_(Küsitud lehekülg {requested} oli vahemikust väljas, näidatakse lehekülge {page}.)_"
+
+  compress:
+    not_enough:            "Vestlust pole piisavalt tihendamiseks (vaja on vähemalt 4 sõnumit)."
+    no_provider:            "Pakkujat pole seadistatud -- tihendamine pole võimalik."
+    nothing_to_do:          "Tihendamiseks pole veel midagi (transkript on endiselt täielikult kaitstud kontekst)."
+    aggressive_unsupported: "--aggressive ei ole toetatud; kasuta '/compress here [N]', et hoida ainult viimaseid sõnumeid, või /undo, et käike kustutada."
+    focus_line:            "Fookus: \"{topic}\""
+    summary_failed:        "⚠️ Kokkuvõtte loomine ebaõnnestus ({error}). {count} varasem(at) sõnumit eemaldati ja asendati kohatäitjaga; varasemat konteksti ei saa enam taastada. Kontrolli oma auxiliary.compression mudeli seadistust."
+    aborted:               "⚠️ Tihendamine katkestati ({error}). Ühtegi sõnumit ei kustutatud — vestlus on muutumatu. Käivita /compress uuesti, /reset puhta seansi jaoks või kontrolli oma auxiliary.compression mudeli seadistust."
+    aux_failed:            "ℹ️ Seadistatud tihendusmudel `{model}` ebaõnnestus ({error}). Taastati põhimudeli abil — kontekst on terve —, kuid soovitatav on kontrollida `auxiliary.compression.model` seadistust failis config.yaml."
+    failed:                "Tihendamine ebaõnnestus: {error}"
+
+  debug:
+    upload_failed:         "✗ Silumisraporti üleslaadimine ebaõnnestus: {error}"
+    header:                "**Silumisraport üles laaditud:**"
+    auto_delete:           "⏱ Lõiked kustutatakse automaatselt 6 tunni pärast."
+    full_logs_hint:        "Täielike logide üleslaadimiseks kasuta käsurealt `hermes debug share`."
+    share_hint:            "Jaga neid linke Hermese meeskonnaga toe saamiseks."
+
+  deny:
+    stale:                 "❌ Käsust keelduti (kinnitus oli aegunud)."
+    no_pending:            "Keeldumist ootavat käsku pole."
+    denied_singular:       "❌ Käsust keelduti."
+    denied_plural:         "❌ Käskudest keelduti ({count} käsku)."
+    denied_reason_singular: "❌ Käsust keelduti. Põhjus edastati agendile: \"{reason}\""
+    denied_reason_plural:  "❌ Käskudest keelduti ({count} käsku). Põhjus edastati agendile: \"{reason}\""
+
+  fast:
+    not_supported:         "⚡ /fast on saadaval ainult OpenAI mudelitele, mis toetavad prioriteetset töötlust (Priority Processing)."
+    status:                "⚡ Prioriteetne töötlus\n\nPraegune režiim: `{mode}`\n\n_Kasutus:_ `/fast <normal|fast|status>`"
+    unknown_arg:           "⚠️ Tundmatu argument: `{arg}`\n\n**Kehtivad valikud:** normal, fast, status"
+    saved:                 "⚡ ✓ Prioriteetne töötlus: **{label}** (salvestatud seadistusse)\n_(jõustub järgmise sõnumiga)_"
+    session_only:          "⚡ ✓ Prioriteetne töötlus: **{label}** (ainult see seanss)"
+    label_fast:            "KIIRE"
+    label_normal:          "TAVALINE"
+    status_fast:           "kiire"
+    status_normal:         "tavaline"
+    picker_title:          "⚡ **Prioriteetne töötlus**\n\nPraegune režiim: `{mode}`\n\nVali suvand:"
+    choice_fast:           "kiire — prioriteetne töötlus sees"
+    choice_normal:         "tavaline — standardne töötlus"
+
+  footer:
+    status:                "📎 Käitusaegne jalus: **{state}**\nVäljad: `{fields}`\nPlatvorm: `{platform}`"
+    usage:                 "Kasutus: `/footer [on|off|status]`"
+    saved:                 "📎 Käitusaegne jalus: **{state}**{example}\n_(salvestatud globaalselt — jõustub järgmise sõnumiga)_"
+    example_line:          "\nNäide: `{preview}`"
+    state_on:              "SEES"
+    state_off:             "VÄLJAS"
+
+  goal:
+    unavailable:           "Eesmärgid ei ole selles seansis saadaval."
+    no_goal_set:           "Eesmärki pole seatud."
+    paused:                "⏸ Eesmärk peatatud: {goal}"
+    no_resume:             "Jätkamiseks pole eesmärki."
+    resumed:               "▶ Eesmärk jätkatud: {goal}\nSaada mistahes sõnum jätkamiseks või oota — teen järgmise sammu järgmisel käigul."
+    invalid:               "Vigane eesmärk: {error}"
+    set:                   "⊙ Eesmärk seatud ({budget}-käigu eelarve): {goal}\nJätkan tööd, kuni eesmärk on täidetud, sina selle peatad/tühistad või eelarve saab otsa.\nJuhtnupud: /goal status · /goal pause · /goal resume · /goal clear"
+
+  help:
+    header:                "📖 **Hermese käsud**\n"
+    skill_header:          "\n⚡ **Oskuskäsud** ({count} aktiivset):"
+    more_use_commands:     "\n... ja veel {count}. Kasuta täieliku loendi jaoks käsku `/commands`."
+
+  insights:
+    invalid_days:          "Vigane --days väärtus: {value}"
+    error:                 "Viga ülevaate loomisel: {error}"
+
+  kanban:
+    error_prefix:          "⚠ kanban-viga: {error}"
+    subscribed_suffix:     "(tellitud — sind teavitatakse, kui {task_id} valmib või blokeerub)"
+    truncated_suffix:      "… (lühendatud; täieliku väljundi jaoks kasuta terminalis `hermes kanban …`)"
+    no_output:             "(väljund puudub)"
+    wake:
+      completed:           "lõpetatud"
+      gave_up:              "loobuti (korduskatsed said otsa)"
+      crashed:              "jooksis kokku (töötaja väljus); dispetšer proovib uuesti"
+      timed_out:            "aegus; dispetšer proovib uuesti"
+      blocked:              "blokeeritud; vajab tähelepanu"
+      status_default:       "staatus muutus"
+      status_joiner:        ", "
+      message:              "[kanban] Ülesanne {task_id} {status}.\nPealkiri: {title}\nVastutaja: @{assignee}\nTahvel: {board}\n\nVaata tulemus üle või otsusta järgmine samm."
+
+  personality:
+    none_configured:       "Failis `{path}/config.yaml` pole ühtegi isiksust seadistatud"
+    header:                "🎭 **Saadaolevad isiksused**\n"
+    none_option:           "• `none` — (isiksuse ülekatet pole)"
+    item:                  "• `{name}` — {preview}"
+    usage:                 "\nKasutus: `/personality <nimi>`"
+    save_failed:           "⚠️ Isiksuse muudatuse salvestamine ebaõnnestus: {error}"
+    cleared:               "🎭 Isiksus tühistatud — kasutatakse baaskäitumist.\n_(jõustub järgmise sõnumiga)_"
+    set_to:                "🎭 Isiksuseks on seatud **{name}**\n_(jõustub järgmise sõnumiga)_"
+    unknown:               "Tundmatu isiksus: `{name}`\n\nSaadaval: {available}"
+
+  profile:
+    header:                "👤 **Profiil:** `{profile}`"
+    home:                  "📂 **Kodukaust:** `{home}`"
+
+  reasoning:
+    level_default:             "keskmine (vaikimisi)"
+    level_disabled:            "puudub (keelatud)"
+    scope_session:             "seansi ülekirjutus"
+    scope_global:              "globaalne seadistus"
+    status:                    "🧠 **Arutlemise seaded**\n\n**Tase:** `{level}`\n**Ulatus:** {scope}\n**Kuvamine:** {display}\n\n_Kasutus:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
+    display_on:                "sees ✓"
+    display_off:               "väljas"
+    display_set_on:            "🧠 ✓ Arutluse kuvamine: **SEES**\nMudeli mõttekäik kuvatakse iga vastuse ees platvormil **{platform}**."
+    display_set_off:           "🧠 ✓ Arutluse kuvamine: **VÄLJAS** platvormil **{platform}**"
+    reset_global_unsupported:  "⚠️ `/reasoning reset --global` ei ole toetatud. Globaalse vaikeväärtuse muutmiseks kasuta `/reasoning <tase> --global`."
+    reset_done:                "🧠 ✓ Seansi arutlustaseme ülekirjutus tühistatud; kasutatakse globaalset seadistust."
+    unknown_arg:               "⚠️ Tundmatu argument: `{arg}`\n\n**Kehtivad tasemed:** none, minimal, low, medium, high, xhigh, max, ultra\n**Kuvamine:** show, hide\n**Püsivus:** lisa `--global`, et salvestada kauemaks kui see seanss"
+    picker_title:              "🧠 **Arutlemise seaded**\n\n**Tase:** `{level}`\n**Ulatus:** {scope}\n**Kuvamine:** {display}\n\nVali suvand:"
+    choice_none:               "none — lülita arutlemine välja"
+    choice_reset:              "reset — tühista seansi ülekirjutus"
+    choice_show:               "näita arutlust vastustes"
+    choice_hide:               "peida arutlus vastustest"
+    set_global:                "🧠 ✓ Arutlustase seatud väärtusele `{effort}` (salvestatud seadistusse)\n_(jõustub järgmise sõnumiga)_"
+    set_global_save_failed:    "🧠 ✓ Arutlustase seatud väärtusele `{effort}` (ainult see seanss — seadistuse salvestamine ebaõnnestus)\n_(jõustub järgmise sõnumiga)_"
+    set_session:               "🧠 ✓ Arutlustase seatud väärtusele `{effort}` (ainult see seanss — püsivaks salvestamiseks lisa `--global`)\n_(jõustub järgmise sõnumiga)_"
+
+  reload_mcp:
+    cancelled:             "🟡 /reload-mcp tühistatud. MCP tööriistad jäid muutumatuks."
+    always_followup:       "ℹ️ Edaspidised `/reload-mcp` käivitused töötavad ilma kinnituseta. Taasluba see failis config.yaml väärtusega `approvals.mcp_reload_confirm: true`."
+    confirm_prompt:        "⚠️ **Kinnita /reload-mcp**\n\nMCP serverite taaslaadimine ehitab selle seansi tööriistakomplekti uuesti üles ning **muudab kehtetuks pakkuja vihjepuhvri** — järgmine sõnum saadab uuesti kõik sisendtokenid. Pika konteksti või kõrge arutlustasemega mudelitel võib see olla kulukas.\n\nVali:\n• **Kinnita üks kord** — laadi kohe uuesti\n• **Kinnita alati** — laadi kohe uuesti ja vaigista see vihje püsivalt\n• **Tühista** — jäta MCP tööriistad muutumatuks\n\n_Tekstivariant: vasta `/approve`, `/always` või `/cancel`._"
+    header:                "🔄 **MCP serverid taaslaaditud**\n"
+    reconnected:           "♻️ Taasühendatud: {names}"
+    added:                 "➕ Lisatud: {names}"
+    removed:               "➖ Eemaldatud: {names}"
+    none_connected:        "Ühtegi MCP serverit pole ühendatud."
+    tools_available:       "\n🔧 {tools} tööriista saadaval {servers} serverist"
+    failed:                "❌ MCP taaslaadimine ebaõnnestus: {error}"
+
+  reload_skills:
+    header:                "🔄 **Oskused taaslaaditud**\n"
+    no_new:                "Uusi oskusi ei tuvastatud."
+    total:                 "\n📚 {count} oskust saadaval"
+    added_header:          "➕ **Lisatud oskused:**"
+    removed_header:        "➖ **Eemaldatud oskused:**"
+    item_with_desc:        "    - {name}: {desc}"
+    item_no_desc:          "    - {name}"
+    failed:                "❌ Oskuste taaslaadimine ebaõnnestus: {error}"
+
+  reset:
+    header_default:        "✨ Seanss lähtestatud! Alustame puhtalt lehelt."
+    header_new:            "✨ Uus seanss alustatud!"
+    header_titled:         "✨ Uus seanss alustatud: {title}"
+    title_rejected:        "\n⚠️ Pealkiri lükati tagasi: {error}"
+    title_error_untitled:  "\n⚠️ {error} — seanss alustati ilma pealkirjata."
+    title_empty_untitled:  "\n⚠️ Pealkiri jäi pärast puhastamist tühjaks — seanss alustati ilma pealkirjata."
+    tip:                   "\n✦ Vihje: {tip}"
+
+  restart:
+    in_progress:           "⏳ Gateway taaskäivitus on juba käimas..."
+    restarting:            "♻ Gateway taaskäivitub. Kui sa ei saa 60 sekundi jooksul teadet, taaskäivita konsoolist käsuga `hermes gateway restart`."
+
+  resume:
+    db_unavailable:        "Seansiandmebaas pole saadaval."
+    parse_error:           "⚠️ `/resume` argumente ei õnnestunud parsida: {error}.\nKasuta tühikuid sisaldavate pealkirjade puhul jutumärke, näiteks: `/resume \"Projekt A plaan\"`."
+    matrix_no_named_sessions: "Selle Matrix-toa jaoks ei leitud ühtegi nimega seanssi.\nKasuta `/title Minu seanss`, et nimetada praeguse toa seanss, `/resume --all`, et loetleda kõik Matrixi seansid, või `/resume --cross-room <seansi nimi>`, et teadlikult toa piire ületada."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blokeeritud: sellel nimega seansil pole registreeritud toa päritolu, seega ei jätka Hermes seda vaikimisi praeguses toas. Kasuta `/resume --cross-room {name}`, kui soovid teadlikult toa piire ületada."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blokeeritud: see seanss kuulub teisele Matrix-toale ({room}). Kasuta `/resume --cross-room {name}`, kui soovid seda teadlikult siin jätkata."
+    matrix_cross_room_success: "⚠️ Toaülene jätkamine: jätkati seanssi **{title}** Matrix-toas **{room}**.\nSelle toa edasised sõnumid kasutavad seda transkripti kuni `/reset` või uue `/resume`ni.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume blokeeritud: '**{name}**' kuulub teisele kasutajale või vestlusele. Saad jätkata ainult selle vestluse seansse."
+    no_named_sessions:     "Ühtegi nimega seanssi ei leitud.\nKasuta `/title Minu seanss`, et nimetada praegune seanss, seejärel `/resume Minu seanss`, et hiljem selle juurde tagasi pöörduda."
+    list_header:           "📋 **Nimega seansid**\n"
+    list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
+    list_preview_suffix:   " — _{preview}_"
+    list_footer:           "\nKasutus: `/resume <seansi nimi>`"
+    list_footer_numbered:  "\nKasutus: `/resume <seansi nimi>` või `/resume <number>` (nt `/resume 1` viimase jaoks)"
+    list_failed:           "Seansse ei õnnestunud loetleda: {error}"
+    out_of_range:          "Jätkamise indeks {index} on vahemikust väljas.\nKasuta `/resume` ilma argumentideta, et näha saadaolevaid seansse."
+    not_found:             "Otsingule '**{name}**' vastavat seanssi ei leitud.\nKasuta `/resume` ilma argumentideta, et näha saadaolevaid seansse."
+    already_on:            "📌 Oled juba seansil **{name}**."
+    switch_failed:         "Seansile lülitumine ebaõnnestus."
+    resumed_one:           "↻ Jätkatud seansiga **{title}** ({count} sõnum). Vestlus taastatud."
+    resumed_many:          "↻ Jätkatud seansiga **{title}** ({count} sõnumit). Vestlus taastatud."
+    resumed_no_count:      "↻ Jätkatud seansiga **{title}**. Vestlus taastatud."
+
+  retry:
+    no_previous:           "Uuesti proovimiseks pole eelmist sõnumit."
+
+  rollback:
+    not_enabled:           "Kontrollpunktid pole lubatud.\nLuba need failis config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found:            "Kausta {cwd} jaoks ei leitud ühtegi kontrollpunkti"
+    invalid_number:        "Vigane kontrollpunkti number. Kasuta vahemikku 1-{max}."
+    restored:              "✅ Taastatud kontrollpunktile {hash}: {reason}\nEnne taastamist salvestati automaatselt hetktõmmis."
+    restore_failed:        "❌ {error}"
+
+  diff:
+    not_enabled:           "Kontrollpunktid pole lubatud, seega puudub seansi lähtetase.\nLuba need failis config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nLihtne /diff töötab siiski — see kasutab otse gitti."
+    no_changes:            "Muudatusi pole."
+    failed:                "{error}"
+
+  set_home:
+    save_failed:           "Kodukanali salvestamine ebaõnnestus: {error}"
+    success:               "✅ Kodukanaliks on seatud **{name}** (ID: {chat_id}).\nCron-tööd ja platvormideülesed sõnumid toimetatakse siia."
+
+  context:
+    header:                "🧠 **Konteksti aken**"
+    model:                 "Mudel: `{model}`"
+    window:                "Aken: {total} tokenit"
+    in_use:                "Kasutusel: {used} / {total} ({pct}%)"
+    bar:                   "{bar}"
+    headroom:              "Varu piirini: {headroom} tokenit"
+    threshold:             "Automaatne tihendamine: {threshold} ({threshold_pct}%) — jäänud {to_go}"
+    over_threshold:        "⚠️ **Automaatse tihendamise lävi ületatud ({threshold}, {threshold_pct}%)**"
+    compressions:          "Tihendamisi selles seansis: {count}"
+    last_savings:          "Viimane tihendamine vabastas: {savings}% kontekstist"
+    totals_header:         "Seansi kokkuvõte (kumulatiivne {calls} API-kutse peale)"
+    totals_line:           "Sisend {input} · Väljund {output} · Arutlus {reasoning}"
+    total_billed:          "Arveldatud kokku: {total}"
+    throughput_note:       "_Läbilaskevõime, mitte konteksti suurus — iga kutse saadab ülaltoodud akna uuesti._"
+    estimated:             "Hinnanguline kontekst: ~{count} tokenit {messages} sõnumi peale"
+    detail_after_first:    "_(Täielik tihendamise ja läbilaskevõime statistika on saadaval pärast esimest agendi vastust)_"
+    no_data:               "Kontekstiandmed pole veel saadaval. Saada sõnum seansi alustamiseks."
+
+  status:
+    header:                "📊 **Hermes Gateway olek**"
+    matrix_scope_header:   "**Matrixi ulatus:**"
+    matrix_scope_room:     "  tuba: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
+    session_id:            "**Seansi ID:** `{session_id}`"
+    title:                 "**Pealkiri:** {title}"
+    created:               "**Loodud:** {timestamp}"
+    last_activity:         "**Viimane tegevus:** {timestamp}"
+    model:                 "**Mudel:** `{model}`"
+    model_provider:        "**Mudel:** `{model}` ({provider})"
+    context:               "**Kontekst:** {used} / {total} ({pct}%)"
+    context_used:          "**Kontekst:** ~{used} tokenit"
+    tokens:                "**Eluaegselt arveldatud tokenid:** {tokens} _(pole sinu praegune kontekstisuurus; kasuta `/context`)_"
+    agent_running:         "**Agent töötab:** {state}"
+    state_yes:             "Jah ⚡"
+    state_no:              "Ei"
+    queued:                "**Järjekorras järelsõnumid:** {count}"
+    platforms:             "**Ühendatud platvormid:** {platforms}"
+
+  stop:
+    stopped_pending:       "⚡ Peatatud. Agent polnud veel alustanud — võid selles seansis jätkata."
+    stopped:               "⚡ Peatatud. Võid selles seansis jätkata."
+    no_active:             "Peatamiseks pole aktiivset ülesannet."
+
+  title:
+    db_unavailable:        "Seansiandmebaas pole saadaval."
+    warn_prefix:           "⚠️ {error}"
+    empty_after_clean:     "⚠️ Pealkiri jäi pärast puhastamist tühjaks. Palun kasuta trükitavaid märke."
+    set_to:                "✏️ Seansi pealkiri seatud: **{title}**"
+    not_found:             "Seanssi andmebaasist ei leitud."
+    current_with_title:    "📌 Seanss: `{session_id}`\nPealkiri: **{title}**"
+    current_no_title:      "📌 Seanss: `{session_id}`\nPealkirja pole seatud. Kasutus: `/title Minu seansi nimi`"
+
+  topic:
+    not_telegram_dm:         "Käsk /topic on saadaval ainult Telegrami privaatvestlustes."
+    no_session_db:           "Seansiandmebaas pole saadaval."
+    unauthorized:            "Sul pole õigust kasutada käsku /topic selle roboti juures."
+    restore_needs_topic:     "Seansi taastamiseks loo või ava kõigepealt Telegrami teema, seejärel saada selles teemas /topic <seansi-id>. Uue teema loomiseks ava Kõik sõnumid ja saada seal mistahes sõnum."
+    topics_disabled:         "Telegrami teemad pole selle roboti jaoks veel lubatud.\n\nKuidas lubada:\n1. Ava @BotFather.\n2. Vali oma robot.\n3. Ava Bot Settings → Threads Settings.\n4. Lülita sisse Threaded Mode ja veendu, et kasutajatel on lubatud uusi lõime luua.\n\nSeejärel saada uuesti /topic."
+    topics_user_disallowed:  "Telegrami teemad on lubatud, kuid kasutajatel pole lubatud teemasid luua.\n\nAva @BotFather → vali oma robot → Bot Settings → Threads Settings ning lülita välja 'Disallow users to create new threads'.\n\nSeejärel saada uuesti /topic."
+    enable_failed:           "Telegrami teemarežiimi lubamine ebaõnnestus: {error}"
+    bound_status:            "See teema on seotud:\nSeanss: {label}\nID: {session_id}\n\nKasuta /new, et asendada see teema uue seansiga.\nParalleeltööks ava Kõik sõnumid ja saada seal sõnum, et luua teine teema."
+    thread_ready:            "Telegrami mitme seansi teemad on lubatud.\n\nSeda teemat kasutatakse iseseisva Hermese seansina. Kasuta /new, et asendada selle teema praegune seanss. Paralleeltööks ava Kõik sõnumid ja saada seal sõnum, et luua teine teema."
+    untitled_session:        "Nimetu seanss"
+
+  undo:
+    nothing:               "Tagasivõtmiseks pole midagi."
+    removed:               "↩️ Võeti tagasi {turns} käiku ({count} sõnumit).\nVarukoopia: \"{preview}\"\nKopeeri/muuda ülaltoodud teksti ja saada see, et siit uuesti alustada."
+    invalid_count:         "Vigane arv \"{arg}\" — kasuta /undo või /undo N."
+
+  update:
+    platform_not_messaging:  "✗ /update on saadaval ainult sõnumiplatvormidelt. Käivita terminalis `hermes update`."
+    not_git_repo:            "✗ Pole git-hoidla — värskendamine pole võimalik."
+    hermes_cmd_not_found:    "✗ Käsku `hermes` ei leitud. Hermes töötab, kuid värskenduskäsk ei leidnud käivitatavat faili PATH-ist ega praeguse Pythoni interpretaatori kaudu. Proovi käivitada `hermes update` käsitsi terminalis."
+    start_failed:            "✗ Värskenduse käivitamine ebaõnnestus: {error}"
+    starting:                "⚕ Hermese värskenduse käivitamine… Näitan siin edenemist."
+
+  usage:
+    rate_limits:              "⏱️ **Piirmäärad:** {state}"
+    header_session:           "📊 **Seansi tokenikasutus**"
+    label_model:              "Mudel: `{model}`"
+    label_input_tokens:       "Sisendtokenid: {count}"
+    label_cache_read:         "Puhvrist loetud tokenid: {count}"
+    label_cache_write:        "Puhvrisse kirjutatud tokenid: {count}"
+    label_output_tokens:      "Väljundtokenid: {count}"
+    label_total:              "Kokku: {count}"
+    label_api_calls:          "API-kutsed: {count}"
+    label_cost:               "Hind: {prefix}${amount}"
+    label_cost_included:      "Hind: sisaldub"
+    label_context:            "Kontekst: {used} / {total} ({pct}%)"
+    label_compressions:       "Tihendamisi: {count}"
+    breakdown_header:         "🧩 **Konteksti jaotus** _(hinnanguline)_"
+    breakdown_line:           "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt:        "Süsteemivihje"
+    breakdown_cat_tool_definitions:     "Tööriistade definitsioonid"
+    breakdown_cat_rules:                "Reeglid"
+    breakdown_cat_skills:               "Oskused"
+    breakdown_cat_mcp:                  "MCP"
+    breakdown_cat_subagent_definitions: "Alamagentide definitsioonid"
+    breakdown_cat_memory:               "Mälu"
+    breakdown_cat_conversation:         "Vestlus"
+    header_session_info:      "📊 **Seansi info**"
+    label_messages:           "Sõnumeid: {count}"
+    label_estimated_context:  "Hinnanguline kontekst: ~{count} tokenit"
+    detailed_after_first:     "_(Detailne kasutus on saadaval pärast esimest agendi vastust)_"
+    no_data:                  "Selle seansi kohta pole kasutusandmeid saadaval."
+    unknown_subcommand:       "Tundmatu /usage alamkäsk: `{args}`. Proovi `/usage` või `/usage reset [--force]`."
+    reset_wrong_provider:     "Kogutud kasutuse lähtestamine on saadaval ainult openai-codex pakkujal. Vaheta esmalt käsuga `/model`."
+
+  credits:
+    not_logged_in:            "Pole sisse logitud Nous Portali. Logi sisse, et näha oma krediidijääki ja seda täiendada."
+
+  verbose:
+    not_enabled:           "Käsk `/verbose` pole sõnumiplatvormide jaoks lubatud.\n\nLuba see failis `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off:              "⚙️ Tööriista edenemine: **VÄLJAS** — tööriistategevust ei näidata."
+    mode_new:              "⚙️ Tööriista edenemine: **UUS** — näidatakse tööriista vahetumisel (eelvaate pikkus: `display.tool_preview_length`, vaikimisi 40)."
+    mode_all:              "⚙️ Tööriista edenemine: **KÕIK** — näidatakse iga tööriistakutset (eelvaate pikkus: `display.tool_preview_length`, vaikimisi 40)."
+    mode_verbose:          "⚙️ Tööriista edenemine: **PÕHJALIK** — iga tööriistakutse koos kõigi argumentidega."
+    mode_log:              "⚙️ Tööriista edenemine: **LOGI** — vestluses vaikne; tööriistakutsed kirjutatakse faili ~/.hermes/logs/tool_calls.log."
+    saved_suffix:          "_(salvestatud platvormile **{platform}** — jõustub järgmise sõnumiga)_"
+    save_failed:           "_(seadistusse salvestamine ebaõnnestus: {error})_"
+
+  voice:
+    enabled_voice_only:    "Häälrežiim lubatud.\nVastan häälega, kui saadad häälsõnumeid.\nKasuta /voice tts, et saada häälvastuseid kõikidele sõnumitele."
+    disabled_text:         "Häälrežiim keelatud. Ainult tekstivastused."
+    tts_enabled:           "Automaatne kõnesüntees lubatud.\nKõik vastused sisaldavad häälsõnumit."
+    status_mode:           "Häälrežiim: {label}"
+    status_channel:        "Häälkanal: #{channel}"
+    status_participants:   "Osalejaid: {count}"
+    status_member:         "  - {name}{status}"
+    speaking:              " (räägib)"
+    enabled_short:         "Häälrežiim lubatud."
+    disabled_short:        "Häälrežiim keelatud."
+    label_off:             "Väljas (ainult tekst)"
+    label_voice_only:      "Sees (häälvastus häälsõnumitele)"
+    label_all:             "TTS (häälvastus kõikidele sõnumitele)"
+    help:                  "{toggle}\n\n**Kuidas /voice töötab**\n• `/voice on` — häälvastus, kui saadad häälsõnumi\n• `/voice tts` — häälvastus *igale* sõnumile\n• `/voice off` — tagasi ainult tekstivastuste juurde\n• `/voice status` — näita praegust režiimi\n• `/voice` (ilma argumendita) — kiirlülitus sisse/välja{channels}"
+    help_channels:         "\n\n**Reaalajas häälkanalid (Discord)**\n• Liitu kõigepealt häälkanaliga, seejärel `/voice channel` — liitun, kuulan ja räägin oma vastused\n• `/voice leave` — lahku häälkanalist"
+
+  yolo:
+    disabled:                   "⚠️ YOLO režiim **VÄLJAS** selles seansis — ohtlikud käsud vajavad kinnitamist."
+    enabled:                    "⚡ YOLO režiim **SEES** selles seansis — kõik käsud kinnitatakse automaatselt. Kasuta ettevaatlikult."
+
+  shared:
+    session_db_unavailable:      "Seansiandmebaas pole saadaval."
+    session_db_unavailable_prefix: "Seansiandmebaas pole saadaval"
+    session_not_found:           "Seanssi andmebaasist ei leitud."
+    warn_passthrough:            "⚠️ {error}"

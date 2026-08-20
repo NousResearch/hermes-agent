@@ -25,7 +25,7 @@ Language resolution order:
     3. ``display.language`` from config.yaml
     4. ``"en"`` (baseline)
 
-Supported languages: en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga,
+Supported languages: en, zh, zh-hant, ja, de, es, et, fr, tr, uk, af, ko, it, ga,
 pt, ru, hu, ar.  Unknown values fall back to en.
 """
 
@@ -41,7 +41,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES: tuple[str, ...] = (
-    "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
+    "en", "zh", "zh-hant", "ja", "de", "es", "et", "fr", "tr", "uk",
     "af", "ko", "it", "ga", "pt", "ru", "hu", "ar",
 )
 DEFAULT_LANGUAGE = "en"
@@ -60,6 +60,8 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "japanese": "ja", "jp": "ja", "ja-jp": "ja",
     "german": "de", "deutsch": "de", "de-de": "de", "de-at": "de", "de-ch": "de",
     "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es", "es-ar": "es",
+    # Estonian
+    "estonian": "et", "eesti": "et", "et-ee": "et",
     "french": "fr", "français": "fr", "france": "fr", "fr-fr": "fr", "fr-be": "fr", "fr-ca": "fr", "fr-ch": "fr",
     "ukrainian": "uk", "ukrainisch": "uk", "українська": "uk", "uk-ua": "uk", "ua": "uk",
     "turkish": "tr", "türkçe": "tr", "tr-tr": "tr",

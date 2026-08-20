@@ -590,6 +590,62 @@ display:
       reasoning_style: subtext   # code | blockquote | subtext
 ```
 
+#### `display.verbose_reasoning`
+
+**Type:** boolean — **Default:** `false`
+
+When enabled, reasoning/thinking blocks emitted by the model (e.g. `</think>`,
+`<think>`, `<reasoning>`) are displayed to the user with a ``💭 **Reasoning:** ``
+prefix instead of being filtered out. This is useful for debugging reasoning
+models or when you want to see the model's thinking process.
+
+```yaml
+display:
+  platforms:
+    discord:
+      verbose_reasoning: true
+```
+
+You can also set it at the Discord platform level:
+
+```yaml
+discord:
+  verbose_reasoning: true
+```
+
+#### `display.thinking_progress`
+
+**Type:** boolean — **Default:** `false`
+
+When enabled, shows the model's thinking status to the user with a progress
+indicator during long turns. This is useful for letting users know the model is
+actively working on their request rather than being unresponsive.
+
+**Resolution order:**
+
+1. ``display.platforms.discord.thinking_progress`` (highest priority)
+2. ``display.thinking_progress`` (global for all platforms)
+3. ``discord.thinking_progress`` (legacy — still respected)
+4. ``DISCORD_THINKING_PROGRESS`` env var (overrides all YAML settings)
+
+Recommended — apply via the `display.*` hierarchy (works for all platforms):
+
+```yaml
+display:
+  thinking_progress: true          # all platforms
+  # or per-platform:
+  platforms:
+    discord:
+      thinking_progress: true      # Discord only
+```
+
+Legacy Discord-only config (still works, but `display.*` is preferred):
+
+```yaml
+discord:
+  thinking_progress: true
+```
+
 ## Slash Command Access Control
 
 By default, every allowed user can run every slash command. To split your allowlist into **admins** (full slash command access) and **regular users** (only commands you explicitly enable), add `allow_admin_from` and `user_allowed_commands` to the Discord platform's `extra` block:

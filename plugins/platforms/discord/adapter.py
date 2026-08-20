@@ -6872,6 +6872,35 @@ class DiscordAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             return 50
 
+    def _discord_verbose_reasoning(self) -> bool:
+        """Return whether Discord should display reasoning/thinking blocks.
+
+        When ``True`` (default ``False``), reasoning content such as
+        ``</think>`` or ``<think>`` blocks in the model's content stream
+        is NOT filtered — instead it is buffered and emitted with a
+        ``💭 **Reasoning:** `` prefix so the user can see the model's
+        thinking process.
+
+        Resolution order:
+        1. ``display.platforms.discord.verbose_reasoning`` → ``display.verbose_reasoning``
+        2. ``discord.verbose_reasoning`` → ``DISCORD_VERBOSE_REASONING``
+
+        .. deprecated::
+            This method is kept for backward-compat only.  The authoritative
+            path is now :func:`gateway.display_config.resolve_display_setting`
+            which checks ``display.platforms.<platform>.verbose_reasoning``
+            first, then ``display.verbose_reasoning``, then the global
+            default.
+        """
+        configured = self.config.extra.get("verbose_reasoning")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        # Fallback to env var
+        env_val = os.getenv("DISCORD_VERBOSE_REASONING", "false")
+        return env_val.lower() in {"true", "1", "yes", "on"}
+
     async def _fetch_channel_context(
         self,
         channel: Any,
@@ -10439,6 +10468,9 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     hbl = discord_cfg.get("history_backfill_limit")
     if hbl is not None and not os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT"):
         os.environ["DISCORD_HISTORY_BACKFILL_LIMIT"] = str(hbl)
+    # verbose_reasoning: when True, reasoning/thinking blocks are displayed
+    if "verbose_reasoning" in discord_cfg and not os.getenv("DISCORD_VERBOSE_REASONING"):
+        os.environ["DISCORD_VERBOSE_REASONING"] = str(discord_cfg["verbose_reasoning"]).lower()
     # allow_mentions: granular control over what the bot can ping.
     # Safe defaults (no @everyone/roles) are applied in the adapter;
     # these YAML keys only override when set and let users opt back

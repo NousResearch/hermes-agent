@@ -302,3 +302,90 @@ class TestLiveStatusSetting:
         assert resolve_display_setting({}, "slack", "live_status") == "full"
 
 
+# ---------------------------------------------------------------------------
+# verbose_reasoning — boolean setting, resolvable per-platform
+# ---------------------------------------------------------------------------
+
+class TestVerboseReasoningSetting:
+    """resolve_display_setting() for the ``verbose_reasoning`` knob."""
+
+    def test_default_is_false(self):
+        """No config → verbose_reasoning resolves to False."""
+        from gateway.display_config import resolve_display_setting
+
+        for plat in ("telegram", "discord", "slack", "mattermost"):
+            assert resolve_display_setting({}, plat, "verbose_reasoning") is False, plat
+
+    def test_global_true(self):
+        """display.verbose_reasoning: true enables for all platforms."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"verbose_reasoning": True}}
+        assert resolve_display_setting(config, "discord", "verbose_reasoning") is True
+        assert resolve_display_setting(config, "slack", "verbose_reasoning") is True
+
+    def test_platform_override_wins(self):
+        """display.platforms.discord.verbose_reasoning overrides global."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "verbose_reasoning": True,
+                "platforms": {"slack": {"verbose_reasoning": False}},
+            }
+        }
+        assert resolve_display_setting(config, "discord", "verbose_reasoning") is True
+        assert resolve_display_setting(config, "slack", "verbose_reasoning") is False
+
+    def test_string_truthy_values(self):
+        """String 'true'/'yes'/'on' normalise to True."""
+        from gateway.display_config import resolve_display_setting
+
+        for val in ("true", "1", "yes", "on", "verbose"):
+            config = {"display": {"verbose_reasoning": val}}
+            assert resolve_display_setting(config, "discord", "verbose_reasoning") is True, val
+
+    def test_string_falsy_values(self):
+        """String 'false'/'no'/'off' normalise to False."""
+        from gateway.display_config import resolve_display_setting
+
+        for val in ("false", "0", "no", "off"):
+            config = {"display": {"verbose_reasoning": val}}
+            assert resolve_display_setting(config, "discord", "verbose_reasoning") is False, val
+
+
+# ---------------------------------------------------------------------------
+# thinking_progress — boolean setting, resolvable per-platform
+# ---------------------------------------------------------------------------
+
+class TestThinkingProgressSetting:
+    """resolve_display_setting() for the ``thinking_progress`` knob."""
+
+    def test_default_is_false(self):
+        """No config → thinking_progress resolves to False."""
+        from gateway.display_config import resolve_display_setting
+
+        for plat in ("telegram", "discord", "slack"):
+            assert resolve_display_setting({}, plat, "thinking_progress") is False, plat
+
+    def test_global_true(self):
+        """display.thinking_progress: true enables for all platforms."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"thinking_progress": True}}
+        assert resolve_display_setting(config, "discord", "thinking_progress") is True
+
+    def test_platform_override_wins(self):
+        """Per-platform override wins over global."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "thinking_progress": True,
+                "platforms": {"slack": {"thinking_progress": False}},
+            }
+        }
+        assert resolve_display_setting(config, "discord", "thinking_progress") is True
+        assert resolve_display_setting(config, "slack", "thinking_progress") is False
+
+

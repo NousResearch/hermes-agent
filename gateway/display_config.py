@@ -33,7 +33,9 @@ from typing import Any
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
-    "show_reasoning": False,
+    "show_reasoning": False,  # Show reasoning summary at turn end
+    "verbose_reasoning": False,  # Stream thinking blocks to user during execution
+    "thinking_progress": False,  # Show assistant scratch text between tool calls
     # How a reasoning/thinking summary is rendered when show_reasoning is on.
     #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
     #   "blockquote"-> each line prefixed with "> "
@@ -268,6 +270,7 @@ def _normalise(setting: str, value: Any) -> Any:
         return val if val in {"off", "new", "all", "verbose", "log"} else "all"
     if setting in {
         "show_reasoning",
+        "verbose_reasoning",
         "streaming",
         "interim_assistant_messages",
         "long_running_notifications",

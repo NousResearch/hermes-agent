@@ -525,6 +525,35 @@ class MattermostAdapter(BasePlatformAdapter):
         content = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\2", content)
         return content
 
+    def _mattermost_verbose_reasoning(self) -> bool:
+        """Return whether Mattermost should display reasoning/thinking blocks.
+
+        When ``True`` (default ``False``), reasoning content such as
+        ``</think>`` or ``<think>`` blocks in the model's content stream
+        is NOT filtered — instead it is buffered and emitted with a
+        ``💭 **Reasoning:** `` prefix so the user can see the model's
+        thinking process.
+
+        Resolution order:
+        1. ``display.platforms.mattermost.verbose_reasoning`` → ``display.verbose_reasoning``
+        2. ``mattermost.verbose_reasoning`` → ``MATTERMOST_VERBOSE_REASONING``
+
+        .. deprecated::
+            This method is kept for backward-compat only.  The authoritative
+            path is now :func:`gateway.display_config.resolve_display_setting`
+            which checks ``display.platforms.<platform>.verbose_reasoning``
+            first, then ``display.verbose_reasoning``, then the global
+            default.
+        """
+        configured = self.config.extra.get("verbose_reasoning")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        # Fallback to env var
+        env_val = os.getenv("MATTERMOST_VERBOSE_REASONING", "false")
+        return env_val.lower() in {"true", "1", "yes", "on"}
+
     # ------------------------------------------------------------------
     # File helpers
     # ------------------------------------------------------------------
@@ -1263,6 +1292,9 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
+    # verbose_reasoning: when True, reasoning/thinking blocks are displayed
+    if "verbose_reasoning" in mattermost_cfg and not os.getenv("MATTERMOST_VERBOSE_REASONING"):
+        os.environ["MATTERMOST_VERBOSE_REASONING"] = str(mattermost_cfg["verbose_reasoning"]).lower()
     return None  # all settings flow through env; nothing to merge into extras
 
 

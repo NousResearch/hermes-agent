@@ -151,6 +151,11 @@ class StreamConsumerConfig:
     # "group", "supergroup", "forum").  Used to gate native draft streaming,
     # which is platform-specific (Telegram drafts are DM-only).
     chat_type: str = ""
+    # When True, reasoning/thinking blocks are NOT filtered out and are
+    # displayed to the user. Default False maintains current behavior where
+    # reasoning tags like <REASONING_SCRATCHPAD>, <think>, etc. are suppressed
+    # from the streaming display.
+    verbose_reasoning: bool = False
 
 
 class GatewayStreamConsumer:
@@ -182,6 +187,7 @@ class GatewayStreamConsumer:
     _CLOSE_THINK_TAGS = (
         "</REASONING_SCRATCHPAD>", "</think>", "</reasoning>",
         "</THINKING>", "</thinking>", "</thought>",
+        "</THINK>",
     )
 
     # Class-wide monotonic counter for native-streaming draft ids.  Telegram
@@ -305,6 +311,12 @@ class GatewayStreamConsumer:
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
         self._think_buffer = ""
+
+        # Verbose reasoning: when enabled, thought block content is NOT discarded.
+        # Instead it's buffered and emitted with a "💭 **Reasoning:** " prefix
+        # as soon as the closing tag is found.
+        self._reasoning_content = ""
+        self._reasoning_prefix_added = False
 
         # Native draft-streaming state.  Resolved at the start of run() based
         # on cfg.transport, cfg.chat_type, and the adapter's
@@ -597,6 +609,10 @@ class GatewayStreamConsumer:
         self._final_content_delivered = False
         self._delivered_final_text = None
         self._turn_split_delivery = False
+        # Verbose reasoning buffers — a segment/tool break means what we
+        # delivered was an interim preamble, not the final answer.
+        self._reasoning_content = ""
+        self._reasoning_prefix_added = False
         # Native draft streaming: bump the draft_id so the next text segment
         # animates as a fresh preview below the tool-progress bubbles, not
         # over the prior segment's already-finalized draft.  This is how
@@ -639,6 +655,11 @@ class GatewayStreamConsumer:
         reasoning/thinking block.  Text inside such blocks is silently
         discarded.  Partial tags at buffer boundaries are held back in
         ``_think_buffer`` until enough characters arrive to decide.
+
+        If ``self.cfg.verbose_reasoning`` is True, reasoning blocks are NOT
+        filtered.  Instead, the content between the opening and closing tags
+        is buffered and emitted with a ``💭 **Reasoning:** `` prefix as soon
+        as the closing tag is found.
         """
         buf = self._think_buffer + text
         self._think_buffer = ""
@@ -660,12 +681,25 @@ class GatewayStreamConsumer:
                         best_len = len(tag)
 
                 if best_len:
-                    # Found closing tag — discard block, process remainder
+                    # Found closing tag
+                    if self.cfg.verbose_reasoning:
+                        # Buffer thought content and emit with 💭 prefix
+                        thought_text = buf[:best_idx]
+                        self._reasoning_content += thought_text
+                        formatted_reasoning = "💭 **Reasoning:** " + self._reasoning_content
+                        self._reasoning_content = ""
+                        # Append reasoning to accumulated buffer so it appears
+                        # inline where the thinking block was, then continue
+                        # processing text after the closing tag normally.
+                        self._accumulated += formatted_reasoning
                     self._in_think_block = False
                     buf = buf[best_idx + best_len:]
                 else:
-                    # No closing tag yet — hold tail that could be a
-                    # partial closing tag prefix, discard the rest.
+                    # No closing tag yet
+                    if self.cfg.verbose_reasoning:
+                        self._reasoning_content += buf
+                    # Hold tail that could be a partial closing tag prefix,
+                    # discard the rest.
                     max_tag = max(len(t) for t in self._CLOSE_THINK_TAGS)
                     self._think_buffer = buf[-max_tag:] if len(buf) > max_tag else buf
                     return
@@ -709,17 +743,65 @@ class GatewayStreamConsumer:
 
                 if best_len:
                     # Emit text before the tag, enter think block
-                    self._append_accumulated(buf[:best_idx])
+                    self._accumulated += buf[:best_idx]
+                    # Initialize reasoning content buffer for new think block
+                    if self.cfg.verbose_reasoning:
+                        self._reasoning_content = ""
+                        self._reasoning_prefix_added = False
                     self._in_think_block = True
                     buf = buf[best_idx + best_len:]
                 else:
                     # No opening tag — check for a partial tag at the tail
+                    # or when the buffer itself is a partial tag (e.g. the
+                    # streaming chunk arrives split across multiple calls).
                     held_back = 0
                     for tag in self._OPEN_THINK_TAGS:
                         tag_lower = tag.lower()
                         for i in range(1, len(tag)):
                             if lower_buf.endswith(tag_lower[:i]) and i > held_back:
                                 held_back = i
+                    # Also catch when the entire buffer is a prefix of a tag
+                    # (e.g. "<THIN" is a prefix of "<THINK>")
+                    if not held_back:
+                        for tag in self._OPEN_THINK_TAGS:
+                            if lower_buf.startswith(tag) and len(lower_buf) < len(tag):
+                                held_back = len(lower_buf)
+                                break
+                    # When _think_buffer already holds a partial tag prefix
+                    # from a previous chunk, check the combined buffer
+                    # against tags so split-stream prefixes (e.g. "<" then
+                    # "THIN" then "K>") are recognised and held, or if the
+                    # combined buffer forms a complete open tag we enter the
+                    # think block (and accumulate any trailing suffix).
+                    if not held_back:
+                        combined = buf
+                        combined_lower = combined.lower()
+                        for tag in self._OPEN_THINK_TAGS:
+                            tag_lower = tag.lower()
+                            tag_len = len(tag_lower)
+                            if combined_lower == tag_lower:
+                                # Combined buffer is exactly an open tag —
+                                # enter the think block now.
+                                self._in_think_block = True
+                                if self.cfg.verbose_reasoning:
+                                    self._reasoning_content = ""
+                                    self._reasoning_prefix_added = False
+                                self._think_buffer = ""
+                                return
+                            elif combined_lower.startswith(tag_lower) and len(combined_lower) > tag_len:
+                                # Combined is longer than the tag — tag +
+                                # suffix.  Accumulate suffix, enter think block.
+                                self._accumulated += combined[tag_len:]
+                                self._in_think_block = True
+                                if self.cfg.verbose_reasoning:
+                                    self._reasoning_content = ""
+                                    self._reasoning_prefix_added = False
+                                self._think_buffer = ""
+                                return
+                            elif tag_lower.startswith(combined_lower) and len(combined_lower) < tag_len:
+                                # Combined is a partial prefix — hold it back.
+                                self._think_buffer = combined
+                                return
                     if held_back:
                         self._append_accumulated(buf[:-held_back])
                         self._think_buffer = buf[-held_back:]
@@ -771,12 +853,20 @@ class GatewayStreamConsumer:
 
         Called when the stream ends (got_done) so that partial text that
         was held back waiting for a possible opening tag is not lost.
+        Also emits any buffered reasoning content for verbose_reasoning.
         """
         if self._think_buffer and not self._in_think_block:
             # Strip any orphan close tags that may have been held back —
             # see _filter_and_accumulate for context.
             self._append_accumulated(self._strip_orphan_close_tags(self._think_buffer))
             self._think_buffer = ""
+        # Emit any remaining reasoning content (stream ended inside think block)
+        if self.cfg.verbose_reasoning and self._in_think_block:
+            remaining = self._reasoning_content + self._think_buffer
+            if remaining.strip():
+                self._accumulated += "💭 **Reasoning:** " + remaining
+            self._reasoning_content = ""
+            self._in_think_block = False
 
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""

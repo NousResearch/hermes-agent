@@ -1195,6 +1195,15 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#   verbose_reasoning: false         # Show model's reasoning/thinking blocks (default: false)
+
+# Mattermost-specific settings (config.yaml top-level, not under platforms:):
+#
+# mattermost:
+#   require_mention: true            # Require @mention in channels (default: true)
+#   free_response_channels: ""       # Channel IDs where no mention is needed
+#   allowed_channels: ""             # Comma-separated channel IDs (whitelist)
+#   verbose_reasoning: false         # Show model's reasoning/thinking blocks (default: false)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

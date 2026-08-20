@@ -225,6 +225,85 @@ To find a channel ID in Mattermost: open the channel, click the channel name hea
 
 When the bot is `@mentioned`, the mention is automatically stripped from the message before processing.
 
+#### Verbose Reasoning Display
+
+**Type:** boolean — **Default:** `false`
+
+When enabled, reasoning/thinking blocks emitted by the model (e.g. `</think>`,
+`<think>`, `<reasoning>`) are displayed to the user with a ``💭 **Reasoning:** ``
+prefix instead of being filtered out. This is useful for debugging reasoning
+models or when you want to see the model's thinking process.
+
+**Resolution order:**
+
+1. ``display.platforms.mattermost.verbose_reasoning`` (highest priority)
+2. ``display.verbose_reasoning`` (global for all platforms)
+3. ``mattermost.verbose_reasoning`` (legacy — still respected)
+4. ``MATTERMOST_VERBOSE_REASONING`` env var (overrides all YAML settings)
+
+Recommended — apply via the `display.*` hierarchy (works for all platforms):
+
+```yaml
+display:
+  verbose_reasoning: true          # all platforms
+  # or per-platform:
+  platforms:
+    mattermost:
+      verbose_reasoning: true      # Mattermost only
+```
+
+Legacy Mattermost-only config (still works, but `display.*` is preferred):
+
+```yaml
+mattermost:
+  verbose_reasoning: true
+```
+
+Or via env var (overrides everything):
+
+```bash
+MATTERMOST_VERBOSE_REASONING=true
+```
+
+#### `display.thinking_progress`
+
+**Type:** boolean — **Default:** `false`
+
+When enabled, shows the model's thinking status to the user with a progress
+indicator during long turns. This is useful for letting users know the model is
+actively working on their request rather than being unresponsive.
+
+**Resolution order:**
+
+1. ``display.platforms.mattermost.thinking_progress`` (highest priority)
+2. ``display.thinking_progress`` (global for all platforms)
+3. ``mattermost.thinking_progress`` (legacy — still respected)
+4. ``MATTERMOST_THINKING_PROGRESS`` env var (overrides all YAML settings)
+
+Recommended — apply via the `display.*` hierarchy (works for all platforms):
+
+```yaml
+display:
+  thinking_progress: true          # all platforms
+  # or per-platform:
+  platforms:
+    mattermost:
+      thinking_progress: true      # Mattermost only
+```
+
+Legacy Mattermost-only config (still works, but `display.*` is preferred):
+
+```yaml
+mattermost:
+  thinking_progress: true
+```
+
+Or via env var (overrides everything):
+
+```bash
+MATTERMOST_THINKING_PROGRESS=true
+```
+
 ## Channel allowlist (`allowed_channels`)
 
 Restrict the bot to a fixed set of Mattermost channels. When set, the bot **only** responds in channels whose ID appears in the list — messages from any other channel are silently ignored, even if the bot is `@mentioned`.

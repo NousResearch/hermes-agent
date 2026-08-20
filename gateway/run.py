@@ -27297,6 +27297,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if source.platform == Platform.TELEGRAM
             else 0.0
         )
+        # Resolve verbose_reasoning via the display config system so it
+        # participates in the same precedence hierarchy as show_reasoning,
+        # thinking_progress, tool_progress, etc. —
+        #  display.platforms.<platform>.verbose_reasoning > display.verbose_reasoning > global default.
+        from gateway.display_config import resolve_display_setting
+        _platform_key = _platform_config_key(source.platform)
+        _verbose_reasoning = resolve_display_setting(
+            _load_gateway_config(),
+            _platform_key,
+            "verbose_reasoning",
+            False,
+        )
         _consumer_cfg = StreamConsumerConfig(
             edit_interval=scfg.edit_interval,
             buffer_threshold=scfg.buffer_threshold,
@@ -27305,6 +27317,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             fresh_final_after_seconds=_fresh_final_secs,
             transport=scfg.transport or "edit",
             chat_type=getattr(source, "chat_type", "") or "",
+            verbose_reasoning=_verbose_reasoning,
         )
         return _consumer_cfg, _pause_typing_before_finalize
 

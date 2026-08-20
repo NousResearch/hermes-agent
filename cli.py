@@ -1803,7 +1803,7 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
 
     repo_root = repo_root or _git_repo_root()
     if not repo_root:
-        print("\033[31m✗ --worktree requires being inside a git repository.\033[0m")
+        _cprint("\033[31m✗ --worktree requires being inside a git repository.\033[0m")
         print("  cd into your project repo first, then run hermes -w")
         return None
 
@@ -1822,7 +1822,7 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
 
     wt_path = worktrees_dir / wt_name
     if name and wt_path.exists():
-        print(f"\033[31m✗ Worktree already exists: {wt_path}\033[0m")
+        _cprint(f"\033[31m✗ Worktree already exists: {wt_path}\033[0m")
         print("  Pick a different name, or remove it with: "
               f"git worktree remove {wt_path}")
         return None
@@ -1892,7 +1892,7 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
                 )
             if result.returncode != 0:
                 _cleanup_failed_worktree_add(repo_root, wt_path, branch_name)
-                print(f"\033[31m✗ Failed to create worktree: {result.stderr.strip()}\033[0m")
+                _cprint(f"\033[31m✗ Failed to create worktree: {result.stderr.strip()}\033[0m")
                 return None
     except Exception as e:
         # A timed-out/failed `worktree add` is NOT atomic: git leaves the
@@ -1903,7 +1903,7 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
         # the error (Aug 2026 incident: 30s timeout during pack-sprawl left
         # exactly this poison).
         _cleanup_failed_worktree_add(repo_root, wt_path, branch_name)
-        print(f"\033[31m✗ Failed to create worktree: {e}\033[0m")
+        _cprint(f"\033[31m✗ Failed to create worktree: {e}\033[0m")
         return None
 
     # Copy files listed in .worktreeinclude (gitignored files the agent needs)
@@ -1998,7 +1998,7 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
         "base": base_ref,
     }
 
-    print(f"\033[32m✓ Worktree created:\033[0m {wt_path}")
+    _cprint(f"\033[32m✓ Worktree created:\033[0m {wt_path}")
     print(f"  Branch: {branch_name}")
     print(f"  Base:   {base_label}")
 
@@ -2453,10 +2453,10 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
             # origin/*, so already-public commits look "unpushed". Be honest
             # about why we're keeping it — the startup pruner deepens the
             # clone in the background and will reap it on a later startup.
-            print(f"\n\033[33m⚠ Shallow clone — cannot verify push state, keeping: {wt_path}\033[0m")
+            _cprint(f"\n\033[33m⚠ Shallow clone — cannot verify push state, keeping: {wt_path}\033[0m")
             print("  The next `hermes -w` session deepens the clone and prunes merged worktrees automatically.")
         else:
-            print(f"\n\033[33m⚠ Worktree has unpushed commits, keeping: {wt_path}\033[0m")
+            _cprint(f"\n\033[33m⚠ Worktree has unpushed commits, keeping: {wt_path}\033[0m")
             print(f"  To clean up manually: git worktree remove --force {wt_path}")
         _active_worktree = None
         return
@@ -2491,7 +2491,7 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
         logger.debug("Failed to delete branch %s: %s", branch, e)
 
     _active_worktree = None
-    print(f"\033[32m✓ Worktree cleaned up: {wt_path}\033[0m")
+    _cprint(f"\033[32m✓ Worktree cleaned up: {wt_path}\033[0m")
 
 
 def _run_state_db_auto_maintenance(session_db) -> None:

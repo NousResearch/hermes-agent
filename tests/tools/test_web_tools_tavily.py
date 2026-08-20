@@ -192,11 +192,16 @@ class TestTavilyAvailability:
             assert _get_backend() == "ddgs"
 
     def test_no_keys_defaults_to_firecrawl(self):
+        """Keyless tier disabled: zero-credential resolve hits the legacy
+        firecrawl sentinel. (With the tier on — the default — it resolves
+        to the Exa/Parallel keyless split; see test_web_keyless_fallback.py.)
+        """
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
              patch("tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch("tools.web_tools._list_registered_web_providers", return_value=[]):
+             patch("tools.web_tools._list_registered_web_providers", return_value=[]), \
+             patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
             os.environ.pop("TAVILY_API_KEY", None)
             assert _get_backend() == "firecrawl"
 

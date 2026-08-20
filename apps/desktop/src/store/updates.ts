@@ -17,8 +17,8 @@ import type {
 import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
-import { dismissNotification, notify } from '@/store/notifications'
 import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connections'
+import { dismissNotification, notify } from '@/store/notifications'
 import { $connection } from '@/store/session'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
 

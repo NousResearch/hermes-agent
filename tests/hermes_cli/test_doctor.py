@@ -655,6 +655,50 @@ def test_run_doctor_accepts_vendor_slugs_for_named_custom_provider(monkeypatch, 
     assert "Either set model.provider to 'openrouter', or drop the vendor prefix." not in out
 
 
+def test_run_doctor_accepts_command_code_vendor_slugs(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: commandcode\n"
+        "  default: deepseek/deepseek-v4-flash\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "model.provider 'commandcode' is not a recognised provider" not in out
+    assert "model.provider 'commandcode' is unknown" not in out
+    assert (
+        "model.default 'deepseek/deepseek-v4-flash' uses a vendor/model slug but provider is "
+        "'commandcode'"
+        not in out
+    )
+    assert "Either set model.provider to 'openrouter', or drop the vendor prefix." not in out
+
+
 
 
 def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):

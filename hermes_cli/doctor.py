@@ -1417,6 +1417,12 @@ def run_doctor(args):
                 # is exclusively ``vendor/model`` slugs (Qwen/Qwen3.5-…,
                 # meta-llama/Llama-3-…, anthropic/claude-opus-4-7, …).
                 "deepinfra",
+                # CommandCode is an aggregator-style gateway whose catalog
+                # is exclusively ``vendor/model`` slugs (deepseek/…,
+                # Qwen/…, zai-org/…, MiniMaxAI/…, nvidia/…, xiaomi/…,
+                # stepfun/…). Note the registry id is ``commandcode``
+                # (no hyphen); ``command-code`` is not a known provider.
+                "commandcode",
             }
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs

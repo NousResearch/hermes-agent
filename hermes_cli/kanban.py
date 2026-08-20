@@ -2252,6 +2252,15 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         return 1
     summary = getattr(args, "summary", None)
     raw_meta = getattr(args, "metadata", None)
+    # Guard: an empty handoff (no summary, no result) is rejected by the
+    # kanban_complete tool handler; keep the CLI path in parity so cards
+    # can't be closed with a NULL result from here either.
+    if not (summary or args.result):
+        print(
+            "kanban: provide at least one of: summary (preferred), result",
+            file=sys.stderr,
+        )
+        return 2
     # Guard: structured handoff fields are per-run, so they'd be
     # copy-pasted identically across N runs — almost always a footgun.
     # Refuse instead of silently doing the wrong thing.

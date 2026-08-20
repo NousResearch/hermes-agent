@@ -2629,6 +2629,31 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
     return None
 
 
+def _non_conversational_startup_violation(config) -> Optional[str]:
+    """Return a startup-abort reason when a non_conversational profile has a
+    messaging platform enabled, else ``None``.
+
+    A ``gateway.non_conversational: true`` profile is declared to have no chat
+    surface — it exists to tick cron only. Any enabled ``platforms.*`` entry
+    contradicts that contract, so the gateway must fail closed rather than
+    quietly expose a chat channel on a profile the operator intended to be
+    execution-only. See #85792.
+    """
+    if not getattr(config, "non_conversational", False):
+        return None
+    enabled = sorted(
+        platform.value
+        for platform, platform_config in getattr(config, "platforms", {}).items()
+        if getattr(platform_config, "enabled", False)
+    )
+    if not enabled:
+        return None
+    return (
+        "non_conversational profile has messaging platform(s) enabled: "
+        f"{', '.join(enabled)}"
+    )
+
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -12407,7 +12432,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
             self._request_clean_exit(reason)
             return True
-        
+
+        # Cron-only guard: a gateway.non_conversational profile must have no
+        # chat surface. Fail closed BEFORE any adapter is created if a messaging
+        # platform is enabled, so a profile the operator declared execution-only
+        # can never quietly come up serving a chat channel (#85792). This runs
+        # before platform adapter creation and cannot be bypassed by
+        # ``hermes --profile <name> gateway run`` the way documentation or a
+        # systemd ExecStartPre could.
+        nc_reason = _non_conversational_startup_violation(self.config)
+        if nc_reason:
+            logger.error(
+                "Refusing to start: gateway.non_conversational is set but %s. "
+                "A non_conversational profile ticks cron only — remove the "
+                "platform entries from this profile's config.yaml, or unset "
+                "gateway.non_conversational to allow a chat surface.",
+                nc_reason,
+            )
+            try:
+                from gateway.status import write_runtime_status
+                write_runtime_status(
+                    gateway_state="startup_failed", exit_reason=nc_reason
+                )
+            except Exception:
+                pass
+            self._exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
+            self._request_clean_exit(nc_reason)
+            return True
+
         # Discover Python plugins before shell hooks so plugin block
         # decisions take precedence in tie cases.  The CLI startup path
         # does this via an explicit call in hermes_cli/main.py; the
@@ -15030,6 +15082,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Enable GATEWAY_ALLOW_ALL_USERS or the platform allow-all flag "
                 "for that profile, or change dm_policy/group_policy away from "
                 "'open'."
+            )
+
+        # A non_conversational secondary profile must not expose a chat surface.
+        # This is a fatal multiplexer config error (not a per-profile skip): the
+        # operator explicitly declared the profile cron-only, so serving a
+        # platform for it would silently violate that contract. Aborting the
+        # whole multiplexer forces the config to be fixed rather than running a
+        # gateway that half-honors the guard (#85792).
+        nc_reason = _non_conversational_startup_violation(profile_cfg)
+        if nc_reason:
+            raise MultiplexConfigError(
+                f"Profile '{profile_name}' sets gateway.non_conversational but "
+                f"{nc_reason}. Remove the platform entries from that profile's "
+                "config.yaml, or unset gateway.non_conversational to allow a "
+                "chat surface."
             )
 
         port_binding_platforms = sorted(

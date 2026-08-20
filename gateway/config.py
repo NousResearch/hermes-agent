@@ -974,6 +974,16 @@ class GatewayConfig:
     # historical serve-all behavior; [] serves only the default profile.
     multiplex_profile_allowlist: Optional[List[str]] = None
 
+    # Cron-only / non-conversational profile guard (opt-in; default off).
+    # When True, this profile is declared to have NO chat surface: the gateway
+    # refuses to start if any messaging platform is enabled, and the profile
+    # multiplexer aborts if a secondary profile with this flag enables a
+    # platform. A gateway with zero platforms still ticks cron, so operators can
+    # split request intake (a conversational profile) from scheduled execution
+    # (this profile) with a first-class, non-bypassable guarantee instead of
+    # relying on documentation or systemd ExecStartPre alone. See #85792.
+    non_conversational: bool = False
+
     # Opt-in systemd event-loop watchdog. Zero preserves Type=simple and
     # disables sd_notify at runtime.
     systemd_watchdog_seconds: int = 0
@@ -1122,6 +1132,7 @@ class GatewayConfig:
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
             "multiplex_profile_allowlist": self.multiplex_profile_allowlist,
+            "non_conversational": self.non_conversational,
             "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
             "loop_watchdog": self.loop_watchdog,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
@@ -1223,6 +1234,14 @@ class GatewayConfig:
         env_multiplex = _env_multiplex_profiles_override()
         if env_multiplex is not None:
             multiplex_profiles = env_multiplex
+
+        # Non-conversational (cron-only) guard. Top-level key wins; the nested
+        # gateway.non_conversational form (written by
+        # ``hermes config set gateway.non_conversational true``) is the fallback,
+        # mirroring the multiplex_profiles precedence above.
+        non_conversational = data.get("non_conversational")
+        if non_conversational is None and isinstance(nested_gateway, dict):
+            non_conversational = nested_gateway.get("non_conversational")
         if "max_concurrent_sessions" in data:
             max_concurrent_raw = data.get("max_concurrent_sessions")
             max_concurrent_key = "max_concurrent_sessions"
@@ -1267,6 +1286,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             multiplex_profile_allowlist=multiplex_profile_allowlist,
+            non_conversational=_coerce_bool(non_conversational, False),
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=loop_watchdog,
             max_concurrent_sessions=max_concurrent_sessions,
@@ -1421,6 +1441,18 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["multiplex_profile_allowlist"] = gateway_section[
                     "multiplex_profile_allowlist"
                 ]
+
+            # Non-conversational (cron-only) guard: accept the top-level key and
+            # the nested gateway.non_conversational form (written by
+            # ``hermes config set gateway.non_conversational true``), mirroring
+            # the multiplex_profiles parity above.
+            if "non_conversational" in yaml_cfg:
+                gw_data["non_conversational"] = yaml_cfg["non_conversational"]
+            elif (
+                isinstance(gateway_section, dict)
+                and "non_conversational" in gateway_section
+            ):
+                gw_data["non_conversational"] = gateway_section["non_conversational"]
 
             # Profile-based routing rules: accept either top-level
             # ``profile_routes`` or the nested ``gateway.profile_routes`` form

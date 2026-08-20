@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 import { skinPref, ThemeProvider, useTheme } from './context'
-import { midnightTheme } from './presets'
+import { everforestTheme } from './presets'
 
 // The live-authoring loop: Hermes writes/edits one skin file and every surface
 // repaints. An in-place edit keeps the NAME — only the palette moves.
@@ -99,9 +99,9 @@ describe('ThemeProvider highlight preview', () => {
 
     const committed = ctx.themeName
 
-    act(() => ctx.previewTheme('midnight', 'dark'))
+    act(() => ctx.previewTheme('everforest', 'dark'))
 
-    expect(cssVar('--theme-foreground')).toBe(midnightTheme.colors.foreground)
+    expect(cssVar('--theme-foreground')).toBe(everforestTheme.darkColors!.foreground)
     // The commit surface does not change. The context name and the stored
     // preference keep their values.
     expect(ctx.themeName).toBe(committed)
@@ -111,22 +111,22 @@ describe('ThemeProvider highlight preview', () => {
   it('clearThemePreview repaints the committed appearance', () => {
     renderProbe()
 
-    act(() => ctx.previewTheme('midnight', 'dark'))
-    expect(cssVar('--theme-foreground')).toBe(midnightTheme.colors.foreground)
+    act(() => ctx.previewTheme('everforest', 'dark'))
+    expect(cssVar('--theme-foreground')).toBe(everforestTheme.darkColors!.foreground)
 
     act(() => ctx.clearThemePreview())
-    expect(cssVar('--theme-foreground')).not.toBe(midnightTheme.colors.foreground)
+    expect(cssVar('--theme-foreground')).not.toBe(everforestTheme.darkColors!.foreground)
   })
 
   it('a commit replaces the preview and persists', () => {
     renderProbe()
 
-    act(() => ctx.previewTheme('midnight', 'dark'))
+    act(() => ctx.previewTheme('everforest', 'dark'))
     act(() => ctx.setTheme('mono'))
 
     expect(ctx.themeName).toBe('mono')
     expect(skinPref.resolve('default')).toBe('mono')
-    expect(cssVar('--theme-foreground')).not.toBe(midnightTheme.colors.foreground)
+    expect(cssVar('--theme-foreground')).not.toBe(everforestTheme.darkColors!.foreground)
   })
 
   it('ignores a preview of an unknown theme', () => {

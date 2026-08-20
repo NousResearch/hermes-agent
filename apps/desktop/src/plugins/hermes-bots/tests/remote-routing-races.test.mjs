@@ -90,13 +90,11 @@ function load({ requestProfile, agents, profileRoutes, storage } = {}) {
         migratedLocalRoutes,
         newBotChat,
         openBotCanonicalChat,
-        openProfileSession,
         persistBotMetaSnapshot,
         prepareBotSource,
         requestForBot,
         saveBotMeta,
-        setPluginStorage: storage => { pluginCtx = { storage } },
-        useProfileSessions
+        setPluginStorage: storage => { pluginCtx = { storage } }
       }
     `)
   vm.runInNewContext(code, context, { filename: 'plugin.js' })
@@ -346,26 +344,6 @@ test('delayed duplicate, delete, and new chat keep source ownership', async () =
   assert.ok(routes.every(route => route.connectionId === 'remote-a'))
 })
 
-test('remote session browsing and opening use the captured route after activation changes', async () => {
-  const runtime = load()
-  let query
-  runtime.context.useQuery = config => {
-    query = config
-    return config
-  }
-  const result = runtime.context.__race.useProfileSessions(remoteBot, 0)
-  await runtime.host.ensureAgent('remote-b', 'default')
-  await result.queryFn()
-  assert.equal(query.queryKey[2], 'remote-a::default')
-  const routedList = runtime.calls.find(call => call[0] === 'profile' && call[2] === 'session.list')
-  assert.equal(routedList[1].connectionId, 'remote-a')
-
-  await runtime.context.__race.openProfileSession(remoteBot, { id: 'stored-remote', message_count: 1 }, 0)
-  const open = runtime.calls.find(call => call[0] === 'openSession')
-  assert.equal(open[2].route.connectionId, 'remote-a')
-  assert.equal(open[2].route.targetProfile, 'remote-default')
-  assert.equal(runtime.calls.some(call => call[0] === 'ambient'), false)
-})
 
 test('default deletion is rejected in the executable mutation layer', async () => {
   const runtime = load()

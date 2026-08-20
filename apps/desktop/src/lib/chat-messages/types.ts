@@ -121,6 +121,15 @@ export type GatewayEventPayload = {
   side?: string
   steps?: unknown
   step_index?: number
+  // preview.act.request (drive_preview tool — agent clicking/typing/scrolling in
+  // the in-app browser). `action` names the verb and `selector` is shared with
+  // tour above; `ref` addresses an element from the last inventory.
+  ref?: string
+  submit?: boolean
+  key?: string
+  amount?: number
+  to?: string
+  max?: number
   // message.reaction (agent reacting via the react_to_message tool) — the
   // durable messages.id, that row's full reaction list after the write, and
   // the row's role so a live (not-yet-round-tripped) message can be matched.

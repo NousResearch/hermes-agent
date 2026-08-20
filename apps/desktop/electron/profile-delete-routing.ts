@@ -88,28 +88,29 @@ export async function dispatchConnectionScopedProfileDelete<T>(
   request: ConnectionScopedProfileDeleteRequest,
   deps: ConnectionScopedProfileDeleteDeps<T>
 ): Promise<T> {
-  const profile = profileNameFromDeleteRequest(request)
+  const targetProfile = profileNameFromDeleteRequest(request)
+  const logicalProfile = String(request.profile ?? '').trim() || targetProfile || ''
   const connectionId = String(request.connectionId ?? '').trim()
 
-  if (!profile || !connectionId) {
+  if (!targetProfile || !connectionId) {
     throw new Error('Connection-scoped profile deletion requires a connection and profile.')
   }
 
-  if (deps.isDefaultProfile(profile)) {
+  if (deps.isDefaultProfile(targetProfile)) {
     throw new Error('The default profile cannot be deleted.')
   }
 
-  if (!deps.isValidProfileName(profile)) {
-    throw new Error(`Invalid profile name: ${profile}`)
+  if (!deps.isValidProfileName(targetProfile)) {
+    throw new Error(`Invalid profile name: ${targetProfile}`)
   }
 
-  const release = deps.acquire(profile)
+  const release = deps.acquire(targetProfile)
 
   try {
     if (deps.connectionKind(connectionId) === 'local') {
       await deps.prepareLocal(request)
     } else {
-      await deps.teardownConnection(connectionId, profile)
+      await deps.teardownConnection(connectionId, logicalProfile)
     }
 
     return await deps.dispatch(null)

@@ -8,7 +8,7 @@ const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf
 /** Load the plugin in a vm with a scripted cli.exec so member turns are
  *  deterministic. `turnScript(profile, prompt)` returns the member's reply
  *  text (or throws to simulate a failed turn). */
-function load(turnScript, { busyUntilResumeCall } = {}) {
+function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approvalUntilResumeCall } = {}) {
   const values = new Map()
   const atom = initial => {
     const slot = { get: () => values.get(slot), set: value => values.set(slot, value) }
@@ -16,6 +16,8 @@ function load(turnScript, { busyUntilResumeCall } = {}) {
     return slot
   }
   const calls = []
+  const clarifyResponds = []
+  const approvalResponds = []
   const sessions = new Map()
   const runtimeToStored = new Map()
   const titleToStored = new Map()
@@ -63,13 +65,23 @@ function load(turnScript, { busyUntilResumeCall } = {}) {
           resumeCallCounts.set(profile, seen)
           const limit = busyUntilResumeCall && busyUntilResumeCall[profile]
           const busy = Boolean(limit && seen <= limit)
+          // clarifyUntilResumeCall[profile] = {payload, until}: the resume
+          // snapshot carries pending_clarify for the first `until` calls —
+          // simulating a member blocked on its clarify tool (#90694).
+          const clarify = clarifyUntilResumeCall && clarifyUntilResumeCall[profile]
+          const pendingClarify = clarify && seen <= clarify.until ? clarify.payload : null
+          // Same window shape for pending command approvals (#90694 class).
+          const approval = approvalUntilResumeCall && approvalUntilResumeCall[profile]
+          const pendingApproval = approval && seen <= approval.until ? approval.payload : null
           return {
             session_id: session.runtime,
             session_key: session.stored,
             message_count: session.messages.length,
             messages: [...session.messages],
             inflight: busy,
-            running: busy
+            running: busy,
+            ...(pendingClarify ? { pending_clarify: pendingClarify } : {}),
+            ...(pendingApproval ? { pending_approval: pendingApproval } : {})
           }
         }
         if (method === 'prompt.submit') {
@@ -89,6 +101,14 @@ function load(turnScript, { busyUntilResumeCall } = {}) {
           session.messages.push({ role: 'assistant', content: reply })
           return {}
         }
+        if (method === 'clarify.respond') {
+          clarifyResponds.push({ ...params })
+          return { ok: true }
+        }
+        if (method === 'approval.respond') {
+          approvalResponds.push({ ...params })
+          return { resolved: true }
+        }
         return {}
       },
       state: { profile: { get: () => 'default', listen: () => undefined }, gateway: { listen: () => undefined } },
@@ -104,7 +124,7 @@ function load(turnScript, { busyUntilResumeCall } = {}) {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, disbandGroupChat, updateGroupChat, openGroupChat, closeGroupChatMainTab, $groupChats, $groupNeedsYou, $groupChatWorkspace, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, disbandGroupChat, updateGroupChat, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -112,7 +132,7 @@ function load(turnScript, { busyUntilResumeCall } = {}) {
     storage: { get: () => null, set: (key, value) => storageWrites.set(key, value) },
     register: () => undefined
   })
-  return { ...context.__gc, calls, host: context.host, sessions, storageWrites }
+  return { ...context.__gc, approvalResponds, calls, clarifyResponds, host: context.host, sessions, storageWrites }
 }
 
 const MEMBERS = [{ name: 'research', title: '' }, { name: 'builder', title: '' }, { name: 'ops', title: 'The Ops' }]
@@ -366,9 +386,72 @@ test('group selection follows main-window open and close', () => {
 
   gc.openGroupChat('Core')
   assert.equal(gc.$groupChatWorkspace.get(), 'Core')
+  // #89788: the main tab owns the room, so the pane keeps its roster.
+  assert.equal(gc.shouldRenderGroupChatInPane('Core'), false)
 
   onClose()
   assert.equal(gc.$groupChatWorkspace.get(), null)
+  assert.equal(gc.shouldRenderGroupChatInPane('Core'), true)
+})
+
+test('older and failed workspace hosts keep the in-pane group fallback', () => {
+  const older = load(() => '(pass)')
+
+  older.openGroupChat('Core')
+  assert.equal(older.$groupChatWorkspace.get(), 'Core')
+  assert.equal(older.shouldRenderGroupChatInPane('Core'), true)
+
+  const failed = load(() => '(pass)')
+
+  failed.host.openWorkspace = () => {
+    throw new Error('workspace unavailable')
+  }
+
+  failed.openGroupChat('Ops')
+  assert.equal(failed.$groupChatWorkspace.get(), 'Ops')
+  assert.equal(failed.shouldRenderGroupChatInPane('Ops'), true)
+})
+
+test('main-tab ownership is recorded before the selection atom paints (#89788 follow-up)', () => {
+  const gc = load(() => '(pass)')
+  // Simulate a BotsPane render racing the open: sample the gate at the
+  // moment the selection atom flips. If the tab were recorded after the
+  // atom set, this probe would observe selected-but-unowned and the
+  // in-pane duplicate would paint beside the main tab.
+  let gateAtSelection = null
+  const realSet = gc.$groupChatWorkspace.set
+
+  gc.$groupChatWorkspace.set = value => {
+    if (value === 'Core' && gateAtSelection === null) {
+      gateAtSelection = gc.shouldRenderGroupChatInPane('Core')
+    }
+
+    realSet(value)
+  }
+  gc.host.openWorkspace = () => () => undefined
+
+  gc.openGroupChat('Core')
+  assert.equal(gateAtSelection, false)
+})
+
+test('tab open/close bumps the reactive rev so the pane gate re-evaluates', () => {
+  const gc = load(() => '(pass)')
+  let onClose
+
+  gc.host.openWorkspace = (_id, options) => {
+    onClose = options.onClose
+    return () => onClose()
+  }
+
+  const before = gc.$groupMainTabsRev.get()
+
+  gc.openGroupChat('Core')
+  assert.ok(gc.$groupMainTabsRev.get() > before, 'recording the main tab must bump the rev')
+
+  const afterOpen = gc.$groupMainTabsRev.get()
+
+  onClose()
+  assert.ok(gc.$groupMainTabsRev.get() > afterOpen, 'closing the main tab must bump the rev')
 })
 
 test('closing an older selected group does not clear the newer selection', () => {
@@ -821,4 +904,223 @@ test('group room preview renders the bot HANDLE, not the raw profile name', () =
   assert.match(pluginSource, /const lastHandle = botHandle\(lastFrom \|\| 'bot', members\.find\(/)
   assert.match(pluginSource, /\? `\$\{last\.from\?\.kind === 'user' \? 'You' : `@\$\{lastHandle\}`\}/)
   assert.doesNotMatch(pluginSource, /`@\$\{last\.from\?\.name \|\| 'bot'\}`/)
+})
+
+// ── group clarify (#90694): member questions surface in the room ──────────
+
+const CLARIFY_PAYLOAD = {
+  request_id: 'req-clarify-1',
+  question: 'Which env should I target?',
+  choices: ['staging', 'prod'],
+  multi_select: false
+}
+
+test('a member blocked on clarify surfaces its question and holds the turn open', async () => {
+  // research reports pending_clarify on its first two resumes after the
+  // submit; the turn must NOT read it as done/pass while the question waits.
+  const gc = load(() => 'targeting staging', {
+    clarifyUntilResumeCall: { research: { payload: CLARIFY_PAYLOAD, until: 3 } }
+  })
+
+  const thread = gc.sendToGroupChat('Core', [MEMBERS[0]], '@research deploy it', null, [])
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  // Mirrored while blocked, cleared once the resume stops reporting it.
+  const log = gc.$groupChats.get().Core.log.filter(e => e.thread === thread)
+  const replies = log.filter(e => e.from.kind === 'member')
+
+  assert.equal(replies.length, 1, 'the finished reply still lands after the clarify clears')
+  assert.equal(replies[0].text, 'targeting staging')
+  assert.equal(Object.keys(gc.$groupClarify.get()).length, 0, 'the mirrored question is cleared once resolved')
+  // The mirror pass ran while the question was blocking: it badges the room
+  // needs-you. The sabotaged (pre-fix) poll never inspects pending_clarify,
+  // so this stays unset — the observable proof the gate executed.
+  assert.equal(gc.$groupNeedsYou.get().Core, true, 'the blocking question badged the room')
+})
+
+test('syncGroupClarify mirrors, badges needs-you, and is idempotent per request', () => {
+  const gc = load(() => '(pass)')
+  const member = { name: 'research', title: '' }
+
+  const blocked = gc.syncGroupClarify('Core', member, { pending_clarify: CLARIFY_PAYLOAD })
+  assert.equal(blocked, true)
+
+  const mirrored = Object.values(gc.$groupClarify.get())
+  assert.equal(mirrored.length, 1)
+  assert.equal(mirrored[0].requestId, 'req-clarify-1')
+  assert.equal(mirrored[0].question, 'Which env should I target?')
+  assert.equal(JSON.stringify(mirrored[0].choices), JSON.stringify(['staging', 'prod']))
+  assert.equal(gc.$groupNeedsYou.get().Core, true)
+
+  // Same request again: no new entry, identity preserved.
+  const first = mirrored[0]
+  gc.syncGroupClarify('Core', member, { pending_clarify: CLARIFY_PAYLOAD })
+  assert.equal(Object.values(gc.$groupClarify.get())[0], first)
+
+  // Question resolved server-side: the mirror clears.
+  const still = gc.syncGroupClarify('Core', member, {})
+  assert.equal(still, false)
+  assert.equal(Object.keys(gc.$groupClarify.get()).length, 0)
+})
+
+test('older backends without pending_clarify never mirror a question', () => {
+  const gc = load(() => '(pass)')
+
+  assert.equal(gc.syncGroupClarify('Core', { name: 'research' }, { messages: [] }), false)
+  assert.equal(Object.keys(gc.$groupClarify.get()).length, 0)
+})
+
+test('answerGroupClarify routes clarify.respond and clears the mirror', async () => {
+  const gc = load(() => '(pass)')
+  const member = { name: 'research', title: '' }
+
+  gc.syncGroupClarify('Core', member, { pending_clarify: CLARIFY_PAYLOAD })
+  const entry = Object.values(gc.$groupClarify.get())[0]
+
+  await gc.answerGroupClarify(entry, member, 'staging')
+
+  assert.equal(JSON.stringify(gc.clarifyResponds), JSON.stringify([{ request_id: 'req-clarify-1', answer: 'staging' }]))
+  assert.equal(Object.keys(gc.$groupClarify.get()).length, 0)
+})
+
+test('answerGroupClarify sends one respond per batch question, in order', async () => {
+  const gc = load(() => '(pass)')
+  const member = { name: 'research', title: '' }
+  const batch = {
+    request_id: 'req-batch-1',
+    questions: [
+      { qid: 'q0', question: 'Env?', choices: ['staging', 'prod'] },
+      { qid: 'q1', question: 'Region?', choices: [] }
+    ]
+  }
+
+  gc.syncGroupClarify('Core', member, { pending_clarify: batch })
+  const entry = Object.values(gc.$groupClarify.get())[0]
+
+  await gc.answerGroupClarify(entry, member, { q0: 'staging', q1: 'eu-west' })
+
+  assert.equal(
+    JSON.stringify(gc.clarifyResponds),
+    JSON.stringify([
+      { request_id: 'req-batch-1', question_id: 'q0', answer: 'staging' },
+      { request_id: 'req-batch-1', question_id: 'q1', answer: 'eu-west' }
+    ])
+  )
+  assert.equal(Object.keys(gc.$groupClarify.get()).length, 0)
+})
+
+test('disband clears the room mirrored questions', async () => {
+  const gc = load(() => '(pass)')
+
+  gc.syncGroupClarify('Core', { name: 'research' }, { pending_clarify: CLARIFY_PAYLOAD })
+  gc.syncGroupClarify('Other', { name: 'ops' }, { pending_clarify: { ...CLARIFY_PAYLOAD, request_id: 'req-2' } })
+
+  await gc.disbandGroupChat('Core', [])
+
+  const remaining = Object.values(gc.$groupClarify.get())
+  assert.equal(remaining.length, 1)
+  assert.equal(remaining[0].group, 'Other')
+})
+
+test('source contract: room renders clarify cards and the poll gates on them', () => {
+  assert.match(pluginSource, /function GroupClarifyCard\(/)
+  assert.match(pluginSource, /syncGroupClarify\(group, member, state\)/)
+  assert.match(pluginSource, /const done = !busy && !awaitingUser/)
+  assert.match(pluginSource, /busy \|\| awaitingUser/)
+  assert.match(pluginSource, /roomClarifies\.map\(entry =>/)
+  assert.match(pluginSource, /'clarify\.respond'/)
+})
+
+// ── group approvals: same hidden-session class as clarify (#90694) ─────────
+
+const APPROVAL_PAYLOAD = {
+  request_id: 'req-approval-1',
+  command: 'rm -rf ./build',
+  description: 'Clean the build directory',
+  choices: ['once', 'session', 'deny']
+}
+
+test('a member blocked on a command approval surfaces an approval card and holds the turn', async () => {
+  const gc = load(() => 'build cleaned', {
+    approvalUntilResumeCall: { research: { payload: APPROVAL_PAYLOAD, until: 3 } }
+  })
+
+  const thread = gc.sendToGroupChat('Core', [MEMBERS[0]], '@research clean up', null, [])
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  const log = gc.$groupChats.get().Core.log.filter(e => e.thread === thread)
+  const replies = log.filter(e => e.from.kind === 'member')
+
+  assert.equal(replies.length, 1, 'the finished reply still lands after the approval clears')
+  assert.equal(replies[0].text, 'build cleaned')
+  assert.equal(Object.keys(gc.$groupClarify.get()).length, 0)
+  assert.equal(gc.$groupNeedsYou.get().Core, true, 'the blocking approval badged the room')
+})
+
+test('syncGroupClarify mirrors an approval with kind, command, and server choices', () => {
+  const gc = load(() => '(pass)')
+  const member = { name: 'research', title: '' }
+
+  const blocked = gc.syncGroupClarify('Core', member, {
+    session_id: 'rt-research-1',
+    pending_approval: APPROVAL_PAYLOAD
+  })
+  assert.equal(blocked, true)
+
+  const entry = Object.values(gc.$groupClarify.get())[0]
+  assert.equal(entry.kind, 'approval')
+  assert.equal(entry.command, 'rm -rf ./build')
+  assert.equal(entry.question, 'Clean the build directory')
+  assert.equal(JSON.stringify(entry.choices), JSON.stringify(['once', 'session', 'deny']))
+  assert.equal(entry.sessionId, 'rt-research-1')
+})
+
+test('an approval without a server choice set falls back to once/deny', () => {
+  const gc = load(() => '(pass)')
+
+  gc.syncGroupClarify('Core', { name: 'research' }, {
+    pending_approval: { request_id: 'req-a2', command: 'ls' }
+  })
+
+  const entry = Object.values(gc.$groupClarify.get())[0]
+  assert.equal(JSON.stringify(entry.choices), JSON.stringify(['once', 'deny']))
+})
+
+test('answerGroupClarify routes approvals through approval.respond with session + choice', async () => {
+  const gc = load(() => '(pass)')
+  const member = { name: 'research', title: '' }
+
+  gc.syncGroupClarify('Core', member, { session_id: 'rt-research-1', pending_approval: APPROVAL_PAYLOAD })
+  const entry = Object.values(gc.$groupClarify.get())[0]
+
+  await gc.answerGroupClarify(entry, member, 'once')
+
+  assert.equal(
+    JSON.stringify(gc.approvalResponds),
+    JSON.stringify([{ session_id: 'rt-research-1', request_id: 'req-approval-1', choice: 'once' }])
+  )
+  assert.equal(gc.clarifyResponds.length, 0, 'approvals never touch the clarify wire')
+  assert.equal(Object.keys(gc.$groupClarify.get()).length, 0)
+})
+
+test('clarify outranks approval when a snapshot carries both', () => {
+  const gc = load(() => '(pass)')
+
+  gc.syncGroupClarify('Core', { name: 'research' }, {
+    pending_clarify: CLARIFY_PAYLOAD,
+    pending_approval: APPROVAL_PAYLOAD
+  })
+
+  const entry = Object.values(gc.$groupClarify.get())[0]
+  assert.equal(entry.kind, 'clarify')
+  assert.equal(entry.requestId, 'req-clarify-1')
+})
+
+test('source contract: approval card renders the command and routes approval.respond', () => {
+  assert.match(pluginSource, /pending_approval/)
+  assert.match(pluginSource, /'approval\.respond'/)
+  assert.match(pluginSource, /kind: 'approval'/)
+  assert.match(pluginSource, /wants to run a command/)
 })

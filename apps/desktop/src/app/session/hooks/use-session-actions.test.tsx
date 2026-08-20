@@ -163,7 +163,7 @@ describe('connection-qualified session deletion', () => {
   afterEach(() => {
     cleanup()
     setSessions([])
-    vi.restoreAllMocks()
+    vi.clearAllMocks()
   })
 
   it('deletes a registry session through its captured connection owner', async () => {

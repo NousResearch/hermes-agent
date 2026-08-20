@@ -262,7 +262,7 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "medium"}
 
-    def test_nous_omits_disabled_reasoning(self, transport):
+    def test_nous_omits_disabled_reasoning_for_unknown_model(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("nous")
         msgs = [{"role": "user", "content": "Hi"}]
@@ -272,7 +272,10 @@ class TestChatCompletionsBuildKwargs:
             supports_reasoning=True,
             reasoning_config={"enabled": False},
         )
-        # Nous rejects enabled=false; reasoning omitted entirely
+        # Not a Portal model id, so the catalog can't rule out a
+        # reasoning-mandatory route (which 400s on a disable) — omit.
+        # tests/plugins/model_providers/test_nous_profile.py covers the
+        # catalog-known cases where the disable IS forwarded.
         assert "reasoning" not in kw.get("extra_body", {})
 
     def test_ollama_num_ctx(self, transport):

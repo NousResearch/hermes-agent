@@ -167,9 +167,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<platform>", cli_only=True),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
-    CommandDef("worktree", "Show, list, or create isolated git worktrees for this session", "Session",
-               cli_only=True, args_hint="[new [name]|list]",
-               subcommands=("new", "list")),
+    CommandDef("worktree", "Show, list, create, or prune isolated git worktrees", "Session",
+               cli_only=True, args_hint="[new [name]|list|prune [--dry-run]]",
+               subcommands=("new", "list", "prune")),
     CommandDef("compress", "Compress conversation context (add 'here [N]' to keep recent N turns; --preview shows what would happen)", "Session",
                aliases=("compact",), args_hint="[here [N] | focus topic | --preview|--dry-run]"),
     CommandDef("rollback", "List or restore filesystem checkpoints (restores keep your hand-edits; --all overrides)", "Session",
@@ -263,7 +263,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("diff", "Show git changes in the working directory", "Info",
                args_hint="[staged|all|session] [--stat] [path...]",
                subcommands=("staged", "all", "session")),
-    CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose -> log",
+    CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
                "Configuration", cli_only=True,
                gateway_config_gate="display.tool_progress_command",
                busy_policy="dispatch"),
@@ -358,8 +358,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]", busy_policy="dispatch",
                execute="gateway_commands"),
-    CommandDef("help", "Show available commands", "Info", busy_policy="dispatch",
-               execute="gateway_help"),
+    CommandDef("help", "Show available commands (/help skills lists skill commands, /help <text> filters)", "Info", busy_policy="dispatch",
+               execute="gateway_help", args_hint="[skills|<filter>]"),
+    CommandDef("palette", "Open the fuzzy command palette (also Ctrl+P)", "Info",
+               cli_only=True, busy_policy="dispatch"),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True, busy_policy="dispatch"),
     CommandDef("usage", "Show token usage and rate limits; `reset` redeems a banked Codex limit reset", "Info",
@@ -447,6 +449,24 @@ SUBCOMMANDS: dict[str, list[str]] = {}
 for _cmd in COMMAND_REGISTRY:
     if _cmd.subcommands:
         SUBCOMMANDS[f"/{_cmd.name}"] = list(_cmd.subcommands)
+
+
+# Help renderer sub-grouping: the "Session" category accumulated ~46 commands
+# spanning genuinely different concerns (lifecycle, context, background/async).
+# Rather than re-tag every CommandDef (category is load-bearing for gateway
+# help + other surfaces), the /help renderer splits Session into readable
+# sub-headers using these command-name sets. Any Session command not listed
+# here falls under the base "Session" header. Names are bare (no leading /).
+HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
+    "Context": (
+        "compress", "compact", "context", "ctx", "status",
+    ),
+    "Background & Automation": (
+        "background", "bg", "btw", "agents", "tasks", "queue", "q", "steer",
+        "goal", "subgoal", "heartbeat", "hb", "refine", "loop", "proactive",
+        "moa", "journey", "learning", "memory-graph",
+    ),
+}
 
 # Also extract subcommands hinted in args_hint via pipe-separated patterns
 # e.g. args_hint="[on|off|tts|status]" for commands that don't have explicit subcommands.

@@ -3,8 +3,13 @@
 ``venv\\Scripts\\hermes.exe`` is a launcher that runs the interpreter with the
 shim itself as its script, keeping the file open without FILE_SHARE_DELETE for
 the whole command. An update started that way must therefore replace a file it
-is holding, which Windows refuses — so ``hermes update`` re-runs itself under
-``venv\\Scripts\\python.exe`` before touching anything.
+is holding, which Windows refuses — so the DEPENDENCY SYNC re-runs itself under
+``venv\\Scripts\\python.exe``.
+
+The hand-off sits at the sync boundary, not at the top of ``hermes update``:
+everything before it (the fetch, the stash question, the branch switch) runs
+in the user's own console, and an up-to-date run that never syncs never hands
+off at all.
 
 ``_is_windows`` is patched so these paths are exercised on any host.
 """
@@ -129,7 +134,7 @@ def test_reexec_runs_same_args_under_venv_python(venv, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update", "--yes"])
     calls = _capture_popen(monkeypatch)
 
-    assert cli_main._reexec_update_off_windows_shim() is True
+    assert cli_main._reexec_dependency_sync_off_windows_shim() is True
     cmd, env, kwargs = calls[0]
     assert cmd == [
         str(venv / "python.exe"), "-m", "hermes_cli.main", "update", "--yes",
@@ -143,7 +148,7 @@ def test_reexec_child_runs_unattended(venv, monkeypatch):
     monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update"])
     calls = _capture_popen(monkeypatch)
 
-    assert cli_main._reexec_update_off_windows_shim() is True
+    assert cli_main._reexec_dependency_sync_off_windows_shim() is True
     assert calls[0][2]["stdin"] is cli_main.subprocess.DEVNULL
 
 
@@ -152,13 +157,13 @@ def test_reexec_does_not_recurse(venv, monkeypatch):
     monkeypatch.setenv(cli_main._UPDATE_REEXEC_ENV, "1")
     calls = _capture_popen(monkeypatch)
 
-    assert cli_main._reexec_update_off_windows_shim() is False
+    assert cli_main._reexec_dependency_sync_off_windows_shim() is False
     assert calls == []
 
 
 def test_reexec_skipped_when_not_launched_from_a_shim(venv, monkeypatch):
     calls = _capture_popen(monkeypatch)
-    assert cli_main._reexec_update_off_windows_shim() is False
+    assert cli_main._reexec_dependency_sync_off_windows_shim() is False
     assert calls == []
 
 
@@ -166,16 +171,84 @@ def test_reexec_falls_through_when_venv_python_is_missing(venv, monkeypatch, cap
     (venv / "python.exe").unlink()
     monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update"])
 
-    assert cli_main._reexec_update_off_windows_shim() is False
-    assert "-m hermes_cli.main update" in capsys.readouterr().out
+    assert cli_main._reexec_dependency_sync_off_windows_shim() is False
+    assert "-m hermes_cli.main update" not in capsys.readouterr().out
 
 
 def test_reexec_falls_through_when_spawn_fails(venv, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update"])
     _capture_popen(monkeypatch, raises=OSError("no exec"))
 
-    assert cli_main._reexec_update_off_windows_shim() is False
+    assert cli_main._reexec_dependency_sync_off_windows_shim() is False
     assert "-m hermes_cli.main update" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Hand-off placement: the sync boundary, not the top of the command
+# ---------------------------------------------------------------------------
+
+
+def test_up_to_date_run_never_hands_off(venv, monkeypatch, capsys):
+    """The regression that started this: a no-op update must not detach.
+
+    The hand-off used to run before the fetch, so every ``hermes update`` —
+    including the ``Already up to date!`` case that never touches the venv —
+    spawned a child and returned to the shell, leaving the child printing
+    into a console it no longer owned. ``--check`` is the cheapest real run
+    that reaches ``cmd_update`` and exits without syncing; nothing may be
+    spawned along the way.
+    """
+    monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update", "--check"])
+    calls = _capture_popen(monkeypatch)
+    monkeypatch.setattr(cli_main, "_cmd_update_check", lambda **kwargs: None)
+
+    cli_main.cmd_update(types.SimpleNamespace(check=True, branch=None))
+
+    assert calls == [], "an up-to-date run must not spawn a detached child"
+
+
+def test_sync_guard_hands_off_when_only_the_shim_is_held(venv, monkeypatch):
+    """No native module mapped, but we ARE the shim: hand off and exit 0."""
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update"])
+    monkeypatch.setattr(cli_main, "_detect_self_loaded_native_modules", lambda: [])
+    calls = _capture_popen(monkeypatch)
+
+    with pytest.raises(SystemExit) as excinfo:
+        update_cmd._abort_dependency_sync_if_self_locked()
+
+    assert excinfo.value.code == 0
+    assert calls, "expected the dependency sync to be handed to the venv python"
+
+
+def test_sync_guard_defers_native_lock_before_considering_the_shim(venv, monkeypatch):
+    """A mapped .pyd still exits 2 — the marker recovery owns that case."""
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update"])
+    monkeypatch.setattr(
+        cli_main, "_detect_self_loaded_native_modules", lambda: ["PyYAML (_yaml.pyd)"]
+    )
+    monkeypatch.setattr(cli_main, "_defer_update_for_self_lock", lambda loaded: None)
+    calls = _capture_popen(monkeypatch)
+
+    with pytest.raises(SystemExit) as excinfo:
+        update_cmd._abort_dependency_sync_if_self_locked()
+
+    assert excinfo.value.code == 2
+    assert calls == [], "a native-module deferral must not also spawn a child"
+
+
+def test_sync_guard_is_a_noop_when_nothing_is_held(venv, monkeypatch):
+    """Off the shim with nothing mapped, the sync just proceeds in-process."""
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(cli_main, "_detect_self_loaded_native_modules", lambda: [])
+    calls = _capture_popen(monkeypatch)
+
+    update_cmd._abort_dependency_sync_if_self_locked()
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------

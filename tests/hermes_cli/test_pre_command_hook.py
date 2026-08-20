@@ -118,7 +118,7 @@ def test_cli_fires_for_recognized_command(monkeypatch):
     monkeypatch.setattr(plugins_mod, "fire_pre_command_hook", _capture)
 
     inst = _make_cli()
-    inst.show_help = lambda: None
+    inst.show_help = lambda *a, **k: None
     assert inst.process_command("/help") is True
 
     assert captured["surface"] == "cli"
@@ -158,7 +158,7 @@ def test_cli_passes_raw_args(monkeypatch):
     )
 
     inst = _make_cli()
-    inst.show_help = lambda: None
+    inst.show_help = lambda *a, **k: None
     # /help ignores args but the payload must carry them raw (case kept).
     inst.process_command("/help Some RAW args")
     assert captured["args_raw"] == "Some RAW args"
@@ -175,7 +175,7 @@ def test_cli_hook_before_handler(monkeypatch):
     )
 
     inst = _make_cli()
-    inst.show_help = lambda: order.append("handler")
+    inst.show_help = lambda *a, **k: order.append("handler")
     inst.process_command("/help")
     assert order == ["hook", "handler"]
 

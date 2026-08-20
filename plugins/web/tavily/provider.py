@@ -17,47 +17,62 @@ Config keys this provider responds to::
 
 Env vars::
 
-    TAVILY_API_KEY=...           # https://app.tavily.com/home (required)
+    TAVILY_API_KEY=...           # https://app.tavily.com/home (optional)
     TAVILY_BASE_URL=...          # optional override of https://api.tavily.com
+
+Auth is header-based. A key uses ``Authorization: Bearer``; without a key
+the request is keyless (``X-Tavily-Access-Mode: keyless``). Both paths
+send ``X-Client-Name: hermes-agent``.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List
+
+import httpx
 
 from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
 
+_CLIENT_NAME = "hermes-agent"
+
+
+def _tavily_headers(api_key: str) -> Dict[str, str]:
+    """Build Tavily request headers for keyed or keyless access."""
+    headers = {"X-Client-Name": _CLIENT_NAME}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    else:
+        headers["X-Tavily-Access-Mode"] = "keyless"
+    return headers
+
 
 def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """POST to the Tavily API and return the parsed JSON response.
 
-    Mirrors :func:`tools.web_tools._tavily_request`. Raises ``ValueError``
-    when ``TAVILY_API_KEY`` is unset; the caller catches and surfaces as
-    a typed error response.
+    Keyed when ``TAVILY_API_KEY`` is set (Bearer auth); otherwise keyless.
+    Non-2xx responses raise ``ValueError`` with the response body so Tavily's
+    keyless rate-limit / upgrade text reaches the model.
     """
-    import httpx
-
     from agent.web_search_provider import get_provider_env
 
     api_key = get_provider_env("TAVILY_API_KEY")
-    if not api_key:
-        raise ValueError(
-            "TAVILY_API_KEY environment variable not set. "
-            "Get your API key at https://app.tavily.com/home"
-        )
-
     base_url = get_provider_env("TAVILY_BASE_URL") or "https://api.tavily.com"
-    payload = dict(payload)  # don't mutate caller's dict
-    payload["api_key"] = api_key
     url = f"{base_url}/{endpoint.lstrip('/')}"
     logger.info("Tavily %s request to %s", endpoint, url)
 
-    response = httpx.post(url, json=payload, timeout=60)
-    response.raise_for_status()
+    response = httpx.post(
+        url,
+        json=payload,
+        timeout=60,
+        headers=_tavily_headers(api_key),
+    )
+    if response.status_code >= 400:
+        body = (response.text or "").strip()
+        detail = body or f"HTTP {response.status_code}"
+        raise ValueError(detail)
     return response.json()
 
 
@@ -144,6 +159,18 @@ class TavilyWebSearchProvider(WebSearchProvider):
 
         return bool(get_provider_env("TAVILY_API_KEY"))
 
+    def is_keyless_available(self) -> bool:
+        """Tavily serves anonymous keyless requests (X-Tavily-Access-Mode).
+
+        Default-on ring member of the keyless free tier: fresh installs
+        rotate across Exa/Parallel/Tavily/Firecrawl/Keenable. False when
+        the user pinned ``web.provider_tier.tavily: paid`` — an explicit
+        paid selection opts the free endpoint out.
+        """
+        from plugins.web.keyless_mcp import keyless_enabled, provider_tier
+
+        return keyless_enabled() and provider_tier("tavily") != "paid"
+
     def supports_search(self) -> bool:
         return True
 
@@ -157,6 +184,18 @@ class TavilyWebSearchProvider(WebSearchProvider):
 
             if is_interrupted():
                 return {"success": False, "error": "Interrupted"}
+
+            from agent.web_search_provider import get_provider_env
+
+            from plugins.web.keyless_mcp import search_with_failover, use_keyless
+
+            if use_keyless("tavily", get_provider_env("TAVILY_API_KEY")):
+                # Keyless free tier — ring dispatch with next-in-line
+                # failover on rate limits.
+                logger.info(
+                    "Tavily keyless search: '%s' (limit=%d)", query, limit
+                )
+                return search_with_failover("tavily", query, limit)
 
             logger.info("Tavily search: '%s' (limit=%d)", query, limit)
             raw = _tavily_request(
@@ -189,6 +228,16 @@ class TavilyWebSearchProvider(WebSearchProvider):
                     {"url": u, "error": "Interrupted", "title": ""} for u in urls
                 ]
 
+            from agent.web_search_provider import get_provider_env
+
+            from plugins.web.keyless_mcp import extract_with_failover, use_keyless
+
+            if use_keyless("tavily", get_provider_env("TAVILY_API_KEY")):
+                # Keyless free tier — ring dispatch with next-in-line
+                # failover on rate limits.
+                logger.info("Tavily keyless extract: %d URL(s)", len(urls))
+                return extract_with_failover("tavily", list(urls))
+
             logger.info("Tavily extract: %d URL(s)", len(urls))
             raw = _tavily_request(
                 "extract",
@@ -212,12 +261,12 @@ class TavilyWebSearchProvider(WebSearchProvider):
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "Tavily",
-            "badge": "paid",
-            "tag": "Search + extract in one provider.",
+            "badge": "free · key optional",
+            "tag": "Search + extract. Works keyless; set TAVILY_API_KEY for higher limits.",
             "env_vars": [
                 {
                     "key": "TAVILY_API_KEY",
-                    "prompt": "Tavily API key",
+                    "prompt": "Tavily API key (optional — keyless works without it)",
                     "url": "https://app.tavily.com/home",
                 },
             ],

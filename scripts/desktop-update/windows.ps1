@@ -776,6 +776,20 @@ try {
         exit $finalCode
     }
     $updateArgs = @("-m", "hermes_cli.main", "update", "--yes", "--gateway", "--force", "--branch", $Branch)
+    # --keep-stash: never re-apply local source edits after the update (they
+    # stay parked in git stash). Probe --help first: the flag ships with newer
+    # backends and an unknown flag would abort argparse with exit 2, which
+    # collides with the "close all Hermes windows" sentinel.
+    try {
+        $updateHelp = & $pythonExe -m hermes_cli.main update --help 2>$null | Out-String
+        if ($updateHelp -match "--keep-stash") {
+            $updateArgs += "--keep-stash"
+        } else {
+            Write-HandoffLog "installed hermes predates --keep-stash; running without it"
+        }
+    } catch {
+        Write-HandoffLog "could not probe update --help; running without --keep-stash"
+    }
     Write-HandoffLog ("running: python " + ($updateArgs -join " "))
     Publish-UiProgress "Updating code and dependencies"
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"

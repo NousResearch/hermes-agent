@@ -222,6 +222,41 @@ test('explicit registered SSH DELETE tears down its source backend before dispat
   ])
 })
 
+test('non-identity connection DELETE tears down the logical pool and deletes the backend target', async () => {
+  const events: string[] = []
+  const request = {
+    connectionId: 'source-a',
+    method: 'DELETE',
+    path: '/api/profiles/backend-worker',
+    profile: 'worker'
+  }
+
+  await dispatchConnectionScopedProfileDelete(request, {
+    ...deps,
+    acquire: profile => {
+      events.push(`gate:${profile}`)
+      return () => events.push(`release:${profile}`)
+    },
+    connectionKind: () => 'ssh',
+    dispatch: async routeProfile => {
+      events.push(`delete:${request.path}:${routeProfile ?? 'primary'}`)
+      return 'deleted'
+    },
+    prepareLocal: async () => assert.fail('remote deletion must not use local profile teardown'),
+    teardownConnection: async (connectionId, profile) => {
+      events.push(`teardown:${connectionId}:${profile}`)
+      assert.notEqual(profile, 'backend-worker', 'must not stop the backend-target pool')
+    }
+  })
+
+  assert.deepEqual(events, [
+    'gate:backend-worker',
+    'teardown:source-a:worker',
+    'delete:/api/profiles/backend-worker:primary',
+    'release:backend-worker'
+  ])
+})
+
 test('connection-scoped default DELETE rejects before gate, preparation, teardown, or dispatch', async () => {
   const events: string[] = []
 

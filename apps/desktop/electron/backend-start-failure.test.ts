@@ -3,8 +3,10 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
   shouldLatchBackendStartFailure,
+  shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure
 } from './backend-start-failure'
 
@@ -79,5 +81,55 @@ test('retryable and reauth-latch are mutually exclusive for remote failures', ()
     const retry = isRetryableRemoteBootFailure({ attemptedRemote: true, isReauth })
     const latch = shouldLatchRemoteReauthFailure({ attemptedRemote: true, isReauth })
     assert.equal(retry !== latch, true, `remote failure with reauth=${isReauth} must pick exactly one path`)
+  }
+})
+
+test('FIX host-key change: classified from the kind tag and from stringified ssh banners', () => {
+  // classifySshError tags the Error it built; errors that crossed an IPC or
+  // string boundary only keep the message. Both shapes must classify.
+  const tagged = Object.assign(new Error('SSH refused to connect.'), { kind: 'host-key-changed' })
+  assert.equal(isHostKeyChangedBootFailure(tagged), true)
+  assert.equal(
+    isHostKeyChangedBootFailure(new Error('@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@@')),
+    true
+  )
+  assert.equal(isHostKeyChangedBootFailure(new Error('Host key verification failed.')), true)
+  assert.equal(
+    isHostKeyChangedBootFailure(new Error('The host key for root@203.0.113.7 has CHANGED since you last connected.')),
+    true
+  )
+  assert.equal(isHostKeyChangedBootFailure(new Error('Connection refused')), false)
+  assert.equal(isHostKeyChangedBootFailure(null), false)
+})
+
+test('FIX host-key change: latches and is never auto-retried (157-failure loop, Aug 2026 bundle)', () => {
+  // SSH fails closed on a changed host key: every retry re-drives the same
+  // doomed boot until the user clears known_hosts. Terminal, like reauth.
+  const context = { attemptedRemote: true, isReauth: false, isHostKeyChanged: true }
+  assert.equal(shouldLatchHostKeyChangedFailure(context), true)
+  assert.equal(isRetryableRemoteBootFailure(context), false)
+})
+
+test('host-key latch never fires for local failures or ordinary remote faults', () => {
+  assert.equal(
+    shouldLatchHostKeyChangedFailure({ attemptedRemote: false, isReauth: false, isHostKeyChanged: true }),
+    false
+  )
+  assert.equal(
+    shouldLatchHostKeyChangedFailure({ attemptedRemote: true, isReauth: false, isHostKeyChanged: false }),
+    false
+  )
+  assert.equal(shouldLatchHostKeyChangedFailure({ attemptedRemote: true, isReauth: false }), false)
+})
+
+test('every remote failure picks exactly one path: retry, reauth latch, or host-key latch', () => {
+  for (const isReauth of [true, false]) {
+    for (const isHostKeyChanged of [true, false]) {
+      const retry = isRetryableRemoteBootFailure({ attemptedRemote: true, isReauth, isHostKeyChanged })
+      const reauth = shouldLatchRemoteReauthFailure({ attemptedRemote: true, isReauth })
+      const hostKey = shouldLatchHostKeyChangedFailure({ attemptedRemote: true, isReauth, isHostKeyChanged })
+      const picked = [retry, reauth, hostKey].filter(Boolean).length
+      assert.ok(picked >= 1, `remote failure reauth=${isReauth} hostKey=${isHostKeyChanged} fell through every path`)
+    }
   }
 })

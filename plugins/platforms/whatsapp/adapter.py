@@ -570,7 +570,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not (bridge_dir / "node_modules").exists():
                 self._set_fatal_error(
                     "whatsapp_dependencies_missing",
-                    "WhatsApp bridge dependencies are missing; they must be preinstalled during Hermes setup or update before the gateway starts.",
+                    "WhatsApp bridge dependencies are missing; run `hermes whatsapp` "
+                    "to install them before starting the gateway.",
                     retryable=False,
                 )
                 return False

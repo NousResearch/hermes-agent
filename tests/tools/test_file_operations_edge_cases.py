@@ -247,6 +247,64 @@ class TestPaginationBounds:
         assert "| head -n 1" in rg_commands[0]
 
 
+class TestReadFileTransportFailures:
+    """Transport silence must not be reported as an empty regular file."""
+
+    @pytest.fixture()
+    def ops(self):
+        env = MagicMock()
+        env.cwd = "/tmp"
+        return ShellFileOperations(env)
+
+    def test_empty_size_probe_fails_instead_of_claiming_file_is_empty(self, ops):
+        with patch.object(
+            ops,
+            "_exec",
+            return_value=MagicMock(exit_code=0, stdout=""),
+        ):
+            result = ops.read_file("linked-worktree.ts")
+
+        assert "Failed to determine file size" in result.error
+        assert "terminal backend returned ''" in result.error
+
+    def test_empty_line_count_probe_fails_instead_of_returning_zero_lines(self, ops):
+        def fake_exec(command, *args, **kwargs):
+            if command.startswith("if [ -f "):
+                return MagicMock(exit_code=0, stdout="17\n")
+            if command.startswith("head -c"):
+                return MagicMock(exit_code=0, stdout="aGVsbG8gd29ybGQ=\n")
+            if command.startswith("sed -n"):
+                return MagicMock(exit_code=0, stdout="hello world\n")
+            if command.startswith("wc -l"):
+                return MagicMock(exit_code=0, stdout="")
+            return MagicMock(exit_code=0, stdout="")
+
+        with patch.object(ops, "_exec", side_effect=fake_exec):
+            result = ops.read_file("linked-worktree.ts")
+
+        assert "Failed to determine line count" in result.error
+        assert "terminal backend returned ''" in result.error
+
+    def test_empty_content_for_positive_size_in_range_fails_closed(self, ops):
+        def fake_exec(command, *args, **kwargs):
+            if command.startswith("if [ -f "):
+                return MagicMock(exit_code=0, stdout="17\n")
+            if command.startswith("head -c"):
+                return MagicMock(exit_code=0, stdout="aGVsbG8gd29ybGQ=\n")
+            if command.startswith("sed -n"):
+                return MagicMock(exit_code=0, stdout="")
+            if command.startswith("wc -l"):
+                return MagicMock(exit_code=0, stdout="1\n")
+            return MagicMock(exit_code=0, stdout="")
+
+        with patch.object(ops, "_exec", side_effect=fake_exec):
+            result = ops.read_file("delegation-summary.txt")
+
+        assert "terminal backend returned empty content" in result.error
+        assert "nonempty 17-byte file" in result.error
+        assert result.content == ""
+
+
 # =========================================================================
 # Search context parsing
 # =========================================================================

@@ -1497,13 +1497,22 @@ class ShellFileOperations(FileOperations):
             # No equivalent spelling — suggest similar files
             return self._suggest_similar_files(path)
 
+        # A successful size probe must still carry its numeric payload. Some
+        # backend failures have returned exit 0 with empty stdout; coercing that
+        # transport silence to zero falsely labels a committed file as empty.
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
         if stat_output.strip() == NOT_REGULAR_SENTINEL:
             return self._not_regular_error(path)
         try:
             file_size = int(stat_output.strip())
         except ValueError:
-            file_size = 0
+            return ReadResult(
+                error=(
+                    f"Failed to determine file size for '{path}': terminal backend "
+                    f"returned {stat_output!r}. Retry the read; if this persists, "
+                    "check the terminal backend diagnostics."
+                )
+            )
         
         # Check if file is too large
         if file_size > MAX_FILE_SIZE:
@@ -1600,7 +1609,22 @@ class ShellFileOperations(FileOperations):
         try:
             total_lines = int(wc_output.strip())
         except ValueError:
-            total_lines = 0
+            return ReadResult(
+                error=(
+                    f"Failed to determine line count for '{path}': terminal backend "
+                    f"returned {wc_output!r}. Retry the read; if this persists, "
+                    "check the terminal backend diagnostics."
+                )
+            )
+
+        if not read_output and file_size > 0 and (offset == 1 or offset <= total_lines):
+            return ReadResult(
+                error=(
+                    f"Failed to read '{path}': terminal backend returned empty content "
+                    f"for a nonempty {file_size}-byte file at in-range offset {offset}. "
+                    "Retry the read; if this persists, check the terminal backend diagnostics."
+                )
+            )
         
         # Check if truncated
         truncated = total_lines > end_line

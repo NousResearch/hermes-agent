@@ -770,8 +770,17 @@ _TOOL_ERROR_CDATA_RE = re.compile(r'<!\[CDATA\[.*?\]\]>', re.DOTALL)
 # Single home for the tool-error context cap: tools/registry.py. Both this
 # sanitizer (exception paths) and the dispatch-boundary bounding
 # (tool_error / _bound_json_error_result) trim to the same budget so text
-# never passes two different caps with two different markers.
-from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
+# never passes two different caps with two different markers. During an
+# in-process upgrade, however, a pre-cap registry module can remain cached
+# while this newer module is imported lazily. Preserve the old sanitizer cap
+# in that mixed-version window instead of failing the entire tool import.
+import tools.registry as _tool_registry_module
+
+_TOOL_ERROR_MAX_LEN = getattr(
+    _tool_registry_module,
+    "_MAX_TOOL_ERROR_CHARS",
+    2000,
+)
 
 
 def _sanitize_tool_error(error_msg: str) -> str:

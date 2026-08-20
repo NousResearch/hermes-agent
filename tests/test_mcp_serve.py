@@ -848,6 +848,54 @@ class TestE2EMessagesSend:
         assert call_args["action"] == "send"
         assert call_args["target"] == "telegram:123456"
 
+    def test_send_survives_legacy_loaded_tool_registry(
+        self, mcp_server_e2e, _event_loop, monkeypatch
+    ):
+        """A rolling upgrade must not fail before reaching the platform sender."""
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from gateway.config import Platform
+        import tools.registry as registry_module
+        import tools.send_message_tool as send_message_module
+
+        server, _ = mcp_server_e2e
+        telegram_config = SimpleNamespace(enabled=True, token="test-token", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.TELEGRAM: telegram_config},
+            get_home_channel=lambda _platform: None,
+        )
+        sender = AsyncMock(
+            return_value={"success": True, "platform": "telegram", "message_id": "1"}
+        )
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+        monkeypatch.setattr(send_message_module, "_send_to_platform", sender)
+        monkeypatch.setattr("gateway.mirror.mirror_to_session", lambda *_args, **_kwargs: False)
+
+        # Reproduce a long-lived bridge that retained the registry module from
+        # before the shared error cap existed, then lazily imports model_tools.
+        monkeypatch.delitem(sys.modules, "model_tools", raising=False)
+        monkeypatch.delattr(registry_module, "_MAX_TOOL_ERROR_CHARS")
+
+        result = _run_tool(
+            server,
+            "messages_send",
+            {"target": "telegram:123456", "message": "Hello!"},
+        )
+
+        assert result["success"] is True
+        sender.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_config,
+            "123456",
+            "Hello!",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
 
 class TestE2EChannelsList:
     def test_channels_from_sessions(self, mcp_server_e2e, _event_loop):

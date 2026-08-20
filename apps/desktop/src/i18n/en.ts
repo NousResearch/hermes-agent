@@ -1016,6 +1016,7 @@ export const en: Translations = {
       defaultsLabel: 'Defaults',
       reasoning: 'Reasoning',
       reasoningOff: 'Off',
+      localReasoningOff: 'Reasoning off for local models',
       defaultsFailed: 'Failed to save model defaults',
       auxiliaryTitle: 'Auxiliary models',
       resetAllToMain: 'Reset all to main',

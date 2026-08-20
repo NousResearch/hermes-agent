@@ -19,7 +19,7 @@ Scoring per family:
 """
 from __future__ import annotations
 
-import json, os, shutil, sys, time, traceback
+import json, os, sys, time, traceback
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -208,7 +208,7 @@ def run_one(scenario, mode, rep, out_dir: Path):
         "final_response": base._redact_secrets(final_response)[:400],
     }
     (out_dir / f"{scenario['id']}__{mode}__rep{rep}.json").write_text(json.dumps(rec, indent=1), encoding="utf-8")
-    shutil.rmtree(Path(os.environ["HERMES_HOME"]).parent, ignore_errors=True)
+    base.cleanup_isolated_home(hermes_home)
     return rec
 
 

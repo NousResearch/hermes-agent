@@ -86,6 +86,12 @@ SHUTDOWN_GRACE = 1.0  # seconds between SIGTERM and SIGKILL
 MAX_CONTENT_MODIFIED_RETRIES = 3
 RETRY_BASE_DELAY = 0.5  # 0.5, 1.0, 2.0 — exponential
 
+# Most files a client keeps open (didOpen'd) at once. Each tracked file
+# pins its full text here AND a mirror copy in the server; the LRU cap
+# bounds both. 64 comfortably covers the working set of an active edit
+# loop while keeping worst-case pinned text in the low MBs.
+MAX_TRACKED_FILES = 64
+
 
 def file_uri(path: str) -> str:
     """Return ``file://`` URI for an absolute filesystem path.
@@ -232,6 +238,14 @@ class LSPClient:
         # Per-document state (version, text, diagnostic stores, and
         # their freshness tags), keyed by absolute file path (NOT URI).
         # See _DocState for the version-based freshness model.
+        #
+        # Insertion-ordered LRU capped at MAX_TRACKED_FILES: each entry
+        # holds the file's full text (for incremental-sync ranges), and the
+        # server mirrors every open document in its own memory, so an
+        # uncapped dict pins the contents of every file a long coding run
+        # ever touches — on both sides of the pipe — until the whole client
+        # is reaped. Evicted files are didClose'd and transparently
+        # re-didOpen'ed on their next touch.
         self._docs: Dict[str, _DocState] = {}
         # Capability registrations — only diagnostic ones are tracked.
         self._diagnostic_registrations: Dict[str, Dict[str, Any]] = {}
@@ -771,6 +785,9 @@ class LSPClient:
             # stale by definition (see _DocState).
             doc.version = new_version
             doc.text = text
+            # pop+reinsert refreshes LRU recency (dicts are insertion-ordered).
+            self._docs.pop(abs_path, None)
+            self._docs[abs_path] = doc
             return new_version
 
         # First open: didChangeWatchedFiles CREATED + didOpen.
@@ -792,7 +809,28 @@ class LSPClient:
                 }
             },
         )
+        await self._evict_lru_files()
         return 0
+
+    async def _evict_lru_files(self) -> None:
+        """didClose + drop least-recently-opened files beyond MAX_TRACKED_FILES.
+
+        Frees the cached text on our side and lets the server release its
+        mirror of the document. Per-path diagnostic state goes with it —
+        the fresh-open path rebuilds it on the file's next touch.
+        """
+        while len(self._docs) > MAX_TRACKED_FILES:
+            old_path = next(iter(self._docs))
+            # One _DocState carries text, both diagnostic stores, and their
+            # freshness tags, so dropping the entry releases all of it.
+            self._docs.pop(old_path, None)
+            try:
+                await self._send_notification(
+                    "textDocument/didClose",
+                    {"textDocument": {"uri": file_uri(old_path)}},
+                )
+            except Exception as e:
+                logger.debug("didClose during LRU eviction failed for %s: %s", old_path, e)
 
     async def save_file(self, path: str) -> None:
         """Send didSave for ``path``.  Some linters re-scan only on save."""

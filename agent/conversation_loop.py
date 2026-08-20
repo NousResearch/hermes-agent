@@ -7213,8 +7213,9 @@ def run_conversation(
                 # as a fallback final response. Common pattern: model delivers its
                 # answer and calls memory/skill tools as a side-effect in the same
                 # turn. If the follow-up turn after tools is empty, we use this.
-                if turn_content and agent._has_content_after_think_block(turn_content):
-                    agent._last_content_with_tools = turn_content
+                _effective = turn_content or getattr(agent, "_current_streamed_assistant_text", "")
+                if _effective and agent._has_content_after_think_block(_effective):
+                    agent._last_content_with_tools = _effective
                     # Only mute subsequent output when EVERY tool call in
                     # this turn is post-response housekeeping (memory, todo,
                     # skill_manage, etc.).  If any substantive tool is present
@@ -7224,7 +7225,7 @@ def run_conversation(
                     if _all_housekeeping and agent._has_stream_consumers():
                         agent._mute_post_response = True
                     elif agent._should_emit_quiet_tool_messages():
-                        clean = agent._strip_think_blocks(turn_content).strip()
+                        clean = agent._strip_think_blocks(_effective).strip()
                         if clean:
                             agent._vprint(f"  ┊ 💬 {clean}")
                 

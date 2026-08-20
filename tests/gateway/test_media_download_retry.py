@@ -100,6 +100,16 @@ class TestCacheImageFromBytes:
         assert path.endswith(".jpg")
 
 
+    def test_magic_bytes_override_misleading_extension(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+
+        path = cache_image_from_bytes(
+            b"RIFF\x00\x00\x00\x00WEBP fake webp data", ".jpg"
+        )
+
+        assert path.endswith(".webp")
+
     def test_rejects_html_content(self, tmp_path, monkeypatch):
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
         from gateway.platforms.base import cache_image_from_bytes
@@ -410,7 +420,7 @@ class TestSlackDownloadSlackFile:
                 )
 
         path = asyncio.run(run())
-        assert path.endswith(".jpg")
+        assert path.endswith(".png")
         mock_client.get.assert_called_once()
 
     def test_rejects_html_response(self, tmp_path, monkeypatch):
@@ -441,7 +451,6 @@ class TestSlackDownloadSlackFile:
         img_dir = tmp_path / "img"
         if img_dir.exists():
             assert list(img_dir.iterdir()) == []
-
 
 # ---------------------------------------------------------------------------
 # SlackAdapter._download_slack_file_bytes
@@ -556,4 +565,3 @@ class TestMattermostSendUrlAsFile:
         adapter.send.assert_called_once()
         text_arg = adapter.send.call_args[0][1]
         assert "http://cdn.example.com/img.png" in text_arg
-

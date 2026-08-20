@@ -374,6 +374,10 @@ class ResponsesApiTransport(ProviderTransport):
             is_github_responses: bool — Copilot/GitHub models backend
             is_codex_backend: bool — chatgpt.com/backend-api/codex
             is_xai_responses: bool — xAI/Grok backend
+            is_custom_responses_backend: bool — any other /v1 provider using
+                this wire format (e.g. a Codex-protocol pooler); gets the
+                same session-scope headers as ``is_codex_backend`` but is
+                otherwise unaffected (#65094)
             github_reasoning_extra: dict | None — Copilot reasoning params
         """
         from agent.codex_responses_adapter import (
@@ -395,6 +399,7 @@ class ResponsesApiTransport(ProviderTransport):
         is_github_responses = params.get("is_github_responses") is True
         is_codex_backend = params.get("is_codex_backend") is True
         is_xai_responses = params.get("is_xai_responses") is True
+        is_custom_responses_backend = params.get("is_custom_responses_backend") is True
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
         )
@@ -632,7 +637,7 @@ class ResponsesApiTransport(ProviderTransport):
         else:
             kwargs.pop("timeout", None)
 
-        if is_codex_backend:
+        if is_codex_backend or is_custom_responses_backend:
             # The Codex backend rejects body-level ``extra_headers`` with
             # HTTP 400, but the OpenAI SDK's ``extra_headers`` kwarg maps
             # to actual HTTP request headers (not body fields).  ``session_id``
@@ -640,6 +645,8 @@ class ResponsesApiTransport(ProviderTransport):
             # the #57012 contract — while ``x-client-request-id`` mirrors the
             # body's effective ``prompt_cache_key`` so header and body always
             # agree on the same routing bucket instead of diverging (#78941).
+            # Also applied for custom /v1 providers on this wire format
+            # (`is_custom_responses_backend`, #65094).
             final_cache_key = kwargs.get("prompt_cache_key") or _bounded_prompt_cache_key(_cache_scope)
             if session_id or final_cache_key:
                 existing_extra_headers = kwargs.get("extra_headers")

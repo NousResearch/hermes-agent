@@ -93,6 +93,59 @@ class TestCleanupTaskResourcesHeadedSkip:
             mock_vm.assert_called_once_with("task-x")
 
 
+class TestAgentCloseBrowserIsolation:
+    def test_background_review_close_does_not_clean_shared_browser(self):
+        """A persistence-isolated review fork shares the parent task id."""
+        import threading
+        from run_agent import AIAgent
+
+        agent = AIAgent.__new__(AIAgent)
+        agent.session_id = "shared-task"
+        agent._persist_disabled = True
+        agent._active_children_lock = threading.Lock()
+        agent._active_children = []
+        agent.client = None
+        agent._cached_request_client = None
+        agent._codex_session = None
+        agent._session_messages = [{"role": "user", "content": "x"}]
+
+        with (
+            patch("tools.process_registry.process_registry.kill_all"),
+            patch("run_agent.cleanup_vm"),
+            patch("run_agent.cleanup_browser") as mock_browser,
+            patch("tools.computer_use.release_computer_use_session"),
+            patch("hermes_cli.mem_trim.trim_memory"),
+        ):
+            agent.close()
+
+        mock_browser.assert_not_called()
+
+    def test_normal_agent_close_cleans_browser(self):
+        import threading
+        from run_agent import AIAgent
+
+        agent = AIAgent.__new__(AIAgent)
+        agent.session_id = "normal-task"
+        agent._persist_disabled = False
+        agent._active_children_lock = threading.Lock()
+        agent._active_children = []
+        agent.client = None
+        agent._cached_request_client = None
+        agent._codex_session = None
+        agent._session_messages = []
+
+        with (
+            patch("tools.process_registry.process_registry.kill_all"),
+            patch("run_agent.cleanup_vm"),
+            patch("run_agent.cleanup_browser") as mock_browser,
+            patch("tools.computer_use.release_computer_use_session"),
+            patch("hermes_cli.mem_trim.trim_memory"),
+        ):
+            agent.close()
+
+        mock_browser.assert_called_once_with("normal-task")
+
+
 # ---------------------------------------------------------------------------
 # --headed flag injection in local mode
 # ---------------------------------------------------------------------------

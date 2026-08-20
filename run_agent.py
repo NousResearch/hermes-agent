@@ -4535,11 +4535,14 @@ class AIAgent:
         except Exception:
             pass
 
-        # 3. Clean browser daemon sessions
-        try:
-            cleanup_browser(task_id)
-        except Exception:
-            pass
+        # 3. Clean browser daemon sessions. Persistence-isolated forks (such
+        # as the background-review agent) share the parent task id, so they
+        # must not tear down the parent's browser session when they close.
+        if not getattr(self, "_persist_disabled", False):
+            try:
+                cleanup_browser(task_id)
+            except Exception:
+                pass
 
         # 4. Release the session-owned computer-use backend.  This ends the
         # exact cua-driver session, drops typed-browser refs/grants, and stops

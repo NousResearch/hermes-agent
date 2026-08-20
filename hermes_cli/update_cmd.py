@@ -3941,6 +3941,50 @@ def _orphaned_desktop_backend_pids(
     return roots
 
 
+def _ledger_reapable_backend_pids(
+    matches: list[tuple[int, str, str]],
+) -> list[int]:
+    """PIDs positively identified by the spawn ledger as orphaned backends.
+
+    The strongest rung: instead of inferring lineage from PPIDs or cmdline
+    shape, look each venv holder up in the machine spawn ledger
+    (``hermes_cli.process_identity``). A holder qualifies when ALL of:
+
+    - its ``(pid, create_time)`` matches a live ledger entry (PID reuse
+      cannot forge this pair);
+    - the entry's purpose is a reapable backend kind (serve/dashboard/
+      gateway — never interactive processes);
+    - the entry's recorded SPAWNER is provably dead (``spawner_is_dead``).
+
+    Unlike the heuristic rungs, this is safe in ANY update context — no
+    hand-off contract needed — because the ownership claim is explicit: the
+    process itself declared who supervises it, and that supervisor is gone.
+    Holders not in the ledger are simply not returned (they fall through to
+    the later rungs); they never disqualify the identified ones. Never raises.
+    """
+    try:
+        from hermes_cli.process_identity import (
+            REAPABLE_PURPOSES,
+            ledger_entries,
+            spawner_is_dead,
+        )
+
+        entries = ledger_entries()
+    except Exception:
+        return []
+    by_pid = {e.get("pid"): e for e in entries if isinstance(e.get("pid"), int)}
+    roots: list[int] = []
+    for pid, _name, _cmdline in matches:
+        entry = by_pid.get(int(pid))
+        if not entry:
+            continue
+        if entry.get("purpose") not in REAPABLE_PURPOSES:
+            continue
+        if spawner_is_dead(entry) is True:
+            roots.append(int(pid))
+    return roots
+
+
 def _handoff_reapable_backend_pids(
     matches: list[tuple[int, str, str]],
 ) -> list[int] | None:
@@ -4873,6 +4917,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         logger.debug(
                             "Could not stop leftover gateway %s: %s", _pid, exc
                         )
+                _time.sleep(1.0)
+                _venv_holders = _m()._detect_venv_python_processes()
+        if _venv_holders:
+            # Positive-identity rung (runs FIRST, any update context): holders
+            # the spawn ledger proves are orphaned Hermes backends — the
+            # process self-registered (pid, create_time, purpose, spawner) at
+            # startup and its recorded spawner is provably dead. No PPID
+            # archaeology, no hand-off contract required.
+            _ledger_backends = _m()._ledger_reapable_backend_pids(_venv_holders)
+            if _ledger_backends:
+                print(
+                    f"  ⚠ {len(_ledger_backends)} ledger-identified orphaned "
+                    "Hermes backend process(es) hold the venv; stopping their trees"
+                )
+                _m()._stop_process_trees(_ledger_backends)
                 _time.sleep(1.0)
                 _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:

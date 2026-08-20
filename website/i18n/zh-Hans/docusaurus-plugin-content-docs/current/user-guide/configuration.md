@@ -1520,7 +1520,7 @@ web:
 
 **自托管 Firecrawl：** 设置 `FIRECRAWL_API_URL` 指向您自己的实例。设置自定义 URL 后，API 密钥变为可选（在服务器上设置 `USE_DB_AUTHENTICATION=***` 以禁用认证）。
 
-**Parallel 搜索模式：** 设置 `PARALLEL_SEARCH_MODE` 控制搜索行为 —— `fast`、`one-shot` 或 `agentic`（默认：`agentic`）。
+**Parallel 搜索模式：** 设置 `PARALLEL_SEARCH_MODE` 控制搜索行为。旧版 `agentic`（默认值）映射到 v1 `advanced`；旧版 `one-shot` 和 `fast` 映射到 v1 `basic`。显式 v1 值 `basic`、`advanced` 和 `turbo` 会直接传递。使用 `v1-fast` 选择全新的 v1 `fast` 模式，该模式在 Beta 中没有对应项。
 
 **Exa：** 在 `~/.hermes/.env` 中设置 `EXA_API_KEY`。支持 `category` 过滤（`company`、`research paper`、`news`、`people`、`personal site`、`pdf`）和域名/日期过滤器。
 

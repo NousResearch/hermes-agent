@@ -1,7 +1,7 @@
 """Parallel.ai web search (sync ``Parallel`` SDK) + async extract (``AsyncParallel``).
 
 Env: ``PARALLEL_API_KEY`` (https://parallel.ai), optional
-``PARALLEL_SEARCH_MODE`` accepts v1 and legacy mode names.
+``PARALLEL_SEARCH_MODE`` accepts v1 modes and legacy names with their Beta semantics.
 """
 
 from __future__ import annotations
@@ -38,17 +38,23 @@ def _get_async_client() -> Any:
 
 
 _V1_SEARCH_MODES = {"turbo", "fast", "basic", "advanced"}
-_LEGACY_SEARCH_MODES = {
-    "agentic": "basic",
-    "one-shot": "advanced",
+_SEARCH_MODE_ALIASES = {
+    "agentic": "advanced",
+    "one-shot": "basic",
+    "fast": "basic",
+    "v1-fast": "fast",
 }
 
 
 def _resolve_search_mode() -> str:
-    """Return a validated v1 mode, translating legacy configuration values."""
+    """Translate configured modes to their semantically equivalent v1 value.
+
+    Bare ``fast`` retains its legacy Beta meaning (v1 ``basic``). The new v1
+    ``fast`` mode is available only through the explicit ``v1-fast`` alias.
+    """
     mode = os.getenv("PARALLEL_SEARCH_MODE", "agentic").lower().strip()
-    mode = _LEGACY_SEARCH_MODES.get(mode, mode)
-    return mode if mode in _V1_SEARCH_MODES else "basic"
+    mode = _SEARCH_MODE_ALIASES.get(mode, mode)
+    return mode if mode in _V1_SEARCH_MODES else "advanced"
 
 
 class ParallelWebSearchProvider(BaseWebSearchProvider):

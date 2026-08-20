@@ -8,7 +8,9 @@ tests/agent/test_direct_provider_url_detection.py.
 
 from __future__ import annotations
 
-from utils import base_url_hostname, base_url_host_matches
+import pytest
+
+from utils import base_url_hostname, base_url_host_matches, base_url_is_local_or_lan_ollama
 
 
 # ─── base_url_hostname ────────────────────────────────────────────────────
@@ -117,4 +119,44 @@ class TestOllamaUrlHostCheck:
         assert base_url_host_matches(
             "https://ollama.com/api/generate", "ollama.com"
         ) is True
+
+
+# ─── base_url_is_local_or_lan_ollama ──────────────────────────────────────
+
+
+class TestBaseUrlIsLocalOrLanOllama:
+    """Local/LAN Ollama detection for the reasoning-effort gate."""
+
+    def test_localhost_matches(self):
+        assert base_url_is_local_or_lan_ollama("http://localhost:11434/v1") is True
+        assert base_url_is_local_or_lan_ollama("http://localhost/v1") is True
+
+    def test_127_0_0_1_matches(self):
+        assert base_url_is_local_or_lan_ollama("http://127.0.0.1:11434/v1") is True
+
+    def test_ipv6_loopback_matches(self):
+        assert base_url_is_local_or_lan_ollama("http://[::1]:11434/v1") is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://192.168.1.100:11434/v1",
+            "http://10.0.0.5:11434/v1",
+            "http://172.16.0.1:11434/v1",
+            "http://172.31.255.255:11434/v1",
+        ],
+    )
+    def test_rfc1918_matches(self, url):
+        assert base_url_is_local_or_lan_ollama(url) is True
+
+    def test_public_ip_does_not_match(self):
+        assert base_url_is_local_or_lan_ollama("http://8.8.8.8:8000/v1") is False
+        assert base_url_is_local_or_lan_ollama("https://api.openai.com/v1") is False
+
+    def test_arbitrary_hostname_does_not_match(self):
+        assert base_url_is_local_or_lan_ollama("http://my-ollama.example.com:11434/v1") is False
+
+    def test_empty_returns_false(self):
+        assert base_url_is_local_or_lan_ollama("") is False
+        assert base_url_is_local_or_lan_ollama(None) is False  # type: ignore[arg-type]
 

@@ -6724,6 +6724,73 @@ class TestSupportsReasoningExtraBody:
             agent.model = model
             assert agent._supports_reasoning_extra_body() is True, model
 
+    # -- localhost / LAN Ollama reasoning gate --------------------------
+
+    def _make_ollama_agent(self, base_url: str, model: str = "qwen3"):
+        agent = object.__new__(AIAgent)
+        agent.provider = "custom"
+        agent.base_url = base_url
+        agent._base_url_lower = base_url.lower()
+        agent.model = model
+        return agent
+
+    def test_localhost_ollama_reaches_thinking_probe(self, monkeypatch):
+        """Local Ollama on localhost:11434 must reach the thinking probe."""
+        agent = self._make_ollama_agent("http://localhost:11434/v1")
+        monkeypatch.setattr(
+            agent, "_ollama_supports_thinking_cached", lambda: True
+        )
+        assert agent._supports_reasoning_extra_body() is True
+
+    def test_127_0_0_1_ollama_reaches_thinking_probe(self, monkeypatch):
+        """Local Ollama on 127.0.0.1 must reach the thinking probe."""
+        agent = self._make_ollama_agent("http://127.0.0.1:11434/v1")
+        monkeypatch.setattr(
+            agent, "_ollama_supports_thinking_cached", lambda: True
+        )
+        assert agent._supports_reasoning_extra_body() is True
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "http://192.168.1.100:11434/v1",
+            "http://10.0.0.5:11434/v1",
+            "http://172.16.0.1:11434/v1",
+        ],
+    )
+    def test_rfc1918_ollama_reaches_thinking_probe(self, monkeypatch, base_url):
+        """LAN Ollama on RFC1918 addresses must reach the thinking probe."""
+        agent = self._make_ollama_agent(base_url)
+        monkeypatch.setattr(
+            agent, "_ollama_supports_thinking_cached", lambda: True
+        )
+        assert agent._supports_reasoning_extra_body() is True
+
+    def test_localhost_ollama_probe_false_returns_false(self, monkeypatch):
+        """When the probe says the model doesn't think, gate stays closed."""
+        agent = self._make_ollama_agent("http://localhost:11434/v1")
+        monkeypatch.setattr(
+            agent, "_ollama_supports_thinking_cached", lambda: False
+        )
+        assert agent._supports_reasoning_extra_body() is False
+
+    def test_public_ip_does_not_reach_ollama_probe(self):
+        """A public OpenAI-compatible endpoint must not fall through to the
+        Ollama thinking probe."""
+        agent = self._make_ollama_agent("http://203.0.113.42:8000/v1")
+        # If the gate were wrong, it would try to call _ollama_supports_thinking_cached
+        # which is unbound on a bare object and would raise.  The assertion is that
+        # it returns False cleanly.
+        assert agent._supports_reasoning_extra_body() is False
+
+    def test_ollama_cloud_behavior_preserved(self, monkeypatch):
+        """The existing ollama.com gate still works and still calls the probe."""
+        agent = self._make_ollama_agent("https://ollama.com/v1")
+        monkeypatch.setattr(
+            agent, "_ollama_supports_thinking_cached", lambda: True
+        )
+        assert agent._supports_reasoning_extra_body() is True
+
 
 class TestMemoryContextSanitization:
     """sanitize_context() helper correctness — used at provider boundaries."""

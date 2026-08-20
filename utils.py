@@ -922,3 +922,34 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     if not domain:
         return False
     return hostname == domain or hostname.endswith("." + domain)
+
+
+def base_url_is_local_or_lan_ollama(base_url: str) -> bool:
+    """Return True when ``base_url`` points to a local Ollama-compatible server.
+
+    Matches loopback (``localhost``, ``127.0.0.1``, ``::1``) and RFC 1918
+    private IPv4 addresses (``10/8``, ``172.16/12``, ``192.168/16``).  These
+    are the typical addresses for a self-hosted Ollama instance that speaks
+    the same ``/v1`` and ``/api`` protocols as Ollama Cloud.
+
+    The probe is conservative: it does NOT match public IPs or arbitrary
+    hostnames, so a random OpenAI-compatible endpoint does not fall through
+    to the Ollama thinking-capability probe unless it is genuinely local.
+    """
+    import ipaddress
+
+    hostname = base_url_hostname(base_url)
+    if not hostname:
+        return False
+    if hostname in ("localhost", "127.0.0.1", "::1"):
+        return True
+    try:
+        addr = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    # IPv4-mapped ::ffff:127.0.0.1 — Python reports is_loopback=False for mapped
+    if addr.version == 6:
+        ipv4_mapped = getattr(addr, "ipv4_mapped", None)
+        if ipv4_mapped is not None and ipv4_mapped.is_loopback:
+            return True
+    return addr.is_private

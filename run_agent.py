@@ -220,7 +220,7 @@ from agent.tool_dispatch_helpers import (
     _extract_error_preview,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, base_url_is_local_or_lan_ollama, env_float, is_truthy_value, model_forces_max_completion_tokens
 
 
 # Internal flags that mark a message as ephemeral empty-response/prefill
@@ -7608,7 +7608,10 @@ class AIAgent:
         # /api/show capabilities list is authoritative — emit reasoning_effort
         # only for models that declare the "thinking" capability. deepseek-v4
         # has it; gemma3 / qwen3-coder don't. Cached per (model, base_url).
-        if base_url_host_matches(self._base_url_lower, "ollama.com"):
+        if (
+            base_url_host_matches(self._base_url_lower, "ollama.com")
+            or base_url_is_local_or_lan_ollama(self._base_url_lower)
+        ):
             return self._ollama_supports_thinking_cached()
         if not self._is_openrouter_url():
             return False

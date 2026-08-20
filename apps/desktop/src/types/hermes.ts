@@ -838,9 +838,11 @@ export interface AnalyticsTotals {
 }
 
 export interface CronJob {
+  active_run_started_at?: null | string
   deliver?: null | string
   enabled: boolean
   id: string
+  is_running?: boolean
   last_error?: null | string
   last_run_at?: null | string
   model?: null | string

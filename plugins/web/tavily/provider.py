@@ -163,9 +163,11 @@ class TavilyWebSearchProvider(WebSearchProvider):
                 "search",
                 {
                     "query": query,
+                    "search_depth": "advanced",
                     "max_results": min(limit, 20),
                     "include_raw_content": False,
-                    "include_images": False,
+                    "include_images": True,
+                    "include_image_descriptions": True,
                 },
             )
             return _normalize_tavily_search_results(raw)

@@ -1596,6 +1596,91 @@ def _log_configured_delete_overridden_once(db_label: str) -> None:
 # ---------------------------------------------------------------------------
 # Config-driven database pragmas
 # ---------------------------------------------------------------------------
+# PRAGMA synchronous accepts either an integer or a symbolic name, and operators
+# write the names. Mapped here rather than passed through so a typo becomes a
+# warning instead of a silently different durability level.
+_SYNCHRONOUS_LEVELS: Dict[str, int] = {
+    "OFF": 0,
+    "NORMAL": 1,
+    "FULL": 2,
+    "EXTRA": 3,
+}
+_SYNCHRONOUS_NAMES: Dict[int, str] = {v: k for k, v in _SYNCHRONOUS_LEVELS.items()}
+_SYNCHRONOUS_FULL = 2
+
+
+def resolve_synchronous_level(raw_value: Any) -> Optional[int]:
+    """Map a configured ``database.synchronous`` value to its PRAGMA integer.
+
+    Accepts the symbolic names SQLite documents (``OFF``/``NORMAL``/``FULL``/
+    ``EXTRA``, any case) and the equivalent integers ``0``-``3``. Returns None
+    for anything else so the caller can warn and leave the level untouched —
+    guessing at a malformed durability setting is worse than ignoring it.
+    """
+    if isinstance(raw_value, bool):
+        # bool is an int subclass, and YAML turns a bare `on`/`off` into one.
+        # "off" as a durability level is a real choice; True is meaningless.
+        return 0 if raw_value is False else None
+    if isinstance(raw_value, int):
+        return raw_value if raw_value in _SYNCHRONOUS_NAMES else None
+    text = str(raw_value).strip()
+    if not text:
+        return None
+    upper = text.upper()
+    if upper in _SYNCHRONOUS_LEVELS:
+        return _SYNCHRONOUS_LEVELS[upper]
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        return None
+    return value if value in _SYNCHRONOUS_NAMES else None
+
+
+def _apply_synchronous_pragma(
+    conn: sqlite3.Connection,
+    raw_value: Any,
+    *,
+    db_label: str,
+) -> None:
+    """Set ``PRAGMA synchronous`` from config, never below FULL on macOS.
+
+    Split out of the integer loop in :func:`apply_database_pragmas` because
+    this PRAGMA is not interchangeable with the sizing ones around it. Those
+    trade memory or disk for speed; this one decides whether a commit is on
+    the platter, so an unrecognised value must not fall through to "SQLite
+    default" the way a bad ``cache_size`` harmlessly can.
+
+    The Darwin floor exists because :func:`_enforce_macos_synchronous_full`
+    runs during ``apply_wal_with_fallback()`` and this function runs after it,
+    so a configured ``NORMAL`` would otherwise silently undo the macOS btree
+    protection that fix put there deliberately. Raising the level on macOS is
+    allowed; lowering it is refused out loud.
+    """
+    level = resolve_synchronous_level(raw_value)
+    if level is None:
+        logger.warning(
+            "%s: ignoring unrecognized database.synchronous=%r "
+            "(expected OFF, NORMAL, FULL, EXTRA, or 0-3)",
+            db_label,
+            raw_value,
+        )
+        return
+    if sys.platform == "darwin" and level < _SYNCHRONOUS_FULL:
+        logger.warning(
+            "%s: refusing database.synchronous=%s on macOS; keeping FULL. "
+            "Darwin's fsync() does not guarantee write ordering, so a lower "
+            "level readmits the half-written btree pages FULL exists to "
+            "prevent.",
+            db_label,
+            _SYNCHRONOUS_NAMES[level],
+        )
+        return
+    try:
+        conn.execute(f"PRAGMA synchronous={level}")
+    except sqlite3.OperationalError:
+        pass
+
+
 def apply_database_pragmas(
     conn: sqlite3.Connection,
     *,
@@ -1618,6 +1703,11 @@ def apply_database_pragmas(
     * ``temp_store`` — 0=DEFAULT(file), 1=FILE, 2=MEMORY, 3=ALWAYS
     * ``wal_autocheckpoint`` — WAL auto-checkpoint threshold in pages
     * ``journal_size_limit`` — max journal/WAL size in bytes
+    * ``synchronous`` — durability level: ``OFF``/``NORMAL``/``FULL``/``EXTRA``
+      or ``0``-``3``. Unset leaves SQLite's own default, which is a
+      *compile-time* constant (``SQLITE_DEFAULT_WAL_SYNCHRONOUS``) and so
+      differs between the bundled, distro and Homebrew builds an operator
+      might be running. Setting it explicitly is the only way to know.
 
     Best-effort: config load or pragma failures are ignored so DB init
     never breaks on a malformed ``database:`` section.
@@ -1656,6 +1746,14 @@ def apply_database_pragmas(
             conn.execute(f"PRAGMA {pragma_name}={value}")
         except sqlite3.OperationalError:
             pass
+
+    # Last, so it wins over nothing and loses to nothing: the sizing pragmas
+    # above cannot change durability, and the macOS enforcement ran earlier
+    # during WAL activation (see _apply_synchronous_pragma for why that
+    # ordering needs an explicit floor rather than an explicit override).
+    raw_synchronous = cfg_get(cfg, "database", "synchronous", default=None)
+    if raw_synchronous is not None:
+        _apply_synchronous_pragma(conn, raw_synchronous, db_label=db_label)
 
 
 # ---------------------------------------------------------------------------

@@ -195,6 +195,25 @@ WhatsApp supports **streaming (progressive) responses** — the bot edits its me
 
 Long responses are automatically split into multiple messages at **4,096 characters** per chunk (WhatsApp's practical display limit). You don't need to configure anything — the gateway handles splitting and sends chunks sequentially.
 
+### Optional Multi-Bubble Replies
+
+By default, Hermes sends one formatted reply and only creates additional messages when the reply exceeds the length limit. You can opt into splitting a reply at blank lines so separate paragraphs arrive as separate WhatsApp bubbles:
+
+```yaml
+# ~/.hermes/config.yaml
+gateway:
+  platforms:
+    whatsapp:
+      extra:
+        split_outgoing_on_blank_lines: true
+        split_outgoing_delay_seconds: 0.6
+        split_outgoing_max_parts: 4
+```
+
+With this option enabled, `First paragraph.\n\nSecond paragraph.` sends two bubbles. A single newline stays within one bubble. Blank lines inside triple-backtick fenced code blocks do not split the code block.
+
+`split_outgoing_max_parts` limits the number of paragraph-based parts (default `4`); any remaining paragraphs are merged into the final part rather than discarded. `split_outgoing_delay_seconds` controls the delay between sends while this mode is enabled (default `0.6`). Length-based chunking still applies to every resulting part and preserves fenced code blocks across chunks.
+
 ### WhatsApp-Compatible Markdown
 
 Standard Markdown in AI responses is automatically converted to WhatsApp's native formatting:

@@ -874,6 +874,82 @@ def test_find_reusable_handles_empty_label_string(monkeypatch):
     )
 
 
+def test_reuse_ps_format_uses_index_labels_not_label(monkeypatch):
+    """Podman rejects ``{{.Label "key"}}`` in ``ps --format`` (RC=125, "can't
+    evaluate field Label"), which silently breaks cross-process container
+    reuse whenever egress is off.  The egress=="off" probe must emit the
+    portable ``{{index .Labels "key"}}`` form instead.  Regression for the
+    Podman-reuse compatibility fix (P0.1C)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    ps_calls = []
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "ps":
+                ps_calls.append(list(cmd))
+                # Empty probe: only the generated --format string is in play.
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if cmd[1] == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    _make_dummy_env(task_id="format-check")  # egress fingerprint defaults to "off"
+
+    assert ps_calls, "expected a docker ps reuse probe"
+    fmt = None
+    for i, part in enumerate(ps_calls[0]):
+        if part == "--format":
+            fmt = ps_calls[0][i + 1]
+            break
+    assert fmt is not None, "ps reuse probe missing --format"
+    assert '.Label "' not in fmt, (
+        f'Podman 4.9.3 returns RC=125 for `{{{{.Label "key"}}}}`; reuse probe '
+        f'must not use .Label. Got: {fmt!r}'
+    )
+    assert 'index .Labels "' in fmt, (
+        f'reuse probe must use `{{{{index .Labels "key"}}}}`; got: {fmt!r}'
+    )
+
+
+def test_egress_off_reuse_rejects_non_off_label(monkeypatch):
+    """When egress is off, a task+profile container whose hermes-egress label
+    holds a non-off value must NOT be reused — it carries baked-in proxy env /
+    CA mounts from an egress-enabled era, and label-only reuse would silently
+    bypass the credential firewall.  Explicit coverage for the post-filter in
+    the egress=="off" branch of _find_reusable_container."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if cmd[1] == "ps":
+                return subprocess.CompletedProcess(
+                    cmd, 0,
+                    stdout="stale-cid\trunning\tdeadbeef0123456789abcdef\n",
+                    stderr="",
+                )
+            if cmd[1] == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    env = _make_dummy_env(task_id="egress-off-reject")
+    assert env._container_id == "fresh-cid", (
+        "container with non-off egress label must not be reused when egress=off; "
+        f"got {env._container_id!r}"
+    )
+
+
 # ── Cleanup correctness (issue #20561) ────────────────────────────
 
 

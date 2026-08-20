@@ -1858,7 +1858,7 @@ class DockerEnvironment(BaseEnvironment):
                 # this, a container created with egress=on can be silently
                 # reused after the operator runs "hermes egress disable",
                 # preserving baked-in proxy env and CA mounts.
-                fmt = '{{.ID}}\t{{.State}}\t{{.Label "' + _EGRESS_LABEL_KEY + '"}}'
+                fmt = '{{.ID}}\t{{.State}}\t{{index .Labels "' + _EGRESS_LABEL_KEY + '"}}'
             result = subprocess.run(
                 [
                     self._docker_exe, "ps", "-a",

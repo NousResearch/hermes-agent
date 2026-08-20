@@ -28,6 +28,8 @@ from hermes_cli.main import (
     _web_toolchain_roots,
     _web_ui_stamp_path,
     _write_web_ui_build_stamp,
+    _web_ui_build_env,
+    _web_ui_build_command,
 )
 
 
@@ -178,7 +180,7 @@ class TestBuildWebUISkipsWhenFresh:
 
         install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
              patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp):
             result = _build_web_ui(web_dir)
@@ -213,17 +215,17 @@ class TestBuildWebUISkipsWhenFresh:
         assert "web" in cmd
 
     def test_web_build_uses_idle_timeout_helper(self, tmp_path):
-        """npm run build now goes through _run_with_idle_timeout (issue #33788).
+        """npm run build goes through _run_with_idle_timeout (issue #33788).
 
         The install step keeps its capture_output behavior (the existing
-        retry-on-EPERM contract depends on it); only the long-running build
-        step is streamed + idle-killed.
+        retry-on-EPERM contract depends on it); the long-running build step
+        is captured + idle-killed with stream=False so Hermes stays quiet.
         """
         web_dir, _ = _make_web_dir(tmp_path)
 
         install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_cp), \
              patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp) as mock_idle:
             result = _build_web_ui(web_dir)
@@ -232,9 +234,45 @@ class TestBuildWebUISkipsWhenFresh:
         # Build was invoked through the idle-timeout helper, not subprocess.run.
         mock_idle.assert_called_once()
         args, kwargs = mock_idle.call_args
-        # Positional: [npm, "run", "build"]; cwd passed as kwarg.
+        # Positional: build command; cwd + stream=False as kwargs.
         assert args[0] == ["/usr/bin/npm", "run", "build"]
         assert kwargs["cwd"] == web_dir
+        assert kwargs.get("stream") is False
+        # Heap cap applied on the build env.
+        node_opts = (kwargs.get("env") or {}).get("NODE_OPTIONS", "")
+        assert "--max-old-space-size=" in node_opts
+
+    def test_quiet_progress_strings_on_success(self, tmp_path, capsys):
+        """Hermes path prints update-style progress, not Vite's asset table."""
+        web_dir, _ = _make_web_dir(tmp_path)
+        install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main.subprocess.run", return_value=install_cp), \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp), \
+             patch("hermes_cli.main._write_web_ui_build_stamp"):
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        out = capsys.readouterr().out
+        assert "→ Building web UI..." in out
+        lines = [ln.rstrip("\r") for ln in out.splitlines()]
+        assert "  bundling pages ✓" in lines
+        assert "  vendors ✓" in lines
+        assert "  assets ✓" in lines
+        assert "Web UI Complete" in lines
+        assert lines.index("  bundling pages ✓") < lines.index("  vendors ✓")
+        assert lines.index("  vendors ✓") < lines.index("  assets ✓")
+        assert lines.index("  assets ✓") < lines.index("Web UI Complete")
+        assert "✓ Web UI built" not in out
+        assert "✓ Web UI Complete" not in out
+        assert "bundling pages, vendors, and assets" not in out
+        # Keep multi-phase fake progress out of the success path.
+        assert "→ Writing output..." not in out
+        assert "../hermes_cli/web_dist/" not in out
+        assert "✓ index.html" not in out
+        assert "✓ assets ready" not in out
+        assert "✓ Build complete!" not in out
 
 
 class TestBuildWebUIRetryAndStaleFallback:
@@ -247,7 +285,7 @@ class TestBuildWebUIRetryAndStaleFallback:
         # build attempt 1: fail; build attempt 2: success.
         build_fail = Subprocess.CompletedProcess([], 1, stdout="EPERM", stderr="")
         build_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main._time.sleep") as mock_sleep, \
              patch("hermes_cli.main.subprocess.run", return_value=install_ok), \
              patch("hermes_cli.main._run_with_idle_timeout",
@@ -257,6 +295,8 @@ class TestBuildWebUIRetryAndStaleFallback:
         assert result is True
         assert mock_idle.call_count == 2  # build + retry
         mock_sleep.assert_called_once_with(3)
+        for call in mock_idle.call_args_list:
+            assert call.kwargs.get("stream") is False
 
     def test_falls_back_to_stale_dist_when_retry_also_fails(self, tmp_path, capsys):
         web_dir, dist_dir = _make_web_dir(tmp_path)
@@ -267,7 +307,7 @@ class TestBuildWebUIRetryAndStaleFallback:
         Subprocess = __import__("subprocess")
         install_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
         build_fail = Subprocess.CompletedProcess([], 1, stdout="vite ENOMEM", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main._time.sleep"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_ok), \
              patch("hermes_cli.main._run_with_idle_timeout",
@@ -280,6 +320,10 @@ class TestBuildWebUIRetryAndStaleFallback:
         out = capsys.readouterr().out
         assert "serving stale dist as fallback" in out
         assert "vite ENOMEM" in out  # combined output surfaced to user
+        assert "vite build failed" in out
+        assert "run: npm install --workspace web && npm run build -w web" in out
+        assert "Web UI Complete" not in out
+        assert "✓ Web UI built" not in out
 
 
 class TestBuildWebUIFlock:
@@ -292,8 +336,10 @@ class TestBuildWebUIFlock:
     that queued behind a successful build skips the rebuild.
     """
 
-
-
+    @pytest.mark.skipif(
+        __import__("sys").platform == "win32",
+        reason="fcntl flock is POSIX-only",
+    )
     def test_contended_lock_without_dist_waits_then_skips_fresh_build(self, tmp_path):
         """First-ever build race: the waiter blocks, and once it acquires the
         lock the callee's own staleness check (running under the lock) sees
@@ -317,7 +363,7 @@ class TestBuildWebUIFlock:
         t = threading.Timer(0.2, release_after_building)
         t.start()
         try:
-            with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+            with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
                  patch("hermes_cli.main.subprocess.run") as mock_run:
                 result = build(web_dir)
         finally:
@@ -338,8 +384,9 @@ def _link_shims(bin_dir: Path, *names: str) -> None:
 
 
 class TestWebBuildToolchainReady:
-    """A tree is ready when the build can resolve tsc AND vite from any root.
+    """A tree is ready when the build can resolve vite from any root.
 
+    Default ``npm run build`` is Vite-only; ``tsc`` is optional (build:check).
     ``npm run build`` searches ``node_modules/.bin`` from the script's own
     package up through every ancestor, so a shim in either place counts.
     """
@@ -348,19 +395,21 @@ class TestWebBuildToolchainReady:
         web_dir, _ = _make_web_dir(tmp_path)
         assert _web_build_toolchain_ready(web_dir, tmp_path) is False
 
+    def test_vite_alone_is_ready(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        _link_shims(tmp_path / "node_modules" / ".bin", "vite")
+        assert _web_build_toolchain_ready(web_dir, tmp_path) is True
 
     def test_hoisted_shims_at_workspace_root_are_ready(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
         _link_shims(tmp_path / "node_modules" / ".bin", "tsc", "vite")
         assert _web_build_toolchain_ready(web_dir, tmp_path) is True
 
-
-    @pytest.mark.parametrize("shim", ["tsc.cmd", "tsc.ps1", "tsc.exe"])
+    @pytest.mark.parametrize("shim", ["vite.cmd", "vite.ps1", "vite.exe"])
     def test_windows_shim_extensions_count(self, tmp_path, shim):
         web_dir, _ = _make_web_dir(tmp_path)
-        _link_shims(tmp_path / "node_modules" / ".bin", shim, "vite.cmd")
+        _link_shims(tmp_path / "node_modules" / ".bin", shim)
         assert _web_build_toolchain_ready(web_dir, tmp_path) is True
-
 
 class TestWebToolchainRoots:
     def test_searches_the_package_and_its_workspace_root(self, tmp_path):
@@ -383,6 +432,103 @@ class TestMissingWebBuildTool:
     )
     def test_detects_the_unresolvable_tool(self, output, expected):
         assert _missing_web_build_tool(output) == expected
+
+
+class TestWebUiBuildEnvAndCommand:
+    def test_default_heap_cap_is_applied(self, monkeypatch):
+        monkeypatch.delenv("NODE_OPTIONS", raising=False)
+        monkeypatch.delenv("HERMES_WEB_BUILD_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_WEB_BUILD_MAX_OLD_SPACE_SIZE", raising=False)
+        env = _web_ui_build_env({})
+        assert "--max-old-space-size=2048" in env.get("NODE_OPTIONS", "")
+
+    def test_light_mode_uses_smaller_heap(self, monkeypatch):
+        monkeypatch.setenv("HERMES_WEB_BUILD_LIGHT", "1")
+        monkeypatch.delenv("NODE_OPTIONS", raising=False)
+        monkeypatch.delenv("HERMES_WEB_BUILD_MAX_OLD_SPACE_SIZE", raising=False)
+        env = _web_ui_build_env(dict(os.environ))
+        assert "--max-old-space-size=1024" in env.get("NODE_OPTIONS", "")
+
+    def test_respects_existing_user_heap(self, monkeypatch):
+        monkeypatch.setenv("NODE_OPTIONS", "--max-old-space-size=4096")
+        env = _web_ui_build_env(dict(os.environ))
+        assert env["NODE_OPTIONS"].count("--max-old-space-size=") == 1
+        assert "--max-old-space-size=4096" in env["NODE_OPTIONS"]
+
+    def test_build_command_default(self, monkeypatch):
+        monkeypatch.delenv("HERMES_WEB_BUILD_LIGHT", raising=False)
+        assert _web_ui_build_command("/usr/bin/npm") == ["/usr/bin/npm", "run", "build"]
+
+    def test_build_command_light(self, monkeypatch):
+        monkeypatch.setenv("HERMES_WEB_BUILD_LIGHT", "1")
+        cmd = _web_ui_build_command("/usr/bin/npm")
+        assert cmd[-3:] == ["/usr/bin/npm", "run", "build:light"] or cmd == [
+            "/usr/bin/npm",
+            "run",
+            "build:light",
+        ]
+
+    def test_install_failure_message_marks_install_step(self, tmp_path, capsys):
+        web_dir, _ = _make_web_dir(tmp_path)
+        install_fail = __import__("subprocess").CompletedProcess(
+            [], 1, stdout="", stderr="ENOTFOUND registry"
+        )
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_fail), \
+             patch("hermes_cli.main._web_ui_build_needed", return_value=True):
+            result = _build_web_ui(web_dir, fatal=True)
+        assert result is False
+        out = capsys.readouterr().out
+        assert "→ Building web UI..." in out
+        assert "npm install failed (install step)" in out
+        assert "dependency install failed before the Vite bundle ran" in out
+        assert "ENOTFOUND registry" in out
+        assert "bundling pages, vendors, and assets" not in out  # never reached Vite
+        # Solution comes last.
+        assert out.rstrip().endswith("run: npm install --workspace web && npm run build -w web")
+        assert "Web UI Complete" not in out
+        assert "bundling pages ✓" not in out
+
+    def test_vite_failure_prints_indented_error_detail(self, tmp_path, capsys):
+        web_dir, _ = _make_web_dir(tmp_path)
+        install_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_fail = __import__("subprocess").CompletedProcess(
+            [], 1, stdout="error during build:\nCould not resolve './missing'\n", stderr=""
+        )
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_fail), \
+             patch("hermes_cli.main._web_ui_build_needed", return_value=True), \
+             patch("hermes_cli.main._time.sleep"):
+            result = _build_web_ui(web_dir, fatal=True)
+        assert result is False
+        out = capsys.readouterr().out
+        assert "→ Building web UI..." in out
+        assert "vite build failed (vite step)" in out
+        assert "dependencies installed; the production bundle step failed" in out
+        assert "Could not resolve './missing'" in out
+        assert out.rstrip().endswith("run: npm install --workspace web && npm run build -w web")
+        assert "Web UI Complete" not in out
+        assert "bundling pages ✓" not in out
+        assert "✓ Web UI built" not in out
+
+    def test_unexpected_crash_prints_clean_error(self, tmp_path, capsys):
+        web_dir, _ = _make_web_dir(tmp_path)
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+             patch(
+                 "hermes_cli.main._run_npm_install_deterministic",
+                 side_effect=OSError(22, "Invalid argument"),
+             ), \
+             patch("hermes_cli.main._web_ui_build_needed", return_value=True):
+            result = _build_web_ui(web_dir, fatal=True)
+        assert result is False
+        out = capsys.readouterr().out
+        assert "→ Building web UI..." in out
+        assert "web UI build crashed: OSError" in out
+        assert "Invalid argument" in out
+        assert "an unexpected error stopped the web UI build" in out
+        assert out.rstrip().endswith("run: npm install --workspace web && npm run build -w web")
+        assert "Web UI Complete" not in out
 
 
 class TestBuildRecoversFromMissingToolchain:

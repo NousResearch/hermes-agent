@@ -496,19 +496,21 @@ def _npm_bin_exists(bin_dir: Path, name: str) -> bool:
     )
 
 def _web_build_toolchain_ready(*roots: Path) -> bool:
-    """True when ``tsc`` and ``vite`` shims are reachable from any of *roots*.
+    """True when the ``vite`` shim is reachable from any of *roots*.
 
-    Callers must pass every root the build would search; checking only one
-    reports a healthy tree as broken.
+    Default ``npm run build`` is Vite-only (typecheck lives in
+    ``build:check`` / ``typecheck``), so a missing ``tsc`` must not force
+    endless reinstalls or mark a healthy tree broken. Callers must pass every
+    root the build would search; checking only one reports a healthy tree as
+    broken.
     """
     bin_dirs = [
         bin_dir
         for bin_dir in (root / "node_modules" / ".bin" for root in roots)
         if bin_dir.is_dir()
     ]
-    return bool(bin_dirs) and all(
-        any(_npm_bin_exists(bin_dir, tool) for bin_dir in bin_dirs)
-        for tool in ("tsc", "vite")
+    return bool(bin_dirs) and any(
+        _npm_bin_exists(bin_dir, "vite") for bin_dir in bin_dirs
     )
 
 def _web_toolchain_roots(web_dir: Path) -> tuple[Path, ...]:

@@ -1916,6 +1916,13 @@ def _validate_context_from_acyclic(jobs: List[Dict[str, Any]]) -> None:
         state[job_id] = 1
         path.append(job_id)
         for dependency_id in graph.get(job_id, []):
+            # A job referencing its OWN id (or the "self" sentinel) is
+            # run-to-run continuity, not a cycle — upstream's self-context
+            # feature. Skip self-references so they don't trip the cycle
+            # detector (a self-edge is a trivial 1-cycle, not a real
+            # dependency loop).
+            if dependency_id == job_id:
+                continue
             if dependency_id in graph:
                 visit(dependency_id)
         path.pop()

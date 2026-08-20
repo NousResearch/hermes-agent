@@ -90,10 +90,12 @@ class TestContextFromCycleRejection:
 
         job = create_job(prompt="A", schedule="every 1h")
 
-        with pytest.raises(ValueError, match="context_from dependency cycle"):
-            update_job(job["id"], {"context_from": [job["id"]]})
+        # Upstream's self-context feature: a job referencing its OWN id is
+        # run-to-run continuity, not a cycle. It must be ACCEPTED (not
+        # rejected) and persisted as the self-reference.
+        update_job(job["id"], {"context_from": [job["id"]]})
 
-        assert get_job(job["id"])["context_from"] is None
+        assert get_job(job["id"])["context_from"] == [job["id"]]
 
     def test_create_rejects_cycle_closed_by_generated_id(self, cron_env, monkeypatch):
         from types import SimpleNamespace

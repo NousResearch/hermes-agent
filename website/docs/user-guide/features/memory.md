@@ -251,8 +251,9 @@ external provider tools too.
 
 With only `memory_enabled: false` (user profile still on), the tool stays —
 it backs the profile store — but the system prompt swaps the full memory
-guidance for a narrower profile-only block, so the model is only instructed to
-save user-profile facts and never steered at the disabled notes store.
+guidance for a narrower profile-only block. The tool schema advertises only the
+`user` target, and direct or staged writes to disabled `MEMORY.md` are rejected.
+The inverse configuration advertises only `memory` and rejects `USER.md` writes.
 
 ## Controlling memory writes (`write_approval`)
 

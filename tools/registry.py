@@ -327,31 +327,29 @@ def check_fn_cache_scope() -> Optional[str]:
         return CHECK_FN_CACHE_BYPASS
 
 
+def _run_check_fn_uncached(fn: Callable, *, unresolved_scope: bool = False) -> bool:
+    """Run an availability check without cache/grace handling."""
+    try:
+        return bool(fn())
+    except Exception:
+        detail = " while profile cache scope was unresolved" if unresolved_scope else ""
+        logger.warning(
+            "check_fn %s raised%s; dependent tools will be unavailable this turn",
+            getattr(fn, "__qualname__", fn),
+            detail,
+            exc_info=True,
+        )
+        return False
+
+
 def _check_fn_cached(fn: Callable) -> bool:
     """Return bool(fn()), TTL-cached across calls."""
     now = time.monotonic()
     if fn in _NO_CACHE_CHECK_FNS:
-        try:
-            return bool(fn())
-        except Exception:
-            logger.warning(
-                "check_fn %s raised; dependent tools will be unavailable this turn",
-                getattr(fn, "__qualname__", fn),
-                exc_info=True,
-            )
-            return False
+        return _run_check_fn_uncached(fn)
     scope = check_fn_cache_scope()
     if scope == CHECK_FN_CACHE_BYPASS:
-        try:
-            return bool(fn())
-        except Exception:
-            logger.warning(
-                "check_fn %s raised while profile cache scope was unresolved; "
-                "dependent tools will be unavailable this turn",
-                getattr(fn, "__qualname__", fn),
-                exc_info=True,
-            )
-            return False
+        return _run_check_fn_uncached(fn, unresolved_scope=True)
     cache_key = (fn, scope)
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)

@@ -317,6 +317,18 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     from gateway.session_context import get_session_env
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
+    ui_session_id = get_session_env("HERMES_UI_SESSION_ID") or ""
+
+    # Browser/WebUI turns are not gateway push platforms. They expose the raw
+    # UI/API session id, and background completions already route those through
+    # the api_server wake/self-post path. Persist that same shared origin shape
+    # instead of recording ``webui`` as a fake Platform value that cron cannot
+    # deliver to. Prefer the raw UI session id when present; fall back to the
+    # chat id for older/bare bindings where it already carries the session id.
+    if str(origin_platform or "").strip().lower() == "webui":
+        origin_platform = "api_server"
+        origin_chat_id = ui_session_id or origin_chat_id
+
     if origin_platform and origin_chat_id:
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
         # Slack thread-per-message session keying (native parity: thread_ts =

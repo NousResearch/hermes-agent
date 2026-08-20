@@ -1512,9 +1512,19 @@ def _resolve_origin(job: dict) -> Optional[dict]:
         return None
     platform = origin.get("platform")
     chat_id = origin.get("chat_id")
-    if platform and chat_id:
-        return origin
-    return None
+    if not (platform and chat_id):
+        return None
+
+    # Compatibility for jobs created by browser/WebUI sessions before origin
+    # capture normalized non-push sessions. ``webui`` is an observed session
+    # surface, not a gateway delivery Platform; the durable return path is the
+    # existing api_server wake/self-post session id. Copy rather than mutate the
+    # job record so resolution remains side-effect free.
+    if str(platform).strip().lower() == "webui":
+        normalized = dict(origin)
+        normalized["platform"] = "api_server"
+        return normalized
+    return origin
 
 
 def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool:
@@ -2816,7 +2826,47 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 thread_id = new_thread_id
                 opened_thread_id = new_thread_id
 
-        if live_adapter_ready:
+        if live_adapter_ready and runtime_adapter is not None:
+            from gateway.wake import adapter_supports_push
+
+            if not adapter_supports_push(runtime_adapter):
+                # Stateless request/response surfaces (api_server/WebUI) are
+                # not push channels. Use the shared wake self-post primitive
+                # that async completions already use so the cron result resumes
+                # the raw UI/API session instead of trying send_message-style
+                # platform delivery or a standalone API-server send.
+                text_to_send = cleaned_delivery_content.strip()
+                if not text_to_send:
+                    delivered = True
+                else:
+                    from agent.async_utils import safe_schedule_threadsafe
+                    from gateway.wake import WAKE_TURN_TIMEOUT_SECONDS, deliver_wake
+
+                    try:
+                        future = safe_schedule_threadsafe(
+                            deliver_wake(
+                                runtime_adapter,
+                                text=text_to_send,
+                                session_id=str(chat_id),
+                            ),
+                            loop,
+                        )
+                        if future is None:
+                            msg = "wake self-post scheduling failed"
+                            target_errors.append(msg)
+                        else:
+                            future.result(timeout=WAKE_TURN_TIMEOUT_SECONDS + 5)
+                            logger.info(
+                                "Job '%s': delivered to %s session %s via wake self-post",
+                                job["id"], platform_name, chat_id,
+                            )
+                            delivered = True
+                    except Exception as e:
+                        msg = f"wake self-post delivery to {platform_name}:{chat_id} failed: {e}"
+                        logger.warning("Job '%s': %s", job["id"], msg)
+                        target_errors.append(msg)
+
+        if live_adapter_ready and not delivered:
             # Telegram topic routing (#22773, regression fixed #52060): a
             # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is
             # ambiguous — a forum-style topic in a private chat and a genuine

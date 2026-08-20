@@ -128,9 +128,37 @@ test('activeBots counts Bot Chat activity that last_session cannot see', () => {
 test('row age label and recency sort key off botActivitySession, not last_session', () => {
   // The "6d ago" regression: the timestamp/sort sites must not read
   // bot.last_session directly anymore.
-  assert.match(source, /relativeTime\(activitySession\.last_active \* 1000\)/)
+  assert.match(source, /relativeTime\(rowAgeTs \* 1000\)/)
   assert.match(source, /const lastMsg = \(botActivitySession\(bot\)\?\.last_active \|\| 0\) \* 1000/)
   assert.doesNotMatch(source, /relativeTime\(last\.last_active \* 1000\)/)
+})
+
+// ── worker liveness: kanban/tool workers count as activity (#90268) ─────────
+
+test('activeBots includes a bot whose kanban worker heartbeat is fresh', () => {
+  const activeBots = loadActiveBots()
+  const bots = [
+    {
+      name: 'coding',
+      // Last chat hours ago — the reported "3 hr ago while working" shape.
+      last_session: { last_active: NOW / 1000 - 3 * 3600 },
+      worker_session: { id: 'w1', source: 'kanban', last_active: NOW / 1000 - 30 }
+    }
+  ]
+  const names = activeBots(bots, 'other', 'open', NOW).map(bot => bot.name)
+  assert.ok(names.includes('coding'), 'live worker heartbeat must light ACTIVE NOW')
+})
+
+test('activeBots ignores a finished worker outside the liveness window', () => {
+  const activeBots = loadActiveBots()
+  const bots = [
+    {
+      name: 'coding',
+      last_session: { last_active: NOW / 1000 - 3 * 3600 },
+      worker_session: { id: 'w1', source: 'kanban', last_active: NOW / 1000 - 3600 }
+    }
+  ]
+  assert.deepEqual(activeBots(bots, 'other', 'open', NOW), [])
 })
 
 test('ActiveNowStrip renders above the roster, is a live region, and is click-accessible', () => {

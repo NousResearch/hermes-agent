@@ -64,12 +64,17 @@ class CustomProfile(ProviderProfile):
                 top_level["reasoning_effort"] = "none"
                 extra_body["think"] = False
             elif _effort:
-                # "ultra" is Hermes-internal ladder vocabulary — no known
-                # OpenAI-compatible backend accepts it verbatim (GLM/ARK,
-                # vLLM and SGLang all top out at "max"); cap it at the wire
-                # ceiling instead of forwarding a guaranteed 400 (#89503).
-                top_level["reasoning_effort"] = (
-                    "max" if _effort == "ultra" else _effort
+                # Clamp the internal ladder onto the widest OpenAI-compatible
+                # wire vocabulary (shared policy in agent.reasoning_effort) —
+                # GLM/ARK, vLLM and SGLang all top out at "max"; forwarding
+                # "ultra" verbatim is a guaranteed 400 (#89503).
+                from agent.reasoning_effort import (
+                    OPENAI_COMPAT_WIRE_EFFORTS,
+                    clamp_effort,
+                )
+
+                top_level["reasoning_effort"] = clamp_effort(
+                    _effort, OPENAI_COMPAT_WIRE_EFFORTS
                 )
 
         return extra_body, top_level

@@ -80,7 +80,7 @@ test('regression: only an actually-missing pin triggers recovery', async () => {
 
   // Definitively gone, but the roster still previews a live session —
   // recovery re-anchors on THAT session instead of minting a new chat.
-  const history = { id: 'hist-1', title: 'Weekly review', preview: 'p', last_active: 1 }
+  const history = { id: 'hist-1', title: 'Bot Chat', preview: 'p', last_active: 1 }
   assert.equal(await runtime.openBotCanonicalChat('ops', 'dead-pin', history), 'hist-1')
   assert.deepEqual(runtime.saved, [{ name: 'ops', patch: { chat: 'hist-1' } }])
 })

@@ -363,6 +363,39 @@ def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     assert turn.logical_llm_calls == {}
 
 
+def test_live_stream_defers_runtime_shutdown_until_exhaustion(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "stream-shutdown-profile"))
+    relay_runtime._reset_for_tests()
+    host = relay_runtime.get_runtime()
+    assert host is not None
+    host.retain_managed_execution("test.live-stream")
+    assert host.ensure_session({"session_id": "stream-shutdown"}) is not None
+    chunks = [{"delta": "first"}, {"delta": "second"}]
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter(chunks),
+        session_id="stream-shutdown",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "complete"},
+        metadata={"api_mode": "custom"},
+    )
+
+    try:
+        host.shutdown()
+        assert not host._shutdown_complete.is_set()
+
+        assert list(stream) == chunks
+        assert host._shutdown_complete.wait(5)
+    finally:
+        stream.close()
+        host.release_managed_execution("test.live-stream")
+        relay_runtime._reset_for_tests()
+
+
 
 
 

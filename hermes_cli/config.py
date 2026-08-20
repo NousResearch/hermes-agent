@@ -2223,25 +2223,21 @@ def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
     sys.stderr.write("\n".join(lines) + "\n\n")
 
 
-def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> None:
+def warn_deprecated_cwd_env_vars() -> None:
     """Warn if MESSAGING_CWD or TERMINAL_CWD is set in .env instead of config.yaml.
 
     These env vars are deprecated — the canonical setting is terminal.cwd
-    in config.yaml.  Prints a migration hint to stderr.
+    in config.yaml.  Read the file rather than ``os.environ`` because runtime
+    config bridges and session restoration legitimately set ``TERMINAL_CWD``.
+    Prints a migration hint to stderr.
     """
-    messaging_cwd = os.environ.get("MESSAGING_CWD")
-    terminal_cwd_env = os.environ.get("TERMINAL_CWD")
+    try:
+        env_map = load_env()
+    except Exception:
+        return
 
-    if config is None:
-        try:
-            config = load_config()
-        except Exception:
-            return
-
-    terminal_cfg = config.get("terminal", {})
-    config_cwd = terminal_cfg.get("cwd", ".") if isinstance(terminal_cfg, dict) else "."
-    # Only warn if config.yaml doesn't have an explicit path
-    config_has_explicit_cwd = config_cwd not in {".", "auto", "cwd", ""}
+    messaging_cwd = str(env_map.get("MESSAGING_CWD") or "").strip()
+    terminal_cwd_env = str(env_map.get("TERMINAL_CWD") or "").strip()
 
     lines: list[str] = []
     if messaging_cwd:
@@ -2249,8 +2245,7 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
             f"  \033[33m⚠\033[0m MESSAGING_CWD={messaging_cwd} found in .env — "
             f"this is deprecated."
         )
-    if terminal_cwd_env and not config_has_explicit_cwd:
-        # TERMINAL_CWD in env but not from config bridge — likely from .env
+    if terminal_cwd_env:
         lines.append(
             f"  \033[33m⚠\033[0m TERMINAL_CWD={terminal_cwd_env} found in .env — "
             f"this is deprecated."

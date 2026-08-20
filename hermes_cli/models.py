@@ -1705,12 +1705,10 @@ def warm_openrouter_reasoning_caps_async() -> None:
     ).start()
 
 
-# Canonical low→high ordering used for nearest-level clamping. Superset of
-# hermes_constants.VALID_REASONING_EFFORTS ("none" included so an explicit
-# disable can be clamped too when a provider publishes it as a level).
-_REASONING_EFFORT_ORDER = (
-    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
-)
+# Canonical low→high ordering used for nearest-level clamping. Kept as an
+# alias of the single source of truth in ``agent.reasoning_effort``.
+from agent.reasoning_effort import EFFORT_LADDER as _REASONING_EFFORT_ORDER
+from agent.reasoning_effort import clamp_effort as _clamp_effort
 
 
 def clamp_reasoning_effort_to_supported(
@@ -1719,38 +1717,17 @@ def clamp_reasoning_effort_to_supported(
 ) -> Optional[str]:
     """Clamp a requested reasoning effort to a provider's supported levels.
 
-    Returns the requested effort unchanged when it is supported, when the
-    supported list is unknown (None/empty), or when the effort isn't a
-    recognized level (custom providers may use bespoke names — pass through
-    rather than guess). Otherwise returns the nearest supported level,
-    preferring the closest LOWER level so a clamp never silently escalates
-    cost (requesting ``xhigh`` against ``[low, medium, high]`` yields
-    ``high``; requesting ``minimal`` against ``[low, medium]`` yields
-    ``low`` because no lower level exists).
+    Thin wrapper over the canonical policy in
+    :func:`agent.reasoning_effort.clamp_effort` (single implementation for
+    every transport and provider profile): keep a supported level verbatim,
+    otherwise nearest WEAKER supported level (never silently escalate cost),
+    weakest supported level when nothing weaker exists, pass through unknown
+    supported-sets and bespoke level names unchanged.
 
     Ported from PrimeIntellect-ai/prime-agent#1258's thinking-level-map
     normalization.
     """
-    requested = str(effort or "").strip().lower()
-    if not requested or not supported_efforts:
-        return effort
-    supported = [
-        str(level).strip().lower()
-        for level in supported_efforts
-        if str(level).strip().lower() in _REASONING_EFFORT_ORDER
-    ]
-    if not supported or requested in supported:
-        return effort
-    if requested not in _REASONING_EFFORT_ORDER:
-        return effort
-    requested_idx = _REASONING_EFFORT_ORDER.index(requested)
-    below = [
-        level for level in supported
-        if _REASONING_EFFORT_ORDER.index(level) < requested_idx
-    ]
-    if below:
-        return max(below, key=_REASONING_EFFORT_ORDER.index)
-    return min(supported, key=_REASONING_EFFORT_ORDER.index)
+    return _clamp_effort(effort, supported_efforts)
 
 
 def fetch_openrouter_models(

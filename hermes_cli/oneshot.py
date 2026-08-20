@@ -28,6 +28,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Optional
 
+from agent.message_sanitization import _sanitize_surrogates
+
 from gateway.session_context import declare_stateless_channel
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -322,6 +324,10 @@ def run_oneshot(
         response = _sanitize_surrogates(response)
 
     if response:
+        # A lone surrogate (U+D800..U+DFFF) from an OpenAI-compatible provider
+        # crashes real_stdout.write on a strict UTF-8 stream (#80366). Replace
+        # them before printing so the run completes with exit code 0.
+        response = _sanitize_surrogates(response)
         real_stdout.write(response)
         if not response.endswith("\n"):
             real_stdout.write("\n")

@@ -20,21 +20,16 @@ from pathlib import Path
 
 import pytest
 
-from tests.providers.test_llamacpp_profile import _installed_plugin_dir
+from tests.providers.test_llamacpp_profile import _bundled_plugin_dir
 
 DATA_DIR = Path(__file__).parent / "fixtures" / "llamacpp"
-
-pytestmark = pytest.mark.skipif(
-    _installed_plugin_dir() is None,
-    reason="real llamacpp user plugin not installed on this machine",
-)
 
 
 @pytest.fixture()
 def probe():
     import sys
 
-    plugin_dir = _installed_plugin_dir()
+    plugin_dir = _bundled_plugin_dir()
     spec = importlib.util.spec_from_file_location(
         "_llamacpp_probe_under_test", plugin_dir / "probe.py"
     )

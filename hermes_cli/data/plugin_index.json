@@ -63,6 +63,19 @@
       "capabilities": ["tools"],
       "api_version": 1,
       "added_at": "2026-08-12"
+    },
+    {
+      "name": "hermes-ambient-watch",
+      "description": "Claude-Tag-style ambient mode for Slack — judges quiet threads with one bounded LLM call and posts at most one nudge per thread ever, under USD spend caps that decline rather than truncate. Shadow mode first, fail-closed.",
+      "author": "sepivip",
+      "tags": ["slack", "gateway", "ambient", "messaging", "budget"],
+      "repo": "sepivip/hermes-ambient-watch",
+      "subdir": "ambient-watch",
+      "ref": "6274c2358a7cbe559de32477ea139a0a0958c42a",
+      "homepage": "https://github.com/sepivip/hermes-ambient-watch",
+      "capabilities": ["gateway", "cron", "llm"],
+      "api_version": 1,
+      "added_at": "2026-08-16"
     }
   ]
 }

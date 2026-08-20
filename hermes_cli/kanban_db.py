@@ -11253,10 +11253,83 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
 # Stats + SLA helpers
 # ---------------------------------------------------------------------------
 
-def board_stats(conn: sqlite3.Connection) -> dict:
-    """Per-status + per-assignee counts, plus the oldest ``ready`` age in
-    seconds (the clearest staleness signal for a router or HUD).
+def _running_activity_stats(
+    conn: sqlite3.Connection,
+    *,
+    now: int,
+) -> tuple[dict[str, dict[str, Optional[int]]], dict[str, int]]:
+    """Return aggregate-only worker evidence for ``running`` tasks.
+
+    A worker is only reported live when both host-local PID liveness and a
+    recent heartbeat are observable. Remote-host rows and rows without enough
+    evidence remain unverified rather than being mislabeled idle or stale.
+    Task identifiers and content never leave this helper.
     """
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    by_assignee: dict[str, dict[str, Optional[int]]] = {}
+    totals = {
+        "running_rows": 0,
+        "live_worker_rows": 0,
+        "stale_worker_rows": 0,
+        "unverified_worker_rows": 0,
+        "unassigned_running_rows": 0,
+    }
+
+    rows = conn.execute(
+        "SELECT assignee, claim_lock, worker_pid, last_heartbeat_at "
+        "FROM tasks WHERE status = 'running'"
+    ).fetchall()
+    for row in rows:
+        totals["running_rows"] += 1
+        assignee = row["assignee"]
+        if assignee is None:
+            totals["unassigned_running_rows"] += 1
+
+        claim_lock = row["claim_lock"] or ""
+        pid = row["worker_pid"]
+        heartbeat = row["last_heartbeat_at"]
+        host_local = claim_lock.startswith(host_prefix)
+        heartbeat_stale = (
+            heartbeat is not None
+            and max(0, now - int(heartbeat))
+            > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
+        )
+        pid_alive = bool(host_local and pid and _pid_alive(int(pid)))
+        heartbeat_fresh = heartbeat is not None and not heartbeat_stale
+        live = pid_alive and heartbeat_fresh
+        stale = heartbeat_stale or bool(host_local and pid and not pid_alive)
+        evidence_key = (
+            "live_worker_rows" if live
+            else "stale_worker_rows" if stale
+            else "unverified_worker_rows"
+        )
+        totals[evidence_key] += 1
+
+        if assignee is None:
+            continue
+        aggregate = by_assignee.setdefault(
+            assignee,
+            {
+                "running_rows": 0,
+                "live_worker_rows": 0,
+                "stale_worker_rows": 0,
+                "unverified_worker_rows": 0,
+                "latest_heartbeat_at": None,
+            },
+        )
+        aggregate["running_rows"] = int(aggregate["running_rows"] or 0) + 1
+        aggregate[evidence_key] = int(aggregate[evidence_key] or 0) + 1
+        if heartbeat is not None:
+            latest = aggregate["latest_heartbeat_at"]
+            aggregate["latest_heartbeat_at"] = max(
+                int(heartbeat),
+                int(latest) if latest is not None else int(heartbeat),
+            )
+
+    return by_assignee, totals
+
+
+def _board_stats_in_snapshot(conn: sqlite3.Connection) -> dict:
     by_status: dict[str, int] = {}
     for row in conn.execute(
         "SELECT status, COUNT(*) AS n FROM tasks "
@@ -11280,13 +11353,35 @@ def board_stats(conn: sqlite3.Connection) -> dict:
         (now - int(oldest_row["ts"]))
         if oldest_row and oldest_row["ts"] is not None else None
     )
-
+    activity_by_assignee, activity_totals = _running_activity_stats(
+        conn,
+        now=now,
+    )
     return {
         "by_status": by_status,
         "by_assignee": by_assignee,
+        "activity_by_assignee": activity_by_assignee,
+        "activity_totals": activity_totals,
         "oldest_ready_age_seconds": oldest_ready_age,
         "now": now,
     }
+
+
+def board_stats(conn: sqlite3.Connection) -> dict:
+    """Return all board aggregates from one SQLite read snapshot.
+
+    The activity projection deliberately excludes task identifiers and task
+    content. It is safe for routers and operator HUDs that need to distinguish
+    a recorded ``running`` status from a host-locally verified live worker.
+    """
+    owns_snapshot = not conn.in_transaction
+    if owns_snapshot:
+        conn.execute("BEGIN")
+    try:
+        return _board_stats_in_snapshot(conn)
+    finally:
+        if owns_snapshot:
+            conn.rollback()
 
 
 def _to_epoch(val) -> Optional[int]:

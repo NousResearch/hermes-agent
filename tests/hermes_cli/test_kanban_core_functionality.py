@@ -95,6 +95,150 @@ def kanban_home(tmp_path, monkeypatch):
 # Stats + age
 # ---------------------------------------------------------------------------
 
+def test_board_stats_reports_aggregate_worker_evidence_without_task_content(
+    kanban_home, monkeypatch,
+):
+    now = 1_800_000_000
+    monkeypatch.setattr(kb.time, "time", lambda: now)
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: pid == 101)
+    host = kb._claimer_id().split(":", 1)[0]
+
+    with kb.connect() as conn:
+        live_id = kb.create_task(
+            conn, title="private live title", body="private live body",
+            assignee="builder",
+        )
+        stale_id = kb.create_task(
+            conn, title="private stale title", body="private stale body",
+            assignee="builder",
+        )
+        stale_heartbeat_id = kb.create_task(
+            conn,
+            title="private stale heartbeat title",
+            body="private stale heartbeat body",
+            assignee="builder",
+        )
+        remote_id = kb.create_task(
+            conn, title="private remote title", body="private remote body",
+            assignee="reviewer",
+        )
+        unassigned_id = kb.create_task(
+            conn, title="private unassigned title", body="private unassigned body",
+        )
+
+        assert kb.claim_task(conn, live_id, claimer=f"{host}:live") is not None
+        assert kb.claim_task(conn, stale_id, claimer=f"{host}:stale") is not None
+        assert kb.claim_task(
+            conn, stale_heartbeat_id, claimer=f"{host}:stale-heartbeat"
+        ) is not None
+        assert kb.claim_task(conn, remote_id, claimer="remote-host:worker") is not None
+        assert kb.claim_task(conn, unassigned_id, claimer=f"{host}:unknown") is not None
+        conn.execute(
+            "UPDATE tasks SET worker_pid = 101, last_heartbeat_at = ? WHERE id = ?",
+            (now - 5, live_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET worker_pid = 202, last_heartbeat_at = ? WHERE id = ?",
+            (now - 15, stale_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET worker_pid = 101, last_heartbeat_at = ? WHERE id = ?",
+            (
+                now - kb.DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS - 1,
+                stale_heartbeat_id,
+            ),
+        )
+        conn.execute(
+            "UPDATE tasks SET worker_pid = 303, last_heartbeat_at = ? WHERE id = ?",
+            (now - 25, remote_id),
+        )
+
+        stats = kb.board_stats(conn)
+
+    assert stats["activity_totals"] == {
+        "running_rows": 5,
+        "live_worker_rows": 1,
+        "stale_worker_rows": 2,
+        "unverified_worker_rows": 2,
+        "unassigned_running_rows": 1,
+    }
+    assert stats["activity_by_assignee"] == {
+        "builder": {
+            "running_rows": 3,
+            "live_worker_rows": 1,
+            "stale_worker_rows": 2,
+            "unverified_worker_rows": 0,
+            "latest_heartbeat_at": now - 5,
+        },
+        "reviewer": {
+            "running_rows": 1,
+            "live_worker_rows": 0,
+            "stale_worker_rows": 0,
+            "unverified_worker_rows": 1,
+            "latest_heartbeat_at": now - 25,
+        },
+    }
+    assert stats["by_status"]["running"] == stats["activity_totals"]["running_rows"]
+    assert stats["by_assignee"]["builder"]["running"] == 3
+    assert stats["by_assignee"]["reviewer"]["running"] == 1
+
+    payload = json.dumps(stats)
+    for private_value in (
+        live_id, stale_id, stale_heartbeat_id, remote_id, unassigned_id,
+        "private live title", "private live body",
+        "private stale title", "private stale body",
+        "private stale heartbeat title", "private stale heartbeat body",
+        "private remote title", "private remote body",
+        "private unassigned title", "private unassigned body",
+        f"{host}:live", f"{host}:stale", f"{host}:stale-heartbeat",
+        f"{host}:unknown", "remote-host:worker",
+    ):
+        assert private_value not in payload
+
+    observed_keys = set()
+    pending = [stats]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            observed_keys.update(value)
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    assert observed_keys.isdisjoint({
+        "task_id", "title", "body", "result", "comment", "dependencies",
+        "claim_lock", "worker_pid", "hostname", "path", "email",
+    })
+
+
+def test_board_stats_reads_all_aggregates_from_one_snapshot(
+    kanban_home, monkeypatch,
+):
+    with kb.connect() as setup_conn:
+        task_id = kb.create_task(
+            setup_conn, title="snapshot race", assignee="builder",
+        )
+        assert kb.claim_task(setup_conn, task_id) is not None
+
+    original_activity_stats = kb._running_activity_stats
+    with kb.connect() as reader, kb.connect() as writer:
+        def complete_between_aggregate_queries(conn, *, now):
+            with kb.write_txn(writer):
+                writer.execute(
+                    "UPDATE tasks SET status = 'done' WHERE id = ?",
+                    (task_id,),
+                )
+            return original_activity_stats(conn, now=now)
+
+        monkeypatch.setattr(
+            kb, "_running_activity_stats", complete_between_aggregate_queries,
+        )
+        stats = kb.board_stats(reader)
+
+    assert stats["by_status"]["running"] == 1
+    assert stats["activity_totals"]["running_rows"] == 1
+    assert stats["by_assignee"]["builder"]["running"] == 1
+    assert stats["activity_by_assignee"]["builder"]["running_rows"] == 1
+
 
 
 
@@ -1406,5 +1550,3 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         assert events == [], "historical events must not replay to a new sub"
     finally:
         conn.close()
-
-

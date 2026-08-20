@@ -498,6 +498,11 @@ DEFAULT_CONFIG = {
         # failing over to the next ring vendor on rate limits. Never
         # pre-empts a configured or keyed backend. Set false to disable.
         "keyless_fallback": True,
+        # One-shot keyless rescue: when the chosen/keyed backend fails a
+        # web_search/web_extract call, THAT call retries once on the keyless
+        # free-tier ring — the next call attempts the chosen backend again
+        # (no sticky failover). Off when keyless_fallback is false.
+        "keyless_rescue": True,
         # Per-provider tier selection for ring vendors with both a keyless
         # free endpoint and a keyed paid path (exa, parallel, tavily,
         # firecrawl, keenable). Set by the `hermes tools` picker's

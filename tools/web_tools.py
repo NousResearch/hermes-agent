@@ -427,6 +427,128 @@ def _ddgs_package_importable() -> bool:
     except ImportError:
         return False
 
+
+# ─── One-shot keyless rescue (keyed/configured backend failed) ───────────────
+
+def _keyless_rescue_enabled() -> bool:
+    """Read ``web.keyless_rescue`` from config (default: enabled).
+
+    Also implicitly off whenever the keyless tier itself is disabled
+    (``web.keyless_fallback: false``).
+    """
+    cfg = _load_web_config()
+    if not cfg.get("keyless_rescue", True):
+        return False
+    try:
+        from agent.web_search_registry import _keyless_tier_enabled
+
+        return _keyless_tier_enabled()
+    except Exception as exc:  # noqa: BLE001 — registry optional
+        logger.debug("keyless rescue tier check failed: %s", exc)
+        return False
+
+
+def _rescue_eligible(provider) -> bool:
+    """True when a failed call on *provider* should get a one-shot rescue.
+
+    Eligible: the call ran a keyed/configured path — either a non-ring
+    backend (searxng, brave-free, xai, custom plugins, managed gateway) or
+    a ring vendor operating in keyed mode. NOT eligible: the call already
+    went through the keyless ring (its failure means the ring was walked;
+    re-walking would just repeat it).
+    """
+    if not _keyless_rescue_enabled():
+        return False
+    if provider is None:
+        return False
+    try:
+        from plugins.web.keyless_mcp import _KEYLESS_RING, use_keyless
+
+        name = getattr(provider, "name", "")
+        if name in _KEYLESS_RING:
+            key_var = {
+                "exa": "EXA_API_KEY",
+                "parallel": "PARALLEL_API_KEY",
+                "tavily": "TAVILY_API_KEY",
+                "firecrawl": "FIRECRAWL_API_KEY",
+                "keenable": "KEENABLE_API_KEY",
+            }.get(name, "")
+            from agent.web_search_provider import get_provider_env
+
+            api_key = get_provider_env(key_var) if key_var else ""
+            # Keyless-mode ring vendors already walked the ring on failure.
+            return not use_keyless(name, api_key)
+        return True
+    except Exception as exc:  # noqa: BLE001 — rescue is best-effort
+        logger.debug("rescue eligibility check failed: %s", exc)
+        return False
+
+
+def _rescue_search(provider_name: str, original_error: str, query: str, limit: int) -> dict:
+    """One-shot keyless-ring rescue for a failed keyed/configured search.
+
+    Stateless by design: this call alone routes to the free-tier ring; the
+    NEXT web_search call attempts the chosen backend again. The result is
+    annotated with the original backend failure so the model (and the
+    user) can see the configured backend needs attention.
+    """
+    from plugins.web.keyless_mcp import search_with_failover
+
+    logger.warning(
+        "web_search backend '%s' failed (%s); one-shot keyless rescue",
+        provider_name, (original_error or "")[:200],
+    )
+    rescued = search_with_failover(provider_name, query, limit)
+    if rescued.get("success"):
+        data = rescued.setdefault("data", {})
+        data["rescued_from"] = provider_name
+        data["backend_error"] = (
+            f"Configured backend '{provider_name}' failed this call "
+            f"({(original_error or 'unknown error')[:300]}); result served "
+            "by the keyless free tier. The next call will use "
+            f"'{provider_name}' again."
+        )
+        return rescued
+    # Ring also failed: surface the ORIGINAL backend error (it names the
+    # user's configured setup) with the rescue note appended.
+    return {
+        "success": False,
+        "error": (
+            f"{original_error or 'search failed'} "
+            f"(keyless rescue also failed: {rescued.get('error', 'unknown')})"
+        ),
+    }
+
+
+def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
+    """One-shot keyless-ring rescue for a failed keyed/configured extract.
+
+    Fires only when EVERY url failed (whole-backend failure); partial
+    results are page problems and pass through untouched. Stateless —
+    the next web_extract call attempts the chosen backend again.
+    """
+    from plugins.web.keyless_mcp import extract_with_failover
+
+    original_error = next(
+        (r.get("error") for r in results if r.get("error")), "extract failed"
+    )
+    logger.warning(
+        "web_extract backend '%s' failed all %d URL(s) (%s); one-shot keyless rescue",
+        provider_name, len(urls), (original_error or "")[:200],
+    )
+    rescued = extract_with_failover(provider_name, list(urls))
+    rescued_errors = [r.get("error", "") for r in rescued]
+    if rescued and all(e for e in rescued_errors):
+        return results  # rescue also failed everywhere: keep original errors
+    for r in rescued:
+        if not r.get("error"):
+            meta = r.setdefault("metadata", {})
+            if isinstance(meta, dict):
+                meta["rescued_from"] = provider_name
+                meta["backend_error"] = (original_error or "")[:300]
+    return rescued
+
+
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -814,7 +936,28 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "Web search via %s: '%s' (limit: %d)",
                 provider.name, query, limit,
             )
-            response_data = provider.search(query, limit)
+            try:
+                response_data = provider.search(query, limit)
+            except Exception as exc:  # noqa: BLE001 — candidate for rescue
+                if _rescue_eligible(provider):
+                    response_data = _rescue_search(
+                        provider.name, str(exc), query, limit
+                    )
+                else:
+                    raise
+            else:
+                if (
+                    not response_data.get("success")
+                    and _rescue_eligible(provider)
+                ):
+                    # One-shot keyless rescue: THIS call rides the free-tier
+                    # ring; the next call attempts the chosen backend again.
+                    response_data = _rescue_search(
+                        provider.name,
+                        str(response_data.get("error", "")),
+                        query,
+                        limit,
+                    )
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -1057,14 +1200,38 @@ async def web_extract_tool(
             # Async-or-sync dispatch: parallel + firecrawl have async
             # extract(); exa + tavily are sync.
             import inspect
-            if inspect.iscoroutinefunction(provider.extract):
-                results = await provider.extract(safe_urls, format=format)
+            try:
+                if inspect.iscoroutinefunction(provider.extract):
+                    results = await provider.extract(safe_urls, format=format)
+                else:
+                    # Run sync extract() in a thread so we don't block the
+                    # event loop on network I/O.
+                    results = await asyncio.to_thread(
+                        provider.extract, safe_urls, format=format
+                    )
+            except Exception as exc:  # noqa: BLE001 — candidate for rescue
+                if _rescue_eligible(provider):
+                    failed = [
+                        {"url": u, "title": "", "content": "", "error": str(exc)}
+                        for u in safe_urls
+                    ]
+                    results = await asyncio.to_thread(
+                        _rescue_extract, provider.name, safe_urls, failed
+                    )
+                else:
+                    raise
             else:
-                # Run sync extract() in a thread so we don't block the
-                # event loop on network I/O.
-                results = await asyncio.to_thread(
-                    provider.extract, safe_urls, format=format
-                )
+                # One-shot keyless rescue when the WHOLE batch failed
+                # (backend-level outage, not per-page problems). Stateless:
+                # the next web_extract call uses the chosen backend again.
+                if (
+                    results
+                    and all(r.get("error") for r in results)
+                    and _rescue_eligible(provider)
+                ):
+                    results = await asyncio.to_thread(
+                        _rescue_extract, provider.name, safe_urls, results
+                    )
 
         # Reconstruct the original input order across invalid, blocked, and
         # provider-processed entries. Providers are expected to preserve the

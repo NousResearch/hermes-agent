@@ -31,6 +31,10 @@ from hermes_cli.nous_subscription import (
     get_nous_subscription_features,
 )
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
+from hermes_cli.toolset_scope import (
+    _TOOLSET_PLATFORM_RESTRICTIONS,
+    toolset_allowed_for_platform as _toolset_allowed_for_platform,
+)
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
 from utils import base_url_hostname, is_truthy_value
 
@@ -204,28 +208,6 @@ def _homeassistant_credentials_present() -> bool:
         return bool((get_secret("HASS_TOKEN", "") or "").strip())
     except Exception:
         return False
-
-# Platform-scoped toolsets: only appear in the `hermes tools` checklist for
-# these platforms, and only resolve/save for these platforms.  A toolset
-# absent from this map is available on every platform (current behaviour).
-#
-# Use this for tools whose APIs only make sense on one platform (Discord
-# server admin, Slack workspace admin, etc.).  Keeps every other platform's
-# checklist from filling up with irrelevant toggles.
-_TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
-    "discord": {"discord"},
-    "discord_admin": {"discord"},
-}
-
-
-def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
-    """Return True if ``ts_key`` is configurable on ``platform``.
-
-    Toolsets without a restriction entry are allowed everywhere (the default).
-    """
-    allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
-    return allowed is None or platform in allowed
-
 
 def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
     """Return the platform a platform-less configuration UI should target.

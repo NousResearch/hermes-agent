@@ -2498,9 +2498,12 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     try:
         from toolsets import validate_toolset
         from hermes_cli.toolset_validation import validate_platform_toolsets
+        from hermes_cli.toolset_scope import toolset_allowed_for_platform
 
         ts_warnings = validate_platform_toolsets(
-            read_raw_config().get("platform_toolsets"), validate_toolset
+            read_raw_config().get("platform_toolsets"),
+            validate_toolset,
+            toolset_allowed_for_platform,
         )
         for w in ts_warnings:
             results["warnings"].append(w)

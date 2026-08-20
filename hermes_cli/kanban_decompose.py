@@ -192,6 +192,40 @@ def _resolve_orchestrator_profile(cfg: dict) -> str:
         return "default"
 
 
+# Spawnable ops fallback used when the resolved default assignee is the
+# literal 'default' placeholder or a nonspawnable profile. A decomposed
+# child must NEVER be assigned to a profile the dispatcher would refuse —
+# it would strand in 'ready' forever (2026-08-20 incident: 16 ready tasks
+# stuck on kensei, all manually reassigned to spawnable profiles).
+_SPAWNABLE_OPS_FALLBACK = "wesker-ops"
+
+
+def _ensure_spawnable_assignee(assignee: Optional[str], cfg: dict) -> str:
+    """Return *assignee* if it is a spawnable worker, else a spawnable ops fallback.
+
+    Guards the decomposer's routing guarantee: a decomposed child must never
+    be assigned to a profile the dispatcher would refuse — a nonspawnable
+    profile (kensei/denji/orchestrator/misa-misa) or the literal 'default'
+    placeholder — or it strands in 'ready' forever. Falls back to a known
+    spawnable ops profile (``wesker-ops``).
+
+    ``default`` is treated as non-routable here even though
+    ``_is_profile_spawnable`` returns True for it (profile_exists hardcodes
+    True): the decomposer should route fallback work to a named, spawnable
+    ops profile rather than the anonymous default, per the 2026-08-20
+    routing directive.
+    """
+    name = (assignee or "").strip().lower()
+    if not name or name == "default":
+        return _SPAWNABLE_OPS_FALLBACK
+    try:
+        if kb._is_profile_spawnable(name):
+            return name
+    except Exception:
+        pass
+    return _SPAWNABLE_OPS_FALLBACK
+
+
 def _resolve_default_assignee(cfg: dict) -> str:
     """Resolve which profile catches child tasks the orchestrator can't route.
 
@@ -206,22 +240,27 @@ def _resolve_default_assignee(cfg: dict) -> str:
       1. explicit ``kanban.default_assignee`` config (unchanged)
       2. the ROOT kensei profile (operator; routes work correctly itself)
       3. literal ``default`` as last resort
+
+    FIX 2026-08-20: the resolved value is passed through
+    ``_ensure_spawnable_assignee`` so a nonspawnable fallback (kensei is in
+    ``kanban.nonspawnable_profiles``) or the 'default' placeholder is mapped
+    to a spawnable ops profile instead of stranding children in ``ready``.
     """
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     explicit = (kanban_cfg.get("default_assignee") or "").strip()
     if explicit:
         try:
             if profiles_mod.profile_exists(explicit):
-                return explicit
+                return _ensure_spawnable_assignee(explicit, cfg)
         except Exception:
             pass
     # Root operator profile — never a gateway-incidental profile.
     try:
         if profiles_mod.profile_exists("kensei"):
-            return "kensei"
+            return _ensure_spawnable_assignee("kensei", cfg)
     except Exception:
         pass
-    return "default"
+    return _ensure_spawnable_assignee("default", cfg)
 
 
 def _structured_output_enabled(cfg: dict) -> bool:

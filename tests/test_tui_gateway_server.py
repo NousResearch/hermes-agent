@@ -2549,6 +2549,13 @@ def test_load_enabled_toolsets_reports_disabled_mcp_separately(monkeypatch, caps
 
 
 def test_history_to_messages_preserves_tool_calls_for_resume_display():
+    # Regression for the empty-assistant-with-tool_calls case.  The legacy
+    # code path dropped the assistant frame (it had empty ``content``) and
+    # synthesized a ``tool`` role frame, but the synthesized frame did not
+    # carry ``tool_call_id`` so the desktop resume payload lost the link
+    # between the tool result and the call that produced it.  The fix
+    # preserves the assistant frame with its ``tool_calls`` intact; the
+    # follow-up tool result frame pairs with it via the call id.
     history = [
         {"role": "user", "content": "first prompt"},
         {
@@ -2572,10 +2579,24 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
     assert server._history_to_messages(history) == [
         {"role": "user", "text": "first prompt"},
         {
+            "role": "assistant",
+            "text": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": "search_files",
+                        "arguments": json.dumps({"pattern": "resume"}),
+                    },
+                }
+            ],
+        },
+        {
             "args": {"pattern": "resume"},
             "context": "resume",
             "name": "search_files",
             "role": "tool",
+            "tool_call_id": "call_1",
         },
         {"role": "assistant", "text": "first answer"},
         {"role": "user", "text": "second prompt"},
@@ -2607,9 +2628,10 @@ def test_history_to_messages_ships_full_tool_args():
     ]
 
     rows = server._history_to_messages(history)
-    assert rows[1]["args"] == {"command": long_command}
+    # Assistant frame is preserved at index 1; the tool row follows at 2.
+    assert rows[2]["args"] == {"command": long_command}
     # The preview stays alongside for the collapsed title.
-    assert rows[1]["context"]
+    assert rows[2]["context"]
 
     # A tool row with no recorded args keeps the old small shape.
     argless = server._history_to_messages(
@@ -2687,6 +2709,48 @@ def test_history_to_messages_still_drops_empty_assistant_without_reasoning():
         {"role": "user", "text": "hi"},
         {"role": "assistant", "text": "real reply"},
     ]
+
+
+def test_history_to_messages_preserves_tool_calls_on_assistant_frame():
+    """Regression for the tool-call-only assistant frame (#43233 + Teknium
+    sweeper review 2026-07-25): the assistant frame with ``tool_calls`` but
+    empty ``content`` must survive ``_history_to_messages`` so the desktop
+    resume payload can route the tool invocation back to the right id.
+
+    Previously the assistant frame was dropped and only a synthetic ``tool``
+    role frame was emitted; that frame doesn't carry the ``tool_call_id``,
+    so the desktop resume payload lost the link between the tool result
+    and the call that produced it.  The fix attaches the original
+    ``tool_calls`` list to the assistant frame and lets the synthetic
+    tool frame carry the resolved context.
+    """
+    history = [
+        {"role": "user", "content": "check status"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_42",
+                    "function": {
+                        "name": "terminal",
+                        "arguments": json.dumps({"command": "uptime"}),
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "content": "12:34", "tool_call_id": "call_42"},
+        {"role": "assistant", "content": "uptime is 12:34"},
+    ]
+
+    msgs = server._history_to_messages(history)
+    assistant_with_tcs = [m for m in msgs if m.get("role") == "assistant" and m.get("tool_calls")]
+    assert len(assistant_with_tcs) == 1, msgs
+    assert assistant_with_tcs[0]["tool_calls"] == history[1]["tool_calls"]
+    # tool_call_id link survives via the tool frame so the desktop can pair
+    # the tool result with the call.
+    tool_frames = [m for m in msgs if m.get("role") == "tool"]
+    assert tool_frames and tool_frames[0]["role"] == "tool"
 
 
 def test_history_to_messages_renders_multimodal_content():

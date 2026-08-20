@@ -2482,6 +2482,147 @@ class TestNewEndpoints:
         assert "Bearer Bearer" not in profile_env
         assert not (root / ".env").exists()
 
+    def test_profiles_create_mirrors_launch_env_auth_and_model_by_default(
+        self, monkeypatch
+    ):
+        """The REST twin of profiles.create — a profile created via the
+        dashboard wizard (clone_from=None, no explicit model pin) must not
+        reproduce the "no inference provider configured" bug (#85755-class):
+        it must inherit the launch profile's .env, auth.json, and model."""
+        from hermes_constants import get_hermes_home
+        from hermes_cli.config import load_config, save_config
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        root = get_hermes_home()
+        (root / ".env").write_text("LAUNCH_API_KEY=launch-secret\n", encoding="utf-8")
+        (root / "auth.json").write_text('{"nous": {"token": "t"}}', encoding="utf-8")
+        cfg = load_config()
+        cfg["model"] = {"provider": "anthropic", "default": "claude-mirror-test"}
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/profiles", json={"name": "mirror-default"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        # voice is incidental here (True/False depends on whether the
+        # fixture's ambient config carries stt/tts/voice defaults) — only
+        # env/auth/model are what this scenario is testing.
+        assert body["mirrored"]["env"] is True
+        assert body["mirrored"]["auth"] is True
+        assert body["mirrored"]["model_inherited"] is True
+        assert body["model_set"] is True
+
+        profile_dir = root / "profiles" / "mirror-default"
+        assert (profile_dir / ".env").read_text(encoding="utf-8") == (
+            "LAUNCH_API_KEY=launch-secret\n"
+        )
+        assert (profile_dir / "auth.json").is_file()
+        profile_cfg = yaml.safe_load(
+            (profile_dir / "config.yaml").read_text(encoding="utf-8")
+        )
+        assert profile_cfg["model"]["provider"] == "anthropic"
+        assert profile_cfg["model"]["default"] == "claude-mirror-test"
+
+    def test_profiles_create_mirror_credentials_false_skips_mirroring(
+        self, monkeypatch
+    ):
+        from hermes_constants import get_hermes_home
+        from hermes_cli.config import load_config, save_config
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        root = get_hermes_home()
+        (root / ".env").write_text("LAUNCH_API_KEY=launch-secret\n", encoding="utf-8")
+        (root / "auth.json").write_text('{"nous": {"token": "t"}}', encoding="utf-8")
+        cfg = load_config()
+        cfg["model"] = {"provider": "anthropic", "default": "claude-mirror-test"}
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/profiles",
+            json={"name": "mirror-off", "mirror_credentials": False},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["mirrored"] == {
+            "env": False, "auth": False, "model_inherited": False, "voice": False,
+        }
+        profile_dir = root / "profiles" / "mirror-off"
+        # create_profile() always seeds a comment-only .env stub — the file
+        # exists either way, what matters is the launch secret never lands.
+        assert "launch-secret" not in (profile_dir / ".env").read_text(encoding="utf-8")
+        assert not (profile_dir / "auth.json").is_file()
+
+    def test_profiles_create_share_auth_skips_auth_copy(self, monkeypatch):
+        """share_auth: True must not copy auth.json (the new profile reads
+        OAuth state through the global-root fallback instead), while still
+        mirroring .env and inheriting the model."""
+        from hermes_constants import get_hermes_home
+        from hermes_cli.config import load_config, save_config
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        root = get_hermes_home()
+        (root / ".env").write_text("LAUNCH_API_KEY=launch-secret\n", encoding="utf-8")
+        (root / "auth.json").write_text('{"nous": {"token": "t"}}', encoding="utf-8")
+        cfg = load_config()
+        cfg["model"] = {"provider": "anthropic", "default": "claude-mirror-test"}
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/profiles",
+            json={"name": "mirror-shared-auth", "share_auth": True},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["mirrored"]["auth"] == "shared"
+        assert body["mirrored"]["env"] is True
+        profile_dir = root / "profiles" / "mirror-shared-auth"
+        assert (profile_dir / ".env").is_file()
+        assert not (profile_dir / "auth.json").exists()
+
+    def test_profiles_create_explicit_model_pin_wins_over_inheritance(
+        self, monkeypatch
+    ):
+        from hermes_constants import get_hermes_home
+        from hermes_cli.config import load_config, save_config
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        root = get_hermes_home()
+        cfg = load_config()
+        cfg["model"] = {"provider": "anthropic", "default": "claude-mirror-test"}
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/profiles",
+            json={
+                "name": "mirror-explicit-pin",
+                "provider": "openai",
+                "model": "gpt-5",
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["model_set"] is True
+        assert body["mirrored"]["model_inherited"] is False
+        profile_dir = root / "profiles" / "mirror-explicit-pin"
+        profile_cfg = yaml.safe_load(
+            (profile_dir / "config.yaml").read_text(encoding="utf-8")
+        )
+        assert profile_cfg["model"]["provider"] == "openai"
+        assert profile_cfg["model"]["default"] == "gpt-5"
+
 
 
     # --- New profiles endpoints: active / description / model / describe-auto ---

@@ -573,6 +573,16 @@ class ProfileCreate(BaseModel):
     description: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
+    # Copy the launch profile's .env/auth.json into the new profile and
+    # inherit its model.provider/model.default when no explicit provider/
+    # model pin is given above — same default-ON semantics as the
+    # profiles.create RPC (#85755-class: without this a headlessly-created
+    # profile has no inference provider configured for its first message).
+    mirror_credentials: bool = True
+    # When mirroring credentials, skip the auth.json copy so the new
+    # profile reads OAuth/token state through the global-root fallback
+    # instead of forking it (see _mirror_profile_credentials docstring).
+    share_auth: bool = False
     # Profile-builder additions — all optional, all applied best-effort AFTER
     # the profile directory exists, so a hiccup in any of them never 500s the
     # create (the user can fix it from the relevant dashboard page afterward).

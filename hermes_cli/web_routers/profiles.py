@@ -74,6 +74,7 @@ _cron_profile_home = late("_cron_profile_home")
 _disable_unselected_skills = late("_disable_unselected_skills")
 _fallback_profile_dicts = late("_fallback_profile_dicts")
 _hub_action_name = late("_hub_action_name")
+_mirror_profile_credentials = late("_mirror_profile_credentials")
 _open_session_db_at_path = late("_open_session_db_at_path")
 _profile_setup_command = late("_profile_setup_command")
 _profile_to_dict = late("_profile_to_dict")
@@ -847,6 +848,24 @@ async def create_profile_endpoint(body: ProfileCreate):
         except Exception:
             _log.exception("Setting model for new profile %s failed", body.name)
 
+    # Credential/voice/model-inheritance mirroring — the REST twin of what
+    # the profiles.create RPC already does (#85755-class): a profile
+    # created here previously started with NO inference provider and no
+    # dictation config, since create_profile() only seeds a comment-only
+    # .env. Best-effort, same rationale as model assignment above.
+    mirrored = {"env": False, "auth": False, "model_inherited": False, "voice": False}
+    try:
+        mirrored = _mirror_profile_credentials(
+            path,
+            share_auth=body.share_auth,
+            mirror_credentials=body.mirror_credentials,
+            explicit_model_given=bool(provider and model),
+        )
+    except Exception:
+        _log.exception("Mirroring credentials for new profile %s failed", body.name)
+    if mirrored.get("model_inherited"):
+        model_set = True
+
     # Optional MCP servers. Best-effort, same rationale as model assignment.
     mcp_written = 0
     if body.mcp_servers:
@@ -895,6 +914,7 @@ async def create_profile_endpoint(body: ProfileCreate):
         "mcp_written": mcp_written,
         "skills_disabled": skills_disabled,
         "hub_installs": hub_installs,
+        "mirrored": mirrored,
     }
 
 

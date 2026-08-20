@@ -14697,6 +14697,181 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
         reset_hermes_home_override(token)
 
 
+def _mirror_profile_voice_sections(profile_dir: Path) -> bool:
+    """Copy voice config (stt/tts/voice) from the launch profile.
+
+    Desktop dictation and TTS are profile-scoped: /api/audio/transcribe
+    resolves the ``stt`` section inside the TARGET profile's home. A
+    freshly created profile has only a ``model`` section, so voice fell
+    back to defaults (local whisper, often not installed) and dictation
+    "didn't work in bot mode" while working on the primary profile (#85755).
+
+    Reads/writes go through the canonical loaders scoped to the target
+    profile via the context-local HERMES_HOME override — the same
+    mechanism as ``_write_profile_model`` (config-read-guard: no raw yaml
+    on config.yaml).
+    """
+    try:
+        from hermes_cli.config import (
+            load_config_readonly,
+            read_user_config_raw,
+            save_config,
+        )
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        src_cfg = load_config_readonly() or {}
+        sections = {
+            k: src_cfg[k] for k in ("stt", "tts", "voice") if src_cfg.get(k)
+        }
+        if not sections:
+            return False
+
+        token = set_hermes_home_override(str(profile_dir))
+        try:
+            # Write-back round-trip on the raw file: load_config() would
+            # merge DEFAULT_CONFIG, making every section look present and
+            # the mirror a no-op (and save_config would then persist the
+            # entire default tree into the fresh profile).
+            dst_cfg = read_user_config_raw() or {}
+            changed = False
+            for key, value in sections.items():
+                if key not in dst_cfg:
+                    dst_cfg[key] = value
+                    changed = True
+            if changed:
+                save_config(dst_cfg)
+        finally:
+            reset_hermes_home_override(token)
+        return changed
+    except Exception:
+        return False
+
+
+def _mirror_profile_credentials(
+    profile_dir: Path,
+    *,
+    share_auth: bool = False,
+    mirror_credentials: bool = True,
+    explicit_model_given: bool = False,
+) -> Dict[str, Any]:
+    """Mirror the launch profile's credentials/voice/model into a freshly
+    created profile so it can run a first turn without interactive setup.
+
+    Shared by ``POST /api/profiles`` and the ``profiles.create`` RPC — the
+    two profile-creation entry points — so this logic lives in exactly one
+    place. ``create_profile()`` deliberately seeds a comment-only ``.env``
+    and never copies ``auth.json`` (OAuth tokens / credential pools), so a
+    profile created without this runs its first message into "No inference
+    provider configured" with no interactive ``hermes setup`` in either
+    creation flow to recover (#85755-class). Mirroring therefore defaults
+    to opt-out (``mirror_credentials=False``), not opt-in.
+
+    ``share_auth`` (default False): skip the auth.json copy so the new
+    profile reads OAuth/token state through the global-root fallback instead
+    (hermes_cli.auth: profile reads fall back to the global store, and token
+    refreshes write THROUGH to it). A copy forks token state — the first
+    refresh in either store invalidates the other for single-use refresh
+    tokens. Sharing keeps one live token pool for the main profile and every
+    bot. Static .env keys still copy (no refresh semantics, so copying is
+    safe).
+
+    ``explicit_model_given``: True when the caller already pinned a model/
+    provider for the new profile — model inheritance from the launch
+    profile is then skipped so the explicit pin isn't overwritten.
+
+    Returns ``{"env": bool, "auth": bool | "shared", "model_inherited":
+    bool, "voice": bool}``.
+    """
+    mirrored: Dict[str, Any] = {
+        "env": False, "auth": False, "model_inherited": False, "voice": False,
+    }
+    if share_auth:
+        mirrored["auth"] = "shared"
+    if not mirror_credentials:
+        return mirrored
+
+    import os
+    import shutil
+
+    from hermes_constants import get_hermes_home
+
+    def _has_real_env_content(env_path: Path) -> bool:
+        """True when .env has any non-comment, non-blank line."""
+        try:
+            for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#"):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    launch_home = get_hermes_home()
+    try:
+        src_env = launch_home / ".env"
+        dst_env = profile_dir / ".env"
+        if src_env.is_file() and _has_real_env_content(src_env) and not _has_real_env_content(dst_env):
+            shutil.copy2(src_env, dst_env)
+            try:
+                os.chmod(str(dst_env), 0o600)
+            except OSError:
+                pass
+            mirrored["env"] = True
+    except Exception:
+        pass
+    try:
+        src_auth = launch_home / "auth.json"
+        dst_auth = profile_dir / "auth.json"
+        if not share_auth and src_auth.is_file() and not dst_auth.exists():
+            shutil.copy2(src_auth, dst_auth)
+            try:
+                os.chmod(str(dst_auth), 0o600)
+            except OSError:
+                pass
+            mirrored["auth"] = True
+    except Exception:
+        pass
+
+    mirrored["voice"] = _mirror_profile_voice_sections(profile_dir)
+
+    if not explicit_model_given:
+        # No explicit pin: inherit the launch profile's provider+model so the
+        # first turn resolves. Gate on the MODEL SECTION being absent, not on
+        # config.yaml existing — the voice mirror above legitimately creates
+        # the file first, and a file-existence gate would silently skip
+        # inheritance for every non-clone profile ("No inference provider
+        # configured" on first message). Clones bring their own model
+        # section and stay untouched.
+        try:
+            from hermes_cli.config import load_config_readonly, read_user_config_raw
+            from hermes_constants import (
+                reset_hermes_home_override,
+                set_hermes_home_override,
+            )
+
+            token = set_hermes_home_override(str(profile_dir))
+            try:
+                dst_model = (read_user_config_raw() or {}).get("model") or {}
+            finally:
+                reset_hermes_home_override(token)
+
+            if not (dst_model.get("provider") and dst_model.get("default")):
+                cfg = load_config_readonly() or {}
+                model_cfg = cfg.get("model") or {}
+                inherited_provider = str(model_cfg.get("provider") or "")
+                inherited_model = str(model_cfg.get("default") or "")
+                if inherited_provider and inherited_model:
+                    _write_profile_model(profile_dir, inherited_provider, inherited_model)
+                    mirrored["model_inherited"] = True
+        except Exception:
+            pass
+
+    return mirrored
+
+
 def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate"]) -> int:
     """Write MCP server entries into a specific profile's config.yaml.
 

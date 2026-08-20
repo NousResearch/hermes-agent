@@ -123,7 +123,8 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 
 | Command | Description |
 |---------|-------------|
-| `/help` | Show this help message |
+| `/help` | Show available commands, grouped by category. Core commands are shown by default with skill commands collapsed to a one-line count; `/help skills` lists all skill commands, and `/help <text>` filters commands (and matching skills) by substring. |
+| `/palette` | Open the fuzzy command palette (also **Ctrl+P**) — type to filter all commands + skills, ↑/↓ to move, Enter to insert the selected command into the composer (never auto-runs), Esc to cancel. Matching is ranked by command name first, so a short query stays precise. |
 | `/version` | Show Hermes Agent version, build, and environment info. |
 | `/whoami` | Show your slash command access level (admin / user). |
 | `/usage` | Show token usage, cost breakdown, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits / plan usage pulled live from the provider's API. |

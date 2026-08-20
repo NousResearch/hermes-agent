@@ -693,7 +693,15 @@ def mark_workspace_edited(
 
     sid = str(session_id or "default")
     root = str(facts.get("root") or Path(cwd or ".").resolve())
-    changed_paths = sorted({str(p) for p in (paths or []) if p})
+    changed_paths = sorted(
+        {
+            str(p)
+            for p in (paths or [])
+            if p and not _is_temp_script_path(str(p), root)
+        }
+    )
+    if not changed_paths:
+        return None
     edited_at = _utc_now()
 
     with _DB_LOCK:

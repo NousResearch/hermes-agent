@@ -675,7 +675,7 @@ def build_subprocess_env(
     base: "Mapping[str, str] | None" = None,
     *,
     inherit_profile_home: bool = True,
-    scrub_secrets: bool = True,
+    scrub_secrets: "bool | str" = True,
     extra: "Mapping[str, str] | None" = None,
 ) -> dict[str, str]:
     """Single factory for building a child-process environment.
@@ -700,6 +700,13 @@ def build_subprocess_env(
       ``HERMES_HOME`` / subprocess-HOME propagation.  On this path profile
       home propagation is inherent — ``inherit_profile_home`` is ignored
       (always applied), exactly matching today's sanitize semantics.
+    * ``scrub_secrets="provider"`` — strip only AI provider/tool credentials
+      (Tier 1 always-strip keys + Tier 2 ``_HERMES_PROVIDER_ENV_BLOCKLIST`` +
+      Hermes-internal dynamic secrets) but preserve everything else — SSH
+      keys, GPG, DBUS, locale, and any other shell env a user-configured
+      secret helper may need.  Profile home propagation is NOT applied by
+      default (``inherit_profile_home`` is honored, unlike the ``True`` path)
+      so the helper sees exactly the user's original shell HOME.
     * ``scrub_secrets=False`` — preserve the base env content byte-for-byte
       (no key is removed).  Use for children that intentionally receive
       secrets (git credential flows, ``bws``/``op`` secret CLIs) or where
@@ -715,6 +722,26 @@ def build_subprocess_env(
       scrub path it is forwarded as ``_sanitize_subprocess_env``'s
       ``extra_env`` (same force-prefix / blocklist handling as today).
     """
+    if scrub_secrets == "provider":
+        env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
+        for key in _ALWAYS_STRIP_KEYS:
+            env.pop(key, None)
+        for key in list(env):
+            if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+                env.pop(key, None)
+            elif _is_hermes_internal_secret(key):
+                env.pop(key, None)
+        for key in _HERMES_PROVIDER_ENV_BLOCKLIST:
+            env.pop(key, None)
+        env.setdefault("PYTHONUTF8", "1")
+        if inherit_profile_home:
+            _inject_context_hermes_home(env)
+            from hermes_constants import apply_subprocess_home_env
+            apply_subprocess_home_env(env)
+        if extra:
+            env.update(extra)
+        return env
+
     if scrub_secrets:
         # _sanitize_subprocess_env already performs HERMES_HOME override
         # bridging + apply_subprocess_home_env unconditionally; delegating

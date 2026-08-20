@@ -74,6 +74,28 @@ def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
+def test_mcp_only_platform_profile_is_valid_and_warning_free(caplog):
+    """An explicit MCP server is a real toolset, not a corrupt config name."""
+    import hermes_cli.tools_config as _tc
+
+    _tc._warned_invalid_platform_toolsets.discard("api_server")
+    config = {
+        "mcp_servers": {
+            "merovingian": {
+                "url": "https://merovingianos.ai/api/mia/mcp",
+            }
+        },
+        "platform_toolsets": {"api_server": ["merovingian"]},
+    }
+
+    with patch.object(_tc, "_get_plugin_toolset_keys", return_value=set()), \
+         caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(config, "api_server")
+
+    assert enabled == {"merovingian"}
+    assert not any("#38798" in r.getMessage() for r in caplog.records)
+
+
 
 
 

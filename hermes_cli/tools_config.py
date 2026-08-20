@@ -2693,7 +2693,12 @@ def _get_platform_tools(
         _named = [str(t) for t in _explicit if isinstance(t, str) and t]
         if (
             _named
-            and not any(validate_toolset(t) for t in _named)
+            and not any(
+                validate_toolset(t)
+                or t in enabled_mcp_servers
+                or t == "no_mcp"
+                for t in _named
+            )
             and platform not in _warned_invalid_platform_toolsets
         ):
             _warned_invalid_platform_toolsets.add(platform)

@@ -65,20 +65,53 @@ class NousProfile(ProviderProfile):
             body["provider"] = provider_preferences
         return body
 
+    @staticmethod
+    def _cannot_disable_reasoning(model: str | None) -> bool:
+        """True when a disable can't safely be sent for *model*.
+
+        Reasoning-mandatory routes answer ``reasoning: {enabled: false}``
+        with HTTP 400 ("Reasoning is mandatory for this model"), so the
+        catalog's ``mandatory`` flag decides. Cache-only, and an unknown
+        model (catalog cold, unlisted, or unreachable) also answers True:
+        a cold first turn errs toward the old omit-everything behavior
+        rather than risking a 400.
+        """
+        try:
+            from hermes_cli.models import (
+                nous_model_reasoning_capabilities,
+                warm_nous_reasoning_caps_async,
+            )
+
+            caps = nous_model_reasoning_capabilities(model)
+            if caps is None:
+                warm_nous_reasoning_caps_async()
+                return True
+        except Exception:
+            return True
+        return bool(caps.get("mandatory"))
+
     def build_api_kwargs_extras(
         self,
         *,
         reasoning_config: dict | None = None,
         supports_reasoning: bool = False,
+        model: str | None = None,
         **context,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Nous: passes full reasoning_config, but OMITS when disabled."""
+        """Nous: passes the full reasoning_config, disable included.
+
+        The Portal honors ``reasoning: {enabled: false}`` — it is the only
+        wire shape that does. Sending nothing means the *upstream* default,
+        which for a thinking-first model like ``deepseek/deepseek-v4-pro``
+        (catalog: ``default_effort: high``) is thinking ON, so omitting a
+        disable silently ignored the user's "thinking off".
+        """
         extra_body = {}
         if supports_reasoning:
             if reasoning_config is not None:
                 rc = dict(reasoning_config)
-                if rc.get("enabled") is False:
-                    pass  # Nous omits reasoning when disabled
+                if rc.get("enabled") is False and self._cannot_disable_reasoning(model):
+                    pass  # route rejects a disable — let the model think
                 else:
                     extra_body["reasoning"] = rc
             else:

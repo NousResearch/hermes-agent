@@ -334,13 +334,15 @@ ledger is included in quick backups.
 
 ### Repeated-failure review nudge
 
-Each job tracks a `failure_streak` — consecutive runs where the agent failed
-(delivery failures don't count). When a *recurring* job's streak reaches the
-threshold, the failure message delivered to chat gains a review nudge telling
-you the job has failed N runs in a row and suggesting you fix, pause
-(`hermes cron pause <job>`), or remove it. Any successful run resets the
-streak, and `hermes cron list` shows the streak alongside a failing job's last
-run. One-shot jobs never nudge.
+Each job tracks a `failure_streak` — consecutive failed runs (delivery
+failures don't count). A run that fails before the agent is reached at all —
+a bad import after a half-applied update, a provider client that cannot be
+constructed — counts and alerts the same as one the agent itself failed. When
+a *recurring* job's streak reaches the threshold, the failure message
+delivered to chat gains a review nudge telling you the job has failed N runs
+in a row and suggesting you fix, pause (`hermes cron pause <job>`), or remove
+it. Any successful run resets the streak, and `hermes cron list` shows the
+streak alongside a failing job's last run. One-shot jobs never nudge.
 
 ```yaml
 cron:

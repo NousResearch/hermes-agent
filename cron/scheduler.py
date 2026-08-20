@@ -7070,7 +7070,14 @@ def _run_one_job_body(
                 delivery_attempted = True
                 delivery_error = _deliver_result(
                     job,
-                    _summarize_cron_failure_for_delivery(job, _err_text),
+                    # Composed exactly like the normal failure delivery above.
+                    # mark_job_run below records THIS run in failure_streak
+                    # whichever layer failed, so a job that fails before the
+                    # run body every tick builds a streak nobody is ever told
+                    # about: its alerts only ever leave through here, and the
+                    # nudge only ever left through there (#88655).
+                    _summarize_cron_failure_for_delivery(job, _err_text)
+                    + _failure_streak_nudge(job),
                     adapters=adapters,
                     loop=loop,
                 )

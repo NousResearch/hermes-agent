@@ -2603,6 +2603,12 @@ def _run_single_child(
     parent-visible truncation flag stays truthful for all of the above.
     """
     child_start = time.monotonic()
+    # A timed-out Future may still be unwinding on its daemon worker. Closing
+    # the child from this owner thread before that Future settles races every
+    # resource the conversation's finally path still touches (notably its
+    # owned SessionDB). The timeout branch flips this when close ownership is
+    # handed to a Future done-callback instead.
+    _child_close_deferred = False
 
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)
@@ -3080,6 +3086,28 @@ def _run_single_child(
                     f"{_late_pending_steer}]"
                 )
             _attach_worktree(_error_entry)
+            if is_timeout and not _child_future.done():
+                # request_hard_interrupt() is cooperative: the worker still
+                # executes run_conversation's finally path before its Future
+                # becomes done. child.close() tears down that same agent's
+                # clients, messages, and owned SQLite handle, so calling it in
+                # our outer finally while the worker is alive can close SQLite
+                # underneath its final activity write. Future callbacks run
+                # only after the worker has fully returned (or raised), which
+                # is the first safe close boundary.
+                def _close_after_timed_out_worker(_done_future) -> None:
+                    try:
+                        close = getattr(child, "close", None)
+                        if callable(close):
+                            close()
+                    except Exception:
+                        logger.debug(
+                            "Failed to close timed-out child after worker exit",
+                            exc_info=True,
+                        )
+
+                _child_future.add_done_callback(_close_after_timed_out_worker)
+                _child_close_deferred = True
             return _error_entry
         finally:
             # Shut down executor without waiting — if the child thread
@@ -3554,11 +3582,13 @@ def _run_single_child(
         # Close tool resources (terminal sandboxes, browser daemons,
         # background processes, httpx clients) so subagent subprocesses
         # don't outlive the delegation.
-        try:
-            if hasattr(child, "close"):
-                child.close()
-        except Exception:
-            logger.debug("Failed to close child agent after delegation")
+        if not _child_close_deferred:
+            try:
+                close = getattr(child, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                logger.debug("Failed to close child agent after delegation")
 
         # The AIAgent turn boundary normally closes the child scope itself. This
         # fallback covers failures before that boundary starts, but must not pop

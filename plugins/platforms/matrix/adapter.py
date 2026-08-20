@@ -1312,6 +1312,8 @@ class MatrixAdapter(BasePlatformAdapter):
             "MATRIX_REACTIONS", "true"
         ).lower() not in {"false", "0", "no"}
         self._pending_reactions: dict[tuple[str, str], str] = {}
+        # Forward non-approval reactions to the agent session.
+        self._forward_reactions: bool = config.extra.get("forward_reactions", True)
         # Delay before redacting reactions so Matrix homeservers have time to
         # deliver the final message event without tripping "missing event"
         # errors in some clients.  5s is empirically safe; not user-tunable —
@@ -4148,6 +4150,105 @@ class MatrixAdapter(BasePlatformAdapter):
                         reply_to=reacts_to,
                     )
                 return
+
+            # Non-approval reaction — forward to the agent session so the
+            # model can perceive user reactions (👍, ❤️, etc.). Reached only
+            # when no approval/model-picker/choice-picker prompt consumed it.
+            if self._forward_reactions:
+                await self._forward_reaction_to_agent(
+                    room_id, sender, event_id, reacts_to, key,
+                )
+
+    async def _forward_reaction_to_agent(
+        self,
+        room_id: str,
+        sender: str,
+        event_id: str,
+        reacts_to: str,
+        key: str,
+    ) -> None:
+        """Forward a non-approval reaction into the agent session."""
+        try:
+            # Match the normal room-message intake filters so bridge/system
+            # relays and ignored senders can't reach the agent through the
+            # reaction path either.
+            if self._is_system_or_bridge_sender(sender):
+                logger.debug(
+                    "Matrix: ignoring reaction from system/bridge sender %s", sender,
+                )
+                return
+            if self._matches_ignored_user_pattern(sender):
+                logger.debug(
+                    "Matrix: ignoring reaction from ignored sender %s", sender,
+                )
+                return
+            if not await self._is_allowed_matrix_room_event(room_id):
+                logger.info(
+                    "Matrix: ignoring reaction from unauthorized room %s", room_id,
+                )
+                return
+            # Resolve context (DM detection, thread, display name, source).
+            # Reactions bypass mention gating — they are intentional user
+            # interactions, not ambient room chatter.
+            is_dm = await self._is_dm_room(room_id)
+            chat_type = "dm" if is_dm else "group"
+            display_name = await self._get_display_name(room_id, sender)
+            source = self.build_source(
+                chat_id=room_id,
+                chat_type=chat_type,
+                user_id=sender,
+                user_name=display_name,
+            )
+            # Reply injection in the gateway prompt layer requires
+            # reply_to_text — the id alone doesn't tell the agent WHAT was
+            # reacted to. Best-effort fetch of the target event body.
+            reply_to_text = await self._reaction_target_text(room_id, reacts_to)
+            body = f"[reaction] reacted with {key} to the message above."
+            msg_event = MessageEvent(
+                text=body,
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message={"reaction": key, "reacts_to": reacts_to},
+                message_id=event_id,
+                reply_to_message_id=reacts_to or None,
+                reply_to_text=reply_to_text,
+            )
+            await self.handle_message(msg_event)
+        except Exception as exc:
+            logger.error("Failed to forward Matrix reaction to agent: %s", exc)
+
+    async def _reaction_target_text(
+        self, room_id: str, reacts_to: str
+    ) -> Optional[str]:
+        """Best-effort body text of the event a reaction points at.
+
+        Falls back to None when the event can't be fetched (history redaction,
+        homeserver lag, missing client) — forwarding still works, the agent
+        just loses the quoted context.
+        """
+        if not reacts_to or self._client is None:
+            return None
+        try:
+            target = await self._client.get_event(room_id, reacts_to)
+            content = getattr(target, "content", None)
+            body = None
+            if isinstance(content, dict):
+                body = content.get("body")
+            else:
+                body = getattr(content, "body", None)
+            if not body or not isinstance(body, str):
+                return None
+            # Match the reply-injection snippet bound (500 chars) so a huge
+            # target message can't blow up the prompt.
+            return body[:500]
+        except Exception as exc:
+            logger.debug(
+                "Matrix: could not fetch reaction target %s in %s: %s",
+                reacts_to,
+                room_id,
+                exc,
+            )
+            return None
 
     def _matrix_prompt_expired(self, prompt: Any) -> bool:
         expires_at = getattr(prompt, "expires_at", None)

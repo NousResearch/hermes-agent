@@ -39,7 +39,7 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 | `/new [name]`（别名：`/reset`） | 开始新会话（全新会话 ID + 历史记录）。可选的 `[name]` 设置初始会话标题——例如 `/new my-experiment` 打开一个已命名为 `my-experiment` 的新会话，便于之后用 `/resume` 或 `/sessions` 查找。追加 `now`、`--yes` 或 `-y` 可跳过确认弹窗——例如 `/reset now`、`/new --yes my-experiment`。 |
 | `/clear` | 清屏并开始新会话 |
 | `/history` | 显示对话历史 |
-| `/save` | 保存当前对话 |
+| `/save <json\|md\|html> [文件名] [redact]` | 将当前会话导出为 JSON、Markdown 或独立 HTML 文件。直接输入 `/save` 显示用法说明。`redact` 会在写入前清除密钥等敏感信息。在网关平台上文件会作为文档发送到聊天中。 |
 | `/retry` | 重试最后一条消息（重新发送给 agent） |
 | `/undo` | 移除最后一轮用户/助手对话 |
 | `/title` | 为当前会话设置标题（用法：/title My Session Name） |
@@ -245,7 +245,7 @@ hermes config set model.aliases.grok x-ai/grok-4
 
 ## 注意事项
 
-- `/skin`、`/snapshot`、`/reload`、`/tools`、`/toolsets`、`/browser`、`/config`、`/cron`、`/platforms`、`/paste`、`/image`、`/statusbar`、`/plugins`、`/busy`、`/indicator`、`/redraw`、`/clear`、`/history`、`/save`、`/copy`、`/handoff`、`/billing` 和 `/quit` 是**仅限 CLI** 的命令。
+- `/skin`、`/snapshot`、`/reload`、`/tools`、`/toolsets`、`/browser`、`/config`、`/cron`、`/platforms`、`/paste`、`/image`、`/statusbar`、`/plugins`、`/busy`、`/indicator`、`/redraw`、`/clear`、`/history`、`/copy`、`/handoff`、`/billing` 和 `/quit` 是**仅限 CLI** 的命令。
 - `/skills` **仅在搜索/浏览/安装时属于 CLI-only**；其写入审批子命令（`pending`、`approve`、`reject`、`diff`、`approval`）在 `skills.write_approval` 开启时也可在消息平台使用。`/memory` 可在**两个表面**使用。
 - `/verbose` **默认仅限 CLI**，但可通过在 `config.yaml` 中设置 `display.tool_progress_command: true` 为消息平台启用。启用后，它会循环切换 `display.tool_progress` 模式并保存到配置。
 - `/sethome`、`/update`、`/restart`、`/approve`、`/deny`、`/topic`、`/platform` 和 `/commands` 是**仅限消息平台**的命令。

@@ -28,6 +28,9 @@ class _FakeTodoStore:
     def has_items(self):
         return True
 
+    def read(self):
+        return []
+
 
 class _FakeGuardrails:
     def reset_for_turn(self):

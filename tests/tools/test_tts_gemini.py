@@ -95,9 +95,26 @@ class TestGenerateGeminiTts:
         with patch("requests.post", return_value=mock_gemini_response) as mock_post:
             _generate_gemini_tts("Hi", output_path, {})
 
-        # Confirm it used the GOOGLE_API_KEY as the query parameter
+        # Confirm it used the GOOGLE_API_KEY, sent via the auth header
         _, kwargs = mock_post.call_args
-        assert kwargs["params"]["key"] == "from-google-env"
+        assert kwargs["headers"]["x-goog-api-key"] == "from-google-env"
+
+    def test_api_key_rides_in_header_not_url(self, tmp_path, monkeypatch, mock_gemini_response):
+        """The key must not be a query parameter: ``requests`` echoes the
+        full prepared URL (query string included) into HTTPError messages,
+        so a ``key=`` param would land in logs on any 4xx/5xx."""
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        output_path = str(tmp_path / "test.wav")
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi", output_path, {})
+
+        _, kwargs = mock_post.call_args
+        assert kwargs["headers"]["x-goog-api-key"] == "test-key"
+        assert "key" not in (kwargs.get("params") or {})
+        assert "test-key" not in mock_post.call_args[0][0]
 
     def test_wav_output_fast_path(self, tmp_path, monkeypatch, mock_gemini_response, fake_pcm_bytes):
         from tools.tts_tool import _generate_gemini_tts

@@ -88,6 +88,7 @@ class TestDotenvFallbackPerProvider:
 
         def fake_post(url, **kwargs):
             captured["params"] = kwargs.get("params", {})
+            captured["headers"] = kwargs.get("headers", {})
             response = MagicMock()
             response.status_code = 200
             response.json.return_value = {
@@ -125,7 +126,8 @@ class TestDotenvFallbackPerProvider:
             tts_tool._generate_gemini_tts("hi", str(tmp_path / "out.wav"), {})
 
         assert "GEMINI_API_KEY" in seen_lookups
-        assert captured["params"]["key"] == "gemini-dotenv-key"
+        assert captured["headers"]["x-goog-api-key"] == "gemini-dotenv-key"
+        assert "key" not in captured["params"]
 
 
 class TestRegressionGuard:

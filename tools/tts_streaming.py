@@ -365,12 +365,16 @@ class GeminiStreamer(StreamingTTSProvider):
         }
         # ``?alt=sse`` flips the response from a single JSON blob to an SSE
         # feed of base64 PCM chunks — the whole point of this provider.
+        # The key rides in the ``x-goog-api-key`` header, not the query
+        # string: ``requests`` puts the full URL into HTTPError messages,
+        # so a ``key=`` param would land in logs on any 4xx/5xx.
         url = f"{base_url}/models/{model}:streamGenerateContent"
 
         def _sse_chunks() -> Iterator[bytes]:
             with requests.post(
                 url,
-                params={"alt": "sse", "key": api_key},
+                params={"alt": "sse"},
+                headers={"x-goog-api-key": api_key},
                 json=payload,
                 timeout=60,
                 stream=True,

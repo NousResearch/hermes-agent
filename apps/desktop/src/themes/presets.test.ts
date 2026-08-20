@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { BUILTIN_THEME_LIST, DEFAULT_TYPOGRAPHY, EMOJI_FALLBACK } from './presets'
+import { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_TYPOGRAPHY, EMOJI_FALLBACK, hepburnTheme, nousTheme } from './presets'
 
 // #40364: none of the UI text/mono fonts carry emoji glyphs, so every font
 // stack must end with a color-emoji fallback or emoji render as tofu on
@@ -29,5 +29,29 @@ describe('theme typography emoji fallback (#40364)', () => {
     expect(EMOJI_FALLBACK).toContain('Apple Color Emoji')
     expect(EMOJI_FALLBACK).toContain('Segoe UI Emoji')
     expect(EMOJI_FALLBACK).toContain('Noto Color Emoji')
+  })
+})
+
+describe('desktop theme presets', () => {
+  it('ports Hepburn colors from the Hermes WebUI skin', () => {
+    expect(BUILTIN_THEMES.hepburn).toBe(hepburnTheme)
+    expect(hepburnTheme.description).toContain('Hermes WebUI')
+
+    expect(hepburnTheme.colors).toMatchObject({
+      background: '#fff3f7',
+      foreground: '#3d1a28',
+      primary: '#d44a7a',
+      sidebarBackground: '#fbe4ed'
+    })
+
+    expect(hepburnTheme.darkColors).toMatchObject({
+      background: '#110a0f',
+      foreground: '#f2e4ee',
+      card: '#241420',
+      primary: '#f278ad',
+      sidebarBackground: '#1e0f19'
+    })
+
+    expect(hepburnTheme.typography).toEqual(nousTheme.typography)
   })
 })

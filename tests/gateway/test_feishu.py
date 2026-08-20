@@ -2302,6 +2302,120 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         self.assertTrue(event.text.startswith("/model"))
 
 
+class TestForwardedResourceFallback(unittest.TestCase):
+    """Tests for forwarded resource download fallback (_retry_with_forwarded_source)."""
+
+    def _build_adapter(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+        from unittest.mock import Mock
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._client = Mock()
+        return adapter
+
+    def _make_msg_response(self, root_id=None, parent_id=None, upper_message_id=None):
+        from unittest.mock import Mock
+        from types import SimpleNamespace
+        msg = SimpleNamespace(
+            root_id=root_id,
+            parent_id=parent_id,
+            upper_message_id=upper_message_id,
+        )
+        resp = Mock()
+        resp.success = lambda: True
+        resp.data = SimpleNamespace(items=[msg])
+        return resp
+
+    # ── _resolve_forwarded_source_message_id ───────────────────────────
+
+    def test_resolve_finds_root_id(self):
+        adapter = self._build_adapter()
+        resp = self._make_msg_response(root_id="om_original_123")
+        adapter._client.im.v1.message.get = Mock(return_value=resp)
+        result = asyncio.run(adapter._resolve_forwarded_source_message_id("om_forwarded_456"))
+        self.assertEqual(result, "om_original_123")
+
+    def test_resolve_prefers_root_over_parent(self):
+        adapter = self._build_adapter()
+        resp = self._make_msg_response(root_id="om_root", parent_id="om_parent", upper_message_id="om_upper")
+        adapter._client.im.v1.message.get = Mock(return_value=resp)
+        result = asyncio.run(adapter._resolve_forwarded_source_message_id("om_current"))
+        self.assertEqual(result, "om_root")
+
+    def test_resolve_uses_parent_when_no_root(self):
+        adapter = self._build_adapter()
+        resp = self._make_msg_response(root_id=None, parent_id="om_parent", upper_message_id="om_upper")
+        adapter._client.im.v1.message.get = Mock(return_value=resp)
+        result = asyncio.run(adapter._resolve_forwarded_source_message_id("om_current"))
+        self.assertEqual(result, "om_parent")
+
+    def test_resolve_returns_none_when_no_source(self):
+        adapter = self._build_adapter()
+        resp = self._make_msg_response()
+        adapter._client.im.v1.message.get = Mock(return_value=resp)
+        result = asyncio.run(adapter._resolve_forwarded_source_message_id("om_normal"))
+        self.assertIsNone(result)
+
+    def test_resolve_returns_none_for_self_reference(self):
+        adapter = self._build_adapter()
+        resp = self._make_msg_response(root_id="om_self")
+        adapter._client.im.v1.message.get = Mock(return_value=resp)
+        result = asyncio.run(adapter._resolve_forwarded_source_message_id("om_self"))
+        self.assertIsNone(result)
+
+    def test_resolve_returns_none_on_api_failure(self):
+        adapter = self._build_adapter()
+        adapter._client.im.v1.message.get = Mock(side_effect=Exception("API unavailable"))
+        result = asyncio.run(adapter._resolve_forwarded_source_message_id("om_fail"))
+        self.assertIsNone(result)
+
+    # ── _retry_with_forwarded_source ───────────────────────────────────
+
+    def test_retry_image_fallback_resolves_and_succeeds(self):
+        adapter = self._build_adapter()
+        adapter._resolve_forwarded_source_message_id = AsyncMock(return_value="om_source")
+        adapter._download_feishu_image = AsyncMock(return_value=("/tmp/img.jpg", "image/jpeg"))
+        result = asyncio.run(adapter._retry_with_forwarded_source(
+            "image", "om_fwd", image_key="img_v3_xxx",
+        ))
+        self.assertEqual(result, ("/tmp/img.jpg", "image/jpeg"))
+        adapter._download_feishu_image.assert_called_once_with(
+            message_id="om_source", image_key="img_v3_xxx",
+        )
+
+    def test_retry_file_fallback_resolves_and_succeeds(self):
+        adapter = self._build_adapter()
+        adapter._resolve_forwarded_source_message_id = AsyncMock(return_value="om_source")
+        adapter._download_feishu_message_resource = AsyncMock(return_value=("/tmp/doc.pdf", "application/pdf"))
+        result = asyncio.run(adapter._retry_with_forwarded_source(
+            "file", "om_fwd", file_key="file_v3_xxx", fallback_filename="doc.pdf",
+        ))
+        self.assertEqual(result, ("/tmp/doc.pdf", "application/pdf"))
+        adapter._download_feishu_message_resource.assert_called_once_with(
+            message_id="om_source", file_key="file_v3_xxx",
+            resource_type="file", fallback_filename="doc.pdf",
+        )
+
+    def test_retry_returns_empty_when_no_alt_source(self):
+        adapter = self._build_adapter()
+        adapter._resolve_forwarded_source_message_id = AsyncMock(return_value=None)
+        with patch.object(adapter, '_download_feishu_image') as mock_img:
+            result = asyncio.run(adapter._retry_with_forwarded_source(
+                "image", "om_fwd", image_key="img_v3_xxx",
+            ))
+            self.assertEqual(result, ("", ""))
+            mock_img.assert_not_called()
+
+    def test_retry_returns_empty_when_alt_equals_self(self):
+        adapter = self._build_adapter()
+        adapter._resolve_forwarded_source_message_id = AsyncMock(return_value="om_self")
+        with patch.object(adapter, '_download_feishu_image') as mock_img:
+            result = asyncio.run(adapter._retry_with_forwarded_source(
+                "image", "om_self", image_key="img_v3_xxx",
+            ))
+            self.assertEqual(result, ("", ""))
+            mock_img.assert_not_called()
+
+
 class TestFeishuFetchMessageText(unittest.TestCase):
     def _build_adapter(self):
         from plugins.platforms.feishu.adapter import FeishuAdapter

@@ -45,7 +45,6 @@ def server():
     }):
         import importlib
         mod = importlib.import_module("tui_gateway.server")
-
     # Tests below stub handlers ("session.list", "prompt.submit", ...) in
     # the module-level _methods dict shared with every other test file in
     # the process — snapshot and restore it around each test.
@@ -58,6 +57,7 @@ def server():
     mod._sessions.clear()
     mod._pending.clear()
     mod._answers.clear()
+    mod._db = None
 
 
 @pytest.fixture()

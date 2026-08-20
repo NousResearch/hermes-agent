@@ -14637,6 +14637,14 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5026, f"wake module unavailable: {e}")
 
     cfg = load_wake_word_config()
+    if not persist and not wake_surface_enabled(surface, cfg):
+        # Passive auto-arm is a startup convenience, so a disabled surface
+        # must return before capture/device and dependency probes.  Explicit
+        # gestures still probe first so an unusable setup is never persisted.
+        reason = "disabled" if not cfg.get("enabled") else "disabled_for_surface"
+        logger.info("wake.start(%s): %s (enabled=%s, surface=%s)",
+                    surface, reason, cfg.get("enabled"), cfg.get("surface"))
+        return _ok(rid, {"started": False, "reason": reason})
     # Desktop remote (gui) prefers client capture: Mac mic → wake.feed PCM,
     # while the engine still runs on the backend. CLI/TUI stay local.
     prefer_client = surface in ("gui", "desktop") or bool(params.get("client_capture"))

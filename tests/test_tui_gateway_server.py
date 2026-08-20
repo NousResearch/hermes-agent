@@ -2087,12 +2087,13 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
 
     monkeypatch.setattr(server, "_persist_wake_enabled", fake_persist)
     monkeypatch.setattr(wake_word, "load_wake_word_config", lambda: dict(config))
-    monkeypatch.setattr(wake_word, "check_wake_word_requirements", lambda _cfg: {
+    check_requirements = Mock(return_value={
         "available": True,
         "phrase": "hey hermes",
         "provider": "test",
         "hint": "",
     })
+    monkeypatch.setattr(wake_word, "check_wake_word_requirements", check_requirements)
     listener = {"owner": None}
     monkeypatch.setattr(
         wake_word, "start_listening",
@@ -2118,6 +2119,7 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
         }, transport=transport)
         assert passive["result"] == {"started": False, "reason": "disabled"}
         assert persisted == []
+        check_requirements.assert_not_called()
 
         # Explicit gesture: enables in config AND arms.
         clicked = _dispatch_sync({
@@ -2128,6 +2130,7 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
         assert clicked["result"]["started"] is True
         assert clicked["result"]["enabled_persisted"] is True
         assert persisted == [True]
+        check_requirements.assert_called_once()
 
         # Explicit stop: disables in config.
         stopped = server.dispatch({
@@ -2148,6 +2151,7 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
         }, transport=transport)
         assert scoped["result"] == {"started": False, "reason": "disabled_for_surface"}
         assert persisted == [True, False]
+        assert check_requirements.call_count == 2
     finally:
         server._wake_owner_transport = None
         server._wake_owner_surface = ""

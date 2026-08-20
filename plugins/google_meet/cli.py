@@ -247,7 +247,7 @@ def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
     print("-------------------")
 
     # 1) pip deps — always safe, venv-scoped.
-    pip_pkgs = ["playwright", "websockets"]
+    pip_pkgs = ["playwright", "websockets>=15.0.1,<16"]
     print(f"\n[1/3] pip install: {' '.join(pip_pkgs)}")
     try:
         from hermes_cli.tools_config import _pip_install

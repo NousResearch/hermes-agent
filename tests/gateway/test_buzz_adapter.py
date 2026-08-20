@@ -421,6 +421,69 @@ class TestBuzzAdapterSend:
         args, _stdin = cli.calls[0]
         assert args[args.index("--file") + 1] == str(img)
 
+    @pytest.mark.asyncio
+    async def test_send_retries_unthreaded_when_parent_missing(self):
+        """A reply target this relay does not have must not lose the message."""
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages", "send", "", code=4,
+            stderr='{"error":"other","message":"error: parent event abc123 not found"}',
+        )
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt203", "message": ""})
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "hello", reply_to="abc123")
+        assert result.success is True
+        assert result.message_id == "evt203"
+
+        assert len(cli.calls) == 2
+        first_args, _ = cli.calls[0]
+        retry_args, retry_stdin = cli.calls[1]
+        assert first_args[first_args.index("--reply-to") + 1] == "abc123"
+        assert "--reply-to" not in retry_args
+        assert "abc123" not in retry_args
+        assert retry_stdin == "hello"
+
+    @pytest.mark.asyncio
+    async def test_send_does_not_retry_on_unrelated_error(self):
+        """Only the missing-parent case is retried; everything else still fails."""
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages", "send", "", code=1,
+            stderr='{"error":"user_error","message":"something else entirely"}',
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "hello", reply_to="abc123")
+        assert result.success is False
+        assert len(cli.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_send_image_retries_unthreaded_when_parent_missing(self, tmp_path):
+        """Native local-file uploads take the same recovery as text sends."""
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages", "send", "", code=4,
+            stderr='{"error":"other","message":"error: parent event abc123 not found"}',
+        )
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt204", "message": ""})
+        adapter._run_cli = cli
+
+        result = await adapter.send_image(CHANNEL, str(img), caption="shot", reply_to="abc123")
+        assert result.success is True
+        assert result.message_id == "evt204"
+
+        assert len(cli.calls) == 2
+        retry_args, _ = cli.calls[1]
+        assert "--reply-to" not in retry_args
+        # The upload itself must survive the retry
+        assert retry_args[retry_args.index("--file") + 1] == str(img)
+
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -536,5 +599,34 @@ class TestStandaloneSend:
         assert captured["input_text"] == "cron says hi"
         # The private key must never be part of argv
         assert all("nsec1x" not in str(a) for a in captured["args"])
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_retries_unthreaded_when_parent_missing(self, monkeypatch, tmp_path):
+        """Out-of-process cron delivery takes the same recovery as the adapter."""
+        from gateway.config import PlatformConfig
+
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+
+        calls = []
+
+        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=30.0):
+            calls.append(list(args))
+            if len(calls) == 1:
+                return 4, "", '{"error":"other","message":"error: parent event abc123 not found"}'
+            return 0, json.dumps({"accepted": True, "event_id": "evt-cron2", "message": ""}), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}), CHANNEL, "cron says hi", thread_id="abc123"
+        )
+        assert result == {"success": True, "message_id": "evt-cron2"}
+        assert len(calls) == 2
+        assert calls[0][calls[0].index("--reply-to") + 1] == "abc123"
+        assert "--reply-to" not in calls[1]
 
 

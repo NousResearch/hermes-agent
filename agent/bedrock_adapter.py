@@ -546,7 +546,10 @@ def _convert_content_to_converse(content) -> List[Dict]:
     Replaces empty/whitespace-only text blocks with a non-whitespace
     placeholder — Bedrock's Converse API rejects messages where a text
     content block is empty or whitespace-only (ValidationException:
-    "text content blocks must contain non-whitespace text"). Ref: issue #9486.
+    "text content blocks must contain non-whitespace text"). A single space
+    (" ") is whitespace and is also rejected, so the placeholder must contain
+    a non-whitespace char. Ref: issue #9486 (originally "non-empty"; Bedrock
+    later tightened this to "non-whitespace").
     """
     if content is None:
         return [{"text": _safe_text(content)}]
@@ -644,6 +647,11 @@ def convert_messages_to_converse(
             # Tool result messages → merge into the preceding user turn
             tool_call_id = msg.get("tool_call_id", "")
             result_content = content if isinstance(content, str) else json.dumps(content)
+            # Bedrock rejects blank text blocks; a tool that returns empty or
+            # whitespace-only output (e.g. a command with no stdout) would
+            # otherwise produce one. Substitute a non-whitespace placeholder.
+            if not (result_content and result_content.strip()):
+                result_content = "."
             tool_result_block = {
                 "toolResult": {
                     "toolUseId": tool_call_id,

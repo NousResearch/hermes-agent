@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -91,10 +93,100 @@ def _make_packaged_executable(root: Path, monkeypatch) -> Path:
     else:
         exe = desktop_dir / "release" / "linux-unpacked" / "hermes"
     exe.parent.mkdir(parents=True, exist_ok=True)
-    exe.write_text("", encoding="utf-8")
+    if sys.platform == "win32":
+        # Current upstream validates the packaged Electron executable before
+        # launch. Build the smallest structurally valid PE fixture the parser
+        # accepts instead of the historical zero-byte placeholder.
+        payload = bytearray(512)
+        payload[:2] = b"MZ"
+        pe_offset = 0x80
+        struct.pack_into("<I", payload, 0x3C, pe_offset)
+        payload[pe_offset : pe_offset + 4] = b"PE\x00\x00"
+        machine = next(iter(cli_main._expected_windows_pe_machines()))
+        struct.pack_into("<HH", payload, pe_offset + 4, machine, 0)
+        exe.write_bytes(payload)
+    else:
+        exe.write_text("", encoding="utf-8")
     if sys.platform not in ("darwin", "win32"):
         (exe.parent / "chrome-sandbox").write_text("", encoding="utf-8")
     return exe
+
+
+def test_gui_routes_termux_before_electron_packaging(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(cli_main, "_is_termux_startup_environment", lambda: True)
+
+    routed = []
+
+    def termux_gui(args, resolved_desktop_dir):
+        routed.append((args, resolved_desktop_dir))
+
+    monkeypatch.setattr(cli_main, "_cmd_termux_gui", termux_gui)
+    monkeypatch.setattr(
+        cli_main,
+        "_desktop_packaged_executable",
+        lambda _desktop_dir: (_ for _ in ()).throw(
+            AssertionError("Termux must route before resolving an Electron executable")
+        ),
+    )
+
+    args = _ns()
+    cli_main.cmd_gui(args)
+
+    assert routed == [(args, desktop_dir)]
+
+
+def test_termux_gui_preserves_desktop_backend_environment(tmp_path, monkeypatch):
+    from hermes_cli.termux_desktop import TermuxDesktopRuntime
+
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    (desktop_dir / "dist").mkdir(parents=True)
+    workdir = tmp_path / "workspace"
+    workdir.mkdir()
+    hermes_root = tmp_path / "custom-hermes-root"
+    hermes_root.mkdir()
+
+    monkeypatch.setattr(cli_main, "_build_termux_desktop_renderer", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "hermes_cli.termux_desktop.ensure_termux_x11_packages",
+        lambda **_kwargs: TermuxDesktopRuntime(browser="chromium", display=":1", x11="termux-x11"),
+    )
+    monkeypatch.setattr("hermes_cli.termux_desktop.termux_x11_android_app_installed", lambda: True)
+    monkeypatch.setattr("hermes_cli.termux_desktop.launch_termux_x11", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("hermes_cli.termux_desktop.chromium_browser_spec", lambda _runtime: "chromium --app=%s")
+
+    captured = {}
+
+    def dashboard(args):
+        captured["args"] = args
+        captured["env"] = dict(os.environ)
+
+    monkeypatch.setattr(cli_main, "cmd_dashboard", dashboard)
+
+    cli_main._cmd_termux_gui(
+        _ns(
+            cwd=str(workdir),
+            fake_boot=True,
+            hermes_root=str(hermes_root),
+            ignore_existing=True,
+            port=9127,
+        ),
+        desktop_dir,
+    )
+
+    env = captured["env"]
+    assert env["HERMES_DESKTOP"] == "1"
+    assert env["HERMES_DESKTOP_CWD"] == str(workdir.resolve())
+    assert env["HERMES_DESKTOP_BOOT_FAKE"] == "1"
+    assert env["HERMES_DESKTOP_IGNORE_EXISTING"] == "1"
+    assert env["HERMES_DESKTOP_HERMES_ROOT"] == str(hermes_root.resolve())
+    assert env["HERMES_WEB_DIST"] == str((desktop_dir / "dist").resolve())
+    assert env["DISPLAY"] == ":1"
+    assert env["BROWSER"] == "chromium --app=%s"
+    assert captured["args"].port == 9127
 
 
 def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
@@ -107,7 +199,7 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \

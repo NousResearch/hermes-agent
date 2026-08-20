@@ -1,4 +1,7 @@
 import './styles.css'
+// Install the loopback browser host before any store/App modules evaluate.
+// Electron preload remains authoritative when its bridge already exists.
+import './lib/browser-desktop-bridge-install'
 // Side-effect: reports in-flight turns to the main process for the quit guard.
 import './store/active-work'
 // Side-effect: mirrors the machine's AC/battery state for poll demotion.

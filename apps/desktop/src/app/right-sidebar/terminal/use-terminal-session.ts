@@ -393,6 +393,7 @@ export function useTerminalSession({
   // must match the surface or the ANSI palette inverts against it. themeName
   // re-resolves the canvas surface on skin switches (same mode, new tint).
   const { renderedMode, theme, themeName } = useTheme()
+  const browserHostedTui = typeof document !== 'undefined' && document.documentElement.dataset.hermesDesktopHost === 'browser'
   // Adopt the skin's ANSI palette when it ships one (imported VS Code themes do),
   // matched to the painted variant; built-in skins carry none, so the terminal
   // keeps its VS Code defaults. withSurface still owns the background, so this
@@ -562,7 +563,7 @@ export function useTerminalSession({
     // so the fresh prompt lands flush under the restored block.
     const initialReviveBuffer = initialReviveBufferRef.current
 
-    if (initialReviveBuffer) {
+    if (initialReviveBuffer && !browserHostedTui) {
       term.write(initialReviveBuffer)
       term.write('\r\n')
     }
@@ -573,6 +574,7 @@ export function useTerminalSession({
     // PTY cwd probe on the main side (shell-agnostic on POSIX). The store
     // updater de-dupes, so both feeding it is harmless.
     const recordCwd = (next: string | null | undefined) => {
+      if (browserHostedTui) {return}
       const value = (next ?? '').trim()
 
       if (!value || value === lastObservedCwdRef.current) {
@@ -596,6 +598,7 @@ export function useTerminalSession({
     let cwdProbeAt = 0
 
     const probeCwd = () => {
+      if (browserHostedTui) {return}
       const sessionId = sessionIdRef.current
 
       if (!sessionId || !terminalApi.cwd || Date.now() - cwdProbeAt < CWD_PROBE_THROTTLE_MS) {
@@ -652,6 +655,8 @@ export function useTerminalSession({
     }
 
     const scheduleSnapshot = () => {
+      if (browserHostedTui) {return}
+
       if (snapshotTimer) {
         return
       }
@@ -677,6 +682,8 @@ export function useTerminalSession({
     })
 
     const onDragOver = (e: DragEvent) => {
+      if (browserHostedTui) {return}
+
       if (!e.dataTransfer || !transferHasDropCandidates(e.dataTransfer)) {
         return
       }
@@ -687,6 +694,7 @@ export function useTerminalSession({
     }
 
     const onDrop = (e: DragEvent) => {
+      if (browserHostedTui) {return}
       const id = sessionIdRef.current
 
       if (!id || !e.dataTransfer || !transferHasDropCandidates(e.dataTransfer)) {
@@ -719,7 +727,7 @@ export function useTerminalSession({
     // While armed, strip leading blank rows so the first prompt lands at the
     // very top (no starship `add_newline` gap). Do this only on renderer output:
     // never inject Ctrl-L or other cleanup keystrokes into the user's shell.
-    let stripLeading = true
+    let stripLeading = !browserHostedTui
 
     const armedWrite = (data: string) => {
       if (!stripLeading) {
@@ -864,6 +872,8 @@ export function useTerminalSession({
           sessionIdRef.current = session.id
           lastSentSize = { cols: term.cols, rows: term.rows }
           shellNameRef.current = session.shell || 'shell'
+
+        if (browserHostedTui) {updateTerminalReviveBuffer(id, '')}
           setShellName(session.shell || 'shell')
           onShellRef.current?.(session.shell || 'shell')
 
@@ -968,7 +978,7 @@ export function useTerminalSession({
     // `id` is stable for the instance's life (keyed by tab id), so listing it
     // doesn't re-create the shell — it just satisfies the deps check for the
     // closeTerminal(id) call in onExit.
-  }, [addSelectionToChat, cwd, id, latestFontFamilyRef, mountedRef])
+  }, [addSelectionToChat, browserHostedTui, cwd, id, latestFontFamilyRef, mountedRef])
 
   useEffect(() => {
     const term = termRef.current
@@ -1057,12 +1067,18 @@ export function useTerminalSession({
         return
       }
 
+      if (browserHostedTui) {
+        $terminalInjection.set(null)
+
+        return
+      }
+
       hasSessionActivityRef.current = true
       void window.hermesDesktop?.terminal?.write(sessionId, `${command}\r`)
       $terminalInjection.set(null)
       termRef.current?.focus()
     })
-  }, [active, status])
+  }, [active, browserHostedTui, status])
 
   return {
     addSelectionToChat,

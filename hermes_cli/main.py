@@ -1989,20 +1989,11 @@ to avoid false-positive reinstalls on every launch.
 def _workspace_root(dir: Path) -> Path:
     """Return the npm workspace root for *dir*.
 
-    In a workspace checkout the single ``package-lock.json`` and hoisted
-    ``node_modules/`` live at the workspace root (the parent of the
-    sub-package directory).  Heuristic: if *dir* has a ``package.json``
-    but **no** ``package-lock.json``, and its **parent** has a
-    ``package-lock.json``, the parent is the workspace root.
-    Otherwise *dir* itself is the root (standalone project or
-    prebuilt-bundle layout).
-
-    Used by ``_tui_need_npm_install``, ``_make_tui_argv``, and
-    ``_build_web_ui`` so that lockfile/node_modules resolution and
-    ``npm install`` cwd stay consistent — a single helper prevents
-    the checks from diverging if someone accidentally creates a
-    sub-package lockfile (e.g. running ``npm install`` in the wrong
-    directory).
+    Keep this shared helper deliberately conservative: existing web/TUI build
+    paths rely on the historical direct-parent contract when deciding which
+    workspace closure npm must reify. Nested workspace discovery is needed by
+    Termux Desktop, but belongs in the Termux-only install helper below rather
+    than changing this shared resolver.
     """
     if (
         (dir / "package.json").is_file()
@@ -2016,8 +2007,26 @@ def _workspace_root(dir: Path) -> Path:
 def _termux_workspace_install_context(
     dir: Path, *, include_child_workspaces: bool = False
 ) -> tuple[Path, tuple[str, ...]]:
-    """Return Termux-only ``(cwd, npm_args)`` for installing deps for *dir* only."""
+    """Return Termux-only ``(cwd, npm_args)`` for installing deps for *dir*.
+
+    Native Termux also needs nested npm workspaces such as ``apps/desktop``.
+    If the shared direct-parent resolver does not find a root, walk ancestors
+    here only. This preserves the web/TUI install-closure semantics while still
+    letting the Android Desktop renderer use the repository lockfile/toolchain.
+    """
     ws_root = _workspace_root(dir)
+    if (
+        ws_root == dir
+        and (dir / "package.json").is_file()
+        and not (dir / "package-lock.json").is_file()
+    ):
+        for ancestor in dir.parents:
+            if (
+                (ancestor / "package.json").is_file()
+                and (ancestor / "package-lock.json").is_file()
+            ):
+                ws_root = ancestor
+                break
     if ws_root == dir:
         return dir, ()
 
@@ -7806,12 +7815,231 @@ def _register_linux_desktop_entry() -> None:
         print(f"⚠ Could not install the desktop launcher entry: {exc}")
 
 
+def _termux_desktop_stamp_path() -> Path:
+    """Separate renderer-only stamp; never satisfy a full Electron source build."""
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "termux-desktop-renderer-build-stamp.json"
+
+def _termux_desktop_renderer_build_needed(desktop_dir: Path) -> bool:
+    if not _desktop_dist_exists(desktop_dir):
+        return True
+    stamp = _termux_desktop_stamp_path()
+    if not stamp.is_file():
+        return True
+    try:
+        data = json.loads(stamp.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+    saved_hash = str(data.get("contentHash") or "")
+    return not saved_hash or saved_hash != _compute_desktop_content_hash(PROJECT_ROOT)
+
+def _write_termux_desktop_renderer_stamp() -> None:
+    stamp = _termux_desktop_stamp_path()
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "contentHash": _compute_desktop_content_hash(PROJECT_ROOT),
+        "surface": "termux-browser-hosted-desktop",
+        "builtAt": datetime.now().astimezone().isoformat(),
+    }
+    tmp = stamp.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, stamp)
+
+def _build_termux_desktop_renderer(
+    desktop_dir: Path,
+    *,
+    skip_build: bool,
+    force_build: bool,
+) -> None:
+    """Build only the browser-safe Desktop renderer on Android/Bionic.
+
+    `npm ci --ignore-scripts` is deliberate: the desktop workspace contains
+    Electron/node-pty dependencies used by the native shell, but Termux only
+    needs the Vite renderer. Skipping lifecycle scripts avoids attempting to
+    download/compile glibc Electron/native modules while npm still resolves the
+    exact lockfile graph needed by Vite.
+    """
+    if skip_build:
+        if not _desktop_dist_exists(desktop_dir):
+            print(f"? --skip-build was passed but no Desktop renderer exists at: {desktop_dir / 'dist'}")
+            print("  Drop --skip-build to build the Termux browser-hosted Desktop renderer.")
+            sys.exit(1)
+        print(f"→ Reusing Desktop renderer at {desktop_dir / 'dist'} (--skip-build)")
+        return
+
+    if not force_build and not _termux_desktop_renderer_build_needed(desktop_dir):
+        print("V Termux Desktop renderer is up to date (content stamp matches)")
+        return
+
+    npm = _resolve_node_runtime_npm()
+    if not npm:
+        print("Termux Desktop requires Node.js/npm, but npm was not found on PATH.")
+        print("Install it with:  pkg install nodejs")
+        sys.exit(1)
+
+    from hermes_constants import with_hermes_node_path
+
+    npm_cwd, workspace_args = _termux_workspace_install_context(desktop_dir)
+    install_env = with_hermes_node_path()
+    install_env["ELECTRON_SKIP_BINARY_DOWNLOAD"] = "1"
+    install_env["npm_config_ignore_scripts"] = "true"
+    print("→ Installing browser-safe Desktop renderer dependencies for Termux...")
+    install_result = _run_npm_install_deterministic(
+        npm,
+        npm_cwd,
+        extra_args=(*workspace_args, "--ignore-scripts", "--prefer-offline"),
+        capture_output=False,
+        env=install_env,
+    )
+    if install_result.returncode != 0:
+        print("? Termux Desktop renderer dependency install failed")
+        print("  Retry manually from the Hermes checkout with:")
+        print("    npm ci --workspace apps/desktop --include-workspace-root=false --ignore-scripts")
+        sys.exit(install_result.returncode or 1)
+
+    # Run the renderer script from the npm workspace root when this checkout
+    # uses workspaces.  In native Termux npm can hoist the dev toolchain
+    # (vite/tsc/vitest) to the root node_modules tree without making those
+    # shims discoverable when a nested workspace script is launched by changing
+    # cwd back into apps/desktop.  `npm run --workspace ...` keeps npm in charge
+    # of constructing PATH for the selected workspace and its hoisted bins.
+    build_cwd = desktop_dir
+    build_cmd = [npm, "run", "build:renderer"]
+    if npm_cwd != desktop_dir:
+        try:
+            workspace = desktop_dir.relative_to(npm_cwd).as_posix()
+        except ValueError:
+            workspace = ""
+        if workspace:
+            build_cwd = npm_cwd
+            build_cmd = [npm, "run", "--workspace", workspace, "build:renderer"]
+
+    # `ignore-scripts` belongs to dependency installation only.  The renderer
+    # build below is an explicit trusted repo script and must not inherit npm's
+    # global lifecycle suppression from the install phase.
+    build_env = dict(install_env)
+    build_env.pop("npm_config_ignore_scripts", None)
+
+    print("→ Building the Hermes Desktop renderer (Electron shell intentionally omitted on Termux)...")
+    build_result = subprocess.run(
+        build_cmd,
+        cwd=build_cwd,
+        env=build_env,
+        check=False,
+    )
+    if build_result.returncode != 0 or not _desktop_dist_exists(desktop_dir):
+        print("? Termux Desktop renderer build failed")
+        if build_cwd == desktop_dir:
+            print("  Run manually:  cd apps/desktop && npm run build:renderer")
+        else:
+            print(f"  Run manually:  npm run --workspace {workspace} build:renderer")
+        sys.exit(build_result.returncode or 1)
+    _write_termux_desktop_renderer_stamp()
+    print(f"V Termux Desktop renderer built at {desktop_dir / 'dist'}")
+
+def _cmd_termux_gui(args: argparse.Namespace, desktop_dir: Path) -> None:
+    """Run the latest Desktop renderer on Termux via loopback + Termux:X11."""
+    _build_termux_desktop_renderer(
+        desktop_dir,
+        skip_build=getattr(args, "skip_build", False),
+        force_build=getattr(args, "force_build", False),
+    )
+
+    if getattr(args, "build_only", False):
+        print("V Termux Desktop renderer ready (not launching; --build-only)")
+        return
+
+    from hermes_cli.termux_desktop import (
+        acquire_termux_x11_android_app,
+        chromium_browser_spec,
+        ensure_termux_x11_packages,
+        launch_termux_x11,
+        termux_x11_android_app_installed,
+    )
+
+    try:
+        runtime = ensure_termux_x11_packages(env=os.environ)
+    except RuntimeError as exc:
+        print(f"? Termux Desktop runtime setup failed: {exc}")
+        sys.exit(1)
+
+    if not termux_x11_android_app_installed():
+        print("→ Termux:X11 Android companion is not installed; acquiring the official nightly APK...")
+        print("  Android will show its required one-time package-install confirmation.")
+        if not acquire_termux_x11_android_app(env=os.environ):
+            print("? Termux:X11 Android companion is still unavailable.")
+            print("  Official release: https://github.com/termux/termux-x11/releases/tag/nightly")
+            print("  Install termux-x11-universal-debug.apk, then rerun `hermes desktop`.")
+            sys.exit(1)
+
+    print(f"→ Starting Termux:X11 on DISPLAY={runtime.display}...")
+    try:
+        launch_termux_x11(runtime, env=os.environ)
+    except RuntimeError as exc:
+        print(f"? Termux:X11 failed to start: {exc}")
+        sys.exit(1)
+    os.environ["DISPLAY"] = runtime.display
+    os.environ["BROWSER"] = chromium_browser_spec(runtime)
+    # Match the packaged Electron backend contract before entering cmd_dashboard.
+    # The Termux branch leaves cmd_gui() before the normal Desktop env setup below,
+    # so without these values the same renderer silently loses Desktop-only backend
+    # behavior (cron ticker, launch cwd, fake boot / existing-instance flags).
+    os.environ["HERMES_DESKTOP"] = "1"
+    os.environ["HERMES_DESKTOP_CWD"] = (
+        str(Path(args.cwd).expanduser().resolve())
+        if getattr(args, "cwd", None)
+        else os.getcwd()
+    )
+    if getattr(args, "fake_boot", False):
+        os.environ["HERMES_DESKTOP_BOOT_FAKE"] = "1"
+    if getattr(args, "ignore_existing", False):
+        os.environ["HERMES_DESKTOP_IGNORE_EXISTING"] = "1"
+    if getattr(args, "hermes_root", None):
+        os.environ["HERMES_DESKTOP_HERMES_ROOT"] = str(
+            Path(args.hermes_root).expanduser().resolve()
+        )
+    # Reuse the hardened dashboard server's auth/token/REST/WS implementation,
+    # but serve the *Desktop* Vite dist. The Desktop bundle detects the injected
+    # loopback token and installs its browser-host bridge before React evaluates.
+    os.environ["HERMES_WEB_DIST"] = str((desktop_dir / "dist").resolve())
+    os.environ.pop("HERMES_SERVE_HEADLESS", None)
+
+    port = int(getattr(args, "port", 9119) or 9119)
+    if not 1 <= port <= 65535:
+        print(f"? --port must be between 1 and 65535 (got {port})")
+        sys.exit(2)
+    print(f"V Hermes Desktop (Termux:X11): http://127.0.0.1:{port}")
+    print(f"V Phone browser URL:            http://127.0.0.1:{port}")
+    print("  The server is loopback-only; other LAN devices cannot reach it.")
+
+    dashboard_args = argparse.Namespace(
+        headless_backend=False,
+        host="127.0.0.1",
+        insecure=False,
+        isolated=True,
+        no_open=False,
+        open_profile="",
+        port=port,
+        skip_build=True,
+        ssh_owner_nonce=None,
+        ssh_session_token_file=None,
+        status=False,
+        stop=False,
+    )
+    cmd_dashboard(dashboard_args)
+
+
 def cmd_gui(args: argparse.Namespace):
-    """Build and launch the native Electron desktop GUI."""
+    """Build and launch Hermes Desktop (Electron, or browser-hosted on Termux)."""
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
     if not (desktop_dir / "package.json").exists():
         print(f"Desktop GUI source not found at: {desktop_dir}")
         sys.exit(1)
+
+    if _is_termux_startup_environment():
+        _cmd_termux_gui(args, desktop_dir)
+        return
 
     try:
         from hermes_logging import setup_logging as _setup_logging_gui

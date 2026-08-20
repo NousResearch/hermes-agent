@@ -33,8 +33,14 @@ export function desktopFsCacheKey(connection: HermesConnection | null = $connect
   return connectionCacheKey(connection)
 }
 
+export function isBrowserHostedDesktop() {
+  return (
+    typeof document !== 'undefined' && document.documentElement.dataset.hermesDesktopHost === 'browser'
+  )
+}
+
 export function isDesktopFsRemoteMode() {
-  return $connection.get()?.mode === 'remote'
+  return $connection.get()?.mode === 'remote' || isBrowserHostedDesktop()
 }
 
 // Active profile for FS/git REST calls. Without it the Electron api bridge

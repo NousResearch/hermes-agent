@@ -15,11 +15,11 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
     gui_parser = subparsers.add_parser(
         "desktop",
         aliases=["gui"],
-        help="Build and launch the native desktop app",
+        help="Build and launch Hermes Desktop",
         description=(
-            "Launch the Hermes Electron desktop app. By default this installs "
-            "workspace Node dependencies, builds the current OS's unpacked "
-            "Electron app, then launches that packaged artifact."
+            "Launch Hermes Desktop. On macOS/Windows/Linux this builds and runs "
+            "the Electron shell. On Termux it builds the same Desktop renderer, "
+            "serves it on loopback, and opens it through Termux:X11 Chromium."
         ),
     )
     gui_parser.add_argument(
@@ -30,7 +30,7 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
     gui_parser.add_argument(
         "--build-only",
         action="store_true",
-        help="Build the desktop app but do not launch it (used by the installer's --update flow)",
+        help="Build Desktop but do not launch it (renderer-only on Termux)",
     )
     gui_parser.add_argument(
         "--fake-boot",
@@ -53,11 +53,17 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
     gui_parser.add_argument(
         "--skip-build",
         action="store_true",
-        help="Skip npm install/package and launch the existing unpacked app from apps/desktop/release",
+        help="Reuse an existing Desktop build (apps/desktop/dist on Termux; packaged app elsewhere)",
     )
     gui_parser.add_argument(
         "--force-build",
         action="store_true",
         help="Force a full rebuild even if the content stamp matches",
+    )
+    gui_parser.add_argument(
+        "--port",
+        type=int,
+        default=9119,
+        help="Termux browser-hosted Desktop loopback port (default: 9119; ignored by Electron hosts)",
     )
     gui_parser.set_defaults(func=cmd_gui)

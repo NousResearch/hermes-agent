@@ -176,12 +176,14 @@ export async function openSessionInTerminal(
   sessionId: string,
   opts?: { cwd?: string; profile?: string }
 ): Promise<void> {
-  if (!sessionId || !canOpenSessionInTerminal()) {
+  const openInTerminal = typeof window !== 'undefined' ? window.hermesDesktop?.openSessionInTerminal : undefined
+
+  if (!sessionId || typeof openInTerminal !== 'function') {
     return
   }
 
   await runWindowOpen(
-    () => window.hermesDesktop.openSessionInTerminal(sessionId, opts),
+    () => openInTerminal(sessionId, opts),
     'Could not open chat in a terminal'
   )
 }

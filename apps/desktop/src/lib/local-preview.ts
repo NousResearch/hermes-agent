@@ -65,6 +65,10 @@ function joinPath(base: string, rel: string) {
 }
 
 function pathToFileUrl(path: string) {
+  if (/^(?:blob:|data:|https?:)/i.test(path)) {
+    return path
+  }
+
   const isWindowsUnc = path.startsWith('\\\\')
   const normalized = isWindowsUnc || /^[a-z]:[\\/]/i.test(path) ? path.replace(/\\/g, '/') : path
 

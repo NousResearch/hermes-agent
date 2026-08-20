@@ -176,6 +176,35 @@ class StreamingThinkScrubber:
                     buf = buf[open_idx + open_len:]
                     continue
 
+                # A COMPLETE open tag mid-line (any boundary-legal opener
+                # was already handled above, so an opener found here is NOT
+                # at a block boundary) with no close yet in buf is ambiguous:
+                # prose that merely mentions the tag, OR a real reasoning
+                # block whose closing tag lands in a LATER delta. Emitting the
+                # content now leaks the reasoning whenever the close is split
+                # across deltas — the exact failure this scrubber exists to
+                # prevent, and the reason a mid-line closed pair only got
+                # stripped when the whole pair happened to fall in one delta.
+                # Hold from the open tag to end-of-buf and re-decide on the
+                # next feed (close arrives -> the Priority-1 closed-pair strip
+                # above discards it) or at flush (no close ever -> emitted
+                # verbatim as prose). Only the tail after a mid-line opener is
+                # buffered, so ordinary streaming is untouched.
+                mid_open_idx, _mid_open_len = self._find_first_tag(
+                    buf, self._OPEN_TAGS,
+                )
+                if mid_open_idx != -1:
+                    preceding = buf[:mid_open_idx]
+                    if preceding:
+                        preceding = self._strip_orphan_close_tags(preceding)
+                        if preceding:
+                            out.append(preceding)
+                            self._last_emitted_ended_newline = (
+                                preceding.endswith("\n")
+                            )
+                    self._buf = buf[mid_open_idx:]
+                    return "".join(out)
+
                 # No resolvable tag structure in buf.  Hold back any
                 # partial-tag prefix at the tail so a split tag
                 # across deltas isn't missed, then emit the rest.

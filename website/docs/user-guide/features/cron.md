@@ -185,6 +185,31 @@ When `workdir` is set:
 Jobs with a `workdir` run sequentially on the scheduler tick, not in the parallel pool. This is deliberate: the cron worker applies the job workdir through process-global terminal state, so two workdir jobs running at the same time would corrupt each other's cwd. Workdir-less jobs still run in parallel as before.
 :::
 
+## Isolating a job in its own Docker sandbox image
+
+With `terminal.backend: docker`, every cron job **and** every interactive session shares **one** long-lived sandbox container built from `terminal.docker_image` — so they share installed packages, `/workspace`, and any credentials mounted into it. To run a specific job in its **own** container built from a **different** image, pin `docker_image` on the job:
+
+```bash
+# Give a job its own sandbox image (e.g. one with the AWS CLI baked in)
+hermes cron edit <job_id> --docker-image my-aws-sandbox:latest
+
+# Clear it — back to the shared default sandbox
+hermes cron edit <job_id> --docker-image ""
+```
+
+`docker_image` is **user-owned** — like the [model pin](#what-cron-can-do-now), set it via `hermes cron create/edit --docker-image`, the dashboard, or by editing `~/.hermes/cron/jobs.json`. The agent's `cronjob` tool **cannot** set or change it: a scheduled job must not be able to choose its own execution image.
+
+When `docker_image` is set (requires `terminal.backend: docker`):
+
+- The job's `terminal` / `execute_code` / file tools run in a **dedicated container** built from that image, keyed to the job — separate from the shared `default` sandbox and from every other job's image.
+- **Mounts and environment still come from the global `terminal.docker_volumes` / `docker_extra_args` / `docker_forward_env`.** This is *image* isolation, not mount isolation: the dedicated container inherits the same host mounts, and additionally gets its own `/root` (home) and `/workspace` under `~/.hermes/sandboxes/docker/cronimg-<job_id>/`.
+- Build the image however you like — typically `FROM` the default sandbox image plus your extra tools. See *Durable installs — build a derived image* in the [Docker guide](../docker.md).
+- Pass `--docker-image ""` on edit to clear it and return to the shared sandbox.
+
+:::note Scoping credentials to a single job
+Because mounts are global, a secret placed in `terminal.docker_volumes` is visible to *every* sandbox. To give a credential to **only** the pinned job — without a global mount and without baking it into the image — drop it into that job's per-task home: `~/.hermes/sandboxes/docker/cronimg-<job_id>/home/` is mounted as the container's `/root`. Files there are seen only by that job's container and survive container recreation. (In the Docker-in-Docker deployment the host path is `<HERMES_HOME>/sandboxes/docker/cronimg-<job_id>/home`.)
+:::
+
 ## Editing jobs
 
 You do not need to delete and recreate jobs just to change them.

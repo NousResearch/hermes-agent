@@ -1793,6 +1793,7 @@ def create_job(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
+    docker_image: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
@@ -1884,6 +1885,7 @@ def create_job(
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
+    normalized_docker_image = _normalize_job_optional_text(docker_image)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
     normalized_monitor_script = str(monitor_script).strip() if isinstance(monitor_script, str) else None
@@ -1959,6 +1961,7 @@ def create_job(
         "provider_snapshot": provider_snapshot,
         "model_snapshot": model_snapshot,
         "base_url": normalized_base_url,
+        "docker_image": normalized_docker_image,
         "script": normalized_script,
         "no_agent": normalized_no_agent,
         "monitor_script": normalized_monitor_script,

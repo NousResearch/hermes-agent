@@ -86,6 +86,11 @@ def _make_recorder_class(captured=None, record_on_run=()):
     after construction.
     """
 
+    class _Compressor:
+        def bind_session_state(self, *, session_db=None, session_id=""):
+            if captured is not None:
+                captured["compressor_binding"] = (session_db, session_id)
+
     class _Recorder:
         def __init__(self, *args, **kwargs):
             if captured is not None:
@@ -102,6 +107,8 @@ def _make_recorder_class(captured=None, record_on_run=()):
             self.session_start = None
             self.session_id = None
             self.ephemeral_system_prompt = kwargs.get("ephemeral_system_prompt")
+            self.context_compressor = _Compressor()
+            self.compression_enabled = None
 
         def run_conversation(self, *args, **kwargs):
             if captured is not None:
@@ -271,6 +278,54 @@ def test_review_fork_pins_session_start_and_session_id():
     )
 
 
+def test_review_fork_enables_only_detached_in_memory_compression():
+    """Review compaction must not retain the parent SessionDB binding."""
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    captured = {}
+    _Recorder = _make_recorder_class(
+        captured, record_on_run=("compression_enabled",)
+    )
+
+    with patch.object(run_agent, "AIAgent", _Recorder), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    assert captured.get("compressor_binding") == (None, "")
+    assert captured.get("compression_enabled") is True
+
+
+def test_review_fork_inherits_parent_toolset_config():
+    """``tools[]`` byte-stability: fork must inherit parent's toolset config."""
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    captured = {}
+    _Recorder = _make_recorder_class(captured)
+
+    with patch.object(run_agent, "AIAgent", _Recorder), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    init_kwargs = captured.get("init_kwargs", {})
+    assert init_kwargs.get("enabled_toolsets") == agent.enabled_toolsets, (
+        f"enabled_toolsets mismatch: {init_kwargs.get('enabled_toolsets')!r} "
+        f"vs expected {agent.enabled_toolsets!r}"
+    )
+    assert init_kwargs.get("disabled_toolsets") == agent.disabled_toolsets, (
+        f"disabled_toolsets mismatch: {init_kwargs.get('disabled_toolsets')!r} "
+        f"vs expected {agent.disabled_toolsets!r}"
+    )
 
 
 

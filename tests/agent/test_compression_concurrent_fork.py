@@ -1188,74 +1188,122 @@ def test_real_lock_api_internal_errors_fail_closed_skips_compression(
 
 
 
-def test_review_fork_disables_compression_to_prevent_stale_parent_fork(tmp_path: Path) -> None:
-    """The background-review fork must set ``compression_enabled = False``
-    so it can never compress the parent it shares a session_id with
-    (issue #38727).
+def test_review_fork_compacts_only_its_detached_transcript(tmp_path: Path) -> None:
+    """An oversized review compacts in memory without mutating its parent.
 
-    The per-session compression lock only serialises a SAME-WINDOW concurrent
-    race. It does NOT stop a stale parent from being compressed again in a
-    LATER turn: if ``review_agent`` had won the race, its new child session is
-    never adopted by the gateway (the fork is single-lifecycle and dies right
-    after one ``run_conversation``), so the foreground path would start the
-    next turn from the stale parent and compress it AGAIN — leaving the same
-    parent with two sibling children.
-
-    The fix makes the review fork never trigger compression at all. Both
-    compression trigger sites in ``agent/conversation_loop.py`` gate on
-    ``agent.compression_enabled`` BEFORE calling ``_compress_context``:
-      • preflight (``if agent.compression_enabled and len(messages) > ...``)
-      • mid-loop  (``if agent.compression_enabled and _compressor.should_compress(...)``)
-    so a fork with the flag cleared never reaches the rotation path.
-
-    This test pins the contract at the source: ``_run_review_in_thread``
-    must set ``review_agent.compression_enabled = False`` on the fork it
-    builds. It calls the real worker synchronously with
-    ``AIAgent.run_conversation`` patched (so no LLM call happens) and
-    captures the constructed review agent to assert the flag.
+    Exercise the real background worker and ``run_conversation`` preflight
+    path. The review keeps the parent's session id for prompt-cache parity, but
+    its compressor and persistence are detached before threshold crossing.
     """
     import agent.background_review as br
-
-    captured = {}
-
-    def _fake_run_conversation(self, *_a, **_k):
-        captured["compression_enabled"] = self.compression_enabled
-        captured["session_id"] = self.session_id
-        return {"final_response": "", "messages": []}
-
-    parent_sid = "REVIEW_FORK_FLAG_TEST"
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(parent_sid, source="discord")
-    parent = _build_agent_with_db(db, parent_sid)
-
-    # The worker does a local ``from run_agent import AIAgent``; patching
-    # the class method covers that import path.
     from run_agent import AIAgent
 
-    with patch.object(AIAgent, "run_conversation", _fake_run_conversation):
-        br._run_review_in_thread(
-            parent,
-            [{"role": "user", "content": "hi"}],
-            "review this conversation",
-        )
+    parent_sid = "REVIEW_FORK_IN_MEMORY_COMPACTION"
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(parent_sid, source="discord")
+    db.append_message(parent_sid, role="user", content="durable parent turn")
+    durable_before = db.get_messages(parent_sid)
+    session_row_before = tuple(
+        db._conn.execute(
+            "SELECT id, parent_session_id, ended_at, end_reason FROM sessions WHERE id = ?",
+            (parent_sid,),
+        ).fetchone()
+    )
+    parent = _build_agent_with_db(db, parent_sid)
+    parent._cached_system_prompt = "stable parent prompt"
 
-    assert captured, (
-        "_run_review_in_thread never reached run_conversation — the spawn path "
-        "changed; update this test to capture the review AIAgent."
-    )
-    assert captured["session_id"] == parent_sid, (
-        "Review fork should inherit the parent's session_id (shared id is the "
-        "whole reason compression must be disabled)."
-    )
-    assert captured["compression_enabled"] is False, (
-        "FIX REGRESSION: background-review fork did NOT disable compression. "
-        "It shares the parent's session_id, so an enabled fork can rotate the "
-        "parent into an orphan child (issue #38727). The trigger gates in "
-        "conversation_loop.py only short-circuit when compression_enabled is "
-        "False — this flag MUST be cleared on the review fork."
-    )
-    db.close()
+    snapshot = [
+        {
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": f"review turn {i} " + "x" * 200,
+        }
+        for i in range(24)
+    ]
+    captured = {}
+    real_run_conversation = AIAgent.run_conversation
+
+    def _run_threshold_crossing_review(self, *args, **kwargs):
+        self.context_compressor.threshold_tokens = 1
+        self.context_compressor.protect_first_n = 1
+        self.context_compressor.protect_last_n = 1
+        self.context_compressor.compress = MagicMock(
+            return_value=[
+                {"role": "user", "content": "[CONTEXT COMPACTION] review summary"},
+                {"role": "assistant", "content": "summary acknowledged"},
+            ]
+        )
+        self._compression_feasibility_checked = True
+        response = type(
+            "Response",
+            (),
+            {
+                "choices": [
+                    type(
+                        "Choice",
+                        (),
+                        {
+                            "message": type(
+                                "Message",
+                                (),
+                                {
+                                    "content": "review complete",
+                                    "tool_calls": None,
+                                    "reasoning": None,
+                                },
+                            )(),
+                            "finish_reason": "stop",
+                        },
+                    )()
+                ],
+                "model": "test/model",
+                "usage": None,
+            },
+        )()
+        self.platform = "subagent"
+        self._interruptible_api_call = MagicMock(return_value=response)
+
+        result = real_run_conversation(self, *args, **kwargs)
+        outbound = self._interruptible_api_call.call_args.args[0]["messages"]
+        captured.update(
+            compression_calls=self.context_compressor.compress.call_count,
+            outbound=outbound,
+            review_session_id=self.session_id,
+            review_session_db=self._session_db,
+            compressor_session_db=self.context_compressor._session_db,
+            compressor_session_id=self.context_compressor._session_id,
+            result=result,
+        )
+        return result
+
+    try:
+        with patch.object(AIAgent, "run_conversation", _run_threshold_crossing_review):
+            br._run_review_in_thread(parent, snapshot, "review this conversation")
+
+        assert captured["compression_calls"] >= 1
+        outbound_contents = [
+            str(message.get("content", "")) for message in captured["outbound"]
+        ]
+        assert any(
+            "[CONTEXT COMPACTION] review summary" in text for text in outbound_contents
+        )
+        assert not any("review turn 12" in text for text in outbound_contents)
+        assert captured["review_session_id"] == parent_sid
+        assert captured["review_session_db"] is None
+        assert captured["compressor_session_db"] is None
+        assert captured["compressor_session_id"] == ""
+
+        assert parent.session_id == parent_sid
+        assert db.get_messages(parent_sid) == durable_before
+        session_row_after = tuple(
+            db._conn.execute(
+                "SELECT id, parent_session_id, ended_at, end_reason FROM sessions WHERE id = ?",
+                (parent_sid,),
+            ).fetchone()
+        )
+        assert session_row_after == session_row_before
+        assert _count_children(db, parent_sid) == 0
+    finally:
+        db.close()
 
 
 # ── Lease-refresher bounded-failure tolerance (salvage follow-up, #54465) ────

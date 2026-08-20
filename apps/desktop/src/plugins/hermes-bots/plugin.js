@@ -9534,12 +9534,32 @@ function GroupChatWorkspace({ group, members, onBack }) {
  *  disband (or the room view's own Back) can retire the tab it opened. */
 const groupChatMainTabs = new Map()
 
+/** Reactive shadow of `groupChatMainTabs` membership. The Map itself can't
+ *  notify React, and #89788's first fix read it non-reactively: a BotsPane
+ *  render that landed between selecting the group and recording its main
+ *  tab kept the in-pane room on screen forever (the map write repaints
+ *  nothing). Every map mutation goes through the two helpers below so the
+ *  rev bump re-evaluates the gate. */
+const $groupMainTabsRev = atom(0)
+
+function recordGroupMainTab(group, close) {
+  groupChatMainTabs.set(group, close)
+  $groupMainTabsRev.set($groupMainTabsRev.get() + 1)
+}
+
+function dropGroupMainTab(group) {
+  if (groupChatMainTabs.delete(group)) {
+    $groupMainTabsRev.set($groupMainTabsRev.get() + 1)
+  }
+}
+
 /** The in-panel room is the FALLBACK surface, not a second copy: it renders
  *  only while no main-window tab owns the group. On desktops with the door
  *  the room already lives in a main tab, and painting it here too produced
  *  two live panes with independent drafts driving one shared engine (#89788).
  *  The selection atom stays set either way so the roster row still
- *  highlights. */
+ *  highlights. Callers must subscribe to `$groupMainTabsRev` (BotsPane does)
+ *  so ownership changes re-run this gate. */
 function shouldRenderGroupChatInPane(group) {
   return Boolean(group && !groupChatMainTabs.has(group))
 }
@@ -9547,7 +9567,7 @@ function shouldRenderGroupChatInPane(group) {
 function closeGroupChatMainTab(group) {
   const close = groupChatMainTabs.get(group)
 
-  groupChatMainTabs.delete(group)
+  dropGroupMainTab(group)
 
   if ($groupChatWorkspace.get() === group) {
     $groupChatWorkspace.set(null)
@@ -9577,10 +9597,16 @@ function GroupChatMainView({ group }) {
 
 /** Open a group chat the Discord way: a tab taking over the MAIN chat window
  *  (host.openWorkspace, newer desktops), falling back to the in-panel room
- *  view on desktops whose SDK predates the main-area door. */
+ *  view on desktops whose SDK predates the main-area door.
+ *
+ *  Ordering matters (#89788 follow-up): the main tab must be RECORDED before
+ *  the selection atom is set. Setting the atom first opened a window where
+ *  BotsPane rendered with a selected group and an empty tab map — the
+ *  in-pane fallback painted alongside the main tab, and because the map
+ *  write itself repaints nothing, the duplicate stuck until an unrelated
+ *  re-render. */
 function openGroupChat(group) {
   $groupNeedsYou.set({ ...$groupNeedsYou.get(), [group]: false })
-  $groupChatWorkspace.set(group)
 
   if (typeof host.openWorkspace === 'function') {
     try {
@@ -9589,7 +9615,7 @@ function openGroupChat(group) {
         minWidth: '24rem',
         render: () => jsx(GroupChatMainView, { group }),
         onClose: () => {
-          groupChatMainTabs.delete(group)
+          dropGroupMainTab(group)
 
           if ($groupChatWorkspace.get() === group) {
             $groupChatWorkspace.set(null)
@@ -9597,7 +9623,10 @@ function openGroupChat(group) {
         }
       })
 
-      groupChatMainTabs.set(group, close)
+      recordGroupMainTab(group, close)
+      // Tab ownership is on record — the atom now only drives the roster
+      // highlight; shouldRenderGroupChatInPane stays false throughout.
+      $groupChatWorkspace.set(group)
 
       return
     } catch {
@@ -9605,8 +9634,9 @@ function openGroupChat(group) {
     }
   }
 
-  // The selected-group atom was set before trying the main-window door, so
-  // older desktops naturally render the in-panel room as the fallback.
+  // No main-window door (older desktop) or it threw: select the group so
+  // the in-panel room renders as the fallback surface.
+  $groupChatWorkspace.set(group)
 }
 
 /** One group chat as ONE roster row — the Discord shape: stacked member
@@ -9735,6 +9765,11 @@ function BotsPane() {
   const activityToasts = useValue($activityToasts)
   const sessionsWorkspaceName = useValue($botSessionsWorkspace)
   const groupChatName = useValue($groupChatWorkspace)
+  // Main-tab ownership is a module Map; this rev subscription makes the
+  // shouldRenderGroupChatInPane gate below reactive to tab open/close
+  // (#89788 follow-up — without it a stale render could paint the in-pane
+  // room beside a live main tab and stick).
+  useValue($groupMainTabsRev)
   const groupNeedsYou = useValue($groupNeedsYou)
   const groupRooms = useValue($groupChats)
 

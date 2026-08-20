@@ -104,7 +104,7 @@ function load(turnScript, { busyUntilResumeCall } = {}) {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, disbandGroupChat, updateGroupChat, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, $groupChats, $groupNeedsYou, $groupChatWorkspace, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, disbandGroupChat, updateGroupChat, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -390,6 +390,48 @@ test('older and failed workspace hosts keep the in-pane group fallback', () => {
   failed.openGroupChat('Ops')
   assert.equal(failed.$groupChatWorkspace.get(), 'Ops')
   assert.equal(failed.shouldRenderGroupChatInPane('Ops'), true)
+})
+
+test('main-tab ownership is recorded before the selection atom paints (#89788 follow-up)', () => {
+  const gc = load(() => '(pass)')
+  // Simulate a BotsPane render racing the open: sample the gate at the
+  // moment the selection atom flips. If the tab were recorded after the
+  // atom set, this probe would observe selected-but-unowned and the
+  // in-pane duplicate would paint beside the main tab.
+  let gateAtSelection = null
+  const realSet = gc.$groupChatWorkspace.set
+
+  gc.$groupChatWorkspace.set = value => {
+    if (value === 'Core' && gateAtSelection === null) {
+      gateAtSelection = gc.shouldRenderGroupChatInPane('Core')
+    }
+
+    realSet(value)
+  }
+  gc.host.openWorkspace = () => () => undefined
+
+  gc.openGroupChat('Core')
+  assert.equal(gateAtSelection, false)
+})
+
+test('tab open/close bumps the reactive rev so the pane gate re-evaluates', () => {
+  const gc = load(() => '(pass)')
+  let onClose
+
+  gc.host.openWorkspace = (_id, options) => {
+    onClose = options.onClose
+    return () => onClose()
+  }
+
+  const before = gc.$groupMainTabsRev.get()
+
+  gc.openGroupChat('Core')
+  assert.ok(gc.$groupMainTabsRev.get() > before, 'recording the main tab must bump the rev')
+
+  const afterOpen = gc.$groupMainTabsRev.get()
+
+  onClose()
+  assert.ok(gc.$groupMainTabsRev.get() > afterOpen, 'closing the main tab must bump the rev')
 })
 
 test('closing an older selected group does not clear the newer selection', () => {

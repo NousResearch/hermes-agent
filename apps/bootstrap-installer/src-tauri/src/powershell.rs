@@ -256,7 +256,20 @@ where
 
     let status = match status {
         Some(s) => s,
-        None => child.wait().await.context("waiting for child to exit")?,
+        // Both pipes reached EOF while the child stayed alive. Reads are done,
+        // but the process is still the authoritative terminal condition — and
+        // it may never exit on its own, so this wait stays cancellable. A bare
+        // `child.wait()` here would strand the caller's cancel channel exactly
+        // when it is the only way out.
+        None => tokio::select! {
+            reaped = child.wait() => reaped.context("waiting for child to exit")?,
+            _ = recv_cancel(cancel_rx) => {
+                tracing::warn!("cancellation received after EOF — killing child");
+                cancelled = true;
+                let _ = child.start_kill();
+                child.wait().await.context("waiting for killed child to exit")?
+            }
+        },
     };
     Ok(PumpOutcome {
         exit_code: status.code(),
@@ -784,5 +797,46 @@ info line
             "took {:?}",
             started.elapsed()
         );
+    }
+
+    /// The reverse topology of the test above: the pipes die and the *process*
+    /// outlives them. Phase 1 leaves on EOF with no exit status, so the final
+    /// wait is the only thing left holding the turn -- and it has to stay
+    /// cancellable. A bare `child.wait()` there strands the cancel channel
+    /// against a child that may never exit on its own.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pump_child_cancellation_returns_after_both_pipes_reach_eof() {
+        // Closes fd 1 and 2, then lingers: both reads hit EOF immediately while
+        // the process stays alive far past any plausible test duration.
+        let mut child = sh("echo bye; exec 1>&- 2>&-; sleep 30");
+        let (tx, rx) = mpsc::channel(1);
+        let mut cancel = Some(rx);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = tx.send(()).await;
+        });
+
+        let started = std::time::Instant::now();
+        let mut lines = Vec::new();
+        let outcome = pump_child(
+            &mut child,
+            |l| lines.push(l.to_string()),
+            |_| {},
+            &mut cancel,
+            Duration::from_millis(300),
+        )
+        .await
+        .expect("pump");
+        let elapsed = started.elapsed();
+
+        assert!(outcome.killed, "cancellation should report killed");
+        assert!(
+            !outcome.abandoned,
+            "both pipes reached EOF, so nothing was abandoned"
+        );
+        assert_eq!(lines, vec!["bye"], "output written before EOF must survive");
+        // Far below the child's 30s: a pass cannot be it exiting on its own.
+        assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
     }
 }

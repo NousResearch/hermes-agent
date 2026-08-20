@@ -207,6 +207,53 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
         mcp_tool._server_breaker_opened_at.pop("resumed", None)
 
 
+def test_call_tool_handler_returns_app_error_after_session_reconnect(
+    monkeypatch, tmp_path
+):
+    """A completed post-reconnect retry returns its tool error as-is.
+
+    An application error from the fresh session proves the transport recovered;
+    it must not be replaced with the original session-expired exception.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    server_name = "wpcom-app-error"
+    server, reconnect_flag = _install_stub_server(server_name)
+    mcp_tool._servers[server_name] = server
+    mcp_tool._server_error_counts[server_name] = (
+        mcp_tool._CIRCUIT_BREAKER_THRESHOLD - 1
+    )
+    call_count = {"n": 0}
+
+    async def _call_sequence(*a, **kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("Invalid params: Invalid or expired session")
+        result = MagicMock()
+        result.isError = True
+        result.content = [MagicMock(type="text", text="Prompt not found")]
+        result.structuredContent = None
+        return result
+
+    server.session.call_tool = _call_sequence
+
+    try:
+        handler = _make_tool_handler(server_name, "get_prompt", 10.0)
+        parsed = json.loads(handler({"prompt_id": "stale"}))
+
+        assert parsed == {"error": "Prompt not found"}
+        assert reconnect_flag.is_set()
+        assert call_count["n"] == 2
+        assert mcp_tool._server_error_counts.get(server_name, 0) == 0
+    finally:
+        mcp_tool._servers.pop(server_name, None)
+        mcp_tool._server_error_counts.pop(server_name, None)
+        mcp_tool._server_breaker_opened_at.pop(server_name, None)
+
+
 def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
     """Regression for long-lived HTTP/stream MCP sessions.
 

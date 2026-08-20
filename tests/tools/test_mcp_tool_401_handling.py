@@ -8,6 +8,7 @@ httpx.HTTPStatusError(401), the handler should:
      hallucinating manual refresh attempts.
 """
 import json
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -73,6 +74,91 @@ def test_call_tool_handler_returns_needs_reauth_on_unrecoverable_401(monkeypatch
     finally:
         mcp_tool._servers.pop("srv", None)
         mcp_tool._server_error_counts.pop("srv", None)
+
+
+def test_call_tool_handler_returns_app_error_after_auth_recovery(
+    monkeypatch, tmp_path
+):
+    """A completed post-auth retry returns its application error as-is.
+
+    The response proves the recovered transport is reachable, so it must not
+    be replaced with a misleading ``needs_reauth`` error or leave the circuit
+    breaker partially tripped.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from mcp.client.auth import OAuthFlowError
+    from tools import mcp_tool
+    from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
+
+    reset_manager_for_tests()
+    mcp_tool._ensure_mcp_loop()
+
+    server = MagicMock()
+    server.name = "srv-auth-app-error"
+    ready_flag = threading.Event()
+    ready_flag.set()
+
+    class _ReadyAdapter:
+        def is_set(self):
+            return ready_flag.is_set()
+
+        def clear(self):
+            ready_flag.clear()
+
+        def set(self):
+            ready_flag.set()
+
+    call_count = {"n": 0}
+
+    async def _call_sequence(*a, **kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise OAuthFlowError("token expired")
+        result = MagicMock()
+        result.isError = True
+        result.content = [MagicMock(type="text", text="Prompt not found")]
+        result.structuredContent = None
+        return result
+
+    old_session = MagicMock()
+    old_session.call_tool = _call_sequence
+    server.session = old_session
+    server._ready = _ReadyAdapter()
+
+    class _ReconnectAdapter:
+        def set(self):
+            new_session = MagicMock()
+            new_session.call_tool = _call_sequence
+            server.session = new_session
+            ready_flag.set()
+
+    server._reconnect_event = _ReconnectAdapter()
+    mcp_tool._servers[server.name] = server
+    mcp_tool._server_error_counts[server.name] = (
+        mcp_tool._CIRCUIT_BREAKER_THRESHOLD - 1
+    )
+
+    manager = get_manager()
+
+    async def _h401(name, token=None):
+        return True
+
+    monkeypatch.setattr(manager, "handle_401", _h401)
+
+    try:
+        handler = mcp_tool._make_tool_handler(server.name, "tool1", 10.0)
+        parsed = json.loads(handler({"prompt_id": "stale"}))
+
+        assert parsed == {"error": "Prompt not found"}
+        assert "needs_reauth" not in parsed
+        assert call_count["n"] == 2
+        assert mcp_tool._server_error_counts.get(server.name, 0) == 0
+    finally:
+        mcp_tool._servers.pop(server.name, None)
+        mcp_tool._server_error_counts.pop(server.name, None)
+        mcp_tool._server_breaker_opened_at.pop(server.name, None)
+        reset_manager_for_tests()
 
 
 def test_call_tool_handler_non_auth_error_still_generic(monkeypatch, tmp_path):

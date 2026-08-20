@@ -22,6 +22,37 @@ adapter lets people email the agent and uses Hermes' built-in IMAP/SMTP
 adapter; this skill lets the agent operate a mailbox from terminal tools and
 requires the external `himalaya` CLI.
 
+## Security: this skill needs `terminal`
+
+Himalaya runs as shell commands, so this skill only functions when the agent
+holds the `terminal` tool. That is fine on a trusted operator surface (your
+CLI). It needs care on any surface that ingests untrusted content: an inbox the
+agent reads, a chat channel, or fetched web pages.
+
+Indirect prompt injection fires when the agent *reads*, not when it acts. An
+agent reading untrusted mail while holding `terminal` can be steered by a
+crafted message into running arbitrary commands, not just email ones. The
+himalaya binary is not the issue; granting a shell to a mail-reading surface is.
+
+Recommended:
+
+- Cap untrusted-input surfaces with `platform_toolsets` so they do not carry
+  `terminal`/`web`/browser tools. A capability the agent does not hold cannot be
+  abused, which bounds the blast radius (least privilege).
+- Keep `approvals.mode: manual` so dangerous commands prompt before running.
+- If a surface needs email without a shell, prefer a native, API-based mail tool
+  over this terminal-driven skill.
+
+Native, shell-free alternatives that let a capability-capped surface do email
+and calendar without holding `terminal`:
+
+- hardmail (native email tools): https://github.com/orlyjamie/hardmail
+- hardcal (native Google Calendar tools): https://github.com/orlyjamie/hardcal
+- youshallnotpass (per-tool, per-platform approval gate): https://github.com/orlyjamie/youshallnotpass
+
+A worked example capping a Telegram-driven Hermes agent to these tools:
+https://x.com/theonejvo/status/2064042129396211938
+
 ## References
 
 - `references/configuration.md` (config file setup + IMAP/SMTP authentication)

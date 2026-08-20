@@ -1112,8 +1112,25 @@ def _root_mount_has_container_runtime(mountinfo: str) -> bool:
         mount_point = fields[4]
         for escaped, unescaped in mountinfo_escapes.items():
             mount_point = mount_point.replace(escaped, unescaped)
-        if mount_point == "/" and any(
-            marker in line.lower() for marker in runtime_markers
+        if mount_point != "/":
+            continue
+        # After the "-" separator the fields are [fstype, mount source,
+        # super options...]. A host root mount's source can name a backing
+        # device such as /dev/mapper/docker--vg-root whose text merely happens
+        # to contain a runtime marker, so match the mount point, the root
+        # path (field 3, e.g. /containerd/.../rootfs inside the container),
+        # the fstype, and the super options — never the mount source, and
+        # never the pre-separator device fields.
+        match_fields = [
+            mount_point,
+            fields[3],
+            fields[separator + 1],
+            *fields[separator + 3 :],
+        ]
+        if any(
+            marker in field.lower()
+            for field in match_fields
+            for marker in runtime_markers
         ):
             return True
     return False

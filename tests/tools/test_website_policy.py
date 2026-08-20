@@ -301,3 +301,66 @@ def test_check_website_access_fails_open_on_malformed_config(tmp_path, monkeypat
     # With default path, errors are caught and fail open
     result = check_website_access("https://example.com")
     assert result is None  # allowed, not crashed
+
+
+# ─── Keyless rescue must never re-fetch policy-blocked URLs ──────────────────
+
+
+def test_rescue_extract_skips_policy_blocked_results():
+    """A whole-batch failure that is actually a policy refusal must NOT be
+    routed through the keyless rescue ring — that would fetch content the
+    user explicitly blocked. Regression for CI reds on main (Aug 2026)."""
+    from tools import web_tools
+
+    urls = ["https://blocked.test"]
+    results = [{
+        "url": "https://blocked.test",
+        "title": "",
+        "content": "",
+        "error": "Blocked by website policy (rule: blocked.test)",
+        "blocked_by_policy": {"rule": "blocked.test"},
+    }]
+
+    def _boom(*a, **kw):
+        raise AssertionError("keyless ring must not be called for policy blocks")
+
+    import plugins.web.keyless_mcp as ring
+    orig = ring.extract_with_failover
+    ring.extract_with_failover = _boom
+    try:
+        out = web_tools._rescue_extract("firecrawl", urls, results)
+    finally:
+        ring.extract_with_failover = orig
+
+    assert out == results  # blocked results preserved verbatim
+
+
+def test_rescue_extract_mixed_batch_only_rescues_real_failures(monkeypatch):
+    """Mixed batch: the policy-blocked entry is preserved; only the genuine
+    backend failure goes through the ring, and order is preserved."""
+    from tools import web_tools
+
+    urls = ["https://blocked.test", "https://down.test"]
+    results = [
+        {"url": "https://blocked.test", "title": "", "content": "",
+         "error": "Blocked by website policy", "blocked_by_policy": {"rule": "blocked.test"}},
+        {"url": "https://down.test", "title": "", "content": "",
+         "error": "backend 500"},
+    ]
+
+    seen = {}
+
+    def fake_failover(provider_name, rescue_urls):
+        seen["urls"] = list(rescue_urls)
+        return [{"url": u, "title": "ok", "content": "rescued", "error": ""} for u in rescue_urls]
+
+    monkeypatch.setattr(
+        "plugins.web.keyless_mcp.extract_with_failover", fake_failover
+    )
+
+    out = web_tools._rescue_extract("firecrawl", urls, results)
+
+    assert seen["urls"] == ["https://down.test"]
+    assert out[0]["error"] == "Blocked by website policy"  # untouched
+    assert out[1]["content"] == "rescued"
+    assert out[1]["metadata"]["rescued_from"] == "firecrawl"

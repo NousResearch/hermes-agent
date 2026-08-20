@@ -520,23 +520,47 @@ def _rescue_search(provider_name: str, original_error: str, query: str, limit: i
     }
 
 
+def _policy_blocked_result(result: dict) -> bool:
+    """True when an extract result failed because of the user's website
+    policy — an intentional refusal, never a backend outage. Policy blocks
+    must NOT be rescued: routing the same URL through the keyless ring
+    would fetch content the user explicitly blocked."""
+    if result.get("blocked_by_policy"):
+        return True
+    return "blocked by website policy" in str(result.get("error") or "").lower()
+
+
 def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
     """One-shot keyless-ring rescue for a failed keyed/configured extract.
 
     Fires only when EVERY url failed (whole-backend failure); partial
     results are page problems and pass through untouched. Stateless —
     the next web_extract call attempts the chosen backend again.
+
+    Website-policy refusals are intentional, not failures: entries flagged
+    by ``_policy_blocked_result`` are never re-fetched through the ring and
+    their original (blocked) results are preserved verbatim.
     """
     from plugins.web.keyless_mcp import extract_with_failover
 
+    # Partition out policy blocks. Rescue only genuine backend failures.
+    if len(results) == len(urls):
+        rescue_idx = [i for i, r in enumerate(results) if not _policy_blocked_result(r)]
+    else:  # defensive: provider broke order parity — treat all as rescueable
+        rescue_idx = list(range(len(results)))
+    if not rescue_idx:
+        return results  # every failure is an intentional policy block
+
+    rescue_urls = [urls[i] for i in rescue_idx] if len(results) == len(urls) else list(urls)
     original_error = next(
-        (r.get("error") for r in results if r.get("error")), "extract failed"
+        (results[i].get("error") for i in rescue_idx if results[i].get("error")),
+        "extract failed",
     )
     logger.warning(
         "web_extract backend '%s' failed all %d URL(s) (%s); one-shot keyless rescue",
-        provider_name, len(urls), (original_error or "")[:200],
+        provider_name, len(rescue_urls), (original_error or "")[:200],
     )
-    rescued = extract_with_failover(provider_name, list(urls))
+    rescued = extract_with_failover(provider_name, list(rescue_urls))
     rescued_errors = [r.get("error", "") for r in rescued]
     if rescued and all(e for e in rescued_errors):
         return results  # rescue also failed everywhere: keep original errors
@@ -546,6 +570,11 @@ def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
             if isinstance(meta, dict):
                 meta["rescued_from"] = provider_name
                 meta["backend_error"] = (original_error or "")[:300]
+    if len(rescued) == len(rescue_idx) and len(results) == len(urls):
+        merged = list(results)
+        for pos, i in enumerate(rescue_idx):
+            merged[i] = rescued[pos]
+        return merged
     return rescued
 
 

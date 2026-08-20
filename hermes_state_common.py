@@ -6,7 +6,11 @@ reference them without importing hermes_state (which would be a cycle).
 hermes_state re-imports every name here for backward compatibility.
 """
 
-from typing import Any
+import random
+import sqlite3
+import time
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 from agent.skill_commands import (
     SKILL_EXCERPT_JOINT,
@@ -688,3 +692,169 @@ AFTER UPDATE OF content, tool_name, tool_calls ON messages BEGIN
     );
 END;
 """
+
+
+# ── Shared helper-writer write-transaction primitive (a6b hardening) ────────
+# ``tools.async_delegation`` and ``gateway.delivery_ledger`` both own short-
+# lived ``sqlite3`` connections (open + write + close) against the shared
+# ``state.db``.  Before this primitive they issued plain ``with conn:``
+# blocks — SQLite starts an implicit DEFERRED transaction, so the write
+# lock is only upgraded on the first ``INSERT``/``UPDATE``/``DELETE``;
+# under contention against a sibling Hermes process (gateway writer, CLI
+# turn append, an older still-running install doing FTS maintenance) the
+# upgrade returned ``SQLITE_BUSY`` *after* the first row touched, leaving a
+# half-written batch.  The deterministic busy handler inside
+# ``sqlite3.connect(timeout=N)`` mitigates but does not eliminate the race:
+# once N is exhausted, the helper raises mid-transaction and the caller's
+# retry policy is whatever it happens to be (typically: none).
+#
+# This primitive gives both helpers the same discipline
+# ``SessionDB._execute_write`` has long used:
+#
+#   * ``BEGIN IMMEDIATE`` BEFORE the write body, so the WAL write lock is
+#     acquired at transaction start (lock contention surfaces immediately
+#     instead of mid-batch).
+#   * Bounded jitter retry on the exact SQLite lock/busy conditions
+#     (``"database is locked"``, ``"database is busy"``) plus the
+#     engine-level ``"no more rows available"`` transient that surfaces
+#     during contended WAL appends on some SQLite builds.
+#   * Explicit ``COMMIT`` on success and ``ROLLBACK`` on failure (with
+#     errors swallowed — a rollback failure on an already-broken
+#     transaction must not mask the original cause).
+#   * Original exception propagated AFTER the patience budget is exhausted.
+#
+# It deliberately stays CONNECTION-AGNOSTIC: helpers keep their own
+# ``_connect()`` / ``conn.close()`` lifecycle, and this primitive just
+# wraps the BEGIN → fn(conn) → COMMIT/ROLLBACK step.  That preserves the
+# existing ``fd-leak`` contract (``tests/tools/test_async_delegation_fd_leak.py``
+# / ``tests/gateway/test_delivery_ledger_fd_leak.py``): every code path that
+# opened a connection still closes it deterministically.
+#
+# Retried exceptions are message-scoped (not class-scoped) because the
+# ``OperationalError`` subclass for the same lock condition varies across
+# SQLite builds (``"database is locked"`` vs. ``"database is busy"`` on
+# 3.53.1+, and the same condition is sometimes an ``InterfaceError`` on
+# older builds — see ``SessionDB._is_no_more_rows``).  Non-lock
+# ``sqlite3.Error`` and arbitrary ``Exception`` from ``fn`` propagate
+# unchanged after rollback.
+#
+# NO SessionDB-only behavior lives here:
+#   * no FTS shadow repair;
+#   * no write counters / checkpoint cadence / FTS merge cadence;
+#   * no compression-busy wait (helpers don't write to the session row);
+#   * no in-process Python mutex (``_DB_LOCK`` stays where it was — the
+#     helpers own their serialization; this primitive owns the SQLite
+#     cross-process layer).
+
+
+# Routine-write budget.  Mirrors ``SessionDB._WRITE_PATIENCE_S`` so a
+# helper that starts a transaction while the SessionDB writer holds the
+# lock rides out the same maintenance window, but stays SHORT ENOUGH that
+# a wedged sibling (older pre-bounded-merge install mid-FTS-optimize)
+# doesn't stall a delivery ack indefinitely.  Helpers are NOT
+# transcript-critical — a failed async-delegation / delivery-ledger write
+# is recoverable on the next process restart (the row stays durable until
+# the sweep / restore path claims it again), so the routine patience is
+# the right knob.
+_STATE_DB_WRITE_PATIENCE_S = 20.0
+
+# Jitter schedule — matches ``SessionDB._WRITE_RETRY_*`` so contending
+# helpers and the SessionDB writer don't synchronize their backoff into
+# a deterministic convoy.  Fast reclaim on millisecond contention,
+# backing off once the hold crosses ``_STATE_DB_WRITE_RETRY_SLOW_AFTER_S``.
+_STATE_DB_WRITE_RETRY_MIN_S = 0.020
+_STATE_DB_WRITE_RETRY_MAX_S = 0.150
+_STATE_DB_WRITE_RETRY_SLOW_AFTER_S = 2.0
+_STATE_DB_WRITE_RETRY_SLOW_MIN_S = 0.250
+_STATE_DB_WRITE_RETRY_SLOW_MAX_S = 1.000
+
+def _is_retryable_lock_error(exc: BaseException) -> bool:
+    """True for the SQLite lock/busy conditions this primitive retries on.
+
+    Message-scoped on purpose: the class hierarchy differs across SQLite
+    builds (3.53.1 surfaces ``"database is locked"`` as ``OperationalError``,
+    but the same condition can land as a sibling error class on older
+    builds, and the ``"no more rows available"`` transient surfaces as
+    ``InterfaceError`` on some builds — see ``SessionDB._execute_write``).
+    Class checks would silently miss the alternate surface and defeat
+    the retry.  Everything else propagates untouched.
+    """
+    if not isinstance(exc, sqlite3.Error):
+        return False
+    msg = str(exc).lower()
+    if "locked" in msg or "busy" in msg:
+        return True
+    if "no more rows available" in msg:
+        return True
+    return False
+
+
+@contextmanager
+def state_db_begin_immediate(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """``BEGIN IMMEDIATE`` with bounded retry; commit/rollback on exit.
+
+    The body between ``__enter__`` and ``__exit__`` is NOT re-run on
+    retry (Python's ``with`` semantics don't allow re-invoking the
+    block); only the BEGIN itself is retried, so this primitive is
+    safe for bodies that have side effects beyond the SQLite write
+    (e.g. acquiring locks, publishing events).
+
+    The helper keeps deterministic connection close.  Mid-body
+    contention rides on SQLite's own ``timeout=10`` busy handler; only
+    the BEGIN itself gets the application-level jitter retry so a
+    sustained write-lock hold by a sibling writer doesn't surface as a
+    mid-turn ``OperationalError``.
+
+    Contract:
+
+    * ``BEGIN IMMEDIATE`` runs first; on ``OperationalError("locked"|"busy")``
+      or the ``"no more rows available"`` transient, retry with the
+      same fast-then-slow jitter schedule as ``SessionDB._execute_write``.
+    * Body runs un-retried (the connection's own ``timeout=10`` covers it).
+    * Body success → ``COMMIT``; body exception → ``ROLLBACK``; the body
+      exception propagates.
+    * ``OperationalError`` at BEGIN exhausts patience → rolled back,
+      re-raised untouched.
+    * Non-lock ``sqlite3.Error`` from the body (integrity violation,
+      schema mismatch, etc.) and arbitrary application ``Exception``
+      propagate untouched after rollback — they are NOT contention
+      problems and must not be masked by retry.
+    """
+    deadline = time.monotonic() + _STATE_DB_WRITE_PATIENCE_S
+    while True:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            break
+        except sqlite3.Error as exc:
+            if not _is_retryable_lock_error(exc):
+                raise
+            now = time.monotonic()
+            if now >= deadline:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            elapsed_s = now - (deadline - _STATE_DB_WRITE_PATIENCE_S)
+            if elapsed_s >= _STATE_DB_WRITE_RETRY_SLOW_AFTER_S:
+                jitter = random.uniform(
+                    _STATE_DB_WRITE_RETRY_SLOW_MIN_S,
+                    _STATE_DB_WRITE_RETRY_SLOW_MAX_S,
+                )
+            else:
+                jitter = random.uniform(
+                    _STATE_DB_WRITE_RETRY_MIN_S,
+                    _STATE_DB_WRITE_RETRY_MAX_S,
+                )
+            time.sleep(min(jitter, max(deadline - now, 0.001)))
+
+    try:
+        yield conn
+    except BaseException:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+    else:
+        conn.execute("COMMIT")

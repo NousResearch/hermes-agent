@@ -47,9 +47,10 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_state_common import state_db_begin_immediate
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,13 @@ def _db_path():
 def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
+    # ``isolation_level=None`` opts out of sqlite3's implicit transaction
+    # wrapper so ``_transaction`` can issue ``BEGIN IMMEDIATE`` explicitly
+    # (the WAL write lock is acquired at transaction start, not lazily on
+    # the first INSERT/UPDATE).  ``timeout=10`` keeps sqlite3's built-in
+    # busy handler engaged for mid-body contention; the BEGIN itself rides
+    # out longer holds via the shared ``state_db_begin_immediate`` primitive.
+    conn = sqlite3.connect(path, timeout=10, isolation_level=None)
     try:
         _initialize_schema(conn)
     except Exception:
@@ -113,20 +120,29 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit/rollback on exit, and ALWAYS close it.
+def _transaction() -> Iterator[Any]:
+    """Open a short-lived connection and run the body under a
+    ``BEGIN IMMEDIATE`` write transaction with bounded jitter retry.
 
-    ``sqlite3.Connection.__enter__``/``__exit__`` only commit or roll back the
-    transaction; they do not close the connection. Using ``with _connect()``
-    alone therefore leaks a connection — and its WAL/SHM file descriptors — on
-    every call, deferring the close to the garbage collector. On a long-running
-    gateway that exhausts ``RLIMIT_NOFILE`` (the cron-ledger sibling of this
-    bug was #69567 / PR #69594). ``record_obligation`` runs on every outbound
-    final response, so this ledger is the highest-frequency leaker.
+    ``sqlite3.Connection.__enter__``/``__exit__`` only commits or rolls
+    back but never closes, which historically leaked ``db/-wal/-shm``
+    file descriptors (see #69567, #69594).  This helper guarantees the
+    deterministic close (in ``finally``) AND adds the reliability
+    discipline via the shared ``hermes_state_common.state_db_begin_immediate``
+    context manager:
+
+    * ``BEGIN IMMEDIATE`` is issued before the body runs and retries with
+      the same fast-then-slow jitter schedule ``SessionDB._execute_write``
+      uses.
+    * Mid-body contention rides on SQLite's own ``timeout=10`` busy handler.
+    * On body success the transaction commits; on body exception it
+      rolls back and the exception propagates.
+    * The connection is ALWAYS closed in ``finally`` so the FD leaks the
+      original ``with conn:`` had cannot return.
     """
     conn = _connect()
     try:
-        with conn:
+        with state_db_begin_immediate(conn):
             yield conn
     finally:
         conn.close()
@@ -274,51 +290,65 @@ def sweep_recoverable(
     pid, started = _owner_stamp()
     claimed: List[Dict[str, Any]] = []
     with _DB_LOCK, _transaction() as conn:
-        rows = conn.execute(
-            """SELECT obligation_id, session_key, platform, chat_id, thread_id,
-                      content, state, attempts, created_at,
-                      owner_pid, owner_started_at
-               FROM delivery_obligations
-               WHERE state IN ('pending', 'attempting', 'failed')"""
-        ).fetchall()
-        for (oid, session_key, platform, chat_id, thread_id, content, state,
-             attempts, created_at, owner_pid, owner_started_at) in rows:
-            if _owner_alive(owner_pid, owner_started_at):
-                continue  # a live gateway still owns this row
-            if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:
-                conn.execute(
-                    """UPDATE delivery_obligations
-                       SET state='abandoned', updated_at=? WHERE obligation_id=?""",
-                    (now, oid),
-                )
-                continue
-            if (
-                deliverable_platforms is not None
-                and platform not in deliverable_platforms
-            ):
-                # No adapter for this platform this boot — the caller cannot
-                # send, so claiming would spend an attempt on a no-op.
-                continue
-            cursor = conn.execute(
+        claimed = _sweep_recoverable_body(
+            conn, now, pid, started, deliverable_platforms,
+        )
+    return claimed
+
+
+def _sweep_recoverable_body(
+    conn: sqlite3.Connection,
+    now: float,
+    pid: int,
+    started: Optional[int],
+    deliverable_platforms: Optional[set],
+) -> List[Dict[str, Any]]:
+    claimed: List[Dict[str, Any]] = []
+    rows = conn.execute(
+        """SELECT obligation_id, session_key, platform, chat_id, thread_id,
+                  content, state, attempts, created_at,
+                  owner_pid, owner_started_at
+           FROM delivery_obligations
+           WHERE state IN ('pending', 'attempting', 'failed')"""
+    ).fetchall()
+    for (oid, session_key, platform, chat_id, thread_id, content, state,
+         attempts, created_at, owner_pid, owner_started_at) in rows:
+        if _owner_alive(owner_pid, owner_started_at):
+            continue  # a live gateway still owns this row
+        if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:
+            conn.execute(
                 """UPDATE delivery_obligations
-                   SET owner_pid=?, owner_started_at=?, attempts=attempts+1,
-                       updated_at=?
-                   WHERE obligation_id=? AND (owner_pid IS ? OR owner_pid=?)""",
-                (pid, started, now, oid, owner_pid, owner_pid),
+                   SET state='abandoned', updated_at=? WHERE obligation_id=?""",
+                (now, oid),
             )
-            if cursor.rowcount:
-                claimed.append({
-                    "obligation_id": oid,
-                    "session_key": session_key,
-                    "platform": platform,
-                    "chat_id": chat_id,
-                    "thread_id": thread_id,
-                    "content": content,
-                    # pending = send never started, redeliver plainly;
-                    # attempting/failed = ambiguous or rejected, carry marker.
-                    "needs_marker": state != "pending",
-                    "attempts": attempts + 1,
-                })
+            continue
+        if (
+            deliverable_platforms is not None
+            and platform not in deliverable_platforms
+        ):
+            # No adapter for this platform this boot — the caller cannot
+            # send, so claiming would spend an attempt on a no-op.
+            continue
+        cursor = conn.execute(
+            """UPDATE delivery_obligations
+               SET owner_pid=?, owner_started_at=?, attempts=attempts+1,
+                   updated_at=?
+               WHERE obligation_id=? AND (owner_pid IS ? OR owner_pid=?)""",
+            (pid, started, now, oid, owner_pid, owner_pid),
+        )
+        if cursor.rowcount:
+            claimed.append({
+                "obligation_id": oid,
+                "session_key": session_key,
+                "platform": platform,
+                "chat_id": chat_id,
+                "thread_id": thread_id,
+                "content": content,
+                # pending = send never started, redeliver plainly;
+                # attempting/failed = ambiguous or rejected, carry marker.
+                "needs_marker": state != "pending",
+                "attempts": attempts + 1,
+            })
     return claimed
 
 
@@ -327,29 +357,33 @@ def _prune(now: Optional[float] = None) -> None:
     cutoff = now - _RETENTION_SECONDS
     try:
         with _transaction() as conn:
-            conn.execute(
-                """DELETE FROM delivery_obligations
-                   WHERE state IN ('delivered', 'abandoned') AND updated_at < ?""",
-                (cutoff,),
-            )
-            total = conn.execute(
-                "SELECT COUNT(*) FROM delivery_obligations"
-            ).fetchone()[0]
-            excess = max(0, total - _MAX_ROWS)
-            if excess:
-                conn.execute(
-                    """DELETE FROM delivery_obligations WHERE obligation_id IN (
-                         SELECT obligation_id FROM delivery_obligations
-                         ORDER BY CASE state
-                                    WHEN 'delivered' THEN 0
-                                    WHEN 'abandoned' THEN 1
-                                    ELSE 2
-                                  END, updated_at ASC
-                         LIMIT ?)""",
-                    (excess,),
-                )
+            _prune_body(conn, cutoff)
     except Exception:
         logger.debug("delivery ledger prune failed", exc_info=True)
+
+
+def _prune_body(conn: sqlite3.Connection, cutoff: float) -> None:
+    conn.execute(
+        """DELETE FROM delivery_obligations
+           WHERE state IN ('delivered', 'abandoned') AND updated_at < ?""",
+        (cutoff,),
+    )
+    total = conn.execute(
+        "SELECT COUNT(*) FROM delivery_obligations"
+    ).fetchone()[0]
+    excess = max(0, total - _MAX_ROWS)
+    if excess:
+        conn.execute(
+            """DELETE FROM delivery_obligations WHERE obligation_id IN (
+                 SELECT obligation_id FROM delivery_obligations
+                 ORDER BY CASE state
+                            WHEN 'delivered' THEN 0
+                            WHEN 'abandoned' THEN 1
+                            ELSE 2
+                          END, updated_at ASC
+                 LIMIT ?)""",
+            (excess,),
+        )
 
 
 def ledger_enabled(config: Optional[Dict[str, Any]] = None) -> bool:

@@ -83,3 +83,82 @@ def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
     assert set(opened) == set(closed)
 
 
+def test_survives_transient_state_db_write_contention(monkeypatch, tmp_path):
+    """Transient lock contention on state.db must be ridden out — the
+    ledger survives a brief hold by a competing writer instead of
+    raising ``database is locked`` mid-turn.
+
+    Repro pattern: a sibling Hermes process (CLI turn append, older
+    install mid-FTS-maintenance) holds the WAL write lock long enough
+    that the ledger's previous implicit-transaction commit would have
+    surfaced as an OperationalError. The shared
+    ``state_db_begin_immediate`` primitive now waits it out via the same
+    jitter schedule ``SessionDB._execute_write`` uses.
+    """
+    import threading
+    _point_ledger(monkeypatch, tmp_path)
+
+    # Force the WAL into existence so the contention is real.
+    # Let ``_connect()`` create the schema with the right columns; we just
+    # need to force WAL so a second opener actually has to fight the lock.
+    dl._connect().close()
+    seed = sqlite3.connect(str(tmp_path / "state.db"), timeout=10, isolation_level=None)
+    try:
+        seed.execute("PRAGMA journal_mode=WAL")
+    finally:
+        seed.close()
+
+    competitor_holder = []
+    release = threading.Event()
+
+    def _hold_lock():
+        c = sqlite3.connect(str(tmp_path / "state.db"), timeout=10, isolation_level=None)
+        competitor_holder.append(c)
+        c.execute("BEGIN IMMEDIATE")
+        release.wait()
+        try:
+            c.execute("COMMIT")
+        except Exception:
+            try:
+                c.execute("ROLLBACK")
+            except Exception:
+                pass
+        c.close()
+
+    competitor = threading.Thread(target=_hold_lock, daemon=True)
+    competitor.start()
+
+    deadline = __import__("time").monotonic() + 2.0
+    while not competitor_holder:
+        if __import__("time").monotonic() > deadline:
+            pytest.fail("competitor never acquired the lock")
+        __import__("time").sleep(0.01)
+    __import__("time").sleep(0.05)
+
+    # Schedule the competitor to release after 250 ms — well within the
+    # primitive's 20 s default patience budget but long enough to force
+    # at least one retry cycle.
+    def _release_after():
+        __import__("time").sleep(0.25)
+        release.set()
+    threading.Thread(target=_release_after, daemon=True).start()
+
+    # record_obligation must succeed by riding out the hold.
+    dl.record_obligation(
+        obligation_id="obl_contended",
+        session_key="sess",
+        platform="telegram",
+        chat_id="123",
+        thread_id=None,
+        content="contended write",
+    )
+
+    # Confirm via debug_rows that the row landed.
+    import json as _json
+    parsed = _json.loads(dl.debug_rows())
+    found = [r for r in parsed if r["id"] == "obl_contended"]
+    assert found, parsed
+
+    competitor.join(timeout=2.0)
+
+

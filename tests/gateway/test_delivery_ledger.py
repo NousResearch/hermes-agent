@@ -135,6 +135,93 @@ class TestPrune:
         dl._prune()
         assert _row("ob-1") is None
 
+    def test_undelivered_rows_survive_retention(self):
+        _record()
+        with dl._connect() as conn:
+            conn.execute(
+                "UPDATE delivery_obligations SET updated_at=? WHERE obligation_id=?",
+                (time.time() - dl._RETENTION_SECONDS - 60, "ob-1"),
+            )
+        dl._prune()
+        assert _row("ob-1") is not None
+
+    def test_max_row_cap_deletes_terminal_not_owed(self, monkeypatch):
+        """When mixed, excess prefers delivered/abandoned over owed."""
+        monkeypatch.setattr(dl, "_MAX_ROWS", 3)
+        for i in range(2):
+            _record(oid=f"del-{i}", content=f"done-{i}")
+            dl.mark_delivered(f"del-{i}")
+        _record(oid="abd-0", content="gave-up")
+        with dl._connect() as conn:
+            conn.execute(
+                "UPDATE delivery_obligations SET state='abandoned' "
+                "WHERE obligation_id='abd-0'"
+            )
+        for i in range(3):
+            _record(oid=f"pend-{i}", content=f"owed-{i}")
+        for i in range(3):
+            assert _row(f"pend-{i}") is not None
+        assert _row("del-0") is None
+        assert _row("del-1") is None
+        assert _row("abd-0") is None
+
+    def test_live_owner_overflow_bounds_table_without_silent_owed_delete(
+        self, monkeypatch,
+    ):
+        """Live-owner backlog must stay bounded without silent owed DELETE.
+
+        Soft-capping only terminal rows lets a continuously failing live
+        gateway grow the table without bound (sweep skips live owners).
+        Overflow must abandon oldest owed, then drop those terminals so
+        the table stays at _MAX_ROWS and newest owed survive.
+        """
+        monkeypatch.setattr(dl, "_MAX_ROWS", 3)
+        # Defer prune so we can stamp deterministic ages, then bound once.
+        monkeypatch.setattr(dl, "_prune", lambda *a, **k: None)
+        for i in range(5):
+            _record(oid=f"ob-{i}", content=f"reply-{i}")
+            with dl._connect() as conn:
+                conn.execute(
+                    "UPDATE delivery_obligations SET updated_at=? "
+                    "WHERE obligation_id=?",
+                    (1000.0 + i, f"ob-{i}"),
+                )
+        with dl._transaction() as conn:
+            dl._prune_to_max_rows(conn, now=2000.0)
+        with dl._connect() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM delivery_obligations"
+            ).fetchone()[0]
+        assert total == 3
+        assert _row("ob-0") is None
+        assert _row("ob-1") is None
+        assert _row("ob-2")["state"] == "pending"
+        assert _row("ob-3")["state"] == "pending"
+        assert _row("ob-4")["state"] == "pending"
+        assert _row("ob-2")["content"] == "reply-2"
+
+    def test_record_path_bounds_live_owner_backlog(self, monkeypatch):
+        """Each record_obligation prune keeps a live failing gateway bounded."""
+        monkeypatch.setattr(dl, "_MAX_ROWS", 3)
+        for i in range(5):
+            _record(oid=f"ob-{i}", content=f"reply-{i}")
+        with dl._connect() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM delivery_obligations"
+            ).fetchone()[0]
+            states = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT state FROM delivery_obligations"
+                ).fetchall()
+            }
+        assert total == 3
+        assert states == {"pending"}
+        # Newest three survive; oldest two were abandoned then dropped.
+        assert _row("ob-0") is None
+        assert _row("ob-1") is None
+        assert _row("ob-4") is not None
+
 
 class TestLedgerEnabled:
     def test_default_on(self):

@@ -229,6 +229,14 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Output the list as JSON",
     )
 
+    skills_subparsers.add_parser("pending", help="List staged skill writes awaiting approval")
+    skills_pending_approve = skills_subparsers.add_parser("approve", help="Approve a staged skill write")
+    skills_pending_approve.add_argument("id", help="Pending write id, or 'all'")
+    skills_pending_reject = skills_subparsers.add_parser("reject", help="Reject a staged skill write")
+    skills_pending_reject.add_argument("id", help="Pending write id, or 'all'")
+    skills_approval = skills_subparsers.add_parser("approval", help="Show or set skills.write_approval")
+    skills_approval.add_argument("mode", nargs="?", choices=["on", "off", "true", "false", "yes", "no", "1", "0"], help="Approval gate mode")
+
     skills_diff = skills_subparsers.add_parser(
         "diff",
         help="Show how your copy of a bundled skill differs from the stock version",

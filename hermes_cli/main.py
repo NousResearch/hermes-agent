@@ -12067,8 +12067,52 @@ def _try_termux_fast_tui_launch() -> bool:
     return True
 
 
+def _write_approval_set_mode(subsystem: str):
+    def _set(enabled: bool) -> None:
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        section = config.get(subsystem)
+        if not isinstance(section, dict):
+            section = {}
+            config[subsystem] = section
+        section["write_approval"] = bool(enabled)
+        save_config(config)
+    return _set
+
+
+def _cli_memory_store():
+    from hermes_cli.config import cfg_get, load_config
+    from tools.memory_tool import MemoryStore
+
+    cfg = load_config()
+    store = MemoryStore(
+        memory_char_limit=int(cfg_get(cfg, "memory", "memory_char_limit", default=2200) or 2200),
+        user_char_limit=int(cfg_get(cfg, "memory", "user_char_limit", default=1375) or 1375),
+    )
+    store.load_from_disk()
+    return store
+
+
 def cmd_memory(args):
     sub = getattr(args, "memory_command", None)
+    if sub in {"pending", "approve", "reject", "approval"}:
+        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from tools import write_approval as wa
+
+        rest = []
+        if sub in {"approve", "reject"}:
+            rest = [getattr(args, "id", "")]
+        elif sub == "approval" and getattr(args, "mode", None):
+            rest = [getattr(args, "mode")]
+        memory_store = _cli_memory_store() if sub == "approve" else None
+        print(handle_pending_subcommand(
+            wa.MEMORY,
+            [sub, *rest],
+            memory_store=memory_store,
+            set_mode_fn=_write_approval_set_mode(wa.MEMORY),
+        ))
+        return
     if sub == "off":
         from hermes_cli.config import load_config, save_config
 
@@ -12236,8 +12280,41 @@ def cmd_monitoring(args):
 
 
 def cmd_skills(args):
+    action = getattr(args, "skills_action", None)
+    if action in {"pending", "approve", "reject", "approval"}:
+        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from tools import write_approval as wa
+
+        rest = []
+        if action in {"approve", "reject"}:
+            rest = [getattr(args, "id", "")]
+        elif action == "approval" and getattr(args, "mode", None):
+            rest = [getattr(args, "mode")]
+        print(handle_pending_subcommand(
+            wa.SKILLS,
+            [action, *rest],
+            set_mode_fn=_write_approval_set_mode(wa.SKILLS),
+        ))
+        return
+
+    # `hermes skills diff <name>` already means "diff a bundled skill".  The
+    # write-approval docs also advertise `hermes skills diff <pending-id>`, so
+    # only route to the pending-review diff when the argument actually names a
+    # staged skill write; otherwise preserve the existing bundled-skill diff.
+    if action == "diff":
+        pending_id = getattr(args, "name", "")
+        if pending_id:
+            try:
+                from hermes_cli.write_approval_commands import handle_pending_subcommand
+                from tools import write_approval as wa
+                if wa.get_pending(wa.SKILLS, pending_id):
+                    print(handle_pending_subcommand(wa.SKILLS, ["diff", pending_id]))
+                    return
+            except Exception:
+                pass
+
     # Route 'config' action to skills_config module
-    if getattr(args, "skills_action", None) == "config":
+    if action == "config":
         _require_tty("skills config")
         from hermes_cli.skills_config import skills_command as skills_config_command
 

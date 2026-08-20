@@ -141,6 +141,103 @@ async def test_status_command_includes_live_agent_model_and_context():
     assert "**Lifetime tokens billed:** 1,250" in result
 
 
+
+@pytest.mark.asyncio
+async def test_status_command_recovers_named_custom_provider_from_session_row(monkeypatch):
+    """Session billing_provider=custom + matching providers: entry → named label."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-custom-named",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "model": "gpt-5.6-terra",
+        "billing_provider": "custom",
+        "billing_base_url": "https://api.openlux.ai/v1",
+        "model_config": {
+            "gateway_runtime": {
+                "provider": "custom",
+                "base_url": "https://api.openlux.ai/v1",
+            }
+        },
+    }
+    cfg = {
+        "model": {
+            "default": "gpt-5.6-sol",
+            "provider": "openlux",
+            "base_url": "https://api.openlux.ai/v1",
+        },
+        "providers": {
+            "openlux": {
+                "base_url": "https://api.openlux.ai/v1",
+                "models": ["gpt-5.6-sol", "gpt-5.6-terra"],
+            }
+        },
+    }
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: cfg)
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `gpt-5.6-terra` (openlux)" in result
+    assert "(custom)" not in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_keeps_custom_for_unmatched_session_url(monkeypatch):
+    """Ad-hoc custom URL must not be relabeled as global model.provider."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-custom-adhoc",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "model": "gpt-5.6-sol",
+        "billing_provider": "custom",
+        "billing_base_url": "https://adhoc.example/v1",
+    }
+    cfg = {
+        "model": {
+            "default": "gpt-5.6-sol",
+            "provider": "openlux",
+            "base_url": "https://api.openlux.ai/v1",
+        },
+        "providers": {
+            "openlux": {
+                "base_url": "https://api.openlux.ai/v1",
+                "models": ["gpt-5.6-sol"],
+            }
+        },
+    }
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: cfg)
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `gpt-5.6-sol` (custom)" in result
+    assert "(openlux)" not in result
+
+
 @pytest.mark.asyncio
 async def test_status_command_uses_dominant_persisted_model_route(tmp_path):
     """Persisted status must not combine a model and provider from different calls."""

@@ -90,21 +90,45 @@ def _effective_provider_label() -> str:
     except AuthError:
         effective = requested or "auto"
 
+    config_base_url = ""
+    config_model = ""
+    config_provider = ""
+    try:
+        model_cfg = load_config().get("model")
+        if isinstance(model_cfg, dict):
+            config_base_url = (model_cfg.get("base_url") or "").strip()
+            config_provider = (model_cfg.get("provider") or "").strip()
+            config_model = str(
+                model_cfg.get("default") or model_cfg.get("model") or ""
+            ).strip()
+    except Exception:
+        pass
+
     if effective == "openrouter":
         # A custom endpoint may be configured either in config.yaml
         # (model.base_url — the canonical location; the runtime treats
         # config.yaml as the single source of truth) or via the legacy
         # OPENAI_BASE_URL env var. Either way, labeling it "OpenRouter"
         # is misleading (#3296).
-        config_base_url = ""
-        try:
-            model_cfg = load_config().get("model")
-            if isinstance(model_cfg, dict):
-                config_base_url = (model_cfg.get("base_url") or "").strip()
-        except Exception:
-            pass
         if config_base_url or get_env_value("OPENAI_BASE_URL"):
             effective = "custom"
+
+    # Recover named providers:/custom_providers: entry names so CLI status
+    # shows "openlux" (etc.) instead of the generic "Custom endpoint" label.
+    try:
+        from hermes_cli.runtime_provider import resolve_custom_provider_display_name
+
+        seed = requested if (requested or "").strip().lower() not in {"", "auto"} else effective
+        display = resolve_custom_provider_display_name(
+            seed or effective,
+            base_url=config_base_url or get_env_value("OPENAI_BASE_URL") or None,
+            config_provider=config_provider or requested or None,
+            model=config_model or None,
+        )
+        if display:
+            effective = display
+    except Exception:
+        pass
 
     return provider_label(effective)
 

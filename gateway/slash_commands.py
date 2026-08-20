@@ -707,6 +707,52 @@ class GatewaySlashCommandsMixin:
             if isinstance(configured_context, int) and configured_context > 0:
                 context_total = configured_context
 
+        # Named providers: / custom_providers: entries resolve to billing class
+        # "custom". Recover the config.yaml entry name so /status can show
+        # e.g. "openlux" instead of bare "custom".
+        try:
+            from hermes_cli.runtime_provider import resolve_custom_provider_display_name
+
+            runtime_provider = ""
+            raw_mc = session_row.get("model_config") if isinstance(session_row, dict) else None
+            model_config: Any = raw_mc
+            if isinstance(raw_mc, str) and raw_mc.strip():
+                try:
+                    import json
+
+                    model_config = json.loads(raw_mc)
+                except Exception:
+                    model_config = {}
+            if isinstance(model_config, dict):
+                gateway_runtime = model_config.get("gateway_runtime")
+                if isinstance(gateway_runtime, dict):
+                    runtime_provider = _clean_str(gateway_runtime.get("provider"))
+                    if not base_url:
+                        base_url = _clean_str(gateway_runtime.get("base_url"))
+
+            config_provider = ""
+            model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
+            if isinstance(model_cfg, dict):
+                config_provider = _clean_str(model_cfg.get("provider"))
+
+            # Prefer a durable named identity already stored on the session
+            # over bare billing "custom" when present.
+            seed_provider = provider_name
+            if runtime_provider and runtime_provider.lower() not in {"", "custom"}:
+                seed_provider = runtime_provider
+
+            provider_name = resolve_custom_provider_display_name(
+                seed_provider,
+                base_url=base_url or None,
+                config_provider=config_provider or None,
+                model=model_name or None,
+            )
+        except Exception:
+            logger.debug(
+                "custom provider display name recovery failed for /status",
+                exc_info=True,
+            )
+
         model_line = ""
         if model_name:
             if provider_name:

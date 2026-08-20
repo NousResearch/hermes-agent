@@ -51,6 +51,44 @@ def test_show_status_displays_configured_dict_model_and_provider_label(monkeypat
     assert "Provider:     Anthropic" in out
 
 
+def test_show_status_displays_named_custom_provider_from_config(monkeypatch, capsys, tmp_path):
+    """Bare custom + matching providers: entry should surface the config key."""
+    from hermes_cli import status as status_mod
+    import hermes_cli.runtime_provider as rp
+
+    _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
+    cfg = {
+        "model": {
+            "default": "gpt-5.6-sol",
+            "provider": "openlux",
+            "base_url": "https://api.openlux.ai/v1",
+        },
+        "providers": {
+            "openlux": {
+                "base_url": "https://api.openlux.ai/v1",
+                "models": ["gpt-5.6-sol"],
+            }
+        },
+    }
+    monkeypatch.setattr(status_mod, "load_config", lambda: cfg, raising=False)
+    monkeypatch.setattr(rp, "load_config", lambda: cfg)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openlux", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "custom", raising=False)
+    monkeypatch.setattr(
+        status_mod,
+        "provider_label",
+        lambda provider: "Custom endpoint" if provider == "custom" else provider,
+        raising=False,
+    )
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    out = capsys.readouterr().out
+    assert "Model:        gpt-5.6-sol" in out
+    assert "Provider:     openlux" in out
+    assert "Custom endpoint" not in out
+
+
 def test_show_status_reports_empty_lmstudio_listing_as_reachable(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
 

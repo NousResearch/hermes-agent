@@ -123,6 +123,30 @@ class TestSendWithRetryNetworkRetry:
         assert not result.success
         assert len(adapter._send_calls) == 1
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("partial_on_retry", [False, True])
+    async def test_partial_delivery_is_not_retried_or_fallen_back(self, partial_on_retry):
+        adapter = _StubAdapter()
+        partial = SendResult(
+            success=False,
+            error="ConnectionError: second chunk failed",
+            partial_delivery=True,
+        )
+        adapter._send_results = (
+            [SendResult(success=False, error="ConnectError", retryable=True), partial]
+            if partial_on_retry
+            else [partial]
+        )
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry(
+                "chat1", "hello", max_retries=2, base_delay=0
+            )
+
+        assert not result.success
+        assert result.partial_delivery
+        assert mock_sleep.await_count == int(partial_on_retry)
+        assert adapter._send_calls == [("chat1", "hello")] * (1 + int(partial_on_retry))
 
 # ---------------------------------------------------------------------------
 # _send_with_retry — all retries exhausted → user notification

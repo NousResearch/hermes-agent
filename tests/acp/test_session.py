@@ -303,6 +303,107 @@ class TestPersistence:
         assert state.session_id in session_ids
 
 
+    def test_persist_stores_named_custom_provider_identity(self, manager):
+        """Write-path metadata must retain the routable custom provider name."""
+        endpoint = "https://ark.example.invalid/v1"
+        state = manager.create_session(cwd="/work")
+        state.model = "ark-code-latest"
+        state.agent.provider = "custom"
+        state.agent.requested_provider = "custom:ark"
+        state.agent.base_url = endpoint
+        state.agent.api_mode = "chat_completions"
+        state.agent.api_key = "must-not-persist"
+        state.agent.key_env = "ARK_API_KEY"
+
+        manager.save_session(state.session_id)
+
+        row = manager._get_db().get_session(state.session_id)
+        meta = json.loads(row["model_config"])
+        assert meta["provider"] == "custom:ark"
+        assert row["billing_provider"] == "custom:ark"
+        assert row["billing_base_url"] == endpoint
+        assert meta["base_url"] == endpoint
+        assert meta["api_mode"] == "chat_completions"
+        assert "api_key" not in meta
+        assert "key_env" not in meta
+
+    def test_persist_keeps_concrete_provider_identity(self, manager):
+        state = manager.create_session(cwd="/work")
+        state.model = "claude-like"
+        state.agent.provider = "anthropic"
+        state.agent.requested_provider = "custom:ark"
+        state.agent.base_url = "https://api.anthropic.com"
+
+        manager.save_session(state.session_id)
+
+        row = manager._get_db().get_session(state.session_id)
+        meta = json.loads(row["model_config"])
+        assert meta["provider"] == "anthropic"
+        assert row["billing_provider"] == "anthropic"
+
+    def test_restore_uses_self_describing_custom_identity(self, tmp_path):
+        captured = []
+
+        class CapturingManager(SessionManager):
+            def _make_agent(self, **kwargs):
+                captured.append(kwargs)
+                return SimpleNamespace(
+                    provider="custom",
+                    requested_provider=kwargs.get("requested_provider"),
+                    base_url=kwargs.get("base_url"),
+                    api_mode=kwargs.get("api_mode"),
+                )
+
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(
+            session_id="session-custom",
+            source="acp",
+            model="ark-code-latest",
+            model_config={"cwd": "/work", "provider": "custom:ark"},
+        )
+        manager = CapturingManager(db=db)
+
+        restored = manager.get_session("session-custom")
+
+        assert restored is not None
+        assert captured[-1]["requested_provider"] == "custom:ark"
+        assert captured[-1]["base_url"] is None
+
+    def test_restore_legacy_bare_custom_keeps_read_path_facts(self, tmp_path):
+        captured = []
+        endpoint = "https://ark.example.invalid/v1"
+
+        class CapturingManager(SessionManager):
+            def _make_agent(self, **kwargs):
+                captured.append(kwargs)
+                return SimpleNamespace(
+                    provider="custom",
+                    requested_provider=kwargs.get("requested_provider"),
+                    base_url=kwargs.get("base_url"),
+                    api_mode=kwargs.get("api_mode"),
+                )
+
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(
+            session_id="session-legacy-custom",
+            source="acp",
+            model="ark-code-latest",
+            model_config={
+                "cwd": "/work",
+                "provider": "custom",
+                "base_url": endpoint,
+                "api_mode": "chat_completions",
+            },
+        )
+        manager = CapturingManager(db=db)
+
+        restored = manager.get_session("session-legacy-custom")
+
+        assert restored is not None
+        assert captured[-1]["requested_provider"] == "custom"
+        assert captured[-1]["base_url"] == endpoint
+        assert captured[-1]["api_mode"] == "chat_completions"
+
     def test_assistant_reasoning_fields_persisted(self, manager):
         """ACP session restore should preserve assistant reasoning context."""
         state = manager.create_session()

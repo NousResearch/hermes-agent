@@ -120,6 +120,21 @@ def _acp_stderr_print(*args, **kwargs) -> None:
     print(*args, **kwargs)
 
 
+def _persisted_provider_identity(agent: Any) -> str | None:
+    """Return the routable provider identity to persist for an ACP agent."""
+    provider = getattr(agent, "provider", None)
+    if not isinstance(provider, str) or not provider.strip():
+        return None
+
+    provider_id = provider.strip()
+    requested = getattr(agent, "requested_provider", None)
+    if provider_id == "custom" and isinstance(requested, str):
+        requested_id = requested.strip()
+        if requested_id.lower().startswith("custom:") and requested_id.split(":", 1)[1].strip():
+            return requested_id
+    return provider_id
+
+
 def _register_task_cwd(task_id: str, cwd: str) -> None:
     """Bind a task/session id to the editor's working directory for tools.
 
@@ -433,7 +448,7 @@ class SessionManager:
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
-        provider = getattr(state.agent, "provider", None)
+        provider = _persisted_provider_identity(state.agent)
         base_url = getattr(state.agent, "base_url", None)
         api_mode = getattr(state.agent, "api_mode", None)
         if isinstance(provider, str) and provider.strip():
@@ -443,6 +458,8 @@ class SessionManager:
         if isinstance(api_mode, str) and api_mode.strip():
             session_meta["api_mode"] = api_mode.strip()
         cwd_json = json.dumps(session_meta)
+        billing_provider = session_meta.get("provider")
+        billing_base_url = session_meta.get("base_url", "") if billing_provider else None
 
         try:
             # Ensure the session record exists.
@@ -452,14 +469,20 @@ class SessionManager:
                     session_id=state.session_id,
                     source="acp",
                     model=model_str,
-                    model_config={"cwd": state.cwd},
+                    model_config=session_meta,
                 )
-            else:
-                # Update model_config (contains cwd) if changed.
-                try:
-                    db.update_session_meta(state.session_id, cwd_json, model_str)
-                except Exception:
-                    logger.debug("Failed to update ACP session metadata", exc_info=True)
+            # Update model_config plus billing route without clearing the
+            # system prompt snapshot (unlike update_session_billing_route).
+            try:
+                db.update_session_meta(
+                    state.session_id,
+                    cwd_json,
+                    model_str,
+                    billing_provider=billing_provider,
+                    billing_base_url=billing_base_url,
+                )
+            except Exception:
+                logger.debug("Failed to update ACP session metadata", exc_info=True)
 
             # When the agent owns persistence to this same SessionDB it has
             # already flushed the live transcript incrementally during
@@ -649,6 +672,7 @@ class SessionManager:
             kwargs.update(
                 {
                     "provider": runtime.get("provider"),
+                    "requested_provider": runtime.get("requested_provider"),
                     "api_mode": api_mode or runtime.get("api_mode"),
                     "base_url": base_url or runtime.get("base_url"),
                     "api_key": runtime.get("api_key"),

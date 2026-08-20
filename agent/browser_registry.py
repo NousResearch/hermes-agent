@@ -32,6 +32,12 @@ Note: there is no "capability" split here (unlike the web subsystem, which
 has search/extract/crawl). Every browser provider implements the full
 :class:`agent.browser_provider.BrowserProvider` lifecycle; the registry's
 job is purely selection, not capability routing.
+
+Rendered-page integrations without persistent CDP/WebSocket sessions do not
+belong in this registry. For example, MrScraper registers
+``mrscraper_fetch_rendered_html`` as a native tool and registers separately as
+a web search/extract provider; it deliberately is not a
+``browser.cloud_provider``.
 """
 
 from __future__ import annotations

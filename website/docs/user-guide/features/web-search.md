@@ -25,6 +25,7 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | 1 000 searches/mo |
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | 1 000 searches/mo |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | Paid |
+| **MrScraper** | `MRSCRAPER_API_TOKEN` | ✔ | ✔ | Paid |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
 
 Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
@@ -270,6 +271,34 @@ Get access at [parallel.ai](https://parallel.ai).
 
 ---
 
+### MrScraper
+
+[MrScraper](https://mrscraper.com) provides Google SERP search, JavaScript-rendered page extraction, structured extraction, website crawling, scraper creation and reruns, and result retrieval.
+
+```bash
+# ~/.hermes/.env
+MRSCRAPER_API_TOKEN=your-token-here
+```
+
+Get a token from the [MrScraper dashboard](https://app.mrscraper.com), then select **MrScraper** in `hermes tools` → **Web Search & Extract**, or configure it directly:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  search_backend: "mrscraper"
+  extract_backend: "mrscraper"
+```
+
+In addition to the standard `web_search` and `web_extract` tools, the bundled integration exposes focused `mrscraper_*` tools for crawling, prompt/listing/structured extraction, scraper management, bulk runs, and retrieving results. `mrscraper_fetch_rendered_html` can return rendered HTML or Markdown and optionally request a screenshot, proxy country, cookies, or wait selector.
+
+:::note Rendered pages, not an interactive browser
+MrScraper renders individual URLs but does not expose the persistent CDP/WebSocket session required by `browser_click`, `browser_type`, and the other interactive `browser_*` tools. Configure a browser provider separately when you need multi-step page interaction. See [Browser Automation](browser.md#mrscraper-rendered-page-tool).
+:::
+
+MrScraper also has an official hosted MCP entry in the Hermes catalog. That is a separate integration with a separate secret (`MCP_MRSCRAPER_API_KEY`); install it with `hermes mcp install mrscraper` if you prefer MCP tools over the bundled native tools.
+
+---
+
 ### xAI (Grok) {#xai-grok}
 
 Routes `web_search` through Grok's server-side [web_search tool](https://docs.x.ai/developers/tools/web-search) on the Responses API. Grok runs the actual searching and returns the top results as structured JSON.
@@ -326,7 +355,7 @@ Set one provider for all web capabilities:
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai
+  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | mrscraper | xai
 ```
 
 ### Per-capability configuration
@@ -362,6 +391,8 @@ If no backend is explicitly configured, Hermes picks the first available one bas
 | `ddgs` package importable | ddgs |
 
 xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` set (or being signed in via xAI Grok OAuth) does not automatically route web traffic through xAI, since those credentials are also used for inference / TTS / image gen and the user may want a different backend for web. Opt in explicitly with `web.backend: "xai"`.
+
+MrScraper is also excluded from the legacy preference walk. Set `web.backend: "mrscraper"` (or the two per-capability keys) explicitly; `hermes tools` writes this configuration for you.
 
 ---
 

@@ -1,0 +1,45 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: mrscraper
+description: >-
+  Official MrScraper hosted MCP for AI scraping, rendered HTML, scraper
+  execution, bulk runs, and result retrieval.
+source: https://docs.mrscraper.com/docs/getting-started/mcp-server
+
+# MrScraper hosts a Streamable HTTP MCP endpoint. Nothing runs or installs on
+# the user's machine; Hermes connects directly through its existing MCP client.
+transport:
+  type: http
+  url: https://mcp.mrscraper.com/mcp
+
+# MrScraper authenticates the HTTP transport with a bearer token. The catalog's
+# standard api_key flow stores it in the active profile's ~/.hermes/.env and
+# references it from the Authorization header without writing the value to
+# config.yaml.
+auth:
+  type: api_key
+  env:
+    - name: MCP_MRSCRAPER_API_KEY
+      prompt: "MrScraper API token (from the MrScraper account dashboard)"
+      required: true
+      secret: true
+
+# The official server currently documents eight focused tools. Leave the
+# default unset so the install-time checklist reflects the live server and
+# starts with every advertised tool selected. Users can prune with
+# `hermes mcp configure mrscraper`.
+
+post_install: |
+  Hermes connects directly to MrScraper's hosted Streamable HTTP endpoint; no
+  local package or server is installed. The API token is stored in the active
+  profile's ~/.hermes/.env and sent as an Authorization bearer header.
+
+  The live server currently documents create_scraper, AI/manual single and
+  bulk reruns, fetch_html, get_all_results, and get_result_by_id. Re-run the
+  tool checklist whenever the server adds tools:
+    hermes mcp configure mrscraper
+
+  MrScraper usage may consume account tokens. Only scrape content you are
+  authorized to access and follow the target site's terms and applicable law.

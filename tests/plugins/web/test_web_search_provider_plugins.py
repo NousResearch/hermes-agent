@@ -2,8 +2,8 @@
 
 Covers:
 
-- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, firecrawl, xai) instantiate and self-report the expected
+- All nine bundled providers (brave-free, ddgs, searxng, exa, parallel,
+  tavily, firecrawl, mrscraper, xai) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -16,6 +16,7 @@ modules — no mocking of provider classes themselves — so the test
 catches drift in the ABC interface, the registry, and the plugin
 glue layer simultaneously.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -42,6 +43,7 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "FIRECRAWL_GATEWAY_URL",
+        "MRSCRAPER_API_TOKEN",
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
         "XAI_API_KEY",
@@ -68,9 +70,9 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """All nine bundled web providers discover and register correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    def test_all_nine_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
@@ -80,6 +82,7 @@ class TestBundledPluginsRegister:
             "ddgs",
             "exa",
             "firecrawl",
+            "mrscraper",
             "parallel",
             "searxng",
             "tavily",
@@ -96,6 +99,7 @@ class TestBundledPluginsRegister:
             ("parallel", True, True),
             ("tavily", True, True),
             ("firecrawl", True, True),
+            ("mrscraper", True, True),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False),
         ],
@@ -116,7 +120,17 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        [
+            "brave-free",
+            "ddgs",
+            "searxng",
+            "exa",
+            "parallel",
+            "tavily",
+            "firecrawl",
+            "mrscraper",
+            "xai",
+        ],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -203,6 +217,18 @@ class TestIsAvailable:
         monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
         assert p.is_available() is True
 
+    def test_mrscraper_requires_api_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("mrscraper")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("MRSCRAPER_API_TOKEN", "real")
+        assert p.is_available() is True
+
     def test_ddgs_always_available_when_package_importable(self) -> None:
         """DDGS is the always-on fallback — no API key required.
 
@@ -219,7 +245,9 @@ class TestIsAvailable:
         # Truthy or falsy, just must not raise.
         _ = bool(p.is_available())
 
-    def test_xai_requires_api_key_or_oauth(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_xai_requires_api_key_or_oauth(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """xAI needs XAI_API_KEY or OAuth tokens in auth.json."""
         _ensure_plugins_loaded()
         from agent.web_search_registry import get_provider
@@ -274,7 +302,6 @@ class TestRegistryResolution:
         assert result is not None
         assert result.is_available() is True
 
-
     def test_no_config_no_credentials_returns_none(
         self,
     ) -> None:
@@ -310,5 +337,3 @@ class TestAsyncExtractDispatch:
 
 class TestErrorResponseShapes:
     """When credentials are missing, plugins return typed errors, not raises."""
-
-

@@ -1,0 +1,24 @@
+name: web-mrscraper
+version: 1.0.0
+description: "MrScraper web search, extraction, scraper management, and result tools. Requires MRSCRAPER_API_TOKEN."
+author: MrScraper
+kind: backend
+requires_env:
+  - MRSCRAPER_API_TOKEN
+provides_web_providers:
+  - mrscraper
+provides_tools:
+  - mrscraper_get_account_info
+  - mrscraper_crawl_website_urls
+  - mrscraper_search_google_serp
+  - mrscraper_extract_page_by_prompt
+  - mrscraper_extract_listings
+  - mrscraper_extract_structured_data
+  - mrscraper_get_results
+  - mrscraper_get_latest_results
+  - mrscraper_get_result_detail
+  - mrscraper_create_prompt_scraper
+  - mrscraper_create_listing_scraper
+  - mrscraper_create_website_crawl_scraper
+  - mrscraper_run_existing_scraper
+  - mrscraper_run_existing_scraper_batch

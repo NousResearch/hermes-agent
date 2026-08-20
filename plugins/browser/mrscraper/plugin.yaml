@@ -1,0 +1,9 @@
+name: browser-mrscraper
+version: 1.0.0
+description: "MrScraper rendered-page integration. Registers a native rendered HTML tool; it is not a CDP cloud-browser provider."
+author: MrScraper
+kind: backend
+requires_env:
+  - MRSCRAPER_API_TOKEN
+provides_tools:
+  - mrscraper_fetch_rendered_html

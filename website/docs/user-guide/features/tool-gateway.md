@@ -171,6 +171,10 @@ These knobs exist for custom infrastructure setups (enterprise deployments, dev 
 
 ## FAQ
 
+### Is MrScraper included in the Nous Tool Gateway?
+
+No. The gateway's managed web route uses Firecrawl, and its managed interactive browser route uses Browser Use. Hermes does bundle a direct MrScraper integration for `web_search`, `web_extract`, rendered HTML, structured extraction, scraper runs, and result retrieval; configure `MRSCRAPER_API_TOKEN` through `hermes tools` and leave `web.use_gateway: false` to use it. An official hosted MrScraper MCP is also available separately with `hermes mcp install mrscraper`.
+
 ### Does it work with Telegram / Discord / the other messaging gateways?
 
 Yes. Tool Gateway operates at the tool-execution layer, not the CLI. Every interface that can call a tool — CLI, Telegram, Discord, Slack, IRC, Teams, the API server, anything — benefits from it transparently.

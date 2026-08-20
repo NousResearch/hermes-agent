@@ -64,6 +64,7 @@ def _load_auxiliary_client() -> None:
 
 from hermes_constants import get_hermes_dir
 from tools.debug_helpers import DebugSession
+from tools.image_source import _file_uri_to_path
 from tools.website_policy import check_website_access
 import sys
 
@@ -1981,10 +1982,10 @@ async def video_analyze_tool(
         logger.info("User prompt: %s", user_prompt[:100])
 
         # Resolve local path vs remote URL
-        resolved_url = video_url
-        if resolved_url.startswith("file://"):
-            resolved_url = resolved_url[len("file://"):]
-        local_path = Path(os.path.expanduser(resolved_url))
+        if video_url.lower().startswith("file://"):
+            local_path = Path(_file_uri_to_path(video_url))
+        else:
+            local_path = Path(os.path.expanduser(video_url))
 
         if not _terminal_backend_is_local() and _is_path_like_video_source(video_url):
             logger.info("Reading video source via terminal backend: %s", video_url)

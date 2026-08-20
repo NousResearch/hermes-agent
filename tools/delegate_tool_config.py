@@ -525,36 +525,37 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         parent_model = str(getattr(parent_agent, "model", "") or "").strip()
         parent_provider = str(getattr(parent_agent, "provider", "") or "").strip()
         parent_base_url = str(getattr(parent_agent, "base_url", "") or "").strip()
-        try:
-            from hermes_cli.runtime_provider import (
-                canonical_custom_identity,
-                resolve_runtime_provider,
-            )
+        if parent_provider.lower().startswith("custom"):
+            try:
+                from hermes_cli.runtime_provider import (
+                    canonical_custom_identity,
+                    resolve_runtime_provider,
+                )
 
-            custom_identity = canonical_custom_identity(
-                base_url=parent_base_url,
-                config_provider=parent_provider,
-                model=values["model"] or parent_model,
-            )
-            if custom_identity:
-                runtime = resolve_runtime_provider(
-                    requested=custom_identity,
-                    target_model=values["model"] or parent_model or None,
+                custom_identity = canonical_custom_identity(
+                    base_url=parent_base_url,
+                    config_provider=parent_provider,
+                    model=values["model"] or parent_model,
                 )
-                return _credential_bundle(
-                    values["model"] or parent_model or runtime.get("model") or None,
-                    custom_identity,
-                    runtime.get("base_url"),
-                    runtime.get("api_key") or None,
-                    runtime.get("api_mode"),
-                    _merge_request_overrides(
-                        runtime.get("request_overrides"), explicit_request_overrides
-                    ) or {},
-                    command=runtime.get("command"),
-                    args=list(runtime.get("args") or []),
-                )
-        except Exception as exc:
-            logger.debug("Could not canonicalize inherited custom provider: %s", exc)
+                if custom_identity:
+                    runtime = resolve_runtime_provider(
+                        requested=custom_identity,
+                        target_model=values["model"] or parent_model or None,
+                    )
+                    return _credential_bundle(
+                        values["model"] or parent_model or runtime.get("model") or None,
+                        custom_identity,
+                        runtime.get("base_url"),
+                        runtime.get("api_key") or None,
+                        runtime.get("api_mode"),
+                        _merge_request_overrides(
+                            runtime.get("request_overrides"), explicit_request_overrides
+                        ) or {},
+                        command=runtime.get("command"),
+                        args=list(runtime.get("args") or []),
+                    )
+            except Exception as exc:
+                logger.debug("Could not canonicalize inherited custom provider: %s", exc)
 
         # Built-ins and genuine ad-hoc endpoints keep the ordinary inheritance path; None
         # overrides are resolved from the parent in _build_child_agent.

@@ -569,23 +569,20 @@ def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider
     if not candidate:
         candidate = os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip()
     candidate_norm = _normalize_custom_provider_name(candidate)
-    # A bare/non-routable candidate cannot heal a bare custom override.
-    if not candidate_norm or candidate_norm in {"custom", "auto", "openrouter"}:
-        # 3. URL-only recovery is a last resort because several named custom providers can
-        #    legitimately share the same gateway URL.
-        return url_identity
-    # Only when it resolves to a configured entry — never invent a ``custom:<x>`` resolution
-    # can't honor. ``candidate`` may be the entry's DISPLAY NAME, not the durable identity of a
-    # keyed ``providers:`` entry — return the durable config-key identity instead of deriving it
-    # from the ambiguous base_url.
-    try:
-        entry = rp._get_named_custom_provider(candidate)
-    except Exception:
-        entry = None
-    if entry is not None:
-        provider_key = _clean(entry.get("provider_key", ""))
-        entry_name = _clean(entry.get("name", "")) or candidate
-        return custom_provider_slug(entry_name, provider_key)
+    if candidate_norm and candidate_norm not in {"custom", "auto", "openrouter"}:
+        # Only return it when it actually resolves to a configured custom entry, so we never
+        # invent a ``custom:<x>`` that resolution can't honor. ``candidate`` may be the entry's
+        # DISPLAY NAME — ``_get_named_custom_provider`` accepts either spelling. Return the
+        # durable config-key identity instead of deriving it from the ambiguous base_url.
+        try:
+            entry = rp._get_named_custom_provider(candidate)
+        except Exception:
+            entry = None
+        if entry is not None:
+            provider_key = _clean(entry.get("provider_key", ""))
+            entry_name = _clean(entry.get("name", "")) or candidate
+            return custom_provider_slug(entry_name, provider_key)
+
     # 3. URL-only recovery is a last resort because several named custom providers can
     #    legitimately share the same gateway URL.
     return url_identity

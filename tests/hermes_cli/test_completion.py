@@ -125,6 +125,38 @@ class TestGenerateZsh:
         finally:
             os.unlink(path)
 
+    def test_valid_zsh_arguments_syntax(self):
+        """_arguments entries must use valid zsh syntax.
+
+        The pattern '(-X --Y){-X,--Y}[...]' is invalid because () groups
+        cannot contain long options with spaces.  Correct form:
+        '(-)'{-h,--help}'[...]'
+        """
+        out = generate_zsh(_make_parser())
+        # Reject the broken pattern: a () group containing a long option
+        bad = re.findall(r"\('\([^)]*--\w+", out)
+        assert not bad, f"Invalid _arguments syntax found: {bad}"
+        # Verify the correct pattern is present for top-level options
+        assert "'(-)'{-h,--help}'" in out
+        assert "'(-)'{-V,--version}'" in out
+        assert "'(-)'{-p,--profile}'" in out
+
+    def test_valid_zsh_arguments_syntax(self):
+        """_arguments entries must use valid zsh syntax.
+
+        The pattern '(-X --Y){-X,--Y}[...]' is invalid because () groups
+        cannot contain long options with spaces.  Correct form:
+        '(-)'{-h,--help}'[...]'
+        """
+        out = generate_zsh(_make_parser())
+        # Reject the broken pattern: a () group containing a long option
+        bad = re.findall(r"\('\([^)]*--\w+", out)
+        assert not bad, f"Invalid _arguments syntax found: {bad}"
+        # Verify the correct pattern is present for top-level options
+        assert "'(-)'{-h,--help}'" in out
+        assert "'(-)'{-V,--version}'" in out
+        assert "'(-)'{-p,--profile}'" in out
+
 
 # ---------------------------------------------------------------------------
 # 4. Fish output

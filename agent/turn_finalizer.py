@@ -588,11 +588,26 @@ def finalize_turn(
 
     _response_transformed = False
     _pre_transform_response = None
+    # Memory-sync override for this turn. None means "use final_response",
+    # i.e. today's behavior (memory receives whatever was transformed for
+    # display). A plugin can set this to a different string via the dict
+    # return form below, e.g. to keep a display-only addition out of
+    # external memory.
+    _memory_response = None
 
     # Plugin hook: transform_llm_output
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can transform the LLM's output text before it's returned.
-    # First hook to return a string wins; None/empty return leaves text unchanged.
+    # Return either a str (replaces the response text; used for both display
+    # and external-memory sync, matching prior behavior) or a dict shaped
+    # {"display": str, "memory": str} to send a different value to external
+    # memory providers than what's shown to the user -- e.g. a plugin that
+    # appends a display-only footer (a citation, a sponsored message) can
+    # keep that footer out of what the model "remembers" saying. A dict
+    # without a valid "memory" string falls back to "display", i.e. behaves
+    # like a plain string return. First hook to return a non-empty str or a
+    # dict with a non-empty "display" wins; None/empty return leaves text
+    # unchanged.
     if final_response and not interrupted:
         try:
             from hermes_cli.lifecycle import invoke_hook as _invoke_hook
@@ -608,7 +623,19 @@ def finalize_turn(
                     _pre_transform_response = final_response
                     final_response = _hook_result
                     _response_transformed = True
-                    break  # First non-empty string wins
+                    break  # First non-empty result wins
+                if (
+                    isinstance(_hook_result, dict)
+                    and isinstance(_hook_result.get("display"), str)
+                    and _hook_result["display"]
+                ):
+                    _pre_transform_response = final_response
+                    final_response = _hook_result["display"]
+                    _memory_override = _hook_result.get("memory")
+                    if isinstance(_memory_override, str):
+                        _memory_response = _memory_override
+                    _response_transformed = True
+                    break  # First non-empty result wins
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
 
@@ -776,9 +803,12 @@ def finalize_turn(
         agent._iters_since_skill = 0
 
     # External memory provider: sync the completed turn + queue next prefetch.
+    # Uses _memory_response when a transform_llm_output plugin explicitly set
+    # one (dict return with a "memory" key); otherwise behaves as before and
+    # syncs whatever final_response ended up being.
     agent._sync_external_memory_for_turn(
         original_user_message=original_user_message,
-        final_response=final_response,
+        final_response=_memory_response if _memory_response is not None else final_response,
         interrupted=interrupted,
         messages=messages,
     )

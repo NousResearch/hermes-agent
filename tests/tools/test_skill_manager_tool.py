@@ -18,6 +18,7 @@ from tools.skill_manager_tool import (
     _delete_skill,
     _write_file,
     _remove_file,
+    _find_skill,
     skill_manage,
 )
 from agent.skill_utils import (
@@ -99,6 +100,71 @@ class TestValidateCategory:
     def test_absolute_path_rejected(self):
         err = _validate_category("/tmp/escape")
         assert "Invalid category '/tmp/escape'" in err
+
+    # Regression guard for #71290 — nested category paths.
+    def test_nested_posix_category_path_accepted(self, tmp_path):
+        with _skill_dir(tmp_path):
+            assert _validate_category("org/team/domain") is None
+            assert _validate_category("global-skills/content") is None
+            assert _validate_category("a/b/c/d/e") is None
+
+    def test_nested_windows_separator_accepted(self, tmp_path):
+        with _skill_dir(tmp_path):
+            # Issue was reported on Windows with native skill_manage.
+            assert _validate_category("org\\team\\domain") is None
+
+    def test_traversal_in_nested_segment_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            err = _validate_category("foo/../escape")
+            assert err is not None
+            assert "Invalid category" in err
+
+    def test_dot_segment_in_nested_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            err = _validate_category("foo/./bar")
+            assert err is not None
+
+    def test_empty_interior_segment_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            err = _validate_category("foo//bar")
+            assert err is not None
+
+    def test_invalid_character_in_segment_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            err = _validate_category("foo/BAR/baz")
+            assert err is not None
+            err2 = _validate_category("foo/bar baz/qux")
+            assert err2 is not None
+
+    def test_combined_length_bound(self, tmp_path):
+        with _skill_dir(tmp_path):
+            err = _validate_category("a" * 1100)
+            assert err is not None
+            assert "exceeds" in err.lower()
+
+    def test_create_skill_with_nested_category_writes_files(self, tmp_path):
+        """End-to-end: skill_manage create with 'global-skills/content'
+        creates the full directory tree and SKILL.md (#71290)."""
+        with _skill_dir(tmp_path):
+            result = _create_skill(
+                "content-publishing-workflow",
+                VALID_SKILL_CONTENT,
+                category="global-skills/content",
+            )
+            assert result["success"] is True, result
+
+            skill_md = tmp_path / "global-skills" / "content" / "content-publishing-workflow" / "SKILL.md"
+            assert skill_md.exists()
+            assert skill_md.read_text().startswith("---\nname:")
+
+            # Resolve lookup: _find_skill must find the nested skill with
+            # ``path`` under the nested category, so skill_view / edit
+            # / delete operate without ambiguous bare-name resolution.
+            found = _find_skill("content-publishing-workflow")
+            assert found is not None
+            assert str(found["path"]).endswith(
+                "global-skills/content/content-publishing-workflow"
+            )
 
 
 # ---------------------------------------------------------------------------

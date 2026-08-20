@@ -276,6 +276,8 @@ def _supports_vision_override(
 def _resolve_inference_base_url(
     cfg: Optional[Dict[str, Any]],
     provider: str,
+    *,
+    requested_provider: str = "",
 ) -> str:
     """Best-effort base URL for the active inference provider."""
     try:
@@ -283,8 +285,8 @@ def _resolve_inference_base_url(
 
         runtime = str(_runtime_main_value("base_url") or "").strip()
         runtime_provider = str(_runtime_main_value("provider") or "").strip().lower()
-        requested_provider = str(provider or "").strip().lower()
-        if runtime and (not requested_provider or requested_provider == runtime_provider):
+        requested_identity = str(requested_provider or "").strip().lower()
+        if runtime and (not requested_identity or requested_identity == runtime_provider):
             return runtime
     except Exception:
         pass
@@ -294,13 +296,9 @@ def _resolve_inference_base_url(
 
     model_cfg_raw = cfg.get("model")
     model_cfg: Dict[str, Any] = model_cfg_raw if isinstance(model_cfg_raw, dict) else {}
-    base_url = str(model_cfg.get("base_url") or "").strip()
-    if base_url:
-        return base_url
-
     config_provider = str(model_cfg.get("provider") or "").strip()
     candidate_names: set[str] = set()
-    for p in filter(None, (provider, config_provider)):
+    for p in filter(None, (requested_provider, provider, config_provider)):
         candidate_names.add(p)
         if p.lower().startswith("custom:"):
             candidate_names.add(p.split(":", 1)[1])
@@ -308,6 +306,11 @@ def _resolve_inference_base_url(
             candidate_names.add(f"custom:{p}")
 
     providers_cfg = cfg.get("providers")
+    # A live named custom provider must win over the persisted default's
+    # model.base_url.  The runtime provider is canonicalized to ``custom``
+    # while ``requested_provider`` retains the selected name (e.g.
+    # ``ollama-lan``), so resolving model.base_url first can probe the wrong
+    # endpoint and route a vision-capable Ollama model through text mode.
     if isinstance(providers_cfg, dict):
         for name in candidate_names:
             entry = providers_cfg.get(name)
@@ -328,6 +331,13 @@ def _resolve_inference_base_url(
             bu = str(entry_raw.get("base_url") or "").strip()
             if bu:
                 return bu
+
+    # Only use the persisted model endpoint after checking the exact live
+    # provider identity above.  Otherwise a session switch to a named remote
+    # Ollama provider inherits the old default endpoint.
+    base_url = str(model_cfg.get("base_url") or "").strip()
+    if base_url:
+        return base_url
 
     return ""
 
@@ -445,7 +455,11 @@ def _lookup_supports_vision(
     if caps is not None:
         return bool(caps.supports_vision)
 
-    base_url = _resolve_inference_base_url(cfg, provider)
+    base_url = _resolve_inference_base_url(
+        cfg,
+        provider,
+        requested_provider=requested_provider,
+    )
     if not base_url and (provider or "").strip().lower() == "ollama":
         base_url = "http://localhost:11434/v1"
     if _should_probe_ollama_vision(provider, base_url):

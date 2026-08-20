@@ -157,6 +157,35 @@ class TestLookupSupportsVisionOverride:
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert _lookup_supports_vision("openrouter", "x", None) is None
 
+    def test_named_remote_ollama_uses_selected_endpoint_not_persisted_default(self):
+        """Session provider selection must control Ollama capability probing."""
+        cfg = {
+            "model": {
+                "provider": "cloud-proxy",
+                "base_url": "https://cloud-proxy.example/v1",
+            },
+            "custom_providers": [
+                {
+                    "name": "ollama-lan",
+                    "base_url": "http://192.0.2.50:11434/v1",
+                    "models": ["qwen3-vl:8b"],
+                }
+            ],
+        }
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.image_routing._should_probe_ollama_vision", return_value=True), \
+             patch("agent.model_metadata.query_ollama_supports_vision", return_value=True) as probe:
+            assert _lookup_supports_vision(
+                "custom",
+                "qwen3-vl:8b",
+                cfg,
+                requested_provider="ollama-lan",
+            ) is True
+            probe.assert_called_once_with(
+                "qwen3-vl:8b",
+                "http://192.0.2.50:11434/v1",
+            )
+
 
 # ─── decide_image_input_mode with auto + override ────────────────────────────
 

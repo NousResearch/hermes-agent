@@ -50,6 +50,12 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────
 
 DEFAULT_MAX_TURNS = 20
+# When a kanban goal-mode worker exhausts its turn budget, an optional
+# progress_check_fn can grant a one-time-per-check extension instead of
+# blocking outright — but only while genuinely making progress, and never
+# past this absolute ceiling (prevents an infinite loop on a stuck worker).
+DEFAULT_GOAL_EXTENSION_TURNS = 20
+DEFAULT_GOAL_MAX_TURNS_CEILING = 200
 DEFAULT_JUDGE_TIMEOUT = 30.0
 # Judge output budget. The freeform judge returns a one-line JSON verdict, but
 # reasoning models (deepseek-v4, qwq, etc.) burn tokens on hidden reasoning
@@ -2140,6 +2146,9 @@ def run_kanban_goal_loop(
     max_turns: int = DEFAULT_MAX_TURNS,
     first_response: str = "",
     log=None,
+    progress_check_fn=None,
+    extension_turns: int = DEFAULT_GOAL_EXTENSION_TURNS,
+    max_turns_ceiling: int = DEFAULT_GOAL_MAX_TURNS_CEILING,
 ) -> Dict[str, Any]:
     """Drive a kanban worker through a Ralph-style goal loop.
 
@@ -2156,7 +2165,12 @@ def run_kanban_goal_loop(
        task is still open → one explicit "call kanban_complete" nudge.
     3. When the turn budget is exhausted and the worker still hasn't
        terminated the task, ``block_fn`` is invoked so the card lands in a
-       sticky ``blocked`` state for human review (NOT a silent exit).
+       sticky ``blocked`` state for human review (NOT a silent exit) —
+       unless ``progress_check_fn`` reports observable progress (heartbeat,
+       new comments, file activity, etc.), in which case the budget is
+       extended by ``extension_turns`` (never past ``max_turns_ceiling``)
+       and the loop keeps going. ``progress_check_fn`` is fail-closed: no
+       callback, an exception, or a falsy result all mean "no extension".
 
     This function performs NO SessionDB persistence — a worker process is
     ephemeral, so the turn budget lives in a local counter. It is fully
@@ -2243,16 +2257,33 @@ def run_kanban_goal_loop(
 
         # Budget check BEFORE spending another turn.
         if turns_used >= max_turns:
-            _log(f"kanban goal loop: task {task_id} exhausted {turns_used}/{max_turns} turns; blocking")
-            try:
-                block_fn(
-                    f"Goal-mode worker exhausted its turn budget "
-                    f"({turns_used}/{max_turns}) without completing the task. "
-                    f"Last judge verdict: {_truncate(reason, 300)}"
-                )
-            except Exception as exc:
-                _log(f"kanban goal loop: block_fn failed ({exc})")
-            return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "turn budget exhausted"}
+            extended = False
+            if progress_check_fn is not None and max_turns < max_turns_ceiling:
+                try:
+                    has_progress = bool(progress_check_fn())
+                except Exception as exc:
+                    _log(f"kanban goal loop: progress check failed ({exc}); treating as no progress")
+                    has_progress = False
+                if has_progress:
+                    old_max = max_turns
+                    max_turns = min(max_turns + extension_turns, max_turns_ceiling)
+                    extended = max_turns > old_max
+                    if extended:
+                        _log(
+                            f"kanban goal loop: task {task_id} showed progress at "
+                            f"{turns_used}/{old_max} turns; extending budget to {max_turns}"
+                        )
+            if not extended:
+                _log(f"kanban goal loop: task {task_id} exhausted {turns_used}/{max_turns} turns; blocking")
+                try:
+                    block_fn(
+                        f"Goal-mode worker exhausted its turn budget "
+                        f"({turns_used}/{max_turns}) without completing the task. "
+                        f"Last judge verdict: {_truncate(reason, 300)}"
+                    )
+                except Exception as exc:
+                    _log(f"kanban goal loop: block_fn failed ({exc})")
+                return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "turn budget exhausted"}
 
         # Run another turn in the same session.
         try:
@@ -2282,6 +2313,8 @@ __all__ = [
     "KANBAN_GOAL_CONTINUATION_TEMPLATE",
     "KANBAN_GOAL_FINALIZE_TEMPLATE",
     "DEFAULT_MAX_TURNS",
+    "DEFAULT_GOAL_EXTENSION_TURNS",
+    "DEFAULT_GOAL_MAX_TURNS_CEILING",
     "load_goal",
     "save_goal",
     "clear_goal",

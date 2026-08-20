@@ -101,6 +101,20 @@ async function adoptServedDashboardToken(baseUrl, spawnToken, { childAlive, labe
   return servedToken
 }
 
+/**
+ * Real `hermes serve` children have no index page by contract, so their
+ * explicitly-pinned spawn token is already authoritative. Older runtimes are
+ * rewritten to `dashboard --no-open`; only that compatibility path still
+ * exposes an injected index token that must be reconciled.
+ */
+async function resolveManagedBackendToken(backendArgs, baseUrl, spawnToken, options) {
+  if (backendArgs.includes('serve')) {
+    return spawnToken
+  }
+
+  return adoptServedDashboardToken(baseUrl, spawnToken, options)
+}
+
 export {
   adoptServedDashboardToken,
   dashboardIndexUrl,
@@ -108,5 +122,6 @@ export {
   extractInjectedDashboardToken,
   fetchPublicText,
   isForeignBackendToken,
+  resolveManagedBackendToken,
   resolveServedDashboardToken
 }

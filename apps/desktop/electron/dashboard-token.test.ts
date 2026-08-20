@@ -15,6 +15,7 @@ import {
   extractInjectedDashboardToken,
   fetchPublicText,
   isForeignBackendToken,
+  resolveManagedBackendToken,
   resolveServedDashboardToken
 } from './dashboard-token'
 
@@ -144,4 +145,34 @@ test('adoptServedDashboardToken falls back to the spawn token when the fetch fai
   assert.equal(token, 'spawn-token')
   assert.equal(logs.length, 1)
   assert.match(logs[0], /could not read served dashboard token \(Hermes backend\): boom/)
+})
+
+test('resolveManagedBackendToken uses the spawn token for headless serve', async () => {
+  const token = await resolveManagedBackendToken(
+    ['--profile', 'work', 'serve', '--port', '0'],
+    'http://127.0.0.1:9120',
+    'spawn-token',
+    {
+      childAlive: () => true,
+      fetchText: async () => {
+        throw new Error('headless serve must not fetch index.html')
+      }
+    }
+  )
+
+  assert.equal(token, 'spawn-token')
+})
+
+test('resolveManagedBackendToken adopts the served token for legacy dashboard fallback', async () => {
+  const token = await resolveManagedBackendToken(
+    ['dashboard', '--no-open', '--port', '0'],
+    'http://127.0.0.1:9120',
+    'spawn-token',
+    {
+      childAlive: () => true,
+      fetchText: async () => '<script>window.__HERMES_SESSION_TOKEN__="served-token";</script>'
+    }
+  )
+
+  assert.equal(token, 'served-token')
 })

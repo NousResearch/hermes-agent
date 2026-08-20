@@ -4676,6 +4676,25 @@ class TestDesktopCronTicker:
             assert called.wait(3.0), "expected cron tick under HERMES_DESKTOP=1"
 
 
+class TestHeadlessSpaFallback:
+    def test_unmatched_api_path_reports_missing_endpoint(self, tmp_path, monkeypatch):
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "WEB_DIST", tmp_path / "missing-dist")
+        monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+        spa_app = FastAPI()
+        ws.mount_spa(spa_app)
+
+        response = TestClient(spa_app).get("/api/plugins/missing/state")
+
+        assert response.status_code == 404
+        assert response.json() == {
+            "detail": "No such API endpoint: /api/plugins/missing/state"
+        }
+
+
 class TestServeIndexMissingIndex:
     """_serve_index must not raise per-request when index.html vanishes
     (partial build, wiped dist) after mount_spa saw an existing dist dir.

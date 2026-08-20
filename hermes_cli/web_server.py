@@ -17353,6 +17353,11 @@ def mount_spa(application: FastAPI):
 
         @application.get("/{full_path:path}")
         async def no_frontend(full_path: str):
+            if full_path == "api" or full_path.startswith("api/"):
+                return JSONResponse(
+                    {"detail": f"No such API endpoint: /{full_path}"},
+                    status_code=404,
+                )
             return JSONResponse({"error": _msg}, status_code=404)
         return
 

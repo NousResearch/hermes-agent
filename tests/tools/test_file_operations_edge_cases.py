@@ -51,6 +51,42 @@ class TestIsLikelyBinary:
         sample = "\x00" * 200 + "a" * 800 + "\x00" * 1000
         assert ops._is_likely_binary("file.xyz", content_sample=sample) is False
 
+    def test_ufffd_from_truncated_multibyte_not_binary(self, ops):
+        """U+FFFD caused by `head -c 1000` cutting a multi-byte UTF-8 char in
+        half must NOT classify the file as binary. The longer re-read shows
+        the replacement char only at the new boundary, so it's truncation
+        artifact, not corruption."""
+        sample = "中文内容" * 200 + "\ufffd"  # cut mid-character
+        with patch.object(ops, "_exec", return_value=MagicMock(
+            exit_code=0,
+            stdout="中文内容" * 300,  # longer sample: boundary moves, no mid U+FFFD
+        )) as mock_exec:
+            assert ops._is_likely_binary("file.md", content_sample=sample) is False
+        # The retry read of a longer sample must have happened
+        retry_cmd = mock_exec.call_args[0][0]
+        assert "head -c 4096" in retry_cmd
+
+    def test_ufffd_scattered_middle_is_binary(self, ops):
+        """U+FFFD scattered through the middle of the longer re-read means the
+        file is genuinely corrupt and must stay read-only/binary."""
+        sample = "中文" + "\ufffd" + "内容" * 200
+        with patch.object(ops, "_exec", return_value=MagicMock(
+            exit_code=0,
+            stdout="开头" + "\ufffd" + "中间" + "\ufffd" + "结尾" * 300,
+        )):
+            assert ops._is_likely_binary("file.md", content_sample=sample) is True
+
+    def test_ufffd_only_at_very_end_of_long_sample_not_binary(self, ops):
+        """Even the 4096-byte retry may itself cut a multi-byte char at its
+        tail; a lone U+FFFD within the last 4 chars is still a truncation
+        artifact, not corruption."""
+        sample = "中文" + "\ufffd" + "内容" * 200
+        with patch.object(ops, "_exec", return_value=MagicMock(
+            exit_code=0,
+            stdout="中文内容" * 1000 + "\ufffd",  # trailing partial char only
+        )):
+            assert ops._is_likely_binary("file.md", content_sample=sample) is False
+
 
 # =========================================================================
 # _check_lint edge cases

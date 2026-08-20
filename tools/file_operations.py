@@ -1053,6 +1053,24 @@ class ShellFileOperations(FileOperations):
             # agent can't corrupt it. Legitimate UTF-8 text effectively never
             # contains U+FFFD.
             if "\ufffd" in content_sample[:1000]:
+                # BUT: a U+FFFD here may also be an artifact of `head -c 1000`
+                # cutting a multi-byte UTF-8 character in half, not genuine
+                # corruption. Re-read a longer sample to disambiguate: valid
+                # text truncated mid-character only shows the replacement char
+                # near the new (longer) cut boundary, whereas a truly corrupt
+                # file shows it scattered through the middle.
+                retry_cmd = f"head -c 4096 {self._escape_shell_arg(path)} 2>/dev/null"
+                retry_result = self._exec(retry_cmd)
+                if retry_result.exit_code == 0 and retry_result.stdout:
+                    retry_sample = _strip_terminal_fence_leaks(retry_result.stdout)
+                    # Only a trailing partial character may produce U+FFFD;
+                    # anything earlier in the sample means real corruption.
+                    boundary = max(0, len(retry_sample) - 4)
+                    corrupt = any(
+                        i < boundary for i, c in enumerate(retry_sample) if c == "\ufffd"
+                    )
+                    if not corrupt:
+                        return False
                 return True
             non_printable = sum(1 for c in content_sample[:1000]
                                if ord(c) < 32 and c not in '\n\r\t')

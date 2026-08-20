@@ -698,6 +698,30 @@ def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
     assert resolved["requested_provider"] == "custom"
 
 
+@pytest.mark.parametrize("requested", ["custom:gateway", "custom:gateway-display"])
+def test_named_provider_prefers_transport_over_legacy_api_mode(monkeypatch, requested):
+    """Desktop and runtime must agree when both API mode fields are present."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "gateway": {
+                    "name": "Gateway Display",
+                    "api": "https://gateway.example.com/v1",
+                    "api_key": "gateway-key",
+                    "transport": "codex_responses",
+                    "api_mode": "chat_completions",
+                }
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested=requested)
+
+    assert resolved["api_mode"] == "codex_responses"
+
+
 
 
 def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):

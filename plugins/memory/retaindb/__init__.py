@@ -31,7 +31,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
-from urllib.parse import quote, urljoin
+from urllib.parse import quote
 
 from agent.memory_provider import MemoryProvider
 from agent.secret_scope import get_secret
@@ -42,6 +42,22 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "https://api.retaindb.com"
 _ASYNC_SHUTDOWN = object()
+
+
+def _guard_redirect(response, *args, **kwargs) -> None:
+    """Reject metadata redirects before requests follows them."""
+    try:
+        from tools.url_safety import is_always_blocked_url, redirect_target_from_response
+
+        target = redirect_target_from_response(response)
+        if target and is_always_blocked_url(target):
+            response.close()
+            raise RuntimeError("RetainDB redirect target is always blocked")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        response.close()
+        raise RuntimeError("RetainDB redirect safety check failed") from exc
 
 
 def _load_retaindb_config() -> Dict[str, Any]:
@@ -228,6 +244,7 @@ class _Client:
             json=json_body if method.upper() not in {"GET", "DELETE"} else None,
             headers=self._headers(path),
             timeout=timeout,
+            hooks={"response": [_guard_redirect]},
         )
         try:
             payload = resp.json()
@@ -316,7 +333,14 @@ class _Client:
         fields = {"path": remote_path, "scope": scope.upper()}
         if project_id:
             fields["project_id"] = project_id
-        resp = requests.post(url, files={"file": (filename, io.BytesIO(data), mime_type)}, data=fields, headers=headers, timeout=30)
+        resp = requests.post(
+            url,
+            files={"file": (filename, io.BytesIO(data), mime_type)},
+            data=fields,
+            headers=headers,
+            timeout=30,
+            hooks={"response": [_guard_redirect]},
+        )
         resp.raise_for_status()
         return resp.json()
 
@@ -334,30 +358,14 @@ class _Client:
         token = self.api_key.replace("Bearer ", "").strip()
         url = f"{self.base_url}/v1/files/{quote(file_id, safe='')}/content"
         headers = {"Authorization": f"Bearer {token}", "x-sdk-runtime": "hermes-plugin"}
-        # Follow redirects manually so every Location is subject to the same
-        # metadata/SSRF floor as the configured base URL.
-        for _ in range(10):
-            resp = requests.get(url, headers=headers, timeout=30, allow_redirects=False)
-            if not resp.is_redirect:
-                resp.raise_for_status()
-                return resp.content
-
-            location = resp.headers.get("Location")
-            resp.close()
-            if not location:
-                raise RuntimeError("RetainDB file response redirected without a Location header")
-            url = urljoin(url, location)
-            try:
-                from tools.url_safety import is_always_blocked_url
-
-                if is_always_blocked_url(url):
-                    raise RuntimeError("RetainDB redirect target is always blocked")
-            except RuntimeError:
-                raise
-            except Exception as exc:
-                raise RuntimeError("RetainDB redirect safety check failed") from exc
-
-        raise RuntimeError("RetainDB file response exceeded the redirect limit")
+        resp = requests.get(
+            url,
+            headers=headers,
+            timeout=30,
+            hooks={"response": [_guard_redirect]},
+        )
+        resp.raise_for_status()
+        return resp.content
 
     def ingest_file(self, file_id: str, user_id: str | None = None, agent_id: str | None = None) -> dict:
         body: dict = {}

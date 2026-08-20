@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import plugins.memory.retaindb as mod
 
 
@@ -26,3 +28,22 @@ def test_retaindb_allows_private_self_host_url():
 
     assert not is_always_blocked_url("http://192.168.1.50:8080")
     assert not is_always_blocked_url("http://127.0.0.1:8080")
+
+
+def test_retaindb_file_read_rejects_public_to_metadata_redirect(monkeypatch):
+    response = MagicMock(
+        is_redirect=True,
+        headers={"location": "http://169.254.169.254/latest/meta-data/"},
+        url="https://api.retaindb.com/v1/files/file-1/content",
+    )
+
+    def redirecting_get(*args, **kwargs):
+        for hook in kwargs["hooks"]["response"]:
+            hook(response)
+        return response
+
+    monkeypatch.setattr("requests.get", redirecting_get)
+    client = mod._Client("test-key", "https://api.retaindb.com", "default")
+
+    with pytest.raises(RuntimeError, match="redirect target is always blocked"):
+        client.read_file_content("file-1")

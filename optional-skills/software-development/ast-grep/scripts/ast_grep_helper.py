@@ -228,14 +228,20 @@ def omo_runtime_slug() -> str:
 
 
 def omo_runtime_binary() -> Optional[Path]:
-    binary_name = "sg.exe" if sys.platform.startswith("win") else "sg"
+    if sys.platform.startswith("win"):
+        # Accept both the real native binary and a .cmd shim (used by tests).
+        binary_names = ["sg.exe", "sg.cmd"]
+    else:
+        binary_names = ["sg"]
     slug = omo_runtime_slug()
     candidates: list[Path] = []
 
     codex_home = os.environ.get("CODEX_HOME")
     if codex_home:
-        candidates.append(Path(codex_home) / "runtime" / "ast-grep" / slug / binary_name)
-    candidates.append(Path.home() / ".omo" / "runtime" / "ast-grep" / slug / binary_name)
+        for name in binary_names:
+            candidates.append(Path(codex_home) / "runtime" / "ast-grep" / slug / name)
+    for name in binary_names:
+        candidates.append(Path.home() / ".omo" / "runtime" / "ast-grep" / slug / name)
 
     for path in candidates:
         if path.is_file() and os.access(path, os.X_OK):

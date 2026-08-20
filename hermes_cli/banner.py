@@ -340,11 +340,21 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         if is_shallow:
             fetch_args += ["--depth", "1"]
         fetch_args.append("--quiet")
-        subprocess.run(
-            fetch_args,
-            capture_output=True, timeout=10,
-            cwd=str(repo_dir),
-        )
+        # Windows subprocess timeout is unreliable — pre-flight TCP check first.
+        import socket as _socket
+        try:
+            _s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            _s.settimeout(2)
+            _s.connect(("github.com", 443))
+            _s.close()
+        except Exception:
+            pass  # skip fetch when GitHub is unreachable
+        else:
+            subprocess.run(
+                fetch_args,
+                capture_output=True, timeout=8,
+                cwd=str(repo_dir),
+            )
     except Exception:
         pass  # Offline or timeout — use stale refs, that's fine
 

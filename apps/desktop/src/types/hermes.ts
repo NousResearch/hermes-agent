@@ -362,6 +362,8 @@ export interface ModelInfoResponse {
   effective_context_length?: number
   model: string
   provider: string
+  /** True when provider=moa and model.default referenced a deleted preset; model holds the fallback name. */
+  stale_default?: boolean
 }
 
 export interface ModelPricing {

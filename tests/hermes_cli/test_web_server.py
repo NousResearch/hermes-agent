@@ -2971,6 +2971,68 @@ class TestModelInfoEndpoint:
         self.client = TestClient(app)
 
 
+    def test_model_info_moa_preset_valid(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "load_config", lambda: {
+            "model": {"default": "TOP", "provider": "moa"},
+            "moa": {
+                "default_preset": "TOP",
+                "presets": {
+                    "TOP": {"reference_models": [], "aggregator": {}},
+                    "日常": {"reference_models": [], "aggregator": {}},
+                },
+            },
+        })
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=0):
+            resp = self.client.get("/api/model/info")
+
+        data = resp.json()
+        assert data["model"] == "TOP"
+        assert data["provider"] == "moa"
+        assert data["stale_default"] is False
+
+    def test_model_info_moa_preset_deleted_falls_back(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "load_config", lambda: {
+            "model": {"default": "TOP", "provider": "moa"},
+            "moa": {
+                "default_preset": "TOP",
+                "presets": {
+                    "日常": {"reference_models": [], "aggregator": {}},
+                },
+            },
+        })
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=0):
+            resp = self.client.get("/api/model/info")
+
+        data = resp.json()
+        assert data["model"] == "日常"  # fell back to the first existing preset
+        assert data["provider"] == "moa"
+        assert data["stale_default"] is True
+
+    def test_model_info_moa_no_presets_uses_builtin_default(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "load_config", lambda: {
+            "model": {"default": "TOP", "provider": "moa"},
+            "moa": {"default_preset": "TOP", "presets": {}},
+        })
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=0):
+            resp = self.client.get("/api/model/info")
+
+        data = resp.json()
+        # normalize_moa_config guarantees a preset even with an empty presets
+        # dict (DEFAULT_MOA_PRESET_NAME); the endpoint must never leak the
+        # deleted name.
+        assert data["model"] != "TOP"
+        assert data["provider"] == "moa"
+        assert data["stale_default"] is True
+
     def test_model_info_with_dict_config(self, monkeypatch):
         import hermes_cli.web_server as ws
 

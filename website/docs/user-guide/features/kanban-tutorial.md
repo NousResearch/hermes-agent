@@ -4,6 +4,24 @@ A walkthrough of the four use-cases the Hermes Kanban system was designed for, w
 
 ## Setup
 
+### Create the required profiles
+
+The tutorial uses named profiles (`backend-dev`, `qa-dev`, etc.) to dispatch work to different specialists. These don't exist on a fresh Hermes install — create them before proceeding:
+
+```bash
+hermes profile create backend-dev \
+  --clone \
+  --description "Backend developer responsible for schemas, APIs, migrations, and server-side implementation."
+
+hermes profile create qa-dev \
+  --clone \
+  --description "QA engineer responsible for integration tests, edge cases, regressions, and test automation."
+```
+
+> **Why `--clone`?** The `--clone` flag copies your current Hermes configuration (models, provider keys, skills, tools) into the new profile so the worker spawns with everything it needs. Without these profiles, tasks get created but stay stuck in **Ready** because the dispatcher can't find a matching profile to spawn.
+
+### Start the dashboard
+
 ```bash
 hermes kanban init           # optional; first `hermes kanban <anything>` auto-inits
 hermes dashboard             # opens http://127.0.0.1:9119 in your browser

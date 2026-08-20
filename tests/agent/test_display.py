@@ -100,6 +100,13 @@ class TestBuildToolPreview:
         assert result == "2 tasks: AAAAAAAAAAAAAAAAAA..."
         assert len(result) == 30
 
+    def test_process_wait_labels_timeout_as_requested_duration(self):
+        preview = build_tool_preview(
+            "process",
+            {"action": "wait", "session_id": "proc_abc123", "timeout": 40000},
+        )
+        assert preview == "wait proc_abc123 timeout=40000s"
+
     def test_false_like_args_zero(self):
         """Non-dict falsy values should return None, not crash."""
         assert build_tool_preview("terminal", 0) is None

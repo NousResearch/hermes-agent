@@ -27,7 +27,10 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+from hermes_cli._subprocess_compat import (
+    windows_detach_flags_without_breakaway,
+    windows_detach_popen_kwargs,
+)
 from hermes_constants import (
     find_node_executable,
     get_hermes_dir,
@@ -732,19 +735,36 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env["HERMES_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
             bridge_env["HERMES_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
 
-            self._bridge_process = subprocess.Popen(
-                [
-                    find_node_executable("node") or "node",
-                    str(bridge_path),
-                    "--port", str(self._bridge_port),
-                    "--session", str(self._session_path),
-                    "--mode", whatsapp_mode,
-                ],
-                stdout=bridge_log_fh,
-                stderr=bridge_log_fh,
-                env=bridge_env,
-                **windows_detach_popen_kwargs(),
-            )
+            _bridge_argv = [
+                find_node_executable("node") or "node",
+                str(bridge_path),
+                "--port", str(self._bridge_port),
+                "--session", str(self._session_path),
+                "--mode", whatsapp_mode,
+            ]
+            try:
+                self._bridge_process = subprocess.Popen(
+                    _bridge_argv,
+                    stdout=bridge_log_fh,
+                    stderr=bridge_log_fh,
+                    env=bridge_env,
+                    **windows_detach_popen_kwargs(),
+                )
+            except OSError:
+                # CREATE_BREAKAWAY_FROM_JOB can fail with "access denied"
+                # when the parent's job object doesn't permit breakaway
+                # (e.g. the Electron desktop app's job). Retry without the
+                # breakaway flag -- see gateway_windows.py::_spawn_detached
+                # for the canonical version of this fallback.
+                if not _IS_WINDOWS:
+                    raise
+                self._bridge_process = subprocess.Popen(
+                    _bridge_argv,
+                    stdout=bridge_log_fh,
+                    stderr=bridge_log_fh,
+                    env=bridge_env,
+                    creationflags=windows_detach_flags_without_breakaway(),
+                )
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             
             # Wait for the bridge to connect to WhatsApp.

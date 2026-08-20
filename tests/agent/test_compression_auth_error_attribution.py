@@ -61,6 +61,9 @@ def _build_agent_with_compressor(
     aux_provider: str = _AUX_PROVIDER,
     aux_model: str = _AUX_MODEL,
     aux_base_url: str = _AUX_BASE_URL,
+    aux_config_provider: str = "",
+    aux_config_model: str = "",
+    aux_config_base_url: str = "",
 ):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
@@ -113,6 +116,13 @@ def _build_agent_with_compressor(
     compressor._last_aux_call_provider = ""
     compressor._last_aux_call_model = ""
     compressor._last_aux_call_base_url = ""
+    # Config-layer auxiliary identity (empty until _generate_summary resolves
+    # an explicit auxiliary.compression provider). Set explicitly because a
+    # MagicMock auto-attribute would be a truthy Mock and leak into the
+    # pre-dispatch branch of the diagnostic.
+    compressor._last_aux_config_provider = aux_config_provider
+    compressor._last_aux_config_model = aux_config_model
+    compressor._last_aux_config_base_url = aux_config_base_url
     compressor._last_aux_model_failure_model = None
     compressor._last_aux_model_failure_error = None
     agent.context_compressor = compressor
@@ -704,4 +714,163 @@ def test_real_compressor_no_provider_does_not_emit_aux_diagnostic(
     # pre-resolution approach produced must NOT appear either.
     assert "Provider: auto" not in rendered, (
         f"phantom 'Provider: auto' on no-provider: {emitted}"
+    )
+
+
+def test_real_call_llm_quarantined_fallback_auth_propagates_last_attempt_error() -> None:
+    """Primary rate-limit → fallback candidate with an unrefreshable 401 →
+    no remaining candidate. The error that propagates must be the FALLBACK's
+    terminal auth error, not the primary's rate-limit: the route snapshot
+    already identifies the fallback, so re-raising the primary would pair one
+    attempt's endpoint with a different attempt's failure class (#72636
+    review, defect 1)."""
+    from agent.auxiliary_client import call_llm
+
+    primary_err = type("Rate429", (Exception,), {"status_code": 429})(
+        "429 Too Many Requests: rate limit exceeded"
+    )
+    fallback_err = type("Auth401", (Exception,), {"status_code": 401})(
+        "expired fallback key"
+    )
+    primary = MagicMock()
+    primary.base_url = "https://api.minimax.chat/v1"
+    primary.chat.completions.create.side_effect = primary_err
+
+    fallback = MagicMock()
+    fallback.base_url = "https://openrouter.ai/api/v1"
+    fallback.chat.completions.create.side_effect = fallback_err
+    routes: list[tuple[str, str | None, str]] = []
+
+    # Discovery order for an auto primary: configured chain (None) → main
+    # chain (None) → payment fallback (the 401-looping candidate). After the
+    # candidate is quarantined, the chain is walked once more — this time it
+    # must yield nothing, so the chain exhausts.
+    payment_walks = [
+        (fallback, "fallback-model", "openrouter"),
+        (None, None, ""),
+    ]
+
+    def _payment_fallback(*_args, **_kwargs):
+        return payment_walks.pop(0) if payment_walks else (None, None, "")
+
+    with (
+        patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "minimax/minimax-m2.7", None, None, None),
+        ),
+        patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary, "minimax/minimax-m2.7"),
+        ),
+        patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(None, None, ""),
+        ),
+        patch(
+            "agent.auxiliary_client._try_main_fallback_chain",
+            return_value=(None, None, ""),
+        ),
+        patch(
+            "agent.auxiliary_client._try_payment_fallback",
+            side_effect=_payment_fallback,
+        ),
+    ):
+        with pytest.raises(Exception) as excinfo:
+            call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+                route_callback=lambda *route: routes.append(route),
+            )
+
+    # The terminal route snapshot is the fallback...
+    assert routes == [
+        ("minimax", "minimax/minimax-m2.7", "https://api.minimax.chat/v1"),
+        ("openrouter", "fallback-model", "https://openrouter.ai/api/v1"),
+    ]
+    # ...so the propagated error must be the fallback's own 401, chained to
+    # the primary origin — never the primary's 429 re-raised bare.
+    assert excinfo.value is fallback_err, (
+        f"propagated error is not the quarantined fallback 401: {excinfo.value!r}"
+    )
+    assert excinfo.value.__cause__ is primary_err
+
+
+def test_real_compressor_explicit_provider_missing_key_reports_pre_dispatch(
+    tmp_path: Path,
+) -> None:
+    """auxiliary.compression names an explicit provider whose API key is
+    missing → call_llm raises BEFORE any client exists, so route_callback
+    never fires. The diagnostic must report the CONFIGURED auxiliary
+    identity as a pre-dispatch failure — it must NOT substitute the healthy
+    main endpoint and must NOT claim auxiliary.compression is unconfigured
+    (#72636 review, defect 2)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "PARENT_72636_NOKEY"
+    db.create_session(sid, source="cli")
+
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url=_MAIN_BASE_URL,
+            model=_MAIN_MODEL,
+            quiet_mode=True,
+            session_db=db,
+            session_id=sid,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        from agent.context_compressor import ContextCompressor
+
+        comp = ContextCompressor(
+            model=_MAIN_MODEL, base_url=_MAIN_BASE_URL, provider=_MAIN_PROVIDER,
+            quiet_mode=True, protect_first_n=2, protect_last_n=2,
+            abort_on_summary_failure=False,
+        )
+    agent.context_compressor = comp
+    comp._clear_compression_failure_cooldown()
+
+    # call_llm dies before dispatch — route_callback never fires.
+    def _fake_missing_key(*args, **kwargs):
+        raise RuntimeError(
+            "Provider 'openrouter' is set in config.yaml but no API key was found"
+        )
+
+    emitted: list[str] = []
+    agent._emit_warning = lambda message: emitted.append(message)
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    with (
+        patch("agent.context_compressor.call_llm", side_effect=_fake_missing_key),
+        patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("openrouter", "or-aux-model", "https://openrouter.ai/api/v1", None, None),
+        ),
+    ):
+        agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    rendered = "\n".join(emitted)
+    # The CONFIGURED auxiliary identity is reported...
+    assert "openrouter" in rendered, (
+        f"configured aux provider missing from pre-dispatch diagnostic: {emitted}"
+    )
+    assert "or-aux-model" in rendered, (
+        f"configured aux model missing from pre-dispatch diagnostic: {emitted}"
+    )
+    assert "https://openrouter.ai/api/v1" in rendered, (
+        f"configured aux endpoint missing from pre-dispatch diagnostic: {emitted}"
+    )
+    # ...flagged as pre-dispatch...
+    assert "no request was dispatched" in rendered, (
+        f"pre-dispatch note missing: {emitted}"
+    )
+    # ...and the two false claims the old fallback produced are gone: the
+    # healthy MAIN endpoint must not appear as the failed route...
+    assert _MAIN_BASE_URL not in rendered, (
+        f"main endpoint substituted on pre-dispatch failure: {emitted}"
+    )
+    # ...and the diagnostic must not claim auxiliary.compression is unset.
+    assert "not configured" not in rendered, (
+        f"false 'not configured' note on explicit-provider failure: {emitted}"
     )

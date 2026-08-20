@@ -2766,24 +2766,27 @@ def run_conversation(
                     int(getattr(_compressor, "threshold_tokens", 0) or 0),
                 )
         elif not agent.compression_enabled and len(messages) > 1:
-            # Uncompressed session guard (#89297) - Defense in Depth:
-            # If mid-turn tool results expand the context beyond model limits
-            # while compression is disabled, warn the operator in-loop.
+            # Uncompressed session guard (#89297): compression is disabled, so
+            # nothing shrinks a growing session. Reuse the unconditionally
+            # computed request estimate (zero marginal cost — this site runs
+            # before every provider request, covering turn-start AND mid-turn
+            # tool-result growth) and surface a deduped, actionable warning
+            # when the request exceeds the model context window. The dedup is
+            # re-armed by the turn-context preflight once the session is back
+            # under the window (manual /compress works with compression
+            # disabled), so the guard warns again on a later re-overflow.
+            # context_compressor always exists (agent_init constructs it even
+            # when compression is disabled) and its context_length property
+            # hard-floors at a positive default — no metadata re-resolution
+            # needed here.
             _ctx_len = getattr(
                 getattr(agent, "context_compressor", None), "context_length", None
             )
-            if not isinstance(_ctx_len, int) or _ctx_len <= 0:
-                try:
-                    from agent.model_metadata import get_model_context_length
-
-                    _ctx_len = get_model_context_length(
-                        agent.model,
-                        getattr(agent, "base_url", "") or "",
-                        provider=getattr(agent, "provider", "") or "",
-                    )
-                except Exception:
-                    _ctx_len = None
-            if _ctx_len and request_pressure_tokens > _ctx_len:
+            if (
+                isinstance(_ctx_len, int)
+                and _ctx_len > 0
+                and request_pressure_tokens > _ctx_len
+            ):
                 _warn_fn = getattr(
                     agent, "_warn_uncompressed_context_overflow", None
                 )

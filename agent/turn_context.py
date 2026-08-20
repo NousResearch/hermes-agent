@@ -1166,46 +1166,54 @@ def build_turn_context(
     elif not agent.compression_enabled:
         # Uncompressed session guard (#89297): when compression is explicitly
         # disabled, sessions can grow past the model's context window across
-        # hundreds of messages without compression to shrink them.
-        # Run a cheap character pre-check before computing rough tokens.
-        _raw_chars = sum(
-            len(m.get("content") or "") for m in messages if isinstance(m, dict)
+        # hundreds of messages with nothing to shrink them. The warning itself
+        # fires from the conversation loop's pre-API site, which reuses the
+        # unconditionally computed request estimate at zero marginal cost and
+        # covers both turn-start and mid-turn growth (every provider request
+        # passes through it). Here we only RE-ARM the dedup once the session
+        # is back under the window, so the guard can warn again after the
+        # user compacts (/compress with force=True works with compression
+        # disabled) and the context later regrows past the limit.
+        _ctx_len = getattr(
+            getattr(agent, "context_compressor", None), "context_length", None
         )
-        if _raw_chars > 20_000:
-            _uncompressed_tokens = estimate_request_tokens_rough(
-                messages,
-                system_prompt=active_system_prompt or "",
-                tools=agent.tools or None,
-            )
-            _ctx_len = getattr(
-                getattr(agent, "context_compressor", None), "context_length", None
-            )
-            if not isinstance(_ctx_len, int) or _ctx_len <= 0:
-                try:
-                    from agent.model_metadata import get_model_context_length
-
-                    _ctx_len = get_model_context_length(
-                        agent.model,
-                        getattr(agent, "base_url", "") or "",
-                        provider=getattr(agent, "provider", "") or "",
-                    )
-                except Exception:
-                    _ctx_len = None
-            if _ctx_len and _uncompressed_tokens > _ctx_len:
-                _warn_fn = getattr(
-                    agent, "_warn_uncompressed_context_overflow", None
+        if isinstance(_ctx_len, int) and _ctx_len > 0:
+            _raw_chars = 0
+            for _m in messages:
+                if not isinstance(_m, dict):
+                    continue
+                _c = _m.get("content")
+                if isinstance(_c, str):
+                    _raw_chars += len(_c)
+                elif _c:
+                    # Non-string, non-empty content (multimodal part lists,
+                    # dict payloads) defeats a char count — force the real
+                    # estimate by treating it as over-gate. None/"" (routine
+                    # assistant tool-call rows) contribute nothing.
+                    _raw_chars = _ctx_len + 1
+                    break
+            # Cheap gate: a session whose raw text is under ~1/4 of the
+            # window (4 chars/token upper bound) cannot be over it — skip
+            # the estimator. Non-string (multimodal) content defeats a char
+            # count, so any such message forces the real estimate.
+            if _raw_chars <= _ctx_len:
+                _clear_warn = getattr(
+                    agent, "_clear_context_overflow_warn", None
                 )
-                if callable(_warn_fn):
-                    _warn_fn(_uncompressed_tokens, _ctx_len)
-                else:
-                    _emit_w = getattr(agent, "_emit_warning", None)
-                    if callable(_emit_w):
-                        _emit_w(
-                            f"⚠️ Session context (~{_uncompressed_tokens:,} tokens) exceeds the "
-                            f"model context window (~{_ctx_len:,} tokens) with compression disabled "
-                            f"(compression.enabled: false). Use /compact to compress history or "
-                            f"enable compression in config.yaml."
-                        )
+                if callable(_clear_warn):
+                    _clear_warn()
+            else:
+                _uncompressed_tokens = estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=active_system_prompt or "",
+                    tools=agent.tools or None,
+                )
+                if _uncompressed_tokens <= _ctx_len:
+                    _clear_warn = getattr(
+                        agent, "_clear_context_overflow_warn", None
+                    )
+                    if callable(_clear_warn):
+                        _clear_warn()
 
     if _preflight_compressed:
         # Compression rebuilt the list (tail messages are fresh compaction

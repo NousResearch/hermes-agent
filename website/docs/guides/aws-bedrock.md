@@ -62,6 +62,21 @@ Set the AWS region in any of these ways (highest priority first):
 3. `AWS_DEFAULT_REGION` environment variable
 4. Default: `us-east-1`
 
+### Client timeouts
+
+The native Converse client waits up to 300 seconds for a response and 10
+seconds to establish a connection. Override either positive numeric value in
+`config.yaml`:
+
+```yaml
+bedrock:
+  read_timeout_seconds: 600
+  connect_timeout_seconds: 15
+```
+
+Invalid, boolean, zero, and negative values fall back to the defaults instead
+of preventing the Bedrock client from starting.
+
 ### Guardrails
 
 To apply [Amazon Bedrock Guardrails](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html) to all model invocations:

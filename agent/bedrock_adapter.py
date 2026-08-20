@@ -29,6 +29,7 @@ Requires: ``boto3`` (optional dependency — only needed when using the Bedrock 
 
 import json
 import logging
+import math
 import os
 import re
 from types import SimpleNamespace
@@ -59,6 +60,8 @@ _bedrock_control_client_cache: Dict[str, Any] = {}
 
 
 _MIN_BOTO3_VERSION = (1, 34, 59)
+_DEFAULT_READ_TIMEOUT_SECONDS = 300.0
+_DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
 
 
 def _require_boto3():
@@ -88,6 +91,38 @@ def _require_boto3():
     return boto3
 
 
+def _coerce_positive_timeout(raw: object, default: float) -> float:
+    if isinstance(raw, bool):
+        return default
+    try:
+        timeout = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return timeout if math.isfinite(timeout) and timeout > 0 else default
+
+
+def _bedrock_client_timeouts() -> tuple[float, float]:
+    """Return validated read/connect timeouts from ``config.yaml``."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+        section = config.get("bedrock", {}) if isinstance(config, dict) else {}
+        if not isinstance(section, dict):
+            section = {}
+    except Exception:
+        section = {}
+
+    return (
+        _coerce_positive_timeout(
+            section.get("read_timeout_seconds"), _DEFAULT_READ_TIMEOUT_SECONDS
+        ),
+        _coerce_positive_timeout(
+            section.get("connect_timeout_seconds"), _DEFAULT_CONNECT_TIMEOUT_SECONDS
+        ),
+    )
+
+
 def _get_bedrock_runtime_client(region: str):
     """Get or create a cached ``bedrock-runtime`` client for the given region.
 
@@ -95,8 +130,15 @@ def _get_bedrock_runtime_client(region: str):
     """
     if region not in _bedrock_runtime_client_cache:
         boto3 = _require_boto3()
+        from botocore.config import Config as BotoConfig
+        read_timeout, connect_timeout = _bedrock_client_timeouts()
         _bedrock_runtime_client_cache[region] = boto3.client(
             "bedrock-runtime", region_name=region,
+            config=BotoConfig(
+                read_timeout=read_timeout,
+                connect_timeout=connect_timeout,
+                retries={"max_attempts": 0},  # Hermes handles retries at a higher level
+            ),
         )
     return _bedrock_runtime_client_cache[region]
 

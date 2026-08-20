@@ -121,6 +121,55 @@ async def test_session_cache_prevents_reanalysis(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cache_is_bounded_lru(tmp_path, monkeypatch):
+    """The summary cache is a bounded LRU: once the cap is hit the
+    least-recently-used entry is evicted, and an evicted image is re-analyzed
+    on its next appearance instead of growing the cache without bound.
+
+    Regression for the review finding that ``_MCP_IMAGE_SUMMARY_CACHE`` was an
+    unbounded ``dict`` that grew monotonically over a long-lived gateway
+    process lifetime.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import tools.mcp_tool as mt
+
+    old_max = mt._MCP_IMAGE_SUMMARY_CACHE_MAX
+    mt._MCP_IMAGE_SUMMARY_CACHE_MAX = 2
+    try:
+        tag_a = _media_tag(tmp_path)
+        tag_b = _media_tag(tmp_path)
+        tag_c = _media_tag(tmp_path)
+        assert tag_a != tag_b != tag_c
+
+        fake = AsyncMock(
+            side_effect=[
+                json.dumps({"success": True, "analysis": "A"}),
+                json.dumps({"success": True, "analysis": "B"}),
+                json.dumps({"success": True, "analysis": "C"}),
+                json.dumps({"success": True, "analysis": "A-again"}),
+            ]
+        )
+        with patch(
+            "hermes_cli.config.load_config", return_value=_vision_cfg()
+        ), patch("tools.vision_tools.vision_analyze_tool", fake):
+            assert await mt._summarize_mcp_image(tag_a) == "[图片内容摘要] A"
+            assert await mt._summarize_mcp_image(tag_b) == "[图片内容摘要] B"
+            # A is now the least-recently-used entry (cap=2)...
+            assert await mt._summarize_mcp_image(tag_c) == "[图片内容摘要] C"
+            # ...so A was evicted and is re-analyzed, while B stays cached.
+            assert await mt._summarize_mcp_image(tag_a) == "[图片内容摘要] A-again"
+        assert fake.await_count == 4
+        assert len(mt._MCP_IMAGE_SUMMARY_CACHE) == 2
+        # Cache keys are the bare image paths (MEDIA: prefix stripped).
+        assert tag_a[len("MEDIA:"):] in mt._MCP_IMAGE_SUMMARY_CACHE
+        assert tag_c[len("MEDIA:"):] in mt._MCP_IMAGE_SUMMARY_CACHE
+        assert tag_b[len("MEDIA:"):] not in mt._MCP_IMAGE_SUMMARY_CACHE
+    finally:
+        mt._MCP_IMAGE_SUMMARY_CACHE_MAX = old_max
+        mt._MCP_IMAGE_SUMMARY_CACHE.clear()
+
+
+@pytest.mark.asyncio
 async def test_vision_failure_is_fail_open(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     import tools.mcp_tool as mt

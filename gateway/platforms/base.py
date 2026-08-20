@@ -3119,6 +3119,12 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
+        # At most one live _keep_typing loop per chat (chat_id -> owning task).
+        # A loop claims its chat on start and re-checks the claim every tick,
+        # so a refresh task that leaks past its turn (cancellation lost in a
+        # shutdown race) self-terminates as soon as it is stopped or a newer
+        # turn's loop supersedes it, instead of refreshing typing forever.
+        self._typing_refresh_owners: Dict[str, asyncio.Task] = {}
         # Dynamic working-state status text per chat (chat_id -> phrase).
         # Set by the gateway on tool starts ("is running pytest…") and read
         # by adapters whose typing indicator renders text (Slack's
@@ -5196,8 +5202,22 @@ class BasePlatformAdapter(ABC):
         # gated on network health.  Must stay below ``interval`` so a slow
         # call gets abandoned before the next scheduled tick.
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+        # Claim this chat's refresh slot and re-check the claim every tick.
+        # getattr-guard: bare object.__new__() adapters in tests may lack the
+        # dict (same idiom as _status_text below).
+        owners = getattr(self, "_typing_refresh_owners", None)
+        if owners is None:
+            owners = {}
+            self._typing_refresh_owners = owners
+        me = asyncio.current_task()
+        owners[str(chat_id)] = me
         try:
             while True:
+                if owners.get(str(chat_id)) is not me:
+                    # Superseded by a newer turn's loop, or stopped via
+                    # _stop_typing_refresh — exit instead of refreshing a
+                    # turn that no longer exists.
+                    return
                 if stop_event is not None and stop_event.is_set():
                     return
                 if chat_id not in self._typing_paused:
@@ -5236,11 +5256,17 @@ class BasePlatformAdapter(ABC):
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
         finally:
+            # Only the current owner may clear platform typing state — a
+            # superseded loop clearing it would stomp the newer turn's live
+            # indicator.
+            still_owner = owners.get(str(chat_id)) is me
+            if still_owner:
+                owners.pop(str(chat_id), None)
             # Ensure the underlying platform typing loop is stopped.
             # _keep_typing may have called send_typing() after an outer
             # stop_typing() cleared the task dict, recreating the loop.
             # Cancelling _keep_typing alone won't clean that up.
-            if hasattr(self, "stop_typing"):
+            if still_owner and hasattr(self, "stop_typing"):
                 try:
                     await self._stop_typing_with_metadata(chat_id, metadata)
                 except Exception:
@@ -5261,6 +5287,17 @@ class BasePlatformAdapter(ABC):
         stop_attempts: int = 2,
     ) -> None:
         """Stop the refresh task and platform typing state as one operation."""
+        # Revoke the stopped task's ownership claim so a refresh loop that
+        # somehow survives cancellation self-terminates on its next tick
+        # instead of typing forever. A claim held by a different live task
+        # (a newer turn already running) is left alone.
+        owners = getattr(self, "_typing_refresh_owners", None)
+        if owners is not None:
+            current = owners.get(str(chat_id))
+            if current is not None and (
+                typing_task is None or current is typing_task or current.done()
+            ):
+                owners.pop(str(chat_id), None)
         self._typing_paused.add(chat_id)
         try:
             if typing_task is not None and not typing_task.done():

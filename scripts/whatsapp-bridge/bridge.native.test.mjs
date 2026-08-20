@@ -7,12 +7,13 @@
 
 import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { getAggregateVotesInPollMessage } from '@whiskeysockets/baileys';
 
 import {
+  buildAlbumPlan,
   buildPollPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
@@ -22,6 +23,8 @@ import {
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  prepareAlbumItems,
+  sendAlbumSequence,
 } from './bridge_helpers.js';
 
 // -- inbound read receipts ------------------------------------------------
@@ -239,6 +242,124 @@ import {
 }
 
 // -- outbound media/poll helpers -----------------------------------------
+{
+  const calls = [];
+  const parentKey = {
+    id: 'album-parent',
+    remoteJid: '15551234567@s.whatsapp.net',
+    fromMe: true,
+  };
+  const send = async (chatId, payload) => {
+    calls.push({ chatId, payload });
+    if (calls.length === 1) {
+      return { key: parentKey };
+    }
+    return { key: { id: `album-child-${calls.length - 1}`, remoteJid: chatId, fromMe: true } };
+  };
+  const items = [
+    { type: 'image', filePath: '/tmp/one.jpg', payload: { image: Buffer.from('one'), mimetype: 'image/jpeg' } },
+    { type: 'image', filePath: '/tmp/two.jpg', payload: { image: Buffer.from('two'), mimetype: 'image/jpeg' } },
+    { type: 'video', filePath: '/tmp/three.mp4', payload: { video: Buffer.from('three'), mimetype: 'video/mp4' } },
+  ];
+
+  const plan = buildAlbumPlan(items);
+  assert.deepEqual(plan.parentPayload, {
+    album: { expectedImageCount: 2, expectedVideoCount: 1 },
+  });
+
+  const result = await sendAlbumSequence({
+    chatId: '15551234567@s.whatsapp.net',
+    items,
+    send,
+  });
+
+  assert.equal(calls.length, 4);
+  assert.deepEqual(calls[0].payload, plan.parentPayload);
+  for (const childCall of calls.slice(1)) {
+    assert.deepEqual(childCall.payload.albumParentKey, parentKey);
+  }
+  assert.equal(result.success, true);
+  assert.equal(result.parentMessageId, 'album-parent');
+  assert.deepEqual(result.childMessageIds, ['album-child-1', 'album-child-2', 'album-child-3']);
+  assert.equal(result.items[0].filePath, '/tmp/one.jpg');
+  console.log('  ✓ album sequence sends one parent then associated media children');
+}
+
+{
+  const albumDir = mkdtempSync(path.join(tmpdir(), 'hermes-wa-album-'));
+  const first = path.join(albumDir, 'first.jpg');
+  const second = path.join(albumDir, 'second.mp4');
+  writeFileSync(first, Buffer.from('first'));
+  writeFileSync(second, Buffer.from('second'));
+
+  const prepared = prepareAlbumItems([
+    { filePath: first, mediaType: 'image' },
+    { filePath: second, mediaType: 'video', caption: 'clip' },
+  ]);
+
+  assert.equal(prepared.length, 2);
+  assert.equal(prepared[0].type, 'image');
+  assert.equal(prepared[0].filePath, first);
+  assert.equal(prepared[0].createPayload().mimetype, 'image/jpeg');
+  assert.equal(prepared[1].type, 'video');
+  assert.equal(prepared[1].createPayload().caption, 'clip');
+  console.log('  ✓ album files are fully validated and prepared before parent send');
+}
+
+{
+  const calls = [];
+  const send = async (chatId, payload) => {
+    calls.push({ chatId, payload });
+    if (calls.length === 1) return { key: { id: 'parent', remoteJid: chatId } };
+    if (calls.length === 3) throw new Error('child upload failed');
+    return { key: { id: `child-${calls.length - 1}`, remoteJid: chatId } };
+  };
+
+  const result = await sendAlbumSequence({
+    chatId: '15551234567@s.whatsapp.net',
+    items: [
+      { type: 'image', filePath: '/tmp/one.jpg', payload: { image: Buffer.from('one') } },
+      { type: 'image', filePath: '/tmp/two.jpg', payload: { image: Buffer.from('two') } },
+      { type: 'image', filePath: '/tmp/three.jpg', payload: { image: Buffer.from('three') } },
+    ],
+    send,
+  });
+
+  assert.equal(calls.length, 4, 'later children still send after one child fails');
+  assert.equal(result.success, false);
+  assert.equal(result.status, 'partial_failure');
+  assert.deepEqual(result.childMessageIds, ['child-1', 'child-3']);
+  assert.deepEqual(result.items[1], {
+    index: 1,
+    filePath: '/tmp/two.jpg',
+    success: false,
+    error: 'child upload failed',
+  });
+  console.log('  ✓ partial album failures are explicit and do not duplicate successful children');
+}
+
+{
+  const result = await sendAlbumSequence({
+    chatId: '15551234567@s.whatsapp.net',
+    items: [
+      { type: 'image', payload: { image: Buffer.from('one') } },
+      { type: 'image', payload: { image: Buffer.from('two') } },
+    ],
+    send: async () => { throw new Error('parent send timed out'); },
+  });
+
+  assert.deepEqual(result, {
+    success: false,
+    attempted: true,
+    status: 'parent_failure',
+    parentMessageId: null,
+    childMessageIds: [],
+    items: [],
+    error: 'parent send timed out',
+  });
+  console.log('  ✓ parent failures are distinguished from preflight validation failures');
+}
+
 {
   const payload = mediaPayloadForFile({
     buffer: Buffer.from('gif89a'),

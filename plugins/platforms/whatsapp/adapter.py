@@ -1227,6 +1227,82 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception:
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata)
 
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: list[tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send two or more images as one native WhatsApp album."""
+        if len(images) < 2 or not self._running or not self._http_session:
+            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return
+
+        from urllib.parse import unquote
+        import aiohttp
+
+        items = []
+        try:
+            for image_url, caption in images:
+                if self._is_animation_url(image_url):
+                    await super().send_multiple_images(chat_id, images, metadata, human_delay)
+                    return
+                if image_url.startswith("file://"):
+                    # Match BasePlatformAdapter's file URI contract. In
+                    # particular, file://C%3A%5C... must retain the drive.
+                    file_path = unquote(image_url[7:])
+                else:
+                    file_path = await cache_image_from_url(image_url)
+                if not os.path.exists(file_path):
+                    raise FileNotFoundError(file_path)
+                item: Dict[str, Any] = {
+                    "filePath": file_path,
+                    "mediaType": "image",
+                }
+                if caption:
+                    item["caption"] = caption
+                items.append(item)
+        except Exception as exc:
+            logger.warning("[%s] Could not prepare native WhatsApp album; using per-image fallback: %s", self.name, exc)
+            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return
+
+        payload: Dict[str, Any] = {
+            "chatId": to_whatsapp_jid(chat_id),
+            "items": items,
+        }
+        should_fallback = False
+        try:
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/send-album",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as resp:
+                if resp.status in (404, 405):
+                    # An older bridge has no album route, so no send occurred.
+                    should_fallback = True
+                else:
+                    data = await resp.json()
+                    if not data.get("attempted", True):
+                        should_fallback = True
+                    elif resp.status not in (200, 207) or not data.get("success", False):
+                        logger.error(
+                            "[%s] Native WhatsApp album send failed (%s): %s",
+                            self.name,
+                            resp.status,
+                            data,
+                        )
+        except Exception as exc:
+            # The bridge may already have sent the parent and some children.
+            # Do not fall back here or successful children would be duplicated.
+            logger.error("[%s] Native WhatsApp album request failed: %s", self.name, exc, exc_info=True)
+            return
+
+        if should_fallback:
+            logger.warning("[%s] Native WhatsApp album was rejected before send; using per-image fallback", self.name)
+            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+
     async def send_image_file(
         self,
         chat_id: str,

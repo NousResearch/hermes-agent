@@ -1189,7 +1189,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const inlineDiffText =
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
 
-        const resultText = ev.payload.result_text ? stripAnsi(String(ev.payload.result_text)) : undefined
+        const resultText = ev.payload.result_text ? String(ev.payload.result_text) : undefined
 
         if (inlineDiffText) {
           turnController.recordInlineDiffToolComplete(

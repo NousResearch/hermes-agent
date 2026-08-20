@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Query, Request  # noqa: F401
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
+from hermes_cli import profiles as profiles_mod
 from hermes_cli.web_deps import late
 from hermes_cli.web_models import (
     BulkDeleteSessions,
@@ -613,8 +614,8 @@ async def get_session_messages(
             detail="order must be one of: oldest, latest",
         )
 
-    def _read():
-        db = _open_session_db_for_profile(profile, read_only=True)
+    def _read_from(candidate_profile: Optional[str]):
+        db = _open_session_db_for_profile(candidate_profile, read_only=True)
         try:
             sid = db.resolve_session_id(session_id)
             if not sid:
@@ -638,11 +639,36 @@ async def get_session_messages(
         finally:
             db.close()
 
-    result = await asyncio.to_thread(_read)
+    def _read():
+        result = _read_from(profile)
+        if result is not None or profile:
+            return profile, result
+
+        # Backward compatibility for remote Desktop clients that omit the
+        # owning profile when opening a cross-profile sidebar/cron session.
+        # Search only after the launch DB misses and accept only a unique match.
+        matches = []
+        try:
+            infos = profiles_mod.list_profiles()
+        except Exception:
+            infos = []
+        for info in infos:
+            candidate = str(info.name)
+            try:
+                candidate_result = _read_from(candidate)
+            except (HTTPException, OSError):
+                continue
+            if candidate_result is not None:
+                matches.append((candidate, candidate_result))
+                if len(matches) > 1:
+                    return None, None
+        return matches[0] if matches else (None, None)
+
+    resolved_profile, result = await asyncio.to_thread(_read)
     if result is None:
         raise HTTPException(status_code=404, detail="Session not found")
     sid, _limit, messages = result
-    return {
+    response = {
         "session_id": sid,
         "messages": messages,
         "pagination": {
@@ -652,6 +678,9 @@ async def get_session_messages(
             "returned": len(messages),
         },
     }
+    if resolved_profile:
+        response["profile"] = resolved_profile
+    return response
 
 
 @manage_router.delete("/api/sessions/{session_id}")

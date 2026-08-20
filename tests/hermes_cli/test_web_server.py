@@ -1927,6 +1927,36 @@ class TestWebServerEndpoints:
         assert payload["limit"] == 3
         assert len(payload["sessions"]) == 3
 
+    def test_get_session_messages_auto_resolves_unique_cross_profile_session(self, monkeypatch):
+        """Remote Desktop clients may omit ``profile`` for sidebar cron rows."""
+        from hermes_state import SessionDB
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            worker_db.create_session(session_id="remote-cron-only", source="cron")
+            worker_db.append_message(
+                "remote-cron-only", role="assistant", content="visible remotely"
+            )
+        finally:
+            worker_db.close()
+
+        monkeypatch.setattr(
+            profiles_mod,
+            "list_profiles",
+            lambda: [SimpleNamespace(name="worker", path=worker_home)],
+        )
+
+        response = self.client.get("/api/sessions/remote-cron-only/messages")
+
+        assert response.status_code == 200
+        assert response.json()["profile"] == "worker"
+        assert [message["content"] for message in response.json()["messages"]] == [
+            "visible remotely"
+        ]
+
     def test_get_session_messages_rejects_negative_limit(self):
         """limit=-1 previously bypassed the documented 500-row clamp because
         min(-1, 500) == -1, which SQLite treats as 'no limit'."""

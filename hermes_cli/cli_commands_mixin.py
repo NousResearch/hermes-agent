@@ -1219,18 +1219,23 @@ class CLICommandsMixin:
         self._handle_resume_command(f"/resume {arg}")
 
     def _handle_worktree_command(self, cmd_original: str) -> None:
-        """Handle /worktree — inspect or create isolated git worktrees.
+        """Handle /worktree — inspect, create, or reclaim isolated git worktrees.
 
         Syntax:
-            /worktree              — show the active worktree (if any)
-            /worktree new [name]   — create a worktree and move this session into it
-            /worktree list         — list worktrees under the repo's .worktrees/
+            /worktree                  — show the active worktree (if any)
+            /worktree new [name]       — create a worktree and move this session into it
+            /worktree list             — list worktrees under the repo's .worktrees/
+            /worktree prune [--dry-run] — reclaim safe trees + merged branches
 
         Inspired by Copilot CLI's ``/worktree new``: start isolated work in a
         fresh worktree without leaving the session. Creating one retargets the
         terminal/file tools (``TERMINAL_CWD`` + process cwd) at the new tree;
         the launcher's exit cleanup applies (kept only when it has unpushed
         commits, same as ``hermes -w``).
+
+        ``prune`` is the same attended reclaim as ``hermes worktree prune``
+        (hermes_cli/worktree_gc.py): never deletes tracked changes, unique
+        unpushed commits, or in-use trees; archives untracked-only scratch.
         """
         import subprocess
 
@@ -1250,8 +1255,48 @@ class CLICommandsMixin:
                 print("  No active worktree for this session.")
             if repo_root:
                 print("  /worktree new [name] — create one and move this session into it")
+                print("  /worktree prune      — reclaim stale trees and merged branches")
             else:
                 print("  (not inside a git repository)")
+            return
+
+        if sub in {"prune", "gc", "clean"}:
+            if not repo_root:
+                print("  Not inside a git repository.")
+                return
+            rest = parts[2].strip().lower() if len(parts) > 2 else ""
+            dry_run = "--dry-run" in rest or "-n" in rest.split()
+            from hermes_cli import worktree_gc
+
+            active = _cli._active_worktree
+            tree_records = worktree_gc.audit_worktrees(repo_root, with_sizes=False)
+            if active:
+                # Never reap the tree this very session is sitting in, even
+                # if a concurrent audit would judge it clean+merged.
+                active_path = str(active.get("path") or "")
+                tree_records = [
+                    record for record in tree_records
+                    if record.path != active_path
+                ]
+            actions = worktree_gc.reclaim_worktrees(
+                repo_root, dry_run=dry_run, records=tree_records
+            )
+            actions += worktree_gc.reclaim_branches(repo_root, dry_run=dry_run)
+            if actions:
+                for line in actions:
+                    print(f"  {line}")
+                print(f"  {len(actions)} action(s) {'planned' if dry_run else 'done'}.")
+            else:
+                print("  Nothing to reclaim — remaining trees/branches carry real work.")
+            kept = [
+                record for record in tree_records
+                if record.verdict == "keep"
+                and "kanban" not in record.reason and "in use" not in record.reason
+            ]
+            if kept:
+                print(f"  Preserved {len(kept)} tree(s) with real work:")
+                for record in kept:
+                    print(f"    {record.name}: {record.reason}")
             return
 
         if sub in {"list", "ls"}:

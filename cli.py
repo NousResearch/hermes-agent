@@ -1866,9 +1866,14 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
         "-c", "checkout.thresholdForParallelism=100",
     ]
     try:
+        # 120s, not 30: on a multi-agent box the ~10k-file materialization
+        # contends with sibling sessions' checkouts/fetches/Electron dev
+        # builds for the same disk — measured 113s wall at near-zero CPU
+        # under load vs 1.2s idle (Aug 2026). A too-tight timeout kills a
+        # legitimately slow create and wastes the work already done.
         result = subprocess.run(
             ["git", *_wt_add_cfg, "worktree", "add", str(wt_path), "-b", branch_name, base_ref],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, cwd=repo_root,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, cwd=repo_root,
         )
         if result.returncode != 0:
             # If branching from the resolved remote ref failed for any reason
@@ -1883,7 +1888,7 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
                 base_ref, base_label = "HEAD", "HEAD (fallback — remote base failed)"
                 result = subprocess.run(
                     ["git", "worktree", "add", str(wt_path), "-b", branch_name, base_ref],
-                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, cwd=repo_root,
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, cwd=repo_root,
                 )
             if result.returncode != 0:
                 _cleanup_failed_worktree_add(repo_root, wt_path, branch_name)
@@ -2292,6 +2297,69 @@ def _worktree_commits_all_merged_upstream(
         return False
 
 
+def _worktree_branch_pr_merged(
+    worktree_path: str,
+    timeout: int = 15,
+    cache: Optional[Dict[str, bool]] = None,
+) -> bool:
+    """Return whether the worktree branch's PR is MERGED on GitHub.
+
+    Escape hatch for the case ``git cherry`` cannot catch: a rebase-merge that
+    altered the diff (conflict resolution against a moved base, follow-up
+    commits added during salvage/CI-fix) changes the patch-id, so the local
+    commits are no longer patch-equivalent to anything upstream even though
+    the PR merged. Those trees survive the cherry check forever (Aug 2026:
+    12 of 22 "unpushed" trees on a loaded box had MERGED PRs).
+
+    GitHub's PR state is the authoritative merge signal, so a clean tree
+    whose branch has a MERGED PR is reaped. Verdicts are memoized keyed on
+    ``(branch, head_sha)`` — MERGED is monotonic, so a True verdict is cached
+    permanently; False is never cached (the PR may merge later without new
+    local commits, which would leave the key unchanged).
+
+    Fails SAFE toward False (preserve): no gh binary, offline, rate-limited,
+    detached HEAD, or any parse failure keeps the tree.
+    """
+    import subprocess
+
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=worktree_path,
+        )
+        if head.returncode != 0:
+            return False
+        branch = head.stdout.strip()
+        if not branch or branch == "HEAD":  # detached — no PR to look up
+            return False
+
+        cache_key = None
+        if cache is not None:
+            sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=worktree_path,
+            )
+            if sha.returncode == 0 and sha.stdout.strip():
+                cache_key = f"pr-merged:{branch}:{sha.stdout.strip()}"
+                if cache.get(cache_key) is True:
+                    return True
+
+        result = subprocess.run(
+            ["gh", "pr", "list", "--head", branch, "--state", "merged",
+             "--json", "number", "--limit", "1"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=worktree_path,
+        )
+        if result.returncode != 0:
+            return False
+        prs = json.loads(result.stdout or "[]")
+        merged = isinstance(prs, list) and len(prs) > 0
+        if merged and cache is not None and cache_key is not None:
+            cache[cache_key] = True
+        return merged
+    except Exception:
+        return False
+
+
 def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10):
     """Classify a worktree's git lock as live, dead, or absent.
 
@@ -2652,6 +2720,14 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
             merged = _worktree_commits_all_merged_upstream(
                 str(entry), timeout=30, cache=snapshot
             )
+            if not merged:
+                # Rebase-merge escape hatch: conflict resolution or follow-up
+                # commits change the patch-id, so cherry misses them — but
+                # GitHub knows the PR merged. Authoritative and cheap (~0.3s,
+                # memoized on (branch, head_sha) so it's paid once per tree).
+                merged = _worktree_branch_pr_merged(
+                    str(entry), timeout=15, cache=snapshot
+                )
             with cache_lock:
                 merge_cache.update(snapshot)
             if not merged:
@@ -2741,11 +2817,30 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     if preserved_stale:
         logger.warning(
             "Preserving %d worktree(s) older than 7 days with unmerged work "
-            "(push or remove them to reclaim disk): %s",
+            "(run `hermes worktree prune` to review and reclaim): %s",
             len(preserved_stale), ", ".join(sorted(preserved_stale)),
         )
 
     _prune_orphaned_branches(repo_root)
+
+    # Escalation notice: the startup pass is deliberately conservative, so
+    # installs accumulate preserved trees it can never reclaim. Once the
+    # footprint is clearly a problem (many trees or multi-GB), say so once
+    # per launch and name the attended reclaim command — silence here is how
+    # boxes reach 15GB+ of .worktrees/ without anyone noticing.
+    try:
+        from hermes_cli.worktree_gc import worktrees_summary
+
+        count, size_mb = worktrees_summary(repo_root)
+        if count >= 10 or (size_mb or 0) >= 5120:
+            size_txt = f"{size_mb / 1024:.1f}GB" if size_mb else "unknown size"
+            logger.warning(
+                ".worktrees/ holds %d tree(s) (%s) — run `hermes worktree list` "
+                "to audit and `hermes worktree prune` to reclaim safely.",
+                count, size_txt,
+            )
+    except Exception:
+        pass
 
 
 def _prune_orphaned_branches(repo_root: str) -> None:
@@ -4094,10 +4189,34 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
     "\x1b[0m"      # reset text attributes
     "\x1b[?25h"    # ensure cursor visible
 )
-_EXTENDED_ENTER_KEYS_SEQ = "\x1b[>1u\x1b[>4;2m"
+_KITTY_KEYBOARD_PUSH_SEQ = "\x1b[>1u"
+_MODIFY_OTHER_KEYS_SEQ = "\x1b[>4;2m"
+_EXTENDED_ENTER_KEYS_SEQ = _KITTY_KEYBOARD_PUSH_SEQ + _MODIFY_OTHER_KEYS_SEQ
 
 
 _BACKSLASH_LINE_CONTINUATION_RE = re.compile(r"\\[ \t]*$")
+
+
+def _is_ghostty_terminal(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether the terminal is Ghostty (either detection path).
+
+    Ghostty must be pushed ONLY modifyOtherKeys, not the Kitty keyboard
+    protocol: its Kitty disambiguate-mode implementation strips the Alt
+    modifier from the Backspace key, so Option+Backspace arrives as bare
+    \\x7f instead of the CSI-u form ``\\x1b[127;3u`` the protocol calls for
+    (upstream Ghostty bug), breaking backward-kill-word (#87630
+    regression).  Ghostty implements modifyOtherKeys correctly (it then
+    emits ``\\x1b[27;3;127~``, which the alias table also maps).
+
+    Matches exactly the two conditions that admit Ghostty through
+    ``_terminal_supports_extended_enter_keys``.
+    """
+    if env is None:
+        env = os.environ
+    return (
+        (env.get("TERM_PROGRAM") or "").strip() == "ghostty"
+        or (env.get("TERM") or "").strip().lower() == "xterm-ghostty"
+    )
 
 
 def _terminal_supports_extended_enter_keys(env: Optional[Mapping[str, str]] = None) -> bool:
@@ -4131,7 +4250,9 @@ def _enable_extended_enter_keys(output=None, env: Optional[Mapping[str, str]] = 
 
     Writes the Kitty keyboard protocol push (CSI >1u, disambiguate mode) AND
     xterm modifyOtherKeys level 2 (CSI >4;2m), mirroring the Ink TUI —
-    terminals honor whichever protocol they implement.  Both are needed:
+    terminals honor whichever protocol they implement (except Ghostty, which
+    gets only modifyOtherKeys; see the Ghostty exception below).  Both are
+    needed:
     kitty-the-terminal removed modifyOtherKeys support entirely (it only
     speaks its own protocol), while tmux/VS Code only accept modifyOtherKeys.
 
@@ -4148,20 +4269,25 @@ def _enable_extended_enter_keys(output=None, env: Optional[Mapping[str, str]] = 
     Ctrl+C, which is handled by prompt_toolkit's ``c-c`` binding (raw mode
     clears ISIG, so the kernel INTR path was never in play for the CLI).
 
+    Ghostty exception: pushes only modifyOtherKeys — see
+    ``_is_ghostty_terminal`` for the full rationale (#87630).
+
     The exit reset sequence pops/resets both modes, so this is safe across
     normal exits, Ctrl+C, and SIGTERM cleanup.
     """
     if not _terminal_supports_extended_enter_keys(env):
         return False
+    # Ghostty exception: only modifyOtherKeys — see _is_ghostty_terminal.
+    seq = _MODIFY_OTHER_KEYS_SEQ if _is_ghostty_terminal(env) else _EXTENDED_ENTER_KEYS_SEQ
     try:
         target = output
         if target is not None and hasattr(target, "write_raw"):
-            target.write_raw(_EXTENDED_ENTER_KEYS_SEQ)
+            target.write_raw(seq)
             target.flush()
             return True
         stream = sys.stdout
         if stream is not None and stream.isatty():
-            stream.write(_EXTENDED_ENTER_KEYS_SEQ)
+            stream.write(seq)
             stream.flush()
             return True
     except Exception:

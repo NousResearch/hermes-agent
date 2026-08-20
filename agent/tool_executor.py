@@ -48,10 +48,29 @@ from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
+    extract_persisted_path,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
 
 logger = logging.getLogger(__name__)
+
+
+def _record_persisted_path_for_stub(agent, tool_call_id: str, function_result) -> None:
+    """Tell the stall guards where a persisted result's full content lives.
+
+    When a large result is spilled to disk (<persisted-output> preview), a
+    later result-reference stub pointing at that first occurrence must carry
+    the spillover file path so the reference can't dangle. Best-effort: never
+    lets bookkeeping break tool execution.
+    """
+    try:
+        if not isinstance(function_result, str):
+            return
+        path = extract_persisted_path(function_result)
+        if path:
+            agent._tool_guardrails.record_persisted_result(tool_call_id, path)
+    except Exception as exc:
+        logger.debug("persisted-path record for result stub failed: %s", exc)
 
 
 def _ensure_file_checkpoint(
@@ -1733,6 +1752,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     function_args,
                     function_result,
                     failed=is_error,
+                    tool_call_id=getattr(tc, "id", "") or "",
                 )
 
             if is_error:
@@ -1767,6 +1787,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             env=get_active_env(effective_task_id),
             config=_tool_budget,
         ) if not _is_multimodal_tool_result(function_result) else function_result
+        _record_persisted_path_for_stub(agent, tc.id, function_result)
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
         if subdir_hints:
@@ -2572,6 +2593,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_args,
                 function_result,
                 failed=_is_error_result,
+                tool_call_id=getattr(tool_call, "id", "") or "",
             )
             result_preview = function_result if agent.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
@@ -2610,6 +2632,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             env=get_active_env(effective_task_id),
             config=_tool_budget,
         ) if not _is_multimodal_tool_result(function_result) else function_result
+        _record_persisted_path_for_stub(agent, tool_call.id, function_result)
 
         # Discover subdirectory context files from tool arguments
         subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)

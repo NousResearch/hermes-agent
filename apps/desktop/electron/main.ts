@@ -256,6 +256,7 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import {
+  buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
@@ -10870,8 +10871,10 @@ function createSessionWindow(sessionId, { watch = false } = {}) {
 // Additional full "instance" windows — peers of the primary that render the
 // COMPLETE app (sidebar, routing, its own draft) against the shared backend, so
 // a user can run multiple GUI windows at once (⌘⇧N / the "New Window" palette
-// command). Unlike the compact session windows they carry no `?win` flag. The
-// primary mainWindow stays the notification / deep-link / pet-overlay anchor and
+// command). Unlike the compact session windows they carry no `?win` flag; a
+// separate `peer=1` marker prevents them from replaying app-launch source
+// restoration after joining that shared backend. The primary mainWindow stays
+// the notification / deep-link / pet-overlay anchor and
 // is NOT tracked here. The set holds a strong reference so an open peer isn't
 // garbage-collected, and drops it on close.
 const instanceWindows = new Set<any>()
@@ -10951,7 +10954,14 @@ function createInstanceWindow() {
   })
 
   attachRendererConsoleCapture(win, 'instance', rememberLog)
-  loadWindowUrl(win, DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(), 'Instance window')
+  loadWindowUrl(
+    win,
+    buildInstanceWindowUrl({
+      devServer: DEV_SERVER,
+      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+    }),
+    'Instance window'
+  )
 
   return win
 }

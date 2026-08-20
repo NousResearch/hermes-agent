@@ -2765,7 +2765,34 @@ def run_conversation(
                     request_pressure_tokens,
                     int(getattr(_compressor, "threshold_tokens", 0) or 0),
                 )
-        
+        elif not agent.compression_enabled and len(messages) > 1:
+            # Uncompressed session guard (#89297): compression is disabled, so
+            # nothing shrinks a growing session. Reuse the unconditionally
+            # computed request estimate (zero marginal cost — this site runs
+            # before every provider request, covering turn-start AND mid-turn
+            # tool-result growth) and surface a deduped, actionable warning
+            # when the request exceeds the model context window. The dedup is
+            # re-armed by the turn-context preflight once the session is back
+            # under the window (manual /compress works with compression
+            # disabled), so the guard warns again on a later re-overflow.
+            # context_compressor always exists (agent_init constructs it even
+            # when compression is disabled) and its context_length property
+            # hard-floors at a positive default — no metadata re-resolution
+            # needed here.
+            _ctx_len = getattr(
+                getattr(agent, "context_compressor", None), "context_length", None
+            )
+            if (
+                isinstance(_ctx_len, int)
+                and _ctx_len > 0
+                and request_pressure_tokens > _ctx_len
+            ):
+                _warn_fn = getattr(
+                    agent, "_warn_uncompressed_context_overflow", None
+                )
+                if callable(_warn_fn):
+                    _warn_fn(request_pressure_tokens, _ctx_len)
+
         # Thinking spinner for quiet mode (animated during API call)
         thinking_spinner = None
         
@@ -5304,6 +5331,21 @@ def run_conversation(
                     FailoverReason.billing,
                     FailoverReason.upstream_rate_limit,
                 }
+                # Relay-wrapped output-cap errors: some gateways wrap an
+                # upstream "[400]: max_tokens (...) exceeds model's maximum
+                # output tokens (...)" as HTTP 429, which classifies as
+                # rate_limit. The failure is a deterministic request-shape
+                # problem — falling back to another provider (or burning
+                # generic retries) can't fix it, but the output-cap clamp
+                # below can, in one retry (#72281). Parse once here; the
+                # result gates both the eager-fallback exemption and the
+                # widened is_context_length_error entry, and is reused as
+                # available_out inside the handler.
+                _wrapped_output_cap_budget = (
+                    parse_available_output_tokens_from_error(error_msg)
+                    if classified.reason == FailoverReason.rate_limit
+                    else None
+                )
                 _is_transport_failure = classified.reason in {
                     FailoverReason.timeout,
                     FailoverReason.overloaded,
@@ -5321,7 +5363,7 @@ def run_conversation(
                 if _is_zai_coding_overload:
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
                 _should_fallback = (
-                    is_rate_limited
+                    (is_rate_limited and _wrapped_output_cap_budget is None)
                     or (_is_transport_failure and retry_count >= 2)
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
@@ -5614,6 +5656,11 @@ def run_conversation(
                 # server disconnect + large session pattern (#2153).
                 is_context_length_error = (
                     classified.reason == FailoverReason.context_overflow
+                    # Relay-wrapped output-cap 429s (parsed once above, where
+                    # the eager-fallback exemption is gated) route into the
+                    # output-cap clamp below instead of provider failover or
+                    # generic retries (#72281).
+                    or _wrapped_output_cap_budget is not None
                 )
 
                 if is_context_length_error:

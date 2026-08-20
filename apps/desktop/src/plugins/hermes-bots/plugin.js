@@ -2969,6 +2969,53 @@ function botHandle(name, bot) {
   return (name || '').trim().toLowerCase() === 'default' ? 'hermes' : name
 }
 
+/** Taggable @-forms derived from a bot's friendly names — the core profile
+ *  display name (`hermes profile rename`) and the Bot Mode title. Free text
+ *  reduces to the mention charset two ways: slugified ("Research Buddy" →
+ *  research-buddy, the form autocomplete inserts) and collapsed
+ *  (researchbuddy). Reserved tokens are dropped so a bot renamed "Hermes"
+ *  can never hijack the primary profile's @hermes alias. */
+function mentionNameForms(value) {
+  const name = String(value || '').trim().toLowerCase()
+
+  if (!name) {
+    return []
+  }
+
+  const slug = name.replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
+  const collapsed = name.replace(/[^a-z0-9_-]+/g, '')
+
+  return [...new Set([slug, collapsed])].filter(
+    form => /^[a-z0-9][a-z0-9_-]*$/.test(form) && !['all', 'everyone', 'user', 'default', 'hermes'].includes(form)
+  )
+}
+
+/** Every friendly (renameable) name a roster row carries: the Bot Mode title
+ *  (server-synced via ui_meta, locally stored, or persisted on a durable
+ *  group descriptor) and the core profile display_name — in displayName's
+ *  precedence order. Remote rows never borrow local meta (two `default`s
+ *  must not share a title). */
+function botFriendlyNames(bot) {
+  const localTitle = !bot?.remoteSource && typeof $botMeta !== 'undefined' ? $botMeta.get()?.[bot?.name]?.title : null
+
+  return [bot?.ui_meta?.['hermes-bots']?.title, localTitle, bot?.title, bot?.display_name]
+}
+
+/** The tag autocomplete inserts for a bot: the renamed (friendly) slug when
+ *  the user gave the bot a real name, otherwise the profile @handle. The
+ *  resolvers accept both, so older muscle memory keeps working. */
+function botMentionTag(bot) {
+  for (const friendly of botFriendlyNames(bot)) {
+    const forms = mentionNameForms(friendly)
+
+    if (forms.length) {
+      return forms[0]
+    }
+  }
+
+  return botHandle(bot?.name, bot)
+}
+
 function isActiveRosterBot(bot, active) {
   const activeName = String(active?.name || 'default').trim() || 'default'
   const activeId = String(active?.connectionId || '').trim()
@@ -3005,6 +3052,15 @@ function resolveRosterMentions(text, roster, active = {}) {
 
     if (bot.handle) {
       forms.add(String(bot.handle).toLowerCase())
+    }
+
+    // Renamed bots are taggable by their friendly names too — the core
+    // profile display_name and the Bot Mode title (issue: renaming a bot
+    // didn't change what you @-tag it with).
+    for (const friendly of botFriendlyNames(bot)) {
+      for (const form of mentionNameForms(friendly)) {
+        forms.add(form)
+      }
     }
 
     for (const form of forms) {
@@ -3697,15 +3753,24 @@ function groupChatMemberBots(group, roster, metaByName) {
  *  source's row may become remote after a connection switch, so retaining it
  *  here is what keeps the same room intact across machines. */
 function durableGroupChatMembers(bots) {
-  return (bots || []).map(bot => ({
-    name: bot.name,
-    handle: bot.handle || bot.name,
-    connectionId: bot.connectionId,
-    connectionKind: bot.connectionKind,
-    connectionLabel: bot.connectionLabel,
-    remoteSource: true,
-    sourceScoped: true
-  }))
+  return (bots || []).map(bot => {
+    // Keep the friendly identity on the stored descriptor: after a
+    // connection switch the live roster row may be gone, and renamed-tag
+    // mentions must still resolve against the persisted member.
+    const title = String(botRosterMeta(bot, $botMeta.get())?.title || bot.ui_meta?.['hermes-bots']?.title || bot.title || '').trim()
+
+    return {
+      name: bot.name,
+      handle: bot.handle || bot.name,
+      ...(title ? { title } : {}),
+      ...(bot.display_name ? { display_name: bot.display_name } : {}),
+      connectionId: bot.connectionId,
+      connectionKind: bot.connectionKind,
+      connectionLabel: bot.connectionLabel,
+      remoteSource: true,
+      sourceScoped: true
+    }
+  })
 }
 
 /** Existing group names, alphabetical — feeds the Manage-groups dialog. */
@@ -3773,6 +3838,15 @@ function parseGroupChatMentions(text, members) {
         ? [title.toLowerCase(), title.toLowerCase().replace(/[\s_-]+/g, ''), title.split(/\s+/)[0].toLowerCase()]
         : [])
     ])
+
+    // Renamed members answer to their friendly names too (profile
+    // display_name and Bot Mode title), in slugged and collapsed forms —
+    // the same tags the roster autocomplete inserts.
+    for (const friendly of botFriendlyNames(member)) {
+      for (const form of mentionNameForms(friendly)) {
+        forms.add(form)
+      }
+    }
 
     for (const form of forms) {
       if (form) {
@@ -8658,14 +8732,26 @@ function GroupMentionInput({ members, onChange, value, ...inputProps }) {
 
     for (const member of members) {
       const handle = String(member.handle || botHandle(member.name, member) || '').trim()
+      const display = displayName(member, botRosterMeta(member, allMeta))
+      // Renamed members complete on their friendly tag; parser resolves both.
+      const tag = String(botMentionTag(member) || handle).trim()
 
-      if (!handle || (token.query && !handle.toLowerCase().startsWith(token.query))) {
+      if (!tag) {
+        continue
+      }
+
+      if (
+        token.query &&
+        !tag.toLowerCase().startsWith(token.query) &&
+        !(handle && handle.toLowerCase().startsWith(token.query)) &&
+        !display.toLowerCase().startsWith(token.query)
+      ) {
         continue
       }
 
       options.push({
-        handle,
-        meta: displayName(member, botRosterMeta(member, allMeta))
+        handle: tag,
+        meta: display
       })
     }
   }
@@ -10109,17 +10195,25 @@ export default {
             }
 
             const handle = botHandle(profile.name, profile)
+            const display = displayName(profile, $botMeta.get()[profile.name])
+            // Renamed bots complete on their friendly name — the tag is the
+            // renamed slug when one exists, the profile handle otherwise.
+            const tag = botMentionTag(profile)
 
-            if (q && !handle.toLowerCase().startsWith(q)) {
+            if (
+              q &&
+              !tag.toLowerCase().startsWith(q) &&
+              !handle.toLowerCase().startsWith(q) &&
+              !display.toLowerCase().startsWith(q)
+            ) {
               continue
             }
 
-            const display = displayName(profile, $botMeta.get()[profile.name])
             const source = profile.connectionLabel ? ` · ${profile.connectionLabel}` : ''
 
             items.push({
-              insert: `@${handle}`,
-              display: `@${handle}`,
+              insert: `@${tag}`,
+              display: `@${tag}`,
               meta: `Bot · ${display}${source}`
             })
           }
@@ -10397,30 +10491,14 @@ export default {
           let mentionedBots = roster ? resolveRosterMentions(text, roster, live) : []
 
           if (!roster) {
-            let names = []
             try {
               const res = await host.request('profiles.list', { include_sessions: false })
-              names = (res?.profiles ?? []).map(p => p.name)
+              // Same resolver as the cached path — renamed bots (display_name
+              // / ui_meta title) stay taggable when the roster cache is cold.
+              mentionedBots = resolveRosterMentions(text, res?.profiles ?? [], live).map(bot => ({ ...bot, remoteSource: false }))
             } catch {
               return draft
             }
-
-            const prose = text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ')
-            const mentioned = []
-
-            for (const match of prose.matchAll(/(^|\s)@([a-z0-9][a-z0-9_-]*)/gi)) {
-              let name = match[2].toLowerCase()
-
-              if (name === 'hermes' && !names.includes('hermes') && names.includes('default')) {
-                name = 'default'
-              }
-
-              if (names.includes(name) && name !== live.name && !mentioned.includes(name)) {
-                mentioned.push(name)
-              }
-            }
-
-            mentionedBots = mentioned.map(name => ({ name }))
           }
 
           if (!mentionedBots.length) {

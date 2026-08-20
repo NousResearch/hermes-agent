@@ -98,6 +98,37 @@ describe('HUD mode', () => {
   })
 })
 
+// A tile can be narrower than the controls cost, and the row is inside an
+// overflow-hidden surface — so anything that doesn't fold gets clipped off the
+// right edge, send button first. The ladder keeps going past `stacked`: voice
+// folds into the same menu the HUD uses, then the model pill drops. Send is
+// the last thing standing.
+describe('narrow tiles', () => {
+  it('folds the voice controls into one menu without entering HUD mode', () => {
+    renderControls({ foldVoice: true })
+
+    expect(screen.getByLabelText('Voice')).toBeTruthy()
+    expect(screen.queryByLabelText('Voice dictation')).toBeNull()
+    expect(screen.queryByLabelText('Read replies aloud')).toBeNull()
+
+    // Folding is a width decision, not the HUD: no exit affordance appears.
+    expect(screen.queryByLabelText('Exit HUD mode')).toBeNull()
+  })
+
+  it('keeps Send at the tightest width, with everything else dropped', () => {
+    renderControls({ foldVoice: true, minimal: true })
+
+    expect(screen.getByLabelText('Send')).toBeTruthy()
+    expect(screen.queryByLabelText('Voice')).toBeNull()
+  })
+
+  it('keeps Stop reachable mid-turn at the tightest width', () => {
+    renderControls({ busy: true, busyAction: 'stop', foldVoice: true, hasComposerPayload: false, minimal: true })
+
+    expect(screen.getByLabelText('Stop')).toBeTruthy()
+  })
+})
+
 describe('ComposerControls shortcut tooltips', () => {
   it('shows Enter for Send', async () => {
     renderControls()

@@ -38,6 +38,47 @@ describe('stripGeneratedImageEchoes', () => {
       'Saved image:'
     )
   })
+
+  it('keeps a MEDIA: attachment link whose path is NOT a generated source (#80621)', () => {
+    // The reporter's case A: a final response with prose + a MEDIA: directive,
+    // in a turn that also completed an image_generate tool call for a DIFFERENT
+    // file. The attachment link must survive the echo-dedupe.
+    const text =
+      'Here is the rendered proof:\n[Image: render-proof.jpg](#media:%2Ftmp%2Frender-proof.jpg)\nIt should show the layout correctly.'
+
+    expect(stripGeneratedImageEchoes(text, ['/tmp/other-generated.png'])).toBe(text)
+  })
+
+  it('keeps a MEDIA: directive for a different file while stripping the same-file echo (#80621)', () => {
+    const text =
+      'Here is the rendered proof:\n[Image: render-proof.jpg](#media:%2Ftmp%2Frender-proof.jpg)\nAnd the raw output: ![Generated](/tmp/generated.png) done.'
+
+    expect(stripGeneratedImageEchoes(text, ['/tmp/generated.png'])).toBe(
+      'Here is the rendered proof:\n[Image: render-proof.jpg](#media:%2Ftmp%2Frender-proof.jpg)\nAnd the raw output: done.'
+    )
+  })
+
+  it('keeps backticked absolute paths inert (#80621 case B)', () => {
+    const text = 'The proof is at `/tmp/render-proof.png` and the other at `/tmp/render-proof-2.png`.'
+
+    expect(stripGeneratedImageEchoes(text, ['/tmp/render-proof.png'])).toBe(text)
+  })
+
+  it('does not over-match a longer path that merely starts with the source', () => {
+    // `/tmp/a.png` must not eat a link to `/tmp/a.png.bak` — prefix over-match
+    // would silently drop a legitimate attachment.
+    const text = 'Keep this: [Image: a.png.bak](#media:%2Ftmp%2Fa.png.bak)'
+
+    expect(stripGeneratedImageEchoes(text, ['/tmp/a.png'])).toBe(text)
+  })
+
+  it('does not corrupt a markdown link whose destination is the source path', () => {
+    // A bare-path strip inside `[label](/tmp/a.png)` would leave a broken
+    // `[label]()` link; the link must survive intact.
+    const text = 'Open [the file](/tmp/a.png) to view it.'
+
+    expect(stripGeneratedImageEchoes(text, ['/tmp/a.png'])).toBe(text)
+  })
 })
 
 describe('generatedImageEchoSources', () => {
@@ -113,6 +154,35 @@ describe('dedupeGeneratedImageEchoesInParts', () => {
     const parts = [
       { text: 'Another peacock, coming up!', type: 'text' },
       { result: undefined, toolName: 'image_generate', type: 'tool-call' }
+    ]
+
+    expect(dedupeGeneratedImageEchoesInParts(parts)).toEqual(parts)
+  })
+
+  it('keeps the MEDIA: attachment link when it references a different file than the generation (#80621)', () => {
+    const parts = [
+      {
+        text: 'Here is the rendered proof:\n[Image: render-proof.jpg](#media:%2Ftmp%2Frender-proof.jpg)\nIt should show the layout correctly.',
+        type: 'text' as const
+      },
+      {
+        result: { host_image: '/tmp/other-generated.png', image: '/tmp/other-generated.png', success: true },
+        toolName: 'image_generate',
+        type: 'tool-call' as const
+      }
+    ]
+
+    expect(dedupeGeneratedImageEchoesInParts(parts)).toEqual(parts)
+  })
+
+  it('does not drop a message whose only content was a MEDIA: link to a different file (#80621)', () => {
+    const parts = [
+      { text: '[Image: render-proof.jpg](#media:%2Ftmp%2Frender-proof.jpg)', type: 'text' as const },
+      {
+        result: { host_image: '/tmp/other-generated.png', image: '/tmp/other-generated.png', success: true },
+        toolName: 'image_generate',
+        type: 'tool-call' as const
+      }
     ]
 
     expect(dedupeGeneratedImageEchoesInParts(parts)).toEqual(parts)

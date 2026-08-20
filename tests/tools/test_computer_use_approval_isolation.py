@@ -11,6 +11,7 @@ default-allow behavior.
 """
 
 import json
+import threading
 
 
 def _install_backend(cu_tool):
@@ -73,3 +74,57 @@ def test_b_still_dispatches_with_default_allow():
     )
     payload = json.loads(result) if isinstance(result, str) else result
     assert not (isinstance(payload, dict) and payload.get("error"))
+
+
+def test_callbacks_are_isolated_across_concurrent_contexts():
+    from tools.computer_use import tool as cu_tool
+
+    barrier = threading.Barrier(2)
+    observed = {}
+    failures = []
+
+    def run(name):
+        def approve(action, args, summary):
+            observed[name] = action
+            return "approve_once"
+
+        token = cu_tool.set_approval_callback(approve)
+        try:
+            barrier.wait(timeout=5)
+            assert cu_tool._request_approval("click", {"element": 1}, name) is None
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            cu_tool.reset_approval_callback(token)
+
+    threads = [threading.Thread(target=run, args=(name,)) for name in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert failures == []
+    assert observed == {"a": "click", "b": "click"}
+
+
+def test_reset_restores_nested_callback():
+    from tools.computer_use import tool as cu_tool
+
+    events = []
+    outer = cu_tool.set_approval_callback(
+        lambda action, args, summary: events.append("outer") or "approve_once"
+    )
+    try:
+        inner = cu_tool.set_approval_callback(
+            lambda action, args, summary: events.append("inner") or "approve_once"
+        )
+        try:
+            assert cu_tool._request_approval("click", {}, "inner") is None
+        finally:
+            cu_tool.reset_approval_callback(inner)
+        assert cu_tool._request_approval("click", {}, "outer") is None
+    finally:
+        cu_tool.reset_approval_callback(outer)
+
+    assert events == ["inner", "outer"]

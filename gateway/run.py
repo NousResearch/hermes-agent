@@ -20795,7 +20795,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         HTTP probes) that must not run on the event loop. The scope is entered
         inside this method, so contextvars behave correctly in the worker
         thread.
+
+        Returns ``""`` when ``reset_notice_session_info`` is disabled — the
+        single choke point for both the manual /new-//reset reply and the
+        auto-reset notice, so operators of multi-user group chats can keep
+        model/provider details out of platform-emitted messages.
         """
+        if not getattr(
+            getattr(self, "config", None), "reset_notice_session_info", True
+        ):
+            return ""
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
                 return self._format_session_info()

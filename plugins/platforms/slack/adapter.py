@@ -10,6 +10,7 @@ Uses slack-bolt (Python) with Socket Mode for:
 
 import asyncio
 import contextvars
+import hashlib
 import inspect
 import json
 import logging
@@ -127,12 +128,69 @@ _SLACK_SPECIAL_MENTION_RE = re.compile(
     r"<!(?:everyone|channel|here)(?:\|[^>\n]*)?>", re.IGNORECASE
 )
 
-# Cap on how many thread-root images are downloaded and delivered when the
-# bot is mentioned mid-thread (cold-start hydrate). Prior thread messages'
-# attachments are surfaced as text markers only — the root is special
-# because it is very often the artifact the mention is about ("@bot what's
-# in this chart?" posted as a reply under an image).
-_THREAD_ROOT_IMAGE_MAX = 4
+# Cap on how many thread-root attachments are downloaded and delivered when
+# the bot is mentioned mid-thread (cold-start hydrate). Prior thread messages'
+# attachments are surfaced as text markers only. The root is special because
+# it is very often the artifact the mention is about (an image, PDF, or other
+# document posted before the bot joined the thread).
+_THREAD_ROOT_ATTACHMENT_MAX = 4
+_THREAD_ROOT_DOCUMENT_MAX_BYTES = 20 * 1024 * 1024
+_SLACK_TEXT_INJECT_MAX_BYTES = 100 * 1024
+_SLACK_MIMETYPE_RE = re.compile(
+    r"^[a-z0-9!#$&^_.+\-]+/[a-z0-9!#$&^_.+\-]+$",
+    re.IGNORECASE,
+)
+
+
+def _safe_slack_filename(file_obj: Dict[str, Any]) -> str:
+    """Return a bounded basename safe for prompts, logs, and cache names."""
+    raw = str(
+        file_obj.get("name")
+        or file_obj.get("title")
+        or file_obj.get("id")
+        or "file"
+    )
+    name = os.path.basename(raw.replace("\\", "/"))
+    name = "".join(
+        ch if ch.isprintable() and ch not in "[]" else "_" for ch in name
+    ).strip()
+    return (name or "file")[:255]
+
+
+def _safe_slack_mimetype(file_obj: Dict[str, Any]) -> str:
+    """Normalize Slack's untrusted MIME field without preserving parameters."""
+    raw = str(file_obj.get("mimetype") or "").split(";", 1)[0].strip().lower()
+    return raw if _SLACK_MIMETYPE_RE.fullmatch(raw) else ""
+
+
+def _safe_slack_file_id(file_obj: Dict[str, Any]) -> str:
+    raw = str(file_obj.get("id") or "").strip()
+    return raw[:128] if re.fullmatch(r"[A-Za-z0-9_-]+", raw) else ""
+
+
+def _safe_slack_actor_id(value: Any) -> str:
+    """Return a bounded Slack actor ID safe for persisted provenance."""
+    raw = str(value or "").strip()
+    return raw[:128] if re.fullmatch(r"[A-Za-z0-9_-]+", raw) else ""
+
+
+def _safe_slack_file_size(file_obj: Dict[str, Any]) -> Optional[int]:
+    try:
+        size = int(file_obj.get("size") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return size if size > 0 else None
+
+
+@dataclass
+class _SlackAttachmentResolution:
+    media_urls: List[str] = field(default_factory=list)
+    media_types: List[str] = field(default_factory=list)
+    notices: List[str] = field(default_factory=list)
+    text_injections: List[str] = field(default_factory=list)
+    provenance: List[str] = field(default_factory=list)
+    file_ids: set[str] = field(default_factory=set)
+    sha256s: set[str] = field(default_factory=set)
 
 
 def _slack_file_marker(file_obj: Dict[str, Any]) -> str:
@@ -143,9 +201,8 @@ def _slack_file_marker(file_obj: Dict[str, Any]) -> str:
     though the context fetch is text-only. Name is sanitized (newlines and
     brackets stripped) so a hostile filename can't fake context structure.
     """
-    name = str(file_obj.get("name") or file_obj.get("title") or file_obj.get("id") or "file")
-    name = re.sub(r"[\r\n\[\]]+", " ", name).strip() or "file"
-    mimetype = str(file_obj.get("mimetype") or "")
+    name = _safe_slack_filename(file_obj)
+    mimetype = _safe_slack_mimetype(file_obj)
     if mimetype.startswith("image/"):
         return f"[image: {name}]"
     if mimetype.startswith("video/"):
@@ -950,7 +1007,11 @@ class SlackAdapter(BasePlatformAdapter):
         # (team_id, user_id) → Slack bot identity, same workspace scoping as
         # the name cache. Used to catch peer-agent posts that arrive as plain
         # user messages without bot_id/subtype=bot_message markers.
-        self._user_is_bot_cache: Dict[Tuple[str, str], bool] = {}
+        # ``None`` means Slack identity lookup failed or returned no user.
+        # Keeping that distinct from a verified human (False) lets security-
+        # sensitive context hydration fail closed without changing the legacy
+        # boolean behavior of _resolve_user_is_bot callers.
+        self._user_is_bot_cache: Dict[Tuple[str, str], Optional[bool]] = {}
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
@@ -4309,7 +4370,7 @@ class SlackAdapter(BasePlatformAdapter):
             result = await client.users_info(user=user_id)
             payload = _slack_response_payload(result)
             if not payload:
-                self._user_is_bot_cache[cache_key] = False
+                self._user_is_bot_cache[cache_key] = None
                 self._user_name_cache[cache_key] = user_id
                 return user_id
             user = payload.get("user", {})
@@ -4467,20 +4528,34 @@ class SlackAdapter(BasePlatformAdapter):
     async def _resolve_user_is_bot(
         self, user_id: str, chat_id: str = "", team_id: str = ""
     ) -> bool:
+        """Return bot status, preserving legacy unknown-as-human behavior."""
+        return bool(
+            await self._resolve_user_bot_status(
+                user_id,
+                chat_id=chat_id,
+                team_id=team_id,
+            )
+        )
+
+    async def _resolve_user_bot_status(
+        self, user_id: str, chat_id: str = "", team_id: str = ""
+    ) -> Optional[bool]:
         """Resolve whether a Slack user ID is a bot account, with caching.
 
         Workspace-scoped like :meth:`_resolve_user_name` — Slack user IDs are
-        team-local, so the cache key includes the team.
+        team-local, so the cache key includes the team. Returns ``None`` when
+        Slack identity lookup is unavailable, allowing security-sensitive
+        callers to distinguish unknown identity from a verified human.
         """
         if not user_id:
-            return False
+            return None
         team_id = str(team_id or self._channel_team.get(chat_id, ""))
         cache_key = (team_id, str(user_id))
         if cache_key in self._user_is_bot_cache:
             return self._user_is_bot_cache[cache_key]
         if not self._app:
-            self._user_is_bot_cache[cache_key] = False
-            return False
+            self._user_is_bot_cache[cache_key] = None
+            return None
 
         try:
             client = (
@@ -4491,9 +4566,9 @@ class SlackAdapter(BasePlatformAdapter):
             result = await client.users_info(user=user_id)
             payload = _slack_response_payload(result)
             if not payload:
-                self._user_is_bot_cache[cache_key] = False
+                self._user_is_bot_cache[cache_key] = None
                 self._user_name_cache.setdefault(cache_key, user_id)
-                return False
+                return None
             user = payload.get("user", {})
             profile = user.get("profile", {}) if isinstance(user, dict) else {}
             is_bot = bool(
@@ -4518,8 +4593,8 @@ class SlackAdapter(BasePlatformAdapter):
             return is_bot
         except Exception as e:
             logger.debug("[Slack] users.info bot check failed for %s: %s", user_id, e)
-            self._user_is_bot_cache[cache_key] = False
-            return False
+            self._user_is_bot_cache[cache_key] = None
+            return None
 
     async def send_image_file(
         self,
@@ -6289,15 +6364,14 @@ class SlackAdapter(BasePlatformAdapter):
         # command routing can misclassify it as conversational text.
         # ``channel_context`` is prepended only after command dispatch.
         channel_context = None
-        # Thread-root images recovered on the cold-start hydrate: when the
+        # Thread-root attachments recovered on the cold-start hydrate: when the
         # bot is mentioned mid-thread for the first time, the thread root is
-        # very often the artifact the mention is about ("@bot what's in this
-        # chart?" replying under an image post) — deliver its images with
-        # this first turn. One-time by construction: the cold-start path is
+        # very often the artifact the mention is about (for example, a chart or
+        # PDF) — deliver supported files with this first turn. One-time by
+        # construction: the cold-start path is
         # guarded by _has_active_session_for_thread, so subsequent turns in
         # the same session never re-deliver (adapted from #69185).
-        thread_root_media_urls: List[str] = []
-        thread_root_media_types: List[str] = []
+        thread_root_attachments = _SlackAttachmentResolution()
         has_active_thread_session = is_thread_reply and self._has_active_session_for_thread(
             channel_id=channel_id,
             thread_ts=event_thread_ts,
@@ -6314,17 +6388,22 @@ class SlackAdapter(BasePlatformAdapter):
             )
             if thread_context:
                 channel_context = thread_context
-            # Deliver the thread root's images with this first turn. The
+            # Deliver the thread root's attachments with this first turn. The
             # root is always a PRIOR message here (is_thread_reply implies
             # thread_ts != ts); the trigger's own files ride event["files"].
-            (
-                thread_root_media_urls,
-                thread_root_media_types,
-            ) = await self._collect_thread_root_images(
+            thread_root_attachments = await self._collect_thread_root_attachments(
                 channel_id=channel_id,
-                thread_ts=event_thread_ts,
+                thread_ts=event_thread_ts or "",
                 team_id=team_id,
+                trigger_ts=ts,
             )
+            if thread_root_attachments.provenance:
+                provenance_block = (
+                    "[Slack thread-root attachment provenance]\n"
+                    + "\n".join(thread_root_attachments.provenance)
+                    + "\n"
+                )
+                channel_context = f"{channel_context or ''}{provenance_block}"
             # Record the trigger ts as the consumption watermark: everything
             # up to and including this turn is now (or will be) in session
             # history, so a later explicit-mention refresh only needs newer
@@ -6433,245 +6512,30 @@ class SlackAdapter(BasePlatformAdapter):
         # the gateway dispatcher; do not prepend fetched thread context or
         # block/attachment rendering before the leading slash.
 
-        # Handle file attachments. Thread-root images recovered above are
-        # delivered ahead of the trigger message's own files.
-        media_urls = list(thread_root_media_urls)
-        media_types = list(thread_root_media_types)
-        attachment_notices: List[str] = []
-        files = event.get("files", [])
-        for f in files:
-            # Slack Connect channels return stub file objects with
-            # file_access="check_file_info" and no URL fields. We must
-            # call files.info to retrieve the full object (including url_private_download)
-            # before we can download it.
-            # https://docs.slack.dev/reference/objects/file-object/#slack_connect_files
-            if f.get("file_access") == "check_file_info":
-                file_id = f.get("id")
-                if not file_id:
-                    continue
-                try:
-                    info_resp = await self._get_client(
-                        channel_id, team_id=team_id
-                    ).files_info(file=file_id)
-                    if info_resp.get("ok"):
-                        f = info_resp["file"]
-                    else:
-                        detail = self._describe_slack_api_error(info_resp, file_obj=f)
-                        if detail:
-                            attachment_notices.append(detail)
-                            logger.warning("[Slack] %s", detail)
-                        else:
-                            logger.warning(
-                                "[Slack] files.info failed for %s: %s",
-                                file_id,
-                                info_resp.get("error"),
-                            )
-                        continue
-                except Exception as e:
-                    response = getattr(e, "response", None)
-                    detail = self._describe_slack_api_error(response, file_obj=f)
-                    if detail:
-                        attachment_notices.append(detail)
-                        logger.warning("[Slack] %s", detail)
-                    else:
-                        logger.warning(
-                            "[Slack] files.info error for %s: %s",
-                            file_id,
-                            e,
-                            exc_info=True,
-                        )
-                    continue
-
-            mimetype = f.get("mimetype", "unknown")
-            url = f.get("url_private_download") or f.get("url_private", "")
-            if mimetype.startswith("image/") and url:
-                try:
-                    ext = "." + mimetype.split("/")[-1].split(";")[0]
-                    if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
-                        ext = ".jpg"
-                    # Slack private URLs require the bot token as auth header
-                    cached = await self._download_slack_file(url, ext, team_id=team_id)
-                    media_urls.append(cached)
-                    media_types.append(mimetype)
-                except Exception as e:  # pragma: no cover - defensive logging
-                    detail = self._describe_slack_download_failure(e, file_obj=f)
-                    if detail:
-                        attachment_notices.append(detail)
-                        logger.warning("[Slack] %s", detail)
-                    else:
-                        logger.warning(
-                            "[Slack] Failed to cache image from %s: %s",
-                            url,
-                            e,
-                            exc_info=True,
-                        )
-            elif mimetype.startswith("audio/") and url:
-                try:
-                    ext = _resolve_slack_audio_ext(f, mimetype)
-                    cached = await self._download_slack_file(
-                        url, ext, audio=True, team_id=team_id
-                    )
-                    media_urls.append(cached)
-                    media_types.append(mimetype)
-                except Exception as e:  # pragma: no cover - defensive logging
-                    detail = self._describe_slack_download_failure(e, file_obj=f)
-                    if detail:
-                        attachment_notices.append(detail)
-                        logger.warning("[Slack] %s", detail)
-                    else:
-                        logger.warning(
-                            "[Slack] Failed to cache audio from %s: %s",
-                            url,
-                            e,
-                            exc_info=True,
-                        )
-            elif mimetype.startswith("video/") and url and _is_slack_voice_clip(f):
-                # Slack in-app voice clips are audio-only MP4 containers that
-                # Slack sometimes mislabels with a ``video/mp4`` mimetype.
-                # Cache them as audio and report an ``audio/*`` type so the
-                # gateway routes them to speech-to-text instead of video
-                # understanding. Without this, voice messages recorded in Slack
-                # never get transcribed.
-                try:
-                    ext = _resolve_slack_audio_ext(f, mimetype)
-                    cached = await self._download_slack_file(
-                        url, ext, audio=True, team_id=team_id
-                    )
-                    media_urls.append(cached)
-                    # Report a coherent audio mimetype matching the cached
-                    # extension so downstream STT routing recognizes it.
-                    media_types.append(
-                        _SLACK_EXT_TO_AUDIO_MIME.get(ext, "audio/mp4")
-                    )
-                    logger.debug(
-                        "[Slack] Cached voice clip (mislabeled %s) as audio: %s",
-                        mimetype,
-                        cached,
-                    )
-                except Exception as e:  # pragma: no cover - defensive logging
-                    detail = self._describe_slack_download_failure(e, file_obj=f)
-                    if detail:
-                        attachment_notices.append(detail)
-                        logger.warning("[Slack] %s", detail)
-                    else:
-                        logger.warning(
-                            "[Slack] Failed to cache voice clip from %s: %s",
-                            url,
-                            e,
-                            exc_info=True,
-                        )
-            elif mimetype.startswith("video/") and url:
-                try:
-                    original_filename = f.get("name", "")
-                    _, ext = os.path.splitext(original_filename)
-                    ext = ext.lower()
-                    if ext not in SUPPORTED_VIDEO_TYPES:
-                        mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
-                        ext = mime_to_ext.get(
-                            mimetype.split(";", 1)[0].lower(), ".mp4"
-                        )
-
-                    raw_bytes = await self._download_slack_file_bytes(
-                        url, team_id=team_id
-                    )
-                    cached_path = cache_video_from_bytes(raw_bytes, ext=ext)
-                    media_urls.append(cached_path)
-                    media_types.append(
-                        SUPPORTED_VIDEO_TYPES.get(ext, mimetype or "video/mp4")
-                    )
-                    logger.debug("[Slack] Cached user video: %s", cached_path)
-                except Exception as e:  # pragma: no cover - defensive logging
-                    detail = self._describe_slack_download_failure(e, file_obj=f)
-                    if detail:
-                        attachment_notices.append(detail)
-                        logger.warning("[Slack] %s", detail)
-                    else:
-                        logger.warning(
-                            "[Slack] Failed to cache video from %s: %s",
-                            url,
-                            e,
-                            exc_info=True,
-                        )
-            elif url:
-                # Try to handle as a document attachment
-                try:
-                    original_filename = f.get("name", "")
-                    ext = ""
-                    if original_filename:
-                        _, ext = os.path.splitext(original_filename)
-                        ext = ext.lower()
-
-                    # Fallback: reverse-lookup from MIME type
-                    if not ext and mimetype:
-                        mime_to_ext = {
-                            v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()
-                        }
-                        ext = mime_to_ext.get(mimetype, "")
-
-                    # Any file type is accepted — authorization to message the
-                    # agent is the gate, not the file extension. Known types keep
-                    # their precise MIME; unknown types fall back to the source
-                    # mimetype or octet-stream so the agent reaches for terminal
-                    # tools.
-                    in_allowlist = ext in SUPPORTED_DOCUMENT_TYPES
-
-                    # Check file size (Slack limit: 20 MB for bots)
-                    file_size = f.get("size", 0)
-                    MAX_DOC_BYTES = 20 * 1024 * 1024
-                    if not file_size or file_size > MAX_DOC_BYTES:
-                        logger.warning(
-                            "[Slack] Document too large or unknown size: %s", file_size
-                        )
-                        continue
-
-                    # Download and cache
-                    raw_bytes = await self._download_slack_file_bytes(
-                        url, team_id=team_id
-                    )
-                    cached_path = cache_document_from_bytes(
-                        raw_bytes, original_filename or f"document{ext or '.bin'}"
-                    )
-                    if in_allowlist:
-                        doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
-                    else:
-                        doc_mime = mimetype or "application/octet-stream"
-                    media_urls.append(cached_path)
-                    media_types.append(doc_mime)
-                    logger.debug("[Slack] Cached user document: %s (%s)", cached_path, doc_mime)
-
-                    # Inject small text-ish files directly into the prompt so
-                    # snippets like JSON/YAML/configs are actually visible to the
-                    # agent. Gate on a text-like extension/MIME — NOT a blind
-                    # UTF-8 decode, since binary formats (PDF/zip/docx) can have
-                    # decodable ASCII headers. Binary files are surfaced as a
-                    # cached path only (run.py emits a path-pointing note).
-                    MAX_TEXT_INJECT_BYTES = 100 * 1024
-                    _is_text = ext in _TEXT_INJECT_EXTENSIONS or (mimetype or "").startswith("text/")
-                    if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
-                        try:
-                            text_content = raw_bytes.decode("utf-8")
-                            display_name = original_filename or f"document{ext or '.txt'}"
-                            display_name = re.sub(r"[^\w.\- ]", "_", display_name)
-                            injection = f"[Content of {display_name}]:\n{text_content}"
-                            if text:
-                                text = f"{injection}\n\n{text}"
-                            else:
-                                text = injection
-                        except UnicodeDecodeError:
-                            pass  # Binary content, skip injection
-
-                except Exception as e:  # pragma: no cover - defensive logging
-                    detail = self._describe_slack_download_failure(e, file_obj=f)
-                    if detail:
-                        attachment_notices.append(detail)
-                        logger.warning("[Slack] %s", detail)
-                    else:
-                        logger.warning(
-                            "[Slack] Failed to cache document from %s: %s",
-                            url,
-                            e,
-                            exc_info=True,
-                        )
+        # Resolve the triggering event through the same attachment pipeline as
+        # the thread root. Shared ID/checksum sets prevent duplicate delivery
+        # when Slack repeats the same file object in both places.
+        current_attachments = await self._resolve_slack_attachments(
+            event.get("files", []),
+            channel_id=channel_id,
+            team_id=team_id,
+            seen_file_ids=thread_root_attachments.file_ids,
+            seen_sha256s=thread_root_attachments.sha256s,
+        )
+        media_urls = [
+            *thread_root_attachments.media_urls,
+            *current_attachments.media_urls,
+        ]
+        media_types = [
+            *thread_root_attachments.media_types,
+            *current_attachments.media_types,
+        ]
+        attachment_notices = [
+            *thread_root_attachments.notices,
+            *current_attachments.notices,
+        ]
+        for injection in current_attachments.text_injections:
+            text = f"{injection}\n\n{text}" if text else injection
 
         if attachment_notices:
             notice_block = "[Slack attachment notice]\n" + "\n".join(
@@ -8056,96 +7920,402 @@ class SlackAdapter(BasePlatformAdapter):
             logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
             return ""
 
-    async def _collect_thread_root_images(
+    async def _resolve_slack_attachments(
         self,
+        files: Any,
+        *,
         channel_id: str,
-        thread_ts: str,
         team_id: str = "",
-    ) -> Tuple[List[str], List[str]]:
-        """Download and cache the thread-root message's image attachments.
+        include_audio: bool = True,
+        include_video: bool = True,
+        max_attachments: Optional[int] = None,
+        seen_file_ids: Optional[set[str]] = None,
+        seen_sha256s: Optional[set[str]] = None,
+        provenance_channel: str = "",
+        provenance_thread_ts: str = "",
+        provenance_trigger_ts: str = "",
+        provenance_uploader_id: str = "",
+        provenance_uploader_kind: str = "",
+        provenance_uploader_trust: str = "",
+    ) -> _SlackAttachmentResolution:
+        """Resolve, download, cache, and describe Slack file objects.
 
-        Called only on the cold-start hydrate path (first turn of a new
-        thread session), so images are delivered exactly once per session —
-        after that the session history carries the turn. The root message
-        is read from the thread-context cache populated by the immediately
-        preceding :meth:`_fetch_thread_context` call, so this normally costs
-        zero extra Slack API calls; Slack Connect stub files
-        (``file_access="check_file_info"``) are resolved via ``files.info``.
-
-        Only ``image/*`` attachments are downloaded (bounded by
-        ``_THREAD_ROOT_IMAGE_MAX``); other root attachments stay text-only
-        markers in the thread context. Failures are best-effort — the
-        markers from :meth:`_render_message_text` already tell the agent the
-        image exists, so a failed download degrades to "ask for a re-share",
-        never to an error turn.
-
-        Returns ``(media_urls, media_types)`` of cached local paths.
+        This is the single attachment resolver for both the addressed event and
+        the cold-start thread-root recovery path. Private Slack URLs never leave
+        this function. Callers receive local paths, safe notices, and an optional
+        provenance manifest containing only stable non-secret Slack metadata.
         """
-        media_urls: List[str] = []
-        media_types: List[str] = []
-        try:
-            cache_key = f"{channel_id}:{thread_ts}:{team_id}"
-            cached = self._thread_context_cache.get(cache_key)
-            root: Optional[Dict[str, Any]] = None
-            if cached:
-                root = next(
-                    (
-                        m
-                        for m in cached.messages
-                        if m.get("ts", "") == thread_ts
-                    ),
-                    None,
-                )
-            if not root:
-                return media_urls, media_types
+        result = _SlackAttachmentResolution(
+            file_ids=seen_file_ids if seen_file_ids is not None else set(),
+            sha256s=seen_sha256s if seen_sha256s is not None else set(),
+        )
+        if not isinstance(files, list):
+            return result
 
-            files = root.get("files")
-            if not isinstance(files, list):
-                return media_urls, media_types
+        attempted = 0
+        for original in files:
+            if not isinstance(original, dict):
+                continue
+            file_obj = original
+            file_id = _safe_slack_file_id(file_obj)
 
-            for f in files:
-                if len(media_urls) >= _THREAD_ROOT_IMAGE_MAX:
-                    break
-                if not isinstance(f, dict):
-                    continue
-                # Slack Connect stubs carry no URL fields until files.info.
-                if f.get("file_access") == "check_file_info":
-                    file_id = f.get("id")
-                    if not file_id:
-                        continue
-                    try:
-                        info_resp = await self._get_client(
-                            channel_id, team_id=team_id
-                        ).files_info(file=file_id)
-                        if not info_resp.get("ok"):
-                            continue
-                        f = info_resp["file"]
-                    except Exception:
-                        continue
-                mimetype = str(f.get("mimetype") or "")
-                url = f.get("url_private_download") or f.get("url_private", "")
-                if not mimetype.startswith("image/") or not url:
+            # Slack Connect events carry a metadata-only stub. Resolve it before
+            # MIME, filename, URL, or size decisions.
+            if file_obj.get("file_access") == "check_file_info":
+                if not file_id:
+                    result.notices.append(
+                        "A Slack Connect attachment could not be resolved because its file ID was missing; it is not available to this turn."
+                    )
                     continue
                 try:
-                    ext = "." + mimetype.split("/")[-1].split(";")[0]
+                    info_resp = await self._get_client(
+                        channel_id, team_id=team_id
+                    ).files_info(file=file_id)
+                    payload = _slack_response_payload(info_resp)
+                    resolved = payload.get("file") if payload.get("ok") else None
+                    if not isinstance(resolved, dict):
+                        detail = self._describe_slack_api_error(
+                            payload, file_obj={"id": file_id, "name": _safe_slack_filename(file_obj)}
+                        )
+                        result.notices.append(
+                            detail
+                            or f"Slack attachment {_safe_slack_filename(file_obj)} could not be resolved with files.info; it is not available to this turn."
+                        )
+                        continue
+                    file_obj = resolved
+                    file_id = _safe_slack_file_id(file_obj) or file_id
+                except Exception as exc:
+                    response = getattr(exc, "response", None)
+                    detail = self._describe_slack_api_error(
+                        response,
+                        file_obj={"id": file_id, "name": _safe_slack_filename(file_obj)},
+                    )
+                    result.notices.append(
+                        detail
+                        or f"Slack attachment {_safe_slack_filename(file_obj)} could not be resolved with files.info; it is not available to this turn."
+                    )
+                    logger.warning(
+                        "[Slack] files.info failed for attachment %s",
+                        file_id or "unknown",
+                        exc_info=True,
+                    )
+                    continue
+
+            filename = _safe_slack_filename(file_obj)
+            mimetype = _safe_slack_mimetype(file_obj)
+            if mimetype.startswith("image/"):
+                kind = "image"
+            elif mimetype.startswith("audio/") or _is_slack_voice_clip(file_obj):
+                kind = "audio"
+            elif mimetype.startswith("video/"):
+                kind = "video"
+            else:
+                kind = "document"
+
+            if (kind == "audio" and not include_audio) or (
+                kind == "video" and not include_video
+            ):
+                continue
+            if max_attachments is not None and attempted >= max_attachments:
+                break
+            attempted += 1
+
+            if file_id and file_id in result.file_ids:
+                continue
+            if file_id:
+                result.file_ids.add(file_id)
+
+            url = file_obj.get("url_private_download") or file_obj.get("url_private")
+            if not isinstance(url, str) or not url:
+                result.notices.append(
+                    f"Slack attachment {filename} has no downloadable file URL; it is not available to this turn."
+                )
+                continue
+
+            safe_file_obj = {
+                "id": file_id,
+                "name": filename,
+                "mimetype": mimetype,
+                "size": _safe_slack_file_size(file_obj),
+            }
+            digest = ""
+            cached_path = ""
+            media_type = ""
+            declared_size = _safe_slack_file_size(file_obj)
+            actual_size: Optional[int] = None
+            try:
+                if kind == "image":
+                    ext = "." + mimetype.split("/", 1)[-1]
                     if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
                         ext = ".jpg"
                     cached_path = await self._download_slack_file(
                         url, ext, team_id=team_id
                     )
-                    media_urls.append(cached_path)
-                    media_types.append(mimetype)
-                except Exception as exc:
-                    logger.warning(
-                        "[Slack] Failed to cache thread-root image %s: %s",
-                        f.get("id") or f.get("name") or "unknown",
-                        exc,
+                    media_type = mimetype
+                    try:
+                        cached_bytes = _Path(cached_path).read_bytes()
+                        actual_size = len(cached_bytes)
+                        digest = hashlib.sha256(cached_bytes).hexdigest()
+                    except OSError:
+                        pass
+                elif kind == "audio":
+                    ext = _resolve_slack_audio_ext(file_obj, mimetype)
+                    cached_path = await self._download_slack_file(
+                        url, ext, audio=True, team_id=team_id
                     )
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug(
-                "[Slack] Thread-root image recovery failed: %s", exc
+                    media_type = _SLACK_EXT_TO_AUDIO_MIME.get(
+                        ext, mimetype if mimetype.startswith("audio/") else "audio/mp4"
+                    )
+                    try:
+                        cached_bytes = _Path(cached_path).read_bytes()
+                        actual_size = len(cached_bytes)
+                        digest = hashlib.sha256(cached_bytes).hexdigest()
+                    except OSError:
+                        pass
+                else:
+                    if kind == "document":
+                        if declared_size is None:
+                            result.notices.append(
+                                f"Slack attachment {filename} has an unknown or invalid size; it is not available to this turn."
+                            )
+                            continue
+                        if declared_size > _THREAD_ROOT_DOCUMENT_MAX_BYTES:
+                            result.notices.append(
+                                f"Slack attachment {filename} exceeds the 20 MB limit; it is not available to this turn."
+                            )
+                            continue
+
+                    raw_bytes = await self._download_slack_file_bytes(
+                        url, team_id=team_id
+                    )
+                    actual_size = len(raw_bytes)
+                    if (
+                        kind == "document"
+                        and actual_size > _THREAD_ROOT_DOCUMENT_MAX_BYTES
+                    ):
+                        result.notices.append(
+                            f"Slack attachment {filename} exceeds the 20 MB limit; it is not available to this turn."
+                        )
+                        continue
+                    digest = hashlib.sha256(raw_bytes).hexdigest()
+                    if digest in result.sha256s:
+                        continue
+
+                    ext = os.path.splitext(filename)[1].lower()
+                    if kind == "video":
+                        if ext not in SUPPORTED_VIDEO_TYPES:
+                            mime_to_ext = {
+                                value: key for key, value in SUPPORTED_VIDEO_TYPES.items()
+                            }
+                            ext = mime_to_ext.get(mimetype, ".mp4")
+                        cached_path = cache_video_from_bytes(raw_bytes, ext=ext)
+                        media_type = SUPPORTED_VIDEO_TYPES.get(
+                            ext, mimetype or "video/mp4"
+                        )
+                    else:
+                        if not ext and mimetype:
+                            mime_to_ext = {
+                                value: key
+                                for key, value in SUPPORTED_DOCUMENT_TYPES.items()
+                            }
+                            ext = mime_to_ext.get(mimetype, "")
+                        cache_filename = filename
+                        if not os.path.splitext(cache_filename)[1]:
+                            cache_filename = f"{cache_filename}{ext or '.bin'}"
+                        cached_path = cache_document_from_bytes(
+                            raw_bytes, cache_filename
+                        )
+                        media_type = SUPPORTED_DOCUMENT_TYPES.get(
+                            ext, mimetype or "application/octet-stream"
+                        )
+                        if (
+                            (ext in _TEXT_INJECT_EXTENSIONS or mimetype.startswith("text/"))
+                            and len(raw_bytes) <= _SLACK_TEXT_INJECT_MAX_BYTES
+                        ):
+                            try:
+                                text_content = raw_bytes.decode("utf-8")
+                            except UnicodeDecodeError:
+                                pass
+                            else:
+                                display_name = re.sub(r"[^\w.\- ]", "_", filename)
+                                result.text_injections.append(
+                                    f"[Content of {display_name}]:\n{text_content}"
+                                )
+
+                if digest and digest in result.sha256s:
+                    continue
+                if digest:
+                    result.sha256s.add(digest)
+                result.media_urls.append(cached_path)
+                result.media_types.append(media_type)
+
+                if provenance_channel and provenance_thread_ts:
+                    provenance = {
+                        "channel": provenance_channel,
+                        "declared_size": declared_size,
+                        "downloaded_size": actual_size,
+                        "file_id": file_id or None,
+                        "mime": media_type or "application/octet-stream",
+                        "name": filename,
+                        "sha256": digest or None,
+                        "status": "downloaded",
+                        "thread_ts": provenance_thread_ts,
+                        "trigger_ts": provenance_trigger_ts or None,
+                        "uploader_id": provenance_uploader_id or None,
+                        "uploader_kind": provenance_uploader_kind or "unknown",
+                        "uploader_trust": provenance_uploader_trust or "unknown",
+                    }
+                    result.provenance.append(
+                        "- "
+                        + json.dumps(provenance, ensure_ascii=True, sort_keys=True)
+                    )
+            except Exception as exc:
+                detail = self._describe_slack_download_failure(
+                    exc, file_obj=safe_file_obj
+                )
+                result.notices.append(
+                    detail
+                    or f"Slack attachment {filename} could not be downloaded and is not available to this turn."
+                )
+                logger.warning(
+                    "[Slack] Failed to cache attachment %s",
+                    file_id or filename,
+                    exc_info=True,
+                )
+
+        return result
+
+    async def _collect_thread_root_attachments(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        team_id: str = "",
+        *,
+        seen_file_ids: Optional[set[str]] = None,
+        seen_sha256s: Optional[set[str]] = None,
+        trigger_ts: str = "",
+    ) -> _SlackAttachmentResolution:
+        """Hydrate supported files from the root on the first thread turn."""
+        cache_key = f"{channel_id}:{thread_ts}:{team_id}"
+        cached = self._thread_context_cache.get(cache_key)
+        root: Optional[Dict[str, Any]] = None
+        if cached:
+            root = next(
+                (m for m in cached.messages if m.get("ts", "") == thread_ts),
+                None,
             )
-        return media_urls, media_types
+        if not root:
+            return _SlackAttachmentResolution(
+                file_ids=seen_file_ids if seen_file_ids is not None else set(),
+                sha256s=seen_sha256s if seen_sha256s is not None else set(),
+            )
+
+        root_files = root.get("files")
+        if not isinstance(root_files, list) or not root_files:
+            return _SlackAttachmentResolution(
+                file_ids=seen_file_ids if seen_file_ids is not None else set(),
+                sha256s=seen_sha256s if seen_sha256s is not None else set(),
+            )
+
+        root_user_id = _safe_slack_actor_id(root.get("user"))
+        declared_bot_root = (
+            bool(root.get("bot_id")) or root.get("subtype") == "bot_message"
+        )
+        self_bot_uid = (
+            self._team_bot_user_ids.get(team_id) if team_id else None
+        ) or self._bot_user_id
+        is_self_bot_root = bool(
+            root_user_id and self_bot_uid and root_user_id == self_bot_uid
+        )
+        is_bot_root = declared_bot_root or is_self_bot_root
+        bot_identity_unknown = not root_user_id and not is_bot_root
+        if not is_bot_root and root_user_id:
+            # Some Slack app posts carry only a bot user ID. The thread text
+            # formatter has already populated this workspace-scoped identity
+            # cache in the common path; resolve on cache miss so a missing
+            # bot_id/subtype cannot downgrade a third-party bot to a human.
+            bot_status = await self._resolve_user_bot_status(
+                root_user_id,
+                chat_id=channel_id,
+                team_id=team_id,
+            )
+            if bot_status is None:
+                bot_identity_unknown = True
+            else:
+                is_bot_root = bot_status
+        uploader_kind = (
+            "unknown" if bot_identity_unknown else "bot" if is_bot_root else "user"
+        )
+        root_authorized: Optional[bool] = None
+        if is_self_bot_root:
+            uploader_trust = "self_bot"
+        else:
+            root_authorized = self._is_sender_authorized(
+                root_user_id or None,
+                chat_type="thread",
+                chat_id=channel_id,
+            )
+            # Third-party bot payloads do not inherit the text-context bot
+            # bypass: unlike a labelled text line, downloaded media enters the
+            # current turn as ordinary multimodal input. Require explicit
+            # allowlist authorization for those bot users. Human roots retain
+            # legacy behavior only when no authorization check is configured.
+            should_block = (
+                is_bot_root and root_authorized is not True
+            ) or (
+                bot_identity_unknown and root_authorized is not True
+            ) or (
+                not is_bot_root and root_authorized is False
+            )
+            if should_block:
+                if bot_identity_unknown:
+                    sender_description = "a root sender with unresolved sender identity"
+                elif is_bot_root:
+                    sender_description = "an unverified bot sender"
+                else:
+                    sender_description = "an unverified sender"
+                result = _SlackAttachmentResolution(
+                    file_ids=seen_file_ids if seen_file_ids is not None else set(),
+                    sha256s=seen_sha256s if seen_sha256s is not None else set(),
+                )
+                result.notices.append(
+                    f"Thread-root attachments from {sender_description} were not downloaded and are not available to this turn. Treat their file markers as background only."
+                )
+                result.provenance.append(
+                    "- "
+                    + json.dumps(
+                        {
+                            "channel": channel_id,
+                            "status": "blocked_unverified_sender",
+                            "thread_ts": thread_ts,
+                            "trigger_ts": trigger_ts or None,
+                            "uploader_id": root_user_id or None,
+                            "uploader_kind": uploader_kind,
+                            "uploader_trust": "unverified",
+                        },
+                        ensure_ascii=True,
+                        sort_keys=True,
+                    )
+                )
+                return result
+            uploader_trust = "authorized" if root_authorized is True else "unknown"
+
+        return await self._resolve_slack_attachments(
+            root_files,
+            channel_id=channel_id,
+            team_id=team_id,
+            include_audio=False,
+            include_video=False,
+            max_attachments=_THREAD_ROOT_ATTACHMENT_MAX,
+            seen_file_ids=seen_file_ids,
+            seen_sha256s=seen_sha256s,
+            provenance_channel=channel_id,
+            provenance_thread_ts=thread_ts,
+            provenance_trigger_ts=trigger_ts,
+            provenance_uploader_id=root_user_id,
+            provenance_uploader_kind=uploader_kind,
+            provenance_uploader_trust=uploader_trust,
+        )
 
     async def _handle_slash_command(self, command: dict) -> None:
         """Handle Slack slash commands.

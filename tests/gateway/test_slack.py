@@ -4225,15 +4225,15 @@ class TestEnsureDmConversation:
 
 
 # ---------------------------------------------------------------------------
-# TestThreadImageContext — C1-images: images/files in prior thread messages
+# TestThreadAttachmentContext — images/files in prior thread messages
 # must be visible to the agent when it joins the conversation (#69185,
 # #32315, #66136). Prior messages' attachments surface as text markers in
-# the fetched thread context; the thread ROOT's images are additionally
-# downloaded and delivered with the cold-start turn.
+# the fetched thread context; supported attachments on the thread ROOT are
+# additionally downloaded and delivered with the cold-start turn.
 # ---------------------------------------------------------------------------
 
 
-class TestThreadImageContext:
+class TestThreadAttachmentContext:
     """Thread-context visibility of images/files posted before the mention."""
 
     # -- _slack_file_marker / _render_message_text unit coverage -----------
@@ -4283,7 +4283,7 @@ class TestThreadImageContext:
 
     # -- integration: cold-start thread hydrate ----------------------------
 
-    def _thread_event(self, text="<@U_BOT> what do you think of the chart?"):
+    def _thread_event(self, text="<@U_BOT> what do you think of the chart?") -> dict[str, object]:
         return {
             "text": text,
             "user": "U_USER",
@@ -4294,12 +4294,22 @@ class TestThreadImageContext:
             "team": "T_TEAM",
         }
 
-    def _replies(self, root_files=None, mid_files=None):
+    def _replies(
+        self,
+        root_files=None,
+        mid_files=None,
+        root_text="Latest revenue chart",
+        root_user="U_ALICE",
+        root_bot_id=None,
+    ):
         root = {
             "ts": "123.000",
-            "user": "U_ALICE",
-            "text": "Latest revenue chart",
+            "user": root_user,
+            "text": root_text,
         }
+        if root_bot_id is not None:
+            root["bot_id"] = root_bot_id
+            root["subtype"] = "bot_message"
         if root_files is not None:
             root["files"] = root_files
         mid = {"ts": "123.100", "user": "U_ALICE", "text": "context reply"}
@@ -4323,6 +4333,9 @@ class TestThreadImageContext:
         a = adapter_with_session_store
         a._has_active_session_for_thread = MagicMock(return_value=False)
         a._register_mentioned_thread = MagicMock()
+        a.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: True
+        )
         a._user_name_cache = {
             ("T_TEAM", "U_ALICE"): "Alice",
             ("T_TEAM", "U_USER"): "User",
@@ -4395,31 +4408,604 @@ class TestThreadImageContext:
         a._download_slack_file.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_root_image_download_failure_degrades_to_marker(
+    async def test_cold_start_delivers_thread_root_pdf(
         self, adapter_with_session_store
     ):
-        """A failed root-image download must not block the turn — the agent
-        still sees the [image: ...] marker and can ask for a re-share."""
+        """A PDF attached to the thread root is downloaded and surfaced as a
+        document on the first turn, not reduced to a filename-only marker."""
         a = self._prep(adapter_with_session_store)
-        a._download_slack_file = AsyncMock(side_effect=RuntimeError("boom"))
+        a._download_slack_file_bytes = AsyncMock(return_value=b"%PDF-1.7\n")
         a._app.client.conversations_replies = self._replies(
             root_files=[
                 {
-                    "id": "F1",
-                    "name": "chart.png",
-                    "mimetype": "image/png",
-                    "url_private_download": "https://files.slack.com/T1-F1/chart.png",
+                    "id": "F_PDF",
+                    "name": "BATCH-20260813.pdf",
+                    "mimetype": "application/pdf",
+                    "size": 1024,
+                    "url_private_download": "https://files.slack.com/T1-FPDF/batch.pdf",
+                }
+            ]
+        )
+
+        with patch(
+            "plugins.platforms.slack.adapter.cache_document_from_bytes",
+            return_value="/tmp/BATCH-20260813.pdf",
+        ):
+            await a._handle_slack_message(self._thread_event())
+
+        a.handle_message.assert_awaited_once()
+        msg_event = a.handle_message.call_args[0][0]
+        assert msg_event.media_urls == ["/tmp/BATCH-20260813.pdf"]
+        assert msg_event.media_types == ["application/pdf"]
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert "[file: BATCH-20260813.pdf (application/pdf)]" in msg_event.channel_context
+        a._download_slack_file_bytes.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_blank_text_file_only_root_delivers_pdf(
+        self, adapter_with_session_store
+    ):
+        """The normal Slack upload UX permits a blank root caption. The file
+        must survive thread formatting and reach the first triggering turn."""
+        a = self._prep(adapter_with_session_store)
+        a._download_slack_file_bytes = AsyncMock(return_value=b"%PDF-1.7\n")
+        a._app.client.conversations_replies = self._replies(
+            root_text="",
+            root_files=[
+                {
+                    "id": "F_BLANK",
+                    "name": "BATCH-20260813.pdf",
+                    "mimetype": "application/pdf",
+                    "size": 1024,
+                    "url_private_download": "https://files.slack.com/T1-FBLANK/batch.pdf",
+                }
+            ],
+        )
+
+        with patch(
+            "plugins.platforms.slack.adapter.cache_document_from_bytes",
+            return_value="/tmp/BATCH-20260813.pdf",
+        ):
+            await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.await_args.args[0]
+        assert msg_event.media_urls == ["/tmp/BATCH-20260813.pdf"]
+        assert "[thread parent] Alice: [file: BATCH-20260813.pdf (application/pdf)]" in msg_event.channel_context
+
+    @pytest.mark.asyncio
+    async def test_unverified_root_sender_attachment_is_not_hydrated(
+        self, adapter_with_session_store
+    ):
+        """Prior files are indirect input. A root sender rejected by the
+        configured allowlist remains marked unverified and cannot inject a
+        document as ordinary media into a verified reply turn."""
+        a = self._prep(adapter_with_session_store)
+        a.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: user_id == "U_USER"
+        )
+        a._download_slack_file_bytes = AsyncMock(return_value=b"%PDF-1.7\n")
+        a._app.client.conversations_replies = self._replies(
+            root_files=[
+                {
+                    "id": "F_UNVERIFIED",
+                    "name": "instructions.pdf",
+                    "mimetype": "application/pdf",
+                    "size": 1024,
+                    "url_private_download": "https://files.slack.com/T1-FUNVERIFIED/file.pdf",
                 }
             ]
         )
 
         await a._handle_slack_message(self._thread_event())
 
-        a.handle_message.assert_awaited_once()
-        msg_event = a.handle_message.call_args[0][0]
+        msg_event = a.handle_message.await_args.args[0]
+        assert msg_event.media_urls == []
+        assert msg_event.media_types == []
+        assert msg_event.message_type == MessageType.TEXT
+        assert "[thread parent] [unverified] Alice:" in msg_event.channel_context
+        assert "[file: instructions.pdf (application/pdf)]" in msg_event.channel_context
+        assert "[Slack attachment notice]" in msg_event.text
+        assert "unverified sender" in msg_event.text
+        assert "not available to this turn" in msg_event.text
+        assert '"status": "blocked_unverified_sender"' in msg_event.channel_context
+        assert '"uploader_id": "U_ALICE"' in msg_event.channel_context
+        assert '"uploader_trust": "unverified"' in msg_event.channel_context
+        a._download_slack_file_bytes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unverified_root_without_files_has_no_attachment_notice(
+        self, adapter_with_session_store
+    ):
+        a = self._prep(adapter_with_session_store)
+        a.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: user_id == "U_USER"
+        )
+        a._app.client.conversations_replies = self._replies(root_files=None)
+
+        await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.await_args.args[0]
+        assert "[Slack attachment notice]" not in msg_event.text
+        assert "[Slack thread-root attachment provenance]" not in msg_event.channel_context
+
+    @pytest.mark.asyncio
+    async def test_unverified_third_party_bot_root_attachment_is_not_hydrated(
+        self, adapter_with_session_store
+    ):
+        a = self._prep(adapter_with_session_store)
+        a.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: user_id == "U_USER"
+        )
+        a._download_slack_file_bytes = AsyncMock(return_value=b"%PDF-1.7\n")
+        a._app.client.conversations_replies = self._replies(
+            root_user="U_EXTERNAL_BOT",
+            root_bot_id="B_EXTERNAL",
+            root_files=[
+                {
+                    "id": "F_BOT_UNVERIFIED",
+                    "name": "bot-instructions.pdf",
+                    "mimetype": "application/pdf",
+                    "size": 1024,
+                    "url_private_download": "https://files.slack.com/T1-FBOT/file.pdf",
+                }
+            ],
+        )
+
+        await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.await_args.args[0]
+        assert msg_event.media_urls == []
+        assert "unverified bot sender" in msg_event.text
+        assert '"status": "blocked_unverified_sender"' in msg_event.channel_context
+        assert '"uploader_id": "U_EXTERNAL_BOT"' in msg_event.channel_context
+        assert '"uploader_kind": "bot"' in msg_event.channel_context
+        assert '"uploader_trust": "unverified"' in msg_event.channel_context
+        a._download_slack_file_bytes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_markerless_third_party_bot_root_requires_authorization(
+        self, adapter_with_session_store
+    ):
+        """Slack may omit bot_id/subtype and expose only a bot user ID. The
+        workspace-scoped users.info identity cache must still put that root on
+        the fail-closed third-party bot path."""
+        a = self._prep(adapter_with_session_store)
+        a.set_authorization_check(None)
+        a._user_is_bot_cache[("T_TEAM", "U_EXTERNAL_BOT")] = True
+        a._user_name_cache[("T_TEAM", "U_EXTERNAL_BOT")] = "Workflow Bot"
+        a._download_slack_file_bytes = AsyncMock(return_value=b"%PDF-1.7\n")
+        a._app.client.conversations_replies = self._replies(
+            root_user="U_EXTERNAL_BOT",
+            root_files=[
+                {
+                    "id": "F_MARKERLESS_BOT",
+                    "name": "markerless.pdf",
+                    "mimetype": "application/pdf",
+                    "size": 1024,
+                    "url_private_download": "https://files.slack.com/T1-FMARKERLESS/file.pdf",
+                }
+            ],
+        )
+
+        await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.await_args.args[0]
+        assert msg_event.media_urls == []
+        assert "unverified bot sender" in msg_event.text
+        assert '"uploader_kind": "bot"' in msg_event.channel_context
+        assert '"uploader_trust": "unverified"' in msg_event.channel_context
+        a._download_slack_file_bytes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unknown_markerless_root_identity_fails_closed(
+        self, adapter_with_session_store
+    ):
+        a = self._prep(adapter_with_session_store)
+        a.set_authorization_check(None)
+        a._app.client.users_info = AsyncMock(side_effect=RuntimeError("lookup failed"))
+        a._download_slack_file_bytes = AsyncMock(return_value=b"%PDF-1.7\n")
+        a._app.client.conversations_replies = self._replies(
+            root_user="U_UNKNOWN",
+            root_files=[
+                {
+                    "id": "F_UNKNOWN_ACTOR",
+                    "name": "unknown.pdf",
+                    "mimetype": "application/pdf",
+                    "size": 1024,
+                    "url_private_download": "https://files.slack.com/T1-FUNKNOWN/file.pdf",
+                }
+            ],
+        )
+
+        await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.await_args.args[0]
+        assert msg_event.media_urls == []
+        assert "unresolved sender identity" in msg_event.text
+        assert '"uploader_kind": "unknown"' in msg_event.channel_context
+        assert '"uploader_trust": "unverified"' in msg_event.channel_context
+        a._download_slack_file_bytes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_self_bot_root_attachment_remains_trusted(
+        self, adapter_with_session_store
+    ):
+        a = self._prep(adapter_with_session_store)
+        a.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: user_id == "U_USER"
+        )
+        a._download_slack_file_bytes = AsyncMock(return_value=b"%PDF-1.7\n")
+        a._app.client.conversations_replies = self._replies(
+            root_user="U_BOT",
+            root_bot_id="B_SELF",
+            root_files=[
+                {
+                    "id": "F_SELF_BOT",
+                    "name": "generated.pdf",
+                    "mimetype": "application/pdf",
+                    "size": 1024,
+                    "url_private_download": "https://files.slack.com/T1-FSELF/file.pdf",
+                }
+            ],
+        )
+
+        with patch(
+            "plugins.platforms.slack.adapter.cache_document_from_bytes",
+            return_value="/tmp/generated.pdf",
+        ):
+            await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.await_args.args[0]
+        assert msg_event.media_urls == ["/tmp/generated.pdf"]
+        assert '"uploader_id": "U_BOT"' in msg_event.channel_context
+        assert '"uploader_kind": "bot"' in msg_event.channel_context
+        assert '"uploader_trust": "self_bot"' in msg_event.channel_context
+
+    @pytest.mark.asyncio
+    async def test_slack_connect_root_stub_resolves_before_download(
+        self, adapter_with_session_store
+    ):
+        a = self._prep(adapter_with_session_store)
+        a._download_slack_file_bytes = AsyncMock(return_value=b"%PDF-1.7\n")
+        a._app.client.conversations_replies = self._replies(
+            root_files=[{"id": "F_STUB", "file_access": "check_file_info"}]
+        )
+        a._app.client.files_info = AsyncMock(
+            return_value={
+                "ok": True,
+                "file": {
+                    "id": "F_STUB",
+                    "name": "shared.pdf",
+                    "mimetype": "application/pdf",
+                    "size": 512,
+                    "url_private_download": "https://files.slack.com/T1-FSTUB/shared.pdf",
+                },
+            }
+        )
+
+        with patch(
+            "plugins.platforms.slack.adapter.cache_document_from_bytes",
+            return_value="/tmp/shared.pdf",
+        ):
+            await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.await_args.args[0]
+        assert msg_event.media_urls == ["/tmp/shared.pdf"]
+        assert msg_event.media_types == ["application/pdf"]
+        a._app.client.files_info.assert_awaited_once_with(file="F_STUB")
+
+    @pytest.mark.asyncio
+    async def test_root_download_failure_injects_clear_notice(
+        self, adapter_with_session_store
+    ):
+        """A marker alone is not enough: the agent must know the attachment
+        was not downloaded and therefore is not available for inspection."""
+        a = self._prep(adapter_with_session_store)
+        a._download_slack_file_bytes = AsyncMock(side_effect=RuntimeError("boom"))
+        a._app.client.conversations_replies = self._replies(
+            root_files=[
+                {
+                    "id": "F_PDF",
+                    "name": "BATCH-20260813.pdf",
+                    "mimetype": "application/pdf",
+                    "size": 1024,
+                    "url_private_download": "https://files.slack.com/T1-FPDF/batch.pdf",
+                }
+            ]
+        )
+
+        await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.await_args.args[0]
         assert msg_event.media_urls == []
         assert msg_event.message_type == MessageType.TEXT
+        assert "[file: BATCH-20260813.pdf (application/pdf)]" in msg_event.channel_context
+        assert "[Slack attachment notice]" in msg_event.text
+        assert "BATCH-20260813.pdf" in msg_event.text
+        assert "not available to this turn" in msg_event.text
+        assert "https://" not in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_root_rejects_oversize_document_with_notice(
+        self, adapter_with_session_store
+    ):
+        a = self._prep(adapter_with_session_store)
+        a._download_slack_file_bytes = AsyncMock()
+        a._app.client.conversations_replies = self._replies(
+            root_files=[
+                {
+                    "id": "F_BIG",
+                    "name": "../../oversize.pdf",
+                    "mimetype": "application/pdf\r\nforged: true",
+                    "size": 20 * 1024 * 1024 + 1,
+                    "url_private_download": "https://files.slack.com/T1-FBIG/oversize.pdf",
+                }
+            ]
+        )
+
+        await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.await_args.args[0]
+        assert msg_event.media_urls == []
+        assert "oversize.pdf" in msg_event.text
+        assert "exceeds the 20 MB limit" in msg_event.text
+        assert "forged" not in msg_event.text
+        assert "../../" not in msg_event.channel_context
+        assert "forged" not in msg_event.channel_context
+        assert "[file: oversize.pdf]" in msg_event.channel_context
+        a._download_slack_file_bytes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_root_rejects_download_larger_than_declared_limit(
+        self, adapter_with_session_store
+    ):
+        a = self._prep(adapter_with_session_store)
+        oversized_payload = MagicMock()
+        oversized_payload.__len__.return_value = 20 * 1024 * 1024 + 1
+        a._download_slack_file_bytes = AsyncMock(return_value=oversized_payload)
+        a._app.client.conversations_replies = self._replies(
+            root_files=[
+                {
+                    "id": "F_SIZE_MISMATCH",
+                    "name": "mismatch.pdf",
+                    "mimetype": "application/pdf",
+                    "size": 1024,
+                    "url_private_download": "https://files.slack.com/T1-FSIZE/mismatch.pdf",
+                }
+            ]
+        )
+
+        with patch(
+            "plugins.platforms.slack.adapter.cache_document_from_bytes"
+        ) as cache_doc:
+            await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.await_args.args[0]
+        assert msg_event.media_urls == []
+        assert "exceeds the 20 MB limit" in msg_event.text
+        cache_doc.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_root_document_without_name_uses_mime_extension_for_cache(
+        self, adapter_with_session_store
+    ):
+        a = self._prep(adapter_with_session_store)
+        payload = b"%PDF-1.7\n"
+        a._download_slack_file_bytes = AsyncMock(return_value=payload)
+        a._app.client.conversations_replies = self._replies(
+            root_files=[
+                {
+                    "id": "F_NO_NAME",
+                    "mimetype": "application/pdf",
+                    "size": len(payload),
+                    "url_private_download": "https://files.slack.com/T1-FNONAME/file",
+                }
+            ]
+        )
+
+        with patch(
+            "plugins.platforms.slack.adapter.cache_document_from_bytes",
+            return_value="/tmp/F_NO_NAME.pdf",
+        ) as cache_doc:
+            await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.await_args.args[0]
+        assert msg_event.media_types == ["application/pdf"]
+        cache_doc.assert_called_once_with(payload, "F_NO_NAME.pdf")
+
+    @pytest.mark.asyncio
+    async def test_duplicate_root_and_trigger_file_id_is_delivered_once(
+        self, adapter_with_session_store
+    ):
+        a = self._prep(adapter_with_session_store)
+        a._download_slack_file_bytes = AsyncMock(return_value=b"%PDF-1.7\n")
+        duplicate = {
+            "id": "F_DUP",
+            "name": "same.pdf",
+            "mimetype": "application/pdf",
+            "size": 512,
+            "url_private_download": "https://files.slack.com/T1-FDUP/same.pdf",
+        }
+        a._app.client.conversations_replies = self._replies(root_files=[duplicate])
+        event = self._thread_event()
+        event["files"] = [duplicate]
+
+        with patch(
+            "plugins.platforms.slack.adapter.cache_document_from_bytes",
+            return_value="/tmp/same.pdf",
+        ):
+            await a._handle_slack_message(event)
+
+        msg_event = a.handle_message.await_args.args[0]
+        assert msg_event.media_urls == ["/tmp/same.pdf"]
+        assert msg_event.media_types == ["application/pdf"]
+        a._download_slack_file_bytes.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_root_documents_by_checksum_are_delivered_once(
+        self, adapter_with_session_store
+    ):
+        a = self._prep(adapter_with_session_store)
+        payload = b"%PDF-1.7 same bytes\n"
+        a._download_slack_file_bytes = AsyncMock(return_value=payload)
+        a._app.client.conversations_replies = self._replies(
+            root_files=[
+                {
+                    "id": "F_ONE",
+                    "name": "one.pdf",
+                    "mimetype": "application/pdf",
+                    "size": len(payload),
+                    "url_private_download": "https://files.slack.com/T1-FONE/one.pdf",
+                },
+                {
+                    "id": "F_TWO",
+                    "name": "two.pdf",
+                    "mimetype": "application/pdf",
+                    "size": len(payload),
+                    "url_private_download": "https://files.slack.com/T1-FTWO/two.pdf",
+                },
+            ]
+        )
+
+        with patch(
+            "plugins.platforms.slack.adapter.cache_document_from_bytes",
+            return_value="/tmp/one.pdf",
+        ) as cache_doc:
+            await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.await_args.args[0]
+        assert msg_event.media_urls == ["/tmp/one.pdf"]
+        assert msg_event.media_types == ["application/pdf"]
+        assert a._download_slack_file_bytes.await_count == 2
+        cache_doc.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_root_audio_and_video_remain_text_only_markers(
+        self, adapter_with_session_store
+    ):
+        a = self._prep(adapter_with_session_store)
+        a._download_slack_file_bytes = AsyncMock()
+        a._app.client.conversations_replies = self._replies(
+            root_files=[
+                {
+                    "id": "F_AUDIO",
+                    "name": "note.m4a",
+                    "mimetype": "audio/mp4",
+                    "size": 100,
+                    "url_private_download": "https://files.slack.com/T1-FAUDIO/note.m4a",
+                },
+                {
+                    "id": "F_VIDEO",
+                    "name": "demo.mp4",
+                    "mimetype": "video/mp4",
+                    "size": 200,
+                    "url_private_download": "https://files.slack.com/T1-FVIDEO/demo.mp4",
+                },
+            ]
+        )
+
+        await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.await_args.args[0]
+        assert msg_event.media_urls == []
+        assert msg_event.media_types == []
+        assert "[audio: note.m4a]" in msg_event.channel_context
+        assert "[video: demo.mp4]" in msg_event.channel_context
+        a._download_slack_file.assert_not_awaited()
+        a._download_slack_file_bytes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_mixed_root_image_and_document_are_both_delivered(
+        self, adapter_with_session_store
+    ):
+        a = self._prep(adapter_with_session_store)
+        a._download_slack_file_bytes = AsyncMock(return_value=b"%PDF-1.7\n")
+        a._app.client.conversations_replies = self._replies(
+            root_files=[
+                {
+                    "id": "F_IMG",
+                    "name": "chart.png",
+                    "mimetype": "image/png",
+                    "size": 256,
+                    "url_private_download": "https://files.slack.com/T1-FIMG/chart.png",
+                },
+                {
+                    "id": "F_DOC",
+                    "name": "details.pdf",
+                    "mimetype": "application/pdf",
+                    "size": 512,
+                    "url_private_download": "https://files.slack.com/T1-FDOC/details.pdf",
+                },
+            ]
+        )
+
+        with patch(
+            "plugins.platforms.slack.adapter.cache_document_from_bytes",
+            return_value="/tmp/details.pdf",
+        ):
+            await a._handle_slack_message(self._thread_event())
+
+        msg_event = a.handle_message.await_args.args[0]
+        assert msg_event.media_urls == ["/tmp/hermes-cached.png", "/tmp/details.pdf"]
+        assert msg_event.media_types == ["image/png", "application/pdf"]
+        assert msg_event.message_type == MessageType.PHOTO
         assert "[image: chart.png]" in msg_event.channel_context
+        assert "[file: details.pdf (application/pdf)]" in msg_event.channel_context
+
+    @pytest.mark.asyncio
+    async def test_active_session_does_not_repeat_root_attachment_injection(
+        self, adapter_with_session_store
+    ):
+        a = self._prep(adapter_with_session_store)
+        a._has_active_session_for_thread = MagicMock(return_value=True)
+        a._collect_thread_root_attachments = AsyncMock()
+        a._app.client.conversations_replies = self._replies(root_files=[])
+
+        await a._handle_slack_message(self._thread_event())
+
+        a.handle_message.assert_awaited_once()
+        a._collect_thread_root_attachments.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_root_provenance_is_safe_and_persistable(
+        self, adapter_with_session_store
+    ):
+        a = self._prep(adapter_with_session_store)
+        a._download_slack_file_bytes = AsyncMock(return_value=b"%PDF-1.7\n")
+        a._app.client.conversations_replies = self._replies(
+            root_files=[
+                {
+                    "id": "F_SAFE",
+                    "name": "BATCH-20260813.pdf",
+                    "mimetype": "application/pdf",
+                    "size": 1024,
+                    "url_private_download": "https://files.slack.com/T1-FSAFE/private.pdf?sig=secret",
+                }
+            ]
+        )
+
+        with patch(
+            "plugins.platforms.slack.adapter.cache_document_from_bytes",
+            return_value="/tmp/BATCH-20260813.pdf",
+        ):
+            await a._handle_slack_message(self._thread_event())
+
+        context = a.handle_message.await_args.args[0].channel_context
+        assert "[Slack thread-root attachment provenance]" in context
+        assert '\"file_id\": \"F_SAFE\"' in context
+        assert '\"channel\": \"C123\"' in context
+        assert '\"thread_ts\": \"123.000\"' in context
+        assert '\"trigger_ts\": \"123.456\"' in context
+        assert '\"name\": \"BATCH-20260813.pdf\"' in context
+        assert '\"mime\": \"application/pdf\"' in context
+        assert '\"declared_size\": 1024' in context
+        assert '\"downloaded_size\": 9' in context
+        assert '\"uploader_id\": \"U_ALICE\"' in context
+        assert '\"uploader_kind\": \"user\"' in context
+        assert '\"uploader_trust\": \"authorized\"' in context
+        assert "url_private" not in context
+        assert "https://" not in context
+        assert "sig=secret" not in context
 
 
 # =========================================================================

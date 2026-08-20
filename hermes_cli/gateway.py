@@ -4697,11 +4697,22 @@ def generate_launchd_plist() -> str:
 
 def launchd_plist_is_current() -> bool:
     """Check if the installed launchd plist matches the currently generated one."""
+    import plistlib
+
     plist_path = get_launchd_plist_path()
     if not plist_path.exists():
         return False
 
-    installed = plist_path.read_text(encoding="utf-8")
+    # macOS launchd commonly rewrites installed plists to binary format on
+    # bootstrap (and `launchctl` may also normalize XML plists back to binary).
+    # The previous ``read_text(encoding="utf-8")`` crashed on the binary
+    # header byte (bplist00 starts with 0xd8), throwing UnicodeDecodeError out
+    # of every ``gateway status`` / ``gateway install`` / auto-refresh path.
+    # Parse with ``plistlib`` (handles both binary and XML) and re-emit as XML
+    # so the existing text normalizer can compare against the generated plist.
+    with plist_path.open("rb") as _f:
+        _installed_data = plistlib.load(_f)
+    installed = plistlib.dumps(_installed_data, fmt=plistlib.FMT_XML).decode("utf-8")
     expected = generate_launchd_plist()
     return _normalize_launchd_plist_for_comparison(
         installed

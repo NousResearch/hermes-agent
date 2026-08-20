@@ -273,6 +273,7 @@ import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import {
   backgroundMaterialFor,
+  defaultTranslucencyState,
   glassActive,
   glassSupportedOn,
   normalizeState as normalizeTranslucency,
@@ -878,7 +879,12 @@ function readPersistedTranslucency() {
   try {
     return normalizeTranslucency(JSON.parse(fs.readFileSync(TRANSLUCENCY_CONFIG_PATH, 'utf8')), GLASS_SUPPORTED)
   } catch {
-    return normalizeTranslucency(null, GLASS_SUPPORTED)
+    // Nothing persisted yet — a first launch. Glass ships on, so the FIRST
+    // window has to be created with the glass backing already: a window born
+    // opaque cannot reliably be swapped to glass afterwards (see
+    // windowBackingOptions). nativeTheme is the only appearance signal main
+    // has this early; the renderer's first resolved send corrects it.
+    return defaultTranslucencyState(nativeTheme.shouldUseDarkColors ? 'dark' : 'light', GLASS_SUPPORTED, IS_WINDOWS)
   }
 }
 

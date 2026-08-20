@@ -1,18 +1,28 @@
 /**
  * Window translucency (see-through window).
  *
- * One lever, 0–100. 0 = off (fully opaque, the default). Two modes decide HOW
- * the desktop shows through — see `@hermes/shared/translucency`, which owns the
- * mapping both this store and the main process read.
+ * One lever, 0–100. Two modes decide HOW the desktop shows through — see
+ * `@hermes/shared/translucency`, which owns the mapping both this store and the
+ * main process read.
  *
- * The renderer owns the value and mirrors it to the main process over IPC.
- * Glass additionally needs page-level work, which lives here: the field
- * surfaces have to get out of the way for the platform material underneath the
- * web contents to read (see the `[data-hermes-glass]` block in styles.css).
+ * Settings are kept per light/dark appearance: a tint that reads as a whisper
+ * over a dark palette is a milky sheet over a light one. The book of settings
+ * is the persisted unit (`TranslucencyBook`); `$translucency` publishes the
+ * RESOLVED state for the appearance currently painted, so every consumer —
+ * the CSS field surfaces, the main process, the HUD — keeps reading one flat
+ * state and never has to know appearances were split.
+ *
+ * The renderer owns the value and mirrors the resolved state to the main
+ * process over IPC. Glass additionally needs page-level work, which lives
+ * here: the field surfaces have to get out of the way for the platform
+ * material underneath the web contents to read (see the `[data-hermes-glass]`
+ * block in styles.css).
  */
 
 import {
+  type Appearance,
   clampIntensity,
+  defaultTranslucencyValues,
   GLASS_MATERIALS,
   GLASS_SCOPES,
   type GlassMaterial,
@@ -20,21 +30,26 @@ import {
   glassMaterialsFor,
   type GlassScope,
   glassSurfaceKeep,
+  normalizeBook,
   normalizeMaterial,
   normalizeScope,
-  normalizeState,
+  resolveTranslucency,
+  setTranslucencyValues,
   TRANSLUCENCY_MAX,
   TRANSLUCENCY_MIN,
   TRANSLUCENCY_STEP,
+  type TranslucencyBook,
   type TranslucencyMode,
-  type TranslucencyState
+  type TranslucencyState,
+  type TranslucencyValues
 } from '@hermes/shared/translucency'
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import { isMacPlatform, isWindowsPlatform } from '@/lib/platform'
 import { readJson, writeJson } from '@/lib/storage'
 
 export {
+  defaultTranslucencyValues,
   GLASS_MATERIALS,
   GLASS_SCOPES,
   glassMaterialForPicker,
@@ -43,6 +58,8 @@ export {
   TRANSLUCENCY_MIN,
   TRANSLUCENCY_STEP
 }
+
+export type { Appearance }
 
 /**
  * Glass needs a native window material. Electron is authoritative (preload
@@ -69,40 +86,65 @@ export const TRANSLUCENCY_SUPPORTED =
 /** Windows collapses the frost ladder — see `glassMaterialsFor`. */
 export const GLASS_IS_WINDOWS = GLASS_SUPPORTED && !isMacPlatform()
 
-const KEY = 'hermes.desktop.translucency.v1'
+// v1 held a flat state (one setting for both appearances); v2 is the book.
+// Reading v1 as the seed is what carries an already-tuned window across the
+// upgrade — normalizeBook lands those values in `base`, which both appearances
+// inherit until one of them is edited.
+const KEY = 'hermes.desktop.translucency.v2'
+const LEGACY_KEY = 'hermes.desktop.translucency.v1'
 
-// The v1 key used to hold a bare intensity (`"23"`). Normalization lives in the
-// shared module so this and the main process resolve the default the same way —
-// including the legacy rule, where a saved NON-ZERO intensity with no mode means
-// a profile that has been rendering as clear all along and must keep doing so.
-const read = (): TranslucencyState => {
-  const stored = readJson<unknown>(KEY)
+const read = (): TranslucencyBook =>
+  normalizeBook(readJson<unknown>(KEY) ?? readJson<unknown>(LEGACY_KEY), GLASS_SUPPORTED)
 
-  return normalizeState(stored && typeof stored === 'object' ? stored : { intensity: stored }, GLASS_SUPPORTED)
+/** The persisted book. Settings edits it; everything else reads `$translucency`. */
+export const $translucencyBook = atom<TranslucencyBook>(
+  typeof window === 'undefined' ? normalizeBook(null, false) : read()
+)
+
+/**
+ * Which palette is on screen. Published by the theme provider from its
+ * RENDERED mode (background luminance), not the light/dark preference — a
+ * skin that keeps a bright surface in "dark" wants light's tint.
+ */
+export const $appearance = atom<Appearance>('dark')
+
+export function setAppearance(appearance: Appearance): void {
+  if ($appearance.get() !== appearance) {
+    $appearance.set(appearance)
+  }
 }
 
-const initial: TranslucencyState = typeof window === 'undefined' ? normalizeState(null, false) : read()
+/** The resolved state for the painted appearance — the shape every consumer reads. */
+export const $translucency = computed([$translucencyBook, $appearance], (book, appearance) =>
+  resolveTranslucency(book, appearance, GLASS_IS_WINDOWS)
+)
 
-export const $translucency = atom<TranslucencyState>(initial)
+/** Write an edit against the appearance being painted. */
+const edit = (patch: Partial<TranslucencyValues>): void => {
+  $translucencyBook.set(setTranslucencyValues($translucencyBook.get(), $appearance.get(), patch))
+}
 
 export function setTranslucency(intensity: number): void {
-  $translucency.set({ ...$translucency.get(), intensity: clampIntensity(intensity) })
+  edit({ intensity: clampIntensity(intensity) })
 }
 
 export function setTranslucencyFade(fade: number): void {
-  $translucency.set({ ...$translucency.get(), fade: clampIntensity(fade) })
+  edit({ fade: clampIntensity(fade) })
 }
 
 export function setTranslucencyMode(mode: TranslucencyMode): void {
-  $translucency.set({ ...$translucency.get(), mode: mode === 'glass' && GLASS_SUPPORTED ? 'glass' : 'clear' })
+  $translucencyBook.set({
+    ...$translucencyBook.get(),
+    mode: mode === 'glass' && GLASS_SUPPORTED ? 'glass' : 'clear'
+  })
 }
 
 export function setTranslucencyMaterial(material: GlassMaterial): void {
-  $translucency.set({ ...$translucency.get(), material: normalizeMaterial(material) })
+  edit({ material: normalizeMaterial(material) })
 }
 
 export function setTranslucencyScope(scope: GlassScope): void {
-  $translucency.set({ ...$translucency.get(), scope: normalizeScope(scope) })
+  edit({ scope: normalizeScope(scope) })
 }
 
 // Glass thins surfaces only in real chat windows (the primary window and
@@ -313,13 +355,20 @@ if (typeof window !== 'undefined') {
 
   const persist = () => {
     storageTimer = null
-    writeJson(KEY, $translucency.get())
+    writeJson(KEY, $translucencyBook.get())
   }
 
+  // The RESOLVED state drives paint and IPC — main only ever cares about the
+  // appearance on screen. Switching light/dark therefore re-sends, which is
+  // exactly right: the window's tint and native opacity change with it.
   $translucency.subscribe(state => {
     applyGlassSurfaces(state)
     window.hermesDesktop?.setTranslucency?.(state)
+  })
 
+  // Persistence follows the BOOK, so an appearance switch (which changes the
+  // resolved state but not the settings) never schedules a pointless write.
+  $translucencyBook.subscribe(() => {
     if (storageTimer !== null) {
       window.clearTimeout(storageTimer)
     }
@@ -346,16 +395,9 @@ if (typeof window !== 'undefined') {
     }
 
     const next = read()
-    const current = $translucency.get()
 
-    if (
-      next.intensity !== current.intensity ||
-      next.fade !== current.fade ||
-      next.mode !== current.mode ||
-      next.material !== current.material ||
-      next.scope !== current.scope
-    ) {
-      $translucency.set(next)
+    if (JSON.stringify(next) !== JSON.stringify($translucencyBook.get())) {
+      $translucencyBook.set(next)
     }
   })
 

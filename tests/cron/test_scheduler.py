@@ -1596,6 +1596,44 @@ class TestBuildJobPromptSilentHint:
         assert "Check for updates" in result
 
 
+class TestBuildJobPromptRunTime:
+    """The cron hint must carry the actual wall-clock run time.
+
+    The system prompt is date-granularity only (byte-stable for prompt
+    caching), so without this line a scheduled run can't tell 07:00
+    from a 19:00 retry. Ported from qwibitai/nanoclaw#3154.
+    """
+
+    def test_run_time_line_present_and_current(self):
+        import re
+        from datetime import datetime, timedelta
+        from hermes_time import now as _now
+
+        job = {"prompt": "Morning brief"}
+        before = _now()
+        result = _build_job_prompt(job)
+        after = _now()
+
+        m = re.search(r"CURRENT RUN TIME: \w+, (\d{4}-\d{2}-\d{2} \d{2}:\d{2})", result)
+        assert m, f"run-time line missing from cron hint: {result[:300]!r}"
+        stamped = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M")
+        # Minute-granularity stamp must fall within the call window
+        # (± one minute for a boundary tick).
+        lo = before.replace(second=0, microsecond=0, tzinfo=None) - timedelta(minutes=1)
+        hi = after.replace(second=0, microsecond=0, tzinfo=None) + timedelta(minutes=1)
+        assert lo <= stamped <= hi
+
+    def test_run_time_present_with_skills_path_too(self):
+        """The hint (with run time) is prepended before skill loading, so
+        it must survive the has-skills assembly path as well."""
+        with patch(
+            "tools.skills_tool.skill_view",
+            return_value='{"success": false, "error": "not found"}',
+        ):
+            result = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "go"})
+        assert "CURRENT RUN TIME:" in result
+
+
 class TestParseWakeGate:
     """Unit tests for _parse_wake_gate — pure function, no side effects."""
 

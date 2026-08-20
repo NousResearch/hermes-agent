@@ -3907,8 +3907,19 @@ def _build_job_prompt(
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
+    #
+    # TIME: the system prompt only carries a date-granularity timestamp
+    # ("Conversation started: <day>") to keep it byte-stable for prompt
+    # caching, so a scheduled run has no idea WHAT TIME it fired — a
+    # "morning brief" job that runs at 07:00 can't distinguish that from a
+    # 19:00 retry, and time-sensitive reports get stamped with stale or
+    # invented times. Give every fire its actual wall-clock run time.
+    # Cron sessions are fresh per fire, so this per-run line does not
+    # break any cached prefix. (Ported from qwibitai/nanoclaw#3154.)
+    _run_time_line = _hermes_now().strftime("%A, %Y-%m-%d %H:%M %Z").strip()
     cron_hint = (
         "[IMPORTANT: You are running as a scheduled cron job. "
+        f"CURRENT RUN TIME: {_run_time_line}. "
         "DELIVERY: Your final response will be automatically delivered "
         "to the user — do NOT use send_message or try to deliver "
         "the output yourself. Just produce your report/output as your "

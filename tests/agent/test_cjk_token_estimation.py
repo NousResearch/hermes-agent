@@ -49,15 +49,16 @@ def test_cjk_tail_does_not_expand_to_english_char_budget():
 
 
 def _reference_per_char_estimate(text: str) -> int:
-    """The pre-perf-gate per-character reference implementation."""
+    """Per-character reference: CJK ~1 token/char, everything else UTF-8
+    bytes/4 (the byte width corrects Cyrillic/Greek/Arabic under-counting)."""
     dense = 0
-    sparse = 0
+    sparse_bytes = 0
     for ch in text:
         if _is_cjk_token_dense_char(ch):
             dense += 1
         else:
-            sparse += 1
-    return dense + ((sparse + 3) // 4)
+            sparse_bytes += len(ch.encode("utf-8"))
+    return dense + ((sparse_bytes + 3) // 4)
 
 
 def test_perf_gated_estimator_matches_per_char_reference():
@@ -79,3 +80,11 @@ def test_perf_gated_estimator_matches_per_char_reference():
 
 
 
+def test_cyrillic_counts_by_utf8_bytes():
+    # «русский текст» = 12 Cyrillic chars (2 bytes each) + 1 ASCII space:
+    # 25 bytes -> ceil(25/4) = 7 tokens; the old chars/4 rule said 4 —
+    # the ~2x under-count that let real prompts ride the context ceiling.
+    from agent.model_metadata import estimate_tokens_rough
+    assert estimate_tokens_rough("русский текст") == 7
+    # Pure ASCII unchanged.
+    assert estimate_tokens_rough("a" * 400) == 100

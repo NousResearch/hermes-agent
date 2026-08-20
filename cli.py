@@ -4649,6 +4649,20 @@ def _looks_like_slash_command(text: str) -> bool:
     return "/" not in first_word[1:]
 
 
+def _command_base(text: str) -> str:
+    """Return the lowercased command name of a slash command, slash stripped.
+
+    ``/My-Skill foo`` -> ``my-skill``. Shared by the busy-time
+    ``_should_handle_*_inline`` detectors and skill-command detection; each
+    used to re-parse this verbatim, which drifted (one stripped the slash
+    before checking the slash-keyed skill map, silently disabling its
+    branch).
+    """
+    if not text:
+        return ""
+    return text.split(None, 1)[0].lower().lstrip("/")
+
+
 # ============================================================================
 # Skill Slash Commands — dynamic commands generated from installed skills
 # ============================================================================
@@ -11150,7 +11164,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return False
         try:
             from hermes_cli.commands import resolve_command
-            base = text.split(None, 1)[0].lower().lstrip('/')
+            base = _command_base(text)
             cmd = resolve_command(base)
             return bool(cmd and cmd.name == "model")
         except Exception:
@@ -11174,7 +11188,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return False
         try:
             from hermes_cli.commands import resolve_command
-            base = text.split(None, 1)[0].lower().lstrip('/')
+            base = _command_base(text)
             cmd = resolve_command(base)
             return bool(cmd and cmd.name == "steer")
         except Exception:
@@ -11205,11 +11219,44 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return False
         try:
             from hermes_cli.commands import resolve_command
-            base = text.split(None, 1)[0].lower().lstrip('/')
+            base = _command_base(text)
             cmd = resolve_command(base)
             return bool(cmd and cmd.name == "background")
         except Exception:
             return False
+
+    def _skill_command_instruction(self, text: str) -> str:
+        """Return the user payload of a skill invocation, or "" if not one.
+
+        A skill command is a slash command whose base name resolves to an
+        installed skill (not a built-in). When it carries a payload (e.g.
+        ``/my-skill review this PR``), the payload is a real user
+        instruction that deserves feedback instead of silent queueing while
+        the agent is busy (#83209). Returns just the instruction text so
+        callers can preview it.
+        """
+        if not text or not _looks_like_slash_command(text):
+            return ""
+        base = _command_base(text)
+        if not base:
+            return ""
+        try:
+            from hermes_cli.commands import resolve_command
+            if resolve_command(base):
+                return ""  # built-in command, not a skill
+        except Exception:
+            return ""
+        try:
+            skills = _ensure_skill_commands()
+        except Exception:
+            return ""
+        # scan_skill_commands() keys are slash-prefixed ("/my-skill") — the
+        # same form production dispatch checks (cli.py `base_cmd in
+        # skill_commands`). Strip the leading slash before comparing.
+        if f"/{base}" not in skills:
+            return ""
+        parts = text.split(None, 1)
+        return parts[1].strip() if len(parts) > 1 else ""
 
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
@@ -17529,6 +17576,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         pass
                 else:
                     self._pending_input.put(payload)
+                    # A skill command with an instruction payload must not
+                    # queue silently while the agent is busy: the user sees
+                    # nothing happen, re-sends, and every send queues another
+                    # full skill-expanded message that replays after the turn
+                    # (#83209). Print explicit feedback naming their
+                    # instruction so they know it is registered for the next
+                    # turn. (Skills still need a full turn — the expanded
+                    # skill content must load into context, so mid-run steer
+                    # is the wrong channel for them.)
+                    if getattr(self, "_agent_running", False):
+                        skill_instruction = self._skill_command_instruction(text)
+                        if skill_instruction:
+                            preview = skill_instruction[:80] + ("..." if len(skill_instruction) > 80 else "")
+                            _cprint(f"  {_DIM}Queued for the next turn (skill): {preview}{_RST}")
                 # History stores real pasted content, not the placeholder, so
                 # up-arrow recall restores the actual text.
                 self._inline_pastes(event.app.current_buffer)

@@ -85,11 +85,18 @@ class TestAdapterInit:
 
 class TestReadReceiptPolicyOrdering:
     @pytest.mark.asyncio
-    async def test_accepted_receipt_key_is_sent_to_bridge(self):
+    async def test_accepted_receipt_key_is_sent_to_external_bridge(self):
         from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
         adapter = WhatsAppAdapter(
-            PlatformConfig(enabled=True, extra={"send_read_receipts": True})
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "bridge_host": "172.17.0.1",
+                    "bridge_port": 19876,
+                    "send_read_receipts": True,
+                },
+            )
         )
         response = SimpleNamespace(status=200)
         session = MagicMock()
@@ -105,7 +112,7 @@ class TestReadReceiptPolicyOrdering:
         await adapter._send_read_receipt({"readReceiptKey": key})
 
         assert session.post.call_args.kwargs["json"] == {"key": key}
-        assert session.post.call_args.args[0].endswith("/read")
+        assert session.post.call_args.args[0] == "http://172.17.0.1:19876/read"
 
 
 # ---------------------------------------------------------------------------

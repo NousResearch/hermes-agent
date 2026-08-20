@@ -47,6 +47,8 @@ def _make_adapter():
     adapter.platform = Platform.WHATSAPP
     adapter.config = MagicMock()
     adapter._bridge_port = 19876
+    adapter._bridge_url = "http://127.0.0.1:19876"
+    adapter._external_bridge = False
     adapter._bridge_script = "/tmp/test-bridge.js"
     adapter._session_path = Path("/tmp/test-wa-session")
     adapter._bridge_log_fh = None
@@ -166,6 +168,27 @@ class TestDataInitialized:
         # connect() returns True (warn-and-proceed path)
         assert result is True
         assert adapter._running is True
+
+
+class TestExternalBridge:
+    """An explicitly remote bridge must not be managed as a local child."""
+
+    @pytest.mark.asyncio
+    async def test_connect_uses_external_bridge_without_local_bootstrap(self):
+        adapter = _make_adapter()
+        adapter._external_bridge = True
+        adapter._bridge_url = "http://172.17.0.1:19876"
+        mock_client_cls = _mock_aiohttp(status=200, json_data={"status": "connected"})
+
+        with patch("aiohttp.ClientSession", mock_client_cls), \
+             patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements") as requirements, \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.create_task") as create_task:
+            result = await adapter.connect()
+
+        assert result is True
+        assert adapter._running is True
+        requirements.assert_not_called()
+        create_task.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

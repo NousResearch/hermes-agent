@@ -60,39 +60,40 @@ class TestUnlimitedSpellings:
 
 class TestAbsentAndDefault:
     def test_none_returns_default(self):
-        assert resolve_turn_limit(None) == 90
+        # Default is now unlimited (max_turns caused more problems than it solved).
+        assert resolve_turn_limit(None) == TURN_LIMIT_UNLIMITED
 
     def test_none_custom_default(self):
         assert resolve_turn_limit(None, default=500) == 500
 
     def test_empty_string_returns_default(self):
-        assert resolve_turn_limit("") == 90
+        assert resolve_turn_limit("") == TURN_LIMIT_UNLIMITED
 
     def test_whitespace_only_returns_default(self):
-        assert resolve_turn_limit("   ") == 90
+        assert resolve_turn_limit("   ") == TURN_LIMIT_UNLIMITED
 
     def test_absent_env_var_returns_default(self):
         """Simulates os.getenv() returning None when HERMES_MAX_ITERATIONS unset."""
-        assert resolve_turn_limit(None) == 90
+        assert resolve_turn_limit(None) == TURN_LIMIT_UNLIMITED
 
 
 class TestInvalidInputs:
     def test_bool_rejected(self):
         # bool is an int subclass — must not silently become 1/0
-        assert resolve_turn_limit(True) == 90
-        assert resolve_turn_limit(False) == 90
+        assert resolve_turn_limit(True) == TURN_LIMIT_UNLIMITED
+        assert resolve_turn_limit(False) == TURN_LIMIT_UNLIMITED
 
     def test_garbage_string_returns_default(self):
-        assert resolve_turn_limit("garbage") == 90
-        assert resolve_turn_limit("not_a_number") == 90
+        assert resolve_turn_limit("garbage") == TURN_LIMIT_UNLIMITED
+        assert resolve_turn_limit("not_a_number") == TURN_LIMIT_UNLIMITED
 
     def test_list_returns_default(self):
-        assert resolve_turn_limit([]) == 90
-        assert resolve_turn_limit([90]) == 90
+        assert resolve_turn_limit([]) == TURN_LIMIT_UNLIMITED
+        assert resolve_turn_limit([90]) == TURN_LIMIT_UNLIMITED
 
     def test_dict_returns_default(self):
-        assert resolve_turn_limit({}) == 90
-        assert resolve_turn_limit({"max_turns": 90}) == 90
+        assert resolve_turn_limit({}) == TURN_LIMIT_UNLIMITED
+        assert resolve_turn_limit({"max_turns": 90}) == TURN_LIMIT_UNLIMITED
 
 
 class TestSentinelProperties:

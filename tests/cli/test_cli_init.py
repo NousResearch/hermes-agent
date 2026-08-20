@@ -73,10 +73,14 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
 class TestMaxTurnsResolution:
     """max_turns must always resolve to a positive integer, never None."""
 
-    def test_default_max_turns_is_integer(self):
+    def test_default_max_turns_is_unlimited(self):
+        # Default is now unlimited (max_turns caused more problems than it
+        # solved). Still a positive int (the sys.maxsize sentinel), so loop
+        # conditions like `count < max_iterations` keep working.
+        import sys
         cli = _make_cli()
         assert isinstance(cli.max_turns, int)
-        assert cli.max_turns == 500
+        assert cli.max_turns == sys.maxsize
 
     def test_explicit_max_turns_honored(self):
         cli = _make_cli(max_turns=25)

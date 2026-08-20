@@ -43,7 +43,11 @@ DEFAULT_CONFIG = {
         "terminal_continue": True,
     },
     "agent": {
-        "max_turns": 500,
+        # Unlimited by default. The agent turn cap caused more problems than
+        # it solved (silent mid-task truncation). null = unlimited; set a
+        # positive integer to cap, or use "none"/"unlimited"/"inf"/0/-1 —
+        # all normalized by hermes_cli.config.resolve_turn_limit.
+        "max_turns": None,
         # Optional wall-clock budget in seconds per conversation run.
         # null/absent = feature fully off (zero behavior change). When set,
         # the agent gets a one-time wrap-up notice at 80% elapsed and

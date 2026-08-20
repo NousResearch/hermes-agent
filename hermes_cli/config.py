@@ -3092,29 +3092,35 @@ TURN_LIMIT_UNLIMITED = sys.maxsize
 
 # String spellings that mean "no limit".  Lowercased, whitespace-stripped
 # before comparison so ``"None"``, ``" unlimited "`` etc. all match.
-_UNLIMITED_SPELLINGS = frozenset({"none", "unlimited", "infinite", "∞", "-1", "0"})
+_UNLIMITED_SPELLINGS = frozenset({
+    "none", "null", "unlimited", "infinite", "infinity", "inf",
+    "∞", "-1", "0",
+})
 
 
-def resolve_turn_limit(raw: Any, default: int = 90) -> int:
+def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
     """Normalize a raw ``agent.max_turns`` value into an int iteration cap.
 
     Accepts:
-      - ``int`` / ``float`` → ``int(raw)`` (floats truncated; negatives rejected
-        → fall through to ``default``).
+      - ``int`` / ``float`` → ``int(raw)`` (floats truncated; values ≤ 0 mean
+        "no limit" → :data:`TURN_LIMIT_UNLIMITED`).
       - numeric string (``"120"``) → ``int(raw)``.
-      - ``"none"`` / ``"unlimited"`` / ``"infinite"`` / ``"-1"`` / ``"0"``
+      - ``"none"`` / ``"null"`` / ``"unlimited"`` / ``"infinite"`` /
+        ``"infinity"`` / ``"inf"`` / ``"∞"`` / ``"-1"`` / ``"0"``
         (case-insensitive, whitespace-tolerant) → :data:`TURN_LIMIT_UNLIMITED`.
-      - YAML ``None`` / ``null`` (the value is explicitly absent) → ``default``.
+      - YAML ``None`` / ``null`` / absent value → ``default`` (which is itself
+        :data:`TURN_LIMIT_UNLIMITED` — max_turns is unlimited by default).
       - Anything unparseable → ``default`` (with a debug log).
 
     The returned int is always ≥ 1, so loop conditions like
     ``while api_call_count < agent.max_iterations`` behave correctly even when
-    the default path is taken.
+    the default (unlimited) path is taken.
 
     This is the single normalization point for the turn-limit value type.
     Config-reading sites (cli.py, gateway/run.py, cron/scheduler.py) call this
     instead of bare ``int(...)``, so ``agent.max_turns: none`` in config.yaml
-    becomes a first-class supported spelling of "unlimited".
+    becomes a first-class supported spelling of "unlimited". max_turns is
+    unlimited unless the user sets an explicit positive integer cap.
     """
     if raw is None:
         return default

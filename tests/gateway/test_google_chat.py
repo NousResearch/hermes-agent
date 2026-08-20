@@ -1472,6 +1472,46 @@ class TestFormatMessage:
         assert "\U0001f469" in out
         assert "\U0001f467" in out
 
+    def test_strips_bom_and_bidi_marks(self):
+        """BOM, LTR/RTL marks stripped — they break Chat's font rendering."""
+        src = "﻿ hello ‎ world ‏"
+        out = GoogleChatAdapter.format_message(src)
+        assert "﻿" not in out
+        assert "‎" not in out
+        assert "‏" not in out
+        assert "hello" in out and "world" in out
+
+    def test_empty_and_none_safe(self):
+        """Empty / None pass through without raising.
+
+        The double-space collapser runs on every non-empty input — that's
+        intentional cleanup after Unicode stripping. So pure-whitespace
+        input collapses to a single space; documented as expected.
+        """
+        assert GoogleChatAdapter.format_message("") == ""
+        assert GoogleChatAdapter.format_message(None) is None
+        # Multi-space input collapses to single space (the cleanup step
+        # runs unconditionally; cheap correctness over rare preservation).
+        assert GoogleChatAdapter.format_message("   ") == " "
+
+    def test_unmatched_asterisks_left_alone(self):
+        """A lone `**` with no closing pair is not transformed.
+
+        Defensive: the regex requires a closing `**`. Unmatched syntax
+        from a partial LLM stream stays visible as-is rather than
+        consuming the rest of the message.
+        """
+        out = GoogleChatAdapter.format_message("rate is ** TBD")
+        assert "**" in out  # not converted
+
+    def test_nested_formatting_restoration(self):
+        """Nested bold inline code formatting behaves correctly and placeholders resolve."""
+        input_text = "The status of your pod: **`broker-dbbb484c5-d8p9w`**: Running"
+        output = GoogleChatAdapter.format_message(input_text)
+        assert "broker-dbbb484c5-d8p9w" in output
+        assert "GC0" not in output
+        assert "GC1" not in output
+
 
 class TestADCFallback:
     """When no SA JSON is configured, fall back to Application Default Credentials.

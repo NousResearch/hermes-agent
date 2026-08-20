@@ -1344,6 +1344,39 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child._swap_credential.assert_called_once_with(leased_entry)
         child._credential_pool.release_lease.assert_called_once_with("cred-b")
 
+    def test_run_single_child_clears_gateway_status_owner(self):
+        from tools.delegate_tool import _run_single_child
+        from tools.delegation_status import (
+            bind_detached_status_owner,
+            get_detached_status_owner,
+        )
+
+        owner = object()
+        child = MagicMock()
+        child._credential_pool = None
+
+        def run_conversation(**kwargs):
+            self.assertIsNone(get_detached_status_owner())
+            return {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+
+        child.run_conversation.side_effect = run_conversation
+        with bind_detached_status_owner(owner):
+            result = _run_single_child(
+                task_index=0,
+                goal="nested work",
+                child=child,
+                parent_agent=_make_mock_parent(),
+            )
+            self.assertIs(get_detached_status_owner(), owner)
+
+        self.assertEqual(result["status"], "completed")
+
     def test_run_single_child_releases_lease_after_failure(self):
         from tools.delegate_tool import _run_single_child
 

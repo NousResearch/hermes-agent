@@ -90,6 +90,8 @@ moa:
       # the same behavior as a single-model Hermes agent.
       # reference_temperature: 0.6
       # aggregator_temperature: 0.4
+      # advisory_context: auto  # or: none for self-contained artifact reviews
+      # advisory_max_chars: 50000
       max_tokens: 4096
       enabled: true
 ```
@@ -99,6 +101,21 @@ Default preset:
 - reference: `openai-codex:gpt-5.5`
 - reference: `openrouter:deepseek/deepseek-v4-pro`
 - aggregator / acting model: `openrouter:anthropic/claude-opus-4.8`
+
+### Control conversation replay to advisors
+
+By default, `advisory_context: auto` preserves the conversational MoA behavior:
+each advisor receives a trimmed text view of the current session plus the latest
+payload. For self-contained artifact reviews, set `advisory_context: none` on
+the preset. Advisors then receive only the fixed advisory system prompt and the
+latest user payload; earlier session messages are not replayed. The acting
+aggregator still receives the normal conversation, so this does not mutate the
+session or its cacheable prefix.
+
+`advisory_max_chars` provides a middle ground. When set to a positive integer,
+Hermes drops complete oldest messages until the advisory view fits the bound.
+The latest user payload is always retained, even if it alone exceeds the soft
+bound. Both options are per-preset, and omitting them keeps existing behavior.
 
 ### Tuning advisor speed with `reference_max_tokens`
 

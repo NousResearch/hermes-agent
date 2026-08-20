@@ -2360,6 +2360,10 @@ def run_conversation(
                     temperature=_preset_temperature(moa_config, "reference_temperature"),
                     aggregator_temperature=_preset_temperature(moa_config, "aggregator_temperature"),
                     reference_max_tokens=moa_config.get("reference_max_tokens"),
+                    advisory_context=str(
+                        moa_config.get("advisory_context") or "auto"
+                    ),
+                    advisory_max_chars=moa_config.get("advisory_max_chars"),
                     # None = no per-preset override; inherit
                     # auxiliary.moa_reference.timeout via call_llm.
                     reference_timeout=(

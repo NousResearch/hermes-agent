@@ -121,6 +121,23 @@ def _preset(**extra):
     return {"default_preset": "p", "presets": {"p": base}}
 
 
+def test_advisory_context_normalizes_per_preset_without_changing_default():
+    default = normalize_moa_config(_preset())["presets"]["p"]
+    artifact = normalize_moa_config(
+        _preset(advisory_context="NONE", advisory_max_chars="50000")
+    )["presets"]["p"]
+    malformed = normalize_moa_config(
+        _preset(advisory_context="unexpected", advisory_max_chars=-1)
+    )["presets"]["p"]
+
+    assert default["advisory_context"] == "auto"
+    assert default["advisory_max_chars"] is None
+    assert artifact["advisory_context"] == "none"
+    assert artifact["advisory_max_chars"] == 50000
+    assert malformed["advisory_context"] == "auto"
+    assert malformed["advisory_max_chars"] is None
+
+
 
 
 

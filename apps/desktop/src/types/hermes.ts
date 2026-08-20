@@ -1275,6 +1275,8 @@ export interface MoaConfigResponse {
       aggregator: MoaModelSlot
       aggregator_temperature: number
       degraded_reference_policy: 'loud' | 'silent'
+      advisory_context?: 'auto' | 'none'
+      advisory_max_chars?: number | null
       enabled: boolean
       max_tokens: number
       reference_models: MoaModelSlot[]
@@ -1289,6 +1291,8 @@ export interface MoaConfigResponse {
   aggregator: MoaModelSlot
   aggregator_temperature: number
   degraded_reference_policy: 'loud' | 'silent'
+  advisory_context?: 'auto' | 'none'
+  advisory_max_chars?: number | null
   enabled: boolean
   max_tokens: number
   reference_models: MoaModelSlot[]

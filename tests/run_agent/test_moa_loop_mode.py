@@ -71,6 +71,97 @@ moa:
     assert calls[1]["tools"] is not None
 
 
+def test_moa_advisory_context_none_sends_only_current_payload(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      advisory_context: none
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("advice" if kwargs["task"] == "moa_reference" else "acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    from agent.moa_loop import MoAChatCompletions, _REFERENCE_SYSTEM_PROMPT
+
+    facade = MoAChatCompletions("review")
+    facade.create(
+        messages=[
+            {"role": "system", "content": "large system prompt"},
+            {"role": "user", "content": "old request"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "review this self-contained diff"},
+        ],
+        tools=[],
+    )
+
+    reference = next(call for call in calls if call["task"] == "moa_reference")
+    assert reference["messages"] == [
+        {"role": "system", "content": _REFERENCE_SYSTEM_PROMPT},
+        {"role": "user", "content": "review this self-contained diff"},
+    ]
+
+
+def test_moa_advisory_context_defaults_to_full_conversation(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("advice" if kwargs["task"] == "moa_reference" else "acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    from agent.moa_loop import MoAChatCompletions
+
+    MoAChatCompletions("review").create(
+        messages=[
+            {"role": "user", "content": "old request"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "current request"},
+        ],
+        tools=[],
+    )
+
+    reference = next(call for call in calls if call["task"] == "moa_reference")
+    content = "\n".join(message["content"] for message in reference["messages"])
+    assert "old request" in content
+    assert "old answer" in content
+    assert "current request" in content
+
+
 def test_moa_runtime_provider_uses_virtual_endpoint():
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -490,6 +581,40 @@ def test_reference_messages_ends_with_user_not_assistant_prefill():
     assert "[tool result: the tool output]" in joined
     # Earlier context preserved too.
     assert "q1" in joined and "a1" in joined and "q2 current" in joined
+
+
+def test_reference_messages_bounds_advisory_context_by_characters():
+    from agent.moa_loop import _reference_messages
+
+    view = _reference_messages(
+        [
+            {"role": "user", "content": "old request that should be dropped"},
+            {"role": "assistant", "content": "old response that should be dropped"},
+            {"role": "user", "content": "current self-contained payload"},
+        ],
+        advisory_max_chars=31,
+    )
+
+    assert view == [{"role": "user", "content": "current self-contained payload"}]
+
+
+def test_reference_messages_char_bound_keeps_current_turn_state():
+    from agent.moa_loop import _ADVISORY_INSTRUCTION, _reference_messages
+
+    view = _reference_messages(
+        [
+            {"role": "user", "content": "old request"},
+            {"role": "assistant", "content": "old response"},
+            {"role": "user", "content": "current payload"},
+            {"role": "assistant", "content": "working"},
+            {"role": "tool", "content": "current tool result"},
+        ],
+        advisory_max_chars=5,
+    )
+
+    assert view[0] == {"role": "user", "content": "current payload"}
+    assert "current tool result" in view[1]["content"]
+    assert view[-1] == {"role": "user", "content": _ADVISORY_INSTRUCTION}
 
 
 

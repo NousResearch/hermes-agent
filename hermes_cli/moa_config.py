@@ -71,6 +71,12 @@ def _coerce_degraded_reference_policy(value: Any) -> str:
     return policy if policy in {"loud", "silent"} else "loud"
 
 
+def _coerce_advisory_context(value: Any) -> str:
+    """Normalize the reference transcript policy without changing defaults."""
+    mode = str(value or "auto").strip().lower()
+    return mode if mode in {"auto", "none"} else "auto"
+
+
 def _coerce_int(value: Any, default: int) -> int:
     if value is None or value == "":
         return default
@@ -305,6 +311,8 @@ def _default_preset() -> dict[str, Any]:
         "degraded_reference_policy": "loud",
         "max_tokens": 4096,
         "reference_max_tokens": None,
+        "advisory_context": "auto",
+        "advisory_max_chars": None,
         "fanout": "user_turn",
         "enabled": True,
     }
@@ -353,6 +361,11 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         # judgement, so capping roughly halves per-turn wall time. Does NOT cap
         # the acting aggregator (its output is the user-visible answer).
         "reference_max_tokens": _coerce_int_or_none(raw.get("reference_max_tokens")),
+        # Artifact-review prompts are often self-contained. They may opt out of
+        # replaying the originating conversation to every advisor, while the
+        # default remains the conversational advisory view.
+        "advisory_context": _coerce_advisory_context(raw.get("advisory_context")),
+        "advisory_max_chars": _coerce_int_or_none(raw.get("advisory_max_chars")),
         # When the reference fan-out runs. "user_turn" (default) runs the
         # advisors ONCE per user turn (the original MoA shape, and the
         # cheapest cadence — #67199): the aggregator gets their upfront
@@ -414,6 +427,8 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "degraded_reference_policy": active["degraded_reference_policy"],
         "max_tokens": active["max_tokens"],
         "reference_max_tokens": active.get("reference_max_tokens"),
+        "advisory_context": active.get("advisory_context", "auto"),
+        "advisory_max_chars": active.get("advisory_max_chars"),
         "fanout": active.get("fanout", "user_turn"),
         "enabled": active["enabled"],
         # MoA-level (not per-preset) toggles ride at the top level alongside

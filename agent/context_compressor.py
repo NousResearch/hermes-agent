@@ -296,12 +296,23 @@ def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
     # Find the last real user message — everything after it is the active
     # turn.  Synthetic continuation rows and tool results never mark a turn
     # boundary.
+    # ``role == "user"`` alone does not mean a human spoke: the retry loop
+    # appends ephemeral scaffolding rows under that role *inside* a turn
+    # (the codex incomplete/ack nudges, the length-continuation and
+    # dropped-tool-call nudges, the todo/continuation markers). Anchoring on
+    # one splits the in-flight turn and strips the reasoning bridging its
+    # earlier function calls — the exact mid-chain loss the user boundary
+    # replaced the last-assistant boundary to avoid. Ask the classifier that
+    # already knows those rows.
     last_user_idx = -1
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
-        if isinstance(msg, dict) and msg.get("role") == "user":
-            last_user_idx = i
-            break
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        if ContextCompressor._is_synthetic_compression_user_turn(msg):
+            continue
+        last_user_idx = i
+        break
     if last_user_idx < 0:
         # No user boundary found — cannot distinguish the active turn, so
         # prune nothing (fail open toward correctness, not size).

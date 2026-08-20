@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -418,3 +419,143 @@ async def test_send_file_attachment_forum_uses_files_kwarg(tmp_path, monkeypatch
     assert isinstance(thread_kwargs.get("files"), list) and len(thread_kwargs["files"]) == 1
 
 
+
+
+
+# ---------------------------------------------------------------------------
+# Upload-size preflight (#50846 / #52698)
+# ---------------------------------------------------------------------------
+
+
+def test_discord_upload_limit_uses_guild_filesize_limit():
+    from plugins.platforms.discord.adapter import (
+        DiscordAdapter,
+        _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES,
+    )
+
+    guild_channel = SimpleNamespace(guild=SimpleNamespace(filesize_limit=50 * 1024 * 1024))
+    dm_channel = SimpleNamespace(guild=None)
+    no_limit_guild = SimpleNamespace(guild=SimpleNamespace(filesize_limit=0))
+
+    assert DiscordAdapter._discord_upload_limit_bytes(guild_channel) == 50 * 1024 * 1024
+    assert DiscordAdapter._discord_upload_limit_bytes(dm_channel) == _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+    assert DiscordAdapter._discord_upload_limit_bytes(no_limit_guild) == _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+
+
+@pytest.mark.asyncio
+async def test_send_file_attachment_rejects_oversized_before_upload(tmp_path):
+    """Oversized local files must not call channel.send(file=...) — issue #50846."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._is_forum_parent = lambda _ch: False  # type: ignore[method-assign]
+
+    from plugins.platforms.discord.adapter import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+
+    big = tmp_path / "clip.mp4"
+    big.write_bytes(b"x")
+
+    send = AsyncMock(return_value=SimpleNamespace(id=999))
+    channel = SimpleNamespace(id=555, guild=None, send=send)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _cid: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    original = os.path.getsize
+
+    def fake_getsize(path):
+        if str(path) == str(big):
+            return _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES + 1
+        return original(path)
+
+    os.path.getsize = fake_getsize
+    try:
+        result = await adapter._send_file_attachment("555", str(big))
+    finally:
+        os.path.getsize = original
+
+    assert result.success is False
+    assert "too large" in (result.error or "").lower()
+    assert "clip.mp4" in (result.error or "")
+    assert send.await_count == 1
+    assert send.await_args is not None
+    kwargs = send.await_args.kwargs
+    assert "file" not in kwargs and "files" not in kwargs
+    assert "Could not attach" in (kwargs.get("content") or "")
+
+
+@pytest.mark.asyncio
+async def test_send_video_respects_guild_filesize_limit(tmp_path):
+    """Guild boost limit is honored; files under the higher cap still upload."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._is_forum_parent = lambda _ch: False  # type: ignore[method-assign]
+
+    video = tmp_path / "ok.mp4"
+    video.write_bytes(b"fake-video-bytes")
+
+    sent_msg = SimpleNamespace(
+        id=42,
+        attachments=[SimpleNamespace(filename="ok.mp4", url="https://cdn.example/ok.mp4")],
+    )
+    send = AsyncMock(return_value=sent_msg)
+    channel = SimpleNamespace(
+        id=777,
+        guild=SimpleNamespace(filesize_limit=50 * 1024 * 1024),
+        send=send,
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _cid: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send_video("777", str(video))
+    assert result.success is True
+    assert result.message_id == "42"
+    assert send.await_count == 1
+    assert send.await_args is not None
+    kwargs = send.await_args.kwargs
+    assert kwargs.get("file") is not None or kwargs.get("files")
+
+
+@pytest.mark.asyncio
+async def test_send_video_oversized_skips_base_fallback(tmp_path, monkeypatch):
+    """Oversized send_video returns failure without falling back to base adapter."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._is_forum_parent = lambda _ch: False  # type: ignore[method-assign]
+
+    from plugins.platforms.discord.adapter import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+
+    video = tmp_path / "huge.mp4"
+    video.write_bytes(b"x")
+
+    send = AsyncMock(return_value=SimpleNamespace(id=1))
+    channel = SimpleNamespace(id=1, guild=None, send=send)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _cid: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    monkeypatch.setattr(
+        os.path,
+        "getsize",
+        lambda path: (
+            _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES + 10
+            if str(path) == str(video)
+            else 0
+        ),
+    )
+
+    base_called = {"yes": False}
+
+    async def boom(*_a, **_k):
+        base_called["yes"] = True
+        raise AssertionError("base send_video must not run for preflight reject")
+
+    monkeypatch.setattr(
+        "gateway.platforms.base.BasePlatformAdapter.send_video",
+        boom,
+    )
+
+    result = await adapter.send_video("1", str(video))
+    assert result.success is False
+    assert "too large" in (result.error or "").lower()
+    assert base_called["yes"] is False

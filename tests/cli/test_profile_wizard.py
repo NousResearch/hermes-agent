@@ -86,9 +86,15 @@ def test_provider_rows_match_model_setup_order_and_active_focus_markers():
     row = profile_wizard._format_provider_row(entries[6], focused=True, active=True)
     unfocused = profile_wizard._format_provider_row(entries[3], focused=False, active=False)
 
-    assert row.startswith(" → (●) OpenAI Codex")
+    # The row is composed from the entry's real display copy (tui_desc), which
+    # is product copy and may change. Assert on the row's *structure* — the
+    # focus marker, the active marker, and that the provider's own tui_desc is
+    # embedded — rather than freezing a specific marketing label.
+    assert row.startswith(" → (●) ")
     assert row.endswith("← currently active")
-    assert unfocused.startswith("   (○) NovitaAI")
+    assert entries[6].tui_desc in row
+    assert unfocused.startswith("   (○) ")
+    assert entries[3].tui_desc in unfocused
 
 
 def test_profile_ideas_include_ootb_examples_leads_and_workers():

@@ -204,13 +204,13 @@ test('unit: older desktop without host.deleteProfile falls back to the non-inter
 test('integration: a deleted bot is removed from plugin-local state and the roster is refreshed', async () => {
   const { context, invalidations, stored } = load()
   context.__delete.$botMeta.set({ researcher: { title: 'Research' }, writer: { title: 'Writer' } })
-  context.__delete.$botUnread.set({ researcher: true, writer: true })
+  context.__delete.$botUnread.set({ 'legacy::researcher': true, 'legacy::writer': true })
   context.__delete.$selectedBot.set('researcher')
 
   await context.__delete.deleteBot({ name: 'researcher' })
 
   assert.equal(context.__delete.$botMeta.get().researcher, undefined)
-  assert.equal(context.__delete.$botUnread.get().researcher, undefined)
+  assert.equal(context.__delete.$botUnread.get()['legacy::researcher'], undefined)
   assert.equal(context.__delete.$selectedBot.get(), 'default')
   assert.equal(stored.at(-1).key, 'bot-meta')
   assert.equal(stored.at(-1).value.researcher, undefined)

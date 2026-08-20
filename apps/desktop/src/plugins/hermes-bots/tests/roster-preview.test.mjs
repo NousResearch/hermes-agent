@@ -105,6 +105,7 @@ function renderRuntime() {
     ContextMenuItem: 'ContextMenuItem',
     ContextMenuSeparator: 'ContextMenuSeparator',
     ContextMenuTrigger: 'ContextMenuTrigger',
+    Tip: 'Tip',
     haptic: () => undefined,
     host: {
       state: {
@@ -173,12 +174,12 @@ const DM_BOT = {
   }
 }
 
-test('render: BotRow shows the sender badge and stripped DM preview', () => {
+test('render: BotRow shows a clean stripped DM preview without delivery furniture', () => {
   const r = renderRuntime()
   const tree = r.__BotRow({ bot: DM_BOT, onEdit: () => undefined })
   const text = textOf(tree)
-  assert.match(text, /@manager/)
   assert.match(text, /Learn-share/)
+  assert.doesNotMatch(text, /@manager/)
   assert.doesNotMatch(text, /Message from/)
 })
 
@@ -200,10 +201,11 @@ test('render: BotRow tolerates a fresh bot with no sessions yet', () => {
   const r = renderRuntime()
   const tree = r.__BotRow({ bot: { name: 'newbie', title: '', description: 'Fresh bot' }, onEdit: () => undefined })
   const text = textOf(tree)
-  assert.match(text, /Fresh bot/)
+  assert.match(text, /Newbie/)
+  assert.doesNotMatch(text, /No conversations yet/)
 })
 
-test('render: a remote gateway name is not squeezed out by its handle', () => {
+test('render: a remote bot keeps its identity while gateway details stay in the tooltip', () => {
   const r = renderRuntime()
   const tree = r.__BotRow({
     bot: {
@@ -215,15 +217,14 @@ test('render: a remote gateway name is not squeezed out by its handle', () => {
     },
     onEdit: () => undefined
   })
-  const name = findNode(tree, node => node.type === 'span' && textOf(node) === 'Studio over SSH')
-  const handle = findNode(tree, node => node.type === 'span' && textOf(node) === '@default-studio-over-ssh')
+  const name = findNode(tree, node => node.type === 'span' && textOf(node) === 'Hermes')
+  const button = findNode(tree, node => node.type === 'button' && node.props?.['aria-label'])
 
   assert.ok(name)
-  assert.match(name.props.className, /shrink-0/)
-  assert.ok(handle)
-  assert.match(handle.props.className, /min-w-0/)
-  assert.match(handle.props.className, /truncate/)
-  assert.doesNotMatch(handle.props.className, /shrink-0/)
+  assert.ok(button)
+  assert.match(button.props['aria-label'], /Hermes/)
+  assert.match(button.props['aria-label'], /Studio over SSH/)
+  assert.doesNotMatch(textOf(button), /Studio over SSH/)
 })
 
 test('render: BotRow previews the pinned canonical chat, not an unrelated latest session', () => {

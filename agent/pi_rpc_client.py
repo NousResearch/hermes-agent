@@ -71,18 +71,15 @@ class PendingQuestion:
         self.created_at = time.time()
 
     def answer_with(self, text: str) -> dict[str, Any]:
-        """Map free text to the response payload pi expects."""
+        """Map free text to the pi-ask-user response shape (AskResponse)."""
         cleaned = (text or "").strip()
         low = cleaned.lower()
         if self.method == "confirm":
-            if low in ("y", "yes", "true", "ok", "confirm"):
-                payload = {"confirmed": True}
-            elif low in ("n", "no", "false", "cancel"):
-                payload = {"confirmed": False}
-            else:
-                # Non-boolean answer to a confirm: treat non-empty as yes.
-                payload = {"confirmed": bool(cleaned)}
+            # yes/no/true/false → selection with "yes" or "no".
+            is_yes = low in ("y", "yes", "true", "ok", "confirm", "t", "1", "yeah", "yep")
+            payload = {"kind": "selection", "selections": ["yes"] if is_yes else ["no"]}
         elif self.method == "select":
+            # Match by option text first, then by 1‑based index.
             match = None
             for option in self.options:
                 if option and option.lower() == low:
@@ -94,18 +91,20 @@ class PendingQuestion:
                     match = self.options[idx - 1]
             if match is None and self.options:
                 match = self.options[0]
-            payload = {"value": match} if match is not None else {"cancelled": True}
-        else:  # input, editor — free text is exactly what these want
-            payload = {"text": cleaned} if cleaned else {"cancelled": True}
+            selections = [match] if match is not None else (self.options[:1] if self.options else [cleaned])
+            payload = {"kind": "selection", "selections": selections}
+        else:  # input, editor — free text.
+            payload = {"kind": "freeform", "text": cleaned} if cleaned else {"cancelled": True}
         self.answer = payload
         self.answered.set()
         return payload
 
     def auto_answer(self) -> dict[str, Any]:
+        """Default answer for fallback policy."""
         if self.method == "confirm":
-            return {"confirmed": True}
+            return {"kind": "selection", "selections": ["yes"]}
         if self.method == "select":
-            return {"value": self.options[0]} if self.options else {"cancelled": True}
+            return {"kind": "selection", "selections": self.options[:1]} if self.options else {"cancelled": True}
         return {"cancelled": True}
 
 

@@ -687,6 +687,7 @@ Connect Hermes to [Photon](https://photon.codes/) / Spectrum (iMessage and other
 | `PHOTON_MARKDOWN` | Send agent replies as markdown — iMessage renders it natively, other Spectrum platforms degrade to plain text (`true`/`false`, default `true`). |
 | `PHOTON_REACTIONS` | Tapback 👀/👍/👎 on messages as processing status and route tapbacks on bot messages to the agent (`true`/`false`, default `false`). |
 | `PHOTON_TELEMETRY` | Enable Spectrum SDK telemetry in the sidecar (`true`/`false`, default `false`; toggle with `hermes photon telemetry on|off`). |
+| `PHOTON_DEGRADED_FATAL_MS` | Milliseconds of sustained upstream stream degradation before the adapter escalates to a fatal reconnect (default `0` = immediate). Useful when brief network blips would otherwise restart the gateway. |
 | `PHOTON_SIDECAR_PORT` | Loopback port for the Node sidecar control + inbound channel (default `8789`). |
 | `PHOTON_SIDECAR_AUTOSTART` | Spawn the Node sidecar on connect (`true`/`false`, default `true`). |
 | `PHOTON_NODE_BIN` | Path to the node binary (default: `shutil.which('node')`). |

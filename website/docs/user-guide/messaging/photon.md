@@ -194,6 +194,10 @@ Common issues:
   [dashboard][app].
 - **Sidecar won't start** — confirm `node --version` is 18.17+ and that
   `hermes photon install-sidecar` completed without errors.
+- **Gateway restart loop on Photon** — brief upstream blips can escalate to
+  `UPSTREAM_STREAM_DEGRADED` and bounce the whole gateway. Set
+  `PHOTON_DEGRADED_FATAL_MS=30000` (or similar) so only sustained degradation
+  goes fatal; the sidecar keeps retrying throughout the grace window.
 
 ## Limits today
 
@@ -245,6 +249,7 @@ Common issues:
 | `PHOTON_MENTION_PATTERNS` | Hermes wake words  | JSON list / comma / newline regex patterns for group mentions |
 | `PHOTON_DASHBOARD_HOST`   | `app.photon.codes` | Override the dashboard / device-login host |
 | `PHOTON_SPECTRUM_HOST`    | `spectrum.photon.codes` | Override the Spectrum API host |
+| `PHOTON_DEGRADED_FATAL_MS`| `0`                 | Grace window (ms) before upstream stream degradation becomes fatal; `0` keeps immediate-fatal behaviour |
 
 [photon]: https://photon.codes/
 [app]: https://app.photon.codes/

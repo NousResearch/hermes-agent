@@ -2952,6 +2952,38 @@ class GatewaySlashCommandsMixin:
             "elapsed. Lives while the gateway runs — use `hermes cron` for durable schedules."
         )
 
+    async def _load_refine_persisted_transcript(
+        self, session_key: str
+    ) -> tuple[Optional[list], Optional[str]]:
+        """Load the durable transcript for /refine without creating a session.
+
+        Returns ``(history, None)`` on success (history may be empty), or
+        ``(None, error_message)`` when the transcript cannot be read. A read
+        failure must NOT be treated as zero turns — that reintroduces the
+        cold-cache false-emptiness claim.
+        """
+        try:
+            session_id = await self.async_session_store.peek_session_id(session_key)
+            if not session_id:
+                return [], None
+            history = await self.async_session_store.load_transcript(
+                session_id, raise_on_error=True
+            )
+        except Exception:
+            logger.debug(
+                "failed to load persisted /refine transcript", exc_info=True
+            )
+            return (
+                None,
+                "Couldn't read the persisted conversation for /refine — "
+                "try again, or send a message to resume the session.",
+            )
+        return list(history or []), None
+
+    @staticmethod
+    def _count_refine_persisted_turns(history: list) -> int:
+        return sum(1 for m in history if m.get("role") in {"user", "assistant"})
+
     async def _handle_refine_command(self, event: "MessageEvent") -> str:
         """Handle /refine — run the memory/skill review fork on demand.
 
@@ -2959,6 +2991,13 @@ class GatewaySlashCommandsMixin:
         ``_agent_cache``). The review runs in a daemon thread against a
         snapshot of the conversation; the live session and prompt cache are
         untouched. Requires the session to have at least one completed turn.
+
+        A cold ``_agent_cache`` is not the same as an empty conversation: when
+        the agent is absent we consult the persisted transcript and tell the
+        user to resume first if durable turns exist, rather than claiming
+        there is nothing to refine. When the agent is cached but
+        ``_session_messages`` is empty, fall back to the persisted transcript
+        and run the review against that snapshot.
         """
         args = (event.get_command_args() or "").strip()
         quick_key = self._session_key_for_source(event.source) if event.source else None
@@ -2974,11 +3013,27 @@ class GatewaySlashCommandsMixin:
                 cached = self._agent_cache.get(quick_key)
                 agent = cached[0] if isinstance(cached, tuple) else cached if cached else None
         if agent is None:
+            history, read_err = await self._load_refine_persisted_transcript(quick_key)
+            if read_err:
+                return read_err
+            n = self._count_refine_persisted_turns(history or [])
+            if n > 0:
+                return (
+                    f"This session has {n} persisted user/assistant messages, but the live "
+                    "agent isn't cached. Send a message (or /resume) to wake "
+                    "the session first, then /refine."
+                )
             return "Nothing to refine yet — send a message first."
 
         snapshot = list(getattr(agent, "_session_messages", None) or [])
         if not snapshot:
-            return "Nothing to refine yet — the conversation is empty."
+            history, read_err = await self._load_refine_persisted_transcript(quick_key)
+            if read_err:
+                return read_err
+            if self._count_refine_persisted_turns(history or []) > 0:
+                snapshot = list(history or [])
+            else:
+                return "Nothing to refine yet — the conversation is empty."
 
         review_skills = "skill_manage" in getattr(agent, "valid_tool_names", set())
         try:

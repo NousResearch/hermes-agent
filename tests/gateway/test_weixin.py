@@ -338,6 +338,51 @@ class TestWeixinOutboundMedia:
         assert media["encrypt_query_param"] == "enc-param"
         assert media["aes_key"] == expected_aes_key
 
+    def test_send_file_raises_on_ilink_business_error(self, tmp_path):
+        """A rate-limited file message must surface as an error instead of a
+        silent drop. _api_post only checks the HTTP status, so iLink's
+        ret/errcode used to be swallowed and the send looked successful while
+        the receiver never got the file."""
+        image_path = tmp_path / "demo.png"
+        image_path.write_bytes(b"fake-png-bytes")
+
+        adapter = _make_adapter()
+        adapter._send_session = object()
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._cdn_base_url = "https://cdn.example.com/c2c"
+        adapter._token_store.get = lambda account_id, chat_id: None
+
+        with patch("gateway.platforms.weixin._get_upload_url", new=AsyncMock(return_value={"upload_full_url": "https://upload.example.com/media"})), \
+             patch("gateway.platforms.weixin._upload_ciphertext", new=AsyncMock(return_value="enc-param")), \
+             patch("gateway.platforms.weixin._api_post", new_callable=AsyncMock, return_value={"ret": -2, "errcode": -2, "errmsg": "rate limited"}), \
+             patch("gateway.platforms.weixin.secrets.token_hex", return_value="filekey-123"), \
+             patch("gateway.platforms.weixin.secrets.token_bytes", return_value=bytes(range(16))):
+            with pytest.raises(RuntimeError, match="ret=-2"):
+                asyncio.run(adapter._send_file("wxid_test123", str(image_path), ""))
+
+    def test_send_file_raises_on_caption_business_error(self, tmp_path):
+        """The caption text send follows the same iLink error contract and
+        must not be silently dropped either."""
+        image_path = tmp_path / "demo.png"
+        image_path.write_bytes(b"fake-png-bytes")
+
+        adapter = _make_adapter()
+        adapter._send_session = object()
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._cdn_base_url = "https://cdn.example.com/c2c"
+        adapter._token_store.get = lambda account_id, chat_id: None
+
+        with patch("gateway.platforms.weixin._get_upload_url", new=AsyncMock(return_value={"upload_full_url": "https://upload.example.com/media"})), \
+             patch("gateway.platforms.weixin._upload_ciphertext", new=AsyncMock(return_value="enc-param")), \
+             patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock, return_value={"ret": -2, "errcode": -2, "errmsg": "rate limited"}), \
+             patch("gateway.platforms.weixin._api_post", new_callable=AsyncMock, return_value={"ret": 0}), \
+             patch("gateway.platforms.weixin.secrets.token_hex", return_value="filekey-123"), \
+             patch("gateway.platforms.weixin.secrets.token_bytes", return_value=bytes(range(16))):
+            with pytest.raises(RuntimeError, match="ret=-2"):
+                asyncio.run(adapter._send_file("wxid_test123", str(image_path), "caption text"))
+
 
 class TestWeixinRemoteMediaSafety:
     def test_download_remote_media_blocks_unsafe_urls(self):

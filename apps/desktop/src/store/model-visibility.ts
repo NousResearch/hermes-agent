@@ -25,16 +25,53 @@ export const emptyProviderSentinelKey = (provider: string): string =>
 /** Check whether a stored key is a provider-hidden sentinel. */
 export const isProviderSentinel = (key: string): boolean => key.endsWith('::')
 
-/** A model and its optional `…-fast` sibling, collapsed into one logical row.
- *  `id` is the canonical (base) model; `fastId` is the fast variant if present. */
+/** A model and its optional speed-optimized sibling, collapsed into one logical
+ *  row. `id` is the canonical (base) model; `fastId` is the fast variant if
+ *  present. */
 export interface ModelFamily {
   fastId: string | null
   id: string
 }
 
-/** Collapse a provider's model list so a base model and its `…-fast` variant
- *  become a single family (one row, one toggle). Order is preserved by the
- *  base model's position. A `…-fast` model with no base stands on its own. */
+function speedVariantCandidates(model: string): string[] {
+  const candidates = [`${model}-fast`]
+  const fireworksBase = /^(accounts\/fireworks\/)models\/(.+)$/i.exec(model)
+
+  if (fireworksBase) {
+    const [, account, slug] = fireworksBase
+    candidates.push(`${account}routers/${slug}-fast`, `${account}routers/${slug}-turbo`)
+  }
+
+  return candidates
+}
+
+function speedVariantBase(model: string, present: ReadonlySet<string>): string | null {
+  if (/-fast$/i.test(model)) {
+    const samePathBase = model.replace(/-fast$/i, '')
+
+    if (present.has(samePathBase)) {
+      return samePathBase
+    }
+  }
+
+  const fireworksRouter = /^(accounts\/fireworks\/)routers\/(.+)-(?:fast|turbo)$/i.exec(model)
+
+  if (!fireworksRouter) {
+    return null
+  }
+
+  const [, account, slug] = fireworksRouter
+  const base = `${account}models/${slug}`
+
+  return present.has(base) ? base : null
+}
+
+/** Collapse a provider's model list so a base model and its speed variant
+ *  become a single family (one row, one toggle). In addition to a same-path
+ *  `…-fast` sibling, Fireworks exposes optimized variants by replacing
+ *  `models/` with `routers/` and appending `-fast` or `-turbo`. Order is
+ *  preserved by the base model's position. A variant with no base stands on
+ *  its own. */
 export function collapseModelFamilies(models: readonly string[]): ModelFamily[] {
   const present = new Set(models)
   const families: ModelFamily[] = []
@@ -45,7 +82,7 @@ export function collapseModelFamilies(models: readonly string[]): ModelFamily[] 
       continue
     }
 
-    if (/-fast$/i.test(model) && present.has(model.replace(/-fast$/i, ''))) {
+    if (speedVariantBase(model, present)) {
       // Represented by its base entry — the base attaches it as `fastId`.
       continue
     }
@@ -55,12 +92,11 @@ export function collapseModelFamilies(models: readonly string[]): ModelFamily[] 
       continue
     }
 
-    const fastId = `${model}-fast`
-    const hasFast = present.has(fastId)
-    families.push({ fastId: hasFast ? fastId : null, id: model })
+    const fastId = speedVariantCandidates(model).find(candidate => present.has(candidate)) ?? null
+    families.push({ fastId, id: model })
     consumed.add(model)
 
-    if (hasFast) {
+    if (fastId) {
       consumed.add(fastId)
     }
   }

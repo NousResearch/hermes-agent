@@ -631,22 +631,26 @@ def _clear_fake_handler_instances():
     _FakeStreamHandler.instances.clear()
 
 
-def test_resolve_stderr_level_caps_macos_non_tty_at_critical(monkeypatch):
+def test_resolve_stderr_level_caps_macos_non_tty_at_critical():
     from gateway.run import _resolve_stderr_level
 
-    monkeypatch.setattr("gateway.run.sys.platform", "darwin")
-    assert _resolve_stderr_level(logging.WARNING, _FakeStderrStream(tty=False)) == logging.CRITICAL
-    assert _resolve_stderr_level(logging.DEBUG, _FakeStderrStream(tty=False)) == logging.CRITICAL
+    assert _resolve_stderr_level(
+        logging.WARNING, _FakeStderrStream(tty=False), platform="darwin"
+    ) == logging.CRITICAL
+    assert _resolve_stderr_level(
+        logging.DEBUG, _FakeStderrStream(tty=False), platform="darwin"
+    ) == logging.CRITICAL
 
 
-def test_macos_non_tty_keeps_routine_errors_out_of_stderr_but_in_error_log(monkeypatch):
+def test_macos_non_tty_keeps_routine_errors_out_of_stderr_but_in_error_log():
     from gateway.run import _resolve_stderr_level
 
-    monkeypatch.setattr("gateway.run.sys.platform", "darwin")
     stderr_stream = io.StringIO()
     error_log_stream = io.StringIO()
     stderr_handler = logging.StreamHandler(stderr_stream)
-    stderr_handler.setLevel(_resolve_stderr_level(logging.WARNING, stderr_stream))
+    stderr_handler.setLevel(
+        _resolve_stderr_level(logging.WARNING, stderr_stream, platform="darwin")
+    )
     error_log_handler = logging.StreamHandler(error_log_stream)
     error_log_handler.setLevel(logging.WARNING)
     test_logger = logging.Logger("test.gateway.stderr", level=logging.DEBUG)
@@ -665,12 +669,15 @@ def test_macos_non_tty_keeps_routine_errors_out_of_stderr_but_in_error_log(monke
 
 
 @pytest.mark.parametrize("platform", ["linux", "win32"])
-def test_resolve_stderr_level_keeps_non_tty_level_outside_macos(monkeypatch, platform):
+def test_resolve_stderr_level_keeps_non_tty_level_outside_macos(platform):
     from gateway.run import _resolve_stderr_level
 
-    monkeypatch.setattr("gateway.run.sys.platform", platform)
-    assert _resolve_stderr_level(logging.WARNING, _FakeStderrStream(tty=False)) == logging.WARNING
-    assert _resolve_stderr_level(logging.INFO, _FakeStderrStream(tty=False)) == logging.INFO
+    assert _resolve_stderr_level(
+        logging.WARNING, _FakeStderrStream(tty=False), platform=platform
+    ) == logging.WARNING
+    assert _resolve_stderr_level(
+        logging.INFO, _FakeStderrStream(tty=False), platform=platform
+    ) == logging.INFO
 
 
 def test_resolve_stderr_level_keeps_tty_level():
@@ -680,15 +687,16 @@ def test_resolve_stderr_level_keeps_tty_level():
     assert _resolve_stderr_level(logging.INFO, _FakeStderrStream(tty=True)) == logging.INFO
 
 
-def test_resolve_stderr_level_isatty_exception_treated_as_macos_non_tty(monkeypatch):
+def test_resolve_stderr_level_isatty_exception_treated_as_macos_non_tty():
     from gateway.run import _resolve_stderr_level
 
     class _StreamThatBreaks:
         def isatty(self):
             raise RuntimeError("broken stream")
 
-    monkeypatch.setattr("gateway.run.sys.platform", "darwin")
-    assert _resolve_stderr_level(logging.WARNING, _StreamThatBreaks()) == logging.CRITICAL
+    assert _resolve_stderr_level(
+        logging.WARNING, _StreamThatBreaks(), platform="darwin"
+    ) == logging.CRITICAL
 
 
 @pytest.mark.parametrize(
@@ -703,7 +711,6 @@ def test_resolve_stderr_level_isatty_exception_treated_as_macos_non_tty(monkeypa
 @pytest.mark.asyncio
 async def test_start_gateway_stderr_handler_level(monkeypatch, tmp_path, platform, tty, expected):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("gateway.run.sys.platform", platform)
     monkeypatch.setattr("sys.stderr", _FakeStderrStream(tty=tty))
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
@@ -712,6 +719,14 @@ async def test_start_gateway_stderr_handler_level(monkeypatch, tmp_path, platfor
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("gateway.run.GatewayRunner", _StderrCleanExitRunner)
     monkeypatch.setattr("gateway.run.logging.StreamHandler", _FakeStreamHandler)
+    from gateway.run import _resolve_stderr_level
+
+    monkeypatch.setattr(
+        "gateway.run._resolve_stderr_level",
+        lambda requested, stream: _resolve_stderr_level(
+            requested, stream, platform=platform
+        ),
+    )
 
     from gateway.run import start_gateway
 
@@ -720,3 +735,25 @@ async def test_start_gateway_stderr_handler_level(monkeypatch, tmp_path, platfor
     assert ok is True
     assert len(_FakeStreamHandler.instances) == 1
     assert _FakeStreamHandler.instances[0].level == expected
+
+
+def test_setup_logging_registers_rotating_gateway_error_log(monkeypatch, tmp_path):
+    """The stderr cap leaves WARNING+ diagnostics in the rotating error log."""
+    import hermes_logging
+
+    calls = []
+
+    def record_handler(_logger, path, **kwargs):
+        calls.append((path, kwargs))
+
+    monkeypatch.setattr(hermes_logging, "_add_rotating_handler", record_handler)
+    monkeypatch.setattr(hermes_logging, "_logging_initialized", False)
+
+    hermes_logging.setup_logging(hermes_home=tmp_path, mode="gateway", force=True)
+
+    error_log = next(path for path, _ in calls if path.name == "errors.log")
+    error_kwargs = next(kwargs for path, kwargs in calls if path == error_log)
+    assert error_log == tmp_path / "logs" / "errors.log"
+    assert error_kwargs["level"] == logging.WARNING
+    assert error_kwargs["max_bytes"] == 2 * 1024 * 1024
+    assert error_kwargs["backup_count"] == 2

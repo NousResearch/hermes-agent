@@ -4781,13 +4781,16 @@ def _looks_like_profile_conflict_from_cmdline(command: str, our_home) -> bool:
     return bool(home_value is not None and _norm(home_value) != _norm(str(our_home)))
 
 
-def _resolve_stderr_level(requested: int, stream: Any) -> int:
-    """Cap macOS non-TTY stderr without changing foreground or other-platform logging."""
+def _resolve_stderr_level(
+    requested: int, stream: Any, *, platform: str | None = None
+) -> int:
+    """Cap macOS non-TTY stderr without changing other logging paths."""
     try:
         is_tty = stream.isatty()
     except Exception:
         is_tty = False
-    if sys.platform == "darwin" and not is_tty:
+    effective_platform = sys.platform if platform is None else platform
+    if effective_platform == "darwin" and not is_tty:
         return max(requested, logging.CRITICAL)
     return requested
 

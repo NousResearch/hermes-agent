@@ -28,6 +28,7 @@ from gateway.platforms.api_server import (
 )
 from tools import approval as approval_mod
 from tools import clarify_gateway as clarify_mod
+from tools.clarify_tool import clarify_tool
 
 
 # ---------------------------------------------------------------------------
@@ -505,6 +506,103 @@ class TestRunEvents:
                 )
                 assert leftover.status == 200
                 assert adapter._run_statuses[second_id]["awaiting_user"] is False
+
+    @pytest.mark.asyncio
+    async def test_clarification_batch_questions_are_sequential_on_one_run(self, adapter):
+        """A questions batch becomes one SSE prompt at a time on the same run."""
+        app = _create_runs_app(adapter)
+        callback_result = {}
+
+        def make_agent(**kwargs):
+            mock_agent = MagicMock()
+
+            def run_conversation(**_run_kwargs):
+                callback_result["batch"] = clarify_tool(
+                    "",
+                    questions=[
+                        {
+                            "question": "Which environment?",
+                            "choices": ["Staging", "Production"],
+                        },
+                        {"question": "Any notes?"},
+                    ],
+                    callback=kwargs["clarify_callback"],
+                )
+                return {"final_response": callback_result["batch"]}
+
+            mock_agent.run_conversation.side_effect = run_conversation
+            mock_agent.session_prompt_tokens = 0
+            mock_agent.session_completion_tokens = 0
+            mock_agent.session_total_tokens = 0
+            return mock_agent
+
+        async def next_clarify_request(queue):
+            while True:
+                event = await asyncio.wait_for(queue.get(), timeout=3)
+                if event and event.get("event") == "clarify.request":
+                    return event
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=make_agent):
+                started = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await started.json())["run_id"]
+                queue = adapter._run_streams[run_id]
+                first_event = await next_clarify_request(queue)
+
+                assert first_event["run_id"] == run_id
+                assert first_event["prompt"]["question"] == "Which environment?"
+                assert first_event["prompt"]["type"] == "choice"
+                assert adapter._run_statuses[run_id]["awaiting_user"] is True
+
+                first = await cli.post(
+                    f"/v1/runs/{run_id}/clarification",
+                    json={
+                        "request_id": first_event["request_id"],
+                        "response": {"type": "choice", "choice_id": "choice-2"},
+                    },
+                )
+                assert first.status == 200
+
+                stale = await cli.post(
+                    f"/v1/runs/{run_id}/clarification",
+                    json={
+                        "request_id": first_event["request_id"],
+                        "response": {"type": "choice", "choice_id": "choice-2"},
+                    },
+                )
+                assert stale.status == 409
+
+                second_event = await next_clarify_request(queue)
+                assert second_event["request_id"] != first_event["request_id"]
+                assert second_event["prompt"]["question"] == "Any notes?"
+                assert second_event["prompt"]["type"] == "text"
+                assert adapter._run_statuses[run_id]["status"] == (
+                    "waiting_for_clarification"
+                )
+                assert adapter._run_statuses[run_id]["awaiting_user"] is True
+
+                second = await cli.post(
+                    f"/v1/runs/{run_id}/clarification",
+                    json={
+                        "request_id": second_event["request_id"],
+                        "response": {"type": "text", "text": "ship it"},
+                    },
+                )
+                assert second.status == 200
+
+                for _ in range(40):
+                    status = adapter._run_statuses[run_id]
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                payload = json.loads(callback_result["batch"])
+                assert [row["user_response"] for row in payload["responses"]] == [
+                    "Production",
+                    "ship it",
+                ]
+                assert status["status"] == "completed"
+                assert status["awaiting_user"] is False
 
     @pytest.mark.asyncio
     async def test_clarification_multi_select_returns_json_array(self, adapter):

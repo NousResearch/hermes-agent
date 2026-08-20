@@ -5041,48 +5041,66 @@ def install_from_quarantine(
                     destination_binding,
                 )
                 published = True
-                if not _directory_binding_matches(
-                    final_install_dir.parent, destination_binding
-                ):
-                    raise ValueError("Install destination changed after publish")
-                if (
-                    expected_scan_hash
-                    and full_content_hash(final_install_dir) != expected_scan_hash
-                ):
-                    raise ValueError("Installed content changed after security scan")
-                if not _directory_binding_matches(
-                    final_install_dir.parent, destination_binding
-                ):
-                    raise ValueError("Install destination changed during verification")
+                with _bound_directory(final_install_dir) as installed_binding:
+                    if not _directory_binding_matches(
+                        final_install_dir, installed_binding
+                    ):
+                        raise ValueError("Install target entry changed before verification")
+                    if not _directory_binding_matches(
+                        final_install_dir.parent, destination_binding
+                    ):
+                        raise ValueError("Install destination changed after publish")
+                    if (
+                        expected_scan_hash
+                        and full_content_hash(final_install_dir) != expected_scan_hash
+                    ):
+                        raise ValueError("Installed content changed after security scan")
+                    if not _directory_binding_matches(
+                        final_install_dir, installed_binding
+                    ):
+                        raise ValueError("Install target entry changed during verification")
+                    if not _directory_binding_matches(
+                        final_install_dir.parent, destination_binding
+                    ):
+                        raise ValueError("Install destination changed during verification")
 
-                installed_content_hash = content_hash(final_install_dir)
-                lock = HubLockFile()
-                lock.record_install(
-                    name=safe_skill_name,
-                    source=bundle.source,
-                    identifier=bundle.identifier,
-                    trust_level=bundle.trust_level,
-                    scan_verdict=scan_result.verdict,
-                    skill_hash=installed_content_hash,
-                    install_path=(
-                        final_install_dir.resolve()
-                        .relative_to(_skills_dir().resolve())
-                        .as_posix()
-                    ),
-                    files=list(bundle.files.keys()),
-                    metadata=bundle.metadata,
-                    scan_provenance=(
-                        scan_provenance
-                        or getattr(scan_result, "scan_provenance", None)
-                    ),
-                    install_attestation=build_install_attestation(
+                    installed_content_hash = content_hash(final_install_dir)
+                    if not _directory_binding_matches(
+                        final_install_dir, installed_binding
+                    ):
+                        raise ValueError("Install target entry changed before commit")
+                    install_attestation = build_install_attestation(
                         final_install_dir,
                         source=bundle.source,
                         identifier=bundle.identifier,
                         trust_level=scan_result.trust_level,
                         origin_identity=getattr(bundle, "origin_identity", ""),
-                    ),
-                )
+                    )
+                    if not _directory_binding_matches(
+                        final_install_dir, installed_binding
+                    ):
+                        raise ValueError("Install target entry changed during attestation")
+                    lock = HubLockFile()
+                    lock.record_install(
+                        name=safe_skill_name,
+                        source=bundle.source,
+                        identifier=bundle.identifier,
+                        trust_level=bundle.trust_level,
+                        scan_verdict=scan_result.verdict,
+                        skill_hash=installed_content_hash,
+                        install_path=(
+                            final_install_dir.resolve()
+                            .relative_to(_skills_dir().resolve())
+                            .as_posix()
+                        ),
+                        files=list(bundle.files.keys()),
+                        metadata=bundle.metadata,
+                        scan_provenance=(
+                            scan_provenance
+                            or getattr(scan_result, "scan_provenance", None)
+                        ),
+                        install_attestation=install_attestation,
+                    )
             except Exception as install_exc:
                 cleanup_error: Optional[Exception] = None
                 if published:

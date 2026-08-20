@@ -517,6 +517,7 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
         targets = [target]
 
     from tools.skills_hub import (
+        HubLockFile,
         _bound_directory,
         _directory_binding_matches,
         _replace_bound_directory_entry,
@@ -560,7 +561,12 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     backup_root = skills_root / ".restore-backups" / f"official-optional-{timestamp}"
 
-    from tools.skills_guard import full_content_hash, full_content_hash_for_files
+    from tools.skills_guard import (
+        build_install_attestation,
+        content_hash,
+        full_content_hash,
+        full_content_hash_for_files,
+    )
 
     for folder_name, install_path, dest, files in verified_targets:
         authoritative_hash = full_content_hash_for_files(files)
@@ -687,7 +693,39 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                                     )
                                     published = False
                                 raise
-                        restored.append(folder_name)
+                        with _bound_directory(dest) as installed_binding:
+                            if not _directory_binding_matches(dest, installed_binding):
+                                raise ValueError("Restore target entry changed")
+                            if full_content_hash(dest) != authoritative_hash:
+                                raise ValueError("Restored bytes changed before lock commit")
+                            if not _directory_binding_matches(dest, installed_binding):
+                                raise ValueError("Restore target entry changed before lock commit")
+                            installed_content_hash = content_hash(dest)
+                            if not _directory_binding_matches(dest, installed_binding):
+                                raise ValueError("Restore target entry changed during attestation")
+                            install_attestation = build_install_attestation(
+                                dest,
+                                source="official",
+                                identifier=f"official/{install_path}",
+                                trust_level="builtin",
+                                origin_identity=origin_identity,
+                            )
+                            if not _directory_binding_matches(dest, installed_binding):
+                                raise ValueError("Restore target entry changed before lock commit")
+                            HubLockFile(path=skills_root / ".hub" / "lock.json").record_install(
+                                name=folder_name,
+                                source="official",
+                                identifier=f"official/{install_path}",
+                                trust_level="builtin",
+                                scan_verdict="restored",
+                                skill_hash=installed_content_hash,
+                                install_path=install_path,
+                                files=sorted(files),
+                                metadata={"restored_from": "official-optional"},
+                                install_attestation=install_attestation,
+                            )
+                        if not canonical_now:
+                            restored.append(folder_name)
             except (OSError, TimeoutError, ValueError):
                 rollback_failures: List[str] = []
                 available_backups: List[str] = []

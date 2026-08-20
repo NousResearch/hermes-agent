@@ -1052,6 +1052,53 @@ class TestRestoreOfficialOptionalSkill:
         assert result["ok"] is True
         assert (existing / "SKILL.md").read_text() == "# Verified\n"
 
+    def test_restore_migrates_registered_skill_to_canonical_category(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_hub as hub
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "newcat" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Official\n")
+        skills_dir = tmp_path / "skills"
+        old = skills_dir / "oldcat" / "demo"
+        old.mkdir(parents=True)
+        (old / "SKILL.md").write_text("# Existing modified\n")
+        lock_path = skills_dir / ".hub" / "lock.json"
+        hub.HubLockFile(path=lock_path).record_install(
+            name="demo",
+            source="official",
+            identifier="official/oldcat/demo",
+            trust_level="builtin",
+            scan_verdict="safe",
+            skill_hash="old",
+            install_path="oldcat/demo",
+            files=["SKILL.md"],
+        )
+        identity = "git:NousResearch/hermes-agent@" + "a" * 40
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(ss, "_optional_root_identity", lambda _path: identity)
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda *_args: {"SKILL.md": b"# Verified\n"},
+        )
+        monkeypatch.setattr(ss, "_backfill_optional_provenance", lambda **_kwargs: [])
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is True
+        assert not old.exists()
+        canonical = skills_dir / "newcat" / "demo"
+        assert (canonical / "SKILL.md").read_text() == "# Verified\n"
+        entry = hub.HubLockFile(path=lock_path).get_installed("demo")
+        assert entry is not None
+        assert entry["install_path"] == "newcat/demo"
+        assert entry["identifier"] == "official/newcat/demo"
+
     def test_restore_reports_backup_when_publish_cleanup_blocks_rollback(
         self, monkeypatch, tmp_path
     ):

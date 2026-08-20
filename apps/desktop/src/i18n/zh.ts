@@ -1282,6 +1282,8 @@ export const zh: Translations = {
       autoArchiveDaysLabel: '归档前',
       autoArchiveDaysUnit: '天无活动',
       autoArchiveFailed: '无法更新自动归档设置',
+      sidebarOpenInNewTabTitle: '在新标签页中打开侧边栏会话',
+      sidebarOpenInNewTabDesc: '普通侧边栏点击会在标签页中打开或聚焦会话。即使关闭此项，Cmd/Ctrl 点击仍可在标签页中打开。',
       defaultDirTitle: '默认项目目录',
       defaultDirDesc: '新会话默认从此文件夹开始，除非你选择其他目录。留空则使用你的 home 目录。',
       defaultDirUpdated: '默认项目目录已更新',

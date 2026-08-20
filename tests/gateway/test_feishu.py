@@ -500,6 +500,30 @@ class TestAdapterBehavior(unittest.TestCase):
             adapter._on_reaction_event("im.message.reaction.created_v1", data)
         run_threadsafe.assert_called_once()
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_user_reaction_is_not_routed_when_profile_disables_it(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(
+            PlatformConfig(extra={"route_user_reactions": False})
+        )
+        adapter._loop = SimpleNamespace(is_closed=lambda: False)
+        event = SimpleNamespace(
+            message_id="om_msg",
+            operator_type="user",
+            reaction_type=SimpleNamespace(emoji_type="LOL"),
+        )
+
+        with patch(
+            "plugins.platforms.feishu.adapter.asyncio.run_coroutine_threadsafe"
+        ) as run_threadsafe:
+            adapter._on_reaction_event(
+                "im.message.reaction.created_v1",
+                SimpleNamespace(event=event),
+            )
+        run_threadsafe.assert_not_called()
+
     def _build_reaction_adapter(self, *, msg_sender_id: str):
         """Build a FeishuAdapter wired up to return a single GET-message result."""
         from gateway.config import PlatformConfig
@@ -2465,5 +2489,3 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
-
-

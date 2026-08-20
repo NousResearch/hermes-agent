@@ -2560,12 +2560,19 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
         raise HTTPException(status_code=400, detail="Path is not a directory")
 
     try:
+        entries = []
         with os.scandir(target) as scan:
-            entries = [
-                _managed_file_entry(policy, Path(entry.path))
-                for entry in scan
-                if not _is_sensitive_path(Path(entry.path))
-            ]
+            for entry in scan:
+                entry_path = Path(entry.path)
+                if _is_sensitive_path(entry_path):
+                    continue
+                try:
+                    entries.append(_managed_file_entry(policy, entry_path))
+                except HTTPException:
+                    # A single unstat-able entry (typically a dangling symlink,
+                    # e.g. ~/cuttlefish_runtime after its /var/tmp target is
+                    # wiped) must not fail the whole directory listing.
+                    continue
     except PermissionError:
         raise HTTPException(status_code=403, detail="Directory is not readable")
     except OSError as exc:

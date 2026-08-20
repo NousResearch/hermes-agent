@@ -119,6 +119,32 @@ class TestTextBatching:
         assert "chunk 2" in text
         assert "chunk 3" in text
 
+    @pytest.mark.asyncio
+    async def test_long_burst_survives_gap_beyond_old_window(self):
+        """Long messages remain buffered across the former 300ms window."""
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        adapter = _make_adapter()
+        adapter._text_batch_delay_seconds = TelegramAdapter._TEXT_BATCH_DEFAULT_DELAY_S
+        adapter._text_batch_split_delay_seconds = (
+            TelegramAdapter._TEXT_BATCH_SPLIT_DEFAULT_DELAY_S
+        )
+
+        first = "a" * 2566
+        second = "b" * 3955
+        adapter._enqueue_text_event(_make_event(first))
+
+        # The production reproduction crossed the old 300ms quiet period.
+        await asyncio.sleep(0.35)
+        adapter.handle_message.assert_not_called()
+
+        adapter._enqueue_text_event(_make_event(second))
+        await asyncio.sleep(TelegramAdapter._TEXT_BATCH_DEFAULT_DELAY_S + 0.1)
+
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert dispatched.text == f"{first}\n{second}"
+
 
     @pytest.mark.asyncio
     async def test_disconnected_adapter_drops_pending_media_group_flush_before_dispatch(self):

@@ -102,6 +102,96 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         stop.set()
 
 
+def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
+    monkeypatch,
+):
+    """Bare ``hermes`` / ``hermes chat`` on a TTY with ``display.interface:
+    tui`` resolves to the TUI via ``_resolve_use_tui``, but does NOT pass
+    ``--tui`` or ``HERMES_TUI``. Discovery must be skipped in the wrapper:
+    the TUI gateway owns it, and the wrapper would otherwise hold a dead
+    MCP server for the entire session (3 copies per TUI instance).
+    """
+    calls = {"background": 0, "inline": 0}
+
+    monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda _args: True)
+    monkeypatch.setattr(
+        mcp_startup,
+        "start_background_mcp_discovery",
+        lambda **_kwargs: calls.__setitem__("background", calls["background"] + 1),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
+            load_config=lambda: {},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda: calls.__setitem__("inline", calls["inline"] + 1),
+        ),
+    )
+
+    main_mod._prepare_agent_startup(_agent_args(command=None))
+
+    assert calls["background"] == 0
+    assert calls["inline"] == 0
+    assert mcp_startup._mcp_discovery_thread is None
+
+
+def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
+    monkeypatch,
+):
+    """Non-chat commands never launch the TUI, so they must keep their own
+    MCP discovery even when the ambient display config resolves to TUI —
+    ``_is_tui_chat_launch`` must not consult ``_resolve_use_tui`` there."""
+    calls = {"inline": 0}
+
+    monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda _args: True)
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
+            load_config=lambda: {},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda: calls.__setitem__("inline", calls["inline"] + 1),
+        ),
+    )
+
+    main_mod._prepare_agent_startup(_agent_args(command="mcp", mcp_action="serve"))
+
+    assert calls["inline"] == 1
+
+
 def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
     state = {"active": False, "during_discover": None}
 

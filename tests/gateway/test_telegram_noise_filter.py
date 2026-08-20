@@ -255,6 +255,20 @@ def test_chat_gateways_drop_interrupt_sentinel(platform):
     assert _sanitize_gateway_final_response("local", sentinel) == sentinel
 
 
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+def test_chat_gateways_replace_empty_model_turn_explainer(platform):
+    """A framework-only empty-turn diagnostic is not useful chat prose."""
+    explainer = (
+        "⚠️ No reply: the model returned empty content after retries and any "
+        "fallback providers. Try `continue`, switch model/provider, or retry."
+    )
+
+    assert _sanitize_gateway_final_response(platform, explainer) == (
+        "⚠️ I couldn’t finish that response. Please try again."
+    )
+    assert _sanitize_gateway_final_response("local", explainer) == explainer
+
+
 def test_telegram_status_sanitizes_raw_provider_security_errors():
     """Provider policy/security bodies should be replaced before chat delivery."""
     raw = (

@@ -2122,6 +2122,15 @@ export interface Translations {
     pidLabel: (pid: number) => string
     technicalDetails: string
     notNow: string
+    /** Multi-target update flow: client nudge after a backend update, and
+     *  per-row fan-out outcomes when updating every registered instance. */
+    clientAlsoBehindTitle: string
+    clientAlsoBehindMessage: string
+    clientAlsoBehindAction: string
+    everythingDispatched: string
+    everythingSkipped: string
+    everythingRowFailed: string
+    everythingFanoutFailedTitle: string
     applyStatus: {
       preparing: string
       pulling: string

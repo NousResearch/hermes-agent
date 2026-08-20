@@ -12743,42 +12743,59 @@ ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
 // app's own update pipeline; remote/ssh POST the backend's own
 // /api/hermes/update endpoint (the dashboard updater), which runs
 // `hermes update` on THAT machine.
-ipcMain.handle('hermes:connections:update-all', async () => {
+ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
   const registry = readDesktopConnectionsRegistry()
 
+  // Optional renderer-side exclusions: the everything-update flow dispatches
+  // the ACTIVE backend through its own detailed-progress path and chains the
+  // local client apply LAST (it relaunches the app), so it excludes those ids
+  // here to avoid double-dispatch. No payload keeps the Settings button's
+  // original all-rows behavior byte-identical.
+  const excludeIds = new Set<string>(
+    Array.isArray((payload as any)?.excludeIds) ? (payload as any).excludeIds.map((id: unknown) => String(id)) : []
+  )
+
   const results = await Promise.all(
-    registry.connections.map(async connection => {
-      const base = { connectionId: connection.id, label: connection.label, kind: connection.kind }
-      const eligibility = updateEligibility(connection)
+    registry.connections
+      .filter(connection => !excludeIds.has(connection.id))
+      .map(async connection => {
+        const base = { connectionId: connection.id, label: connection.label, kind: connection.kind }
+        const eligibility = updateEligibility(connection)
 
-      if (!eligibility.eligible) {
-        return { ...base, ok: false, skipped: true, reason: eligibility.reason }
-      }
-
-      try {
-        if (connection.kind === 'local') {
-          // The app-managed runtime updates through the same pipeline as the
-          // Settings → Updates button (marker + venv gate + relaunch flow).
-          const result: any = await applyUpdates({})
-
-          return { ...base, ok: result?.ok !== false, detail: result?.message || 'update started' }
+        if (!eligibility.eligible) {
+          return { ...base, ok: false, skipped: true, reason: eligibility.reason }
         }
 
-        const descriptor: any = await ensureRegistryBackend(connection.id, null)
+        try {
+          if (connection.kind === 'local') {
+            // The app-managed runtime updates through the same pipeline as the
+            // Settings → Updates button (marker + venv gate + relaunch flow).
+            const result: any = await applyUpdates({})
 
-        const body: any = await postJsonForBackend(descriptor, '/api/hermes/update', {}, { timeoutMs: 15_000 })
+            return { ...base, ok: result?.ok !== false, detail: result?.message || 'update started' }
+          }
 
-        if (body?.ok === false) {
-          // The backend refused (docker/nix/externally-managed installs) —
-          // surface ITS message, per-row, instead of failing the batch.
-          return { ...base, ok: false, skipped: true, reason: body?.error || 'backend-refused', detail: body?.message }
+          const descriptor: any = await ensureRegistryBackend(connection.id, null)
+
+          const body: any = await postJsonForBackend(descriptor, '/api/hermes/update', {}, { timeoutMs: 15_000 })
+
+          if (body?.ok === false) {
+            // The backend refused (docker/nix/externally-managed installs) —
+            // surface ITS message, per-row, instead of failing the batch.
+            return {
+              ...base,
+              ok: false,
+              skipped: true,
+              reason: body?.error || 'backend-refused',
+              detail: body?.message
+            }
+          }
+
+          return { ...base, ok: true, detail: body?.message || 'update started' }
+        } catch (error: any) {
+          return { ...base, ok: false, error: String(error?.message || error) }
         }
-
-        return { ...base, ok: true, detail: body?.message || 'update started' }
-      } catch (error: any) {
-        return { ...base, ok: false, error: String(error?.message || error) }
-      }
-    })
+      })
   )
 
   return { ok: true, results }

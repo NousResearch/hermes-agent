@@ -2110,6 +2110,13 @@ export const zhHant = defineLocale({
     pidLabel: pid => `PID ${pid}`,
     technicalDetails: '技術詳細資料',
     notNow: '暫不',
+    clientAlsoBehindTitle: '桌面應用版本落後',
+    clientAlsoBehindMessage: '後端已是最新，但此桌面應用仍是舊版本。請更新以取得最新修復。',
+    clientAlsoBehindAction: '更新桌面應用',
+    everythingDispatched: '更新已派送',
+    everythingSkipped: '已略過',
+    everythingRowFailed: '更新失敗',
+    everythingFanoutFailedTitle: '無法更新其他執行個體',
     applyStatus: {
       preparing: '正在更新後端…',
       pulling: '後端更新中…',

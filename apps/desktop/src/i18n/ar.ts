@@ -1971,6 +1971,14 @@ export const ar = defineLocale({
     pidLabel: pid => `معرّف العملية ${pid}`,
     technicalDetails: 'التفاصيل التقنية',
     notNow: 'ليس الآن',
+    clientAlsoBehindTitle: 'تطبيق سطح المكتب متأخر',
+    clientAlsoBehindMessage:
+      'الخادم الخلفي محدث، لكن تطبيق سطح المكتب هذا لا يزال على إصدار أقدم. حدّثه للحصول على أحدث الإصلاحات.',
+    clientAlsoBehindAction: 'تحديث تطبيق سطح المكتب',
+    everythingDispatched: 'تم إرسال التحديث',
+    everythingSkipped: 'تم التخطي',
+    everythingRowFailed: 'فشل التحديث',
+    everythingFanoutFailedTitle: 'تعذر تحديث المثيلات الأخرى',
     applyStatus: {
       preparing: 'جار تحديث الواجهة الخلفية...',
       pulling: 'جار تحديث الواجهة الخلفية...',

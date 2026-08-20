@@ -2693,6 +2693,13 @@ export const zh: Translations = {
     pidLabel: pid => `PID ${pid}`,
     technicalDetails: '技术详情',
     notNow: '暂不',
+    clientAlsoBehindTitle: '桌面应用版本落后',
+    clientAlsoBehindMessage: '后端已是最新，但此桌面应用仍是旧版本。请更新以获得最新修复。',
+    clientAlsoBehindAction: '更新桌面应用',
+    everythingDispatched: '更新已分发',
+    everythingSkipped: '已跳过',
+    everythingRowFailed: '更新失败',
+    everythingFanoutFailedTitle: '无法更新其他实例',
     applyStatus: {
       preparing: '正在更新后端…',
       pulling: '后端更新中…',

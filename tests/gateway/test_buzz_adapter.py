@@ -136,6 +136,39 @@ class TestBuzzAdapterInit:
         assert adapter.poll_interval == 2.0
         assert adapter.home_channel == "ccc"
 
+    def test_outbound_mention_pubkeys_reject_casefold_collisions(self):
+        from gateway.config import PlatformConfig
+
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "relay_url": "https://cfg.relay",
+                "outbound_mention_pubkeys": {
+                    "Agent": OTHER_PUBKEY,
+                    "agent": SELF_PUBKEY,
+                },
+            },
+        )
+
+        with pytest.raises(ValueError, match="duplicate display name"):
+            BuzzAdapter(cfg)
+
+    def test_validate_config_rejects_invalid_outbound_mention_mapping(
+        self, monkeypatch
+    ):
+        from gateway.config import PlatformConfig
+
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1test")
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "relay_url": "https://cfg.relay",
+                "outbound_mention_pubkeys": "not-a-mapping",
+            },
+        )
+
+        assert validate_config(cfg) is False
+
     def test_env_overrides_config(self, monkeypatch):
         monkeypatch.setenv("BUZZ_RELAY_URL", "https://env.relay")
         from gateway.config import PlatformConfig
@@ -397,6 +430,7 @@ class TestBuzzAdapterSend:
         result = await adapter.send(CHANNEL, "hello **markdown**")
         assert result.success is True
         assert result.message_id == "evt123"
+        assert len(cli.calls) == 1
 
         args, stdin_text = cli.calls[0]
         assert args[:2] == ["messages", "send"]
@@ -407,6 +441,402 @@ class TestBuzzAdapterSend:
         # Our own event id is marked seen for echo suppression
         assert "evt123" in adapter._channel_state[CHANNEL]["seen"]
 
+
+    @pytest.mark.asyncio
+    async def test_send_configured_agent_handoff_uses_exact_pubkey(self):
+        adapter = _make_adapter(
+            {"outbound_mention_pubkeys": {"CodexTerraM": OTHER_PUBKEY}}
+        )
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt-agent-handoff", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(
+            CHANNEL,
+            "@CodexTerraM — review the clean rebuild.",
+            metadata={"thread_id": "thread-root"},
+        )
+
+        assert result.success is True
+        assert len(cli.calls) == 1
+        args, stdin_text = cli.calls[0]
+        assert args[args.index("--mention") + 1] == OTHER_PUBKEY
+        assert stdin_text == "@CodexTerraM — review the clean rebuild."
+
+    @pytest.mark.asyncio
+    async def test_send_uses_casefold_consistently_for_unicode_names(self):
+        adapter = _make_adapter(
+            {
+                "outbound_mention_pubkeys": {
+                    "i": OTHER_PUBKEY,
+                    "ı": SELF_PUBKEY,
+                }
+            }
+        )
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt-unicode-name", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "@ı — review this.")
+
+        assert result.success is True
+        args, stdin_text = cli.calls[0]
+        mention_values = [
+            args[index + 1]
+            for index, value in enumerate(args)
+            if value == "--mention"
+        ]
+        assert mention_values == [SELF_PUBKEY]
+        assert stdin_text == "@ı — review this."
+
+    @pytest.mark.asyncio
+    async def test_send_never_downgrades_configured_agent_handoff(self):
+        adapter = _make_adapter(
+            {"outbound_mention_pubkeys": {"CodexTerraM": OTHER_PUBKEY}}
+        )
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr=(
+                "mention '@CodexTerraM' does not match a current channel member"
+            ),
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(
+            CHANNEL,
+            "@CodexTerraM — review the clean rebuild.",
+        )
+
+        assert result.success is False
+        assert len(cli.calls) == 1
+        args, stdin_text = cli.calls[0]
+        assert args[args.index("--mention") + 1] == OTHER_PUBKEY
+        assert stdin_text == "@CodexTerraM — review the clean rebuild."
+
+    @pytest.mark.asyncio
+    async def test_send_configured_handoff_only_protects_its_own_marker(self):
+        adapter = _make_adapter(
+            {"outbound_mention_pubkeys": {"CodexTerraM": OTHER_PUBKEY}}
+        )
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr="mention '@ghost' does not match a current channel member",
+        )
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt-mixed", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(
+            CHANNEL,
+            "@CodexTerraM — ask @ghost to review.",
+        )
+
+        assert result.success is True
+        assert len(cli.calls) == 2
+        first_args, first_text = cli.calls[0]
+        second_args, second_text = cli.calls[1]
+        assert first_args == second_args
+        assert first_args[first_args.index("--mention") + 1] == OTHER_PUBKEY
+        assert first_text == "@CodexTerraM — ask @ghost to review."
+        assert second_text == "@CodexTerraM — ask ghost to review."
+
+    @pytest.mark.asyncio
+    async def test_send_unconfigured_prefix_does_not_strip_configured_handoff(self):
+        adapter = _make_adapter(
+            {"outbound_mention_pubkeys": {"Ghostly": OTHER_PUBKEY}}
+        )
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr="mention '@ghost' does not match a current channel member",
+        )
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt-prefix", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(
+            CHANNEL,
+            "@Ghostly — ask @ghost to review.",
+        )
+
+        assert result.success is True
+        assert [text for _args, text in cli.calls] == [
+            "@Ghostly — ask @ghost to review.",
+            "@Ghostly — ask ghost to review.",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_send_retries_unresolved_mentions_as_readable_text(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr=(
+                "user_error: mention '@teknium1' does not match a current "
+                "channel member; retry with --mention <pubkey>"
+            ),
+        )
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt-fallback", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(
+            CHANNEL,
+            "Ask @teknium1 and notify @Codex, but keep bob@example.com intact.",
+            metadata={"thread_id": "thread-root"},
+        )
+
+        assert result.success is True
+        assert result.message_id == "evt-fallback"
+        assert len(cli.calls) == 2
+        first_args, first_text = cli.calls[0]
+        fallback_args, fallback_text = cli.calls[1]
+        assert first_text == "Ask @teknium1 and notify @Codex, but keep bob@example.com intact."
+        assert fallback_text == "Ask teknium1 and notify @Codex, but keep bob@example.com intact."
+        assert fallback_args == first_args
+        assert fallback_args[fallback_args.index("--reply-to") + 1] == "thread-root"
+
+    @pytest.mark.asyncio
+    async def test_send_retries_unicode_unresolved_mention(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr="mention '@Иван' does not match a current channel member",
+        )
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt-unicode", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "Ask @Иван Петров to review")
+
+        assert result.success is True
+        assert [text for _args, text in cli.calls] == [
+            "Ask @Иван Петров to review",
+            "Ask Иван Петров to review",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_send_retries_apostrophe_name(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr="mention '@O'Brien' does not match a current channel member",
+        )
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt-apostrophe", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "Ask @O'Brien to review")
+
+        assert result.success is True
+        assert [text for _args, text in cli.calls] == [
+            "Ask @O'Brien to review",
+            "Ask O'Brien to review",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_send_retries_each_new_unresolved_name_within_cap(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr="mention '@Ghost One' does not match a current channel member",
+        )
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr="mention '@Ghost Two' does not match a current channel member",
+        )
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt-multiple", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "ping @Ghost One and @Ghost Two")
+
+        assert result.success is True
+        assert [text for _args, text in cli.calls] == [
+            "ping @Ghost One and @Ghost Two",
+            "ping Ghost One and @Ghost Two",
+            "ping Ghost One and Ghost Two",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_send_caps_sequential_mention_fallback_retries(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        for name in ("One", "Two", "Three", "Four"):
+            cli.script(
+                "messages",
+                "send",
+                "",
+                code=1,
+                stderr=(
+                    f"mention '@Ghost {name}' does not match a current channel member"
+                ),
+            )
+        adapter._run_cli = cli
+
+        result = await adapter.send(
+            CHANNEL,
+            "ping @Ghost One, @Ghost Two, @Ghost Three, and @Ghost Four",
+        )
+
+        assert result.success is False
+        assert result.error == (
+            "mention '@Ghost Four' does not match a current channel member"
+        )
+        assert len(cli.calls) == 4
+
+    @pytest.mark.asyncio
+    async def test_send_retries_ambiguous_mention_without_silencing_other_mentions(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr=(
+                "mention '@Twin' is ambiguous; candidates: npub1a, npub1b. "
+                "Retry with --mention <pubkey>"
+            ),
+        )
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt-ambiguous", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "Ask @Twin and notify @Codex")
+
+        assert result.success is True
+        assert cli.calls[1][1] == "Ask Twin and notify @Codex"
+
+    @pytest.mark.asyncio
+    async def test_send_retries_max_mentions_with_all_markers_neutralized(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr="too many unique message mentions (max 2)",
+        )
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt-max", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(
+            CHANNEL,
+            "Ask @Иван, @李明, and @Codex; email bob@example.com",
+        )
+
+        assert result.success is True
+        assert cli.calls[1][1] == (
+            "Ask Иван, 李明, and Codex; email bob@example.com"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_does_not_retry_unrelated_failure(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr="forbidden: sender is not authorized",
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "Ask @Codex")
+
+        assert result.success is False
+        assert len(cli.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_send_propagates_second_attempt_failure_without_third_attempt(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr="mention '@ghost' does not match a current channel member",
+        )
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr="relay unavailable after fallback",
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "Ask @ghost")
+
+        assert result.success is False
+        assert result.error == "relay unavailable after fallback"
+        assert len(cli.calls) == 2
 
     @pytest.mark.asyncio
     async def test_send_image_local_file_uses_file_flag(self, tmp_path):
@@ -420,6 +850,145 @@ class TestBuzzAdapterSend:
         assert result.success is True
         args, _stdin = cli.calls[0]
         assert args[args.index("--file") + 1] == str(img)
+
+    @pytest.mark.asyncio
+    async def test_send_image_configured_handoff_uses_exact_pubkey(self, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter(
+            {"outbound_mention_pubkeys": {"CodexTerraM": OTHER_PUBKEY}}
+        )
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt-image-handoff", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send_image(
+            CHANNEL,
+            str(img),
+            caption="@CodexTerraM — review this screenshot.",
+        )
+
+        assert result.success is True
+        args, stdin_text = cli.calls[0]
+        mention_values = [
+            args[index + 1]
+            for index, value in enumerate(args)
+            if value == "--mention"
+        ]
+        assert mention_values == [OTHER_PUBKEY]
+        assert stdin_text == "@CodexTerraM — review this screenshot."
+
+    @pytest.mark.asyncio
+    async def test_send_image_never_downgrades_configured_handoff(self, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter(
+            {"outbound_mention_pubkeys": {"CodexTerraM": OTHER_PUBKEY}}
+        )
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr=(
+                "mention '@CodexTerraM' does not match a current channel member"
+            ),
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send_image(
+            CHANNEL,
+            str(img),
+            caption="@CodexTerraM — review this screenshot.",
+        )
+
+        assert result.success is False
+        assert len(cli.calls) == 1
+        args, stdin_text = cli.calls[0]
+        assert args[args.index("--mention") + 1] == OTHER_PUBKEY
+        assert stdin_text == "@CodexTerraM — review this screenshot."
+
+    @pytest.mark.asyncio
+    async def test_send_image_configured_handoff_only_protects_its_marker(
+        self, tmp_path
+    ):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter(
+            {"outbound_mention_pubkeys": {"CodexTerraM": OTHER_PUBKEY}}
+        )
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr="mention '@ghost' does not match a current channel member",
+        )
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt-image-mixed", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send_image(
+            CHANNEL,
+            str(img),
+            caption="@CodexTerraM — ask @ghost to review this screenshot.",
+        )
+
+        assert result.success is True
+        assert len(cli.calls) == 2
+        first_args, first_text = cli.calls[0]
+        second_args, second_text = cli.calls[1]
+        mention_values = [
+            first_args[index + 1]
+            for index, value in enumerate(first_args)
+            if value == "--mention"
+        ]
+        assert mention_values == [OTHER_PUBKEY]
+        assert second_args == first_args
+        assert first_text == (
+            "@CodexTerraM — ask @ghost to review this screenshot."
+        )
+        assert second_text == "@CodexTerraM — ask ghost to review this screenshot."
+
+    @pytest.mark.asyncio
+    async def test_send_image_retries_unresolved_caption_mention(self, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr="mention '@ghost' does not match a current channel member",
+        )
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt-image-fallback", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send_image(
+            CHANNEL,
+            str(img),
+            caption="For @ghost",
+            reply_to="thread-root",
+        )
+
+        assert result.success is True
+        assert [text for _args, text in cli.calls] == ["For @ghost", "For ghost"]
+        assert cli.calls[1][0] == cli.calls[0][0]
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -513,6 +1082,31 @@ class TestBuzzPluginRegistration:
 class TestStandaloneSend:
 
     @pytest.mark.asyncio
+    async def test_standalone_invalid_outbound_mapping_returns_error(
+        self, monkeypatch, tmp_path
+    ):
+        from gateway.config import PlatformConfig
+
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+
+        result = await _standalone_send(
+            PlatformConfig(
+                enabled=True,
+                extra={"outbound_mention_pubkeys": "not-a-mapping"},
+            ),
+            CHANNEL,
+            "hello",
+        )
+
+        assert result == {
+            "error": "Buzz standalone send: invalid outbound_mention_pubkeys"
+        }
+
+    @pytest.mark.asyncio
     async def test_standalone_send_success(self, monkeypatch, tmp_path):
         from gateway.config import PlatformConfig
 
@@ -537,4 +1131,115 @@ class TestStandaloneSend:
         # The private key must never be part of argv
         assert all("nsec1x" not in str(a) for a in captured["args"])
 
+    @pytest.mark.asyncio
+    async def test_standalone_send_configured_handoff_uses_exact_pubkey(
+        self, monkeypatch, tmp_path
+    ):
+        from gateway.config import PlatformConfig
 
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        calls = []
+
+        async def fake_exec(
+            cli_path, args, *, relay_url, private_key, input_text=None, timeout=30.0
+        ):
+            calls.append((list(args), input_text))
+            return 0, json.dumps(
+                {"accepted": True, "event_id": "evt-cron", "message": ""}
+            ), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = await _standalone_send(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "outbound_mention_pubkeys": {"CodexTerraM": OTHER_PUBKEY}
+                },
+            ),
+            CHANNEL,
+            "@CodexTerraM — review the scheduled result.",
+        )
+
+        assert result == {"success": True, "message_id": "evt-cron"}
+        args, stdin_text = calls[0]
+        assert args[args.index("--mention") + 1] == OTHER_PUBKEY
+        assert stdin_text == "@CodexTerraM — review the scheduled result."
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_retries_unresolved_mention(self, monkeypatch, tmp_path):
+        from gateway.config import PlatformConfig
+
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        calls = []
+
+        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=30.0):
+            calls.append((list(args), input_text))
+            if len(calls) == 1:
+                return 1, "", "mention '@ghost' does not match a current channel member"
+            return 0, json.dumps({"accepted": True, "event_id": "evt-cron", "message": ""}), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            CHANNEL,
+            "Cron asks @ghost",
+            thread_id="thread-root",
+        )
+
+        assert result == {"success": True, "message_id": "evt-cron"}
+        assert [text for _args, text in calls] == ["Cron asks @ghost", "Cron asks ghost"]
+        assert calls[1][0] == calls[0][0]
+
+    @pytest.mark.asyncio
+    async def test_standalone_configured_handoff_only_protects_its_own_marker(
+        self, monkeypatch, tmp_path
+    ):
+        from gateway.config import PlatformConfig
+
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        calls = []
+
+        async def fake_exec(
+            cli_path, args, *, relay_url, private_key, input_text=None, timeout=30.0
+        ):
+            calls.append((list(args), input_text))
+            if len(calls) == 1:
+                return 1, "", "mention '@ghost' does not match a current channel member"
+            return 0, json.dumps(
+                {"accepted": True, "event_id": "evt-cron", "message": ""}
+            ), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = await _standalone_send(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "outbound_mention_pubkeys": {"CodexTerraM": OTHER_PUBKEY}
+                },
+            ),
+            CHANNEL,
+            "@CodexTerraM asks @ghost to review",
+        )
+
+        assert result == {"success": True, "message_id": "evt-cron"}
+        assert [text for _args, text in calls] == [
+            "@CodexTerraM asks @ghost to review",
+            "@CodexTerraM asks ghost to review",
+        ]
+        assert calls[1][0] == calls[0][0]
+        assert calls[0][0][calls[0][0].index("--mention") + 1] == OTHER_PUBKEY

@@ -2592,6 +2592,88 @@ class TestCompressionChainProjection:
         assert [row["id"] for row in webui_rows] == ["heartbeat-tip"]
         assert db.list_sessions_rich(source="telegram", limit=20) == []
 
+    def test_sql_tip_source_projection_matches_python_walk(self, db):
+        """The SQL source projection must stay equivalent to the Python walker.
+
+        Keep this as a small table-driven lineage matrix instead of duplicating
+        the implementation in a second test helper. It covers empty sources,
+        multi-hop compression, ignored branch/delegate children, and a fully
+        tied sibling choice where the stable id tie-breaker is observable.
+        """
+        db.create_session("matrix-plain", "")
+
+        db.create_session("matrix-chain-root", "telegram")
+        db.end_session("matrix-chain-root", "compression")
+        db.create_session(
+            "matrix-chain-mid",
+            "telegram",
+            parent_session_id="matrix-chain-root",
+        )
+        db.end_session("matrix-chain-mid", "compression")
+        db.create_session(
+            "matrix-chain-tip",
+            "webui",
+            parent_session_id="matrix-chain-mid",
+        )
+
+        db.create_session("matrix-filter-root", "telegram")
+        db.end_session("matrix-filter-root", "compression")
+        db.create_session(
+            "matrix-filter-delegate",
+            "webui",
+            parent_session_id="matrix-filter-root",
+            model_config={"_delegate_from": "matrix-filter-root"},
+        )
+        db.create_session(
+            "matrix-filter-branch",
+            "slack",
+            parent_session_id="matrix-filter-root",
+            model_config={"_branched_from": "matrix-filter-root"},
+        )
+        db.create_session(
+            "matrix-filter-tip",
+            "webui",
+            parent_session_id="matrix-filter-root",
+        )
+
+        db.create_session("matrix-tie-root", "telegram")
+        db.end_session("matrix-tie-root", "compression")
+        for child_id, child_source in (
+            ("matrix-tie-a", "alpha"),
+            ("matrix-tie-b", "beta"),
+        ):
+            db.create_session(
+                child_id,
+                child_source,
+                parent_session_id="matrix-tie-root",
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at = 1700000000, "
+                "last_activity_at = 1700000100 WHERE id = ?",
+                (child_id,),
+            )
+        db._conn.commit()
+
+        roots = (
+            "matrix-plain",
+            "matrix-chain-root",
+            "matrix-filter-root",
+            "matrix-tie-root",
+        )
+        projection_sql = (
+            "SELECT "
+            f"{hermes_state._projected_tip_source_sql('s')} "
+            "AS projected_source FROM sessions s WHERE s.id = ?"
+        )
+        for root_id in roots:
+            tip_id = db.get_compression_tip(root_id)
+            tip = db.get_session(tip_id)
+            expected = (tip["source"] or "cli") if tip else "cli"
+            actual = db._conn.execute(projection_sql, (root_id,)).fetchone()
+            assert actual["projected_source"] == expected
+
+        assert db.get_compression_tip("matrix-tie-root") == "matrix-tie-b"
+
     def test_list_handles_broken_chain_gracefully(self, db):
         """A compression root with no child (e.g. DB corruption or a partial
         end_session call that didn't finish creating the child) must not

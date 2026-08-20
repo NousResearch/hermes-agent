@@ -324,7 +324,11 @@ def _projected_tip_source_sql(session_alias: str = "s") -> str:
             SELECT leaf.source
             FROM tip
             JOIN sessions leaf ON leaf.id = tip.id
-            ORDER BY tip.depth DESC
+            ORDER BY
+                tip.depth DESC,
+                {_sql_session_last_active("leaf")} DESC,
+                leaf.started_at DESC,
+                leaf.id DESC
             LIMIT 1
         ), ''), 'cli')
     """

@@ -80,7 +80,16 @@ def _parse_owner_user_id(value: object) -> int | None:
 
 
 def render_qr_terminal(url: str) -> str:
-    """Render a URL as a QR code string suitable for terminal output."""
+    """Render a URL as a QR code string suitable for terminal output.
+
+    Uses Unicode block characters (▀▄█) which render correctly in both
+    light and dark backgrounds — the blocks use the terminal's foreground
+    color while the empty cells use the background color.
+
+    ``invert=False`` ensures the QR code's quiet zone (border) remains as
+    background-colored space rather than being filled with foreground blocks,
+    which would make the border invisible to QR scanner apps.
+    """
     try:
         import io
 
@@ -96,7 +105,7 @@ def render_qr_terminal(url: str) -> str:
         qr.make(fit=True)
 
         buf = io.StringIO()
-        qr.print_ascii(out=buf, invert=True)
+        qr.print_ascii(out=buf, invert=False)
         return buf.getvalue()
     except ImportError:
         return ""

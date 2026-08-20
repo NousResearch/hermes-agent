@@ -7,8 +7,12 @@ the file-write logic live here.
 
 import json
 import logging
+import sys
 from datetime import datetime
 from typing import Any, Dict, List
+
+if sys.platform != "win32":
+    import fcntl
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +54,12 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
 
     try:
         with open(filename, "a", encoding="utf-8") as f:
+            if sys.platform != "win32":
+                fcntl.flock(f, fcntl.LOCK_EX)
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            f.flush()
+            if sys.platform != "win32":
+                fcntl.flock(f, fcntl.LOCK_UN)
         logger.info("Trajectory saved to %s", filename)
     except Exception as e:
         logger.warning("Failed to save trajectory: %s", e)

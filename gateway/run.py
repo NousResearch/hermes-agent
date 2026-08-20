@@ -2746,6 +2746,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
         "max_tokens": max_tokens,
     }
 
@@ -2886,6 +2887,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
     }
 
 
@@ -2944,6 +2946,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+                    "request_overrides": dict(runtime.get("request_overrides") or {}),
                     "model": entry.get("model"),
                 }
             except Exception as fb_exc:
@@ -8046,16 +8049,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ),
         }
 
+        # Named custom providers can contribute request-only fields through
+        # ``runtime_kwargs["request_overrides"]`` (for example provider-side
+        # ``web_search`` tools in ``extra_body``).  Keep those fields separate
+        # from the AIAgent constructor kwargs, but never discard them while
+        # computing the per-turn fast-mode override.
+        request_overrides = dict(runtime_kwargs.get("request_overrides") or {})
+
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
-            route["request_overrides"] = {}
+            route["request_overrides"] = request_overrides
             return route
 
         try:
             overrides = resolve_fast_mode_overrides(route["model"])
         except Exception:
             overrides = None
-        route["request_overrides"] = overrides or {}
+        # Fast mode and provider metadata are independent.  Merge nested maps
+        # such as ``extra_body``/``extra_headers`` instead of replacing the
+        # provider payload wholesale when both happen to use the same key.
+        for key, value in (overrides or {}).items():
+            current = request_overrides.get(key)
+            if isinstance(current, dict) and isinstance(value, dict):
+                request_overrides[key] = {**current, **value}
+            else:
+                request_overrides[key] = value
+        route["request_overrides"] = request_overrides
         return route
 
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:

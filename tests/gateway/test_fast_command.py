@@ -124,6 +124,61 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
     assert route["request_overrides"] == {"service_tier": "priority"}
 
 
+def test_turn_route_preserves_custom_provider_request_overrides():
+    runner = _make_runner()
+    provider_overrides = {
+        "extra_body": {
+            "enable_thinking": True,
+            "tools": [{"type": "web_search"}, {"type": "web_extractor"}],
+        }
+    }
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "https://example.invalid/v1",
+        "provider": "custom",
+        "requested_provider": "custom:research-provider",
+        "api_mode": "codex_responses",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+        "request_overrides": provider_overrides,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "research this", "research-model", runtime_kwargs
+    )
+
+    assert route["request_overrides"] == provider_overrides
+    assert route["request_overrides"] is not provider_overrides
+
+
+def test_turn_route_merges_fast_mode_with_custom_provider_overrides():
+    runner = _make_runner()
+    runner._service_tier = "priority"
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "https://example.invalid/v1",
+        "provider": "custom",
+        "requested_provider": "custom:research-provider",
+        "api_mode": "codex_responses",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+        "request_overrides": {
+            "extra_body": {"tools": [{"type": "web_search"}]},
+        },
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "research this quickly", "gpt-5.4", runtime_kwargs
+    )
+
+    assert route["request_overrides"] == {
+        "extra_body": {"tools": [{"type": "web_search"}]},
+        "service_tier": "priority",
+    }
+
+
 @pytest.mark.asyncio
 async def test_handle_fast_command_global_flag_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()

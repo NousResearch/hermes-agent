@@ -6327,6 +6327,57 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         heartbeat_thread.join(timeout=1.0)
 
 
+# A provider quota window surfacing in a job failure message. Anchored on the
+# Codex quota-exhaustion wording ("quota exhausted (429); retry after <N>s"),
+# which both token-endpoint and usage-endpoint raises share, so an ordinary
+# "retry after" hint from some unrelated subsystem cannot trip the hold.
+_QUOTA_RETRY_AFTER_RE = re.compile(
+    r"quota exhausted \(429\); retry after (\d+)s", re.IGNORECASE
+)
+# Below this the window is shorter than most sub-hourly cadences anyway.
+_QUOTA_HOLD_MIN_SECONDS = 300.0
+# Slack on top of the provider's window so a fire at the boundary does not
+# land inside a clock-skewed still-closed window.
+_QUOTA_HOLD_SLACK_SECONDS = 30.0
+
+
+def _quota_hold_seconds_from_failure(error_text: str) -> Optional[float]:
+    """Extract a deferrable provider quota window from a job failure (#89376).
+
+    Returns whole seconds to hold the job's fires, or None when the failure
+    is not a quota-window rejection (or the window is too short to matter).
+    AuthError carries the same value structurally as
+    ``retry_after_seconds``; this text channel is the surviving signal once
+    run-level exception wrapping has stringified the cause chain.
+    """
+    m = _QUOTA_RETRY_AFTER_RE.search(error_text or "")
+    if not m:
+        return None
+    try:
+        seconds = float(m.group(1))
+    except ValueError:
+        return None
+    return seconds if seconds >= _QUOTA_HOLD_MIN_SECONDS else None
+
+
+def _apply_quota_hold(job: dict, hold_seconds: float) -> None:
+    """Persist a quota hold so get_due_jobs skips fires until the window ends."""
+    hold_until = time.time() + hold_seconds + _QUOTA_HOLD_SLACK_SECONDS
+    try:
+        from cron.jobs import update_job
+
+        update_job(job["id"], {"quota_hold_until": hold_until})
+        logger.warning(
+            "Job '%s': provider quota window (%.0fs) — holding fires until the "
+            "window reopens instead of failing on every cadence tick (#89376)",
+            job.get("id"), hold_seconds,
+        )
+    except Exception as exc:
+        logger.debug(
+            "Failed persisting quota hold for job %s: %s", job.get("id"), exc
+        )
+
+
 def run_one_job(
     job: dict,
     *,
@@ -6744,6 +6795,10 @@ def _run_one_job_body(
             mark_kwargs["expected_fire_owner"] = fire_owner
         if blocked_config:
             mark_kwargs["status"] = "blocked_config"
+        if not success:
+            _hold_s = _quota_hold_seconds_from_failure(error or "")
+            if _hold_s is not None:
+                _apply_quota_hold(job, _hold_s)
         marked = mark_job_run(job["id"], success, error, **mark_kwargs)
         if fire_owner is not None and not marked:
             finish_execution(
@@ -6825,6 +6880,9 @@ def _run_one_job_body(
                     mark_kwargs["expected_fire_owner"] = fire_owner
                 if isinstance(e, Exception):
                     mark_kwargs["delivery_error"] = delivery_error
+                _hold_s = _quota_hold_seconds_from_failure(_err_text)
+                if _hold_s is not None:
+                    _apply_quota_hold(job, _hold_s)
                 mark_job_run(job["id"], False, _err_text, **mark_kwargs)
         except Exception as record_err:
             # Never let bookkeeping mask the original interruption.

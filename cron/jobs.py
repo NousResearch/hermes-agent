@@ -3456,6 +3456,40 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             needs_save = True
                             break
 
+                # Provider quota hold (#89376): a failure that carried a
+                # provider quota window (scheduler's _apply_quota_hold) parked
+                # this job until the window reopens. Skip the fire and park
+                # next_run_at at the hold boundary — the stale-collapse logic
+                # above then collapses any missed occurrences, so the job
+                # resumes its cadence after the window WITHOUT burst-firing.
+                _quota_hold = job.get("quota_hold_until")
+                if isinstance(_quota_hold, (int, float)) and _quota_hold > 0:
+                    _hold_dt = _ensure_aware(
+                        datetime.fromtimestamp(_quota_hold)
+                    )
+                    if _hold_dt > now:
+                        _parked = _hold_dt.isoformat()
+                        job["next_run_at"] = _parked
+                        for rj in raw_jobs:
+                            if rj["id"] == job["id"]:
+                                rj["next_run_at"] = _parked
+                                needs_save = True
+                                break
+                        logger.info(
+                            "Job '%s' held until %s (provider quota window)",
+                            job.get("name", job.get("id", "?")),
+                            _parked,
+                        )
+                        continue
+                    # Window over: clear the marker so it cannot pin a
+                    # future recovery after an operator-driven model change.
+                    job.pop("quota_hold_until", None)
+                    for rj in raw_jobs:
+                        if rj["id"] == job["id"]:
+                            rj.pop("quota_hold_until", None)
+                            needs_save = True
+                            break
+
                 due.append(job)
         except Exception:
             logger.exception(

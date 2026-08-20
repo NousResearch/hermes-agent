@@ -2826,3 +2826,29 @@ class TestFailureStreakNudge:
         from cron.scheduler import _failure_streak_nudge
         with patch("cron.scheduler.load_config", side_effect=RuntimeError("boom")):
             assert "failed 3 runs" in _failure_streak_nudge(self._job(2))
+
+
+class TestQuotaHoldFromFailure:
+    """_quota_hold_seconds_from_failure gates the scheduler's quota hold (#89376)."""
+
+    def test_codex_quota_message_yields_window(self):
+        from cron.scheduler import _quota_hold_seconds_from_failure
+
+        msg = (
+            "Codex provider quota exhausted (429); retry after 123518s. "
+            "Credentials are still valid."
+        )
+        assert _quota_hold_seconds_from_failure(msg) == 123518.0
+
+    def test_short_window_ignored(self):
+        from cron.scheduler import _quota_hold_seconds_from_failure
+
+        msg = "Codex provider quota exhausted (429); retry after 90s."
+        assert _quota_hold_seconds_from_failure(msg) is None
+
+    def test_unrelated_retry_after_ignored(self):
+        from cron.scheduler import _quota_hold_seconds_from_failure
+
+        assert _quota_hold_seconds_from_failure("HTTP 429: retry after 60s") is None
+        assert _quota_hold_seconds_from_failure("") is None
+        assert _quota_hold_seconds_from_failure(None) is None

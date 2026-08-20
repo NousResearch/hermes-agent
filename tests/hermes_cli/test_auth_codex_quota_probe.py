@@ -281,3 +281,22 @@ def test_pool_probe_not_fired_for_non_quota_exhaustion(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# AuthError.retry_after_seconds — structured quota window (#89376)
+# ---------------------------------------------------------------------------
+
+def test_auth_error_retry_after_seconds_default_and_explicit():
+    default = auth_mod.AuthError("boom", code="x")
+    assert default.retry_after_seconds is None
+
+    err = auth_mod.AuthError(
+        "Codex provider quota exhausted (429); retry after 123518s. "
+        "Credentials are still valid.",
+        code=auth_mod.CODEX_RATE_LIMITED_CODE,
+        relogin_required=False,
+        retry_after_seconds=123518.0,
+    )
+    assert auth_mod.is_rate_limited_auth_error(err) is True
+    assert err.retry_after_seconds == 123518.0
+
+

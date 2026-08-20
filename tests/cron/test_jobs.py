@@ -1102,6 +1102,56 @@ class TestClaimDispatch:
         assert load_jobs() == []  # cleaned up
 
 
+class TestQuotaHoldWindow:
+    """A provider quota window parks the job's fires until it reopens (#89376).
+
+    The scheduler stamps ``quota_hold_until`` (epoch seconds) when a job
+    failure carried an upstream quota window. While the window is open the
+    job must not fire on every cadence tick; next_run_at is parked at the
+    hold boundary so the stale-collapse logic collapses missed occurrences
+    instead of burst-firing when the window ends."""
+
+    def test_open_window_parks_next_run(self, tmp_cron_dir):
+        now_dt = datetime.now(timezone.utc)
+        past = (now_dt - timedelta(minutes=5)).isoformat()
+        hold_until = (now_dt + timedelta(hours=10)).timestamp()
+        save_jobs([{
+            "id": "q1",
+            "name": "quota-held",
+            "enabled": True,
+            "schedule": {"kind": "cron", "expr": "11,41 * * * *"},
+            "next_run_at": past,
+            "quota_hold_until": hold_until,
+        }])
+
+        due = get_due_jobs()
+
+        assert all(j["id"] != "q1" for j in due), "held job must not fire"
+        persisted = load_jobs()[0]
+        parked = datetime.fromisoformat(persisted["next_run_at"])
+        # Parked at the hold boundary (not the original past instant).
+        assert abs(parked.timestamp() - hold_until) < 60
+
+    def test_expired_window_fires_and_clears_marker(self, tmp_cron_dir):
+        now_dt = datetime.now(timezone.utc)
+        past = (now_dt - timedelta(minutes=5)).isoformat()
+        expired_hold = (now_dt - timedelta(hours=1)).timestamp()
+        save_jobs([{
+            "id": "q2",
+            "name": "quota-released",
+            "enabled": True,
+            "schedule": {"kind": "cron", "expr": "11,41 * * * *"},
+            "next_run_at": past,
+            "quota_hold_until": expired_hold,
+        }])
+
+        due = get_due_jobs()
+
+        assert any(j["id"] == "q2" for j in due), "expired hold must fire"
+        persisted = load_jobs()[0]
+        assert "quota_hold_until" not in persisted, "expired marker cleared"
+
+
 class TestLateEnvRepointScopesStore:
     """A HERMES_HOME set AFTER cron.jobs import must scope the store even
     without use_cron_store(): fixtures that patch the environment too late

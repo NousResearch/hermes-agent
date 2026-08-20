@@ -928,11 +928,17 @@ class AuthError(RuntimeError):
         provider: str = "",
         code: Optional[str] = None,
         relogin_required: bool = False,
+        retry_after_seconds: Optional[float] = None,
     ) -> None:
         super().__init__(message)
         self.provider = provider
         self.code = code
         self.relogin_required = relogin_required
+        # Upstream quota/rate-limit hint (whole seconds until the window
+        # reopens) when the provider sent one. Structured so schedulers can
+        # defer without parsing the message (#89376); None means "retry
+        # later, duration unknown".
+        self.retry_after_seconds = retry_after_seconds
 
 
 def is_rate_limited_auth_error(error: Exception) -> bool:
@@ -3929,6 +3935,7 @@ def refresh_codex_oauth_pure(
             provider="openai-codex",
             code=CODEX_RATE_LIMITED_CODE,
             relogin_required=False,
+            retry_after_seconds=float(retry_after) if retry_after is not None else None,
         )
 
     if response.status_code != 200:
@@ -4182,6 +4189,7 @@ def resolve_codex_runtime_credentials(
                 provider="openai-codex",
                 code=CODEX_RATE_LIMITED_CODE,
                 relogin_required=False,
+                retry_after_seconds=float(remaining) if remaining >= 0 else None,
             )
         if read_error is not None:
             raise read_error

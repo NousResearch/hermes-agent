@@ -1013,6 +1013,45 @@ class TestRestoreOfficialOptionalSkill:
         assert result["ok"] is False
         assert (existing / "SKILL.md").read_text() == "# Existing modified\n"
 
+    def test_restore_supports_configured_profile_root_redirect(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Official\n")
+        real_skills = tmp_path / "real-skills"
+        existing = real_skills / "devops" / "demo"
+        existing.mkdir(parents=True)
+        (existing / "SKILL.md").write_text("# Existing modified\n")
+        skills_link = tmp_path / "profile" / "skills"
+        skills_link.parent.mkdir()
+        try:
+            skills_link.symlink_to(real_skills, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory symlinks unavailable: {exc}")
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_link)
+        monkeypatch.setattr(
+            ss,
+            "_optional_root_identity",
+            lambda _path: "git:NousResearch/hermes-agent@" + "a" * 40,
+        )
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda *_args: {"SKILL.md": b"# Verified\n"},
+        )
+        monkeypatch.setattr(ss, "_backfill_optional_provenance", lambda **_kwargs: [])
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is True
+        assert (existing / "SKILL.md").read_text() == "# Verified\n"
+
     def test_restore_rejects_unverified_optional_override(self, monkeypatch, tmp_path):
         import tools.skills_sync as ss
 

@@ -440,7 +440,7 @@ def _move_to_restore_backup(
         _replace_bound_directory_entry,
     )
 
-    rel = path.relative_to(_skills_dir())
+    rel = path.relative_to(_skills_dir().resolve())
     target = backup_root / rel
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
@@ -556,8 +556,9 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
 
     restored: List[str] = []
     backed_up: List[str] = []
+    skills_root = _skills_dir().resolve()
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    backup_root = _skills_dir() / ".restore-backups" / f"official-optional-{timestamp}"
+    backup_root = skills_root / ".restore-backups" / f"official-optional-{timestamp}"
 
     from tools.skills_guard import full_content_hash, full_content_hash_for_files
 
@@ -584,14 +585,15 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                     continue
                 candidate = skill_md.parent
                 try:
-                    _safe_rel_install_path(candidate, _skills_dir())
+                    candidate_resolved = candidate.resolve(strict=True)
+                    _safe_rel_install_path(candidate_resolved, skills_root)
                 except (OSError, ValueError):
                     continue
                 candidate_name = _read_skill_name(skill_md, candidate.name)
-                if candidate == dest:
+                if candidate_resolved == dest:
                     continue
                 if candidate.name == folder_name or candidate_name in {folder_name, src_frontmatter}:
-                    matches.append(candidate)
+                    matches.append(candidate_resolved)
 
         if restore:
             stage_context = None
@@ -600,7 +602,7 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                 try:
                     stage_context = tempfile.TemporaryDirectory(
                         prefix=".restore-stage-",
-                        dir=str(_skills_dir()),
+                        dir=str(skills_root),
                     )
                     staged_path = Path(stage_context.name) / folder_name
                     _write_restored_bundle(files, staged_path)
@@ -624,12 +626,12 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                 with _target_install_lock(
                     install_path,
                     folder_name,
-                    skills_dir=_skills_dir(),
+                    skills_dir=skills_root,
                 ):
                     final_dest = _resolve_lock_install_path(
                         install_path,
                         folder_name,
-                        skills_dir=_skills_dir(),
+                        skills_dir=skills_root,
                     )
                     if final_dest != dest:
                         raise ValueError("Restore destination changed")
@@ -640,11 +642,11 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                     for match in matches:
                         if not match.exists():
                             continue
-                        _safe_rel_install_path(match, _skills_dir())
+                        _safe_rel_install_path(match, skills_root)
                         rel, backup = _move_to_restore_backup(match, backup_root)
                         moved.append((match, backup, rel))
                     if dest.exists() and not canonical_now:
-                        _safe_rel_install_path(dest, _skills_dir())
+                        _safe_rel_install_path(dest, skills_root)
                         rel, backup = _move_to_restore_backup(dest, backup_root)
                         moved.append((dest, backup, rel))
                     if not canonical_now:

@@ -8,6 +8,7 @@ import {
 import { useLocation, useSearchParams } from "react-router";
 import { api, setManagementProfile } from "@/lib/api";
 import { ProfileContext } from "@/contexts/profile-context";
+import { profileBridge } from "@/plugins/profile-bridge";
 
 /**
  * Machine-level management-profile scope.
@@ -130,6 +131,19 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     () => ({ profile, currentProfile, profiles, setProfile }),
     [profile, currentProfile, profiles, setProfile],
   );
+
+  // Mirror the live profile scope into the host-internal plugin bridge so the
+  // plugin SDK's profileScope surface (and non-React consumers like a plain-JS
+  // plugin bundle) can read it and react to switcher flips. Read fields only;
+  // setProfile is never mirrored (the SDK surface is read + subscribe, not
+  // write). Keyed on the three primitives, not the memo value: the memo's deps
+  // include setProfile, whose identity can churn across renders and would
+  // re-fire this effect needlessly. No teardown reset: a flip-to-empty on
+  // unmount would be worse than a brief stale snapshot (which the host's
+  // single-provider runtime never actually hits).
+  useEffect(() => {
+    profileBridge.set({ profile, currentProfile, profiles });
+  }, [profile, currentProfile, profiles]);
 
   return (
     <ProfileContext.Provider value={value}>{children}</ProfileContext.Provider>

@@ -38,6 +38,7 @@ import { Separator } from "@nous-research/ui/ui/components/separator";
 import { Tabs, TabsList, TabsTrigger } from "@nous-research/ui/ui/components/tabs";
 import { useI18n } from "@/i18n";
 import { registerSlot, PluginSlot } from "./slots";
+import { profileBridge } from "./profile-bridge";
 
 // ---------------------------------------------------------------------------
 // Plugin registry — plugins call register() to add their component.
@@ -98,12 +99,13 @@ export function getRegisteredCount(): number {
 
 /**
  * Version of the plugin SDK contract (see ``plugins/sdk.d.ts``). Bump the
- * major on any backwards-incompatible change to the exposed surface;
- * additive changes (new optional fields / helpers) don't require a bump.
+ * major on any backwards-incompatible change to the exposed surface; additive
+ * changes (new optional fields / helpers) take a minor bump so a runtime compat
+ * gate can advertise the new capability, never a major bump.
  * Exposed at runtime as ``window.__HERMES_PLUGIN_SDK__.sdkVersion`` so a
  * plugin (or a future host-side compatibility gate) can read it.
  */
-export const SDK_CONTRACT_VERSION = "1.1.0";
+export const SDK_CONTRACT_VERSION = "1.2.0";
 
 // Window globals for the plugin SDK are declared in ``plugins/sdk.d.ts`` —
 // the single source of truth for the public contract. Don't redeclare them
@@ -117,7 +119,7 @@ export function exposePluginSDK() {
 
   window.__HERMES_PLUGIN_SDK__ = {
     // Contract version of the plugin SDK surface (see plugins/sdk.d.ts).
-    // Bump on backwards-incompatible changes; additive changes don't need it.
+    // Bump major on backwards-incompatible changes; additive changes take a minor bump.
     sdkVersion: SDK_CONTRACT_VERSION,
     // React core — plugins use these instead of importing react
     React,
@@ -188,5 +190,27 @@ export function exposePluginSDK() {
 
     // Hooks
     useI18n,
+
+    // Live, read-only view of the host's management-profile switcher, plus a
+    // subscribe(cb) that fires once immediately (bootstrap) and then on every
+    // operator flip. An object with live
+    // getters (not a bare hook) so non-React consumers (plain-JS plugin
+    // bundles that probe `typeof sdk.profileScope === "object"` and call
+    // `.subscribe`) work too. Getters re-read the host-internal store at
+    // access time; read + subscribe only (setProfile is not re-exported).
+    profileScope: {
+      get profile() {
+        return profileBridge.get().profile;
+      },
+      get currentProfile() {
+        return profileBridge.get().currentProfile;
+      },
+      get profiles() {
+        return profileBridge.get().profiles;
+      },
+      subscribe(cb: () => void) {
+        return profileBridge.subscribe(cb);
+      },
+    },
   };
 }

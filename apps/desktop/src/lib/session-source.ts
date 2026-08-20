@@ -21,6 +21,7 @@ const SOURCE_LABELS: Record<string, string> = {
   telegram: 'Telegram',
   tui: 'TUI',
   webhook: 'Webhook',
+  webui: 'Hermex',
   weixin: 'WeChat',
   whatsapp: 'WhatsApp',
   yuanbao: 'Yuanbao'
@@ -64,6 +65,7 @@ export const MESSAGING_SESSION_SOURCE_IDS = [
   'sms',
   'webhook',
   'api_server',
+  'webui',
   'weixin',
   'wecom',
   'qqbot',

@@ -1799,7 +1799,11 @@ registry.register(
     toolset="vision",
     schema=VISION_ANALYZE_SCHEMA,
     handler=_handle_vision_analyze,
-    check_fn=check_vision_requirements,
+    # Availability cannot be decided by probing only the auxiliary client:
+    # the live session may use the native multimodal tool-result path instead.
+    # Keep the canonical image-ingest tool visible and let the handler choose
+    # the native or auxiliary route from the active runtime.
+    check_fn=None,
     is_async=True,
     emoji="👁️",
 )

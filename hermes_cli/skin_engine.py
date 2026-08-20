@@ -133,6 +133,8 @@ BUILT-IN SKINS
 - ``slate``   — Cool blue developer-focused theme
 - ``daylight`` — Light background theme with dark text and blue accents
 - ``warm-lightmode`` — Warm brown/gold text for light terminal backgrounds
+- ``designless`` — Warm monochrome (dark base + hand-tuned light overlay),
+  molten-orange accent; from the designless.cloud palette
 
 USER SKINS
 ==========
@@ -539,6 +541,130 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "help_header": "(^_^)? Available Commands",
         },
         "tool_prefix": "\u250a",
+    },
+    "designless": {
+        "name": "designless",
+        "description": "Warm monochrome — near-black canvas, warm cream text, molten orange focus",
+        # Dark-authored base, faithful to the canonical designless-dark palette
+        # (designless.cloud v1.2.0, MIT). Deviations from upstream are the
+        # minimum needed to clear Hermes's contrast audit on the dark pole
+        # (#101014): muted/border tones lifted #5A5248 → #625B51, input_rule
+        # #3D3530 → #625B57, status_bar_dim #5A5248 → #696258 (2.8:1 vs the
+        # #1D1A17 status surface), and shell_dollar added (#FF4719).
+        "colors": {
+            "background": "#090807",
+            "banner_border": "#625B51",
+            "banner_title": "#E5DDD0",
+            "banner_accent": "#FF4719",
+            "banner_dim": "#625B51",
+            "banner_text": "#E5DDD0",
+            "ui_accent": "#FF4719",
+            "ui_label": "#6FB3F5",
+            "ui_ok": "#5AB87A",
+            "ui_error": "#FF6B5B",
+            "ui_warn": "#FFB84D",
+            "prompt": "#FF4719",
+            "input_rule": "#625B57",
+            "response_border": "#FF4719",
+            "status_bar_bg": "#1D1A17",
+            "status_bar_text": "#E5DDD0",
+            "status_bar_strong": "#FF4719",
+            "status_bar_dim": "#696258",
+            "status_bar_good": "#5AB87A",
+            "status_bar_warn": "#FFB84D",
+            "status_bar_bad": "#E8A030",
+            "status_bar_critical": "#FF6B5B",
+            "session_label": "#FF4719",
+            "session_border": "#625B51",
+            "completion_menu_bg": "#090807",
+            "completion_menu_current_bg": "#1D1A17",
+            "completion_menu_meta_bg": "#090807",
+            "completion_menu_meta_current_bg": "#3D3530",
+            "selection_bg": "#3D3530",
+            "shell_dollar": "#FF4719",
+            "voice_status_bg": "#1D1A17",
+        },
+        # Hand-tuned light overlay, faithful to canonical designless-light.
+        # Overlay (not a full replacement): fills flip to light polarity and
+        # foregrounds re-tune for a white pole. Deviation from upstream:
+        # status_bar_strong deepened #FF4719 → #CC3914 to hold 3.9:1 against
+        # the #E8E4DF status surface; shell_dollar added (#1050A0).
+        "light_colors": {
+            "background": "#FFFFFF",
+            "banner_border": "#DDD7D1",
+            "banner_title": "#111111",
+            "banner_accent": "#FF4719",
+            "banner_dim": "#6B6560",
+            "banner_text": "#111111",
+            "ui_accent": "#FF4719",
+            "ui_label": "#1050A0",
+            "ui_ok": "#1E6B3C",
+            "ui_error": "#C0000A",
+            "ui_warn": "#7A4A00",
+            "prompt": "#FF4719",
+            "input_rule": "#DDD7D1",
+            "response_border": "#FF4719",
+            "status_bar_bg": "#E8E4DF",
+            "status_bar_text": "#111111",
+            "status_bar_strong": "#CC3914",
+            "status_bar_dim": "#6B6560",
+            "status_bar_good": "#1E6B3C",
+            "status_bar_warn": "#7A4A00",
+            "status_bar_bad": "#9A5E00",
+            "status_bar_critical": "#C0000A",
+            "session_label": "#FF4719",
+            "session_border": "#6B6560",
+            "completion_menu_bg": "#FFFFFF",
+            "completion_menu_current_bg": "#E8E4DF",
+            "completion_menu_meta_bg": "#F4F0EB",
+            "completion_menu_meta_current_bg": "#DDD7D1",
+            "selection_bg": "#DDD7D1",
+            "shell_dollar": "#1050A0",
+            "voice_status_bg": "#E8E4DF",
+        },
+        "spinner": {
+            "waiting_faces": ["(dl)", "(· )", "( ·)", "(··)"],
+            "thinking_faces": ["(dl)", "(//)", "(-- )", "( --)"],
+            "thinking_verbs": [
+                "reducing noise", "holding structure", "shaping the system",
+                "tracing the edge", "keeping it minimal", "warming the monochrome",
+            ],
+            "wings": [
+                ["\u27ea#", "#\u27eb"],
+                ["\u27ea\u00b7", "\u00b7\u27eb"],
+                ["\u27ea/", "/\u27eb"],
+            ],
+        },
+        "branding": {
+            "agent_name": "Hermes Agent",
+            "welcome": "Welcome to Hermes Agent — Designless. Type your message or /help for commands.",
+            "goodbye": "Goodbye. \u258c",
+            "response_label": " \u258c Hermes ",
+            "prompt_symbol": "\u258c",
+            "help_header": "\u258c Available Commands",
+        },
+        "tool_prefix": "\u2502",
+        "tool_emojis": {
+            "terminal": "\u25a3",
+            "read_file": "\u25a4",
+            "write_file": "\u25a5",
+            "patch": "\u25a8",
+            "search_files": "\u2315",
+            "web_search": "\u25cc",
+            "browser_navigate": "\u25c7",
+            "computer_use": "\u25a7",
+        },
+        "banner_logo": """[bold #E5DDD0]██████╗ ███████╗███████╗██╗ ██████╗ ███╗   ██╗██╗     ███████╗███████╗███████╗[/]
+[#E5DDD0]██╔══██╗██╔════╝██╔════╝██║██╔════╝ ████╗  ██║██║     ██╔════╝██╔════╝██╔════╝[/]
+[#FF4719]██║  ██║█████╗  ███████╗██║██║  ███╗██╔██╗ ██║██║     █████╗  ███████╗███████╗[/]
+[#8A8176]██║  ██║██╔══╝  ╚════██║██║██║   ██║██║╚██╗██║██║     ██╔══╝  ╚════██║╚════██║[/]
+[#625B51]██████╔╝███████╗███████║██║╚██████╔╝██║ ╚████║███████╗███████╗███████║███████║[/]
+[#3D3530]╚═════╝ ╚══════╝╚══════╝╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚══════╝╚══════╝╚══════╝╚══════╝[/]""",
+        "banner_hero": """[#625B51]┌──────────────────────────────┐[/]
+[#625B51]│[/][#E5DDD0] warm monochrome            [/][#625B51]│[/]
+[#625B51]│[/][#FF4719] molten focus               [/][#625B51]│[/]
+[#625B51]│[/][#8A8176] structure over decoration  [/][#625B51]│[/]
+[#625B51]└──────────────────────────────┘[/]""",
     },
     "poseidon": {
         "name": "poseidon",

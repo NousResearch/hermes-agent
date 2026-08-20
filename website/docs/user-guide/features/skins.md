@@ -41,6 +41,7 @@ display:
 | `poseidon` | Ocean-god theme — deep blue and seafoam | `Poseidon Agent` | Deep blue to seafoam gradient. Ocean-themed spinners ("charting currents", "sounding the depth"). Trident ASCII art banner. |
 | `sisyphus` | Sisyphean theme — austere grayscale with persistence | `Sisyphus Agent` | Light grays with stark contrast. Boulder-themed spinners ("pushing uphill", "resetting the boulder", "enduring the loop"). Boulder-and-hill ASCII art banner. |
 | `charizard` | Volcanic theme — burnt orange and ember | `Charizard Agent` | Warm burnt orange to ember gradient. Fire-themed spinners ("banking into the draft", "measuring burn"). Dragon-silhouette ASCII art banner. |
+| `designless` | Warm monochrome with molten orange focus | `Hermes Agent` | Near-black canvas (`#090807`), warm cream text, and a single molten-orange accent (`#FF4719`) reserved for focus and active states. Dark base with a hand-tuned light overlay (white canvas, near-black text) — the light/dark toggle flips between the two. From the designless.cloud palette. |
 
 ## Complete list of configurable keys
 

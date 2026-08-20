@@ -472,6 +472,34 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         or any(t.rsplit("/", 1)[-1] in ("hermes", "hermes.exe") for t in tokens)
     )
     if not has_gateway_entry:
+        # Wrapper scripts that import ``hermes_cli.main`` and call ``main()``
+        # with ``gateway run`` in argv (common for supervised launches, secure
+        # credential handoff, or profile-specific env setup) won't carry any of
+        # the known entrypoint markers.  Recognize them by the
+        # ``gateway run`` subcommand pair appearing as standalone tokens —
+        # the same signal the filtered-token loop below relies on, but without
+        # requiring a known entrypoint basename.  The pair is specific enough
+        # that unrelated processes won't trip it: a bare ``gateway run`` with
+        # no Hermes entrypoint is the wrapper-script case.
+        filtered_for_wrappers: list[str] = []
+        skip_next = False
+        for token in tokens:
+            if skip_next:
+                skip_next = False
+                continue
+            if token in ("--profile", "-p"):
+                skip_next = True
+                continue
+            if token.startswith("--profile=") or token.startswith("-p="):
+                continue
+            filtered_for_wrappers.append(token)
+        for i, token in enumerate(filtered_for_wrappers):
+            if token != "gateway":
+                continue
+            if i + 1 >= len(filtered_for_wrappers):
+                return "run"
+            if filtered_for_wrappers[i + 1] == "run":
+                return "run"
         return None
 
     # Drop profile selectors anywhere: --profile X / -p X / --profile=X / -p=X.

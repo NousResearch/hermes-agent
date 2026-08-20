@@ -16,6 +16,7 @@ chosen ``user_peer_id`` can be asserted without touching the network.
 
 import hashlib
 import json
+import os
 from unittest.mock import MagicMock
 
 
@@ -515,16 +516,18 @@ class TestPinTransition:
         )
 
     def test_cache_busting_signature_reflects_pin_peer_name(self, tmp_path, monkeypatch):
-        """Gateway agent cache must bust when honcho.json's pinPeerName flips."""
+        """Gateway cache must bust even when honcho.json's mtime is unchanged."""
         from gateway.run import GatewayRunner
 
         cfg_path = tmp_path / "honcho.json"
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor", "pinPeerName": True}))
+        original_stat = cfg_path.stat()
         sig_pinned = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor", "pinPeerName": False}))
+        os.utime(cfg_path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
         sig_unpinned = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         assert sig_pinned["honcho.pin_peer_name"] != sig_unpinned["honcho.pin_peer_name"]

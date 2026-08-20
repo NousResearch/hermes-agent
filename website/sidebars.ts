@@ -611,6 +611,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/web-development/web-development-cloudflare-temporary-deploy',
+                    'user-guide/skills/optional/web-development/web-development-interface-design',
                     'user-guide/skills/optional/web-development/web-development-page-agent',
                   ],
                 },

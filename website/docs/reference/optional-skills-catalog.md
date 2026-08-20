@@ -239,6 +239,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**cloudflare-temporary-deploy**](/docs/user-guide/skills/optional/web-development/web-development-cloudflare-temporary-deploy) | Deploy a Worker live, no account, via wrangler --temporary. |
+| [**interface-design**](/docs/user-guide/skills/optional/web-development/web-development-interface-design) | UI/UX craft reviews: typography, color, a11y, layout. |
 | [**page-agent**](/docs/user-guide/skills/optional/web-development/web-development-page-agent) | Embed an in-page natural-language GUI copilot in web apps. |
 
 ## yuanbao

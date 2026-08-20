@@ -4558,6 +4558,15 @@ _SECRET_CONFIG_KEYS = frozenset({
 })
 
 
+def _is_secret_config_key(key: str) -> bool:
+    """Return whether a config mapping key conventionally carries a secret."""
+    normalized = key.lower().replace("-", "_")
+    return (
+        normalized in _SECRET_CONFIG_KEYS
+        or normalized.endswith(("_api_key", "_token", "_secret", "_password", "_passwd", "_private_key"))
+    )
+
+
 def redact_config_value(value: Any, _depth: int = 0) -> Any:
     """Return a copy of ``value`` with credential-shaped keys masked for display.
 
@@ -4569,7 +4578,7 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
     redactor, and opaque tokens (e.g. Cloudflare ``cfut_...``) don't match the
     vendor-prefix regexes either, so structural key-name masking is required.
     """
-    from agent.redact import mask_secret
+    from agent.redact import mask_secret, redact_sensitive_text
 
     # Defensive bound on recursion depth for pathological/cyclic configs.
     if _depth > 20:
@@ -4577,13 +4586,18 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, dict):
         out = {}
         for k, v in value.items():
-            if isinstance(k, str) and k.lower() in _SECRET_CONFIG_KEYS and isinstance(v, str) and v:
+            if isinstance(k, str) and _is_secret_config_key(k) and isinstance(v, str) and v:
                 out[k] = mask_secret(v)
             else:
                 out[k] = redact_config_value(v, _depth + 1)
         return out
     if isinstance(value, list):
         return [redact_config_value(v, _depth + 1) for v in value]
+    if isinstance(value, str):
+        # Catch recognizable credentials even when stored under a custom key.
+        # force=True makes config inspection safe independently of the normal
+        # runtime redaction toggle.
+        return redact_sensitive_text(value, force=True)
     return value
 
 
@@ -5674,6 +5688,15 @@ def get_config_value(key: str, *, as_json: bool = False):
         print(f"Config key not set: {key}", file=sys.stderr)
         sys.exit(1)
 
+    # Configuration inspection is an unconditional secret boundary. Unlike
+    # ordinary tool/chat output, it must remain safe even when the operator
+    # disables runtime redaction, because arbitrary MCP env/header values can
+    # contain credentials that are not recognizable by token-prefix regexes.
+    if _is_env_config_key(key):
+        from agent.redact import mask_secret
+        value = mask_secret(value)
+    else:
+        value = redact_config_value(value)
     print(_format_config_get_value(value, as_json=as_json))
 
 

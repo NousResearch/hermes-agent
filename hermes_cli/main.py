@@ -1685,7 +1685,9 @@ def cmd_chat(args):
     _apply_safe_mode(args)
     _apply_user_config_bypass(args)
     _guard_noninteractive_user_config(args)
-    use_tui = _resolve_use_tui(args)
+    from hermes_cli.stream_json import stream_json_requested
+    # Structured stdout is a non-interactive protocol: it overrides HERMES_TUI/display.interface too.
+    use_tui = False if stream_json_requested(args) else _resolve_use_tui(args)
 
     _resolve_chat_session_args(args, use_tui)
 
@@ -1739,6 +1741,7 @@ def cmd_chat(args):
         "query": args.query,
         "oneshot": bool(getattr(args, "oneshot_exit", False)),
         "run_budget": getattr(args, "run_budget", None),
+        "output_format": getattr(args, "output_format", "text"),
         "ignore_rules": getattr(args, "ignore_rules", False) or safe_mode,
         "ignore_user_config": getattr(args, "ignore_user_config", False) or safe_mode,
         "compact": getattr(args, "compact", False),

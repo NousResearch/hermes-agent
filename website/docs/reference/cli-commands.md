@@ -120,6 +120,7 @@ Common options:
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
+| `--format stream-json` | Emit structured JSONL for a `-q` / `--query` invocation. Implies `--quiet`; cannot be combined with `--tui`. |
 | `--image <path>` | Attach a local image to a single query. |
 | `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`. |
 | `--worktree` | Create an isolated git worktree for this run. |
@@ -141,10 +142,36 @@ hermes chat --oneshot -q "Summarize the latest PRs"  # answer and exit
 hermes chat --provider openrouter --model anthropic/claude-sonnet-4.6
 hermes chat --toolsets web,terminal,skills
 hermes chat --quiet -q "Return only JSON"
+hermes chat -q "Inspect this repository" --format stream-json
 hermes chat --worktree -q "Review this repo and open a PR"
 hermes chat --ignore-user-config --ignore-rules -q "Repro without my personal setup"
 hermes chat --safe-mode -q "Is this bug mine or Hermes'?"
 ```
+
+### `--format stream-json` — structured JSONL output
+
+Use `--format stream-json` when a program needs to consume progress without
+scraping terminal output. It requires `-q` / `--query` (or `--query-file`), implies
+quiet non-interactive CLI mode, and rejects an explicit `--tui` request. Every
+stdout line is one JSON object; diagnostics and the `session_id:` line stay on stderr.
+
+```bash
+hermes chat -q "Summarize this repository" --format stream-json
+```
+
+Every event carries `timestamp` (Unix epoch milliseconds).
+
+| Event `type` | Fields |
+|---|---|
+| `system` | `subtype: "init"`, `model`, `session_id` |
+| `text` | `text` — a streamed assistant text delta |
+| `tool_use` | `name`; `input` when the tool arguments are available |
+| `tool_result` | `name`, `output` (capped at 5000 chars), `duration_ms`, `is_error` |
+| `result` | `session_id`, `exit_code`, `text`, `tokens` (`input`, `output`, `total`, `cache_read`, `cache_write`), `duration_ms`; `error` when the turn failed |
+
+Once a conversation starts, its terminal record is always `result` — including
+`exit_code: 130` when it is interrupted with Ctrl-C. Treat that record as the
+completion signal; the process exit code matches its `exit_code`.
 
 #### Delegation in finite chat runs
 

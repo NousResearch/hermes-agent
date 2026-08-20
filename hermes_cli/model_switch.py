@@ -1382,6 +1382,10 @@ def _configured_provider_matches(
                     matches[slug] = hit
                     break
 
+    configured_provider_keys = {
+        key.strip().lower() for key in matches if isinstance(key, str) and key.strip()
+    }
+
     if isinstance(custom_providers, list):
         for entry in custom_providers:
             if not isinstance(entry, dict):
@@ -1391,6 +1395,19 @@ def _configured_provider_matches(
                 continue
             slug = f"custom:{name}"
             if slug in matches:
+                continue
+            # New-style providers.<slug> blocks are mirrored into
+            # custom_providers (via get_compatible_custom_providers) with
+            # provider_key == slug.  Skip the mirror so the same provider
+            # isn't reported twice (custom:gpt + gpt) for one model.
+            # Compare against a normalized (lowercased) key set so mixed-case
+            # provider slugs are caught.
+            provider_key = entry.get("provider_key")
+            if (
+                isinstance(provider_key, str)
+                and provider_key.strip()
+                and provider_key.strip().lower() in configured_provider_keys
+            ):
                 continue
             for key in ("models", "model", "default_model"):
                 hit = _match(entry.get(key))

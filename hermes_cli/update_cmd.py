@@ -4644,6 +4644,89 @@ def _rebuild_desktop_after_update(
     return True
 
 
+
+def _restore_feature_branch_after_update(
+    git_cmd, project_root, current_branch: str, target_branch: str
+) -> None:
+    """Return the checkout to the user's own branch after a successful update.
+
+    Rebase the user's branch onto the freshly updated target and return to it;
+    on any failure, abort cleanly, stay on the target, and print the manual
+    recovery command. Never raises — a branch-restore failure must not fail
+    the update itself.
+    """
+    import subprocess
+    if not current_branch or current_branch in (target_branch, "HEAD"):
+        return
+    try:
+        print(
+            f"→ Returning to your branch '{current_branch}' "
+            f"(rebasing onto {target_branch})..."
+        )
+        checkout = subprocess.run(
+            git_cmd + ["checkout", current_branch],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+        )
+        if checkout.returncode != 0:
+            print(
+                f"  ⚠ Could not check out '{current_branch}' — staying on "
+                f"{target_branch}."
+            )
+            return
+        
+        rebase = subprocess.run(
+            git_cmd + ["rebase", target_branch],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+        )
+        if rebase.returncode != 0:
+            subprocess.run(
+                git_cmd + ["rebase", "--abort"],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                git_cmd + ["checkout", target_branch],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+            )
+            print(
+                f"  ⚠ Rebasing '{current_branch}' onto {target_branch} hit "
+                f"conflicts — staying on {target_branch}."
+            )
+            print("  Your branch is untouched. Rebase manually when ready:")
+            print(f"    git checkout {current_branch} && git rebase {target_branch}")
+            return
+            
+        syntax_ok, failing_path, _err = _validate_critical_files_syntax(project_root)
+        if not syntax_ok:
+            print(
+                f"  ⚠ Rebased tree fails the critical-file syntax check "
+                f"({failing_path}) — returning to {target_branch}."
+            )
+            print(
+                f"  Fix the branch, then check it out manually: "
+                f"git checkout {current_branch}"
+            )
+            subprocess.run(
+                git_cmd + ["checkout", target_branch],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+            )
+            return
+        print(
+            f"  ✓ '{current_branch}' rebased onto {target_branch} and checked out."
+        )
+    except Exception as exc:
+        print(f"  ⚠ Branch restore skipped ({exc}) — staying on {target_branch}.")
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
@@ -5275,6 +5358,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(f"    cd {_m().PROJECT_ROOT} && git reflog && git reset --hard <prev-sha>")
                 sys.exit(1)
 
+            
+
+            
+
+            _restore_feature_branch_after_update(git_cmd, _m().PROJECT_ROOT, current_branch, branch)
             update_succeeded = True
         finally:
             if auto_stash_ref is not None:

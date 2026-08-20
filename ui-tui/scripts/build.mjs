@@ -2,7 +2,7 @@
 // Bundles src/entry.tsx into a single self-contained dist/entry.js.
 // No runtime node_modules needed.
 import { build } from 'esbuild'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
@@ -26,6 +26,36 @@ const stubDevtools = {
   }
 }
 
+// `tsconfig.json` uses `moduleResolution: "nodenext"`, which requires every
+// relative import to spell the `.js` extension (even when the file on disk
+// is `.ts`/`.tsx`). esbuild, by default, does NOT rewrite `.js` -> `.ts` for
+// imports that already carry an explicit extension — it only walks
+// `resolveExtensions` for extensionless imports. Without this plugin every
+// `import x from '../lib/foo.js'` would fail to resolve, even though
+// `foo.ts` is sitting right there. Map `.js` -> `.tsx`/`.ts`/`.jsx` on disk
+// and let esbuild pick up the match. We deliberately do NOT include `.js`
+// in the lookup list — if a `.ts/.tsx/.jsx` rewrite isn't available the
+// resolution is left to esbuild's default path (which handles real `.js`
+// files in `node_modules/` and elsewhere). All returned paths are absolute
+// (esbuild rejects relative paths from resolve plugins).
+const jsToTsPlugin = {
+  name: 'js-to-ts',
+  setup(b) {
+    b.onResolve({ filter: /\.js$/ }, args => {
+      if (args.namespace === 'stub-devtools') return null
+      const base = args.path.replace(/\.js$/, '')
+      const dir = args.resolveDir
+      for (const ext of ['.tsx', '.ts', '.jsx']) {
+        const candidate = resolve(dir, base + ext)
+        if (existsSync(candidate) && statSync(candidate).isFile()) {
+          return { path: candidate }
+        }
+      }
+      return null
+    })
+  }
+}
+
 await build({
   entryPoints: [resolve(root, 'src/entry.tsx')],
   bundle: true,
@@ -44,7 +74,7 @@ await build({
   //     circular async chain that hung the TUI at startup with only ANSI
   //     reset bytes on screen (#31227).
   alias: { '@hermes/ink': resolve(root, 'packages/hermes-ink/src/entry-exports.ts') },
-  plugins: [stubDevtools],
+  plugins: [stubDevtools, jsToTsPlugin],
   // Some transitive deps use CommonJS `require(...)` at runtime. ESM bundles
   // don't get a `require` binding automatically, so we inject one.
   banner: {

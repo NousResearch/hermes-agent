@@ -66,7 +66,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -256,6 +256,13 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
     "deny": "Denied",
 }
 
+# Exact card-action tag sets for dispatch. We match these explicitly so the
+# model picker buttons never collide with approval buttons.
+_APPROVAL_ACTION_SET = frozenset(_APPROVAL_CHOICE_MAP.keys())
+_MODEL_PICK_ACTION_SET = frozenset({
+    "model_pick_provider", "model_pick_model", "model_pick_back", "model_pick_page",
+})
+
 
 async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> bytes:
     """Read at most ``max_bytes`` from an aiohttp request body."""
@@ -269,7 +276,8 @@ async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> byt
 
 
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
-_FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
+_FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003, 99992354})  # reply target withdrawn/missing/invalid-id → create fallback
+_FEISHU_VALID_MESSAGE_ID_RE = re.compile(r"^om_[0-9a-zA-Z]+$")  # Feishu open message ids only (om_ + alphanumerics); reject card tokens (c-...), uuids, etc.
 
 # Feishu reactions render as prominent badges, unlike Discord/Telegram's
 # small footer emoji — a success badge on every message would add noise, so
@@ -1559,6 +1567,9 @@ class FeishuAdapter(BasePlatformAdapter):
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
+        # Interactive model picker state per chat — mirrors Telegram adapter.
+        self._model_picker_state: Dict[str, dict] = {}
+        self._model_picker_state_cap = 200
         self._load_seen_message_ids()
 
     @staticmethod
@@ -2735,8 +2746,12 @@ class FeishuAdapter(BasePlatformAdapter):
             if isinstance(action_value, dict) else None
         )
 
-        if hermes_action:
+        if hermes_action in _APPROVAL_ACTION_SET:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
+        if hermes_action in _MODEL_PICK_ACTION_SET:
+            return self._handle_model_picker_card_action(
+                event=event, action_value=action_value, loop=loop,
+            )
         if update_prompt_action:
             return self._handle_update_prompt_card_action(
                 event=event,
@@ -3111,8 +3126,475 @@ class FeishuAdapter(BasePlatformAdapter):
         await self._handle_message_with_guards(synthetic_event)
 
     # =========================================================================
-    # Per-chat serialization and typing indicator
+    # Model picker — interactive card for /model
+    #
+    # Two-level drill-down (provider -> model) mirroring the Telegram adapter.
+    # Navigation is instant: the synchronous card-action callback returns a
+    # ``P2CardActionTriggerResponse`` with a ``CallBackCard`` so Feishu swaps
+    # the card in place with NO subprocess / external PATCH. The actual model
+    # switch runs in the background and patches the card to its final state.
     # =========================================================================
+
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected: "Callable[[str, str, str], Awaitable[str]]",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "SendResult":
+        """Send an interactive card model picker for Feishu.
+
+        Two-level drill-down: provider selection -> model selection. The card
+        is updated in place by returning ``P2CardActionTriggerResponse`` from
+        the synchronous card-action callback (no subprocess, instant nav).
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        picker_id = f"mp_{chat_id}_{uuid.uuid4().hex[:8]}"
+
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+
+        card = self._build_provider_list_card(
+            providers=providers,
+            picker_id=picker_id,
+            current_model=current_model,
+            current_provider=current_provider,
+        )
+        payload = json.dumps(card, ensure_ascii=False)
+        response = await self._feishu_send_with_retry(
+            chat_id=chat_id,
+            msg_type="interactive",
+            payload=payload,
+            reply_to=None,
+            metadata=metadata,
+        )
+        result = self._finalize_send_result(response, "send_model_picker failed")
+        if result.success:
+            self._prune_model_picker_state()
+            self._model_picker_state[picker_id] = {
+                "session_key": session_key,
+                "on_model_selected": on_model_selected,
+                "current_model": current_model,
+                "current_provider": current_provider,
+                "message_id": getattr(result, "message_id", "") or "",
+                "chat_id": chat_id,
+                "providers": providers,
+                "switching": False,
+                "created_at": time.time(),
+            }
+            logger.info("[Feishu] Model picker sent to %s (%d providers)", chat_id, len(providers))
+        return result
+
+    def _prune_model_picker_state(self) -> None:
+        """Drop expired picker entries and enforce the capacity cap."""
+        now = time.time()
+        for key in [k for k, v in self._model_picker_state.items() if now - v.get("created_at", 0) > 300]:
+            self._model_picker_state.pop(key, None)
+        while len(self._model_picker_state) > self._model_picker_state_cap:
+            oldest = min(self._model_picker_state, key=lambda k: self._model_picker_state[k].get("created_at", 0))
+            self._model_picker_state.pop(oldest, None)
+
+    def _handle_model_picker_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+        """Handle model picker card button click (synchronous callback).
+
+        Returns a ``P2CardActionTriggerResponse`` carrying a new
+        ``CallBackCard`` so Feishu swaps the card in place — instant
+        navigation with no subprocess.
+        """
+        hermes_action = action_value.get("hermes_action", "")
+        picker_id = action_value.get("picker_id")
+        if not picker_id:
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        state = self._model_picker_state.get(picker_id)
+        if not state:
+            logger.debug("[Feishu] Model picker %s unknown/expired", picker_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        def _resp(card_json):
+            if P2CardActionTriggerResponse is None:
+                return None
+            response = P2CardActionTriggerResponse()
+            if CallBackCard is not None:
+                cb = CallBackCard()
+                cb.type = "raw"
+                cb.data = card_json
+                response.card = cb
+            return response
+
+        # Operator authorization — same pattern as approval actions.
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
+        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+            logger.warning("[Feishu] Unauthorized model picker click by %s", open_id or "<unknown>")
+            return _resp(self._build_model_picker_info_card(
+                title="🔒 无权操作", content="你没有权限切换模型，请与管理员联系。", template="red",
+            ))
+        if not self._is_interactive_operator_authorized(open_id):
+            logger.warning("[Feishu] Model picker action not authorized for %s", open_id or "<unknown>")
+            return _resp(self._build_model_picker_info_card(
+                title="🔒 无权操作", content="你没有权限切换模型，请与管理员联系。", template="red",
+            ))
+
+        # Chat binding — verify the callback came from the same chat.
+        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
+            logger.warning("[Feishu] Model picker callback chat mismatch (expected=%s, got=%s)", expected_chat_id, callback_chat_id)
+            return _resp(self._build_model_picker_info_card(
+                title="🔒 无权操作", content="这张卡片不属于当前会话，请重新发送 /model。", template="red",
+            ))
+
+        # Expiry check — 5 minutes idle timeout.
+        created_at = state.get("created_at", 0)
+        if time.time() - created_at > 300:
+            self._model_picker_state.pop(picker_id, None)
+            logger.debug("[Feishu] Model picker %s expired", picker_id)
+            return _resp(self._build_model_picker_info_card(
+                title="⏰ 选择已过期", content="选择超时已过期，请重新发送 /model 选择模型。",
+            ))
+
+        if hermes_action == "model_pick_provider":
+            provider_slug = action_value.get("provider_slug", "")
+            provider = next((p for p in state.get("providers", []) if p.get("slug") == provider_slug), None)
+            if not provider:
+                return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+            return _resp(self._build_model_list_card(
+                provider=provider,
+                picker_id=picker_id,
+                current_model=state.get("current_model", ""),
+                current_provider=state.get("current_provider", ""),
+                page=0,
+            ))
+
+        if hermes_action == "model_pick_page":
+            provider_slug = action_value.get("provider_slug", "")
+            page = int(action_value.get("page", 0) or 0)
+            provider = next((p for p in state.get("providers", []) if p.get("slug") == provider_slug), None)
+            if not provider:
+                return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+            return _resp(self._build_model_list_card(
+                provider=provider,
+                picker_id=picker_id,
+                current_model=state.get("current_model", ""),
+                current_provider=state.get("current_provider", ""),
+                page=page,
+            ))
+
+        if hermes_action == "model_pick_back":
+            return _resp(self._build_provider_list_card(
+                providers=state.get("providers", []),
+                picker_id=picker_id,
+                current_model=state.get("current_model", ""),
+                current_provider=state.get("current_provider", ""),
+            ))
+
+        if hermes_action == "model_pick_model":
+            # Double-tap guard — ignore taps while already switching.
+            if state.get("switching", False):
+                logger.debug("[Feishu] Model picker %s already switching, ignoring tap", picker_id)
+                return _resp(self._build_model_picker_info_card(
+                    title="⏳ 正在切换中", content="模型正在切换，请稍候...",
+                ))
+            state["switching"] = True
+            model_id = action_value.get("model_id", "")
+            provider_slug = action_value.get("provider_slug", "")
+            # Server-side validation: the tapped model must exist in the
+            # provider's model list (do not trust the card payload blindly).
+            provider = next((p for p in state.get("providers", []) if p.get("slug") == provider_slug), None)
+            if not provider or model_id not in provider.get("models", []):
+                logger.warning("[Feishu] Model picker invalid model_id=%r for provider=%r", model_id, provider_slug)
+                state["switching"] = False
+                return _resp(self._build_model_picker_info_card(
+                    title="⚠️ 无效选择", content="所选模型不存在或已移除，请返回重新选择。", template="red",
+                ))
+            # Schedule the actual switch in the background and return the
+            # "switching" card immediately (callback card) for instant
+            # feedback — the original PR interaction. The final outcome is
+            # always confirmed with a visible text message (see
+            # _execute_model_switch), so the user learns the result even if
+            # the client does not re-render card updates.
+            if not self._submit_on_loop(loop, self._execute_model_switch(
+                picker_id=picker_id,
+                model_id=model_id,
+                provider_slug=provider_slug,
+                state=state,
+            )):
+                state["switching"] = False
+                logger.warning("[Feishu] Model switch scheduling failed for %s", picker_id)
+                return _resp(self._build_model_picker_info_card(
+                    title="⚠️ 调度失败", content="无法启动模型切换，请稍后重试。", template="red",
+                ))
+            return _resp(self._build_model_switching_card(model_id=model_id, provider_slug=provider_slug))
+
+        return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+    @staticmethod
+    def _build_provider_list_card(*, providers: list, picker_id: str, current_model: str, current_provider: str) -> Dict[str, Any]:
+        """Build raw card JSON for provider selection."""
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+
+        provider_actions = []
+        for p in providers:
+            count = p.get("total_models", len(p.get("models", [])))
+            label = f"{p.get('name', p.get('slug', ''))} ({count})"
+            if p.get("is_current"):
+                label = f"✓ {label}"
+            provider_actions.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": label[:48]},
+                "type": "primary" if p.get("is_current") else "default",
+                "value": {
+                    "hermes_action": "model_pick_provider",
+                    "picker_id": picker_id,
+                    "provider_slug": p.get("slug", ""),
+                },
+            })
+
+        provider_label = get_label(current_provider)
+        return {
+            "config": {"wide_screen_mode": True, "update_multi": True},
+            "header": {"title": {"content": "⚙️ 切换模型", "tag": "plain_text"}, "template": "blue"},
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"当前模型: `{current_model or 'unknown'}`\nProvider: {provider_label}\n\n请选择 Provider：",
+                },
+                {"tag": "action", "actions": provider_actions},
+            ],
+        }
+
+    @staticmethod
+    def _build_model_list_card(*, provider: dict, picker_id: str, current_model: str, current_provider: str, page: int = 0) -> Dict[str, Any]:
+        """Build raw card JSON for model selection within a provider."""
+        provider_slug = provider["slug"]
+        provider_name = provider.get("name", provider_slug)
+        models = provider.get("models", [])
+
+        # Pagination: 8 models per page (leave room for nav buttons)
+        page_size = 8
+        total_pages = max(1, (len(models) + page_size - 1) // page_size)
+        page = max(0, min(int(page), total_pages - 1))
+        page_models = models[page * page_size:(page + 1) * page_size]
+
+        model_actions = []
+        for model_id in page_models:
+            is_current = (model_id == current_model and provider_slug == current_provider)
+            label = f"✓ {model_id}" if is_current else model_id
+            model_actions.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": label[:48]},
+                "type": "primary" if is_current else "default",
+                "value": {
+                    "hermes_action": "model_pick_model",
+                    "picker_id": picker_id,
+                    "model_id": model_id,
+                    "provider_slug": provider_slug,
+                },
+            })
+
+        nav_actions = []
+        nav_actions.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "← 返回"},
+            "type": "default",
+            "value": {"hermes_action": "model_pick_back", "picker_id": picker_id},
+        })
+        if total_pages > 1:
+            if page > 0:
+                nav_actions.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "‹ 上一页"},
+                    "type": "default",
+                    "value": {
+                        "hermes_action": "model_pick_page",
+                        "picker_id": picker_id,
+                        "provider_slug": provider_slug,
+                        "page": page - 1,
+                    },
+                })
+            if page < total_pages - 1:
+                nav_actions.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "下一页 ›"},
+                    "type": "default",
+                    "value": {
+                        "hermes_action": "model_pick_page",
+                        "picker_id": picker_id,
+                        "provider_slug": provider_slug,
+                        "page": page + 1,
+                    },
+                })
+
+        page_info = f" ({page + 1}/{total_pages})" if total_pages > 1 else ""
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"content": f"⚙️ {provider_name}{page_info}", "tag": "plain_text"}, "template": "blue"},
+            "elements": [
+                {"tag": "markdown", "content": f"当前模型: `{current_model or 'unknown'}`\n\n请选择模型："},
+                {"tag": "action", "actions": model_actions},
+                {"tag": "action", "actions": nav_actions},
+            ],
+        }
+
+    @staticmethod
+    def _build_model_switching_card(*, model_id: str, provider_slug: str) -> Dict[str, Any]:
+        """Build raw card JSON for model switching in progress."""
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"content": "⏳ 切换模型中...", "tag": "plain_text"}, "template": "blue"},
+            "elements": [
+                {"tag": "markdown", "content": f"正在切换到 `{model_id}` ({provider_slug})..."},
+            ],
+        }
+
+    @staticmethod
+    def _build_model_picker_info_card(*, title: str, content: str, template: str = "grey") -> Dict[str, Any]:
+        """Build a plain informational card for picker edge cases (expired / unauthorized / busy)."""
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"content": title, "tag": "plain_text"}, "template": template},
+            "elements": [{"tag": "markdown", "content": content}],
+        }
+
+    async def _execute_model_switch(self, *, picker_id: Any, model_id: str, provider_slug: str, state: Dict[str, Any]) -> None:
+        """Execute the actual model switch and patch the card to its final state."""
+        on_model_selected = state.get("on_model_selected")
+        chat_id_val = state.get("chat_id", "")
+        message_id = state.get("message_id", "")
+
+        # Push the "switching" state through the message-update channel (PATCH)
+        # instead of relying on the card-action callback card — callback cards
+        # are not reliably refreshed by the Feishu client, so the card could
+        # stay stuck on "switching" forever. A real message update is pushed to
+        # every client and always renders.
+        try:
+            await self._patch_model_picker_card(
+                chat_id_val,
+                self._build_model_switching_card(model_id=model_id, provider_slug=provider_slug),
+                message_id=message_id,
+            )
+        except Exception as exc:
+            logger.warning("[Feishu] Model picker switching-card patch failed: %s", exc)
+
+        if on_model_selected:
+            display_model = model_id.rsplit("/", 1)[-1]
+            try:
+                confirm_text = await on_model_selected(chat_id_val, model_id, provider_slug)
+                template = "green"
+                title = f"✅ 已切换为 {display_model}"
+            except Exception as exc:
+                confirm_text = f"切换失败: {exc}"
+                template = "red"
+                title = "❌ 切换失败"
+
+            # Patch the card to its final state (single PATCH, happens once).
+            try:
+                final_card = {
+                    "config": {"wide_screen_mode": True},
+                    "header": {"title": {"content": title, "tag": "plain_text"}, "template": template},
+                    "elements": [{"tag": "markdown", "content": confirm_text}],
+                }
+                self._model_picker_state[picker_id] = {**state, "message_id": message_id}
+                await self._patch_model_picker_card(chat_id_val, final_card, message_id=message_id)
+            except Exception as exc:
+                logger.warning("[Feishu] Model picker final card patch failed: %s", exc)
+
+            # Always send a visible text message with the outcome. Card PATCHes
+            # update the message server-side but some Feishu clients do not
+            # re-render them reliably, so a plain-text message guarantees the
+            # user sees the result regardless of client behaviour.
+            try:
+                await self._feishu_send_with_retry(
+                    chat_id=chat_id_val,
+                    msg_type="text",
+                    payload=json.dumps({"text": f"{title}\n{confirm_text}"}, ensure_ascii=False),
+                    reply_to=None,
+                    metadata=None,
+                )
+            except Exception as send_exc:
+                logger.warning("[Feishu] Model picker result message failed: %s", send_exc)
+
+        self._model_picker_state.pop(picker_id, None)
+
+    async def _update_model_picker_card(
+        self,
+        chat_id: str,
+        model: str,
+        provider: str,
+        confirmation: str,
+    ) -> None:
+        """(Kept for back-compat) Update the model picker card to confirmation."""
+        display_model = model.rsplit("/", 1)[-1]
+        new_card = {
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"tag": "plain_text", "content": f"✅ 已切换为 {display_model}"}, "template": "green"},
+            "elements": [{"tag": "markdown", "content": confirmation}],
+        }
+        await self._patch_model_picker_card(chat_id, new_card)
+
+    async def _patch_model_picker_card(
+        self,
+        chat_id: str,
+        new_card: dict,
+        message_id: Optional[str] = None,
+    ) -> None:
+        """PATCH the model picker card in place.
+
+        Uses lark-cli (bot identity) — the most reliable path for interactive
+        card updates. The lark-oapi SDK's ``message.update`` has a content
+        encoding bug for ``msg_type=interactive`` (230001), so we skip it
+        and go straight to the CLI subprocess.
+        """
+        import json, asyncio
+
+        if message_id is None:
+            # picker_id now embeds a random token (mp_<chat>_<token>), so
+            # match by the stored chat_id field rather than formatting the key.
+            state = {}
+            for _state in self._model_picker_state.values():
+                if str(_state.get("chat_id", "")) == str(chat_id):
+                    state = _state
+                    break
+            msg_id = state.get("message_id")
+        else:
+            msg_id = message_id
+        if not msg_id:
+            logger.debug("[Feishu] No message_id to update model picker card")
+            return
+
+        content = json.dumps(new_card, ensure_ascii=False)
+        cmd = [
+            "lark-cli", "api", "PATCH",
+            f"/open-apis/im/v1/messages/{msg_id}",
+            "--as", "bot",
+            "--data", json.dumps({"msg_type": "interactive", "content": content}, ensure_ascii=False),
+        ]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode == 0:
+                logger.info("[Feishu] Model picker card updated for chat %s", chat_id)
+            else:
+                logger.warning("[Feishu] Model picker card update failed: %s", stderr[:200])
+        except Exception as exc:
+            logger.debug("[Feishu] Model picker card update error: %s", exc)
+
 
     def _get_chat_lock(self, chat_id: str) -> asyncio.Lock:
         """Return (creating if needed) the per-chat asyncio.Lock for serial message processing.
@@ -4822,6 +5304,18 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
         effective_reply_to = reply_to
+        # Guard: synthetic card tokens (c-...) and ad-hoc uuids are NOT valid
+        # Feishu open message ids — passing them to the reply API returns 99992354
+        # and the message is lost. Strip before the reply path so the
+        # downstream `_FEISHU_REPLY_FALLBACK_CODES` short-circuit doesn't have
+        # to depend on the server-side code being returned.
+        if effective_reply_to and not _FEISHU_VALID_MESSAGE_ID_RE.match(effective_reply_to):
+            logger.debug(
+                "[Feishu] reply_to=%r is not a valid open message id (expected om_...); "
+                "dropping reply target and posting as new message",
+                effective_reply_to,
+            )
+            effective_reply_to = None
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
         reply_in_thread = bool((metadata or {}).get("thread_id"))

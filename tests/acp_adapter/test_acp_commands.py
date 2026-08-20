@@ -4,6 +4,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 from acp.schema import TextContentBlock
 
+from agent import skill_commands
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
 
@@ -71,6 +72,79 @@ def make_agent_and_state():
     conn = CaptureConn()
     acp_agent.on_connect(conn)
     return acp_agent, state, fake, conn
+
+
+def install_skill(tmp_path, monkeypatch, name="acp-helper"):
+    skills_root = tmp_path / "skills"
+    skill_dir = skills_root / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"""---
+name: {name}
+description: Help with ACP tasks.
+---
+
+# ACP helper
+
+Follow the ACP helper instructions.
+"""
+    )
+    monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_root)
+    skill_commands.scan_skill_commands()
+
+
+def test_acp_advertises_installed_skill_commands(tmp_path, monkeypatch):
+    install_skill(tmp_path, monkeypatch)
+
+    commands = {command.name: command for command in HermesACPAgent._available_commands()}
+
+    assert commands["acp-helper"].description == "Help with ACP tasks."
+
+
+@pytest.mark.asyncio
+async def test_acp_help_lists_installed_skill_commands(tmp_path, monkeypatch):
+    install_skill(tmp_path, monkeypatch)
+    acp_agent, state, fake, conn = make_agent_and_state()
+
+    await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/help")],
+    )
+
+    assert fake.runs == []
+    assert any("/acp-helper" in update.content.text for _, update in conn.updates)
+
+
+@pytest.mark.asyncio
+async def test_acp_skill_slash_command_loads_skill_for_agent(tmp_path, monkeypatch):
+    install_skill(tmp_path, monkeypatch)
+    acp_agent, state, fake, _conn = make_agent_and_state()
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/acp-helper fix command discovery")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert len(fake.runs) == 1
+    assert "Follow the ACP helper instructions." in fake.runs[0]
+    assert "fix command discovery" in fake.runs[0]
+
+
+@pytest.mark.asyncio
+async def test_acp_builtin_slash_command_takes_precedence_over_same_named_skill(
+    tmp_path, monkeypatch
+):
+    install_skill(tmp_path, monkeypatch, name="help")
+    acp_agent, state, fake, conn = make_agent_and_state()
+
+    await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/help")],
+    )
+
+    assert fake.runs == []
+    assert any("Available commands:" in update.content.text for _, update in conn.updates)
 
 
 def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):

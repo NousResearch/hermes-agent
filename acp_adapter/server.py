@@ -1866,13 +1866,17 @@ class HermesACPAgent(acp.Agent):
         # send the whole multimodal prompt to the agent instead of treating it as
         # an ACP command.
         if text_only_prompt and isinstance(user_content, str) and user_text.startswith("/"):
-            response_text = self._handle_slash_command(user_text, state)
-            if response_text is not None:
-                if self._conn:
-                    update = acp.update_agent_message_text(response_text)
-                    await self._conn.session_update(session_id, update)
-                    await self._send_usage_update(state)
-                return PromptResponse(stop_reason="end_turn")
+            skill_message = self._build_skill_invocation(user_text, state)
+            if skill_message is not None:
+                user_content = skill_message
+            else:
+                response_text = self._handle_slash_command(user_text, state)
+                if response_text is not None:
+                    if self._conn:
+                        update = acp.update_agent_message_text(response_text)
+                        await self._conn.session_update(session_id, update)
+                        await self._send_usage_update(state)
+                    return PromptResponse(stop_reason="end_turn")
 
         # If the client sends another regular text prompt while this ACP session
         # is running, route it through the core active-turn redirect. Rich media
@@ -2223,6 +2227,7 @@ class HermesACPAgent(acp.Agent):
     @classmethod
     def _available_commands(cls) -> list[AvailableCommand]:
         commands: list[AvailableCommand] = []
+        seen: set[str] = set()
         for spec in cls._ADVERTISED_COMMANDS:
             input_hint = spec.get("input_hint")
             commands.append(
@@ -2234,6 +2239,26 @@ class HermesACPAgent(acp.Agent):
                     else None,
                 )
             )
+            seen.add(spec["name"])
+
+        try:
+            from agent.skill_commands import get_skill_commands
+
+            for command_key, skill_info in sorted(get_skill_commands().items()):
+                name = command_key.lstrip("/")
+                if not name or name in seen:
+                    continue
+                description = str(skill_info.get("description") or "").strip()
+                commands.append(
+                    AvailableCommand(
+                        name=name,
+                        description=description or f"Invoke the {name} skill",
+                        input=UnstructuredCommandInput(hint="instructions for the skill"),
+                    )
+                )
+                seen.add(name)
+        except Exception:
+            logger.warning("Failed to discover ACP skill slash commands", exc_info=True)
         return commands
 
     async def _send_available_commands_update(self, session_id: str) -> None:
@@ -2264,6 +2289,37 @@ class HermesACPAgent(acp.Agent):
         loop.call_soon(
             asyncio.create_task, self._send_available_commands_update(session_id)
         )
+
+    def _build_skill_invocation(self, text: str, state: SessionState) -> str | None:
+        """Expand an installed skill slash command into the normal agent prompt."""
+        parts = text.split(maxsplit=1)
+        command = parts[0].lstrip("/").lower()
+        instruction = parts[1].strip() if len(parts) > 1 else ""
+        if command in self._SLASH_COMMANDS:
+            return None
+
+        try:
+            from agent.runtime_cwd import set_session_cwd
+            from agent.skill_commands import (
+                build_skill_invocation_message,
+                resolve_skill_command_key,
+            )
+
+            def _build() -> str | None:
+                set_session_cwd(state.cwd)
+                command_key = resolve_skill_command_key(command)
+                if command_key is None:
+                    return None
+                return build_skill_invocation_message(
+                    command_key,
+                    instruction,
+                    task_id=state.session_id,
+                )
+
+            return contextvars.copy_context().run(_build)
+        except Exception:
+            logger.error("Skill slash command /%s failed", command, exc_info=True)
+            return None
 
     def _handle_slash_command(self, text: str, state: SessionState) -> str | None:
         """Dispatch a slash command and return the response text.
@@ -2316,8 +2372,8 @@ class HermesACPAgent(acp.Agent):
 
     def _cmd_help(self, args: str, state: SessionState) -> str:
         lines = ["Available commands:", ""]
-        for cmd, desc in self._SLASH_COMMANDS.items():
-            lines.append(f"  /{cmd:10s}  {desc}")
+        for command in self._available_commands():
+            lines.append(f"  /{command.name:10s}  {command.description}")
         lines.append("")
         lines.append("Unrecognized /commands are sent to the model as normal messages.")
         return "\n".join(lines)

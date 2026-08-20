@@ -1,16 +1,18 @@
 """Tests for the TERMINAL_CWD readers-writer lock in cron/scheduler.py.
 
-Workdir cron jobs override the process-global ``os.environ["TERMINAL_CWD"]``
-for their whole agent run.  Workdir-less jobs run concurrently on a separate
-pool and read that same global (via the terminal / file / code-exec tools), so
-without serialization they execute commands in another job's workdir.
+Agent-backed workdir cron jobs override the process-global
+``os.environ["TERMINAL_CWD"]`` for their whole agent run. Workdir-less jobs and
+no-agent scripts run concurrently on a separate pool and read that same global
+through tools or subprocess environment construction, so without lock
+isolation they can inherit another job's workdir.
 
-``_ReadWriteLock`` models workdir jobs as writers (exclusive) and workdir-less
-jobs as readers (concurrent with each other, excluded from a writer's run).
-These tests assert that contract.
+``_ReadWriteLock`` models agent-backed workdir jobs as writers (exclusive) and
+the remaining jobs as readers (concurrent with each other, excluded from a
+writer's run). These tests assert that contract.
 """
 
 import os
+import subprocess
 import threading
 import time
 
@@ -158,6 +160,121 @@ def test_reader_never_observes_writer_override():
     assert not wt.is_alive() and not rt.is_alive()
     # The reader saw the restored value, never the writer's /project/A override.
     assert observations == ["<scheduler>"]
+
+
+def test_no_agent_script_env_waits_for_workdir_writer(tmp_path, monkeypatch):
+    """A real no-agent run must not snapshot a writer's TERMINAL_CWD."""
+    import cron.scheduler as sched
+
+    home = tmp_path / "home"
+    scripts_dir = home / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "watchdog.py").write_text("print('ok')\n", encoding="utf-8")
+    script_workdir = tmp_path / "script-workdir"
+    script_workdir.mkdir()
+
+    monkeypatch.setattr(sched, "_hermes_home", home)
+    monkeypatch.setenv("TERMINAL_CWD", "scheduler-cwd")
+
+    subprocess_started = threading.Event()
+    writer_holding = threading.Event()
+    release_writer = threading.Event()
+    captured_env = []
+    results = []
+
+    def fake_run(*args, **kwargs):
+        captured_env.append(dict(kwargs["env"]))
+        subprocess_started.set()
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(sched.subprocess, "run", fake_run)
+
+    def writer():
+        sched._terminal_cwd_lock.acquire_write()
+        try:
+            os.environ["TERMINAL_CWD"] = "writer-cwd"
+            writer_holding.set()
+            release_writer.wait(timeout=5)
+        finally:
+            os.environ["TERMINAL_CWD"] = "scheduler-cwd"
+            sched._terminal_cwd_lock.release_write()
+
+    def no_agent_reader():
+        writer_holding.wait(timeout=5)
+        results.append(
+            sched.run_job(
+                {
+                    "id": "script-reader",
+                    "name": "script-reader",
+                    "no_agent": True,
+                    "script": "watchdog.py",
+                    "workdir": str(script_workdir),
+                }
+            )
+        )
+
+    writer_thread = threading.Thread(target=writer)
+    reader_thread = threading.Thread(target=no_agent_reader)
+    writer_thread.start()
+    assert writer_holding.wait(timeout=5)
+    reader_thread.start()
+
+    started_while_writer_active = subprocess_started.wait(timeout=1)
+    release_writer.set()
+    writer_thread.join(timeout=5)
+    reader_thread.join(timeout=5)
+
+    assert not writer_thread.is_alive() and not reader_thread.is_alive()
+    assert not started_while_writer_active
+    assert len(results) == 1 and results[0][0] is True
+    assert captured_env[0]["TERMINAL_CWD"] == "scheduler-cwd"
+
+
+def test_no_agent_script_readers_run_concurrently(tmp_path, monkeypatch):
+    """No-agent scripts remain concurrent with other TERMINAL_CWD readers."""
+    import cron.scheduler as sched
+
+    home = tmp_path / "home"
+    scripts_dir = home / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "watchdog.py").write_text("print('ok')\n", encoding="utf-8")
+    script_workdir = tmp_path / "script-workdir"
+    script_workdir.mkdir()
+
+    monkeypatch.setattr(sched, "_hermes_home", home)
+    barrier = threading.Barrier(2, timeout=5)
+    results = []
+
+    def fake_run(*args, **kwargs):
+        barrier.wait()
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(sched.subprocess, "run", fake_run)
+
+    def run_reader(job_id):
+        results.append(
+            sched.run_job(
+                {
+                    "id": job_id,
+                    "name": job_id,
+                    "no_agent": True,
+                    "script": "watchdog.py",
+                    "workdir": str(script_workdir),
+                }
+            )
+        )
+
+    threads = [
+        threading.Thread(target=run_reader, args=("reader-a",)),
+        threading.Thread(target=run_reader, args=("reader-b",)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(results) == 2 and all(result[0] is True for result in results)
 
 
 def test_run_job_releases_cwd_lock_when_body_raises(tmp_path):

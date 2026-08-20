@@ -182,7 +182,7 @@ When `workdir` is set:
 - Pass `--workdir ""` (or `workdir=""` via the tool) on edit to clear it and restore the old behaviour
 
 :::note Serialization
-Jobs with a `workdir` run sequentially on the scheduler tick, not in the parallel pool. This is deliberate: the cron worker applies the job workdir through process-global terminal state, so two workdir jobs running at the same time would corrupt each other's cwd. Workdir-less jobs still run in parallel as before.
+Agent-backed jobs with a `workdir` run sequentially because they apply that directory through process-global terminal state. No-agent script jobs pass `workdir` directly to the child process and remain eligible for the parallel pool; a reader lock prevents their subprocess environment from overlapping an agent-backed workdir override. Workdir-less jobs still run in parallel as before.
 :::
 
 ## Editing jobs

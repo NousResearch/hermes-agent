@@ -4,6 +4,8 @@ import json
 import os
 import subprocess
 import shutil
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -155,6 +157,52 @@ class TestProjectFacts:
         assert facts.package_managers == ["pnpm"]
         assert facts.verify_commands == ["pnpm run test"]  # dev excluded
         assert facts.context_files == []
+
+    def test_detect_project_facts_abandons_blocked_filesystem_probe(
+        self, tmp_path, monkeypatch
+    ):
+        """Best-effort metadata sniffing must never wedge the agent worker."""
+        entered = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        calls = 0
+        original_probe = cc._detect_project_facts_unbounded
+
+        def blocked_probe(root):
+            nonlocal calls
+            calls += 1
+            entered.set()
+            try:
+                release.wait(timeout=5)
+                return original_probe(root)
+            finally:
+                finished.set()
+
+        monkeypatch.setattr(cc, "_PROJECT_FACTS_PROBE_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(cc, "_PROJECT_FACTS_MAX_INFLIGHT_PROBES", 1)
+        monkeypatch.setattr(
+            cc, "_PROJECT_FACTS_PROBE_SLOTS", threading.BoundedSemaphore(1)
+        )
+        monkeypatch.setattr(cc, "_detect_project_facts_unbounded", blocked_probe)
+
+        try:
+            started = time.monotonic()
+            facts = cc.detect_project_facts(tmp_path)
+            elapsed = time.monotonic() - started
+
+            assert entered.is_set()
+            assert facts == cc.ProjectFacts([], [], [], [])
+            assert elapsed < 1.0
+
+            # The occupied slot makes later calls fail fast instead of
+            # spawning one abandoned thread per terminal result.
+            started = time.monotonic()
+            assert cc.detect_project_facts(tmp_path) == cc.ProjectFacts([], [], [], [])
+            assert time.monotonic() - started < 0.5
+            assert calls == 1
+        finally:
+            release.set()
+            assert finished.wait(timeout=1)
 
     def test_project_facts_for_matches_prompt_block(self, tmp_path):
         # Invariant: the structured facts the UI consumes must not drift from the

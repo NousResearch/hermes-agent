@@ -1010,10 +1010,30 @@ def build_turn_context(
                 _orig_len = len(messages)
                 _orig_tokens = _preflight_tokens
                 _preflight_input = messages
-                messages, active_system_prompt = agent._compress_context(
-                    messages, system_message, approx_tokens=_preflight_tokens,
-                    task_id=effective_task_id,
-                )
+                try:
+                    messages, active_system_prompt = agent._compress_context(
+                        messages, system_message, approx_tokens=_preflight_tokens,
+                        task_id=effective_task_id,
+                    )
+                except Exception as _preflight_compress_exc:
+                    # Preflight compaction is an optimization, not a
+                    # precondition for the turn. _compress_context re-raises
+                    # every failure after releasing the session lock — a
+                    # summary-model "Request timed out" on a large transcript
+                    # included — and nothing between here and the caller
+                    # catches it, so one oversized session takes the whole
+                    # turn down. Degrade to the state the
+                    # insufficient-progress path already uses: no compaction
+                    # this turn, and let the loop's own error handling, with
+                    # its retry budget, deal with an oversized request.
+                    logger.warning(
+                        "Preflight compression failed (%s: %s); continuing the "
+                        "turn without compaction",
+                        type(_preflight_compress_exc).__name__,
+                        _preflight_compress_exc,
+                    )
+                    _preflight_compression_blocked = True
+                    break
                 if (
                     messages is _preflight_input
                     and compression_skipped_due_to_lock(agent)
@@ -1143,10 +1163,23 @@ def build_turn_context(
                     f"{getattr(_compressor, 'threshold_tokens', 0):,}",
                 )
                 _engine_input = messages
-                messages, active_system_prompt = agent._compress_context(
-                    messages, system_message, approx_tokens=_preflight_tokens,
-                    task_id=effective_task_id,
-                )
+                try:
+                    messages, active_system_prompt = agent._compress_context(
+                        messages, system_message, approx_tokens=_preflight_tokens,
+                        task_id=effective_task_id,
+                    )
+                except Exception as _engine_compress_exc:
+                    # Same contract as the threshold passes above: a failed
+                    # maintenance compaction must not take the turn with it.
+                    # Restoring the input list makes the skip check below
+                    # read this as the no-op it turned out to be.
+                    logger.warning(
+                        "Engine-driven preflight maintenance failed (%s: %s); "
+                        "continuing the turn without compaction",
+                        type(_engine_compress_exc).__name__,
+                        _engine_compress_exc,
+                    )
+                    messages = _engine_input
                 # ``_compress_context`` returns the INPUT list object on every
                 # skip path (per-session lock held elsewhere, cooldown,
                 # anti-thrash breaker, codex-native routing) and an engine may

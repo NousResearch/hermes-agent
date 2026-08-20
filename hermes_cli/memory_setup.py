@@ -11,7 +11,6 @@ import os
 import re
 import sys
 import shlex
-from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from hermes_cli.secret_prompt import masked_secret_prompt
@@ -335,7 +334,6 @@ def cmd_setup(args) -> None:
     if not isinstance(provider_config, dict):
         provider_config = {}
 
-    env_path = get_hermes_home() / ".env"
     env_writes = {}
 
     if schema:
@@ -414,7 +412,7 @@ def cmd_setup(args) -> None:
 
     # Write secrets to .env
     if env_writes:
-        _write_env_vars(env_path, env_writes)
+        _write_env_vars(env_writes)
 
     print(f"\n  Memory provider: {name}")
     print("  Activation saved to config.yaml")
@@ -425,50 +423,52 @@ def cmd_setup(args) -> None:
     print("\n  Start a new session to activate.\n")
 
 
-def _env_line_safe(value) -> str:
-    """Neutralize characters that would break ``.env`` line structure.
+def _write_env_vars(
+    env_writes: dict,
+    hermes_home: str | os.PathLike[str] | None = None,
+) -> None:
+    """Persist memory-provider env vars through the canonical ``.env`` writer.
 
-    ``.env`` is strictly line-oriented (one ``KEY=VALUE`` per line) and
-    values are interpolated straight into that line. A pasted secret with an
-    embedded CR/LF would spill onto a new line and be re-parsed as a
-    *separate* ``KEY=VALUE`` entry on the next read — injecting an arbitrary
-    variable into the credentials file. Strip every separator recognized by
-    ``str.splitlines()`` plus NUL so a value can only occupy its own line.
-    Mirrors the openviking plugin's writer and ``config.save_env_value``.
+    Delegates to ``hermes_cli.config.save_env_value`` so every key flows
+    through the same input-validation gate as every other ``.env`` writer:
+    the ``_ENV_VAR_NAME_RE`` regex (no malformed identifiers), the
+    ``_ENV_VAR_NAME_DENYLIST`` (no ``LD_PRELOAD`` / ``PYTHONPATH`` /
+    ``HERMES_HOME`` / etc.), CR/LF stripping on the value, and the atomic
+    0o600-from-creation write (no TOCTOU permission window). This function
+    previously wrote via ``Path.write_text`` directly, bypassing all of
+    that: a memory-provider plugin schema declaring ``env_var: "LD_PRELOAD"``
+    would land in ``.env`` verbatim and load via the ``env_loader.py``
+    ``.env`` -> ``os.environ`` chain on the next Hermes startup, and the
+    file existed at the default umask between the write and the later
+    ``chmod`` regardless of key legitimacy.
+
+    Validation failures (``ValueError`` from ``save_env_value`` — a
+    denylisted name or an identifier rejected by ``_ENV_VAR_NAME_RE``) are
+    surfaced and skipped rather than aborting the wizard, so a single bad
+    key from one schema field doesn't take down the rest of the batch.
+    Non-validation errors (filesystem failures, permission errors) are
+    intentionally NOT caught — those indicate the wizard cannot safely
+    persist any subsequent key either and should propagate.
+
+    ``hermes_home`` may be supplied by plugin ``post_setup`` hooks that
+    already received an explicit home directory (e.g. a non-default
+    profile). It is applied through the context-local Hermes home override
+    so ``save_env_value`` still owns the validation, sanitization, and
+    atomic-write path without mutating global ``os.environ``.
     """
-    text = value if isinstance(value, str) else str(value)
-    return "".join(text.replace("\x00", "").splitlines())
+    from hermes_cli.config import save_env_value
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-
-def _write_env_vars(env_path: Path, env_writes: dict) -> None:
-    """Append or update env vars in .env file."""
-    env_path.parent.mkdir(parents=True, exist_ok=True)
-
-    existing_lines = []
-    if env_path.exists():
-        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
-
-    updated_keys = set()
-    new_lines = []
-    for line in existing_lines:
-        key_match = line.split("=", 1)[0].strip() if "=" in line else ""
-        if key_match in env_writes:
-            new_lines.append(f"{key_match}={_env_line_safe(env_writes[key_match])}")
-            updated_keys.add(key_match)
-        else:
-            new_lines.append(line)
-
-    for key, val in env_writes.items():
-        if key not in updated_keys:
-            new_lines.append(f"{key}={_env_line_safe(val)}")
-
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    # Restrict permissions — .env holds API keys and tokens.
+    token = set_hermes_home_override(hermes_home) if hermes_home is not None else None
     try:
-        import stat
-        env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
-    except OSError:
-        pass  # Windows or read-only FS
+        for key, val in env_writes.items():
+            try:
+                save_env_value(key, val)
+            except ValueError as exc:
+                print(f"  Skipping {key}: {exc}")
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
 
 
 # ---------------------------------------------------------------------------

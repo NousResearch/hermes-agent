@@ -77,6 +77,52 @@ class TestDoctorToolAvailabilitySummary:
 
         assert [item["name"] for item in filtered] == ["web"]
 
+    def test_web_capability_rows_warn_when_selected_provider_not_ready(self, monkeypatch):
+        """#78412: selected firecrawl with is_available=False must warn."""
+        class _Unavailable:
+            name = "firecrawl"
+
+            def is_available(self):
+                return False
+
+        unavailable = _Unavailable()
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: unavailable,
+        )
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_extract_provider",
+            lambda: unavailable,
+        )
+
+        rows = doctor._doctor_web_capability_rows()
+        assert rows
+        assert all(status == "warn" for status, _, _ in rows)
+        assert any("firecrawl selected; provider not configured" in detail for _, _, detail in rows)
+
+    def test_web_capability_rows_ok_when_provider_ready(self, monkeypatch):
+        class _Ready:
+            name = "ddgs"
+
+            def is_available(self):
+                return True
+
+        ready = _Ready()
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: ready,
+        )
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_extract_provider",
+            lambda: ready,
+        )
+
+        rows = doctor._doctor_web_capability_rows()
+        assert rows == [
+            ("ok", "web search", "(ddgs)"),
+            ("ok", "web extract", "(ddgs)"),
+        ]
+
 
 class TestDoctorEnvFileEncoding:
     """Regression for #18637 (bug 3): `hermes doctor` crashed on Windows

@@ -1551,10 +1551,16 @@ class _CodexCompletionsAdapter:
                     # Codex backend, which rejects e.g. {"effort": null}
                     # with a 400.
                     effort = reasoning_cfg.get("effort") or "medium"
-                    # Codex backend rejects "minimal"; clamp to "low" to
-                    # match the main-agent Codex transport behavior.
-                    if effort == "minimal":
-                        effort = "low"
+                    # Same declared vocabulary + shared clamp as the main
+                    # Codex transport (agent.reasoning_effort): per-model —
+                    # "max" is gpt-5.6-only, "minimal"/"ultra" always
+                    # rejected (live-verified, #68365).
+                    from agent.reasoning_effort import (
+                        clamp_effort,
+                        codex_supported_efforts,
+                    )
+
+                    effort = clamp_effort(effort, codex_supported_efforts(model))
                     resp_kwargs["reasoning"] = {
                         "effort": effort,
                         "summary": "auto",

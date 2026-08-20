@@ -29,6 +29,7 @@ import { isEditableTarget } from '@/lib/keybinds/combo'
 import { typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, openCommandPalettePage } from '@/store/command-palette'
+import { confirm } from '@/store/confirm'
 import { bindingsFor } from '@/store/keybinds'
 import { notifyError } from '@/store/notifications'
 
@@ -147,7 +148,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   }
 
   const resetConfig = async () => {
-    if (!window.confirm(t.settings.resetConfirm)) {
+    const ok = await confirm({
+      confirmLabel: t.settings.resetToDefaults,
+      destructive: true,
+      title: t.settings.resetConfirm
+    })
+
+    if (!ok) {
       return
     }
 

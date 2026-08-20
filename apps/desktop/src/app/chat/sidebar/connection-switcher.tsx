@@ -36,6 +36,7 @@ import {
 } from '@/store/connections'
 import { closeFindBar } from '@/store/find-in-page'
 import { notifyError } from '@/store/notifications'
+import { isAuxiliaryWindow, isPeerInstanceWindow } from '@/store/windows'
 
 export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: boolean; onConnect: () => void }) {
   const { t } = useI18n()
@@ -64,8 +65,10 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
     // The primary boot owns its initial config/session fetches. Restoring a
     // different source before those settle lets a late primary response repaint
     // the sidebar under the new source label. Switch only after boot completes,
-    // then the normal source reset/refetch remains the final writer.
-    if (!boot.running) {
+    // then the normal source reset/refetch remains the final writer. Peer and
+    // auxiliary windows already boot into their intended runtime; replaying the
+    // primary window's app-launch preference would move them away from it.
+    if (!boot.running && !isAuxiliaryWindow() && !isPeerInstanceWindow()) {
       void initializeConnectionsRegistry().catch(() => undefined)
     }
   }, [boot.running])

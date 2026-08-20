@@ -339,10 +339,15 @@ export interface RosterAgent {
 }
 
 /**
- * SSH roster enumeration skips undialed sources (connect-on-demand). Reuse the
- * last successful profile list so Bot Mode does not go empty the moment the
- * window switches back to local. Never-seen SSH sources still get a `default`
- * seed so the device is clickable.
+ * Roster enumeration skips undialed sources (connect-on-demand) and reports
+ * unreachable ones with `profiles: null`. Reuse the last successful profile
+ * list so Bot Mode does not go empty (or drop to a partial roster) the moment
+ * a source is briefly unreachable — SSH tunnels drop on sleep/wake, and a
+ * remote gateway bounce (VPS restart) otherwise erased its bots from the
+ * roster until the next successful enumeration ("my 4 bots show as 2", Aug
+ * 2026 bundle). Never-seen SSH sources still get a `default` seed so the
+ * device is clickable; never-seen remote sources stay empty (no seed) since
+ * an unreachable URL is not evidence a backend exists there.
  */
 export function rememberSshEnumeration(
   enumeration: Pick<ConnectionAgents, 'error' | 'profiles'>,
@@ -353,7 +358,7 @@ export function rememberSshEnumeration(
     return enumeration
   }
 
-  if (kind !== 'ssh') {
+  if (kind === 'local') {
     return enumeration
   }
 
@@ -361,7 +366,7 @@ export function rememberSshEnumeration(
     return { profiles: cached, error: enumeration.error }
   }
 
-  if (enumeration.error === 'connect-on-demand') {
+  if (kind === 'ssh' && enumeration.error === 'connect-on-demand') {
     return { profiles: ['default'], error: 'connect-on-demand' }
   }
 

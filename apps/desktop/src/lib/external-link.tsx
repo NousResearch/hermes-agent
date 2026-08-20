@@ -247,6 +247,9 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
 interface ExternalLinkProps extends Omit<ComponentProps<'a'>, 'href' | 'target'> {
   href: string
   children?: ReactNode
+  /** Skip the in-app pane. For links whose whole point is the session you are
+   *  signed into over there — a cloud console, an account page. */
+  native?: boolean
   showExternalIcon?: boolean
 }
 
@@ -274,6 +277,7 @@ export function ExternalLink({
   children,
   className,
   href,
+  native = false,
   onClick,
   showExternalIcon = false,
   ...rest
@@ -307,7 +311,7 @@ export function ExternalLink({
         }
 
         event.preventDefault()
-        openLink(target, { native: wantsNativeBrowser(event.nativeEvent) })
+        openLink(target, { native: native || wantsNativeBrowser(event.nativeEvent) })
       }}
       rel="noopener noreferrer"
       target="_blank"
@@ -369,6 +373,49 @@ export function LinkifiedText({ className, explicitOnly = false, pretty = true, 
           {raw}
         </ExternalLink>
       )
+    )
+
+    cursor = index + raw.length
+  }
+
+  if (cursor < text.length) {
+    nodes.push(text.slice(cursor))
+  }
+
+  return <span className={className}>{nodes.length ? nodes : text}</span>
+}
+
+const MD_LINK_RE = /\[([^\]]+)]\((https?:\/\/[^\s)]+)\)/g
+
+/**
+ * Inline `[label](url)` and nothing else.
+ *
+ * For short authored strings — a catalog entry's setup steps — where the
+ * label carries the meaning ("enable the Docs API") and the URL is a console
+ * page whose own title is useless or, behind a login wall, actively wrong.
+ * `LinkifiedText` can't serve this: it finds bare URLs and guesses a label.
+ * Full markdown is the other extreme, a block renderer inside a card row.
+ *
+ * These open in the real browser. The destination is a console the user is
+ * already signed into there, and the work is a form to fill in and a secret to
+ * copy back — none of which the in-app pane is for.
+ */
+export function MarkdownLinkText({ className, text }: { className?: string; text: string }) {
+  const nodes: ReactNode[] = []
+  let cursor = 0
+
+  for (const match of text.matchAll(MD_LINK_RE)) {
+    const [raw, label, href] = match
+    const index = match.index ?? 0
+
+    if (index > cursor) {
+      nodes.push(text.slice(cursor, index))
+    }
+
+    nodes.push(
+      <ExternalLink href={href} key={`${href}-${index}`} native title={href}>
+        {label}
+      </ExternalLink>
     )
 
     cursor = index + raw.length

@@ -62,6 +62,10 @@ BROWSER_USE_API_KEY=***
 
 Get your API key at [browser-use.com](https://browser-use.com).
 
+:::note Selecting the provider
+The `.env` keys above supply **credentials only**. The active cloud browser is chosen by the `browser.cloud_provider` selection written by `hermes tools` → Browser Automation (`browserbase`, `browser-use`, `camofox`, or `nous` for the Nous Subscription). Once a selection exists, adding or removing a key does not switch providers — and a selected provider with a missing key errors with guidance to run `hermes tools` instead of silently rerouting. Never-configured setups still autodetect from available credentials.
+:::
+
 ### Browser Use mode (default)
 
 Browser Use mode uses the [Browser Use CLI 3.0](https://github.com/browser-use/browser-use) — a new browser harness that is state-of-the-art at web tasks — instead of the built-in browser tools. The agent writes and executes Python in the browser to click, type, drag, scrape, and interact with webpages.
@@ -237,7 +241,7 @@ The rewrite only applies to page navigation URLs with loopback hosts (`localhost
 
 Or configure via `hermes tools` → Browser Automation → Camofox.
 
-When `CAMOFOX_URL` is set, all browser tools automatically route through Camofox instead of Browserbase or agent-browser.
+Camofox is selected like any other browser backend: pick **Camofox** in `hermes tools` → Browser Automation, which writes `browser.cloud_provider: camofox` to `config.yaml`. `CAMOFOX_URL` is only the server address — setting it no longer selects the backend by itself once a browser selection exists (never-configured setups still autodetect it).
 
 #### Persistent browser sessions
 

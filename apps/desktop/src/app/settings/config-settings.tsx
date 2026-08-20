@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { confirm } from '@/store/confirm'
 import {
   $dataUrlReadMaxMb,
   clampDataUrlReadMaxMb,
@@ -213,19 +214,29 @@ function ConfigSettingsInner({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; avoid re-scheduling autosave on locale change
   }, [config, onConfigSaved, saveVersion])
 
+  const applyConfig = (next: HermesConfigRecord) => {
+    saveVersionRef.current += 1
+    setConfig(next)
+    setSaveVersion(saveVersionRef.current)
+  }
+
   const updateConfig = (next: HermesConfigRecord) => {
     // Guard the single most destructive config edit: clearing the entire
     // "Enabled Toolsets" list silently disables memory, terminal, web search,
     // delegation, and most tools, and a stray select-all + Backspace can do it.
     // Auto-save is debounced with no undo, so confirm a non-empty → empty
     // transition before applying it. Every other edit passes through untouched.
-    if (config && clearsEnabledToolsets(config, next) && !window.confirm(c.toolsetsWipeConfirm)) {
+    if (config && clearsEnabledToolsets(config, next)) {
+      void confirm({ destructive: true, title: c.toolsetsWipeConfirm }).then(ok => {
+        if (ok) {
+          applyConfig(next)
+        }
+      })
+
       return
     }
 
-    saveVersionRef.current += 1
-    setConfig(next)
-    setSaveVersion(saveVersionRef.current)
+    applyConfig(next)
   }
 
   const sectionFields = useMemo(() => {

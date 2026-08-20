@@ -212,7 +212,7 @@ test('shape: hiding never filters mentions, group flows, or the meta/activity sw
   // avatar pulls, and activity tracking all run on activeSourceRoster —
   // which is derived from the unfiltered roster, not visibleRoster.
   assert.match(pluginSource, /const activeSourceRoster = roster\.filter\(bot => !bot\.remoteSource\)/)
-  assert.match(pluginSource, /mergeServerMeta\(activeSourceRoster\)/)
+  assert.match(pluginSource, /mergeServerMeta\(activeSourceRoster, data\?\.fetchedAt \|\| 0\)/)
   assert.match(pluginSource, /trackInboundActivity\(activeSourceRoster\)/)
   // Mention resolution never consults the hidden flag.
   const mentions = pluginSource.slice(

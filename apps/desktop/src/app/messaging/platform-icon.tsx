@@ -15,8 +15,8 @@ import {
 import type { ComponentPropsWithoutRef, ComponentType, SVGProps } from 'react'
 import { forwardRef, memo } from 'react'
 
+import { AvatarChip } from '@/components/ui/avatar-chip'
 import { Globe, Link as LinkIcon, MessageSquareText } from '@/lib/icons'
-import { cn } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------
 // Photon brand icon — three diagonal rounded bars (the Photon logo mark).
@@ -84,48 +84,18 @@ interface PlatformAvatarProps extends Omit<ComponentPropsWithoutRef<'span'>, 'ch
 // silently — the tooltip renders but never opens (#67500).
 export const PlatformAvatar = memo(
   forwardRef<HTMLSpanElement, PlatformAvatarProps>(function PlatformAvatar(
-    { className, platformId, platformName, style, ...rest },
+    { className, platformId, platformName, ...rest },
     ref
   ) {
-    const spec = PLATFORM_ICONS[platformId]
-
-    const baseClass = cn(
-      'inline-grid size-6 shrink-0 place-items-center rounded-md text-[length:var(--conversation-caption-font-size)] font-medium',
-      className
-    )
-
-    if (!spec) {
-      return (
-        <span
-          aria-hidden="true"
-          className={cn(baseClass, 'bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)')}
-          ref={ref}
-          style={style}
-          {...rest}
-        >
-          {platformName.charAt(0).toUpperCase()}
-        </span>
-      )
-    }
-
-    const { Icon, color } = spec
-
     return (
-      <span
+      <AvatarChip
         aria-hidden="true"
-        className={baseClass}
+        brand={PLATFORM_ICONS[platformId]}
+        className={className}
+        name={platformName}
         ref={ref}
-        style={{
-          // 16% tint of the brand color so the glyph reads against any surface
-          // without the avatar dominating the row.
-          backgroundColor: `color-mix(in srgb, ${color} 16%, transparent)`,
-          color,
-          ...style
-        }}
         {...rest}
-      >
-        {Icon ? <Icon className="size-3.5" /> : spec.monogram || platformName.charAt(0).toUpperCase()}
-      </span>
+      />
     )
   })
 )

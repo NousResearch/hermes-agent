@@ -459,6 +459,21 @@ def build_top_level_parser():
         metavar="N",
         help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)",
     )
+    chat_parser.add_argument(
+        "--run-budget",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        dest="run_budget",
+        help=(
+            "Optional wall-clock budget in seconds for each conversation run. "
+            "At 80%% elapsed the agent gets a one-time wrap-up notice, and "
+            "implicit provider stale timeouts are capped to the remaining "
+            "budget so one hung call can't consume the run. Unset = off. "
+            "Also configurable as agent.run_budget_seconds in config.yaml. "
+            "Intended for one-shot/eval invocations with a hard ceiling."
+        ),
+    )
     _inherited_flag(
         chat_parser,
         "--yolo",

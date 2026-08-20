@@ -25,6 +25,9 @@ Lanes:
   must not run it.
 * ``npm_lock``    — semantic package-lock.json diff PR comment.
 * ``installer``   — PowerShell installer tests (Windows runner).
+* ``rust``        — ``cargo test`` for the Tauri bootstrap installer. ``.rs``
+  lives under ``apps/``, so without this lane a Rust change matched ``frontend``
+  and only the TypeScript matrix ran.
 * ``mcp_catalog`` — bundled MCP catalog / installer review.
 
 Docker is not a lane — it builds on push-to-main and release only,
@@ -45,6 +48,9 @@ must never skip one a change could break:
 * ``website/static/oauth/`` is python-relevant too: it publishes the OAuth
   Client ID Metadata Document that ``tests/tools/test_mcp_cimd.py`` checks
   against the pinned callback ports in ``tools/mcp_oauth.py``.
+* ``website/docs/`` and ``website/scripts/`` are python-relevant for the same
+  reason: the docs tree generates ``llms.txt``, and
+  ``tests/website/test_generate_llms_txt.py`` asserts every page reaches it.
 """
 
 from __future__ import annotations
@@ -66,7 +72,16 @@ _PY_SKIP = ("docs/", "website/") + _FRONTEND
 # callback ports in tools/mcp_oauth.py, so editing it alone must still run the
 # Python lane — otherwise dropping a redirect URI goes green here and breaks
 # every CIMD login on main.
-_PY_RELEVANT_SITE = ("website/static/oauth/",)
+# website/docs/ and website/scripts/ are asserted about the same way. The docs
+# tree generates llms.txt — the index every LLM (Hermes included, via the
+# hermes-agent skill) reads to learn what Hermes can do — and
+# tests/website/test_generate_llms_txt.py holds every page to appearing in it.
+# Skipping Python on a docs-only PR is how the index drifted to 53% coverage.
+_PY_RELEVANT_SITE = (
+    "website/static/oauth/",
+    "website/docs/",
+    "website/scripts/",
+)
 
 # CI-sensitive files: eslint config, workflow files, composite actions.
 # Changes here can influence what code the autofix job executes and pushes to
@@ -93,6 +108,13 @@ _MCP_CATALOG_FILES = {"hermes_cli/mcp_catalog.py"}
 # so they get their own lane rather than riding along with ``python``.
 _INSTALLER_PATHS = ("scripts/tests/",)
 _INSTALLER_FILES = {"scripts/install.ps1", "scripts/install.cmd"}
+
+# Rust crates — currently just the Tauri bootstrap installer (Hermes-Setup).
+# These live under ``apps/``, so before this lane existed a ``.rs`` edit matched
+# ``frontend`` and nothing more: the TypeScript matrix built, cargo never ran,
+# and the crate's unit tests had never executed in CI at all.
+_RUST_PATHS = ("apps/bootstrap-installer/src-tauri/",)
+_RUST_FILENAMES = {"Cargo.toml", "Cargo.lock"}
 
 def _is_docs(p: str) -> bool:
     if p.startswith(("skills/", "optional-skills/")):
@@ -140,6 +162,14 @@ def _is_installer(p: str) -> bool:
     return p.startswith(_INSTALLER_PATHS) or p in _INSTALLER_FILES
 
 
+def _is_rust(p: str) -> bool:
+    return (
+        p.endswith(".rs")
+        or p.startswith(_RUST_PATHS)
+        or os.path.basename(p) in _RUST_FILENAMES
+    )
+
+
 def _is_ci_review(p: str) -> bool:
     if p in _CI_REVIEW_FILES or p.startswith(_CI_REVIEW_PATHS):
         return True
@@ -175,6 +205,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         "uv_lock": any(f in ("pyproject.toml", "uv.lock") for f in files),
         "npm_lock": npm_lock,
         "installer": any(_is_installer(f) for f in files),
+        "rust": any(_is_rust(f) for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
         "ci_review": any(_is_ci_review(f) for f in files),
         "nix": python_prod or frontend or any(_is_nix(f) for f in files)
@@ -191,6 +222,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         ret["uv_lock"] = True
         ret["npm_lock"] = True
         ret["installer"] = True
+        ret["rust"] = True
         ret["nix"] = True
         ret["ci_review"] = True
 

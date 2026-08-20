@@ -167,6 +167,38 @@ describe('requestForSessionProfile', () => {
     expect(secondaryGateways[0].request).toHaveBeenCalledWith('session.resume', { session_id: 'stored-loki-chat' })
   })
 
+  it('forwards timeout and abort signal onto the owning profile socket', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop()
+    await ensureGatewayForProfile('default')
+
+    const ambient = vi.fn(async (method: string, params?: Record<string, unknown>) => ({
+      ambient: true,
+      method,
+      params
+    }))
+
+    const controller = new AbortController()
+
+    await requestForSessionProfile(
+      'loki',
+      ambient as never,
+      'prompt.submit',
+      { session_id: 'stored-loki-chat', text: 'hi' },
+      1_800_000,
+      controller.signal
+    )
+
+    expect(ambient).not.toHaveBeenCalled()
+    expect(secondaryGateways[0].request).toHaveBeenCalledWith(
+      'prompt.submit',
+      { session_id: 'stored-loki-chat', text: 'hi' },
+      1_800_000,
+      controller.signal
+    )
+  })
+
   it('keeps the ambient dispatcher when the active route already serves the owner', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')

@@ -71,6 +71,11 @@ from hermes_cli.plugin_capabilities import (  # noqa: F401 — re-exported
 from hermes_cli.plugin_capabilities import (
     parse_declared_capabilities as _parse_declared_capabilities,
 )
+from hermes_cli.relay_plugin_cutover import (
+    LEGACY_RELAY_PLUGIN_KEYS,
+    RELAY_PLUGINS_CONFIG_ENV,
+    legacy_relay_plugin_keys,
+)
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -3892,6 +3897,14 @@ class PluginManager:
         # don't collide even when both manifests say ``name: openai``.
         disabled = _get_disabled_plugins()
         enabled = _get_enabled_plugins()  # None = opt-in default (nothing enabled)
+        stale_relay_keys = legacy_relay_plugin_keys(enabled)
+        if stale_relay_keys:
+            logger.warning(
+                "Removed Hermes plugin %s is still listed in plugins.enabled; "
+                "remove it and configure native Relay plugins with %s",
+                ", ".join(stale_relay_keys),
+                RELAY_PLUGINS_CONFIG_ENV,
+            )
         winners: Dict[str, PluginManifest] = {}
         for manifest in manifests:
             winners[manifest.key or manifest.name] = manifest
@@ -3901,6 +3914,26 @@ class PluginManager:
         to_load: Dict[str, PluginManifest] = {}
         for manifest in winners.values():
             lookup_key = manifest.key or manifest.name
+
+            # Relay lifecycle ownership now lives in the Hermes core. Loading
+            # an old user or entry-point copy would let plugin.initialize()
+            # compete for the same process-global Relay registries.
+            if (
+                lookup_key in LEGACY_RELAY_PLUGIN_KEYS
+                or manifest.name in LEGACY_RELAY_PLUGIN_KEYS
+            ):
+                loaded = LoadedPlugin(manifest=manifest, enabled=False)
+                loaded.error = (
+                    "removed — Relay lifecycle is owned by Hermes core; configure "
+                    f"{RELAY_PLUGINS_CONFIG_ENV} instead"
+                )
+                self._plugins[lookup_key] = loaded
+                logger.warning(
+                    "Refusing to load removed Hermes Relay plugin '%s'; %s",
+                    lookup_key,
+                    loaded.error,
+                )
+                continue
 
             # Explicit disable always wins (matches on key or on legacy
             # bare name for back-compat with existing user configs).

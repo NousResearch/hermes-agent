@@ -4382,6 +4382,30 @@ _ACTION_PROCS: Dict[str, subprocess.Popen] = {}
 _ACTION_COMMANDS: Dict[str, Tuple[str, ...]] = {}
 _ACTION_IDS: Dict[str, str] = {}
 
+# A finished ``gateway-restart`` child does not mean the gateway is back: the
+# child exits as soon as it has handed the restart to the supervisor (or to the
+# running gateway), while the gateway itself is still stopping and coming up.
+# The in-flight reuse in :func:`_spawn_gateway_restart` therefore stops
+# coalescing exactly when repeat requests do the most damage, so a stale cached
+# frontend that re-fires its restart every few seconds gets a brand new restart
+# every time (#89034: 77 restarts, 17 of them inside one minute, killing the
+# gateway often enough mid-FTS5-write to corrupt state.db).  Suppress repeats
+# for a short window after the last spawn as well.
+#
+# MAINTAINER DECISION: a fixed window, not "until the gateway reports healthy".
+# Health-gating is what #89034 asks for, but it cannot be made to fail safe
+# here — a gateway that never comes back would leave the restart action
+# permanently inert, which is a worse failure than the flood it prevents.  A
+# fixed window always releases.  10s is above the ~3.5s spacing of the reported
+# storm and below the time an operator waits before deliberately retrying.
+GATEWAY_RESTART_COOLDOWN_SECONDS = 10.0
+
+# ``(monotonic spawn time, Popen, command)`` for the last gateway restart this
+# process started.  Deliberately NOT read out of ``_ACTION_PROCS``: entries
+# there are reaped once the child exits, and a guard that disappears when the
+# child exits is the bug this exists to fix.
+_LAST_GATEWAY_RESTART: Optional[Tuple[float, subprocess.Popen, Tuple[str, ...]]] = None
+
 # ``name`` → completed synthetic action result for actions the server handled
 # without spawning a subprocess (for example, unsupported Docker updates).
 _ACTION_RESULTS: Dict[str, Dict[str, Any]] = {}
@@ -4608,6 +4632,13 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
     concurrent ``hermes gateway restart`` children race each other on the
     manual kill-and-start path, so reuse the live one instead.
 
+    Reusing only the *live* child is not enough. The child exits as soon as
+    the restart has been handed off, long before the gateway is back, so a
+    frontend re-firing every few seconds cleared that guard every time and
+    kept restarting a gateway that was still coming up (#89034). Requests
+    within ``GATEWAY_RESTART_COOLDOWN_SECONDS`` of the last spawn for the
+    same profile are coalesced onto that spawn as well.
+
     Before spawning, sweep for orphaned gateway processes whose parent has
     exited (e.g. desktop-app restarts leaving a reparented gateway child
     under launchd/PPID=1).  Without this the orphan keeps its platform
@@ -4623,6 +4654,8 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
     except Exception:
         pass  # best-effort — don't block the restart on a reap failure
 
+    global _LAST_GATEWAY_RESTART
+
     subcommand = _gateway_subcommand(profile, "restart")
     existing = _ACTION_PROCS.get("gateway-restart")
     if existing is not None and existing.poll() is None:
@@ -4630,7 +4663,24 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
         if existing_command is None or existing_command == tuple(subcommand):
             return existing, True
         raise RuntimeError("gateway restart already in progress for another profile")
-    return _spawn_hermes_action(subcommand, "gateway-restart"), False
+
+    recent = _LAST_GATEWAY_RESTART
+    if recent is not None:
+        spawned_at, recent_proc, recent_command = recent
+        age = time.monotonic() - spawned_at if recent_command == tuple(subcommand) else None
+        if age is not None and age < GATEWAY_RESTART_COOLDOWN_SECONDS:
+            _log.info(
+                "Coalescing gateway restart: one was started %.1fs ago "
+                "(pid %s) and the gateway may still be coming back; not "
+                "spawning another (#89034).",
+                age,
+                getattr(recent_proc, "pid", "?"),
+            )
+            return recent_proc, True
+
+    proc = _spawn_hermes_action(subcommand, "gateway-restart")
+    _LAST_GATEWAY_RESTART = (time.monotonic(), proc, tuple(subcommand))
+    return proc, False
 
 
 def _restart_gateway_after_webhook_enable(profile: Optional[str] = None) -> dict[str, Any]:
@@ -19030,6 +19080,21 @@ def start_server(
             # tui_gateway/slash_worker.py::_start_parent_death_watchdog. No-op
             # for standalone `hermes serve` (no HERMES_PARENT_PID env).
             _start_parent_death_watchdog()
+
+            # Positive process identity: record (pid, create_time, purpose,
+            # spawner) in the machine spawn ledger and — on Windows — attach
+            # to a kill-on-close job so this backend's whole child tree dies
+            # with it. Both best-effort; failures degrade to legacy behavior.
+            try:
+                from hermes_cli.process_identity import (
+                    attach_self_to_kill_on_close_job,
+                    register_self,
+                )
+
+                register_self("serve" if headless else "dashboard")
+                attach_self_to_kill_on_close_job()
+            except Exception as exc:
+                _log.debug("process-identity registration skipped: %s", exc)
 
             actual_port = _read_bound_port(server, fallback=port)
             app.state.bound_port = actual_port

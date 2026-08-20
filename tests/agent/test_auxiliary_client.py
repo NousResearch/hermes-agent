@@ -507,6 +507,90 @@ class TestNormalizeAuxProvider:
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
 
 
+
+    def test_maps_deepseek_alias(self):
+        assert _normalize_aux_provider("deep-seek") == "deepseek"
+
+    def test_maps_alibaba_aliases(self):
+        assert _normalize_aux_provider("dashscope") == "alibaba"
+        assert _normalize_aux_provider("aliyun") == "alibaba"
+        assert _normalize_aux_provider("qwen") == "alibaba"
+        assert _normalize_aux_provider("alibaba-cloud") == "alibaba"
+
+    def test_maps_nvidia_aliases(self):
+        assert _normalize_aux_provider("nim") == "nvidia"
+        assert _normalize_aux_provider("nvidia-nim") == "nvidia"
+        assert _normalize_aux_provider("build-nvidia") == "nvidia"
+        assert _normalize_aux_provider("nemotron") == "nvidia"
+
+    def test_maps_huggingface_aliases(self):
+        assert _normalize_aux_provider("hf") == "huggingface"
+        assert _normalize_aux_provider("hugging-face") == "huggingface"
+        assert _normalize_aux_provider("huggingface-hub") == "huggingface"
+
+    def test_maps_bedrock_aliases(self):
+        assert _normalize_aux_provider("aws") == "bedrock"
+        assert _normalize_aux_provider("aws-bedrock") == "bedrock"
+        assert _normalize_aux_provider("amazon-bedrock") == "bedrock"
+        assert _normalize_aux_provider("amazon") == "bedrock"
+
+    def test_maps_vertex_aliases(self):
+        assert _normalize_aux_provider("vertex-ai") == "vertex"
+        assert _normalize_aux_provider("vertexai") == "vertex"
+        assert _normalize_aux_provider("gcp-vertex") == "vertex"
+        assert _normalize_aux_provider("google-vertex") == "vertex"
+
+    def test_maps_fireworks_aliases(self):
+        assert _normalize_aux_provider("fireworks-ai") == "fireworks"
+        assert _normalize_aux_provider("fw") == "fireworks"
+
+    def test_maps_local_custom_aliases(self):
+        assert _normalize_aux_provider("ollama") == "custom"
+        assert _normalize_aux_provider("vllm") == "custom"
+        assert _normalize_aux_provider("llamacpp") == "custom"
+        assert _normalize_aux_provider("llama.cpp") == "custom"
+        assert _normalize_aux_provider("llama-cpp") == "custom"
+        assert _normalize_aux_provider("lmstudio") == "lmstudio"
+        assert _normalize_aux_provider("lm-studio") == "lmstudio"
+        assert _normalize_aux_provider("lm_studio") == "lmstudio"
+
+    def test_maps_remaining_aliases(self):
+        assert _normalize_aux_provider("novita-ai") == "novita"
+        assert _normalize_aux_provider("novitaai") == "novita"
+        assert _normalize_aux_provider("mimo") == "xiaomi"
+        assert _normalize_aux_provider("xiaomi-mimo") == "xiaomi"
+        assert _normalize_aux_provider("step") == "stepfun"
+        assert _normalize_aux_provider("stepfun-coding-plan") == "stepfun"
+        assert _normalize_aux_provider("arcee-ai") == "arcee"
+        assert _normalize_aux_provider("arceeai") == "arcee"
+        assert _normalize_aux_provider("opencode") == "opencode-zen"
+        assert _normalize_aux_provider("zen") == "opencode-zen"
+        assert _normalize_aux_provider("go") == "opencode-go"
+        assert _normalize_aux_provider("opencode-go-sub") == "opencode-go"
+        assert _normalize_aux_provider("kilo") == "kilocode"
+        assert _normalize_aux_provider("kilo-code") == "kilocode"
+        assert _normalize_aux_provider("kilo-gateway") == "kilocode"
+        assert _normalize_aux_provider("ollama_cloud") == "ollama-cloud"
+        assert _normalize_aux_provider("grok-oauth") == "xai-oauth"
+        assert _normalize_aux_provider("xai-oauth") == "xai-oauth"
+        assert _normalize_aux_provider("x-ai-oauth") == "xai-oauth"
+        assert _normalize_aux_provider("xai-grok-oauth") == "xai-oauth"
+        assert _normalize_aux_provider("minimax-portal") == "minimax-oauth"
+        assert _normalize_aux_provider("minimax-global") == "minimax-oauth"
+        assert _normalize_aux_provider("minimax_oauth") == "minimax-oauth"
+        assert _normalize_aux_provider("qwen-portal") == "qwen-oauth"
+
+    def test_aux_aliases_cover_models_catalog(self):
+        """auxiliary _PROVIDER_ALIASES must include every models.py alias."""
+        from hermes_cli import models as models_mod
+        from agent import auxiliary_client as aux_mod
+
+        models_map = models_mod._PROVIDER_ALIASES
+        aux_map = aux_mod._PROVIDER_ALIASES
+        missing = sorted(set(models_map) - set(aux_map))
+        assert missing == [], f"aux missing aliases from models.py: {missing}"
+
+
 class TestReadCodexAccessToken:
     def test_valid_auth_store(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"

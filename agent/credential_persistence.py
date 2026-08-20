@@ -130,8 +130,25 @@ def _fingerprint_value(value: Any) -> str | None:
     return f"sha256:{digest[:16]}"
 
 
-def _credential_secret_fingerprint(payload: Mapping[str, Any]) -> str | None:
-    for key in ("agent_key", "access_token", "refresh_token", "api_key", "token", "secret"):
+def _credential_secret_fingerprint(
+    payload: Mapping[str, Any],
+    provider_id: Any = None,
+) -> str | None:
+    if provider_id == "anthropic" and payload.get("source") == "claude_code":
+        # Access tokens can be reissued while the same single-use refresh
+        # token remains the owning lineage. DEAD inheritance clears only when
+        # that refresh lineage changes.
+        keys = ("refresh_token",)
+    else:
+        keys = (
+            "agent_key",
+            "access_token",
+            "refresh_token",
+            "api_key",
+            "token",
+            "secret",
+        )
+    for key in keys:
         fingerprint = _fingerprint_value(payload.get(key))
         if fingerprint:
             return fingerprint
@@ -163,7 +180,7 @@ def sanitize_borrowed_credential_payload(
     if not is_borrowed_credential_source(result.get("source"), provider_id):
         return result
 
-    fingerprint = _credential_secret_fingerprint(result)
+    fingerprint = _credential_secret_fingerprint(result, provider_id)
     sanitized = {
         key: value
         for key, value in result.items()

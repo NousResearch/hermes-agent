@@ -35,6 +35,7 @@ def _bare_pool(entries):
     """Minimal pool shell — avoids disk/keyring I/O in __init__."""
     pool = CredentialPool.__new__(CredentialPool)
     pool._lock = threading.RLock()
+    pool._external_state_lock = threading.Lock()
     pool._entries = list(entries)
     pool._active_leases = {}
     pool._current_id = None

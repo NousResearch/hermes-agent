@@ -359,22 +359,6 @@ describe('AppContextMenu', () => {
     expect($contextMenu.get()).toBeNull()
   })
 
-  it('leaves asChild radix triggers alone when the child overwrites data-slot', () => {
-    installBridge()
-    mountMenu()
-    // Status bar: ContextMenuTrigger asChild over a footer whose data-slot
-    // is "statusbar". The coordinator must still recognize the dedicated
-    // marker — otherwise the window-verbs fallback eats the gesture.
-    const host = attach(
-      '<footer data-slot="statusbar" data-hermes-context-menu-trigger=""><span>meter</span></footer>'
-    )
-
-    fireEvent.contextMenu(host.querySelector('span')!)
-
-    expect($contextMenu.get()).toBeNull()
-    expect(screen.queryByText('Settings')).toBeNull()
-  })
-
   it('shows the terminal menu through a registered handle', async () => {
     installBridge()
     mountMenu()

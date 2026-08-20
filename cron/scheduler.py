@@ -2593,7 +2593,6 @@ def _send_media_via_adapter(
             )
             logger.warning("Job '%s': %s", job.get("id", "?"), msg)
             errors.append(msg)
-    return errors
 
     # Document media: single batch through the Base contract (no hasattr guard).
     if doc_files:
@@ -2603,17 +2602,22 @@ def _send_media_via_adapter(
             )
             future = safe_schedule_threadsafe(coro, loop)
             if future is None:
-                logger.warning(
-                    "Job '%s': cannot send %d document(s), gateway loop unavailable",
-                    job.get("id", "?"), len(doc_files),
+                msg = (
+                    f"cannot send {len(doc_files)} document(s): "
+                    "gateway loop unavailable"
                 )
+                logger.warning("Job '%s': %s", job.get("id", "?"), msg)
+                errors.append(msg)
             else:
                 future.result(timeout=60)
         except Exception as e:
-            logger.warning(
-                "Job '%s': failed to send %d document(s): %s",
-                job.get("id", "?"), len(doc_files), e,
+            msg = (
+                f"failed to send {len(doc_files)} document(s): "
+                f"{str(e) or type(e).__name__}"
             )
+            logger.warning("Job '%s': %s", job.get("id", "?"), msg)
+            errors.append(msg)
+    return errors
 
 
 def _confirm_adapter_delivery(send_result) -> bool:

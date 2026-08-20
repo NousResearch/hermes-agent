@@ -52,6 +52,19 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Disable when the platform should steer silently (the text still lands in
     # the active run; only the confirmation echo is suppressed).
     "busy_steer_ack_enabled": True,
+    # Whether the busy-ack path sends a visible "↪ Redirected current run"
+    # bubble when the user's mid-turn message was injected into the running
+    # agent as a correction (busy_input_mode=interrupt + redirected=True).
+    # The redirect is still applied to the running turn; only the confirmation
+    # echo is suppressed. Useful in Matrix group rooms where the prefix is
+    # noise adjacent to the actual reply.
+    "busy_redirect_ack_enabled": True,
+    # Whether the busy-ack path sends a visible "⚡ Interrupting current task"
+    # bubble when the user's mid-turn message aborts the running turn
+    # (busy_input_mode=interrupt). The interrupt still happens; only the
+    # confirmation echo is suppressed. Useful in Matrix group rooms where the
+    # prefix pollutes the chat history.
+    "busy_interrupt_ack_enabled": True,
     # When true, delete tool-progress / "⏳ Working — N min" / status bubbles
     # after the final response lands on platforms that support message
     # deletion (e.g. Telegram). Off by default — progress is still shown

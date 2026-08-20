@@ -837,6 +837,38 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
+_EMPTY_CONTENT_PLACEHOLDER = "(The user sent a message with no text content)"
+
+
+def _strip_empty_content_placeholder(user_text: str) -> str:
+    """Remove the adapter empty-content placeholder from a user message.
+
+    Discord delivers a captionless voice note as the literal
+    ``"(The user sent a message with no text content)"`` placeholder. In
+    shared multi-user sessions ``_prepare_inbound_message_text`` labels the
+    message with a sender prefix first (``"[Javi] (The user sent a message
+    with no text content)"``), so a bare equality check misses the prefixed
+    form and the placeholder leaks into the model's turn next to a perfectly
+    good STT transcript — the model then answers "your message came through
+    empty" even though it has the words. Strip the marker whether or not it
+    carries a ``[Name] `` prefix, and whether it stands alone or is embedded
+    among merged follow-up lines.
+    """
+    if not user_text:
+        return user_text
+    kept = []
+    for line in user_text.split("\n"):
+        stripped = line.strip()
+        if stripped == _EMPTY_CONTENT_PLACEHOLDER:
+            continue
+        if stripped.startswith("[") and stripped.endswith(
+            f"] {_EMPTY_CONTENT_PLACEHOLDER}"
+        ):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
@@ -18030,7 +18062,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _safe_user_name = (
                     f"{_safe_user_name} | Slack user <@{source.user_id}>"
                 )
-            message_text = f"[{_safe_user_name}] {message_text}"
+            # Don't attribute the adapter's empty-content placeholder: it's
+            # gateway-internal text (not user content), gets replaced by the
+            # STT transcript or a sentinel note, and prefixing it breaks the
+            # placeholder strip in _enrich_message_with_transcription.
+            if message_text.strip() != _EMPTY_CONTENT_PLACEHOLDER:
+                message_text = f"[{_safe_user_name}] {message_text}"
 
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the
@@ -24570,11 +24607,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not notes:
                 return user_text, []
             prefix = "\n\n".join(notes)
-            _placeholder = "(The user sent a message with no text content)"
-            if user_text and user_text.strip() == _placeholder:
-                return prefix, []
-            if user_text:
-                return f"{prefix}\n\n{user_text}", []
+            cleaned_text = _strip_empty_content_placeholder(user_text)
+            if cleaned_text.strip():
+                return f"{prefix}\n\n{cleaned_text.strip()}", []
             return prefix, []
 
         try:
@@ -24585,11 +24620,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except ModuleNotFoundError as e:
             logger.error("Transcription module unavailable: %s", e)
             unavailable_note = "[voice message could not be transcribed]"
-            _placeholder = "(The user sent a message with no text content)"
-            if user_text and user_text.strip() == _placeholder:
-                return unavailable_note, []
-            if user_text:
-                return f"{unavailable_note}\n\n{user_text}", []
+            cleaned_text = _strip_empty_content_placeholder(user_text)
+            if cleaned_text.strip():
+                return f"{unavailable_note}\n\n{cleaned_text.strip()}", []
             return unavailable_note, []
 
         enriched_parts = []
@@ -24666,11 +24699,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             prefix = "\n\n".join(enriched_parts)
             # Strip the empty-content placeholder from the Discord adapter
             # when we successfully transcribed the audio — it's redundant.
-            _placeholder = "(The user sent a message with no text content)"
-            if user_text and user_text.strip() == _placeholder:
-                return prefix, successful_transcripts
-            if user_text:
-                return f"{prefix}\n\n{user_text}", successful_transcripts
+            # Match the prefixed form too: shared multi-user sessions label
+            # the message "[Name] (The user sent a message with no text
+            # content)" before enrichment, and leaking the marker into the
+            # model's turn next to the transcript makes it answer "your
+            # message came through empty" despite having the words.
+            cleaned_text = _strip_empty_content_placeholder(user_text)
+            if cleaned_text.strip():
+                return f"{prefix}\n\n{cleaned_text.strip()}", successful_transcripts
             return prefix, successful_transcripts
         return user_text, successful_transcripts
 

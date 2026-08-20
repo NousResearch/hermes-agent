@@ -18,6 +18,49 @@ from providers.base import ProviderProfile
 class GeminiProfile(ProviderProfile):
     """Gemini — translate reasoning_config to thinking_config in extra_body."""
 
+    def fetch_models(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: float = 8.0,
+    ) -> list[str] | None:
+        """Live model discovery via Gemini's OpenAI-compatible surface.
+
+        Points at the /v1beta/openai subpath (not the native /v1beta root
+        the base_url otherwise resolves to) so the base implementation's
+        {"data": [{"id": ...}]} parsing applies -- the native /v1beta/models
+        endpoint uses a differently-shaped response that would need
+        separate parsing.
+
+        Gemini's OpenAI-compat endpoint prefixes returned IDs with
+        "models/" (e.g. "models/gemini-2.5-flash") -- native Gemini-API
+        convention. Stripped here so callers get the same bare-ID form the
+        curated list, user input, and the existing validation path
+        (#12532) all use.
+
+        Deliberately does NOT short-circuit with its own curated-list
+        merge or early return: returning through fetch_models() here lets
+        it flow through the SHARED generic merge in
+        hermes_cli.models.provider_model_ids(), which already knows how
+        to preserve curated entries when the live catalog is partial or
+        stale (review of #75306) -- an earlier revision of this fix
+        returned the live result directly from a separate branch,
+        bypassing that merge entirely.
+        """
+        effective_base = (base_url or self.base_url or "").rstrip("/")
+        if effective_base.endswith("/v1beta"):
+            effective_base += "/openai"
+        models = super().fetch_models(
+            api_key=api_key, base_url=effective_base or None, timeout=timeout,
+        )
+        if not models:
+            return models
+        return [
+            m[len("models/"):] if isinstance(m, str) and m.startswith("models/") else m
+            for m in models
+        ]
+
     def build_extra_body(
         self, *, session_id: str | None = None, **context: Any
     ) -> dict[str, Any]:

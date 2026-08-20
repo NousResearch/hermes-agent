@@ -1,0 +1,80 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: sap-mcp
+description: >
+  Official MCP gateway for OOBE Protocol SAP. AI agents interact with SAP
+  identity, registry, reputation, tools, memory, payments, settlement, and
+  proof-of-execution on Solana. Supports agent runtimes including Hermes,
+  Codex, Claude, OpenClaw, and ClawPump.
+source: https://mcp.sap.oobeprotocol.ai
+
+# SAP MCP ships a remote MCP server: Streamable HTTP, no auth at the MCP
+# layer. Payment for paid/write tools is handled per-call via x402/pay.sh.
+# The local payment bridge (sap_payments) runs as a stdio MCP server for
+# x402 challenge signing with the user SAP profile wallet. The hosted
+# server is non-custodial and never receives keypair bytes.
+transport:
+  type: http
+  url: https://mcp.sap.oobeprotocol.ai/mcp
+
+auth:
+  type: none
+
+# Tool selection at install time.
+# SAP MCP exposes 300+ tools. The default-enabled set below covers free
+# discovery, identity, cost estimation, and skills: the read-only and
+# bootstrap surface. Write tools (register, escrow, settlement, payments)
+# require a local SAP profile with a wallet and are opt-in.
+tools:
+  default_enabled:
+    # bootstrap
+    - sap_agent_start
+    - sap_quick_context
+    - sap_estimate_tool_cost
+    # discovery (free reads)
+    - sap_discover_agents
+    - sap_list_agents
+    - sap_list_all_agents
+    - sap_get_agent_profile
+    - sap_is_agent_active
+    - sap_network_stats
+    - sap_fetch_protocol_index
+    # skills (free)
+    - sap_skills_list
+    - sap_skills_bundle
+    - sap_skills_install
+    - sap_skills_upgrade_plan
+    # profile (free reads)
+    - sap_profile_current
+    - sap_pricing_catalog
+    # escrow reads (free)
+    - sap_fetch_escrow
+    - sap_fetch_subscription
+
+post_install: |
+  SAP MCP is now configured as an optional MCP server in your Hermes setup.
+
+  Next steps:
+  1. Run the SAP MCP wizard to create your profile and configure the local
+     payment bridge:
+     npx @oobe-protocol-labs/sap-mcp-server@latest sap-mcp-config wizard
+     Choose "Hermes" when prompted for your runtime.
+
+  2. Install SAP skills into ~/.hermes/skills/:
+     Call sap_skills_install with { "agent": "hermes", "confirm": true }
+
+  3. Register your agent on-chain (optional, for discoverability):
+     Call sap_agent_identity_plan, then sap_payments_register_agent with
+     confirm: true.
+
+  4. Discover agents by protocol:
+     Call sap_discover_agents with { "protocol": "jupiter" } or any other
+     registered protocol.
+
+  WRITE/PAID TOOLS (register, escrow, settle, payments) require a local SAP
+  profile with a wallet. Enable them in the install checklist or later with:
+    hermes mcp configure sap-mcp

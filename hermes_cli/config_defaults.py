@@ -4112,6 +4112,13 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
         "advanced": True,
     },
+    "COMPOSIO_API_KEY": {
+        "description": "Composio API key for the composio connectors skill (1000+ SaaS apps: Gmail, Notion, Slack, Linear, ...)",
+        "prompt": "Composio API key",
+        "url": "https://app.composio.dev/",
+        "password": True,
+        "category": "tool",
+    },
     "TAVILY_API_KEY": {
         "description": "Tavily API key for AI-native web search and extract",
         "prompt": "Tavily API key",

@@ -1843,12 +1843,14 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     """Spawn an AIAgent fork to run the curator review prompt.
 
     Returns a dict with:
-      - final: full (untruncated) final response from the reviewer
+      - final: full (untruncated) final response from the reviewer; a failed
+        pass may still retain partial or diagnostic output here
       - summary: short summary suitable for state file (240-char cap)
       - model, provider: what the fork actually ran on
       - tool_calls: list of {name, arguments} for every tool call made during
         the pass (arguments may be truncated for readability)
-      - error: set if the pass failed mid-run; final/summary may still be empty
+      - error: set if the pass failed mid-run; consumers must use this field
+        rather than infer success from whether ``final`` is populated
 
     Never raises; callers get a structured failure instead.
     """
@@ -1861,11 +1863,16 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         "tool_calls": [],
         "error": None,
     }
+
+    def _bounded_summary(value: str, fallback: str = "") -> str:
+        text = value or fallback
+        return text[:239] + "…" if len(text) > 240 else text
+
     try:
         from run_agent import AIAgent
     except Exception as e:
         result_meta["error"] = f"AIAgent import failed: {e}"
-        result_meta["summary"] = result_meta["error"]
+        result_meta["summary"] = _bounded_summary(result_meta["error"])
         return result_meta
 
     # Resolve provider + model the same way the CLI does, so the curator
@@ -1976,7 +1983,16 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         if isinstance(conv_result, dict):
             final = str(conv_result.get("final_response") or "").strip()
         result_meta["final"] = final
-        result_meta["summary"] = (final[:240] + "…") if len(final) > 240 else (final or "no change")
+        conversation_error = conv_result.get("error") if isinstance(conv_result, dict) else None
+        conversation_failed = (
+            bool(conv_result.get("failed")) if isinstance(conv_result, dict) else False
+        )
+        if conversation_failed or conversation_error:
+            error = str(conversation_error or "conversation failed")
+            result_meta["error"] = error
+            result_meta["summary"] = _bounded_summary(f"error ({error})")
+        else:
+            result_meta["summary"] = _bounded_summary(final, "no change")
 
         # Collect tool calls for the report. Walk the forked agent's
         # session messages and extract every tool_call made during the
@@ -1999,7 +2015,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         result_meta["tool_calls"] = _calls
     except Exception as e:
         result_meta["error"] = f"error: {e}"
-        result_meta["summary"] = result_meta["error"]
+        result_meta["summary"] = _bounded_summary(result_meta["error"])
     finally:
         if review_agent is not None:
             try:

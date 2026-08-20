@@ -804,6 +804,52 @@ def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch)
     assert captured["max_tokens"] == 1234
 
 
+def test_review_fork_preserves_structured_conversation_failure(curator_env, monkeypatch):
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+    conversation_result = {
+        "final_response": "partial diagnostic response",
+        "failed": True,
+        "error": "provider rejected credentials",
+    }
+
+    class _StubAgent:
+        def __init__(self, **_kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **_kwargs):
+            return conversation_result
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    result = curator._run_llm_review("review")
+
+    assert result["final"] == "partial diagnostic response"
+    assert result["error"] == "provider rejected credentials"
+    assert result["summary"] == "error (provider rejected credentials)"
+
+    long_error = "provider rejected credentials: " + "x" * 300
+    conversation_result["error"] = long_error
+    result = curator._run_llm_review("review")
+
+    assert result["error"] == long_error
+    assert result["summary"] == f"error ({long_error})"[:239] + "…"
+    assert len(result["summary"]) == 240
+
+    class _FailingAgent:
+        def __init__(self, **_kwargs):
+            raise RuntimeError(long_error)
+
+    monkeypatch.setattr("run_agent.AIAgent", _FailingAgent)
+    result = curator._run_llm_review("review")
+
+    assert result["error"] == f"error: {long_error}"
+    assert result["summary"] == result["error"][:239] + "…"
+    assert len(result["summary"]) == 240
 
 
 def test_review_fork_restricts_toolsets_to_skills_and_terminal(curator_env, monkeypatch):

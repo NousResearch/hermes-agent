@@ -52,13 +52,67 @@ DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT = float(
 CRON_DRAIN_CLEANUP_RESERVE_S = 10.0
 
 
+_PROC_SELF_CGROUP = "/proc/self/cgroup"
+
+
+def _innermost_systemd_unit_kinds(cgroup_path: str = _PROC_SELF_CGROUP) -> set[str]:
+    """Return the innermost systemd unit suffixes owning this process.
+
+    Each ``/proc/self/cgroup`` line is scanned from the leaf toward the
+    root; the first component ending in ``.service`` or ``.scope`` is that
+    hierarchy's innermost unit (the one that directly contains the
+    process).  Scanning inward-first matters: a desktop-terminal process
+    lives at ``.../user@N.service/app.slice/ptyxis-spawn-X.scope``, so a
+    naive "any .service in the path" check would misread the ``user@``
+    manager unit as service ownership, while a gateway with ``Delegate=yes``
+    lives at ``.../hermes-gateway.service/<sub-cgroup>`` and a naive
+    leaf-only check would miss the service.  Returns a subset of
+    ``{"service", "scope"}``; empty when unreadable (macOS/Windows/etc.).
+
+    Kept injectable (``cgroup_path``) for the same reason
+    :func:`is_container_restart_context` was extracted — tests must be able
+    to pin cgroup detection hermetically, or a CI runner that itself runs
+    inside a systemd unit flips the result under the test.
+    """
+    kinds: set[str] = set()
+    try:
+        with open(cgroup_path, encoding="utf-8") as fh:
+            for line in fh:
+                for component in reversed(line.strip().split("/")):
+                    if component.endswith(".service"):
+                        kinds.add("service")
+                        break
+                    if component.endswith(".scope"):
+                        kinds.add("scope")
+                        break
+    except OSError:
+        return set()
+    return kinds
+
+
 def is_gateway_supervisor_process(
     environ: Mapping[str, str] | None = None,
+    cgroup_path: str = _PROC_SELF_CGROUP,
 ) -> bool:
     """Return whether this gateway process is owned by a supervisor."""
     env = os.environ if environ is None else environ
     if env.get("INVOCATION_ID"):
-        return True
+        # systemd sets INVOCATION_ID for every unit it launches — including
+        # desktop sessions: on GNOME every process of a graphical login
+        # inherits it because gnome-session and the terminal's transient
+        # ``*-spawn-*.scope`` are themselves systemd units. A process whose
+        # innermost cgroup unit is a transient *scope* (and no enclosing
+        # *service* below the user@ manager) is such a desktop/terminal
+        # process, not a supervised service: treating it as supervised
+        # routes /restart to the exit-75 service path where nothing
+        # restarts the gateway. Veto only that shape; any ``.service``
+        # ownership — hermes-gateway.service, legacy hermes.service, or a
+        # user-custom unit — keeps supervisor status, and an unreadable
+        # cgroup file (macOS, containers without cgroupfs) preserves the
+        # historical INVOCATION_ID meaning.
+        unit_kinds = _innermost_systemd_unit_kinds(cgroup_path)
+        if "service" in unit_kinds or not unit_kinds:
+            return True
     if env.get("HERMES_S6_SUPERVISED_CHILD"):
         return True
     xpc_service = env.get("XPC_SERVICE_NAME", "")

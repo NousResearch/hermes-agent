@@ -1212,6 +1212,18 @@ def init_agent(
                     print("🔑 Using credentials: Microsoft Entra ID")
                 elif isinstance(effective_key, str) and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+    elif agent.api_mode == "codex_app_server":
+        # Codex owns transport construction and authentication in this mode.
+        # The subprocess reads its own CODEX_HOME config/auth state; building a
+        # Hermes provider client here is both unused and breaks the documented
+        # no-API-key path before the first turn can reach the app-server.
+        agent.client = None
+        agent._client_kwargs = {}
+        if not agent.quiet_mode:
+            print(
+                f"🤖 AI Agent initialized with model: {agent.model} "
+                "(Codex app-server)"
+            )
     elif agent.provider == "moa":
         from agent.moa_loop import build_moa_facade
         agent.api_mode = "chat_completions"

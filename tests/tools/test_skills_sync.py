@@ -939,6 +939,43 @@ class TestUpdateBackupRecovery:
 
 
 class TestRestoreOfficialOptionalSkill:
+    def test_restore_all_refuses_nontransactional_bulk_mutation(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        for name in ("one", "two"):
+            source = optional_dir / "devops" / name
+            source.mkdir(parents=True)
+            (source / "SKILL.md").write_text(f"# {name}\n")
+        skills_dir = tmp_path / "skills"
+        installed = skills_dir / "devops" / "one"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Existing one\n")
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(
+            ss,
+            "_optional_root_identity",
+            lambda _path: "git:NousResearch/hermes-agent@" + "a" * 40,
+        )
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda _identity, identifier: {
+                "SKILL.md": f"# Verified {identifier}\n".encode()
+            },
+        )
+
+        result = ss.restore_official_optional_skill("all", restore=True)
+
+        assert result["ok"] is False
+        assert "one at a time" in result["message"].lower()
+        assert (installed / "SKILL.md").read_text() == "# Existing one\n"
+        assert not (skills_dir / ".restore-backups").exists()
+
     def test_restore_rejects_unverified_optional_override(self, monkeypatch, tmp_path):
         import tools.skills_sync as ss
 

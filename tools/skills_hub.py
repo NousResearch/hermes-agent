@@ -225,6 +225,40 @@ def _nix_store_optional_identity(
         return ""
 
 
+def _trusted_git_environment() -> Dict[str, str]:
+    """Return a Git environment without caller-controlled object/config hooks."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_")
+    }
+    env.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+        }
+    )
+    return env
+
+
+def _run_trusted_git(repo_root: Path, *args: str, **kwargs):
+    return subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-C",
+            str(repo_root),
+            *args,
+        ],
+        env=_trusted_git_environment(),
+        **kwargs,
+    )
+
+
 def _git_checkout_optional_identity(path: Path, repo_root: Path) -> str:
     """Return the exact clean Git commit that owns a checkout's optional tree."""
     try:
@@ -236,8 +270,10 @@ def _git_checkout_optional_identity(path: Path, repo_root: Path) -> str:
         for entry in resolved.rglob("*"):
             if _is_path_redirect(entry):
                 return ""
-        top = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "--show-toplevel"],
+        top = _run_trusted_git(
+            repo_root,
+            "rev-parse",
+            "--show-toplevel",
             check=True,
             capture_output=True,
             text=True,
@@ -245,17 +281,13 @@ def _git_checkout_optional_identity(path: Path, repo_root: Path) -> str:
         ).stdout.strip()
         if Path(top).resolve() != repo_root:
             return ""
-        status = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo_root),
-                "status",
-                "--porcelain",
-                "--untracked-files=all",
-                "--",
-                "optional-skills",
-            ],
+        status = _run_trusted_git(
+            repo_root,
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--",
+            "optional-skills",
             check=True,
             capture_output=True,
             text=True,
@@ -263,19 +295,15 @@ def _git_checkout_optional_identity(path: Path, repo_root: Path) -> str:
         ).stdout
         if status:
             return ""
-        ignored_untracked = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo_root),
-                "ls-files",
-                "--others",
-                "--ignored",
-                "--exclude-standard",
-                "-z",
-                "--",
-                "optional-skills",
-            ],
+        ignored_untracked = _run_trusted_git(
+            repo_root,
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "-z",
+            "--",
+            "optional-skills",
             check=True,
             capture_output=True,
             timeout=10,
@@ -287,8 +315,10 @@ def _git_checkout_optional_identity(path: Path, repo_root: Path) -> str:
         ]
         if any(_optional_bundle_file_is_included(path) for path in ignored_paths):
             return ""
-        remote_output = subprocess.run(
-            ["git", "-C", str(repo_root), "remote", "-v"],
+        remote_output = _run_trusted_git(
+            repo_root,
+            "remote",
+            "-v",
             check=True,
             capture_output=True,
             text=True,
@@ -310,14 +340,10 @@ def _git_checkout_optional_identity(path: Path, repo_root: Path) -> str:
         }
         if not official_fetch_remotes:
             return ""
-        head_tree = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo_root),
-                "rev-parse",
-                "HEAD:optional-skills",
-            ],
+        head_tree = _run_trusted_git(
+            repo_root,
+            "rev-parse",
+            "HEAD:optional-skills",
             check=True,
             capture_output=True,
             text=True,
@@ -325,27 +351,19 @@ def _git_checkout_optional_identity(path: Path, repo_root: Path) -> str:
         ).stdout.strip()
         for remote in sorted(official_fetch_remotes):
             try:
-                revision = subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(repo_root),
-                        "rev-parse",
-                        f"{remote}/main^{{commit}}",
-                    ],
+                revision = _run_trusted_git(
+                    repo_root,
+                    "rev-parse",
+                    f"{remote}/main^{{commit}}",
                     check=True,
                     capture_output=True,
                     text=True,
                     timeout=10,
                 ).stdout.strip()
-                remote_tree = subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(repo_root),
-                        "rev-parse",
-                        f"{remote}/main:optional-skills",
-                    ],
+                remote_tree = _run_trusted_git(
+                    repo_root,
+                    "rev-parse",
+                    f"{remote}/main:optional-skills",
                     check=True,
                     capture_output=True,
                     text=True,
@@ -437,8 +455,10 @@ def _git_origin_commit_is_official(repo_root: Path, revision: str) -> bool:
         "ssh://git@github.com/NousResearch/hermes-agent.git",
     }
     try:
-        remote_output = subprocess.run(
-            ["git", "-C", str(repo_root), "remote", "-v"],
+        remote_output = _run_trusted_git(
+            repo_root,
+            "remote",
+            "-v",
             check=True,
             capture_output=True,
             text=True,
@@ -456,16 +476,12 @@ def _git_origin_commit_is_official(repo_root: Path, revision: str) -> bool:
     }
     for remote in sorted(remotes):
         try:
-            result = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(repo_root),
-                    "merge-base",
-                    "--is-ancestor",
-                    revision,
-                    f"{remote}/main",
-                ],
+            result = _run_trusted_git(
+                repo_root,
+                "merge-base",
+                "--is-ancestor",
+                revision,
+                f"{remote}/main",
                 capture_output=True,
                 timeout=10,
             )
@@ -497,17 +513,13 @@ def _git_optional_skill_files(
             allow_nested=True,
         )
         prefix = f"optional-skills/{safe_rel}"
-        archive = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo_root),
-                "archive",
-                "--format=tar",
-                match.group(1),
-                "--",
-                prefix,
-            ],
+        archive = _run_trusted_git(
+            repo_root,
+            "archive",
+            "--format=tar",
+            match.group(1),
+            "--",
+            prefix,
             check=True,
             capture_output=True,
             timeout=30,
@@ -1061,6 +1073,9 @@ class GitHubSource(SkillSource):
         # Survives within a single search/install flow, avoiding redundant API calls.
         self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
         self._tree_revisions: Dict[str, str] = {}
+        self._trusted_tree_cache: Dict[
+            str, Tuple[str, List[dict], str]
+        ] = {}
         # Per-repo cache of the optional skills.sh.json grouping sidecar,
         # mapping skill_name -> human-readable grouping title. ``None`` means
         # "fetched, no sidecar"; a missing key means "not fetched yet".
@@ -1346,6 +1361,86 @@ class GitHubSource(SkillSource):
         self._tree_cache[repo] = (default_branch, entries)
         return (default_branch, entries)
 
+    @staticmethod
+    def _trusted_github_get(
+        url: str,
+        *,
+        params: Optional[Dict] = None,
+        accept: str = "application/vnd.github+json",
+        timeout: float = 15.0,
+    ) -> Optional["httpx.Response"]:
+        """Fetch official GitHub data without env proxies or redirects."""
+        try:
+            with httpx.Client(
+                trust_env=False,
+                follow_redirects=False,
+                timeout=timeout,
+                headers={
+                    "Accept": accept,
+                    "User-Agent": "hermes-agent-skills-origin-verifier",
+                },
+            ) as client:
+                return client.get(url, params=params)
+        except httpx.HTTPError:
+            return None
+
+    def _get_trusted_repo_tree(
+        self,
+        repo: str,
+    ) -> Optional[Tuple[str, List[dict], str]]:
+        """Resolve an official tree and commit through hardened GitHub calls."""
+        if repo != "NousResearch/hermes-agent":
+            return None
+        cached = self._trusted_tree_cache.get(repo)
+        if cached is not None:
+            return cached
+        repo_url = f"https://api.github.com/repos/{repo}"
+        response = self._trusted_github_get(repo_url)
+        if response is None or response.status_code != 200:
+            return None
+        try:
+            default_branch = response.json().get("default_branch", "main")
+        except (ValueError, AttributeError):
+            return None
+        if not isinstance(default_branch, str) or not default_branch:
+            return None
+        commit_response = self._trusted_github_get(
+            f"{repo_url}/commits/{default_branch}"
+        )
+        if commit_response is None or commit_response.status_code != 200:
+            return None
+        try:
+            commit_data = commit_response.json()
+            revision = commit_data.get("sha")
+            tree_revision = commit_data.get("commit", {}).get("tree", {}).get("sha")
+        except (ValueError, AttributeError):
+            return None
+        if not (
+            isinstance(revision, str)
+            and re.fullmatch(r"[0-9a-f]{40}", revision)
+            and isinstance(tree_revision, str)
+            and re.fullmatch(r"[0-9a-f]{40}", tree_revision)
+            and _github_commit_is_official(revision)
+        ):
+            return None
+        tree_response = self._trusted_github_get(
+            f"{repo_url}/git/trees/{tree_revision}",
+            params={"recursive": "1"},
+            timeout=30.0,
+        )
+        if tree_response is None or tree_response.status_code != 200:
+            return None
+        try:
+            tree_data = tree_response.json()
+        except ValueError:
+            return None
+        entries = tree_data.get("tree", [])
+        if tree_data.get("truncated") or not isinstance(entries, list):
+            return None
+        result = (default_branch, entries, revision)
+        self._trusted_tree_cache[repo] = result
+        return result
+
     def _check_rate_limit_response(self, resp: "httpx.Response") -> None:
         """Flag the instance as rate-limited when GitHub returns 403 + exhausted quota."""
         if resp.status_code in (403, 429):
@@ -1574,14 +1669,27 @@ class GitHubSource(SkillSource):
         path: str,
         *,
         revision: str = "",
+        trusted: bool = False,
     ) -> Optional[bytes]:
         """Fetch exact file bytes from GitHub without text decoding."""
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
-        resp = self._github_get(
-            url,
-            params={"ref": revision} if revision else None,
-            headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
-        )
+        if trusted:
+            if (
+                repo != "NousResearch/hermes-agent"
+                or not _github_commit_is_official(revision)
+            ):
+                return None
+            resp = self._trusted_github_get(
+                url,
+                params={"ref": revision},
+                accept="application/vnd.github.v3.raw",
+            )
+        else:
+            resp = self._github_get(
+                url,
+                params={"ref": revision} if revision else None,
+                headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
+            )
         if resp is not None and resp.status_code == 200:
             return resp.content
         return None
@@ -4043,11 +4151,10 @@ class OptionalSkillSource(SkillSource):
         # install scripts, LICENSE, tests/). GitHubSource.fetch() would only
         # pull SKILL.md + referenced support dirs, silently dropping files the
         # local-checkout path preserves.
-        tree = github._get_repo_tree(self.OFFICIAL_REPO)
+        tree = github._get_trusted_repo_tree(self.OFFICIAL_REPO)
         if tree is None:
             return None
-        _branch, entries = tree
-        revision = github._tree_revisions.get(self.OFFICIAL_REPO, "")
+        _branch, entries, revision = tree
         verified_revision = (
             revision
             if isinstance(revision, str)
@@ -4070,6 +4177,7 @@ class OptionalSkillSource(SkillSource):
                 self.OFFICIAL_REPO,
                 item_path,
                 revision=revision,
+                trusted=True,
             )
             if content is None:
                 logger.warning("Live-repo optional skill fetch failed for %s", item_path)
@@ -4111,9 +4219,9 @@ class OptionalSkillSource(SkillSource):
             return cached
 
         dirs: Dict[str, bool] = {}
-        tree = self._get_github()._get_repo_tree(self.OFFICIAL_REPO)
+        tree = self._get_github()._get_trusted_repo_tree(self.OFFICIAL_REPO)
         if tree is not None:
-            _branch, entries = tree
+            _branch, entries, _revision = tree
             prefix = f"{self.OPTIONAL_SKILLS_PREFIX}/"
             suffix = "/SKILL.md"
             for item in entries:
@@ -4611,6 +4719,12 @@ def install_from_quarantine(
             raise ValueError("Verified install staging differs from security scan")
         shutil.rmtree(scanned_path, ignore_errors=True)
 
+    final_install_dir = _resolve_lock_install_path(
+        install_rel_path,
+        safe_skill_name,
+    )
+    if final_install_dir != install_dir:
+        raise ValueError("Install destination changed during verification")
     install_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(quarantine_path), str(install_dir))
 

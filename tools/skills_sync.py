@@ -449,6 +449,16 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
     repairs already-mutated/reorganized skills by backing up matching active
     copies and copying the official optional source into its canonical path.
     """
+    if restore and name in {"all", "*"}:
+        return {
+            "ok": False,
+            "message": (
+                "Bulk restore is not atomic; restore official skills one at a time."
+            ),
+            "restored": [],
+            "backfilled": [],
+            "backed_up": [],
+        }
     optional_dir = _get_optional_dir()
     origin_identity = _optional_root_identity(optional_dir)
     if not origin_identity:
@@ -470,6 +480,8 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
             return {"ok": False, "message": f"Official optional skill not found: {name}", "restored": [], "backfilled": [], "backed_up": []}
         targets = [target]
 
+    from tools.skills_hub import _resolve_lock_install_path
+
     verified_targets = []
     for folder_name, install_path, src in targets:
         identifier = f"official/{install_path}"
@@ -482,7 +494,6 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                 "backfilled": [],
                 "backed_up": [],
             }
-        from tools.skills_hub import _resolve_lock_install_path
 
         try:
             dest = _resolve_lock_install_path(
@@ -566,6 +577,19 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                     }
                 backed_up.append(_move_to_restore_backup(dest, backup_root))
             if not dest.exists():
+                final_dest = _resolve_lock_install_path(
+                    install_path,
+                    folder_name,
+                    skills_dir=_skills_dir(),
+                )
+                if final_dest != dest:
+                    return {
+                        "ok": False,
+                        "message": f"Restore destination changed for: {folder_name}",
+                        "restored": restored,
+                        "backfilled": [],
+                        "backed_up": backed_up,
+                    }
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 with tempfile.TemporaryDirectory(
                     prefix=".restore-stage-",

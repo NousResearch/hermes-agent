@@ -758,6 +758,68 @@ class TestAppendAuditLog:
 
 
 class TestOptionalSkillSourceMetadata:
+    def test_git_archive_ignores_replace_refs(self, monkeypatch, tmp_path):
+        import subprocess
+        import tools.skills_hub as hub
+
+        repo = tmp_path / "repo"
+        skill = repo / "optional-skills" / "devops" / "demo"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Official bytes\n")
+        for command in (
+            ["git", "init", "-q"],
+            ["git", "config", "user.name", "Test"],
+            ["git", "config", "user.email", "test@example.invalid"],
+            ["git", "add", "optional-skills"],
+            ["git", "commit", "-qm", "official"],
+        ):
+            subprocess.run(command, cwd=repo, check=True)
+        official_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(
+            [
+                "git", "remote", "add", "upstream",
+                "https://github.com/NousResearch/hermes-agent.git",
+            ],
+            cwd=repo,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/upstream/main", official_sha],
+            cwd=repo,
+            check=True,
+        )
+        (skill / "SKILL.md").write_text("# Attacker replacement\n")
+        subprocess.run(["git", "add", "optional-skills"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-qm", "attacker"], cwd=repo, check=True
+        )
+        attacker_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "replace", official_sha, attacker_sha], cwd=repo, check=True
+        )
+        monkeypatch.setattr(hub, "_github_commit_is_official", lambda _sha: True)
+
+        files = hub._git_optional_skill_files(
+            repo,
+            "devops/demo",
+            f"git:NousResearch/hermes-agent@{official_sha}",
+        )
+
+        assert files is not None
+        assert files["SKILL.md"] == b"# Official bytes\n"
+
     def test_github_commit_authority_requires_exact_server_sha(
         self, monkeypatch
     ):
@@ -1195,6 +1257,9 @@ class TestOptionalSkillSourceLiveRepoFallback:
             contents[rel_path] = data
         fake = MagicMock()
         fake._get_repo_tree.return_value = ("main", entries)
+        fake._get_trusted_repo_tree.return_value = (
+            "main", entries, "d" * 40
+        )
         fake._tree_revisions = {"NousResearch/hermes-agent": "d" * 40}
         fake._fetch_file_bytes.side_effect = (
             lambda repo, path, **_kwargs: contents.get(path)
@@ -1226,6 +1291,7 @@ class TestOptionalSkillSourceLiveRepoFallback:
             "NousResearch/hermes-agent",
             "optional-skills/software-development/ast-grep/SKILL.md",
             revision="d" * 40,
+            trusted=True,
         )
         # FULL directory arrives — including root-level files GitHubSource.fetch drops
         assert bundle.files["install.sh"] == b"#!/bin/sh\n"
@@ -1234,9 +1300,11 @@ class TestOptionalSkillSourceLiveRepoFallback:
     def test_live_repo_requires_immutable_commit_revision(self, tmp_path):
         src = self._make_source(tmp_path, ["security/scanner"])
         src._github = self._fake_github_with_tree(["security/scanner"])
-        src._github._tree_revisions = {
-            "NousResearch/hermes-agent": "main"
-        }
+        src._github._get_trusted_repo_tree.return_value = (
+            "main",
+            src._github._get_trusted_repo_tree.return_value[1],
+            "main",
+        )
 
         bundle = src.fetch("official/security/scanner")
 
@@ -1384,6 +1452,60 @@ def test_install_rejects_quarantine_changed_after_scan(tmp_path):
             )
 
     assert not (skills_dir / "demo").exists()
+
+
+def test_install_does_not_follow_parent_swapped_after_resolution(
+    monkeypatch, tmp_path
+):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    skills_dir = tmp_path / "skills"
+    category = skills_dir / "devops"
+    category.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    quarantine_root = skills_dir / ".hub" / "quarantine"
+    q_dir = quarantine_root / "demo"
+    q_dir.mkdir(parents=True)
+    (q_dir / "SKILL.md").write_text("# Demo\n")
+    bundle = hub.SkillBundle(
+        name="demo",
+        files={"SKILL.md": "# Demo\n"},
+        source="community",
+        identifier="owner/repo/demo",
+        trust_level="community",
+    )
+    result = guard.ScanResult(
+        skill_name="demo",
+        source="community",
+        trust_level="community",
+        verdict="safe",
+    )
+    original_resolve = hub._resolve_lock_install_path
+    swapped = False
+
+    def _resolve_then_swap(*args, **kwargs):
+        nonlocal swapped
+        resolved = original_resolve(*args, **kwargs)
+        if not swapped:
+            swapped = True
+            category.rename(skills_dir / "devops-original")
+            try:
+                category.symlink_to(outside, target_is_directory=True)
+            except OSError as exc:
+                pytest.skip(f"directory symlinks unavailable: {exc}")
+        return resolved
+
+    monkeypatch.setattr(hub, "_resolve_lock_install_path", _resolve_then_swap)
+    with patch.object(hub, "SKILLS_DIR", skills_dir), \
+            patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+        with pytest.raises((OSError, ValueError)):
+            hub.install_from_quarantine(
+                q_dir, "demo", "devops", bundle, result
+            )
+
+    assert not (outside / "demo").exists()
 
 
 class TestQuarantineBundleBinaryAssets:

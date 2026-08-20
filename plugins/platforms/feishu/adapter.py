@@ -3079,7 +3079,7 @@ class FeishuAdapter(BasePlatformAdapter):
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
 
-        synthetic_text = f"/card {action_tag}"
+        synthetic_text = f"🖱️ 卡片按钮点击: {action_tag}"
         if action_value:
             try:
                 synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
@@ -3098,12 +3098,13 @@ class FeishuAdapter(BasePlatformAdapter):
             thread_id=None,
             user_id_alt=sender_profile["user_id_alt"],
         )
+        real_message_id = str(getattr(context, "open_message_id", "") or "")
         synthetic_event = MessageEvent(
             text=synthetic_text,
-            message_type=MessageType.COMMAND,
+            message_type=MessageType.TEXT,
             source=source,
             raw_message=data,
-            message_id=token or str(uuid.uuid4()),
+            message_id=real_message_id or token or str(uuid.uuid4()),
             channel_prompt=self._resolve_channel_prompt(chat_id),
             timestamp=datetime.now(),
         )

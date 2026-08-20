@@ -287,7 +287,7 @@ CAMOFOX_ADOPT_EXISTING_TAB=true
 /browser disconnect              # Detach and return to cloud/local mode
 ```
 
-若浏览器尚未以远程调试模式运行，Hermes 将尝试自动启动支持的 Chromium 系浏览器并使用 `--remote-debugging-port=9222`。检测范围包括 Brave、Google Chrome、Chromium 和 Microsoft Edge，以及常见 Linux 安装路径（如 `/opt/brave-bin/brave` 和 `/snap/bin/brave`）。
+若浏览器尚未以远程调试模式运行，Hermes 将尝试自动启动支持的 Chromium 系浏览器并使用 `--remote-debugging-port=9222`。检测范围包括 Brave、Brave Origin/Nightly、Google Chrome、Chromium 和 Microsoft Edge，以及常见 Linux 安装路径和二进制名称（如 `brave-origin`、`brave-origin-nightly`、`/opt/brave.com/brave-origin/brave-origin`、`/opt/brave.com/brave-origin-nightly/brave-origin`、`/opt/brave-bin/brave` 和 `/snap/bin/brave`）。
 
 :::tip
 要手动启动带 CDP 的 Chromium 系浏览器，请使用专用的 user-data-dir，确保即使浏览器已以普通 profile 运行，调试端口也能正常开启：

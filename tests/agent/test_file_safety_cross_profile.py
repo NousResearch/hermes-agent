@@ -146,6 +146,90 @@ class TestClassifyCrossProfileTarget:
 
 
 # ---------------------------------------------------------------------------
+# Early-return regression tests (PR #48784)
+# ---------------------------------------------------------------------------
+# The fix in d7e30dcd2 added a path-normalization early return before the
+# name comparison. When active_profile is a named profile and the resolved
+# target path lives under the active profile's home directory, the guard
+# returns None immediately — even if the name inference would have matched
+# a different profile. These tests verify the early return is correct and
+# does not accidentally suppress genuine cross-profile warnings.
+# ---------------------------------------------------------------------------
+
+
+class TestCrossProfileGuardEarlyReturn:
+    """Regression: the path-normalization early return must not suppress
+    genuine cross-profile warnings, and must correctly identify in-profile
+    writes when paths resolve through symlinks or relative prefixes."""
+
+    def test_same_profile_path_returns_none_through_early_return(
+        self, fake_hermes, monkeypatch
+    ):
+        """When active_profile is a named profile and the target path
+        resolves inside the active profile's home, the early return fires
+        and returns None — even when the path doesn't go through the
+        name-comparison path."""
+        import agent.file_safety as fs
+
+        _set_active_home(monkeypatch, fake_hermes["security_home"])
+        # Target inside the active profile's own home directory
+        result = fs.classify_cross_profile_target(
+            str(fake_hermes["security_home"] / "skills" / "foo" / "SKILL.md")
+        )
+        assert result is None
+
+    def test_other_profile_target_is_still_blocked(
+        self, fake_hermes, monkeypatch
+    ):
+        """A genuine path into another profile's scoped area must still
+        be flagged — the early return must not be too broad."""
+        _set_active_home(monkeypatch, fake_hermes["security_home"])
+        from agent.file_safety import classify_cross_profile_target
+
+        result = classify_cross_profile_target(
+            str(fake_hermes["coder_home"] / "skills" / "foo" / "SKILL.md")
+        )
+        assert result is not None
+        assert result["target_profile"] == "coder"
+
+    def test_symlink_to_other_profile_does_not_early_return(
+        self, fake_hermes, monkeypatch, tmp_path
+    ):
+        """A symlink pointing to a different profile's area must still
+        be flagged — the early return uses the resolved path and must
+        detect that the resolved path is not inside the active profile."""
+        import agent.file_safety as fs
+
+        _set_active_home(monkeypatch, fake_hermes["security_home"])
+
+        # Symlink from tmp_path to the coder profile's skills
+        symlink = tmp_path / "link-to-coder-skills"
+        symlink.symlink_to(fake_hermes["coder_home"] / "skills")
+
+        result = fs.classify_cross_profile_target(
+            str(symlink / "some-skill.md")
+        )
+        assert result is not None
+        assert result["target_profile"] == "coder"
+
+    def test_default_profile_skips_early_return_when_writing_named_profile(
+        self, fake_hermes, monkeypatch
+    ):
+        """When active_profile is 'default', the early return is skipped
+        (active_profile != 'default' is False), so the name comparison
+        must still detect cross-profile writes correctly."""
+        _set_active_home(monkeypatch, fake_hermes["default_home"])
+        from agent.file_safety import classify_cross_profile_target
+
+        result = classify_cross_profile_target(
+            str(fake_hermes["security_home"] / "skills" / "foo" / "SKILL.md")
+        )
+        assert result is not None
+        assert result["active_profile"] == "default"
+        assert result["target_profile"] == "hermes-security"
+
+
+# ---------------------------------------------------------------------------
 # get_cross_profile_warning
 # ---------------------------------------------------------------------------
 

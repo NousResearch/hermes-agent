@@ -655,18 +655,41 @@ class TestBuildMessageEvent:
 
 
     @pytest.mark.asyncio
-    async def test_group_keeps_thread_id_on_source(self, adapter):
-        """In group spaces, threads are real conversational containers —
-        keep thread_id on the source from the FIRST message so different
-        threads get isolated sessions (Telegram forum / Discord thread
-        parity)."""
+    async def test_group_first_message_uses_main_session(self, adapter):
+        """A top-level space message uses the space-level session key."""
         env = _make_chat_envelope(text="ping", thread_name="spaces/G/threads/T1")
         env["chat"]["messagePayload"]["space"]["spaceType"] = "SPACE"
         env["chat"]["messagePayload"]["message"]["space"]["spaceType"] = "SPACE"
+        env["chat"]["messagePayload"]["space"]["name"] = "spaces/G"
+        env["chat"]["messagePayload"]["message"]["space"]["name"] = "spaces/G"
         msg = env["chat"]["messagePayload"]["message"]
         event = await adapter._build_message_event(msg, env)
         assert event.source.chat_type == "group"
-        assert event.source.thread_id == "spaces/G/threads/T1"
+        assert event.source.thread_id is None
+        assert "spaces/G" not in adapter._last_inbound_thread
+
+    @pytest.mark.asyncio
+    async def test_group_second_message_in_same_thread_is_side_thread(self, adapter):
+        """A deliberate reply in an existing thread remains isolated."""
+        env1 = _make_chat_envelope(text="first", thread_name="spaces/G/threads/T1")
+        env1["chat"]["messagePayload"]["space"]["spaceType"] = "SPACE"
+        env1["chat"]["messagePayload"]["message"]["space"]["spaceType"] = "SPACE"
+        env1["chat"]["messagePayload"]["space"]["name"] = "spaces/G"
+        env1["chat"]["messagePayload"]["message"]["space"]["name"] = "spaces/G"
+        await adapter._build_message_event(
+            env1["chat"]["messagePayload"]["message"], env1
+        )
+
+        env2 = _make_chat_envelope(text="reply", thread_name="spaces/G/threads/T1")
+        env2["chat"]["messagePayload"]["space"]["spaceType"] = "SPACE"
+        env2["chat"]["messagePayload"]["message"]["space"]["spaceType"] = "SPACE"
+        env2["chat"]["messagePayload"]["space"]["name"] = "spaces/G"
+        env2["chat"]["messagePayload"]["message"]["space"]["name"] = "spaces/G"
+        event2 = await adapter._build_message_event(
+            env2["chat"]["messagePayload"]["message"], env2
+        )
+        assert event2.source.thread_id == "spaces/G/threads/T1"
+        assert adapter._last_inbound_thread["spaces/G"] == "spaces/G/threads/T1"
 
 
 # ===========================================================================

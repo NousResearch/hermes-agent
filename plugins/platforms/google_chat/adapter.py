@@ -1889,9 +1889,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
         #   message). Isolate session by chat_id+thread_id, AND keep
         #   the bot's reply inside that thread.
         #
-        # For groups, threads ARE meaningful conversational containers
-        # (Telegram forum / Discord thread parity); always isolate AND
-        # always reply in-thread.
+        # Google Chat spaces are inline-threaded: the API assigns a fresh
+        # thread to every top-level message. Treat the first message in a
+        # thread as part of the space-level conversation, while a thread
+        # that already has a message remains an intentional side-thread.
         if chat_type == "dm":
             is_side_thread = prev_thread_count > 0
             session_thread_id = thread_name if is_side_thread else None
@@ -1903,10 +1904,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
             elif space_name:
                 self._last_inbound_thread.pop(space_name, None)
         else:
-            session_thread_id = thread_name
-            # Groups always reply in-thread.
-            if thread_name and space_name:
+            is_side_thread = prev_thread_count > 0
+            session_thread_id = thread_name if is_side_thread else None
+            if thread_name and space_name and is_side_thread:
                 self._last_inbound_thread[space_name] = thread_name
+            elif space_name:
+                self._last_inbound_thread.pop(space_name, None)
 
         source = self.build_source(
             chat_id=space_name,

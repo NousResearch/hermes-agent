@@ -313,7 +313,7 @@ function EnvVarRow({
             size="sm"
             onClick={() => onSave(varKey)}
             prefix={<Save />}
-            disabled={saving === varKey || !edits[varKey]}
+            disabled={saving === varKey || (!edits[varKey] && !info.is_set)}
           >
             {saving === varKey ? "..." : t.common.save}
           </Button>
@@ -682,6 +682,11 @@ export default function EnvPage() {
 
   const handleSave = async (key: string) => {
     const value = edits[key];
+    // Empty value on a set key → treat as delete (GH-72552).
+    if (!value && vars?.[key]?.is_set) {
+      keyClear.requestDelete(key);
+      return;
+    }
     if (!value) return;
     setSaving(key);
     try {

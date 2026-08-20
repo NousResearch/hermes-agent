@@ -415,7 +415,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
-    if "memory" in agent.valid_tool_names:
+    # MEMORY_GUIDANCE instructs the model to save facts to the built-in
+    # MEMORY.md/USER.md stores. With both disabled in config no store is built,
+    # so the guidance would steer the model at a tool whose every call returns
+    # "Memory is not available". Defaults to True for the rare code paths that
+    # build an agent view without going through agent_init.
+    builtin_memory_active = getattr(agent, "_memory_enabled", True) or getattr(
+        agent, "_user_profile_enabled", True
+    )
+    if "memory" in agent.valid_tool_names and builtin_memory_active:
         tool_guidance.append(MEMORY_GUIDANCE)
     if "session_search" in agent.valid_tool_names:
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)

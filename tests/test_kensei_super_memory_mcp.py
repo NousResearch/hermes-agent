@@ -17,7 +17,7 @@ import pytest
 # Pre-import the real mcp SDK before adding the scripts directory to sys.path.
 # The scripts dir contains a local mcp/ package that shadows the installed SDK.
 import mcp as _real_mcp
-_SCRIPTS_DIR = Path("/home/kensei/.hermes/scripts")
+_SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 # Pre-import every real mcp submodule the codebase uses so a later
 # ``import mcp.shared`` / ``import mcp.types`` cannot resolve from the shadow
 # package once scripts/ is on sys.path (the top-level restore alone leaves

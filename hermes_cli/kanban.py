@@ -1059,6 +1059,47 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_repair.add_argument("--json", action="store_true",
                           help="Emit the repair report as JSON")
 
+    # --- Review-flow subcommands ----------------------------------------
+    p_req_review = sub.add_parser(
+        "request-review",
+        help="Move a task into the review column for approval",
+        description=(
+            "Transition a running/ready task into the first-class review "
+            "phase. The current implementer and resolved reviewer are "
+            "recorded so an autonomous reviewer can route requested "
+            "changes back to the right profile."
+        ),
+    )
+    p_req_review.add_argument("task_id", help="Task to move to review")
+    p_req_review.add_argument("--summary", help="Handoff summary for the reviewer")
+    p_req_review.add_argument("--reviewer", help="Reviewer profile to assign")
+    p_req_review.add_argument("--metadata", help="JSON object of handoff metadata")
+    p_req_review.add_argument("--force", action="store_true",
+                              help="Override a live worker claim")
+
+    p_req_changes = sub.add_parser(
+        "request-changes",
+        help="Return an active review to its implementer for rework",
+        description=(
+            "Finish an active review run and route the task back for "
+            "rework with a reason. Only valid for a run claimed from "
+            "the review column."
+        ),
+    )
+    p_req_changes.add_argument("task_id", help="Task to return for rework")
+    p_req_changes.add_argument("reason", nargs="+", help="Reason for requesting changes")
+
+    p_reopen_review = sub.add_parser(
+        "reopen-review",
+        help="Reopen a review task for re-execution",
+        description=(
+            "Transition a review task back to ready (or todo) so the "
+            "implementer re-runs."
+        ),
+    )
+    p_reopen_review.add_argument("task_ids", nargs="+", help="Task IDs to reopen")
+    p_reopen_review.add_argument("--reason", nargs="+", help="Reason comment for the reopen")
+
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
     return kanban_parser
 
@@ -2784,6 +2825,23 @@ def _cmd_reopen_review(args: argparse.Namespace) -> int:
     if not ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
+    raw_reason = getattr(args, "reason", None)
+    reason: Optional[str] = None
+    if raw_reason:
+        reason = str(kb.redact_review_value(" ".join(raw_reason).strip())).strip() or None
+    exit_code = 0
+    with kb.connect_closing() as conn:
+        for tid in ids:
+            if not kb.reopen_review_task(conn, tid):
+                print(f"cannot reopen {tid}: not in review", file=sys.stderr)
+                exit_code = 1
+                continue
+            if reason:
+                kb.add_comment(conn, tid, _profile_author(), reason)
+            print(f"Reopened {tid}")
+    return exit_code
+
+
 def _cmd_promote(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     author = _profile_author()

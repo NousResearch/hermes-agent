@@ -233,7 +233,7 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
     it through.
     """
     try:
-        from hermes_cli.plugins import invoke_hook
+        from hermes_cli.lifecycle import invoke_hook
         from hermes_cli.profiles import get_active_profile_name
         try:
             profile_name = get_active_profile_name()
@@ -4990,6 +4990,7 @@ def _recompute_ready_locked(
             (task_id,),
         ).fetchall()
         if all(p["status"] in ("done", "archived") for p in parents):
+            resume_status = _resume_status_from_events(conn, task_id)
             if cur_status == "blocked":
                 failures = int(row["consecutive_failures"] or 0)
                 task_limit = row["max_retries"]
@@ -5000,16 +5001,19 @@ def _recompute_ready_locked(
                 if failures >= effective_limit:
                     continue
                 conn.execute(
-                    "UPDATE tasks SET status = 'ready' "
+                    "UPDATE tasks SET status = ? "
                     "WHERE id = ? AND status = 'blocked'",
-                    (task_id,),
+                    (resume_status, task_id),
                 )
             else:
                 conn.execute(
-                    "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
-                    (task_id,),
+                    "UPDATE tasks SET status = ? WHERE id = ? AND status = 'todo'",
+                    (resume_status, task_id),
                 )
-            _append_event(conn, task_id, "promoted", None)
+            _append_event(
+                conn, task_id, "promoted",
+                {"status": resume_status} if resume_status != "ready" else None,
+            )
             promoted += 1
     return promoted
 
@@ -7765,6 +7769,8 @@ def request_review(
     expected_run_id: Optional[int] = None,
     force: bool = False,
     with_reason: bool = False,
+    artefacts: Optional[Iterable[str]] = None,
+    next_steps: Optional[str] = None,
 ):
     """Transition implementation work into the first-class review phase.
 
@@ -7781,6 +7787,10 @@ def request_review(
     worker's ``claim_lock``/``worker_pid``. Workers prove ownership by passing
     their own run id as ``expected_run_id`` (unchanged).
 
+    ``artefacts`` and ``next_steps`` provide a structured handoff for the
+    worker tool surface (``_handle_request_review``).  When supplied, they are
+    folded into the run metadata and review event payload.
+
     Returns ``bool`` by default. With ``with_reason=True`` returns
     ``(ok, reason)`` mirroring :func:`request_changes` — ``reason`` is a
     diagnostic string on failure, ``None`` on success.
@@ -7790,7 +7800,14 @@ def request_review(
         return (ok, reason) if with_reason else ok
 
     summary = redact_review_value(summary)
-    metadata = redact_review_value(metadata)
+    metadata = dict(redact_review_value(metadata) or {})
+    # Fold structured handoff fields (worker tool surface) into metadata.
+    if artefacts is not None:
+        artefacts_list = [str(a).strip() for a in artefacts if str(a).strip()]
+        if artefacts_list:
+            metadata["artefacts"] = artefacts_list
+    if isinstance(next_steps, str) and next_steps.strip():
+        metadata["next_steps"] = next_steps.strip()
     with write_txn(conn):
         if not _parents_satisfied(conn, task_id):
             return _ret(False, "parent dependencies are not satisfied")
@@ -8431,84 +8448,6 @@ def _should_review(
     digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()
     sample_bucket = int(digest, 16) % sample_rate
     return sample_bucket == 0
-
-
-
-def request_review(
-    conn: sqlite3.Connection,
-    task_id: str,
-    *,
-    summary: str,
-    artefacts: Optional[Iterable[str]] = None,
-    next_steps: Optional[str] = None,
-    expected_run_id: Optional[int] = None,
-) -> bool:
-    """Transition ``running -> review`` with a structured handoff.
-
-    Returns ``True`` on success, ``False`` when the task is not in
-    ``running`` (or the optimistic ``expected_run_id`` did not match).
-    Ends the current run with ``outcome='review_requested'`` so attempt
-    history records the handoff and ``latest_worker_profile`` can read
-    the reviewer's worker back.
-
-    The ``review`` column is unclaimed (claim_lock cleared) so the next
-    dispatcher tick picks it up via ``claim_review_task``.
-    """
-    if not summary or not str(summary).strip():
-        raise ValueError("summary is required")
-    artefacts_list: list[str] = []
-    if artefacts is not None:
-        for raw in artefacts:
-            s = str(raw).strip()
-            if s:
-                artefacts_list.append(s)
-    payload = {
-        "summary": str(summary).strip(),
-        "artefacts": artefacts_list,
-        "next_steps": (next_steps.strip() if isinstance(next_steps, str) and next_steps.strip() else None),
-    }
-    with write_txn(conn):
-        if expected_run_id is None:
-            cur = conn.execute(
-                """
-                UPDATE tasks
-                   SET status        = 'review',
-                       claim_lock    = NULL,
-                       claim_expires = NULL,
-                       worker_pid    = NULL
-                 WHERE id = ? AND status = 'running'
-                """,
-                (task_id,),
-            )
-        else:
-            cur = conn.execute(
-                """
-                UPDATE tasks
-                   SET status        = 'review',
-                       claim_lock    = NULL,
-                       claim_expires = NULL,
-                       worker_pid    = NULL
-                 WHERE id = ? AND status = 'running'
-                   AND current_run_id = ?
-                """,
-                (task_id, int(expected_run_id)),
-            )
-        if cur.rowcount != 1:
-            return False
-        run_id = _end_run(
-            conn, task_id,
-            outcome="review_requested",
-            status="review_requested",
-            summary=payload["summary"],
-            metadata={
-                "artefacts": artefacts_list,
-                "next_steps": payload["next_steps"],
-            },
-        )
-        _append_event(
-            conn, task_id, "review_requested", payload, run_id=run_id,
-        )
-        return True
 
 
 def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
@@ -13761,6 +13700,43 @@ def _dispatch_once_locked(
             continue
         if not _is_profile_spawnable(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
+            continue
+        # Per-profile concurrency cap — mirrors the ready-lane check so a
+        # fan-out of review tasks for the same reviewer profile is bounded.
+        row_assignee = row["assignee"]
+        if _per_profile_cap is not None:
+            current = _per_profile_running.get(row_assignee, 0)
+            if current >= _per_profile_cap:
+                result.skipped_per_profile_capped.append(
+                    (row["id"], row_assignee, current)
+                )
+                continue
+        # Respawn guard (lane="review"): rate-limit cooldown and auth-blocker
+        # still apply; recent_success and active_pr are skipped (upstream
+        # commit a235d1917e — these are the *inputs* to a review handoff).
+        guard_reason = check_respawn_guard(conn, row["id"], lane="review")
+        if guard_reason is not None:
+            result.respawn_guarded.append((row["id"], guard_reason))
+            if not dry_run:
+                with write_txn(conn):
+                    _append_event(
+                        conn, row["id"], "respawn_guarded",
+                        {"reason": guard_reason, "lane": "review"},
+                    )
+            continue
+        if dry_run:
+            result.spawned.append((row["id"], row["assignee"] or "", ""))
+            _tick_started += 1
+            spawned += 1
+            _review_spawned += 1
+            # Increment per-profile counter even in dry_run so the cap
+            # check sees the would-be spawn on subsequent iterations.
+            if _per_profile_cap is not None and row["assignee"]:
+                _per_profile_running[row["assignee"]] = (
+                    _per_profile_running.get(row["assignee"], 0) + 1
+                )
+            if _daily_budget > 0:
+                _consume_daily_spawn(conn)
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:

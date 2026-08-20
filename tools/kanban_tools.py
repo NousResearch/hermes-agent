@@ -996,6 +996,8 @@ def _handle_request_review(args: dict, **kw) -> str:
                 reviewer=reviewer,
                 expected_run_id=_worker_run_id(tid),
                 with_reason=True,
+                artefacts=args.get("artefacts") or args.get("artifacts") or None,
+                next_steps=args.get("next_steps"),
             )
             if not ok:
                 detail = fail_reason or "unknown id or not in running/ready"
@@ -1727,50 +1729,6 @@ def _handle_unblock(args: dict, **kw) -> str:
         return tool_error(f"kanban_unblock: {e}")
 
 
-def _handle_request_review(args: dict, **kw) -> str:
-    """Worker tool: flip the current task to the review column."""
-    tid = _default_task_id(args.get("task_id"))
-    if not tid:
-        return tool_error("task_id is required (or set HERMES_KANBAN_TASK)")
-    ownership_err = _enforce_worker_task_ownership(str(tid))
-    if ownership_err:
-        return ownership_err
-    summary = args.get("summary")
-    if not summary or not str(summary).strip():
-        return tool_error("summary is required")
-    artefacts = args.get("artefacts") or args.get("artifacts") or []
-    if isinstance(artefacts, str):
-        artefacts = [artefacts]
-    if not isinstance(artefacts, (list, tuple)):
-        return tool_error("artefacts must be a list of strings")
-    next_steps = args.get("next_steps")
-    board = args.get("board")
-    expected_run_id = _worker_run_id(str(tid))
-    try:
-        kb, conn = _connect(board=board)
-        try:
-            ok = kb.request_review(
-                conn, str(tid),
-                summary=str(summary),
-                artefacts=artefacts,
-                next_steps=next_steps,
-                expected_run_id=expected_run_id,
-            )
-            if not ok:
-                return tool_error(
-                    f"could not request review for {tid} (not running or "
-                    "run id mismatch)"
-                )
-            return _ok(task_id=str(tid), status="review")
-        finally:
-            conn.close()
-    except ValueError as e:
-        return tool_error(f"kanban_request_review: {e}")
-    except Exception as e:
-        logger.exception("kanban_request_review failed")
-        return tool_error(f"kanban_request_review: {e}")
-
-
 def _approver_profile_from_env() -> Optional[str]:
     raw = os.environ.get("HERMES_PROFILE")
     if not raw:
@@ -2250,6 +2208,23 @@ KANBAN_REQUEST_REVIEW_SCHEMA = {
                 ),
                 "additionalProperties": True,
             },
+            "artefacts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional list of file paths or PR URLs the reviewer "
+                    "should examine. Same shape as kanban_complete's "
+                    "`artifacts`."
+                ),
+            },
+            "next_steps": {
+                "type": "string",
+                "description": (
+                    "Optional follow-up guidance for the reviewer (e.g. "
+                    "'confirm the fallback choice; if approved, chain to "
+                    "security review')."
+                ),
+            },
             "board": _board_schema_prop(),
         },
         "required": ["summary"],
@@ -2646,53 +2621,6 @@ KANBAN_UNBLOCK_SCHEMA = {
             "board": _board_schema_prop(),
         },
         "required": ["task_id"],
-    },
-}
-
-KANBAN_REQUEST_REVIEW_SCHEMA = {
-    "name": "kanban_request_review",
-    "description": (
-        "Worker tool: hand off your current running task to a reviewer "
-        "by flipping its column to 'review'. The dispatcher claims the "
-        "next tick under a reviewer profile (sdlc-review or, if the task "
-        "has a prior rejection, the same reviewer who logged it). The "
-        "reviewer reads `summary`, `artefacts`, and `next_steps` via "
-        "their first kanban_show; no separate JSON-in-comment is needed."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "task_id": {
-                "type": "string",
-                "description": _DESC_TASK_ID_DEFAULT,
-            },
-            "summary": {
-                "type": "string",
-                "description": (
-                    "Human-readable handoff, 1-3 sentences. The reviewer "
-                    "sees this on their first kanban_show."
-                ),
-            },
-            "artefacts": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Optional list of file paths or PR URLs the reviewer "
-                    "should examine. Same shape as kanban_complete's "
-                    "`artifacts`."
-                ),
-            },
-            "next_steps": {
-                "type": "string",
-                "description": (
-                    "Optional follow-up guidance for the reviewer (e.g. "
-                    "'confirm the fallback choice; if approved, chain to "
-                    "security review')."
-                ),
-            },
-            "board": _board_schema_prop(),
-        },
-        "required": ["summary"],
     },
 }
 
@@ -3262,15 +3190,6 @@ registry.register(
     handler=_handle_unblock,
     check_fn=_check_kanban_orchestrator_mode,
     emoji="▶",
-)
-
-registry.register(
-    name="kanban_request_review",
-    toolset="kanban",
-    schema=KANBAN_REQUEST_REVIEW_SCHEMA,
-    handler=_handle_request_review,
-    check_fn=_check_kanban_mode,
-    emoji="🔍",
 )
 
 registry.register(

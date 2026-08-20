@@ -16,7 +16,8 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 # Add the scripts directory to path so we can import the module
-_SCRIPTS_DIR = Path("/home/kensei/.hermes/scripts")
+# Resolve relative to this test file so it works from any checkout / CI runner.
+_SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(_SCRIPTS_DIR))
 
 # ---------------------------------------------------------------------------

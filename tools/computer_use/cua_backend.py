@@ -3427,7 +3427,10 @@ class CuaDriverBackend(ComputerUseBackend):
         return self._run_input_action("scroll", args, delivery_mode, bring_to_front)
 
     # ── Keyboard ───────────────────────────────────────────────────
-    def type_text(self, text: str, *, delivery_mode: Optional[str] = None,
+    def type_text(self, text: str, *, element: Optional[int] = None,
+                  x: Optional[int] = None, y: Optional[int] = None,
+                  delay_ms: Optional[int] = None,
+                  delivery_mode: Optional[str] = None,
                   bring_to_front: bool = False) -> ActionResult:
         pid = self._active_pid
         window_id = self._active_window_id
@@ -3435,6 +3438,13 @@ class CuaDriverBackend(ComputerUseBackend):
             return ActionResult(ok=False, action="type_text",
                                 message="No active window — call capture() first.")
         args: Dict[str, Any] = {"pid": pid, "window_id": window_id, "text": text}
+        if element is not None:
+            args["element_index"] = int(element)
+        elif x is not None and y is not None:
+            args["x"] = int(x)
+            args["y"] = int(y)
+        if delay_ms is not None:
+            args["delay_ms"] = max(0, min(200, int(delay_ms)))
         return self._run_input_action("type_text", args, delivery_mode, bring_to_front)
 
     def key(self, keys: str, *, delivery_mode: Optional[str] = None,

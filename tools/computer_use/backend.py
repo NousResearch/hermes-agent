@@ -179,7 +179,10 @@ class ComputerUseBackend(ABC):
 
     # ── Keyboard ────────────────────────────────────────────────────
     @abstractmethod
-    def type_text(self, text: str, *, delivery_mode: Optional[str] = None,
+    def type_text(self, text: str, *, element: Optional[int] = None,
+                  x: Optional[int] = None, y: Optional[int] = None,
+                  delay_ms: Optional[int] = None,
+                  delivery_mode: Optional[str] = None,
                   bring_to_front: bool = False) -> ActionResult: ...
 
     @abstractmethod

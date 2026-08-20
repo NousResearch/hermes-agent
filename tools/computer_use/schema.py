@@ -132,7 +132,7 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "minimum": 1,
                 "maximum": 1000,
             },
-            # ── click / drag / scroll targeting ────────────────────
+            # ── click / drag / scroll / type targeting ─────────────
             "element": {
                 "type": "integer",
                 "description": (
@@ -209,6 +209,15 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
             "text": {
                 "type": "string",
                 "description": "Text to type (respects the current layout).",
+            },
+            "delay_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 200,
+                "description": (
+                    "Optional delay between characters for action='type'. "
+                    "The driver default is 30ms; ignored by atomic UIA value writes."
+                ),
             },
             "keys": {
                 "type": "string",

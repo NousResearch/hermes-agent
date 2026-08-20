@@ -902,8 +902,17 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action == "type":
+        type_kwargs: Dict[str, Any] = {}
+        coord = args.get("coordinate") or (None, None)
+        if args.get("element") is not None:
+            type_kwargs["element"] = args.get("element")
+        elif coord and coord[0] is not None:
+            type_kwargs["x"], type_kwargs["y"] = coord[0], coord[1]
+        if args.get("delay_ms") is not None:
+            type_kwargs["delay_ms"] = args.get("delay_ms")
         res = backend.type_text(args.get("text", ""),
-                                delivery_mode=delivery_mode, bring_to_front=bring_to_front)
+                                delivery_mode=delivery_mode, bring_to_front=bring_to_front,
+                                **type_kwargs)
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action == "key":

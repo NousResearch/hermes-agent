@@ -244,6 +244,27 @@ class AnthropicTransport(ProviderTransport):
         """Map Anthropic stop_reason to OpenAI finish_reason."""
         return self._STOP_REASON_MAP.get(raw_reason, "stop")
 
+    def replays_stale_thinking(
+        self, *, base_url: str = "", model: str = ""
+    ) -> bool:
+        """Report routes whose preserved-thinking contract replays history."""
+        from agent.anthropic_adapter import (
+            _is_deepseek_anthropic_endpoint,
+            _is_kimi_family_endpoint,
+        )
+
+        return _is_kimi_family_endpoint(base_url, model) or (
+            _is_deepseek_anthropic_endpoint(base_url)
+        )
+
+    def replays_stale_thinking_envelope(
+        self, *, base_url: str = "", model: str = ""
+    ) -> bool:
+        """Kimi replays signed envelopes; DeepSeek strips their signatures."""
+        from agent.anthropic_adapter import _is_kimi_family_endpoint
+
+        return _is_kimi_family_endpoint(base_url, model)
+
 
 # Auto-register on import
 from agent.transports import register_transport  # noqa: E402

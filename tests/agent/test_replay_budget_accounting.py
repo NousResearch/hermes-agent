@@ -111,15 +111,43 @@ class TestTailCutBehavior:
     """The tail cut must protect MORE real transcript when stale turns carry
     heavy thinking — the #73624 symptom was the cut landing early."""
 
-    def _compressor(self):
+    def _compressor(
+        self,
+        *,
+        model="claude-opus-5",
+        base_url="",
+        api_mode="anthropic_messages",
+    ):
         from agent.context_compressor import ContextCompressor
 
         cc = ContextCompressor(
-            model="claude-opus-5",
+            model=model,
+            base_url=base_url,
+            api_mode=api_mode,
             quiet_mode=True,
             config_context_length=200_000,
         )
         return cc
+
+    @staticmethod
+    def _reasoning_details_transcript():
+        msgs = [{"role": "system", "content": "sys"}]
+        for i in range(30):
+            msgs.append({"role": "user", "content": f"question {i}"})
+            msgs.append(
+                {
+                    "role": "assistant",
+                    "content": f"answer {i}",
+                    "reasoning_details": [
+                        {
+                            "type": "thinking",
+                            "thinking": "plan",
+                            "signature": "s" * 4_000,
+                        }
+                    ],
+                }
+            )
+        return msgs
 
     def test_stale_thinking_does_not_shrink_tail(self):
         cc = self._compressor()
@@ -156,3 +184,36 @@ class TestTailCutBehavior:
         # index = more messages in the tail), and strictly more here because
         # the stale thinking dominates each message's old-cost.
         assert cut < old_cut
+
+    def test_kimi_replayed_thinking_envelopes_shrink_protected_tail(self):
+        """Kimi replays every signed reasoning_details block, so its protected
+        tail must be priced from the replayed envelopes rather than the direct
+        Anthropic newest-turn-only exemption."""
+        msgs = self._reasoning_details_transcript()
+        budget = 500
+
+        direct_cut = self._compressor()._find_tail_cut_by_tokens(
+            msgs, 1, token_budget=budget
+        )
+        kimi_cut = self._compressor(
+            model="k3",
+            base_url="https://api.kimi.com/coding",
+        )._find_tail_cut_by_tokens(msgs, 1, token_budget=budget)
+
+        assert kimi_cut > direct_cut
+
+    def test_kimi_model_on_foreign_gateway_charges_replayed_thinking(self):
+        """The request builder identifies proxied Kimi from the model slug;
+        compression accounting must use the same capability knowledge."""
+        msgs = self._reasoning_details_transcript()
+        budget = 500
+
+        direct_cut = self._compressor()._find_tail_cut_by_tokens(
+            msgs, 1, token_budget=budget
+        )
+        proxied_kimi_cut = self._compressor(
+            model="moonshotai/kimi-k2.5",
+            base_url="https://gateway.example/v1/messages",
+        )._find_tail_cut_by_tokens(msgs, 1, token_budget=budget)
+
+        assert proxied_kimi_cut > direct_cut

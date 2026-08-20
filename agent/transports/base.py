@@ -87,3 +87,20 @@ class ProviderTransport(ABC):
         with different stop reason vocabularies.
         """
         return raw_reason
+
+    def replays_stale_thinking(
+        self, *, base_url: str = "", model: str = ""
+    ) -> bool:
+        """Whether historical assistant thinking is replayed on this route.
+
+        Most transports strip thinking from all but the newest assistant turn.
+        Transports with route-specific preserved-thinking contracts override
+        this capability so context accounting matches the request wire.
+        """
+        return False
+
+    def replays_stale_thinking_envelope(
+        self, *, base_url: str = "", model: str = ""
+    ) -> bool:
+        """Whether opaque historical thinking envelopes ride the request wire."""
+        return False

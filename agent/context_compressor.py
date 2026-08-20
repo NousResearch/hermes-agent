@@ -1279,7 +1279,11 @@ def _reasoning_details_text_chars(value: Any) -> int:
     return total
 
 
-def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -> int:
+def _estimate_msg_budget_tokens(
+    msg: dict,
+    charge_stale_thinking: bool = True,
+    charge_thinking_envelope: bool = False,
+) -> int:
     """Token estimate for one message in the tail-protection budget walks.
 
     Counts the message content plus the **full** ``tool_call`` envelope —
@@ -1310,6 +1314,12 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
     cut land early and discard more real transcript than configured).
     Default ``True`` preserves the conservative full charge for callers
     without turn-position context.
+
+    ``charge_thinking_envelope`` additionally charges the serialized
+    ``reasoning_details`` carrier. It is reserved for transports whose
+    preserved-thinking contract replays historical signed/opaque blocks; on
+    those routes the envelope itself rides the request wire and cannot use the
+    ordinary text-only estimate.
     """
     content = msg.get("content") or ""
     if isinstance(content, str):
@@ -1324,15 +1334,28 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
         tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
     if not charge_stale_thinking:
         return tokens
+    generic_thinking_tokens = 0
     for key in _NEWEST_TURN_ONLY_BUDGET_KEYS:
-        tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
+        generic_thinking_tokens += (
+            _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
+        )
+    tokens += generic_thinking_tokens
     # reasoning_details: charge only the thinking TEXT, never the signed /
     # base64 envelope (#73298 second site; mirrors the preflight estimator's
     # exclusion in model_metadata).  When the same thinking text already rides
     # in ``reasoning``/``reasoning_content`` (measured byte-identical on
     # Anthropic-wire sessions), skip it here entirely so the prose is not
     # charged twice on top of the envelope exclusion.
-    if not (msg.get("reasoning") or msg.get("reasoning_content")):
+    if charge_thinking_envelope:
+        envelope_tokens = (
+            _serialized_length_for_budget(msg.get("reasoning_details"))
+            // _CHARS_PER_TOKEN
+        )
+        # ``reasoning`` and ``reasoning_details`` commonly carry the same
+        # thinking text. Charge whichever replay carrier is larger rather than
+        # counting that text twice.
+        tokens += max(0, envelope_tokens - generic_thinking_tokens)
+    elif not (msg.get("reasoning") or msg.get("reasoning_content")):
         tokens += (
             _reasoning_details_text_chars(msg.get("reasoning_details"))
             // _CHARS_PER_TOKEN
@@ -2684,6 +2707,19 @@ class ContextCompressor(ContextEngine):
         self._proactive_prune_rearm_tokens = 0
         self._clear_durable_proactive_prune_rearm()
 
+    def _transport_stale_thinking_budget(self) -> tuple[bool, bool]:
+        """Resolve historical thinking-text/envelope replay capabilities."""
+        from agent.transports import get_transport
+
+        transport = get_transport(getattr(self, "api_mode", None))
+        if transport is None:
+            return False, False
+        kwargs = {"base_url": self.base_url, "model": self.model}
+        return (
+            transport.replays_stale_thinking(**kwargs),
+            transport.replays_stale_thinking_envelope(**kwargs),
+        )
+
     # When the MINIMUM_CONTEXT_LENGTH floor meets/exceeds a small context
     # window, compacting at the percentage (50% → 32K of a 64K window) wastes
     # half the usable context. Trigger near the top of the window instead so a
@@ -3462,14 +3498,22 @@ class ContextCompressor(ContextEngine):
                 len(result),
                 _MAX_TAIL_MESSAGE_FLOOR,
             )
-            # Same newest-turn-only thinking charge as the tail-cut walk
-            # (#73624) — this boundary decides which tool results stay
-            # prunable, and overcharging stale thinking shrinks that window.
+            # Match the active request transport: most wires only replay the
+            # newest assistant's thinking, while preserved-thinking routes
+            # replay every historical envelope.
             _newest_asst_idx = _last_assistant_index(result)
+            (
+                _replays_stale_thinking,
+                _replays_stale_thinking_envelope,
+            ) = self._transport_stale_thinking_budget()
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
                 msg_tokens = _estimate_msg_budget_tokens(
-                    msg, charge_stale_thinking=(i == _newest_asst_idx)
+                    msg,
+                    charge_stale_thinking=(
+                        _replays_stale_thinking or i == _newest_asst_idx
+                    ),
+                    charge_thinking_envelope=_replays_stale_thinking_envelope,
                 )
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
@@ -5997,16 +6041,23 @@ This compaction should PRIORITISE preserving all information related to the focu
         accumulated = 0
         cut_idx = n  # start from beyond the end
 
-        # Newest assistant turn: the only message whose generic thinking
-        # fields any transport still replays (#73624) — every older turn's
-        # reasoning/reasoning_content is stripped or padded at send time,
-        # so charging it here spends tail budget on bytes that never ship.
+        # Match the active request transport. Most wires only replay the
+        # newest assistant's generic thinking (#73624); preserved-thinking
+        # routes replay every historical signed/opaque envelope.
         _newest_asst_idx = _last_assistant_index(messages)
+        (
+            _replays_stale_thinking,
+            _replays_stale_thinking_envelope,
+        ) = self._transport_stale_thinking_budget()
 
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
             msg_tokens = _estimate_msg_budget_tokens(
-                msg, charge_stale_thinking=(i == _newest_asst_idx)
+                msg,
+                charge_stale_thinking=(
+                    _replays_stale_thinking or i == _newest_asst_idx
+                ),
+                charge_thinking_envelope=_replays_stale_thinking_envelope,
             )
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
@@ -6034,7 +6085,11 @@ This compaction should PRIORITISE preserving all information related to the focu
             for j in range(n - 1, head_end - 1, -1):
                 raw_msg = messages[j]
                 raw_tok = _estimate_msg_budget_tokens(
-                    raw_msg, charge_stale_thinking=(j == _newest_asst_idx)
+                    raw_msg,
+                    charge_stale_thinking=(
+                        _replays_stale_thinking or j == _newest_asst_idx
+                    ),
+                    charge_thinking_envelope=_replays_stale_thinking_envelope,
                 )
                 if raw_accumulated + raw_tok > raw_budget and (n - j) >= min_tail:
                     cut_idx = j

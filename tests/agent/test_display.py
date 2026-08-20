@@ -1,7 +1,9 @@
 """Tests for agent/display.py — build_tool_preview() and inline diff previews."""
 
+import base64
 import json
 import pytest
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import agent.display as display_module
@@ -314,3 +316,414 @@ class TestBuildStatusPhrase:
             assert build_status_phrase("terminal", {"command": "ls"}) is None
         finally:
             set_friendly_tool_labels(True)
+
+
+# =========================================================================
+# Inline image preview (display.image_preview) — issue #6675
+# =========================================================================
+
+
+@pytest.fixture(autouse=True)
+def reset_image_preview_latches():
+    """Restore the default image-preview latches around every test."""
+    display_module.set_image_preview(True, 0)
+    yield
+    display_module.set_image_preview(True, 0)
+
+
+def _make_image(tmp_path, name="shot.png", size=64) -> str:
+    img = tmp_path / name
+    img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * size)
+    return str(img)
+
+
+class TestImagePreviewLatches:
+    def test_defaults_enabled_natural_size(self):
+        assert display_module._image_preview_enabled is True
+        assert display_module._image_preview_max_width == 0
+
+    def test_setter_coerces_values(self):
+        # Deliberately wrong-typed inputs: the setter is defensive against
+        # YAML-typed config values (bool()/int() coercion).
+        display_module.set_image_preview(0, -5)  # type: ignore[arg-type]
+        assert display_module.get_image_preview_enabled() is False
+        assert display_module.get_image_preview_max_width() == 0
+        display_module.set_image_preview("yes", "400")  # type: ignore[arg-type]
+        assert display_module.get_image_preview_enabled() is True
+        assert display_module.get_image_preview_max_width() == 400
+
+    def test_setter_malformed_width_keeps_explicit_disable(self):
+        # cli.py passes raw YAML values through; a malformed width must not
+        # abort the latch update or re-enable previews (int(_ipw) at the call
+        # site previously raised before the setter ever ran).
+        display_module.set_image_preview(False, "400px")  # type: ignore[arg-type]
+        assert display_module.get_image_preview_enabled() is False
+        assert display_module.get_image_preview_max_width() == 0
+
+
+class TestExtractImagePaths:
+    def test_quoted_absolute_path(self, tmp_path):
+        img = _make_image(tmp_path)
+        assert display_module._extract_image_paths(f"Screenshot saved to '{img}'") == [img]
+
+    def test_json_embedded_path(self, tmp_path):
+        img = _make_image(tmp_path)
+        assert display_module._extract_image_paths(f'{{"path": "{img}", "w": 800}}') == [img]
+
+    def test_bare_absolute_path(self, tmp_path):
+        img = _make_image(tmp_path)
+        assert display_module._extract_image_paths(f"see {img} for details") == [img]
+
+    def test_hyphenated_filename(self, tmp_path):
+        img = _make_image(tmp_path, "screenshot-2026-01-15.png")
+        assert display_module._extract_image_paths(f"Saved {img}") == [img]
+
+    def test_uppercase_extension(self, tmp_path):
+        img = _make_image(tmp_path, "photo.JPEG")
+        assert display_module._extract_image_paths(f"Saved {img}") == [img]
+
+    def test_relative_existing_resolves_against_cwd(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "rel.png").write_bytes(b"x")
+        assert display_module._extract_image_paths("wrote rel.png") == [str(tmp_path / "rel.png")]
+
+    def test_quoted_path_with_spaces(self, tmp_path):
+        img = tmp_path / "my shot.png"
+        img.write_bytes(b"x")
+        assert display_module._extract_image_paths(f"Saved '{img}'") == [str(img)]
+        assert display_module._extract_image_paths(f'Saved "{img}"') == [str(img)]
+
+    def test_json_path_with_spaces(self, tmp_path):
+        img = tmp_path / "my shot.png"
+        img.write_bytes(b"x")
+        assert display_module._extract_image_paths(f'{{"path": "{img}"}}') == [str(img)]
+
+    def test_quoted_sentence_with_path_uses_bare_fallback(self, tmp_path):
+        img = _make_image(tmp_path)
+        assert display_module._extract_image_paths(f'"Saved screenshot to {img}"') == [img]
+        assert display_module._extract_image_paths(f"'Result image: {img}'") == [img]
+
+    def test_bare_token_boundary_avoids_longer_filenames(self, tmp_path):
+        real = _make_image(tmp_path, "image.png")
+        (tmp_path / "image.png.bak").write_bytes(b"x")
+        (tmp_path / "image.pngzip").write_bytes(b"x")
+        text = f"touched {tmp_path / 'image.png.bak'} and {tmp_path / 'image.pngzip'}"
+        assert display_module._extract_image_paths(text) == []
+        assert display_module._extract_image_paths(f"real one: {real}") == [real]
+
+    def test_sentence_period_after_path_still_extracts(self, tmp_path):
+        img = _make_image(tmp_path)
+        assert display_module._extract_image_paths(f"see {img}. next") == [img]
+        assert display_module._extract_image_paths(f"saved to '{img}'.") == [img]
+        # Period INSIDE the closing quote — the bare boundary lookahead must
+        # allow a trailing '.' when it is not a filename continuation.
+        assert display_module._extract_image_paths(f'"Saved screenshot to {img}."') == [img]
+
+    def test_http_url_excluded(self, tmp_path):
+        assert display_module._extract_image_paths("see https://example.com/img.png") == []
+
+    def test_data_uri_excluded(self):
+        assert display_module._extract_image_paths("data:image/png;base64,AAAA") == []
+
+    def test_missing_file_excluded(self, tmp_path):
+        assert display_module._extract_image_paths(str(tmp_path / "gone.png")) == []
+
+    def test_dedupe_preserves_order(self, tmp_path):
+        img = _make_image(tmp_path)
+        assert display_module._extract_image_paths(f"one {img} two {img}") == [img]
+
+    def test_cap_at_three(self, tmp_path):
+        imgs = [_make_image(tmp_path, f"a{i}.png") for i in range(4)]
+        found = display_module._extract_image_paths(" ".join(imgs))
+        assert found == imgs[:3]
+
+    def test_does_not_match_directory_named_like_image(self, tmp_path):
+        d = tmp_path / "dir.png"
+        d.mkdir()
+        assert display_module._extract_image_paths(str(d)) == []
+
+    def test_quoted_run_of_two_paths_both_found(self, tmp_path):
+        # Regression: a quoted string wrapping two image paths was captured
+        # as ONE token that did not exist as a file, hiding both paths.
+        a = _make_image(tmp_path, "a.png")
+        b = _make_image(tmp_path, "b.png")
+        assert display_module._extract_image_paths(f"compare '{a} and {b}'") == [a, b]
+
+    def test_relative_resolves_against_base_dir(self, tmp_path):
+        img = tmp_path / "out.png"
+        img.write_bytes(b"x")
+        assert display_module._extract_image_paths("wrote out.png", base_dir=str(tmp_path)) == [str(img)]
+
+    def test_base_dir_ignored_when_not_absolute(self, tmp_path, monkeypatch):
+        img = tmp_path / "out.png"
+        img.write_bytes(b"x")
+        monkeypatch.chdir(tmp_path)
+        assert display_module._extract_image_paths("wrote out.png", base_dir="relative/base") == [str(img)]
+
+
+class TestITerm2Escape:
+    def test_structure_and_base64_roundtrip(self, tmp_path):
+        img = _make_image(tmp_path)
+        esc = display_module._iterm2_image_escape(Path(img), 0)
+        assert esc.startswith("\033]1337;File=inline=1;preserveAspectRatio=1:")
+        assert esc.endswith("\a")
+        payload = esc.split(":", 1)[1][:-1]
+        assert base64.b64decode(payload) == Path(img).read_bytes()
+
+    def test_width_clause_only_when_positive(self, tmp_path):
+        img = _make_image(tmp_path)
+        assert ";width=" not in display_module._iterm2_image_escape(Path(img), 0)
+        assert ";width=400px:" in display_module._iterm2_image_escape(Path(img), 400)
+
+
+class TestKittyEscapes:
+    def test_multi_chunk_framing_and_roundtrip(self, tmp_path):
+        img = _make_image(tmp_path, "big.png", size=20000)
+        chunks = display_module._kitty_image_escapes(Path(img))
+        assert len(chunks) > 1
+        assert chunks[0].startswith("\033_Ga=T,f=100,t=d,m=1;")
+        assert all(c.startswith("\033_Gm=1;") for c in chunks[1:-1])
+        assert chunks[-1].startswith("\033_Gm=0;")
+        payloads = [c.split(";", 1)[1].rsplit("\033\\", 1)[0] for c in chunks]
+        assert all(len(p) <= display_module._KITTY_CHUNK_SIZE for p in payloads)
+        assert base64.b64decode("".join(payloads)) == Path(img).read_bytes()
+
+    def test_single_chunk_is_final(self, tmp_path):
+        img = _make_image(tmp_path)
+        chunks = display_module._kitty_image_escapes(Path(img))
+        assert len(chunks) == 1
+        assert chunks[0].startswith("\033_Ga=T,f=100,t=d,m=0;")
+
+    def test_empty_file_single_final_chunk(self, tmp_path):
+        img = tmp_path / "empty.png"
+        img.write_bytes(b"")
+        chunks = display_module._kitty_image_escapes(Path(img))
+        assert chunks == ["\033_Ga=T,f=100,t=d,m=0;\033\\"]
+
+
+class TestTerminalDetection:
+    def test_iterm2(self, monkeypatch):
+        monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
+        assert display_module._terminal_supports_inline_images() == "iterm2"
+
+    def test_kitty_term(self, monkeypatch):
+        # Hermetic: must clear TERM_PROGRAM/KITTY_WINDOW_ID or this fails
+        # when the suite runs from inside iTerm2 (checked first).
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+        monkeypatch.delenv("KITTY_WINDOW_ID", raising=False)
+        monkeypatch.setenv("TERM", "xterm-kitty")
+        assert display_module._terminal_supports_inline_images() == "kitty"
+
+    def test_kitty_window_id(self, monkeypatch):
+        monkeypatch.setenv("KITTY_WINDOW_ID", "1")
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+        assert display_module._terminal_supports_inline_images() == "kitty"
+
+    def test_wezterm(self, monkeypatch):
+        monkeypatch.setenv("TERM_PROGRAM", "WezTerm")
+        assert display_module._terminal_supports_inline_images() == "kitty"
+
+    def test_wezterm_term_env(self, monkeypatch):
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+        monkeypatch.delenv("KITTY_WINDOW_ID", raising=False)
+        monkeypatch.setenv("TERM", "xterm-wezterm")
+        assert display_module._terminal_supports_inline_images() == "kitty"
+
+    def test_unsupported_terminal(self, monkeypatch):
+        monkeypatch.setenv("TERM_PROGRAM", "")
+        monkeypatch.setenv("TERM", "xterm-256color")
+        monkeypatch.delenv("KITTY_WINDOW_ID", raising=False)
+        assert display_module._terminal_supports_inline_images() == ""
+
+
+class TestRenderImagePreview:
+    def _tty_and_terminal(self, monkeypatch, protocol="iterm2"):
+        monkeypatch.setattr(display_module, "_stdout_is_tty", lambda: True)
+        monkeypatch.setattr(display_module, "_terminal_supports_inline_images", lambda: protocol)
+
+    def test_disabled_latch_emits_nothing(self, tmp_path, monkeypatch):
+        self._tty_and_terminal(monkeypatch)
+        display_module.set_image_preview(False, 0)
+        calls = []
+        assert display_module.render_image_preview(_make_image(tmp_path), print_fn=calls.append) is False
+        assert calls == []
+
+    def test_non_tty_emits_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(display_module, "_stdout_is_tty", lambda: False)
+        calls = []
+        assert display_module.render_image_preview(_make_image(tmp_path), print_fn=calls.append) is False
+        assert calls == []
+
+    def test_unsupported_terminal_without_chafa_emits_nothing(self, tmp_path, monkeypatch):
+        self._tty_and_terminal(monkeypatch, protocol="")
+        monkeypatch.setenv("PATH", str(tmp_path))  # no chafa binary anywhere
+        calls = []
+        assert display_module.render_image_preview(_make_image(tmp_path), print_fn=calls.append) is False
+        assert calls == []
+
+    def test_iterm2_emits_label_and_wrapped_escape(self, tmp_path, monkeypatch):
+        self._tty_and_terminal(monkeypatch, protocol="iterm2")
+        img = _make_image(tmp_path)
+        calls = []
+        assert display_module.render_image_preview(f"Saved {img}", print_fn=calls.append) is True
+        escape = display_module._iterm2_image_escape(Path(img), 0)
+        assert calls == ["  ┊ image", "\001" + escape + "\002"]
+
+    def test_kitty_emits_label_and_single_wrapped_fragment(self, tmp_path, monkeypatch):
+        self._tty_and_terminal(monkeypatch, protocol="kitty")
+        img = _make_image(tmp_path)
+        calls = []
+        assert display_module.render_image_preview(f"Saved {img}", print_fn=calls.append) is True
+        joined = "".join(display_module._kitty_image_escapes(Path(img)))
+        # All chunks in ONE print_fn call: _cprint adds a newline per call,
+        # and inter-chunk newlines would drift the cursor before render.
+        assert calls == ["  ┊ image", "\001" + joined + "\002"]
+
+    def test_size_cap_skips_large_file(self, tmp_path, monkeypatch):
+        self._tty_and_terminal(monkeypatch, protocol="iterm2")
+        big = tmp_path / "big.png"
+        big.write_bytes(b"x" * (display_module._MAX_IMAGE_PREVIEW_BYTES + 1))
+        small = _make_image(tmp_path, "small.png")
+        calls = []
+        assert display_module.render_image_preview(f"{big} then {small}", print_fn=calls.append) is True
+        assert calls == ["  ┊ image", "\001" + display_module._iterm2_image_escape(Path(small), 0) + "\002"]
+
+    def test_kitty_renders_file_under_cap(self, tmp_path, monkeypatch):
+        self._tty_and_terminal(monkeypatch, protocol="kitty")
+        img = _make_image(tmp_path, "medium.png", size=1_500_000)  # 1.5MB < 5MB cap
+        calls = []
+        assert display_module.render_image_preview(f"Saved {img}", print_fn=calls.append) is True
+        assert calls[0] == "  ┊ image"
+        assert len(calls) == 2  # label + one joined fragment (no per-chunk newlines)
+
+    def test_kitty_non_png_falls_back_to_chafa(self, tmp_path, monkeypatch):
+        # kitty graphics protocol only accepts PNG (f=100) or raw RGB/RGBA —
+        # JPEG must fall back to chafa when available.
+        self._tty_and_terminal(monkeypatch, protocol="kitty")
+        jpg = _make_image(tmp_path, "photo.jpg")
+        fake = tmp_path / "chafa"
+        fake.write_text("#!/bin/sh\nprintf '\\033[31m█\\033[0m\\n'\n")
+        fake.chmod(0o755)
+        monkeypatch.setenv("PATH", str(tmp_path))
+        calls = []
+        assert display_module.render_image_preview(f"Saved {jpg}", print_fn=calls.append) is True
+        assert calls == ["  ┊ image", "\x1b[31m█\x1b[0m\n"]
+
+    def test_kitty_non_png_without_chafa_emits_nothing(self, tmp_path, monkeypatch):
+        self._tty_and_terminal(monkeypatch, protocol="kitty")
+        jpg = _make_image(tmp_path, "photo.jpg")
+        monkeypatch.setenv("PATH", str(tmp_path))  # no chafa binary
+        calls = []
+        assert display_module.render_image_preview(f"Saved {jpg}", print_fn=calls.append) is False
+        assert calls == []
+
+    def test_max_width_plumbed_to_iterm2_escape(self, tmp_path, monkeypatch):
+        self._tty_and_terminal(monkeypatch, protocol="iterm2")
+        display_module.set_image_preview(True, 400)
+        img = _make_image(tmp_path)
+        calls = []
+        assert display_module.render_image_preview(f"Saved {img}", print_fn=calls.append) is True
+        assert ";width=400px:" in calls[1]
+
+    def test_print_fn_none_emits_nothing(self, tmp_path, monkeypatch):
+        self._tty_and_terminal(monkeypatch)
+        assert display_module.render_image_preview(_make_image(tmp_path), print_fn=None) is False
+
+    def test_chafa_fallback_uses_path_binary(self, tmp_path, monkeypatch):
+        self._tty_and_terminal(monkeypatch, protocol="")
+        img = _make_image(tmp_path)
+        fake = tmp_path / "chafa"
+        fake.write_text("#!/bin/sh\nprintf '\\033[31m█\\033[0m\\n'\n")
+        fake.chmod(0o755)
+        monkeypatch.setenv("PATH", str(tmp_path))
+        calls = []
+        assert display_module.render_image_preview(f"Saved {img}", print_fn=calls.append) is True
+        assert calls == ["  ┊ image", "\x1b[31m█\x1b[0m\n"]
+
+    def test_chafa_skips_file_over_cap(self, tmp_path, monkeypatch):
+        # The 5 MiB cap applies to the chafa path too, not just the
+        # iTerm2/kitty escape protocols — a huge file must not be handed to
+        # chafa for a potentially long decode.
+        self._tty_and_terminal(monkeypatch, protocol="")
+        big = tmp_path / "big.png"
+        big.write_bytes(b"x" * (display_module._MAX_IMAGE_PREVIEW_BYTES + 1))
+        fake = tmp_path / "chafa"
+        fake.write_text("#!/bin/sh\nprintf 'x\\n'\n")
+        fake.chmod(0o755)
+        monkeypatch.setenv("PATH", str(tmp_path))
+        calls = []
+        assert display_module.render_image_preview(str(big), print_fn=calls.append) is False
+        assert calls == []
+
+    def test_time_budget_breaks_loop(self, tmp_path, monkeypatch):
+        # A pathological set of previews must not stall the CLI main thread
+        # for the full 3 × 15s worst case: once the cumulative budget is
+        # exceeded, remaining images are skipped.
+        self._tty_and_terminal(monkeypatch, protocol="iterm2")
+        imgs = [_make_image(tmp_path, f"a{i}.png") for i in range(3)]
+        calls = []
+        vals = [0.0, 0.1, 25.0]
+
+        def fake_monotonic():
+            return vals.pop(0) if vals else 25.0
+
+        monkeypatch.setattr(display_module.time, "monotonic", fake_monotonic)
+        assert display_module.render_image_preview(" ".join(imgs), print_fn=calls.append) is True
+        assert calls == ["  ┊ image", "\001" + display_module._iterm2_image_escape(Path(imgs[0]), 0) + "\002"]
+
+    def test_render_uses_base_dir_for_relative_path(self, tmp_path, monkeypatch):
+        # Relative paths in tool output resolve against the tool call's
+        # workdir when one was provided — not the CLI process cwd.
+        self._tty_and_terminal(monkeypatch, protocol="iterm2")
+        img = tmp_path / "out.png"
+        img.write_bytes(b"x")
+        monkeypatch.chdir(tmp_path.parent)
+        calls = []
+        assert display_module.render_image_preview("wrote out.png", base_dir=str(tmp_path), print_fn=calls.append) is True
+        assert calls == ["  ┊ image", "\001" + display_module._iterm2_image_escape(img, 0) + "\002"]
+
+    def test_no_result_or_empty_result_emits_nothing(self, monkeypatch):
+        self._tty_and_terminal(monkeypatch)
+        calls = []
+        assert display_module.render_image_preview(None, print_fn=calls.append) is False
+        assert display_module.render_image_preview("", print_fn=calls.append) is False
+        assert calls == []
+
+    def test_non_str_result_emits_nothing(self, monkeypatch):
+        self._tty_and_terminal(monkeypatch)
+        calls = []
+        # Deliberately wrong-typed input — the gate is isinstance()-based.
+        assert display_module.render_image_preview({"path": "/tmp/x.png"}, print_fn=calls.append) is False  # type: ignore[arg-type]
+        assert calls == []
+
+    def test_never_raises_when_escape_builder_fails(self, tmp_path, monkeypatch):
+        self._tty_and_terminal(monkeypatch, protocol="iterm2")
+        img = _make_image(tmp_path)
+        monkeypatch.setattr(display_module, "_iterm2_image_escape", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        calls = []
+        assert display_module.render_image_preview(f"Saved {img}", print_fn=calls.append) is False
+        assert calls == []
+
+    def test_one_bad_image_does_not_kill_the_rest(self, tmp_path, monkeypatch):
+        self._tty_and_terminal(monkeypatch, protocol="iterm2")
+        good = _make_image(tmp_path, "good.png")
+        bad = _make_image(tmp_path, "bad.png")
+        real = display_module._iterm2_image_escape
+
+        def flaky(path, max_width):
+            if Path(path).name == "bad.png":
+                raise RuntimeError("boom")
+            return real(path, max_width)
+
+        monkeypatch.setattr(display_module, "_iterm2_image_escape", flaky)
+        calls = []
+        assert display_module.render_image_preview(f"{bad} {good}", print_fn=calls.append) is True
+        assert calls == ["  ┊ image", "\001" + real(Path(good), 0) + "\002"]
+
+
+class TestImagePreviewConfig:
+    def test_display_config_defaults(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        display = DEFAULT_CONFIG["display"]
+        assert display["image_preview"] is True
+        assert display["image_preview_max_width"] == 0

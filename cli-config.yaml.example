@@ -1539,6 +1539,15 @@ display:
   # edit-in-place "⏳ Working — N min" heartbeat). Override under
   # display.platforms.telegram.
 
+  # Inline image preview for tool results (CLI only).
+  #   true:  Render image file paths found in tool results inline in the
+  #          terminal — iTerm2 Inline Images, kitty graphics (PNG), or chafa
+  #          half-block fallback when the chafa binary is installed (default)
+  #   false: Keep showing the plain text path
+  image_preview: true
+  # Max inline image render width in pixels (0 = natural size; iTerm2 only).
+  image_preview_max_width: 0
+
   # Auto-cleanup of temporary progress bubbles after the final response lands.
   # On platforms that support message deletion (currently Telegram), this
   # removes the tool-progress bubble, "⏳ Still working..." notices, and

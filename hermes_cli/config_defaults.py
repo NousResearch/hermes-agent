@@ -2220,6 +2220,23 @@ DEFAULT_CONFIG = {
         # The adapter also probes clip duration and extends this floor by a
         # padding window, so long TTS readbacks are not cut at exactly 120s.
         "voice_playback_timeout_seconds": 120,
+        # Discord voice-channel keyword gate (applied AFTER speech-to-text).
+        # If non-empty, a voice utterance is ONLY processed when its transcript
+        # starts with one of these phrases (case-insensitive, word boundary).
+        # The matched keyword is stripped before the rest reaches the agent.
+        # Empty list (default) = no gate, the bot processes every allowed
+        # user's speech as before.
+        "voice_keywords": [],
+        # Tolerance for speech-to-text mangling of the keyword, 0.0–1.0.
+        # Matching is always case- and accent-insensitive. Above 0, a leading
+        # keyword the STT only approximated is also accepted when a contiguous
+        # run covering at least this fraction of the keyword appears at the
+        # start of the transcript (e.g. Whisper hears "hey hermes" as
+        # "l'hermesse" -> the contiguous "hermes" run covers 0.6 of the
+        # keyword). A contiguous-run test avoids accidental substring matches
+        # on scattered letters. 0 disables fuzzy matching (exact,
+        # case/accent-insensitive only).
+        "voice_keyword_similarity": 0.5,
         # Voice-channel audio effects (the continuous mixer). OFF by default.
         # When enabled, the bot installs a software mixer on the outgoing voice
         # stream so a low ambient "thinking" bed, verbal acknowledgements, and

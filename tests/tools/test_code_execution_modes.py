@@ -514,6 +514,80 @@ class TestUsesHermesPythonEnvironment(unittest.TestCase):
                    return_value=hermes_prefix):
             self.assertTrue(_uses_hermes_python_environment("/same/env/python"))
 
+    def test_false_for_sibling_venv_sharing_base_binary(self):
+        """A different venv created from the same base python is external.
+
+        On POSIX every venv symlinks bin/python to the base interpreter, so
+        an external project venv realpaths equal to sys.executable whenever
+        Hermes's env was created from the same base. Trusting the realpath
+        alone re-added the hermes root to the external project's PYTHONPATH,
+        undoing project-mode isolation for the most common venv setup.
+        """
+        real_realpath = os.path.realpath
+        sibling_python = "/proj/venv/bin/python"
+
+        def fake_realpath(path):
+            if path == sibling_python:
+                return real_realpath(sys.executable)
+            return real_realpath(path)
+
+        real_isfile = os.path.isfile
+
+        def fake_isfile(path):
+            if path.replace("\\", "/").endswith("/proj/venv/pyvenv.cfg"):
+                return True
+            return real_isfile(path)
+
+        with patch("os.path.realpath", side_effect=fake_realpath), \
+             patch("os.path.isfile", side_effect=fake_isfile), \
+             patch("tools.code_execution_tool._python_environment_prefix",
+                   return_value=real_realpath("/proj/venv")):
+            self.assertFalse(_uses_hermes_python_environment(sibling_python))
+
+    def test_true_for_hermes_env_via_alias_path_without_probe(self):
+        """Hermes's own venv referenced through a symlinked path stays
+        recognized by layout alone — same binary AND same env root, no
+        subprocess probe involved."""
+        real_realpath = os.path.realpath
+        alias_python = "/alias/bin/python"
+
+        def fake_realpath(path):
+            if path == alias_python:
+                return real_realpath(sys.executable)
+            if path.replace("\\", "/").endswith("/alias"):
+                return real_realpath(sys.prefix)
+            return real_realpath(path)
+
+        real_isfile = os.path.isfile
+
+        def fake_isfile(path):
+            if path.replace("\\", "/").endswith("/alias/pyvenv.cfg"):
+                return True
+            return real_isfile(path)
+
+        with patch("os.path.realpath", side_effect=fake_realpath), \
+             patch("os.path.isfile", side_effect=fake_isfile), \
+             patch("tools.code_execution_tool._python_environment_prefix",
+                   side_effect=AssertionError("probe must not run")):
+            self.assertTrue(_uses_hermes_python_environment(alias_python))
+
+    def test_same_binary_outside_venv_layout_falls_back_to_probe(self):
+        """Same binary but no pyvenv.cfg (bare base interpreter, conda,
+        exotic layout): the sys.prefix probe stays the authority."""
+        real_realpath = os.path.realpath
+        base_alias = "/usr/bin/python3-alias"
+
+        def fake_realpath(path):
+            if path == base_alias:
+                return real_realpath(sys.executable)
+            return real_realpath(path)
+
+        with patch("os.path.realpath", side_effect=fake_realpath), \
+             patch("tools.code_execution_tool._python_environment_prefix",
+                   return_value="/usr") as probe_mock:
+            self.assertFalse(_uses_hermes_python_environment(base_alias))
+        probe_mock.assert_called_once_with(base_alias)
+
 
 # ---------------------------------------------------------------------------
 # PYTHONPATH composition — hermes root included only for same-env interpreters

@@ -197,10 +197,13 @@ Common issues:
 
 ## Limits today
 
-- **Inbound attachments are metadata-only.** Inbound events carry the
-  filename + MIME type; the agent sees a marker but can't yet read the
-  bytes. The SDK exposes attachment bytes via `content.read()`, so this
-  is a sidecar follow-up.
+- **Inbound attachments and voice notes are downloaded.** The sidecar reads
+  the bytes and the adapter caches them so Hermes can pass images and files to
+  the agent and transcribe voice notes. Mixed bubbles preserve typed text
+  alongside their attachments. Media larger than
+  `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` (20 MB by default), or content that
+  cannot be read, falls back to a text marker so the agent still knows an
+  attachment arrived.
 - **Outbound attachments are supported.** Hermes sends images, voice
   notes, video, and documents through spectrum-ts' `attachment()` /
   `voice()` content builders via the sidecar's `/send-attachment`
@@ -243,6 +246,7 @@ Common issues:
 | `PHOTON_ALLOW_ALL_USERS`  | `false`            | Dev only — accept any sender               |
 | `PHOTON_REQUIRE_MENTION`  | `false`            | Require a wake word before responding in groups |
 | `PHOTON_MENTION_PATTERNS` | Hermes wake words  | JSON list / comma / newline regex patterns for group mentions |
+| `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` | `20971520` (20 MB) | Max inbound attachment size the sidecar reads and caches |
 | `PHOTON_DASHBOARD_HOST`   | `app.photon.codes` | Override the dashboard / device-login host |
 | `PHOTON_SPECTRUM_HOST`    | `spectrum.photon.codes` | Override the Spectrum API host |
 

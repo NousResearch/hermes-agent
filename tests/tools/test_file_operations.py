@@ -748,6 +748,22 @@ class TestByteLayerBinaryDetection:
         # Error near the end but the prefix itself is not clean UTF-8.
         assert file_ops._is_likely_binary_bytes(b"\xff\xfe" + b"a" * 10 + b"\xe4") is True
 
+    def test_invalid_lead_byte_at_the_cut_is_binary(self, file_ops):
+        # Clean prefix, error in the last 3 bytes — but 0xFF is not a UTF-8
+        # lead byte in any position, so this is not a cut character and the
+        # file must stay read-only. Deciding "cut" by position alone reads it
+        # as text and lets a round-trip rewrite the byte as U+FFFD.
+        assert file_ops._is_likely_binary_bytes(b"a" * 999 + b"\xff") is True
+
+    def test_stray_continuation_byte_at_the_cut_is_binary(self, file_ops):
+        # 0x80 is a continuation byte with nothing to continue.
+        assert file_ops._is_likely_binary_bytes(b"a" * 999 + b"\x80") is True
+
+    def test_four_byte_sequence_cut_after_one_byte_is_text(self, file_ops):
+        # The over-correction guard: a genuine cut leaving only the lead byte
+        # of a 4-byte sequence is still text.
+        assert file_ops._is_likely_binary_bytes(b"a" * 999 + b"\xf0") is False
+
     # --- transport: _sample_file_bytes ------------------------------------
 
     def test_sample_decodes_base64_transport(self, mock_env):

@@ -27,6 +27,7 @@ Usage:
 
 import base64
 import binascii
+import codecs
 import os
 import re
 import difflib
@@ -1017,19 +1018,22 @@ class ShellFileOperations(FileOperations):
             return False
         if b"\x00" in sample:
             return True
+        # An incremental decoder states the contract above directly: with
+        # final=False it buffers a trailing sequence that is incomplete but
+        # well formed, and raises on anything else.
+        #
+        # Deciding it by position instead — the error starts in the last 3
+        # bytes and the prefix is clean, therefore a cut — also accepts a byte
+        # that cannot begin a sequence in any position. b"a" * 999 + b"\xff"
+        # is a cut by position, but \xff is not a UTF-8 lead byte, so the file
+        # is binary; reading it as text is the mojibake round-trip this guard
+        # exists to prevent.
+        decoder = codecs.getincrementaldecoder("utf-8")()
         try:
-            sample.decode("utf-8")
-            return False
-        except UnicodeDecodeError as exc:
-            # UTF-8 sequences are at most 4 bytes: an error starting in the
-            # last 3 bytes with a clean prefix is a boundary cut, not binary.
-            if exc.start >= len(sample) - 3:
-                try:
-                    sample[: exc.start].decode("utf-8")
-                    return False
-                except UnicodeDecodeError:
-                    pass
+            decoder.decode(sample, final=False)
+        except UnicodeDecodeError:
             return True
+        return False
 
     def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
         """

@@ -758,11 +758,91 @@ class TestAppendAuditLog:
 
 
 class TestOptionalSkillSourceMetadata:
-    def test_repo_optional_root_identity_is_commit_bound(self):
+    def test_github_commit_authority_requires_exact_server_sha(
+        self, monkeypatch
+    ):
+        import tools.skills_hub as hub
+
+        revision = "a" * 40
+        seen = {}
+
+        class Response:
+            status_code = 200
+
+            def __init__(self, sha):
+                self.sha = sha
+
+            def json(self):
+                return {"sha": self.sha}
+
+        class Client:
+            def __init__(self, **kwargs):
+                seen.update(kwargs)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def get(self, _url):
+                return Response(seen["server_sha"])
+
+        monkeypatch.setattr(hub.httpx, "Client", Client)
+        hub._github_commit_is_official.cache_clear()
+        try:
+            seen["server_sha"] = revision
+            assert hub._github_commit_is_official(revision) is True
+            hub._github_commit_is_official.cache_clear()
+            seen["server_sha"] = "b" * 40
+            assert hub._github_commit_is_official(revision) is False
+        finally:
+            hub._github_commit_is_official.cache_clear()
+
+        assert seen["trust_env"] is False
+        assert seen["follow_redirects"] is False
+
+    def test_git_optional_identity_rejects_locally_forged_remote_ref(
+        self, monkeypatch, tmp_path
+    ):
+        import subprocess
+        import tools.skills_hub as hub
+
+        repo = tmp_path / "repo"
+        skill = repo / "optional-skills" / "devops" / "demo"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Payload\n")
+        for command in (
+            ["git", "init", "-q"],
+            ["git", "config", "user.name", "Test"],
+            ["git", "config", "user.email", "test@example.invalid"],
+            ["git", "add", "optional-skills"],
+            ["git", "commit", "-qm", "payload"],
+            [
+                "git", "remote", "add", "upstream",
+                "https://github.com/NousResearch/hermes-agent.git",
+            ],
+            ["git", "update-ref", "refs/remotes/upstream/main", "HEAD"],
+        ):
+            subprocess.run(command, cwd=repo, check=True)
+        monkeypatch.setattr(
+            hub,
+            "_github_commit_is_official",
+            lambda _revision: False,
+            raising=False,
+        )
+
+        assert hub._git_checkout_optional_identity(
+            repo / "optional-skills", repo
+        ) == ""
+
+    def test_repo_optional_root_identity_is_commit_bound(self, monkeypatch):
         import re
         from pathlib import Path
 
         import tools.skills_hub as hub
+
+        monkeypatch.setattr(hub, "_github_commit_is_official", lambda _sha: True)
 
         optional_root = Path(hub.__file__).resolve().parent.parent / "optional-skills"
         assert re.fullmatch(
@@ -806,10 +886,13 @@ class TestOptionalSkillSourceMetadata:
 
         assert _git_checkout_optional_identity(repo / "optional-skills", repo) == ""
 
-    def test_git_optional_identity_rejects_ignored_untracked_files(self, tmp_path):
+    def test_git_optional_identity_rejects_ignored_untracked_files(
+        self, monkeypatch, tmp_path
+    ):
         import subprocess
+        import tools.skills_hub as hub
 
-        from tools.skills_hub import _git_checkout_optional_identity
+        monkeypatch.setattr(hub, "_github_commit_is_official", lambda _sha: True)
 
         repo = tmp_path / "repo"
         skill = repo / "optional-skills" / "devops" / "demo"
@@ -837,14 +920,14 @@ class TestOptionalSkillSourceMetadata:
             cwd=repo,
             check=True,
         )
-        assert _git_checkout_optional_identity(
+        assert hub._git_checkout_optional_identity(
             repo / "optional-skills", repo
         ).startswith("git:NousResearch/hermes-agent@")
 
         ignored_payload = skill / "evil.payload"
         ignored_payload.write_text("ignored but installable\n")
 
-        assert _git_checkout_optional_identity(repo / "optional-skills", repo) == ""
+        assert hub._git_checkout_optional_identity(repo / "optional-skills", repo) == ""
 
         ignored_payload.unlink()
         (skill / "SKILL.md").write_text("# Locally modified\n")
@@ -855,7 +938,7 @@ class TestOptionalSkillSourceMetadata:
             check=True,
         )
 
-        assert _git_checkout_optional_identity(repo / "optional-skills", repo) == ""
+        assert hub._git_checkout_optional_identity(repo / "optional-skills", repo) == ""
 
     def test_redirect_helper_recognizes_windows_reparse_point(self):
         import stat
@@ -906,6 +989,9 @@ class TestOptionalSkillSourceMetadata:
     ):
         import subprocess
         from pathlib import Path
+        import tools.skills_hub as hub
+
+        monkeypatch.setattr(hub, "_github_commit_is_official", lambda _sha: True)
 
         repo = tmp_path / "repo"
         optional_root = repo / "optional-skills"

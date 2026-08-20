@@ -997,6 +997,81 @@ class TestRestoreOfficialOptionalSkill:
         assert (installed / "SKILL.md").read_bytes() == b"# Verified commit bytes\n"
         assert (installed / "scripts" / "run.py").read_bytes() == b"print('ok')\n"
 
+    def test_restore_rejects_redirected_destination_parent(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+        skills_dir = tmp_path / "skills"
+        outside = tmp_path / "outside"
+        outside_demo = outside / "demo"
+        outside_demo.mkdir(parents=True)
+        (outside_demo / "SKILL.md").write_text("# Outside\n")
+        skills_dir.mkdir()
+        try:
+            (skills_dir / "devops").symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory symlinks unavailable: {exc}")
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(
+            ss,
+            "_optional_root_identity",
+            lambda _path: "git:NousResearch/hermes-agent@" + "a" * 40,
+        )
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda *_args: {"SKILL.md": b"# Verified\n"},
+        )
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is False
+        assert (outside_demo / "SKILL.md").read_text() == "# Outside\n"
+        assert not (skills_dir / ".restore-backups").exists()
+
+    def test_restore_matches_using_verified_frontmatter_not_worktree(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("---\nname: victim\n---\nPayload\n")
+        skills_dir = tmp_path / "skills"
+        victim = skills_dir / "custom" / "victim"
+        victim.mkdir(parents=True)
+        (victim / "SKILL.md").write_text("---\nname: victim\n---\nKeep me\n")
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(
+            ss,
+            "_optional_root_identity",
+            lambda _path: "git:NousResearch/hermes-agent@" + "a" * 40,
+        )
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda *_args: {
+                "SKILL.md": b"---\nname: demo\n---\nVerified\n"
+            },
+        )
+        monkeypatch.setattr(ss, "_backfill_optional_provenance", lambda **_kwargs: [])
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is True
+        assert (victim / "SKILL.md").read_text().endswith("Keep me\n")
+        assert result["backed_up"] == []
+
 
 class TestOptionalProvenanceAttestation:
     @pytest.fixture(autouse=True)

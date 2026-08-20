@@ -272,6 +272,11 @@ def _read_skill_name(skill_md: Path, fallback: str) -> str:
         content = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
     except OSError:
         return fallback
+    return _read_skill_name_content(content, fallback)
+
+
+def _read_skill_name_content(content: str, fallback: str) -> str:
+    """Read a frontmatter name from already trusted in-memory content."""
     in_frontmatter = False
     for line in content.split("\n"):
         stripped = line.strip()
@@ -477,7 +482,23 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                 "backfilled": [],
                 "backed_up": [],
             }
-        verified_targets.append((folder_name, install_path, src, files))
+        from tools.skills_hub import _resolve_lock_install_path
+
+        try:
+            dest = _resolve_lock_install_path(
+                install_path,
+                folder_name,
+                skills_dir=_skills_dir(),
+            )
+        except (OSError, ValueError):
+            return {
+                "ok": False,
+                "message": f"Unsafe restore destination for: {folder_name}",
+                "restored": [],
+                "backfilled": [],
+                "backed_up": [],
+            }
+        verified_targets.append((folder_name, install_path, dest, files))
 
     restored: List[str] = []
     backed_up: List[str] = []
@@ -486,8 +507,7 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
 
     from tools.skills_guard import full_content_hash, full_content_hash_for_files
 
-    for folder_name, install_path, src, files in verified_targets:
-        dest = _skills_dir() / Path(*install_path.split("/"))
+    for folder_name, install_path, dest, files in verified_targets:
         authoritative_hash = full_content_hash_for_files(files)
         canonical_ok = (
             dest.exists()
@@ -496,7 +516,13 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
 
         # Find already-active copies of this official skill by frontmatter name
         # or folder slug, even if curator moved it into another category.
-        src_frontmatter = _read_skill_name(src / "SKILL.md", folder_name)
+        skill_md_content = files.get("SKILL.md", b"")
+        if isinstance(skill_md_content, bytes):
+            skill_md_content = skill_md_content.decode("utf-8", errors="replace")
+        src_frontmatter = _read_skill_name_content(
+            str(skill_md_content)[:4000],
+            folder_name,
+        )
         matches: List[Path] = []
         if _skills_dir().exists():
             for skill_md in sorted(_skills_dir().rglob("SKILL.md")):
@@ -504,8 +530,8 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                     continue
                 candidate = skill_md.parent
                 try:
-                    candidate.relative_to(_skills_dir())
-                except ValueError:
+                    _safe_rel_install_path(candidate, _skills_dir())
+                except (OSError, ValueError):
                     continue
                 candidate_name = _read_skill_name(skill_md, candidate.name)
                 if candidate == dest:
@@ -516,8 +542,28 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
         if restore:
             for match in matches:
                 if match.exists():
+                    try:
+                        _safe_rel_install_path(match, _skills_dir())
+                    except (OSError, ValueError):
+                        return {
+                            "ok": False,
+                            "message": f"Unsafe active skill path: {match.name}",
+                            "restored": restored,
+                            "backfilled": [],
+                            "backed_up": backed_up,
+                        }
                     backed_up.append(_move_to_restore_backup(match, backup_root))
             if dest.exists() and not canonical_ok:
+                try:
+                    _safe_rel_install_path(dest, _skills_dir())
+                except (OSError, ValueError):
+                    return {
+                        "ok": False,
+                        "message": f"Unsafe restore destination for: {folder_name}",
+                        "restored": restored,
+                        "backfilled": [],
+                        "backed_up": backed_up,
+                    }
                 backed_up.append(_move_to_restore_backup(dest, backup_root))
             if not dest.exists():
                 dest.parent.mkdir(parents=True, exist_ok=True)

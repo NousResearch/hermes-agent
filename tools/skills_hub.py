@@ -27,6 +27,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -58,13 +59,17 @@ logger = logging.getLogger(__name__)
 INDEX_CACHE_TTL = 3600  # 1 hour
 
 
-class _ResolvedDynamicPath(type(Path())):
+class _ResolvedDynamicPath(Path):
     """Path marker returned by ``__getattr__`` for legacy dynamic constants.
 
     ``monkeypatch`` and ``mock.patch`` restore the exact object returned by
     ``getattr``.  Marking that object lets ``_override`` distinguish cleanup
     from a caller's deliberate real-Path override.
     """
+
+    # Python <3.12 requires concrete Path subclasses to provide the platform
+    # flavour; newer versions harmlessly retain it.
+    _flavour = getattr(type(Path()), "_flavour")
 
 
 # _override lets a test-injected real module attribute (patch.object/monkeypatch
@@ -349,6 +354,7 @@ def _git_checkout_optional_identity(path: Path, repo_root: Path) -> str:
             if (
                 remote_tree == head_tree
                 and re.fullmatch(r"[0-9a-f]{40}", revision)
+                and _github_commit_is_official(revision)
             ):
                 return f"git:NousResearch/hermes-agent@{revision}"
         return ""
@@ -377,6 +383,37 @@ def optional_skills_root_is_authoritative(path: Path) -> bool:
     shipped Nix tree is bound to an immutable, content-addressed store item.
     """
     return bool(optional_skills_root_identity(path))
+
+
+@lru_cache(maxsize=128)
+def _github_commit_is_official(revision: str) -> bool:
+    """Bind a commit identity to GitHub's NousResearch repository over TLS."""
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        return False
+    url = (
+        "https://api.github.com/repos/NousResearch/hermes-agent/commits/"
+        f"{revision}"
+    )
+    try:
+        # Ignore proxy/config environment variables: HERMES_OPTIONAL_SKILLS is
+        # explicitly attacker-controlled in this trust decision, so adjacent
+        # environment settings must not redirect the authority lookup either.
+        with httpx.Client(
+            trust_env=False,
+            follow_redirects=False,
+            timeout=10,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "hermes-agent-skills-origin-verifier",
+            },
+        ) as client:
+            response = client.get(url)
+        if response.status_code != 200:
+            return False
+        payload = response.json()
+    except (httpx.HTTPError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get("sha") == revision
 
 
 def _optional_bundle_file_is_included(path: PurePosixPath) -> bool:
@@ -433,7 +470,7 @@ def _git_origin_commit_is_official(repo_root: Path, revision: str) -> bool:
         except (OSError, subprocess.SubprocessError):
             continue
         if result.returncode == 0:
-            return True
+            return _github_commit_is_official(revision)
     return False
 
 

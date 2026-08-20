@@ -228,3 +228,47 @@ def test_ws_transport_preserves_cross_batch_order():
     asyncio.run(scenario())
 
 
+
+
+def _rebind_session(running, current_transport):
+    return {"running": running, "transport": current_transport}
+
+
+def test_resume_does_not_steal_a_running_sessions_transport():
+    """A second viewer resuming a session must not take over its live stream.
+
+    Resume is also how another window / tile / client PEEKS at a session. When
+    it rebound unconditionally, a turn already streaming to viewer A suddenly
+    emitted to viewer B, and A watched its own answer stop mid-sentence.
+    """
+    viewer_a = object()
+    viewer_b = object()
+
+    assert not server._resume_may_rebind_transport(_rebind_session(True, viewer_a), viewer_b)
+
+
+def test_resume_rebinds_an_idle_session():
+    """With no turn in flight there is nothing to interrupt."""
+    viewer_a = object()
+    viewer_b = object()
+
+    assert server._resume_may_rebind_transport(_rebind_session(False, viewer_a), viewer_b)
+
+
+def test_resume_rebinds_a_running_session_whose_viewer_disconnected():
+    """A detached session has no live reader, so the resuming client wins."""
+    viewer_b = object()
+
+    detached = _rebind_session(True, server._detached_ws_transport)
+    assert server._resume_may_rebind_transport(detached, viewer_b)
+
+    on_stdio = _rebind_session(True, server._stdio_transport)
+    assert server._resume_may_rebind_transport(on_stdio, viewer_b)
+
+
+def test_resume_is_idempotent_for_the_same_viewer():
+    """The viewer that already owns the stream may always re-assert it."""
+    viewer_a = object()
+
+    assert server._resume_may_rebind_transport(_rebind_session(True, viewer_a), viewer_a)
+    assert server._resume_may_rebind_transport(_rebind_session(True, None), viewer_a)

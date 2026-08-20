@@ -8886,6 +8886,33 @@ def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> 
     return in_memory_fallback
 
 
+def _resume_may_rebind_transport(session: dict, transport: Transport) -> bool:
+    """Whether a ``session.resume`` may point this session at *transport*.
+
+    Resume is also how a second viewer PEEKS at a session (another window, a
+    tile, a mobile client). Rebinding unconditionally meant that peek stole the
+    stream: a turn already running for viewer A suddenly emitted to viewer B,
+    and A watched its own answer stop mid-sentence.
+
+    So a RUNNING session keeps the transport it is streaming to, unless that
+    transport is gone — a disconnect points detached sessions at
+    ``_detached_ws_transport`` (see ``_reap_or_detach_sessions_for_transport``),
+    and a session parked there has no live reader, so the resuming client is
+    strictly better than nothing. An idle session always rebinds: with no turn
+    in flight there is nothing to interrupt, and the next prompt would rebind
+    anyway.
+    """
+    current = session.get("transport")
+
+    if current is transport or current is None:
+        return True
+
+    if not session.get("running"):
+        return True
+
+    return current is _detached_ws_transport or current is _stdio_transport
+
+
 def _live_session_payload(
     sid: str,
     session: dict,
@@ -8898,7 +8925,7 @@ def _live_session_payload(
     with session["history_lock"]:
         if cols is not None:
             session["cols"] = cols
-        if transport is not None:
+        if transport is not None and _resume_may_rebind_transport(session, transport):
             session["transport"] = transport
         if touch:
             session["last_active"] = time.time()

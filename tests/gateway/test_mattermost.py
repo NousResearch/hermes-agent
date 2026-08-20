@@ -594,3 +594,76 @@ async def test_mattermost_top_level_channel_post_is_thread_root():
     assert msg_event.message_id == "top_post_123"
 
 
+@pytest.mark.asyncio
+async def test_mattermost_dm_post_does_not_seed_thread_root():
+    adapter = _make_adapter()
+    adapter._reply_mode = "thread"
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter.handle_message = AsyncMock()
+    post_data = {
+        "id": "dm_post_123",
+        "user_id": "user_123",
+        "channel_id": "dm_chan",
+        "message": "hello",
+        "root_id": "",
+    }
+    event = {
+        "event": "posted",
+        "data": {
+            "post": json.dumps(post_data),
+            "channel_type": "D",
+            "sender_name": "@alice",
+        },
+    }
+
+    await adapter._handle_ws_event(event)
+
+    msg_event = adapter.handle_message.call_args[0][0]
+    assert msg_event.source.thread_id is None
+    assert msg_event.source.message_id == "dm_post_123"
+
+
+class TestMattermostHttpLoopSafety:
+    """Regression for the cron/threadpool delivery bug.
+
+    Cron auto-delivery runs the send coroutine via ``asyncio.run()`` inside a
+    worker thread, which creates a brand-new event loop. Reusing the
+    connect-time ``ClientSession`` (bound to the gateway loop) from that foreign
+    loop raises "Timeout context manager should be used inside a task" and the
+    digest is generated but never delivered. ``_http()`` must fall back to an
+    ephemeral session when the persistent one is bound to a *different* loop.
+    """
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_http_reuses_session_on_same_loop(self):
+        import asyncio
+        sess = MagicMock()
+        sess.closed = False
+        sess._loop = asyncio.get_running_loop()
+        self.adapter._session = sess
+        async with self.adapter._http() as s:
+            assert s is sess
+
+    @pytest.mark.asyncio
+    async def test_http_uses_ephemeral_on_foreign_loop(self):
+        import asyncio
+        foreign = asyncio.new_event_loop()
+        try:
+            sess = MagicMock()
+            sess.closed = False
+            sess._loop = foreign  # bound to a DIFFERENT real loop (the bug trigger)
+            self.adapter._session = sess
+            async with self.adapter._http() as s:
+                assert s is not sess  # ephemeral session, not the foreign-loop one
+        finally:
+            foreign.close()
+
+    @pytest.mark.asyncio
+    async def test_http_uses_ephemeral_when_no_session(self):
+        self.adapter._session = None
+        async with self.adapter._http() as s:
+            assert s is not None

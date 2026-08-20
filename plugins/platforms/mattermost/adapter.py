@@ -14,6 +14,7 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -156,6 +157,43 @@ class MattermostAdapter(BasePlatformAdapter):
             "Content-Type": "application/json",
         }
 
+    @contextlib.asynccontextmanager
+    async def _http(self):
+        """Yield an aiohttp session bound to the *current* running loop.
+
+        ``self._session`` is created in ``connect()`` and bound to the gateway's
+        event loop. Cron auto-delivery, however, runs the send coroutine via
+        ``asyncio.run(...)`` inside a worker thread (cron/scheduler.py), which
+        spins up a brand-new event loop. Reusing the connect-time session from
+        that foreign loop raises "Timeout context manager should be used inside
+        a task" and the delivery fails (digest generated but never posted).
+
+        So: if a persistent session exists AND it lives on the running loop,
+        reuse it; otherwise create a short-lived session for this call and close
+        it afterwards. This keeps the hot WebSocket path fast while making the
+        cron delivery path loop-safe.
+        """
+        import aiohttp
+
+        running = asyncio.get_running_loop()
+        sess = self._session
+        sess_loop = getattr(sess, "_loop", None) if sess is not None else None
+        sess_closed_attr = getattr(sess, "closed", False) if sess is not None else False
+        sess_closed = sess_closed_attr if isinstance(sess_closed_attr, bool) else False
+        if (
+            sess is not None
+            and not sess_closed
+            and (sess_loop is running or not isinstance(sess_loop, asyncio.AbstractEventLoop))
+        ):
+            yield sess
+            return
+
+        ephemeral = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+        try:
+            yield ephemeral
+        finally:
+            await ephemeral.close()
+
     async def _api_get(self, path: str) -> Dict[str, Any]:
         """GET /api/v4/{path}."""
         import aiohttp
@@ -164,12 +202,13 @@ class MattermostAdapter(BasePlatformAdapter):
             return {}
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
-            async with self._session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                if resp.status >= 400:
-                    body = await resp.text()
-                    logger.error("MM API GET %s → %s: %s", path, resp.status, body[:200])
-                    return {}
-                return await resp.json()
+            async with self._http() as sess:
+                async with sess.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        logger.error("MM API GET %s → %s: %s", path, resp.status, body[:200])
+                        return {}
+                    return await resp.json()
         except aiohttp.ClientError as exc:
             logger.error("MM API GET %s network error: %s", path, exc)
             return {}
@@ -186,17 +225,18 @@ class MattermostAdapter(BasePlatformAdapter):
         self._last_post_status = None
         self._last_post_error = ""
         try:
-            async with self._session.post(
-                url, headers=self._headers(), json=payload,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as resp:
-                self._last_post_status = resp.status
-                if resp.status >= 400:
-                    body = await resp.text()
-                    self._last_post_error = body or ""
-                    logger.error("MM API POST %s → %s: %s", path, resp.status, body[:200])
-                    return {}
-                return await resp.json()
+            async with self._http() as sess:
+                async with sess.post(
+                    url, headers=self._headers(), json=payload,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    self._last_post_status = resp.status
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        self._last_post_error = body or ""
+                        logger.error("MM API POST %s → %s: %s", path, resp.status, body[:200])
+                        return {}
+                    return await resp.json()
         except aiohttp.ClientError as exc:
             self._last_post_error = str(exc)
             logger.error("MM API POST %s network error: %s", path, exc)
@@ -266,14 +306,16 @@ class MattermostAdapter(BasePlatformAdapter):
             return {}
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
-            async with self._session.put(
-                url, headers=self._headers(), json=payload
-            ) as resp:
-                if resp.status >= 400:
-                    body = await resp.text()
-                    logger.error("MM API PUT %s → %s: %s", path, resp.status, body[:200])
-                    return {}
-                return await resp.json()
+            async with self._http() as sess:
+                async with sess.put(
+                    url, headers=self._headers(), json=payload,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        logger.error("MM API PUT %s → %s: %s", path, resp.status, body[:200])
+                        return {}
+                    return await resp.json()
         except aiohttp.ClientError as exc:
             logger.error("MM API PUT %s network error: %s", path, exc)
             return {}
@@ -294,14 +336,15 @@ class MattermostAdapter(BasePlatformAdapter):
             content_type=content_type,
         )
         headers = {"Authorization": f"Bearer {self._token}"}
-        async with self._session.post(url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-            if resp.status >= 400:
-                body = await resp.text()
-                logger.error("MM file upload → %s: %s", resp.status, body[:200])
-                return None
-            data = await resp.json()
-            infos = data.get("file_infos", [])
-            return infos[0]["id"] if infos else None
+        async with self._http() as sess:
+            async with sess.post(url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error("MM file upload → %s: %s", resp.status, body[:200])
+                    return None
+                data = await resp.json()
+                infos = data.get("file_infos", [])
+                return infos[0]["id"] if infos else None
 
     # ------------------------------------------------------------------
     # Required overrides

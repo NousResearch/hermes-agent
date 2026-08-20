@@ -573,6 +573,99 @@ platforms:
 - The card stream is stopped exactly once when the turn finalizes, including
   on interrupt/disconnect, so no dangling live indicator is left behind.
 
+### Custom API endpoint (`base_url`) & network proxy
+
+By default Hermes talks to Slack's Web API at `https://slack.com/api/`. If you run
+a **self-hosted Slack-compatible server**, a **staging/mock endpoint**, or a
+dedicated Enterprise endpoint, point Hermes at it with `base_url`:
+
+```yaml
+slack:
+  # Custom Slack Web API base URL (default: https://slack.com/api/).
+  # A trailing slash is added automatically if you omit it. Set it here in
+  # config.yaml, not .env (which holds secrets like SLACK_BOT_TOKEN).
+  base_url: "https://slack.internal.corp/api/"
+```
+
+`base_url` applies to every Web API call (`chat.postMessage`, `auth.test`, file
+uploads, …), including out-of-process cron delivery. Socket Mode obtains its
+WebSocket URL dynamically from the endpoint's `apps.connections.open`, so a fully
+custom endpoint must implement that method too.
+
+#### Inbound file downloads from a custom endpoint
+
+Incoming attachments — images, voice clips, PDFs, anything else — are fetched
+from the `url_private` / `url_private_download` links in the event payload, and
+those links are minted by whatever endpoint the workspace actually talks to. So
+`base_url` governs downloads too: **file URLs on that endpoint are trusted** for
+inbound downloads. Concretely, there only:
+
+- the URL may resolve to a **private or loopback address**
+  (`http://127.0.0.1:49917/files/…`) — the usual SSRF block that protects the
+  bot token does not apply to an endpoint you configured yourself;
+- **redirects are pinned to the endpoint.** It may `3xx` within itself (auth
+  handoff, path rewrite, API host to file host), but any hop that leaves it is
+  refused, because the bot token travels with the request.
+
+"That endpoint" means the **host of `base_url` and any host below it**, on the
+same scheme and port — the same shape as the Slack-CDN allowlist. Slack splits
+the API (`slack.com`) from file content (`files.slack.com`), so a deployment
+mirroring that split serves files from `files.slack.internal.corp` while
+`base_url` is `https://slack.internal.corp/api/`, and those downloads are
+trusted. A host that is *not* below `base_url` is refused, including its parent
+domain (`internal.corp`) and that parent's other children
+(`files.internal.corp`); the refusal in `~/.hermes/logs/gateway.log` names the
+trusted endpoint so the mismatch is obvious. Serve file content below the host
+`base_url` names.
+
+Pointing `base_url` at Slack itself (`https://slack.com/api/`, or an Enterprise
+`*.slack.com` endpoint) changes nothing for downloads: Slack's own CDN hosts keep
+the standard path, with the SSRF pre-flight and the DNS-pinned client intact.
+
+If your endpoint fronts the real Slack rather than serving the workspace
+itself, the file links it passes through still point at `https://files.slack.com/…`
+and are fetched from Slack directly. Rewrite them to your own host in the
+endpoint's API responses (and in Socket Mode frames) if downloads have to go
+through it — for example when only the endpoint holds a usable bot token, as
+the CDN then answers with an HTML login page instead of file bytes.
+
+Without a custom `base_url` nothing changes: inbound file URLs are accepted only
+on Slack's own CDN hosts (`slack.com`, `slack-files.com` and their subdomains)
+over `https`.
+
+#### Routing Slack through a proxy
+
+Hermes honors the standard `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` environment
+variables (and, on macOS, the system proxy) for Slack traffic. Only `http://` and
+`https://` proxy schemes are used for the in-process Slack bot; other schemes
+(e.g. SOCKS) are ignored for it.
+
+To send Slack **directly**, bypassing the proxy, add a Slack host to `NO_PROXY`:
+
+```bash
+# Bypass the proxy for the real Slack hosts
+NO_PROXY=slack.com
+```
+
+`NO_PROXY` entries match subdomains, so `NO_PROXY=slack.com` covers
+`files.slack.com` and `wss-primary.slack.com` as well. When you set a custom
+`base_url`, **its host is honored in `NO_PROXY` too** — so
+`NO_PROXY=slack.internal.corp` disables the proxy for your custom endpoint.
+The in-process bot keeps a Socket Mode connection alongside the Web API, so any
+of those hosts in `NO_PROXY` sends its traffic direct. Out-of-process delivery
+(cron, `send_message`) talks to the Web API endpoint only and is matched against
+that endpoint's host alone — `NO_PROXY=slack.com` does not send it direct once
+`base_url` points somewhere else. Attachment uploads inherit that decision and
+then post the bytes to the upload URL the endpoint hands out (`files.slack.com`
+unless it rewrites them).
+
+That scoping also narrows **partial** `NO_PROXY` entries on a default
+deployment: `NO_PROXY=files.slack.com` alone no longer sends cron /
+`send_message` Web API calls direct, because they are matched against the API
+host (`slack.com`) only. The in-process bot is unaffected — it still matches any
+of the Slack hosts it uses. Name the API host (`NO_PROXY=slack.com`, or your
+`base_url` host) when out-of-process delivery has to bypass the proxy too.
+
 ### Session Isolation
 
 ```yaml

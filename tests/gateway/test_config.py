@@ -371,6 +371,34 @@ class TestLoadGatewayConfig:
             config.platforms[Platform.SLACK].typing_status_text == "chasing yarn…"
         )
 
+    def test_bridges_slack_base_url_from_config_yaml(self, tmp_path, monkeypatch):
+        """config.yaml ``slack.base_url`` propagates into
+        ``PlatformConfig.extra['base_url']`` through the plugin's
+        apply_yaml_config hook (not an env var).
+
+        Exercises the real loader -> registry dispatch -> _apply_yaml_config
+        chain (no mocks), so the full config-propagation path is covered.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "slack:\n  base_url: https://slack.internal.corp/api\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with patch.dict(os.environ, clear=False):
+            os.environ.pop("SLACK_BASE_URL", None)
+            config = load_gateway_config()
+            # Seeded into PlatformConfig.extra, NOT bridged to an env var.
+            assert Platform.SLACK in config.platforms
+            assert (
+                config.platforms[Platform.SLACK].extra.get("base_url")
+                == "https://slack.internal.corp/api"
+            )
+            assert os.environ.get("SLACK_BASE_URL") is None
+
     def test_multiplex_profiles_from_nested_gateway_section(self, tmp_path, monkeypatch):
         """``gateway.multiplex_profiles: true`` (the nested form written by
         ``hermes config set gateway.multiplex_profiles true``) must enable

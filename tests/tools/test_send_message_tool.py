@@ -33,6 +33,7 @@ from tools.send_message_tool import (
     _send_signal,
     _send_telegram,
     _send_to_platform,
+    _slack_dm_base_url,
     send_message_tool,
 )
 # Discord helpers moved to the plugin in #24325.  Import from the new path
@@ -272,6 +273,154 @@ def _ensure_slack_mock(monkeypatch):
         ("slack_sdk.web.async_client", slack_sdk.web.async_client),
     ]:
         monkeypatch.setitem(sys.modules, name, mod)
+
+
+class TestSlackDmBaseUrl:
+    """_slack_dm_base_url falls back to the slack_sdk default for unset/blank
+    values and always yields a trailing slash, so the conversations.open URL is
+    never malformed (the reviewer-flagged '/conversations.open' collapse)."""
+
+    def test_unset_falls_back_to_default(self):
+        assert _slack_dm_base_url(None) == "https://slack.com/api/"
+        assert _slack_dm_base_url({}) == "https://slack.com/api/"
+
+    def test_empty_string_falls_back_to_default(self):
+        assert _slack_dm_base_url({"base_url": ""}) == "https://slack.com/api/"
+
+    def test_whitespace_falls_back_to_default(self):
+        # Reachable verbatim via platforms.slack.extra.base_url; must not
+        # collapse to "/".
+        assert _slack_dm_base_url({"base_url": "   "}) == "https://slack.com/api/"
+
+    def test_custom_host_gets_trailing_slash(self):
+        assert (
+            _slack_dm_base_url({"base_url": "https://slack.internal.corp/api"})
+            == "https://slack.internal.corp/api/"
+        )
+
+    def test_custom_host_trailing_slash_preserved(self):
+        assert (
+            _slack_dm_base_url({"base_url": "https://slack.internal.corp/api/"})
+            == "https://slack.internal.corp/api/"
+        )
+
+    def test_surrounding_whitespace_is_stripped(self):
+        assert (
+            _slack_dm_base_url({"base_url": "  https://slack.internal.corp/api  "})
+            == "https://slack.internal.corp/api/"
+        )
+
+    def test_conversations_open_url_never_collapses_to_root(self):
+        # The exact string the DM path builds must always be well-formed.
+        for extra in (None, {}, {"base_url": ""}, {"base_url": "   "}):
+            url = _slack_dm_base_url(extra) + "conversations.open"
+            assert url == "https://slack.com/api/conversations.open"
+            assert not url.startswith("/conversations.open")
+
+
+class TestSlackDmProxyBypass:
+    """NO_PROXY applies to the endpoint DM resolution actually talks to.
+
+    ``resolve_proxy_url`` consults NO_PROXY only for the hosts it is told
+    about, and bypasses as soon as any of them matches.
+    """
+
+    BASE = "https://slack.internal.corp/api/"
+
+    @staticmethod
+    def _fake_aiohttp(monkeypatch, calls):
+        class _Resp:
+            async def json(self):
+                return {"ok": True, "channel": {"id": "D1"}}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return None
+
+        class _Session:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return None
+
+            def post(self, url, **kwargs):
+                calls.append((url, kwargs))
+                return _Resp()
+
+        monkeypatch.setitem(
+            sys.modules,
+            "aiohttp",
+            SimpleNamespace(
+                ClientSession=lambda timeout=None, **kw: _Session(),
+                ClientTimeout=lambda total=None: None,
+            ),
+        )
+
+    def _resolve(self, monkeypatch, env):
+        """Run the DM leg and return the proxy URL it resolved.
+
+        That URL is the proxy decision itself; the kwargs it turns into are
+        transport detail — with aiohttp-socks installed every scheme travels
+        as a ``connector`` in the session kwargs and no ``proxy`` request
+        kwarg.
+        """
+        from tools.send_message_tool import _resolve_slack_user_target
+
+        calls = []
+        self._fake_aiohttp(monkeypatch, calls)
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
+                    "https_proxy", "http_proxy", "all_proxy", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        seen = []
+        with patch(
+            "gateway.platforms.base.proxy_kwargs_for_aiohttp",
+            side_effect=lambda url: (seen.append(url), ({}, {}))[1],
+        ):
+            resolved, error = asyncio.run(
+                _resolve_slack_user_target("xoxb", "user:U1", {"base_url": self.BASE})
+            )
+        assert error is None, error
+        assert resolved == "D1"
+        assert calls and calls[0][0] == self.BASE + "conversations.open"
+        assert len(seen) == 1
+        return seen[0]
+
+    def test_no_proxy_on_the_custom_host_keeps_the_request_direct(
+        self, monkeypatch
+    ):
+        assert (
+            self._resolve(
+                monkeypatch,
+                {
+                    "HTTPS_PROXY": "http://proxy:3128",
+                    "NO_PROXY": "slack.internal.corp",
+                },
+            )
+            is None
+        )
+
+    def test_proxy_still_applies_without_a_matching_no_proxy(self, monkeypatch):
+        assert (
+            self._resolve(monkeypatch, {"HTTPS_PROXY": "http://proxy:3128"})
+            == "http://proxy:3128"
+        )
+
+    def test_no_proxy_on_slack_com_does_not_bypass_a_custom_endpoint(
+        self, monkeypatch
+    ):
+        """Only the endpoint being called counts, not Slack's own hosts."""
+        assert (
+            self._resolve(
+                monkeypatch,
+                {"HTTPS_PROXY": "http://proxy:3128", "NO_PROXY": "slack.com"},
+            )
+            == "http://proxy:3128"
+        )
 
 
 class TestSendMessageTool:

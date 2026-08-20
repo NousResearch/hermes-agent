@@ -6,6 +6,7 @@ from queue import Empty, SimpleQueue
 import threading
 
 import pytest
+pytest.importorskip("fastapi")
 from fastapi import HTTPException
 
 

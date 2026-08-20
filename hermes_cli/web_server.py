@@ -7205,6 +7205,8 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                 "max_tokens": preset.max_tokens,
                 "reference_max_tokens": preset.reference_max_tokens,
                 "fanout": preset.fanout,
+                "reference_input_scope": preset.reference_input_scope,
+                "reference_input_filter": preset.reference_input_filter,
                 "enabled": preset.enabled,
             }
 
@@ -7228,6 +7230,8 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                         max_tokens=body.max_tokens,
                         reference_max_tokens=body.reference_max_tokens,
                         fanout=body.fanout,
+                        reference_input_scope=body.reference_input_scope,
+                        reference_input_filter=body.reference_input_filter,
                         enabled=body.enabled,
                     )
                 )

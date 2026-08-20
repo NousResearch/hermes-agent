@@ -90,6 +90,9 @@ moa:
       # the same behavior as a single-model Hermes agent.
       # reference_temperature: 0.6
       # aggregator_temperature: 0.4
+      # Optional advisor-input boundary (legacy-safe defaults shown):
+      reference_input_scope: conversation  # or current_turn
+      reference_input_filter: none         # or redact
       max_tokens: 4096
       enabled: true
 ```
@@ -99,6 +102,43 @@ Default preset:
 - reference: `openai-codex:gpt-5.5`
 - reference: `openrouter:deepseek/deepseek-v4-pro`
 - aggregator / acting model: `openrouter:anthropic/claude-opus-4.8`
+
+### Limit and redact advisor input
+
+MoA advisors normally receive the conversation view used historically by
+Hermes. For sessions that may contain sensitive history, each preset can narrow
+and sanitize the payload sent to advisor providers:
+
+- `reference_input_scope: conversation` (default) sends the normal conversation
+  view. `current_turn` sends only the latest real user turn; prior user,
+  assistant, and tool frames are excluded.
+- `reference_input_filter: none` (default) preserves the selected view verbatim.
+  `redact` applies Hermes' central secret/PII redactor before any advisor provider
+  call, including email, phone, tokens, private keys, and URL credentials.
+
+Image data is never forwarded as base64 in either scope; image-only turns use a
+non-text attachment placeholder. These settings affect advisor input only. The
+acting aggregator keeps the raw conversation, while `moa.privacy_filter` below
+continues to control how advisor **outputs** are displayed, traced, and passed to
+the aggregator. For the strongest boundary, combine:
+
+```yaml
+moa:
+  privacy_filter: full
+  presets:
+    private:
+      reference_input_scope: current_turn
+      reference_input_filter: redact
+      reference_models:
+        - provider: openrouter
+          model: openai/gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+```
+
+Both defaults preserve the behavior of existing presets. Invalid hand-edited
+values fall back to those defaults when read; Dashboard/API writes reject them.
 
 ### Tuning advisor speed with `reference_max_tokens`
 

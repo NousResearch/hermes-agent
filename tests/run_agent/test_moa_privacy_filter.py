@@ -184,3 +184,63 @@ def test_full_mode_covers_one_shot_aggregate_moa_context(monkeypatch, tmp_path):
     agg_input = str(agg_calls[0]["messages"])
     assert "ceo@example.com" not in agg_input
     assert "[redacted email]" in agg_input
+
+
+def test_one_shot_input_fallback_resolves_named_default_with_one_config_read(
+    monkeypatch,
+):
+    """Older direct callers omit the input kwargs; resolve the named default
+    preset, and share that config read with the output privacy check."""
+    calls = _install_fake_llm(monkeypatch)
+    loads = 0
+
+    def load_config():
+        nonlocal loads
+        loads += 1
+        return {
+            "moa": {
+                "default_preset": "private",
+                "presets": {
+                    "private": {
+                        "reference_input_scope": "current_turn",
+                        "reference_input_filter": "redact",
+                        "reference_models": [
+                            {"provider": "openai-codex", "model": "gpt-5.5"}
+                        ],
+                        "aggregator": {
+                            "provider": "openrouter",
+                            "model": "anthropic/claude-opus-4.8",
+                        },
+                    }
+                },
+            }
+        }
+
+    monkeypatch.setattr("hermes_cli.config.load_config", load_config)
+    monkeypatch.setattr(
+        "agent.moa_loop._slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+    # Isolate this boundary from the aggregator reasoning helper, which has its
+    # own pre-existing config read unrelated to MoA input/privacy resolution.
+    monkeypatch.setattr("agent.moa_loop._aggregator_reasoning_config", lambda _slot: None)
+
+    from agent.moa_loop import aggregate_moa_context
+
+    aggregate_moa_context(
+        user_prompt="email alice@corp.example",
+        api_messages=[
+            {"role": "user", "content": "old private history"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "email alice@corp.example"},
+        ],
+        reference_models=[{"provider": "openai-codex", "model": "gpt-5.5"}],
+        aggregator={"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+    )
+
+    ref_call = next(call for call in calls if call["task"] == "moa_reference")
+    payload = "".join(str(message.get("content") or "") for message in ref_call["messages"])
+    assert loads == 1
+    assert "old private history" not in payload
+    assert "alice@corp.example" not in payload
+    assert "email [redacted email]" in payload

@@ -1996,6 +1996,9 @@ DEFAULT_CONFIG = {
                 ],
                 "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
                 "max_tokens": 4096,
+                # Advisor-input boundary. Defaults preserve historical behavior.
+                "reference_input_scope": "conversation",  # or "current_turn"
+                "reference_input_filter": "none",  # or "redact"
                 "enabled": True,
             }
         },

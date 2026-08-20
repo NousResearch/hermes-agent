@@ -2458,6 +2458,10 @@ export interface MoaConfigResponse {
     reference_max_tokens?: number | null;
     /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
     fanout?: string;
+    /** Advisor transcript view — round-tripped, not edited here. */
+    reference_input_scope?: "conversation" | "current_turn";
+    /** Pre-provider advisor input filtering — round-tripped, not edited here. */
+    reference_input_filter?: "none" | "redact";
     enabled: boolean;
   }>;
   reference_models: MoaModelSlot[];
@@ -2467,6 +2471,8 @@ export interface MoaConfigResponse {
   reference_timeout: number | null;
   degraded_reference_policy: "loud" | "silent";
   max_tokens: number;
+  reference_input_scope?: "conversation" | "current_turn";
+  reference_input_filter?: "none" | "redact";
   enabled: boolean;
 }
 

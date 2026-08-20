@@ -162,6 +162,9 @@ class _MoaReferenceControls(BaseModel):
     # auxiliary.moa_reference.timeout (900s default).
     reference_timeout: Optional[float] = None
     degraded_reference_policy: Literal["loud", "silent"] = "loud"
+    # Optional for older clients; normalization supplies legacy-safe defaults.
+    reference_input_scope: Optional[Literal["conversation", "current_turn"]] = None
+    reference_input_filter: Optional[Literal["none", "redact"]] = None
 
     @field_validator("reference_timeout", mode="before")
     @classmethod

@@ -2370,6 +2370,8 @@ def run_conversation(
                     degraded_reference_policy=str(
                         moa_config.get("degraded_reference_policy") or "loud"
                     ),
+                    reference_input_scope=moa_config.get("reference_input_scope"),
+                    reference_input_filter=moa_config.get("reference_input_filter"),
                     agent=agent,
                 )
                 if _moa_context:

@@ -162,6 +162,18 @@ def coerce_privacy_filter(value: Any) -> str:
     return ""
 
 
+def _coerce_reference_input_scope(value: Any) -> str:
+    """Normalize the advisor input view; invalid reads preserve legacy scope."""
+    mode = str(value or "").strip().lower()
+    return mode if mode in {"conversation", "current_turn"} else "conversation"
+
+
+def _coerce_reference_input_filter(value: Any) -> str:
+    """Normalize advisor input filtering; invalid reads preserve raw input."""
+    mode = str(value or "").strip().lower()
+    return mode if mode in {"none", "redact"} else "none"
+
+
 def _clean_reasoning_effort(value: Any) -> str | None:
     """Return a canonical per-slot reasoning effort, or None when unset/invalid."""
     from hermes_constants import parse_reasoning_effort
@@ -290,6 +302,17 @@ def validate_moa_payload(raw: Any) -> list[str]:
         if agg_issue:
             problems.append(f"preset '{label}' aggregator: {agg_issue}")
 
+        scope = str(preset.get("reference_input_scope") or "conversation").strip().lower()
+        if scope not in {"conversation", "current_turn"}:
+            problems.append(
+                f"preset '{label}' reference_input_scope: must be 'conversation' or 'current_turn'"
+            )
+        input_filter = str(preset.get("reference_input_filter") or "none").strip().lower()
+        if input_filter not in {"none", "redact"}:
+            problems.append(
+                f"preset '{label}' reference_input_filter: must be 'none' or 'redact'"
+            )
+
     return problems
 
 
@@ -306,6 +329,8 @@ def _default_preset() -> dict[str, Any]:
         "max_tokens": 4096,
         "reference_max_tokens": None,
         "fanout": "user_turn",
+        "reference_input_scope": "conversation",
+        "reference_input_filter": "none",
         "enabled": True,
     }
 
@@ -366,6 +391,13 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         # last advisor run. Also accepts the mapping form
         # {mode: every_n, n: N}, normalized to the canonical string.
         "fanout": _coerce_fanout(raw.get("fanout")),
+        # Defaults preserve the historical full, unredacted advisor input.
+        "reference_input_scope": _coerce_reference_input_scope(
+            raw.get("reference_input_scope")
+        ),
+        "reference_input_filter": _coerce_reference_input_filter(
+            raw.get("reference_input_filter")
+        ),
     }
 
 
@@ -415,6 +447,8 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "max_tokens": active["max_tokens"],
         "reference_max_tokens": active.get("reference_max_tokens"),
         "fanout": active.get("fanout", "user_turn"),
+        "reference_input_scope": active.get("reference_input_scope", "conversation"),
+        "reference_input_filter": active.get("reference_input_filter", "none"),
         "enabled": active["enabled"],
         # MoA-level (not per-preset) toggles ride at the top level alongside
         # save_traces. privacy_filter: '' (off, default) | 'display' | 'full'

@@ -177,6 +177,128 @@ def test_validate_moa_payload_agrees_with_clean_slot():
 # --- privacy_filter normalization ---
 
 
+# ── G8 V2 oracle: reference_input_scope / reference_input_filter (RED) ─────
+#
+# Contract for the MoA reference input boundary (feature NOT yet implemented):
+# read-time defaults degrade to the legacy behavior (conversation / none), and
+# write-time validation rejects anything else. The runtime seam consumes these
+# fields from the RESOLVED PRESET (facade create() reads presets via
+# resolve_moa_preset), so the contract is asserted at preset level — no new
+# top-level flattened keys are required.
+#
+# SUT call reconciliation (parametrization runs both combos):
+#   normalize_moa_config x4  (default / preset w/ fields / invalid read / flat)
+#   validate_moa_payload x2  (invalid write / valid accepted)
+#   decode_moa_turn      x1          = 7 per combo -> 14 total
+#   (encode_moa_turn is a fixture builder and is not counted as SUT.)
+
+
+@pytest.mark.parametrize(
+    "scope, input_filter",
+    [("conversation", "none"), ("current_turn", "redact")],
+)
+def test_reference_input_scope_filter_config_contract(scope, input_filter):
+    """F1: reference_input_scope/reference_input_filter read+write contract.
+
+    - default legacy: absent config falls back to conversation / none;
+    - preset roundtrip + validate-accepted => normalize preserves valid values;
+    - invalid write-time values are rejected loudly (validate_moa_payload),
+      never silently repaired;
+    - invalid read-time values degrade to the legacy defaults;
+    - the legacy flat shape still becomes the default preset, fields included;
+    - the /moa one-shot marker round-trips the fields through encode/decode.
+
+    RED baseline: neither field exists in the config model yet, so every
+    value-bearing assertion fails on the absent key (None != expected).
+    """
+    from hermes_cli.moa_config import (
+        decode_moa_turn,
+        encode_moa_turn,
+        normalize_moa_config,
+        validate_moa_payload,
+    )
+
+    # Exercise every contract seam before asserting RED, so the baseline run
+    # mechanically reconciles all 7 calls per parameterized case.
+    default_cfg = normalize_moa_config({})
+
+    valid_preset = {
+        **_valid_preset_payload(),
+        "reference_input_scope": scope,
+        "reference_input_filter": input_filter,
+    }
+    payload = {"default_preset": "p", "presets": {"p": valid_preset}}
+    valid_cfg = normalize_moa_config(payload)
+
+    bad_payload = {
+        "presets": {
+            "p": {
+                **_valid_preset_payload(),
+                "reference_input_scope": f"{scope}-bogus",
+                "reference_input_filter": f"{input_filter}-bogus",
+            }
+        }
+    }
+    problems = validate_moa_payload(bad_payload)
+    valid_problems = validate_moa_payload(payload)
+
+    invalid_cfg = normalize_moa_config(
+        {
+            "default_preset": "p",
+            "presets": {
+                "p": {
+                    **valid_preset,
+                    "reference_input_scope": f"{scope}-bogus",
+                    "reference_input_filter": f"{input_filter}-bogus",
+                }
+            },
+        }
+    )
+
+    flat = {
+        **_valid_preset_payload(),
+        "reference_input_scope": scope,
+        "reference_input_filter": input_filter,
+    }
+    flat_cfg = normalize_moa_config(flat)
+    prompt, decoded = decode_moa_turn(encode_moa_turn("do the thing", config=payload))
+
+    # 1. Default legacy: both fields fall back to conversation / none.
+    assert default_cfg["presets"]["default"].get("reference_input_scope") == "conversation"
+    assert default_cfg["presets"]["default"].get("reference_input_filter") == "none"
+
+    # 2. Preset roundtrip: valid values survive normalize unchanged.
+    assert valid_cfg["presets"]["p"].get("reference_input_scope") == scope
+    assert valid_cfg["presets"]["p"].get("reference_input_filter") == input_filter
+    assert valid_cfg["presets"]["p"]["aggregator"] == valid_preset["aggregator"]
+
+    # 3. Invalid write-time values are rejected loudly, not silently repaired.
+    assert any(
+        "reference_input_scope" in p or "reference_input_filter" in p
+        for p in problems
+    )
+
+    # 4. Valid write-time payload passes validation (the "accepted" half).
+    assert valid_problems == []
+
+    # 5. Invalid named-preset values degrade to the legacy defaults at read time.
+    assert invalid_cfg["presets"]["p"].get("reference_input_scope") == "conversation"
+    assert invalid_cfg["presets"]["p"].get("reference_input_filter") == "none"
+
+    # 6. Legacy flat shape still becomes the default preset, fields included.
+    assert flat_cfg["presets"]["default"]["reference_models"] == _enabled_refs(
+        flat["reference_models"]
+    )
+    assert flat_cfg["presets"]["default"]["aggregator"] == flat["aggregator"]
+    assert flat_cfg["presets"]["default"].get("reference_input_scope") == scope
+    assert flat_cfg["presets"]["default"].get("reference_input_filter") == input_filter
+
+    # 7. /moa one-shot marker round-trips the fields through encode/decode.
+    assert prompt == "do the thing"
+    assert decoded.get("reference_input_scope") == scope
+    assert decoded.get("reference_input_filter") == input_filter
+
+
 
 
 

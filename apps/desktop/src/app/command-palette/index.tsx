@@ -564,6 +564,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // highlighted brightness. `system` has to be resolved here — previewTheme
   // paints a concrete light/dark.
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
+
   const resolveThemeMode = useCallback(
     (target: ThemeMode): 'light' | 'dark' => (target === 'system' ? (systemDark ? 'dark' : 'light') : target),
     [systemDark]

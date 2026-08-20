@@ -55,6 +55,59 @@ echo "Owner: $OWNER, Repo: $REPO"
 
 ---
 
+## 0. Check for Existing Solutions (MANDATORY before any PR)
+
+**Before fixing a bug or proposing a feature, search the upstream repo to see if someone already solved it.** Skipping this step wastes reviewer time, clutters the PR queue, and annoys maintainers. Many bugs already have open PRs with working fixes — your job is to find and amplify them, not to create noise.
+
+### Step 0a: Search existing issues
+
+```bash
+# Broad keyword search on the upstream repo
+gh search issues "your topic keywords" --repo <owner>/<repo> --limit 20 --state open
+gh search issues "your topic keywords" --repo <owner>/<repo> --limit 10 --state closed
+
+# Alternatively via web search
+# site:github.com/<owner>/<repo>/issues "your keywords"
+```
+
+### Step 0b: Search existing PRs
+
+```bash
+# Search open PRs for the same fix/feature
+gh search prs "your topic keywords" --repo <owner>/<repo> --limit 20 --state open
+
+# Also check closed PRs — many are abandoned for fixable reasons
+gh search prs "your topic keywords" --repo <owner>/<repo> --limit 10 --state closed
+```
+
+### Step 0c: Check git log for related commits
+
+```bash
+# Search commit messages on the target branch
+git log origin/main --oneline --grep="keyword" | head -20
+
+# Search by file changed (who touched this code recently?)
+git log origin/main --oneline -- path/to/affected/file.py | head -10
+```
+
+### What to do with results
+
+| You find... | Action |
+|-------------|--------|
+| Open PR with same fix, unreviewed | Comment supportively. Do NOT open a duplicate. |
+| Open PR with same fix, stalled on CI/feedback | Help fix the CI issue if you can. Add a review comment with the fix. |
+| Closed PR that was rejected for a specific reason | Check if the rejection reason still applies. If not, mention it. |
+| Closed PR that diverged from main | Re-implement on a clean branch, reference the original PR with "Supersedes #NNNN". |
+| Nothing found | Safe to proceed. Still mention your search in the PR body: "Searched issues/PRs for X, Y — no existing coverage." |
+
+### Hard rule
+
+**If you find an existing open PR that solves the same problem, do NOT open another one.** Instead:
+1. Comment on the existing PR explaining why it matters
+2. Help review, test, or fix CI failures on the existing PR
+3. If the existing PR is abandoned, mention it in a new PR as "Supersedes #NNNN" with an explanation
+
+
 ## 1. Branch Creation
 
 This part is pure `git` — identical either way:

@@ -657,6 +657,11 @@ class GatewayAuthorizationMixin:
                         profile=adapter_profile,
                     ):
                         return True
+                    # Adapter's own group_policy check (open/allowlist/etc.)
+                    # is already a trustworthy intake decision — the adapter
+                    # gates at intake with its own policy + @mention check.
+                    if effective_policy == "open":
+                        return True
                 else:
                     effective_policy = self._adapter_dm_policy(
                         source.platform,

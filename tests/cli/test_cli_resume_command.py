@@ -40,6 +40,34 @@ class TestCliResumeCommand:
         assert "/resume 2" in output
         assert "/resume <session title>" in output
 
+    def test_show_recent_sessions_sanitizes_terminal_escapes(self, capsys):
+        """A stored title/preview carrying raw terminal escapes (pasted content,
+        gateway-origin text, or model output echoing an injected tool result)
+        must not clear/retitle/restyle the terminal when the /resume list is
+        rendered. Escapes/control bytes are stripped; the visible text survives.
+        """
+        cli_obj = _make_cli()
+        cli_obj._list_recent_sessions = MagicMock(return_value=[
+            {
+                "id": "sess_evil",
+                # OSC window-retitle + BEL, then CSI clear-screen, around text.
+                "title": "ok\x1b]0;PWNED\x07\x1b[2Jtitle",
+                "preview": "hi\x1b[31m\x07\x1b[2Jbye",
+                "last_active": None,
+            },
+        ])
+
+        shown = cli_obj._show_recent_sessions(reason="resume")
+        output = capsys.readouterr().out
+
+        assert shown is True
+        # No raw ESC / BEL bytes reach the terminal...
+        assert "\x1b" not in output
+        assert "\x07" not in output
+        # ...but the visible characters survive.
+        assert "oktitle" in output
+        assert "hibye" in output
+
     def test_show_recent_sessions_uses_prompt_toolkit_safe_print(self):
         cli_obj = _make_cli()
         cli_obj._list_recent_sessions = MagicMock(return_value=[

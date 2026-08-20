@@ -7,6 +7,7 @@ Diagnoses issues with Hermes Agent setup.
 import os
 import sys
 import subprocess
+import time
 import shutil
 import importlib.util
 from pathlib import Path
@@ -492,6 +493,86 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
     # would only duplicate it.
 
     return lines
+
+
+
+
+def collect_source_tree_state(project_root: Path = PROJECT_ROOT) -> list[tuple[str, str, str]]:
+    """Return non-failing diagnostics for the Hermes source checkout.
+
+    The running install may be a git checkout with local patches applied. Doctor
+    should surface that state so users can tell whether they are running clean
+    upstream, a fork branch, or dirty live source.
+    """
+    root = Path(project_root)
+    git_dir = root / ".git"
+    if not git_dir.exists():
+        return []
+
+    # Share one small latency budget across every git probe so a slow or
+    # network-mounted checkout cannot stall the whole doctor command.
+    deadline = time.monotonic() + 3.0
+
+    def _git(*args: str) -> str | None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(root), *args],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=remaining,
+            )
+        except Exception:
+            return None
+        if proc.returncode != 0:
+            return None
+        return proc.stdout.strip()
+
+    rows: list[tuple[str, str, str]] = []
+    branch = _git("branch", "--show-current") or "(detached)"
+    head = _git("rev-parse", "--short=12", "HEAD")
+    if head:
+        rows.append(("info", "Source checkout", f"{branch} @ {head}"))
+
+    upstream = _git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    if upstream:
+        ahead_behind = _git("rev-list", "--left-right", "--count", f"{upstream}...HEAD")
+        if ahead_behind:
+            try:
+                behind_s, ahead_s = ahead_behind.split()
+                behind, ahead = int(behind_s), int(ahead_s)
+            except Exception:
+                behind = ahead = 0
+            level = "ok" if ahead == 0 and behind == 0 else "warn"
+            rows.append((level, f"Upstream {upstream}", f"behind {behind}, ahead {ahead}"))
+
+    status = _git("status", "--porcelain")
+    if status is None:
+        return rows
+    changed = [line for line in status.splitlines() if line and not line.startswith("?? ")]
+    untracked = [line for line in status.splitlines() if line.startswith("?? ")]
+    if changed:
+        rows.append(("warn", "Source checkout has local modifications", f"{len(changed)} tracked file(s) changed"))
+    else:
+        rows.append(("ok", "No tracked source modifications", ""))
+    if untracked:
+        sample = untracked[0][3:]
+        suffix = f"; first: {sample}" if sample else ""
+        rows.append(("info", "Untracked source files", f"{len(untracked)} file(s){suffix}"))
+    return rows
+
+
+def report_source_tree_state(project_root: Path = PROJECT_ROOT) -> None:
+    for level, text, detail in collect_source_tree_state(project_root):
+        if level == "ok":
+            check_ok(text, detail)
+        elif level == "warn":
+            check_warn(text, detail)
+        else:
+            check_info(f"{text} {detail}".strip())
 
 
 def _section(title: str) -> None:
@@ -1150,6 +1231,9 @@ def run_doctor(args):
     except Exception as e:
         check_warn(f"MCP security check failed: {e}")
     
+    _section("Source Checkout")
+    report_source_tree_state()
+
     _section("Python Environment")
     py_version = sys.version_info
     if py_version >= (3, 11):

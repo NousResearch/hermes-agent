@@ -141,6 +141,7 @@ def create_swarm(
     workspace_path: Optional[str] = None,
     priority: int = 0,
     idempotency_key: Optional[str] = None,
+    max_runtime_seconds: Optional[int] = 600,
 ) -> SwarmCreated:
     """Atomically create a durable, immediately dispatchable Kanban swarm."""
     activation_summary = (
@@ -247,6 +248,7 @@ def _create_swarm_uncommitted(
         initial_status="blocked",
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
+        max_runtime_seconds=max_runtime_seconds,
     )
 
     # If idempotency returned an existing non-archived root, do not duplicate the
@@ -280,7 +282,7 @@ def _create_swarm_uncommitted(
             workspace_kind=workspace_kind,
             workspace_path=workspace_path,
             skills=spec.skills or None,
-            max_runtime_seconds=spec.max_runtime_seconds,
+            max_runtime_seconds=spec.max_runtime_seconds or max_runtime_seconds,
         )
         worker_ids.append(worker_id)
 
@@ -302,6 +304,7 @@ def _create_swarm_uncommitted(
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
         skills=["requesting-code-review"],
+        max_runtime_seconds=max_runtime_seconds,
     )
 
     synthesizer_body = (
@@ -321,6 +324,7 @@ def _create_swarm_uncommitted(
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
         skills=["humanizer"],
+        max_runtime_seconds=max_runtime_seconds,
     )
 
     created = SwarmCreated(root, worker_ids, verifier, synthesizer)

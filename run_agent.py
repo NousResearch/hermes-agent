@@ -66,6 +66,9 @@ from types import SimpleNamespace
 from hermes_constants import get_hermes_home
 
 
+_CONTEXT_ENGINE_SHUTDOWN_FALLBACK_LOCK = threading.Lock()
+
+
 def _launch_cwd_for_session(source: str) -> Optional[str]:
     """Working directory to stamp on a new session row, or None.
 
@@ -4600,6 +4603,30 @@ class AIAgent:
                 codex_session.close()
         except Exception:
             pass
+
+        # 6d. Shut down the session-owned context engine. on_session_end()
+        # finalizes logical session state, but plugin engines may still own
+        # SQLite connections, worker threads, or clients until shutdown().
+        # Select the hook exactly once under the per-agent lock, then invoke it
+        # outside the lock so a plugin can perform re-entrant cleanup safely.
+        try:
+            shutdown_context_engine = None
+            shutdown_lock = getattr(
+                self,
+                "_context_engine_shutdown_lock",
+                _CONTEXT_ENGINE_SHUTDOWN_FALLBACK_LOCK,
+            )
+            with shutdown_lock:
+                if not getattr(self, "_context_engine_shutdown", False):
+                    self._context_engine_shutdown = True
+                    context_engine = getattr(self, "context_compressor", None)
+                    shutdown_context_engine = getattr(
+                        context_engine, "shutdown", None
+                    )
+            if callable(shutdown_context_engine):
+                shutdown_context_engine()
+        except Exception:
+            logger.debug("Context engine shutdown failed", exc_info=True)
 
         # 7. Free conversation history.  Mirrors _release_evicted_agent_soft's
         # soft-eviction clear — close() is the hard teardown for true session

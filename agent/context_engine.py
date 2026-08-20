@@ -23,6 +23,7 @@ Lifecycle:
   5. compress() called when should_compress() returns True
   6. on_session_end() called at real session boundaries (CLI exit, /reset,
      gateway session expiry) — NOT per-turn
+  7. shutdown() called once when the owning agent releases its resources
 """
 
 from abc import ABC, abstractmethod
@@ -396,6 +397,13 @@ class ContextEngine(ABC):
 
         Use this to flush state, close DB connections, etc.
         NOT called per-turn — only when the session truly ends.
+        """
+
+    def shutdown(self) -> None:
+        """Release resources owned by this engine.
+
+        Called once by the owning agent after ``on_session_end``. Engines with
+        persistent SQLite connections, workers, or clients should override it.
         """
 
     def on_session_reset(self) -> None:

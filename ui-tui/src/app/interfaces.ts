@@ -322,6 +322,7 @@ export interface UiState {
   busy: boolean
   busyInputMode: BusyInputMode
   compact: boolean
+  destructiveSlashConfirm: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
   // Focus view (/focus) — display-only reduced-output mode. Drives the
@@ -344,6 +345,9 @@ export interface UiState {
   statusBar: StatusBarMode
   streaming: boolean
   theme: Theme
+  // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
+  // rows, the same config key the classic CLI honors (#41531).
+  timestamps: boolean
   usage: Usage
 }
 
@@ -548,6 +552,7 @@ export interface SlashHandlerContext {
 export interface AppLayoutActions {
   answerApproval: (choice: string) => void
   answerClarify: (answer: string) => void
+  answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
   clearSelection: () => void
@@ -615,6 +620,7 @@ export interface AppOverlaysProps {
   completions: CompletionItem[]
   onApprovalChoice: (choice: string) => void
   onClarifyAnswer: (value: string) => void
+  onClarifyQuestionAnswer: (qid: string, value: string) => void
   onActiveSessionSelect: (sessionId: string) => void
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
   onModelSelect: (value: string) => void

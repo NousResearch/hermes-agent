@@ -210,9 +210,24 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
             "error": "OAuth authentication required — no token found.",
             "tools": [],
         }
+    # Additive-optional per-tool schema size (chars of the converted registry
+    # schema) — the desktop's cost overlay estimates tokens from it. Older
+    # renderers ignore the extra key; failed probes simply omit it.
+    schema_chars = details.get("schema_chars") or {}
     return {
         "ok": True,
-        "tools": [{"name": t, "description": d} for t, d in tools],
+        "tools": [
+            {
+                "name": t,
+                "description": d,
+                **(
+                    {"schema_chars": schema_chars[t]}
+                    if isinstance(schema_chars.get(t), int)
+                    else {}
+                ),
+            }
+            for t, d in tools
+        ],
         "prompts": details.get("prompts", 0),
         "resources": details.get("resources", 0),
     }
@@ -298,6 +313,23 @@ async def mcp_oauth_flow_status(flow_id: str, request: Request):
     snapshot = flow.snapshot()
     snapshot["tools"] = flow.tools
     return snapshot
+
+
+@router.delete("/api/mcp/oauth/flows/{flow_id}")
+async def cancel_mcp_oauth_flow(flow_id: str, request: Request):
+    """Cancel an in-flight MCP OAuth flow (the desktop's inline-card/pill
+    cancel). mark_error unblocks both worker waits, so the worker exits and
+    frees the per-server "already in progress" slot — without this, a renderer
+    that stops polling leaves the flow squatting until its 300s callback
+    timeout and every retry 409s. Idempotent: an already-settled flow is left
+    as-is (approved stays approved)."""
+    _require_token(request)
+    flow = _mcp_oauth_flows.get(flow_id)
+    if flow is None:
+        # Expired/GC'd is the goal state of a cancel — not an error.
+        return {"ok": True, "status": "expired"}
+    flow.mark_error("Cancelled by user")
+    return {"ok": True, "status": flow.snapshot()["status"]}
 
 
 @router.get("/api/mcp/oauth/callback/{server_name:path}")
@@ -427,6 +459,12 @@ async def list_mcp_catalog(profile: Optional[str] = None):
                 if entry.tools.default_enabled is not None
                 else None,
                 "post_install": entry.post_install or "",
+                # Composer-suggestion triggers (desktop brand pills). Present
+                # only for entries whose manifest declares a `suggest` block.
+                "suggest": {
+                    "keywords": list(entry.suggest.keywords),
+                    "hosts": list(entry.suggest.hosts),
+                } if entry.suggest else None,
                 "needs_install": entry.install is not None,
                 "installed": installed_state.get(entry.name, (False, False))[0],
                 "enabled": installed_state.get(entry.name, (False, False))[1],

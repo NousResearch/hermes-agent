@@ -54,6 +54,26 @@ def _uses_gateway(section: object) -> bool:
     return is_truthy_value(section.get("use_gateway"), default=False)
 
 
+def _selected_provider(section: object, name_key: str = "provider") -> Optional[str]:
+    """Return the stored provider string for a config section dict.
+
+    Mirrors :func:`tools.tool_backend_helpers.read_selection`'s semantics on
+    an in-memory section dict: ``"nous"`` for the managed selection (stored
+    ``nous`` value or legacy ``use_gateway: true``), a vendor name for BYOK
+    picks, or ``None`` when no selection is stored. Keeping this in lockstep
+    with the runtime resolver is what stops ``hermes status`` from lying.
+    """
+    if not isinstance(section, dict):
+        return None
+    if is_truthy_value(section.get("use_gateway"), default=False):
+        return "nous"
+    value = section.get(name_key)
+    if value is None:
+        return None
+    name = str(value).strip().lower()
+    return name or None
+
+
 @dataclass(frozen=True)
 class NousFeatureState:
     key: str
@@ -159,35 +179,59 @@ def _toolset_enabled(config: Dict[str, object], toolset_key: str) -> bool:
 def _has_agent_browser() -> bool:
     import shutil
 
-    from hermes_constants import agent_browser_runnable, with_hermes_node_path
+    from hermes_constants import agent_browser_runnable
 
-    # Validate the resolved binary actually runs — a dangling global symlink
-    # (issue #48521) is reported by ``which`` but fails at exec. Fall through to
-    # the local node_modules copy, which the validator also checks.
-    if agent_browser_runnable(shutil.which("agent-browser")):
-        return True
-
-    # Hermes-managed Node dirs (Windows installer / POSIX $HERMES_HOME/node)
-    # are prepended to PATH at runtime but usually absent from the *probe*
-    # process's PATH — the same rung `_find_agent_browser` searches. Without
-    # it a successful install keeps reporting "needs setup" on Windows.
-    managed_path = with_hermes_node_path().get("PATH", "")
-    if managed_path:
-        managed_hit = shutil.which("agent-browser", path=managed_path)
-        if managed_hit and agent_browser_runnable(managed_hit):
+    # agent-browser is no longer a root package.json dependency (#43564) — it
+    # resolves lazily via npx for most installs, which a bare PATH +
+    # node_modules probe can't see. Mirror the local-CLI tail of
+    # :func:`tools.browser_tool.check_browser_requirements` (same cascade, same
+    # Termux carve-out) so the setup/status surfaces can't diverge from what
+    # browser tools actually find at runtime; validate=False keeps this a cheap
+    # existence check with no subprocess spawn.
+    try:
+        from tools.browser_tool import (
+            _find_agent_browser,
+            _requires_real_termux_browser_install,
+        )
+    except Exception:
+        # If the runtime probe can't be imported, fall back to binary presence
+        # (prior behaviour) rather than crashing the setup/status surface.
+        # Validate the resolved binary actually runs — a dangling global
+        # symlink (issue #48521) is reported by ``which`` but fails at exec.
+        if agent_browser_runnable(shutil.which("agent-browser")):
             return True
 
-    # Local node_modules/.bin: resolve via PATHEXT-aware ``shutil.which`` so
-    # Windows picks the executable ``.cmd`` shim. Probing the extensionless
-    # POSIX shim directly fails exec (WinError 193) even right after a
-    # successful ``npm install`` — the bug that pinned every browser row on
-    # "Setup required" in the desktop GUI.
-    local_bin_dir = Path(__file__).parent.parent / "node_modules" / ".bin"
-    if local_bin_dir.is_dir():
-        local_which = shutil.which("agent-browser", path=str(local_bin_dir))
-        if local_which and agent_browser_runnable(local_which):
-            return True
-    return False
+        # Hermes-managed Node dirs (Windows installer / POSIX $HERMES_HOME/node)
+        # are prepended to PATH at runtime but usually absent from the *probe*
+        # process's PATH. Without this rung a successful install keeps
+        # reporting "needs setup" on Windows.
+        from hermes_constants import with_hermes_node_path
+        managed_path = with_hermes_node_path().get("PATH", "")
+        if managed_path:
+            managed_hit = shutil.which("agent-browser", path=managed_path)
+            if managed_hit and agent_browser_runnable(managed_hit):
+                return True
+
+        # Local node_modules/.bin: resolve via PATHEXT-aware ``shutil.which`` so
+        # Windows picks the executable ``.cmd`` shim — probing the
+        # extensionless POSIX shim directly fails exec (WinError 193) even
+        # right after a successful ``npm install``.
+        local_bin_dir = Path(__file__).parent.parent / "node_modules" / ".bin"
+        if local_bin_dir.is_dir():
+            local_which = shutil.which("agent-browser", path=str(local_bin_dir))
+            if local_which and agent_browser_runnable(local_which):
+                return True
+        return False
+
+    try:
+        browser_cmd = _find_agent_browser(validate=False)
+    except FileNotFoundError:
+        return False
+    # On Termux, the bare npx fallback is too fragile to advertise as ready —
+    # require a real install, matching check_browser_requirements.
+    if _requires_real_termux_browser_install(browser_cmd):
+        return False
+    return True
 
 
 def _local_browser_runnable() -> bool:
@@ -291,11 +335,14 @@ def _resolve_browser_feature_state(
     on the latter, or setup/status advertise a browser that fails on first use
     when Chromium is missing.
     """
-    if direct_camofox:
-        return "camofox", True, bool(browser_tool_enabled), False
-
     if browser_provider_explicit:
         current_provider = browser_provider or "local"
+        if current_provider == "camofox":
+            # Camofox is now a stored selection (browser.cloud_provider:
+            # camofox); CAMOFOX_URL is only the server address.
+            available = bool(direct_camofox)
+            active = bool(browser_tool_enabled and available)
+            return current_provider, available, active, False
         if current_provider == "browserbase":
             available = bool(browser_local_available and direct_browserbase)
             active = bool(browser_tool_enabled and available)
@@ -322,6 +369,11 @@ def _resolve_browser_feature_state(
         available = bool(browser_local_runnable)
         active = bool(browser_tool_enabled and available)
         return current_provider, available, active, False
+
+    # Never-configured autodetect: CAMOFOX_URL keeps activating Camofox
+    # exactly as before when no cloud_provider selection was ever stored.
+    if direct_camofox:
+        return "camofox", True, bool(browser_tool_enabled), False
 
     if managed_browser_available or direct_browser_use:
         available = bool(browser_local_available)
@@ -394,6 +446,7 @@ def get_nous_subscription_features(
     # Per-capability overrides: if set, they determine which backend is active for
     # search/extract independently of web.backend.
     web_search_backend = str(web_cfg.get("search_backend") or "").strip().lower()
+    web_extract_backend = str(web_cfg.get("extract_backend") or "").strip().lower()
     tts_provider = str(tts_cfg.get("provider") or "edge").strip().lower()
     # STT default is "local" (faster-whisper) per DEFAULT_CONFIG, which
     # requires `pip install faster-whisper`. For Nous subscribers we'd
@@ -411,22 +464,51 @@ def get_nous_subscription_features(
         terminal_cfg.get("modal_mode")
     )
 
-    # use_gateway flags — when True, the user explicitly opted into the
-    # Tool Gateway via `hermes model`, so direct credentials should NOT
-    # prevent gateway routing.
-    web_use_gateway = _uses_gateway(web_cfg)
-    tts_use_gateway = _uses_gateway(tts_cfg)
-    stt_use_gateway = _uses_gateway(stt_cfg)
-    browser_use_gateway = _uses_gateway(browser_cfg)
+    # Stored selections (strict model): one provider string per category.
+    # "nous" (stored value or legacy use_gateway: true) = managed gateway;
+    # vendor name = that vendor direct; None = never configured (autodetect).
     image_gen_cfg = config.get("image_gen") if isinstance(config.get("image_gen"), dict) else {}
-    image_use_gateway = _uses_gateway(image_gen_cfg)
     video_gen_cfg = config.get("video_gen") if isinstance(config.get("video_gen"), dict) else {}
-    video_use_gateway = _uses_gateway(video_gen_cfg)
+    web_selected = _selected_provider(web_cfg, "backend")
+    tts_selected = _selected_provider(tts_cfg)
+    stt_selected = _selected_provider(stt_cfg)
+    browser_selected = _selected_provider(browser_cfg, "cloud_provider")
+    image_selected = _selected_provider(image_gen_cfg)
+    video_selected = _selected_provider(video_gen_cfg)
+
+    # Lockstep with tools.tool_backend_helpers.read_selection: these are
+    # merged-config sections, so the legacy DEFAULT_CONFIG-seeded
+    # ``stt.provider: local`` COULD appear here without a user pick on old
+    # versions. Current DEFAULT_CONFIG no longer seeds it, so a merged
+    # ``local`` implies the raw file holds it — a genuine selection.
+
+    # Managed selection flags (replace the legacy use_gateway reads —
+    # use_gateway is now interpreted only inside _selected_provider).
+    web_use_gateway = web_selected == "nous"
+    tts_use_gateway = tts_selected == "nous"
+    stt_use_gateway = stt_selected == "nous"
+    browser_use_gateway = browser_selected == "nous"
+    image_use_gateway = image_selected == "nous"
+    video_use_gateway = video_selected == "nous"
+
+    # The "nous" selection is serviced by a concrete vendor implementation —
+    # normalize the current-provider labels so downstream vendor checks hold.
+    if web_backend == "nous" or web_use_gateway:
+        web_backend = "firecrawl"
+    if tts_provider == "nous" or tts_use_gateway:
+        tts_provider = "openai"
+    if stt_provider == "nous" or stt_use_gateway:
+        stt_provider = "openai"
+    if browser_provider == "nous" or browser_use_gateway:
+        browser_provider = "browser-use"
 
     direct_exa = bool(get_env_value("EXA_API_KEY"))
     direct_firecrawl = bool(get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL"))
     direct_parallel = bool(get_env_value("PARALLEL_API_KEY"))
     direct_tavily = bool(get_env_value("TAVILY_API_KEY"))
+    # Keyless Tavily is opt-in: selecting it in `hermes tools` / setup writes
+    # web.backend (or a per-capability override) without requiring a key.
+    tavily_selected = "tavily" in {web_backend, web_search_backend, web_extract_backend}
     direct_searxng = bool(get_env_value("SEARXNG_URL"))
     direct_fal = fal_key_is_configured()
     direct_fal_video = direct_fal  # same FAL_KEY; separate var so use_gateway is independent
@@ -459,6 +541,7 @@ def get_nous_subscription_features(
         direct_exa = False
         direct_parallel = False
         direct_tavily = False
+        tavily_selected = False
     if image_use_gateway:
         direct_fal = False
     if video_use_gateway:
@@ -525,6 +608,29 @@ def get_nous_subscription_features(
         managed_enabled=managed_tools_flag,
     )
 
+    # Strict selection: a stored VENDOR selection pins the category to direct
+    # credentials — managed availability must not light the feature up (the
+    # runtime will error, not reroute), and camofox/local selections must not
+    # be pre-empted by env credentials for other providers.
+    if web_selected is not None and not web_use_gateway:
+        managed_web_available = False
+    if image_selected is not None and not image_use_gateway:
+        managed_image_available = False
+    if video_selected is not None and not video_use_gateway:
+        managed_video_available = False
+    if tts_selected is not None and not tts_use_gateway:
+        managed_tts_available = False
+    if stt_selected is not None and not stt_use_gateway:
+        managed_stt_available = False
+    if browser_selected is not None and not browser_use_gateway:
+        managed_browser_available = False
+    if browser_selected is not None and browser_selected != "camofox":
+        # CAMOFOX_URL is the server address, not a selection: an explicit
+        # different browser choice wins over the env var.
+        direct_camofox = False
+
+
+    tavily_ready = direct_tavily or tavily_selected
     web_managed = web_backend == "firecrawl" and managed_web_available and not direct_firecrawl
     web_active = bool(
         web_tool_enabled
@@ -533,7 +639,7 @@ def get_nous_subscription_features(
             or (web_backend == "exa" and direct_exa)
             or (web_backend == "firecrawl" and direct_firecrawl)
             or (web_backend == "parallel" and direct_parallel)
-            or (web_backend == "tavily" and direct_tavily)
+            or (web_backend == "tavily" and tavily_ready)
             or (web_backend == "searxng" and direct_searxng)
             # Per-capability overrides: search_backend or extract_backend may be set
             # without web.backend (using the new split config from #20061)
@@ -541,11 +647,17 @@ def get_nous_subscription_features(
             or (web_search_backend == "exa" and direct_exa)
             or (web_search_backend == "firecrawl" and direct_firecrawl)
             or (web_search_backend == "parallel" and direct_parallel)
-            or (web_search_backend == "tavily" and direct_tavily)
+            or (web_search_backend == "tavily" and tavily_ready)
+            or (web_extract_backend == "tavily" and tavily_ready)
         )
     )
     web_available = bool(
-        managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily or direct_searxng
+        managed_web_available
+        or direct_exa
+        or direct_firecrawl
+        or direct_parallel
+        or tavily_ready
+        or direct_searxng
     )
 
     image_managed = image_tool_enabled and managed_image_available and not direct_fal
@@ -640,17 +752,10 @@ def get_nous_subscription_features(
         modal_active = False
         modal_direct_override = False
 
-    tts_explicit_configured = False
-    raw_tts_cfg = config.get("tts")
-    if isinstance(raw_tts_cfg, dict) and "provider" in raw_tts_cfg:
-        tts_explicit_configured = tts_provider not in {"", "edge"}
-
-    # STT considers any non-default provider explicit. "local" is the
-    # DEFAULT_CONFIG seed, so seeing it doesn't mean the user picked it.
-    stt_explicit_configured = False
-    raw_stt_cfg = config.get("stt")
-    if isinstance(raw_stt_cfg, dict) and "provider" in raw_stt_cfg:
-        stt_explicit_configured = stt_provider not in {"", "local"}
+    # Explicit-configured mirrors the stored selections computed above so
+    # status/picker markers stay in lockstep with runtime dispatch.
+    tts_explicit_configured = tts_selected is not None and tts_selected != "edge"
+    stt_explicit_configured = stt_selected is not None
 
     features = {
         "web": NousFeatureState(
@@ -662,8 +767,8 @@ def get_nous_subscription_features(
             managed_by_nous=web_managed,
             direct_override=web_active and not web_managed,
             toolset_enabled=web_tool_enabled,
-            current_provider=web_backend or web_search_backend or "",
-            explicit_configured=bool(web_backend or web_search_backend),
+            current_provider=web_backend or web_search_backend or web_extract_backend or "",
+            explicit_configured=bool(web_backend or web_search_backend or web_extract_backend),
         ),
         "image_gen": NousFeatureState(
             key="image_gen",
@@ -674,8 +779,8 @@ def get_nous_subscription_features(
             managed_by_nous=image_managed,
             direct_override=image_active and not image_managed,
             toolset_enabled=image_tool_enabled,
-            current_provider="FAL" if direct_fal else ("Nous Subscription" if image_managed else ""),
-            explicit_configured=direct_fal,
+            current_provider="FAL" if (image_selected not in (None, "nous") or (image_selected is None and direct_fal)) else ("Nous Subscription" if (image_managed or image_use_gateway) else ""),
+            explicit_configured=image_selected is not None or direct_fal,
         ),
         "video_gen": NousFeatureState(
             key="video_gen",
@@ -686,8 +791,8 @@ def get_nous_subscription_features(
             managed_by_nous=video_managed,
             direct_override=video_active and not video_managed,
             toolset_enabled=video_tool_enabled,
-            current_provider="FAL" if direct_fal_video else ("Nous Subscription" if video_managed else ""),
-            explicit_configured=direct_fal_video,
+            current_provider="FAL" if (video_selected not in (None, "nous") or (video_selected is None and direct_fal_video)) else ("Nous Subscription" if (video_managed or video_use_gateway) else ""),
+            explicit_configured=video_selected is not None or direct_fal_video,
         ),
         "tts": NousFeatureState(
             key="tts",
@@ -799,24 +904,26 @@ def apply_nous_managed_defaults(
         or get_env_value("FIRECRAWL_API_KEY")
         or get_env_value("FIRECRAWL_API_URL")
     ):
-        web_cfg["backend"] = "firecrawl"
+        web_cfg["backend"] = "nous"
+        web_cfg.pop("use_gateway", None)
         changed.add("web")
 
     if "tts" in selected_toolsets and not features.tts.explicit_configured and not (
         resolve_openai_audio_api_key()
         or get_env_value("ELEVENLABS_API_KEY")
     ):
-        tts_cfg["provider"] = "openai"
+        tts_cfg["provider"] = "nous"
+        tts_cfg.pop("use_gateway", None)
         changed.add("tts")
 
     # STT: same pattern as TTS. The DEFAULT_CONFIG seed is "local"
     # (requires `pip install faster-whisper`); for Nous subscribers we
-    # flip it to "openai" so the managed audio gateway handles transcription
-    # via the same auth as TTS. Skipped when the user has explicitly
-    # configured STT, has direct credentials for a non-managed provider,
-    # has a working local backend (faster-whisper installed or a custom
-    # local command — strong intent signal that "local" was a choice, not
-    # just the DEFAULT_CONFIG seed), or isn't entitled to the managed
+    # flip it to the managed selection so the managed audio gateway handles
+    # transcription via the same auth as TTS. Skipped when the user has
+    # explicitly configured STT, has direct credentials for a non-managed
+    # provider, has a working local backend (faster-whisper installed or a
+    # custom local command — strong intent signal that "local" was a choice,
+    # not just the DEFAULT_CONFIG seed), or isn't entitled to the managed
     # "openai-audio" category (flipping would point at a gateway that
     # refuses them, silently breaking voice transcription).
     if (
@@ -830,14 +937,16 @@ def apply_nous_managed_defaults(
         and features.account_info is not None
         and features.account_info.tool_gateway_entitled_for("openai-audio")
     ):
-        stt_cfg["provider"] = "openai"
+        stt_cfg["provider"] = "nous"
+        stt_cfg.pop("use_gateway", None)
         changed.add("stt")
 
     if "browser" in selected_toolsets and not features.browser.explicit_configured and not (
         get_env_value("BROWSER_USE_API_KEY")
         or get_env_value("BROWSERBASE_API_KEY")
     ):
-        browser_cfg["cloud_provider"] = "browser-use"
+        browser_cfg["cloud_provider"] = "nous"
+        browser_cfg.pop("use_gateway", None)
         changed.add("browser")
 
     if "image_gen" in selected_toolsets and not fal_key_is_configured():
@@ -845,7 +954,8 @@ def apply_nous_managed_defaults(
         if not isinstance(image_cfg, dict):
             image_cfg = {}
             config["image_gen"] = image_cfg
-        image_cfg["use_gateway"] = True
+        image_cfg["provider"] = "nous"
+        image_cfg.pop("use_gateway", None)
         changed.add("image_gen")
 
     # Video gen is not funded by the free tool pool, so only wire managed video
@@ -859,8 +969,8 @@ def apply_nous_managed_defaults(
         if not isinstance(video_cfg, dict):
             video_cfg = {}
             config["video_gen"] = video_cfg
-        video_cfg["provider"] = "fal"
-        video_cfg["use_gateway"] = True
+        video_cfg["provider"] = "nous"
+        video_cfg.pop("use_gateway", None)
         changed.add("video_gen")
 
     return changed
@@ -1026,23 +1136,23 @@ def apply_gateway_defaults(
         config["browser"] = browser_cfg
 
     if "web" in tool_keys:
-        web_cfg["backend"] = "firecrawl"
-        web_cfg["use_gateway"] = True
+        web_cfg["backend"] = "nous"
+        web_cfg.pop("use_gateway", None)
         changed.add("web")
 
     if "tts" in tool_keys:
-        tts_cfg["provider"] = "openai"
-        tts_cfg["use_gateway"] = True
+        tts_cfg["provider"] = "nous"
+        tts_cfg.pop("use_gateway", None)
         changed.add("tts")
 
     if "stt" in tool_keys:
-        stt_cfg["provider"] = "openai"
-        stt_cfg["use_gateway"] = True
+        stt_cfg["provider"] = "nous"
+        stt_cfg.pop("use_gateway", None)
         changed.add("stt")
 
     if "browser" in tool_keys:
-        browser_cfg["cloud_provider"] = "browser-use"
-        browser_cfg["use_gateway"] = True
+        browser_cfg["cloud_provider"] = "nous"
+        browser_cfg.pop("use_gateway", None)
         changed.add("browser")
 
     if "image_gen" in tool_keys:
@@ -1050,7 +1160,8 @@ def apply_gateway_defaults(
         if not isinstance(image_cfg, dict):
             image_cfg = {}
             config["image_gen"] = image_cfg
-        image_cfg["use_gateway"] = True
+        image_cfg["provider"] = "nous"
+        image_cfg.pop("use_gateway", None)
         changed.add("image_gen")
 
     if "video_gen" in tool_keys:
@@ -1058,8 +1169,8 @@ def apply_gateway_defaults(
         if not isinstance(video_cfg, dict):
             video_cfg = {}
             config["video_gen"] = video_cfg
-        video_cfg["provider"] = "fal"
-        video_cfg["use_gateway"] = True
+        video_cfg["provider"] = "nous"
+        video_cfg.pop("use_gateway", None)
         changed.add("video_gen")
 
     return changed

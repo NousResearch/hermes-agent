@@ -605,6 +605,7 @@ async def get_session_messages(
     limit: Optional[int] = Query(None, ge=0),
     offset: int = Query(0, ge=0),
     order: Optional[str] = Query(None),
+    include_compacted: bool = Query(False),
 ):
     if order not in (None, "oldest", "latest"):
         raise HTTPException(
@@ -632,6 +633,7 @@ async def get_session_messages(
                 limit=_limit,
                 offset=offset,
                 latest=latest_page,
+                include_compacted=include_compacted,
             )
         finally:
             db.close()
@@ -682,11 +684,13 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
 
 @manage_router.patch("/api/sessions/{session_id}")
 async def rename_session_endpoint(session_id: str, body: SessionRename):
-    """Update a session: rename, archive, and/or pin it.
+    """Update a session: rename, archive, pin, and/or mark read/unread.
 
     ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
     restores the session; ``pinned`` sets the durable keep flag (exempts the
-    session from the auto-archive sweep). Any field may be omitted. ``profile``
+    session from the auto-archive sweep); ``unread`` toggles the read-state
+    watermark (True = explicitly unread, False = read up to now — see
+    ``SessionDB.set_session_read``). Any field may be omitted. ``profile``
     targets another profile's session.
     """
     db = _open_session_db_for_profile(body.profile, read_only=False)
@@ -694,10 +698,15 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
-        if body.title is None and body.archived is None and body.pinned is None:
+        if (
+            body.title is None
+            and body.archived is None
+            and body.pinned is None
+            and body.unread is None
+        ):
             raise HTTPException(
                 status_code=400,
-                detail="Nothing to update; provide 'title', 'archived', and/or 'pinned'.",
+                detail="Nothing to update; provide 'title', 'archived', 'pinned', and/or 'unread'.",
             )
         if body.title is not None:
             try:
@@ -709,11 +718,15 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
             db.set_session_archived(sid, body.archived)
         if body.pinned is not None:
             db.set_session_pinned(sid, body.pinned)
+        if body.unread is not None:
+            db.set_session_read(sid, read=not body.unread)
         result = {"ok": True, "title": db.get_session_title(sid) or ""}
         if body.archived is not None:
             result["archived"] = bool(body.archived)
         if body.pinned is not None:
             result["pinned"] = bool(body.pinned)
+        if body.unread is not None:
+            result["unread"] = bool(body.unread)
         return result
     finally:
         db.close()

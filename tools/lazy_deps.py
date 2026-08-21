@@ -203,7 +203,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "memory.mem0": ("mem0ai==2.0.10",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
-    "platform.telegram": ("python-telegram-bot[webhooks]==22.6",),
+    "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),
     # brotlicffi gives aiohttp a working 2-arg Decompressor.process() for
     # Discord CDN's Brotli-encoded attachments. Without it, aiohttp falls
     # back to google's `Brotli` package (1-arg API), and any .txt/.md/.doc
@@ -219,12 +219,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
     ),
     "platform.slack": (
-        "slack-bolt==1.29.0",
+        "slack-bolt==1.30.0",
         "slack-sdk==3.43.0",
         "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
     ),
     "platform.matrix": (
-        "mautrix[encryption]==0.21.0",
+        "mautrix[encryption]==0.21.1",
         "aiosqlite==0.22.1",
         "asyncpg==0.31.0",
         "aiohttp-socks==0.11.0",
@@ -302,7 +302,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # `[all]`; lazy-installing here covers lean / partial / broken-extra
     # installs so computer_use never dead-ends on `No module named 'mcp'`.
     "tool.computer_use": (
-        "mcp==1.28.1",
+        "mcp==2.0.0",
+        "httpx2==2.7.0",  # mcp 2.x HTTP stack — keep in sync with pyproject [computer-use]
         "starlette==1.3.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
@@ -1133,8 +1134,27 @@ def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
     Intended for ``hermes update``. Never raises; lazy-install failures
     here must not block the rest of the update flow.
     """
+    return _refresh_features(active_features(), prompt=prompt, restoring=False)
+
+
+def restore_features(features: list[str]) -> dict[str, str]:
+    """Restore features captured before an explicit managed-runtime rebuild.
+
+    Feature names are checked against :data:`LAZY_DEPS`, and installs remain
+    subject to ``security.allow_lazy_installs``. An explicit opt-out therefore
+    leaves the captured feature absent and reports it as skipped.
+    """
+    return _refresh_features(features, prompt=False, restoring=True)
+
+
+def _refresh_features(
+    features: list[str], *, prompt: bool, restoring: bool
+) -> dict[str, str]:
+    """Refresh or restore a known set of allowlisted lazy features."""
     results: dict[str, str] = {}
-    for feature in active_features():
+    for feature in features:
+        if feature not in LAZY_DEPS:
+            continue
         missing = feature_missing(feature)
         if not missing:
             results[feature] = "current"
@@ -1146,8 +1166,12 @@ def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
             continue
 
         try:
-            ensure(feature, prompt=prompt)
-            results[feature] = "refreshed"
+            if restoring:
+                ensure(feature, prompt=False)
+                results[feature] = "restored"
+            else:
+                ensure(feature, prompt=prompt)
+                results[feature] = "refreshed"
         except FeatureUnavailable as e:
             # Distinguish "user opted out" or platform-incompatible features
             # from install failures so the update command can render the

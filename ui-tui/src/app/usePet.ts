@@ -2,6 +2,7 @@ import { useStdout } from '@hermes/ink'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { PetGrid } from '../components/petSprite.js'
+import { createPetSingleFlight, requestPetUpdate } from '../lib/petPolling.js'
 
 import { useGateway } from './gatewayContext.js'
 import { $overlayState, getOverlayState } from './overlayStore.js'
@@ -104,10 +105,11 @@ export interface PetRender {
  *
  * A steady poll keeps it reactive to config changes made elsewhere (`/pet`, the
  * picker, `hermes pets select`) so adopting/switching/disabling takes effect
- * live. The frame cache is keyed by `slug:state` so a switch re-pulls cleanly.
+ * live. Disabled/cached pets use the cheap inline `pet.info.meta` probe; only
+ * uncached enabled states request `pet.cells` from the long-handler pool.
  */
 export function usePet(): PetRender {
-  const { rpc } = useGateway()
+  const { gw } = useGateway()
   const { write } = useStdout()
   const [enabled, setEnabled] = useState(false)
   const [grid, setGrid] = useState<PetGrid | null>(null)
@@ -116,9 +118,11 @@ export function usePet(): PetRender {
   const cache = useRef<Map<string, CacheEntry>>(new Map())
   const slugRef = useRef('')
   const scaleRef = useRef(0)
+  const revisionRef = useRef('')
   const imageIdRef = useRef(0)
   const stateRef = useRef<PetState>('idle')
   const frameRef = useRef(0)
+  const runSingleFlight = useRef(createPetSingleFlight()).current
 
   const [petState, setPetState] = useState<PetState>('idle')
 
@@ -189,38 +193,76 @@ export function usePet(): PetRender {
     }
   }, [write])
 
-  // Fetch + cache one (slug, state). `pet.cells` resolves the active pet from
-  // config, so its `slug`/`enabled` are the source of truth.
+  const disablePet = useCallback(() => {
+    releaseKitty()
+    slugRef.current = ''
+    scaleRef.current = 0
+    revisionRef.current = ''
+    cache.current.clear()
+    setGrid(null)
+    setKitty(null)
+    setEnabled(false)
+  }, [releaseKitty])
+
+  // Probe the active selection cheaply, then fetch + cache one uncached state.
   const sync = useCallback(
-    async (state: PetState) => {
-      try {
-        const res = (await rpc('pet.cells', { graphics: IS_TTY, state })) as PetCellsResult | null
+    (state: PetState) =>
+      runSingleFlight(async () => {
+        const update = await requestPetUpdate<PetCellsResult>(gw, state, IS_TTY, meta => {
+          const slug = meta.slug ?? ''
+          const scale = meta.scale ?? 0
+          const revision = meta.spritesheetRevision ?? ''
+
+          const selectionChanged =
+            slug !== slugRef.current || scale !== scaleRef.current || revision !== revisionRef.current
+
+          if (selectionChanged) {
+            releaseKitty()
+            slugRef.current = slug
+            scaleRef.current = scale
+            revisionRef.current = revision
+            cache.current.clear()
+            frameRef.current = 0
+          }
+
+          return !cache.current.has(`${slug}:${state}`)
+        })
+
+        if (!update) {
+          return
+        }
+
+        if (!update.meta.enabled) {
+          disablePet()
+
+          return
+        }
+
+        const res = update.cells
 
         if (!res) {
+          setEnabled(true)
+
           return
         }
 
         if (!res.enabled) {
-          releaseKitty()
-          slugRef.current = ''
-          cache.current.clear()
-          setGrid(null)
-          setKitty(null)
-          setEnabled(false)
+          disablePet()
 
           return
         }
 
-        const slug = res.slug ?? ''
-        const scale = res.scale ?? 0
+        const slug = res.slug ?? update.meta.slug ?? ''
+        const scale = res.scale ?? update.meta.scale ?? 0
 
-        // A switch OR a live `/pet scale` change invalidates the cached frames
-        // (they're rendered at the old size), so the steady poll repaints at the
-        // new scale without a restart.
-        if (slug !== slugRef.current || (scale > 0 && scale !== scaleRef.current)) {
+        // Config may change between the metadata and frame calls. Keep the
+        // frame response authoritative and force a fresh metadata revision on
+        // the next poll when the response moved to another selection.
+        if (slug !== slugRef.current || scale !== scaleRef.current) {
           releaseKitty()
           slugRef.current = slug
           scaleRef.current = scale
+          revisionRef.current = slug === update.meta.slug ? revisionRef.current : ''
           cache.current.clear()
           frameRef.current = 0
         }
@@ -243,11 +285,8 @@ export function usePet(): PetRender {
         }
 
         setEnabled(true)
-      } catch {
-        // cosmetic — ignore RPC failures
-      }
-    },
-    [rpc, releaseKitty]
+      }),
+    [disablePet, gw, releaseKitty, runSingleFlight]
   )
 
   // Pull frames whenever the state changes (if not already cached for the

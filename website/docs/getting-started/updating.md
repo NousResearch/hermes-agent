@@ -42,6 +42,12 @@ hermes update --check --branch experimental   # preview behindness only
 
 If your local checkout is on a different branch, Hermes auto-stashes any uncommitted work, switches HEAD to the target branch, and then pulls. Branches that don't exist locally are auto-tracked from `origin/<name>` (`git checkout -B <name> origin/<name>`). Branches that don't exist anywhere fail cleanly — your stashed changes are restored before exit so you're never stranded in a weird state. The `main`-only fork-upstream sync logic is automatically skipped on non-`main` branches.
 
+### Checkout parked on a feature branch
+
+If the source checkout was left sitting on a feature branch (by tooling, a worktree experiment, or a manual checkout), `hermes update` only switches it back to the update target automatically when that is provably safe: the working tree is clean **and** every commit on the parked branch is already contained in `origin/main` (`git cherry` reports nothing unmerged). In that case the update says so — `Checkout was parked on '<branch>' (fully merged) — switched back to main` — and stays on `main` afterwards.
+
+When the parked branch has uncommitted changes or unmerged commits, Hermes does **not** touch it. The code update is marked **SKIPPED** with a loud warning naming the branch, how far behind `origin/main` it is, and the exact commands to resolve — instead of pretending the update succeeded. The completion line always shows the actual branch and HEAD (`✓ Update complete! [main @ 30fcf9580]`) so drift is visible at a glance. Set `updates.auto_switch_parked_branch: false` in `config.yaml` to disable the auto-switch entirely (the skip warning still fires).
+
 ### Local changes on non-interactive updates
 
 When you run `hermes update` in a terminal, Hermes stashes any uncommitted source-tree changes, pulls, then **asks** whether to restore them — exactly as it always has. Nothing changes for interactive updates.
@@ -59,6 +65,16 @@ updates:
 - `discard` — auto-stash and drop the stash after the pull, so the update always lands on a clean tree. Use this only on machines where you never intend to keep local edits to the Hermes source. It stash-drops (not `git reset --hard` + `git clean -fd`), so ignored paths like `node_modules`, `venv`, and build outputs are never touched.
 
 In the desktop app this is **Settings → Advanced → In-App Update Local Changes**.
+
+**Desktop updates never auto-restore.** The desktop updater invokes `hermes update --keep-stash`: local source edits are still stashed so the update can proceed, but they are **not** re-applied afterward — they stay parked in `git stash` and the update log prints the exact `git stash apply <ref>` command to bring them back. This prevents local edits from silently riding along across desktop updates and breaking the freshly updated install. (`non_interactive_local_changes: discard` still wins if you've opted into discarding.) To restore parked changes manually:
+
+```bash
+cd ~/.hermes/hermes-agent   # or your install root
+git stash list --format='%gd %H %s'   # find the hermes-update-autostash entry
+git stash apply stash@{0}
+```
+
+You can pass `--keep-stash` to a terminal `hermes update` too if you want the same never-reapply behavior interactively.
 
 ### Preview-only: `hermes update --check`
 
@@ -108,6 +124,14 @@ Close the listed processes and re-run. If you're sure the concurrent process won
 
 A second, separate guard refuses to touch the venv while any process is running from its Python interpreter (the Desktop app's backend, a gateway, a Python REPL). Those processes keep native extension files (`.pyd`) locked, and a dependency sync that dies partway on an access-denied error strands the install between versions. This guard is **not** bypassed by `--force`; if you're certain the detected holders are false positives, use the explicit `hermes update --force-venv`.
 
+#### Windows venv recreation is transactional
+
+When the Windows installer must recreate an existing `venv`, it first moves the old directory to a unique `venv.stale.*` name, then creates and verifies the replacement. The old tree is deleted only after the dependency install completes and the baseline imports pass in the new tree — until then it is the rollback source (recorded in `venv.pending-backup`).
+
+If the move cannot be completed, the installer stops and leaves the live `venv` untouched. If `uv` fails or reports success without creating the interpreter, any partial replacement is moved to `venv.failed.*` and the previous venv is restored. This keeps the health and blocker checks usable after a failed install.
+
+A `venv.stale.*` or `venv.failed.*` directory can remain when another process still owns a file handle. Close Hermes Desktop, gateways, and Python processes using the install, then retry the install/update; parked directories are cleaned up best-effort after a successful recreation.
+
 Expected output looks like:
 
 ```
@@ -156,7 +180,7 @@ You no longer need to wrap `hermes update` in `screen` or `tmux` to survive a te
 ### Checking your current version
 
 ```bash
-hermes version
+hermes --version
 ```
 
 Compare against the latest release at the [GitHub releases page](https://github.com/NousResearch/hermes-agent/releases).
@@ -250,6 +274,10 @@ hermes uninstall
 ```
 
 The uninstaller gives you the option to keep your configuration files (`~/.hermes/`) for a future reinstall.
+
+:::tip Moving to a new machine rather than leaving?
+Take your setup with you before removing anything: `hermes backup` captures the entire `~/.hermes` directory including credentials, while `hermes profile export` packs a single profile with credentials excluded by design (so an export alone is not a full backup). See [`hermes backup` vs `hermes profile export`](/reference/faq#hermes-backup-vs-hermes-profile-export).
+:::
 
 ### Manual Uninstall
 

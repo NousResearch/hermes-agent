@@ -145,6 +145,53 @@ class TestTickWorkdirPartition:
     pieces tick() calls.
     """
 
+    def test_workdir_jobs_run_sequentially(self, tmp_path, monkeypatch):
+        import cron.scheduler as sched
+
+        # Two workdir jobs (both sequential) + one parallel job.
+        workdir_a = {"id": "a", "name": "A", "workdir": str(tmp_path)}
+        workdir_b = {"id": "b", "name": "B", "workdir": str(tmp_path)}
+        parallel_job = {"id": "c", "name": "C", "workdir": None}
+
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: [workdir_a, workdir_b, parallel_job])
+        monkeypatch.setattr(sched, "claim_job_for_fire", lambda *_a, **_kw: True)
+
+        # Record call order / thread context.
+        import threading
+        calls: list[tuple[str, str]] = []
+        order_lock = threading.Lock()
+
+        def fake_run_job(job, *, defer_agent_teardown=None, **_kw):
+            # Return a minimal tuple matching run_job's signature.
+            with order_lock:
+                calls.append((job["id"], threading.current_thread().name))
+            return True, "output", "response", None
+
+        monkeypatch.setattr(sched, "run_job", fake_run_job)
+        monkeypatch.setattr(sched, "save_job_output", lambda _jid, _o: None)
+        monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(
+            sched, "_deliver_result", lambda *_a, **_kw: None
+        )
+
+        n = sched.tick(verbose=False)
+        assert n == 3
+
+        ids = [c[0] for c in calls]
+        # Sequential workdir jobs preserve submission order relative to each
+        # other (single-thread pool).
+        assert ids.index("a") < ids.index("b")
+
+        # Workdir jobs run on the persistent single-thread cron-seq pool —
+        # NOT the main thread — so a long workdir job never blocks the ticker.
+        main_thread_name = threading.current_thread().name
+        for jid in ("a", "b"):
+            workdir_thread_name = next(t for j, t in calls if j == jid)
+            assert workdir_thread_name != main_thread_name
+            assert workdir_thread_name.startswith("cron-seq"), workdir_thread_name
+        par_thread_name = next(t for j, t in calls if j == "c")
+        assert par_thread_name.startswith("cron-parallel"), par_thread_name
+
 
 # ---------------------------------------------------------------------------
 # scheduler.run_job: TERMINAL_CWD + skip_context_files wiring

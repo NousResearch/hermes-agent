@@ -11,7 +11,10 @@ read timeout, and the job-level inactivity monitor was observed not to fire.
 These tests pin the watchdog contract: it aborts the in-flight sockets through
 the already-registered abort hook, surfaces a retryable ``TimeoutError`` (never
 ``InterruptedError``), feeds the cross-turn stale circuit breaker, and stays
-out of the way of a healthy call.
+out of the way of a healthy call. They also pin #85252: the keepalive httpx
+client uses ``read=None``, so a stranger-thread abort that finds no sockets
+must not leave the call unbounded — ``direct_api_call`` injects a per-call
+read timeout matching the stale budget as a hard backstop.
 """
 
 import sys
@@ -382,3 +385,84 @@ def test_resolver_exception_propagates_instead_of_disarming_the_watchdog():
 
     with pytest.raises(RuntimeError, match="resolver regression"):
         direct_api_call(agent, {"model": "m", "messages": []})
+
+
+# ---------------------------------------------------------------------------
+# #85252: hard socket bound when stranger-thread abort cannot kill the recv.
+# ---------------------------------------------------------------------------
+
+
+def test_inline_hard_timeout_matches_stale_budget():
+    """Keepalive httpx uses read=None. The injected timeout's read budget
+    must equal the stale watchdog so a no-op abort cannot hang for hours."""
+    from agent.chat_completion_helpers import _inline_nonstream_hard_timeout
+
+    timeout = _inline_nonstream_hard_timeout(600.0)
+    assert timeout is not None
+    assert timeout.read == 600.0
+    assert timeout.connect == 60.0
+    assert timeout.write == 60.0
+    assert timeout.pool == 60.0
+
+
+def test_inline_hard_timeout_disarmed_when_watchdog_is_disarmed():
+    from agent.chat_completion_helpers import _inline_nonstream_hard_timeout
+
+    assert _inline_nonstream_hard_timeout(float("inf")) is None
+    assert _inline_nonstream_hard_timeout(0) is None
+    assert _inline_nonstream_hard_timeout(-1) is None
+
+
+def test_inline_call_passes_hard_read_timeout_to_the_sdk():
+    """The bound has to actually reach chat.completions.create — a helper
+    that is never wired in would leave cron on read=None (#85252)."""
+    agent = _make_agent(stale_timeout=0.5)
+    fake_client = MagicMock()
+    captured = {}
+
+    def _create(**kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return SimpleNamespace(id="ok")
+
+    fake_client.chat.completions.create.side_effect = _create
+    agent._create_request_openai_client.return_value = fake_client
+
+    assert direct_api_call(agent, {"model": "m", "messages": []}).id == "ok"
+    timeout = captured["timeout"]
+    assert timeout is not None
+    assert timeout.read == 0.5
+
+
+def test_inline_call_does_not_override_explicit_timeout():
+    """A transport/provider that already set timeout= must keep it."""
+    agent = _make_agent(stale_timeout=30.0)
+    fake_client = MagicMock()
+    captured = {}
+
+    def _create(**kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return SimpleNamespace(id="ok")
+
+    fake_client.chat.completions.create.side_effect = _create
+    agent._create_request_openai_client.return_value = fake_client
+
+    assert direct_api_call(
+        agent, {"model": "m", "messages": [], "timeout": 12.0}
+    ).id == "ok"
+    assert captured["timeout"] == 12.0
+
+
+def test_infinite_budget_does_not_inject_a_hard_timeout():
+    agent = _make_agent(stale_timeout=float("inf"))
+    fake_client = MagicMock()
+    captured = {}
+
+    def _create(**kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return SimpleNamespace(id="ok")
+
+    fake_client.chat.completions.create.side_effect = _create
+    agent._create_request_openai_client.return_value = fake_client
+
+    assert direct_api_call(agent, {"model": "m", "messages": []}).id == "ok"
+    assert "timeout" not in captured or captured["timeout"] is None

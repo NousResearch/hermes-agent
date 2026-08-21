@@ -67,16 +67,30 @@ function keyedPromptStore<T extends KeyedPrompt>(): PromptStore<T> {
   }
 }
 
-// Approval is session-keyed on the backend (one in-flight approval per session,
-// resolved via approval.respond {choice, session_id}). It carries no request_id,
-// unlike sudo/secret which are _block()-style request/response.
+// Approval is session-keyed on the backend and correlated by `request_id` when
+// available (legacy ID-free responses remain FIFO-compatible). Resolved via
+// approval.respond {choice, request_id, session_id}.
 export interface ApprovalRequest extends KeyedPrompt {
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
   choices?: string[]
   command: string
   description: string
+  requestId?: string
   smartDenied?: boolean
+}
+
+interface ApprovalGateway {
+  request: (method: string, params: Record<string, unknown>) => Promise<unknown>
+}
+
+interface PendingApprovalPayload {
+  allow_permanent?: boolean
+  choices?: unknown
+  command?: unknown
+  description?: unknown
+  request_id?: unknown
+  smart_denied?: boolean
 }
 
 export interface SudoRequest extends KeyedPrompt {
@@ -100,6 +114,46 @@ const $approvalInlineAnchors = atom<Record<string, number>>({})
 export const $approvalRequest = approval.$active
 export const setApprovalRequest = approval.set
 export const clearApprovalRequest = approval.clear
+
+export async function receiveApprovalRequest(gateway: ApprovalGateway | null, request: ApprovalRequest): Promise<void> {
+  setApprovalRequest(request)
+
+  if (gateway && request.requestId && request.sessionId) {
+    await gateway.request('approval.received', {
+      request_id: request.requestId,
+      session_id: request.sessionId
+    })
+  }
+}
+
+export async function replayPendingApproval(gateway: ApprovalGateway | null, sessionId: string | null): Promise<void> {
+  if (!gateway || !sessionId) {
+    return
+  }
+
+  const rawResult = await gateway.request('approval.pending', {
+    session_id: sessionId
+  })
+
+  const result =
+    rawResult && typeof rawResult === 'object' ? (rawResult as { approvals?: PendingApprovalPayload[] }) : {}
+
+  const pending = Array.isArray(result?.approvals) ? result.approvals[0] : undefined
+
+  if (!pending || typeof pending.request_id !== 'string') {
+    return
+  }
+
+  await receiveApprovalRequest(gateway, {
+    allowPermanent: pending.allow_permanent !== false,
+    choices: Array.isArray(pending.choices) ? pending.choices.filter(choice => typeof choice === 'string') : undefined,
+    command: typeof pending.command === 'string' ? pending.command : '',
+    description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
+    requestId: pending.request_id,
+    sessionId,
+    smartDenied: pending.smart_denied === true
+  })
+}
 
 /** The prompt request for one specific session — the tile counterpart of the
  *  active-session `$*Request` views (same map, fixed key). */
@@ -146,6 +200,28 @@ export const $activeSessionAwaitingInput = computed(
   [$clarifyRequest, $approvalRequest, $sudoRequest, $secretRequest],
   (clarify, approval, sudo, secret) => Boolean(clarify || approval || sudo || secret)
 )
+
+/** True when `sessionId` is parked on a blocking prompt that typing cannot
+ *  answer (approval / sudo / secret). Clarify is deliberately excluded: typing
+ *  a real message IS an answer to a clarify ("none of these" — the composer
+ *  skips it and routes the words), but no message text can approve a command
+ *  or supply a password. Imperative read — the composer checks this on Enter,
+ *  not on every render. */
+export const hasBlockingPromptRequest = (sessionId: string | null | undefined): boolean => {
+  const key = keyFor(sessionId)
+
+  return Boolean(approval.$all.get()[key] || sudo.$all.get()[key] || secret.$all.get()[key])
+}
+
+/** Reactive twin of `hasBlockingPromptRequest`, for the composer's busy-action
+ *  affordance (the primary button must advertise queue, not steer, while the
+ *  turn is parked on a prompt Enter can't answer). */
+export const sessionBlockingPrompt = (sessionId: string | null) =>
+  computed([approval.$all, sudo.$all, secret.$all], (approvals, sudos, secrets) => {
+    const key = keyFor(sessionId)
+
+    return Boolean(approvals[key] || sudos[key] || secrets[key])
+  })
 
 /** Per-session `awaitingInput` — the tile composer's counterpart of
  *  `$activeSessionAwaitingInput` (same sources, fixed session instead of the

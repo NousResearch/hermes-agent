@@ -22,6 +22,15 @@ transport:
 auth:
   type: oauth
 
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - figma
+    - mockup
+    - wireframe
+  hosts:
+    - figma.com
+
 post_install: |
   On first connection Hermes opens a browser to authorize with Figma
   (or run `hermes mcp login figma`). Approve access, then restart the

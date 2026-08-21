@@ -10,7 +10,7 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, Fragment, type ReactNode, type RefObject, useRef, useState } from 'react'
 
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
@@ -32,7 +32,8 @@ import { cn } from '@/lib/utils'
 
 import { $layoutEditMode } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
-import { hiddenPaneProps, PaneGroupContext, PaneVisibleContext } from '../../pane-visibility'
+import { emptyPaneLifecycleState, reconcilePaneLifecycle } from '../../pane-lifecycle'
+import { hiddenPaneProps, PaneGroupContext, PaneLifecycleContext, PaneVisibleContext } from '../../pane-visibility'
 import type { DropPosition, GroupNode } from '../model'
 import {
   $dropHint,
@@ -40,7 +41,6 @@ import {
   $narrowViewport,
   $newSessionTabAction,
   $panesWithCloser,
-  $stripToolsRevision,
   $treeDragging,
   $treePaneEpochs,
   activateTreePane,
@@ -49,6 +49,7 @@ import {
   closeTabPane,
   closeTreeTabsToRight,
   collapseTreePane,
+  hideOnlyZoneTabs,
   isCollapsePane,
   isMainStripPane,
   isSessionStripPane,
@@ -56,6 +57,7 @@ import {
   reloadTreePane,
   restoreTreePane,
   SESSION_TILE_DRAG,
+  setStripTabHidden,
   setTreeGroupHeaderHidden,
   setTreeGroupMinimized,
   treeTabCloseTargets
@@ -129,6 +131,30 @@ function ZoneMenu({
           onCloseOthers: () => closeOtherTreeTabs(targetId),
           onCloseToRight: () => closeTreeTabsToRight(targetId)
         })}
+        {(() => {
+          // Show/hide rows for the zone's hide-only chrome tabs (sessions /
+          // Bots) — their Close replacement. Resolved when the menu OPENS,
+          // same no-subscription contract as the close-verb counts above.
+          const hideOnly = hideOnlyZoneTabs(nodeId)
+
+          if (hideOnly.length === 0) {
+            return null
+          }
+
+          return (
+            <>
+              <kit.Separator />
+              {hideOnly.map(tab =>
+                renderActionItem(kit, {
+                  icon: tab.hidden ? 'eye' : 'eye-closed',
+                  key: `strip-tab-${tab.id}`,
+                  label: tab.hidden ? t.zones.showStripTab(tab.title) : t.zones.hideStripTab(tab.title),
+                  onSelect: () => setStripTabHidden(tab.id, !tab.hidden)
+                })
+              )}
+            </>
+          )
+        })()}
         <kit.Separator />
         {renderActionItem(kit, {
           icon: headerHidden ? 'eye' : 'eye-closed',
@@ -137,7 +163,9 @@ function ZoneMenu({
         })}
         {minimizable &&
           renderActionItem(kit, {
-            icon: minimized ? 'chevron-down' : 'chevron-up',
+            // Same action-direction contract as the strip button below: the
+            // icon points where the zone will GO (restore opens upward).
+            icon: minimized ? 'chevron-up' : 'chevron-down',
             label: minimized ? t.zones.restore : t.zones.minimize,
             onSelect: () => setTreeGroupMinimized(nodeId, !minimized)
           })}
@@ -193,9 +221,6 @@ export function TreeGroup({
   // Reload epochs: only an explicit tab-menu Reload writes here, so this
   // subscription costs nothing on a normal render.
   const paneEpochs = useStore($treePaneEpochs)
-  // Re-read the active pane's contributed strip glyphs when their state changes
-  // (a toggle flipped, a DevTools handle registered).
-  useStore($stripToolsRevision)
 
   const paneFor = (id: string) => panes.find(p => p.id === id)
 
@@ -212,29 +237,24 @@ export function TreeGroup({
   const active = paneFor(activeId)
   const isEmpty = node.panes.length === 0
 
-  // KEEP-ALIVE: every pane that has been ACTIVE in this zone stays mounted —
-  // an inactive tab merely hides (visibility), it does not unmount. Remounting
-  // on every tab switch re-measured and re-scrolled the content from scratch
-  // (the thread visibly layout-shifted each time a session tab was revisited).
-  // Lazy on purpose: a pane first mounts when first activated, so a
-  // boot-restored tab stack doesn't resume every session up front.
-  const everActivePanesRef = useRef<Set<string>>(new Set())
+  // BOUNDED KEEP-ALIVE: the active pane is visible, a small per-zone LRU stays
+  // hot-hidden, and older panes park (unmount). This preserves fast tab
+  // round-trips without letting a long-lived zone pin every transcript it has
+  // ever visited. Stateful resources can opt out of parking (the terminal keeps
+  // its PTY alive while hidden). Lazy remains deliberate: restored background
+  // tabs have no lifecycle entry and do not mount until first activation.
+  const lifecycleRef = useRef(emptyPaneLifecycleState())
 
-  useEffect(() => {
-    if (!node.minimized && !isEmpty) {
-      everActivePanesRef.current.add(activeId)
-    }
+  if (!node.minimized && !isEmpty) {
+    lifecycleRef.current = reconcilePaneLifecycle(lifecycleRef.current, {
+      activeId,
+      keepAlive: id => Boolean(paneChrome(paneFor(id)).lifecycleKeepAlive),
+      paneIds: shown
+    })
+  }
 
-    // Prune panes that left the zone (closed / moved to another group), so a
-    // long-lived zone doesn't pin stale ids forever.
-    for (const id of everActivePanesRef.current) {
-      if (!node.panes.includes(id)) {
-        everActivePanesRef.current.delete(id)
-      }
-    }
-  })
-
-  const keptPanes = shown.filter(id => id === activeId || everActivePanesRef.current.has(id))
+  const paneLifecycle = lifecycleRef.current.entries
+  const keptPanes = shown.filter(id => paneLifecycle[id] && paneLifecycle[id].lifecycle !== 'parked')
 
   // ONE header style: the app's compact pane-header. DEFAULT is contextual —
   // a single pane isn't a "tab", so its header auto-hides; a stack shows its
@@ -293,11 +313,13 @@ export function TreeGroup({
   const targetPane = () => menuPane ?? activeId
 
   // Close targets the right-clicked chip (falling back to the active pane);
-  // only panes that declare `uncloseable` (the main workspace) are exempt.
+  // panes that declare `uncloseable` (the main workspace) or `hideOnly`
+  // (sessions / Bots — show/hide replaces Close) are exempt.
   const closable = () => {
     const paneId = targetPane()
+    const chrome = paneChrome(paneFor(paneId))
 
-    return paneChrome(paneFor(paneId)).uncloseable ? undefined : paneId
+    return chrome.uncloseable || chrome.hideOnly ? undefined : paneId
   }
 
   // The zone hosting the uncloseable workspace never minimizes — collapsing
@@ -310,8 +332,11 @@ export function TreeGroup({
 
   // A pane whose store owns Close keeps the gesture even when the pane itself
   // is uncloseable — the workspace tab empties to a fresh draft rather than
-  // leaving the tree.
-  const closeableTab = (paneId: string) => !paneChrome(paneFor(paneId)).uncloseable || panesWithCloser.has(paneId)
+  // leaving the tree. Hide-only chrome (sessions / Bots) opts out of every
+  // close gesture: its tabs are shown/hidden (zone menu, ⌘K), never closed —
+  // an accidental ✕ on standing chrome removed Bot Mode until the next launch.
+  const closeableTab = (paneId: string) =>
+    !paneChrome(paneFor(paneId)).hideOnly && (!paneChrome(paneFor(paneId)).uncloseable || panesWithCloser.has(paneId))
 
   // A pane's own live label when it has one, else its registered string.
   const tabLabel = (paneId: string) => paneChrome(paneFor(paneId)).tabTitle?.() ?? paneFor(paneId)?.title ?? paneId
@@ -440,7 +465,7 @@ export function TreeGroup({
                     onPointerDown={e => e.stopPropagation()}
                     type="button"
                   >
-                    <Codicon name={node.minimized ? 'chevron-down' : 'chevron-up'} size="0.75rem" />
+                    <Codicon name={node.minimized ? 'chevron-up' : 'chevron-down'} size="0.75rem" />
                   </button>
                 )}
                 <StripDropCaret groupId={node.id} stripRef={stripRef} />
@@ -545,6 +570,7 @@ export function TreeGroup({
                   }}
                   role="tab"
                   selected={isSelected}
+                  showCloseButton={chrome.showCloseButton !== false}
                   style={{ cursor: 'grab' }}
                 >
                   {chrome.tabLead ? (
@@ -558,15 +584,6 @@ export function TreeGroup({
               // tile tab); the wrapper needs the key since it's the root.
               return <Fragment key={paneId}>{chrome.tabWrap ? chrome.tabWrap(tab) : tab}</Fragment>
             })}
-
-            {/* Bare glyphs after the last tab: whatever the ACTIVE pane
-                contributes (a preview's console / DevTools), then the "+".
-                All of them are PaneStripGlyph — same size, colour and hover,
-                because they're the same button. */}
-            {!node.minimized &&
-              paneChrome(active)
-                .stripTools?.()
-                .map(tool => <PaneStripGlyph key={tool.id} {...tool} />)}
 
             {/* Plain "+" after the last tab of a CHAT strip (the workspace
                 zone, or any zone holding session tabs) — always shown. Creates
@@ -593,8 +610,8 @@ export function TreeGroup({
         </ZoneMenu>
       )}
 
-      {/* Body: the zone's pane content — every kept (ever-active) pane stays
-          mounted in an absolute layer; only the active one is visible.
+      {/* Body: the zone's pane content — the active pane and bounded hot-hidden
+          cache stay mounted in absolute layers; parked panes are unmounted.
           `visibility` (not display) keeps the hidden pane's layout box, so
           scroll positions and measurements survive the round-trip — which also
           makes a hidden layer's rect identical to the visible one's, hence the
@@ -627,11 +644,13 @@ export function TreeGroup({
                     // Reload remounts the contribution (effects re-run, state
                     // resets) while the layer — and every other tab — stays.
                     <PaneGroupContext.Provider value={node.id}>
-                      <PaneVisibleContext.Provider value={isActive}>
-                        <ContribBoundary id={pane.id} key={paneEpochs[paneId] ?? 0}>
-                          <ContribRender render={pane.render} />
-                        </ContribBoundary>
-                      </PaneVisibleContext.Provider>
+                      <PaneLifecycleContext.Provider value={paneLifecycle[paneId]?.lifecycle ?? 'visible'}>
+                        <PaneVisibleContext.Provider value={isActive}>
+                          <ContribBoundary id={pane.id} key={paneEpochs[paneId] ?? 0}>
+                            <ContribRender render={pane.render} />
+                          </ContribBoundary>
+                        </PaneVisibleContext.Provider>
+                      </PaneLifecycleContext.Provider>
                     </PaneGroupContext.Provider>
                   ) : (
                     isActive && (

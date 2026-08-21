@@ -15,6 +15,7 @@ This module provides:
 """
 
 import copy
+from hermes_cli.cli_output import line_input
 import json
 import logging
 import os
@@ -27,6 +28,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
@@ -312,6 +314,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "HERMES_LANGFUSE_RELEASE",
     "HERMES_LANGFUSE_SAMPLE_RATE",
     "HERMES_LANGFUSE_MAX_CHARS",
+    "HERMES_LANGFUSE_CAPTURE",
     "HERMES_LANGFUSE_DEBUG",
     "LANGFUSE_PUBLIC_KEY",
     "LANGFUSE_SECRET_KEY",
@@ -336,10 +339,10 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 # =============================================================================
 
 _MANAGED_TRUE_VALUES = ("true", "1", "yes")
-_MANAGED_SYSTEM_NAMES = {
-    "nix": "NixOS",
-    "nixos": "NixOS",
-}
+_NIX_MANAGED_SYSTEMS = {"nixos", "home-manager"}
+# Only the NixOS module ever wrote a bare "true" or an empty marker, so both
+# legacy signals name that system.
+_LEGACY_MANAGED_SYSTEM = "nixos"
 # The Nix store root. Used by detect_install_method to identify installs
 # from `nix run` / `nix profile install` (which don't set HERMES_MANAGED).
 # A module-level constant so tests can patch it without creating files
@@ -355,18 +358,30 @@ _IGNORED_MANAGED_VALUES = frozenset({"brew", "homebrew"})
 def get_managed_system() -> Optional[str]:
     """Return the package manager owning this install, if any."""
     raw = os.getenv("HERMES_MANAGED", "").strip()
+    marker = None
     if raw:
-        normalized = raw.lower()
-        if normalized in _IGNORED_MANAGED_VALUES:
-            return None
-        if normalized in _MANAGED_TRUE_VALUES:
-            return "NixOS"
-        return _MANAGED_SYSTEM_NAMES.get(normalized, raw)
+        marker = raw.lower()
+    else:
+        managed_marker = get_hermes_home() / ".managed"
+        # An interactive shell reads the marker, because it does not see the
+        # HERMES_MANAGED variable of the service. A marker with content
+        # names the system that manages the install.
+        if managed_marker.exists():
+            try:
+                marker = managed_marker.read_text(encoding="utf-8", errors="replace").strip().lower()
+            except OSError:
+                marker = ""
 
-    managed_marker = get_hermes_home() / ".managed"
-    if managed_marker.exists():
-        return "NixOS"
-    return None
+    if marker is None:
+        return None
+
+    if marker in _IGNORED_MANAGED_VALUES:
+        return None
+
+    if marker == "" or marker in _MANAGED_TRUE_VALUES:
+        return _LEGACY_MANAGED_SYSTEM
+
+    return marker
 
 
 def is_managed() -> bool:
@@ -379,6 +394,9 @@ def is_managed() -> bool:
     return get_managed_system() is not None
 
 
+# Nix installs arrive by several routes (nix run, nix profile, a system flake,
+# home-manager), and the running process cannot tell which one. Thus this text
+# names the routes instead of one command.
 _NIX_UPDATE_MSG = (
     "Update Hermes through the Nix source that installed it "
     "(e.g. nix profile upgrade, or update your flake input and rebuild with nixos-rebuild or home-manager switch)"
@@ -388,7 +406,7 @@ _NIX_UPDATE_MSG = (
 def get_managed_update_command() -> Optional[str]:
     """Return the preferred upgrade command for a managed install."""
     managed_system = get_managed_system()
-    if managed_system == "NixOS":
+    if managed_system in _NIX_MANAGED_SYSTEMS:
         return _NIX_UPDATE_MSG
     return None
 
@@ -408,7 +426,8 @@ def _install_method_project_root(project_root: Optional[Path] = None) -> Path:
 
 
 def detect_install_method(project_root: Optional[Path] = None) -> str:
-    """Detect how Hermes was installed: 'docker', 'nix', 'nixos', 'git', or 'unknown'.
+    """Detect how Hermes was installed: 'apt', 'docker', 'nix', 'nixos',
+    'home-manager', 'git', or 'unknown'.
 
     Resolution order:
     1. Code-scoped stamp ``<install tree>/.install_method`` (next to the
@@ -452,7 +471,14 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     See issue #34397.
     """
     root = _install_method_project_root(project_root)
-    supported_methods = {"docker", "nix", "nixos", "git", "unknown"}
+    # "apt" is intentionally the Termux APT distribution identifier, not a
+    # generic Debian/Ubuntu APT signal. If another APT-managed distribution is
+    # added, give it a distinct install method or make update-command selection
+    # platform-aware instead of silently reusing Termux's `pkg` command.
+    # "home-manager" is here because step 3 can return it. A stamp must name
+    # every method that this function returns. Without it, the stamp of a
+    # home-manager install gives "unknown".
+    supported_methods = {"apt", "docker", "nix", "nixos", "home-manager", "git", "unknown"}
 
     # 1. Code-scoped stamp — authoritative, immune to shared $HERMES_HOME.
     try:
@@ -540,17 +566,34 @@ def stamp_install_method(method: str, project_root: Optional[Path] = None) -> No
         pass
 
 
+def is_nix_install_method(method: str) -> bool:
+    """Return True for every install method that Nix owns.
+
+    The callers that branch on the install method must treat "nix",
+    "nixos" and "home-manager" the same way. One helper keeps the three
+    names in one place, so a new Nix shape cannot miss a call site.
+    """
+    return method == "nix" or method in _NIX_MANAGED_SYSTEMS
+
+
 def recommended_update_command_for_method(method: str) -> str:
     """Return the update command or guidance for a given install method."""
-    if method in {"nix", "nixos"}:
+    if is_nix_install_method(method):
         return _NIX_UPDATE_MSG
     if method == "docker":
         return "docker pull nousresearch/hermes-agent:latest"
+    if method == "apt":
+        # By contract, the current "apt" install method is the Termux APT
+        # distribution. It deliberately uses Termux's `pkg` frontend.
+        return "pkg upgrade hermes-agent"
     return "hermes update"
 
 
 def recommended_update_command() -> str:
     """Return the best update command for the current installation."""
+    # The managed state wins over the code-scoped stamp. A managed install
+    # can carry a stale stamp from an earlier install shape, and the stamp
+    # then names an update path that the managed guard refuses.
     managed_cmd = get_managed_update_command()
     if managed_cmd:
         return managed_cmd
@@ -613,17 +656,6 @@ def format_docker_update_message() -> str:
 def format_managed_message(action: str = "modify this Hermes installation") -> str:
     """Build a user-facing error for managed installs."""
     managed_system = get_managed_system() or "a package manager"
-    raw = os.getenv("HERMES_MANAGED", "").strip().lower()
-
-    if managed_system == "NixOS":
-        env_hint = "true" if raw in _MANAGED_TRUE_VALUES else raw or "true"
-        return (
-            f"Cannot {action}: this Hermes installation is managed by NixOS "
-            f"(HERMES_MANAGED={env_hint}).\n"
-            "Edit services.hermes-agent.settings in your configuration.nix and run:\n"
-            "  sudo nixos-rebuild switch"
-        )
-
     return (
         f"Cannot {action}: this Hermes installation is managed by {managed_system}.\n"
         "Use your package manager to upgrade or reinstall Hermes."
@@ -918,16 +950,12 @@ def _ensure_hermes_home_managed(home: Path):
     """Managed-mode variant: verify dirs exist (activation creates them), seed SOUL.md."""
     if not home.is_dir():
         raise RuntimeError(
-            f"HERMES_HOME {home} does not exist. "
-            "Run 'sudo nixos-rebuild switch' first."
+            f"HERMES_HOME {home} does not exist."
         )
     for subdir in ("cron", "sessions", "logs", "memories"):
         d = home / subdir
         if not d.is_dir():
-            raise RuntimeError(
-                f"{d} does not exist. "
-                "Run 'sudo nixos-rebuild switch' first."
-            )
+            raise RuntimeError(f"{d} does not exist.")
     # Curator reports dir is a sub-path of logs/; create it if missing.
     # In managed mode the activation script may not know about this subdir,
     # so we mkdir it ourselves (it's inside an already-secured logs/ dir).
@@ -1281,6 +1309,42 @@ def _warn_once_per_provider(
     logger.warning(msg, *args)
 
 
+_API_MODE_ALIASES = {
+    # Values accepted by earlier releases (and natural spellings) mapped to
+    # the canonical transport names consumed by agent_init. Before this map
+    # existed, an unrecognized api_mode was silently ignored and the
+    # transport fell through to hostname-based guessing, so a config that
+    # said ``api_mode: openai`` (valid on older releases) could flip to
+    # ``codex_responses`` after an update and break the provider (#66543
+    # discussion; observed live against api.actual.inc).
+    "openai": "chat_completions",
+    "openai_chat": "chat_completions",
+    "openai-chat": "chat_completions",
+    "chat-completions": "chat_completions",
+    "chatcompletions": "chat_completions",
+    "responses": "codex_responses",
+    "openai_responses": "codex_responses",
+    "openai-responses": "codex_responses",
+    "anthropic": "anthropic_messages",
+    "anthropic-messages": "anthropic_messages",
+    "messages": "anthropic_messages",
+    "bedrock": "bedrock_converse",
+    "bedrock-converse": "bedrock_converse",
+}
+
+
+def _canonical_api_mode(api_mode: str) -> str:
+    """Map legacy/alias ``api_mode`` spellings to canonical transport names.
+
+    Unknown values pass through unchanged (callers keep their existing
+    fall-through behavior); known aliases are rewritten so downstream
+    consumers (``agent_init``'s accepted-set check, runtime resolution)
+    see a canonical name instead of silently discarding the user's intent.
+    """
+    cleaned = api_mode.strip()
+    return _API_MODE_ALIASES.get(cleaned.lower(), cleaned)
+
+
 def _normalize_custom_provider_entry(
     entry: Any,
     *,
@@ -1322,7 +1386,9 @@ def _normalize_custom_provider_entry(
         # configs don't warn on every load.
         "provider",
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
+        "key_cmd",
         "api_mode", "transport", "model", "default_model", "models",
+        "models_discovered",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
@@ -1395,24 +1461,38 @@ def _normalize_custom_provider_entry(
     if isinstance(api_key, str) and api_key.strip():
         normalized["api_key"] = api_key.strip()
 
-    key_env = entry.get("key_env")
+    key_env = entry.get("key_env") or entry.get("api_key_env")
     if isinstance(key_env, str) and key_env.strip():
         normalized["key_env"] = key_env.strip()
+        if entry.get("api_key_env") and not entry.get("key_env"):
+            normalized["api_key_env"] = key_env.strip()
 
     api_mode = entry.get("api_mode") or entry.get("transport")
     if isinstance(api_mode, str) and api_mode.strip():
-        normalized["api_mode"] = api_mode.strip()
+        normalized["api_mode"] = _canonical_api_mode(api_mode)
 
     model_name = entry.get("model") or entry.get("default_model")
     if isinstance(model_name, str) and model_name.strip():
         normalized["model"] = model_name.strip()
+
+    # Entry-level marker: the ``models`` mapping was auto-discovered by
+    # Hermes (``_save_discovered_models_to_config``), not hand-curated.
+    # Older Hermes versions wrote an in-mapping ``__discovered_model_catalog__``
+    # sentinel instead; accept it on read and strip it from the models
+    # mapping so sentinel keys never surface as model IDs.
+    models_discovered = entry.get("models_discovered") is True
 
     models = entry.get("models")
     if isinstance(models, dict) and models:
         # Shallow-copy: `entry` may alias a cached config sub-dict, and the
         # normalized entry escapes into long-lived runtime state
         # (agent._custom_providers) — don't share the cached models mapping.
-        normalized["models"] = dict(models)
+        models_copy = dict(models)
+        if models_copy.pop("__discovered_model_catalog__", None) is True:
+            models_discovered = True
+        models_copy.pop("__explicit_model_allowlist__", None)
+        if models_copy:
+            normalized["models"] = models_copy
     elif isinstance(models, list) and models:
         # Hand-edited configs (and older Hermes versions) may write
         # ``models`` as a plain list of ids or as ``[{id: ...}]`` rows.
@@ -1437,6 +1517,9 @@ def _normalize_custom_provider_entry(
             normalized_models[model_id.strip()] = model_meta
         if normalized_models:
             normalized["models"] = normalized_models
+
+    if models_discovered:
+        normalized["models_discovered"] = True
 
     context_length = entry.get("context_length")
     if isinstance(context_length, int) and context_length > 0:
@@ -1494,6 +1577,7 @@ def _custom_provider_entry_to_provider_config(
         "api_key",
         "key_env",
         "models",
+        "models_discovered",
         "context_length",
         "rate_limit_delay",
         "discover_models",
@@ -1780,6 +1864,57 @@ def get_custom_provider_context_length(
     return None
 
 
+def get_custom_provider_model_capability(
+    model: str,
+    base_url: str,
+    capability: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[bool]:
+    """Return an explicit boolean capability for one custom-provider model.
+
+    Matching is scoped to the normalized route and exact runtime model id so
+    aliases can declare capabilities without changing the id sent upstream.
+    Missing or non-boolean declarations return ``None``.
+    """
+    if not model or not base_url or not capability:
+        return None
+    if custom_providers is None:
+        try:
+            if config is None:
+                # Read-only path: this helper never mutates the entries it
+                # scans, and get_compatible_custom_providers shallow-copies
+                # each entry before normalizing, so the no-deepcopy cache is
+                # safe here (~135us saved per call on the blank-stub paths).
+                config = load_config_readonly()
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            return None
+    if not isinstance(custom_providers, list):
+        return None
+
+    target_url = normalize_route_base_url(base_url)
+    if not target_url:
+        return None
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = normalize_route_base_url(entry.get("base_url"))
+        if not entry_url or entry_url != target_url:
+            continue
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            continue
+        model_cfg = models.get(model)
+        if not isinstance(model_cfg, dict):
+            continue
+        value = model_cfg.get(capability)
+        if isinstance(value, bool):
+            return value
+    return None
+
+
 def _coerce_config_version(value: Any) -> int:
     """Return a safe integer config version, treating invalid values as legacy."""
     if isinstance(value, bool):
@@ -1877,6 +2012,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "require_mention",       # top-level convenience form honored by the gateway (#3979)
     "unauthorized_dm_behavior",  # top-level form read by gateway/config.py
     "signal",            # Signal settings bridged to env vars by gateway/config.py
+    "timeouts",          # unified timeout resolution section (agent/deadline.py, #85125)
 }
 _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 
@@ -1918,6 +2054,20 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             return [ConfigIssue("error", "Could not load config.yaml", "Run 'hermes setup' to create a valid config")]
 
     issues: List[ConfigIssue] = []
+
+    # ── voice.submit_mode: direct | draft ────────────────────────────────
+    voice_cfg = config.get("voice")
+    if isinstance(voice_cfg, dict) and "submit_mode" in voice_cfg:
+        submit_mode = voice_cfg.get("submit_mode")
+        normalized_submit_mode = (
+            submit_mode.strip().lower() if isinstance(submit_mode, str) else None
+        )
+        if normalized_submit_mode not in {"direct", "draft"}:
+            issues.append(ConfigIssue(
+                "error",
+                f"voice.submit_mode must be 'direct' or 'draft', got {submit_mode!r}",
+                "Set voice.submit_mode to direct (submit immediately) or draft (edit before sending)",
+            ))
 
     # ── custom_providers must be a list, not a dict ──────────────────────
     cp = config.get("custom_providers")
@@ -2074,25 +2224,21 @@ def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
     sys.stderr.write("\n".join(lines) + "\n\n")
 
 
-def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> None:
+def warn_deprecated_cwd_env_vars() -> None:
     """Warn if MESSAGING_CWD or TERMINAL_CWD is set in .env instead of config.yaml.
 
     These env vars are deprecated — the canonical setting is terminal.cwd
-    in config.yaml.  Prints a migration hint to stderr.
+    in config.yaml.  Read the file rather than ``os.environ`` because runtime
+    config bridges and session restoration legitimately set ``TERMINAL_CWD``.
+    Prints a migration hint to stderr.
     """
-    messaging_cwd = os.environ.get("MESSAGING_CWD")
-    terminal_cwd_env = os.environ.get("TERMINAL_CWD")
+    try:
+        env_map = load_env()
+    except Exception:
+        return
 
-    if config is None:
-        try:
-            config = load_config()
-        except Exception:
-            return
-
-    terminal_cfg = config.get("terminal", {})
-    config_cwd = terminal_cfg.get("cwd", ".") if isinstance(terminal_cfg, dict) else "."
-    # Only warn if config.yaml doesn't have an explicit path
-    config_has_explicit_cwd = config_cwd not in {".", "auto", "cwd", ""}
+    messaging_cwd = str(env_map.get("MESSAGING_CWD") or "").strip()
+    terminal_cwd_env = str(env_map.get("TERMINAL_CWD") or "").strip()
 
     lines: list[str] = []
     if messaging_cwd:
@@ -2100,8 +2246,7 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
             f"  \033[33m⚠\033[0m MESSAGING_CWD={messaging_cwd} found in .env — "
             f"this is deprecated."
         )
-    if terminal_cwd_env and not config_has_explicit_cwd:
-        # TERMINAL_CWD in env but not from config bridge — likely from .env
+    if terminal_cwd_env:
         lines.append(
             f"  \033[33m⚠\033[0m TERMINAL_CWD={terminal_cwd_env} found in .env — "
             f"this is deprecated."
@@ -2289,7 +2434,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if var.get("password"):
                 value = masked_secret_prompt(f"  {var['prompt']}: ")
             else:
-                value = input(f"  {var['prompt']}: ").strip()
+                value = line_input(f"  {var['prompt']}: ").strip()
             
             if value:
                 save_env_value(var["name"], value)
@@ -2342,7 +2487,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                             f"  {info.get('prompt', name)} (Enter to skip): "
                         )
                     else:
-                        value = input(f"  {info.get('prompt', name)} (Enter to skip): ").strip()
+                        value = line_input(f"  {info.get('prompt', name)} (Enter to skip): ").strip()
                     if value:
                         save_env_value(name, value)
                         results["env_added"].append(name)
@@ -2393,7 +2538,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             for var in missing_skill_config:
                 default = var.get("default", "")
                 default_hint = f" (default: {default})" if default else ""
-                value = input(f"  {var['prompt']}{default_hint}: ").strip()
+                value = line_input(f"  {var['prompt']}{default_hint}: ").strip()
                 if not value and default:
                     value = str(default)
                 if value:
@@ -2743,6 +2888,27 @@ def _strip_default_values(
     return result
 
 
+def split_model_config_default(raw_default: Any) -> tuple[str, str]:
+    """Canonicalize a config ``model.default``/``model.model`` value.
+
+    A dict-valued default (``model.default: {provider: ..., model: ...}``)
+    pairs the model string with the provider it must be routed through. The
+    dict is flattened here at the shared boundary so both halves stay
+    together through ``HermesCLI`` construction: the model becomes a plain
+    string and the provider is returned explicitly instead of being lost to
+    the outer merged ``model.provider`` default (often ``"auto"``, which
+    runtime resolution treats as authoritative and would otherwise route the
+    model through the wrong active provider).
+
+    Returns ``(model, provider)``; both are ``""`` when nothing is usable.
+    """
+    if isinstance(raw_default, dict):
+        provider = str(raw_default.get("provider") or "").strip()
+        model = raw_default.get("model") or raw_default.get("default")
+        return (str(model or "").strip(), provider)
+    return (str(raw_default or "").strip(), "")
+
+
 def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     """Move stale root-level provider/base_url/context_length into model section.
 
@@ -2778,6 +2944,17 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     # alias, or a model dict whose id lives under a non-canonical key.
     model_in = config.get("model")
     model_has_alias = isinstance(model_in, dict) and model_in.get("api_base")
+    # A dict-valued ``default``/``model`` (``{provider: ..., model: ...}``)
+    # must be flattened into ``default`` (string) + ``provider`` here at the
+    # single load/save chokepoint, so every reader (doctor, status, fallback
+    # picker, prompt-size, context-switch guard, …) sees plain strings instead
+    # of a nested dict that crashes ``.strip()``/``.lower()`` or routes the
+    # model through the wrong provider.
+    _has_nested_default = isinstance(model_in, dict) and (
+        isinstance(model_in.get("default"), dict)
+        or isinstance(model_in.get("model"), dict)
+        or isinstance(model_in.get("name"), dict)
+    )
     # A model dict needs canonicalization if its id lives under a non-canonical
     # key (``model``/``name``) — either because ``default`` is empty (we must
     # promote the alias) or because ``default`` is set but a stale alias still
@@ -2788,7 +2965,7 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     has_root = any(
         config.get(k) for k in ("provider", "base_url", "context_length", "api_base")
     )
-    if not has_root and not model_has_alias and not model_needs_canon:
+    if not has_root and not model_has_alias and not model_needs_canon and not _has_nested_default:
         return config
 
     config = dict(config)
@@ -2798,6 +2975,24 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     else:
         model = dict(model)
     config["model"] = model
+
+    # Flatten a dict-valued ``model.default``/``model.model``:
+    # ``{provider: <p>, model: <m>}`` -> ``default: "<m>"`` and, when no
+    # explicit ``model.provider`` is set, ``provider: "<p>"``. The nested
+    # provider must win over the merged default ``"auto"`` (which runtime
+    # resolution treats as authoritative and would otherwise route the model
+    # through the wrong active provider), but never over an explicitly
+    # configured outer provider.
+    for _key in ("default", "model", "name"):
+        _val = model.get(_key)
+        if isinstance(_val, dict):
+            _nested_model = _val.get("model") or _val.get("default")
+            _nested_provider = str(_val.get("provider") or "").strip()
+            model[_key] = str(_nested_model or "").strip()
+            if _nested_provider:
+                _outer_provider = str(model.get("provider") or "").strip()
+                if not _outer_provider or _outer_provider == "auto":
+                    model["provider"] = _nested_provider
 
     for key in ("provider", "base_url", "context_length"):
         root_val = config.get(key)
@@ -2881,6 +3076,83 @@ def is_provider_enabled(provider_cfg: Optional[Dict[str, Any]]) -> bool:
     if isinstance(flag, str):
         return flag.strip().lower() not in {"false", "0", "no", "off"}
     return bool(flag)
+
+
+# Sentinel used when the user requests an unlimited turn budget.
+# ``sys.maxsize`` (9,223,372,036,854,775,807) is chosen so it:
+#   - survives the ``str() → int()`` round-trip through the HERMES_MAX_ITERATIONS
+#     env-var bridge in gateway/run.py,
+#   - works correctly in every ``<``, ``>=``, and ``remaining = max - used``
+#     comparison in agent/iteration_budget.py and agent/conversation_loop.py
+#     without requiring those call sites to learn about a special "unlimited"
+#     value, and
+#   - is large enough that no real conversation will ever reach it (a turn
+#     takes seconds; 9.2e18 turns would take ~10^11 years).
+TURN_LIMIT_UNLIMITED = sys.maxsize
+
+# String spellings that mean "no limit".  Lowercased, whitespace-stripped
+# before comparison so ``"None"``, ``" unlimited "`` etc. all match.
+_UNLIMITED_SPELLINGS = frozenset({
+    "none", "null", "unlimited", "infinite", "infinity", "inf",
+    "∞", "-1", "0",
+})
+
+
+def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
+    """Normalize a raw ``agent.max_turns`` value into an int iteration cap.
+
+    Accepts:
+      - ``int`` / ``float`` → ``int(raw)`` (floats truncated; values ≤ 0 mean
+        "no limit" → :data:`TURN_LIMIT_UNLIMITED`).
+      - numeric string (``"120"``) → ``int(raw)``.
+      - ``"none"`` / ``"null"`` / ``"unlimited"`` / ``"infinite"`` /
+        ``"infinity"`` / ``"inf"`` / ``"∞"`` / ``"-1"`` / ``"0"``
+        (case-insensitive, whitespace-tolerant) → :data:`TURN_LIMIT_UNLIMITED`.
+      - YAML ``None`` / ``null`` / absent value → ``default`` (which is itself
+        :data:`TURN_LIMIT_UNLIMITED` — max_turns is unlimited by default).
+      - Anything unparseable → ``default`` (with a debug log).
+
+    The returned int is always ≥ 1, so loop conditions like
+    ``while api_call_count < agent.max_iterations`` behave correctly even when
+    the default (unlimited) path is taken.
+
+    This is the single normalization point for the turn-limit value type.
+    Config-reading sites (cli.py, gateway/run.py, cron/scheduler.py) call this
+    instead of bare ``int(...)``, so ``agent.max_turns: none`` in config.yaml
+    becomes a first-class supported spelling of "unlimited". max_turns is
+    unlimited unless the user sets an explicit positive integer cap.
+    """
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        # bool is a subclass of int; reject it explicitly so True/False don't
+        # silently become 1/0.
+        return default
+    if isinstance(raw, (int, float)):
+        n = int(raw)
+        if n <= 0:
+            return TURN_LIMIT_UNLIMITED
+        return n
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if not s:
+            return default
+        if s in _UNLIMITED_SPELLINGS:
+            return TURN_LIMIT_UNLIMITED
+        try:
+            n = int(s)
+        except ValueError:
+            try:
+                n = int(float(s))
+            except ValueError:
+                logger.debug("resolve_turn_limit: unparseable value %r → default %d", raw, default)
+                return default
+        if n <= 0:
+            return TURN_LIMIT_UNLIMITED
+        return n
+    # Unknown type (list, dict, …) — don't crash the agent over a bad config.
+    logger.debug("resolve_turn_limit: unsupported type %s (%r) → default %d", type(raw).__name__, raw, default)
+    return default
 
 
 def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> Any:
@@ -3454,7 +3726,18 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         # keys the managed layer pins — see docs/design/managed-scope.md §4.1.
         managed_config = managed_scope.load_managed_config()
         if managed_config:
-            managed_expanded = _expand_env_vars(managed_config)
+            # Normalize the managed overlay through the same canonicalization as
+            # the user config BEFORE merging (parity with
+            # managed_scope.apply_managed_overlay): a dict-valued
+            # ``model.default`` (``{provider: ..., model: ...}``) or a bare
+            # ``model: <string>`` must be flattened to a string ``default``
+            # paired with ``provider`` so the merged result never exposes a
+            # nested dict to status/fallback/runtime readers.
+            managed_normalized = _normalize_root_model_keys(managed_config)
+            if isinstance(managed_normalized.get("model"), str):
+                managed_normalized = dict(managed_normalized)
+                managed_normalized["model"] = {"default": managed_normalized["model"]}
+            managed_expanded = _expand_env_vars(managed_normalized)
             expanded = _deep_merge(expanded, managed_expanded)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:
@@ -4626,16 +4909,182 @@ def _cron_fleet_default_covers_axis(
     return isinstance(value, str) and bool(value.strip())
 
 
-def _load_cron_jobs_for_config_warning() -> List[Dict[str, Any]]:
-    """Best-effort read of the active profile's cron jobs database.
+_CRON_MODEL_IMPACT_JOB_LIMIT = 50
+_CRON_MODEL_IMPACT_ID_LIMIT = 256
+_CRON_MODEL_IMPACT_NAME_LIMIT = 120
 
-    Delegates to ``cron.jobs.load_jobs`` to reuse its BOM handling, corruption
-    repair, and context-local store resolution (tests, embedders). Falls back
-    to an empty list on any failure so config writes never break.
+
+def _model_assignment_text(value: Any) -> str:
+    """Return a trimmed scalar model/provider value, or empty for malformed data."""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def resolve_cron_model_drift_defaults(
+    config: Any,
+    *,
+    environ: Optional[Dict[str, str]] = None,
+) -> Tuple[str, str]:
+    """Resolve the global provider/model values cron compares against snapshots.
+
+    Mirrors the scheduler's global-model precedence: a truthy configured model
+    wins ``HERMES_MODEL``; the environment is only a fallback. Per-job and cron
+    fleet defaults are handled by the caller/classifier because they suppress a
+    drift axis rather than changing the global assignment.
     """
+    env = os.environ if environ is None else environ
+    provider = ""
+    model = _model_assignment_text(env.get("HERMES_MODEL", ""))
+    model_config = config.get("model") if isinstance(config, dict) else None
+    if isinstance(model_config, str):
+        configured_model = model_config.strip()
+        if configured_model:
+            model = configured_model
+    elif isinstance(model_config, dict):
+        provider = _model_assignment_text(model_config.get("provider"))
+        configured_model = _model_assignment_text(
+            model_config.get("default")
+            or model_config.get("model")
+            or model_config.get("name")
+        )
+        if configured_model:
+            model = configured_model
+    return provider, model
+
+
+def cron_model_drift_axes(
+    job: Any,
+    *,
+    current_provider: Any = "",
+    current_model: Any = "",
+    config: Any = None,
+) -> List[str]:
+    """Return the unpinned axes that the fail-closed cron guard would block."""
+    if not isinstance(job, dict) or not cron_model_drift_guard_enabled(config):
+        return []
+
+    current = {
+        "provider": _model_assignment_text(current_provider).lower(),
+        "model": _model_assignment_text(current_model).lower(),
+    }
+    drifted: List[str] = []
+    for axis in ("provider", "model"):
+        if _cron_fleet_default_covers_axis(axis, config):
+            continue
+        if _model_assignment_text(job.get(axis)):
+            continue
+        snapshot = _model_assignment_text(job.get(f"{axis}_snapshot")).lower()
+        if snapshot and current[axis] and snapshot != current[axis]:
+            drifted.append(axis)
+    return drifted
+
+
+def _valid_cron_impact_job_id(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    job_id = value.strip()
+    if not job_id or len(job_id) > _CRON_MODEL_IMPACT_ID_LIMIT:
+        return ""
+    if any(unicodedata.category(char).startswith("C") for char in job_id):
+        return ""
+    return job_id
+
+
+def _cron_impact_job_name(value: Any, job_id: str) -> str:
+    if isinstance(value, str):
+        printable = "".join(
+            char for char in value if not unicodedata.category(char).startswith("C")
+        )
+        name = " ".join(printable.split())[:_CRON_MODEL_IMPACT_NAME_LIMIT].rstrip()
+        if name:
+            return name
+    return f"Job {job_id}"[:_CRON_MODEL_IMPACT_NAME_LIMIT].rstrip()
+
+
+def _unavailable_cron_model_impact(guard_enabled: bool) -> Dict[str, Any]:
+    return {
+        "available": False,
+        "guard_enabled": guard_enabled,
+        "affected_count": 0,
+        "truncated": False,
+        "jobs": [],
+    }
+
+
+def build_cron_model_impact(
+    *,
+    current_provider: Any = "",
+    current_model: Any = "",
+    config: Any = None,
+    jobs: Any = None,
+) -> Dict[str, Any]:
+    """Build a bounded, profile-local summary of jobs blocked by model drift.
+
+    Job-store inspection is deliberately best effort: a model assignment has
+    already succeeded by the time Desktop requests this summary, so an unreadable
+    store is represented as unavailable instead of failing or rolling back it.
+    """
+    guard_enabled = cron_model_drift_guard_enabled(config)
+    if jobs is None:
+        try:
+            from cron.jobs import load_jobs
+
+            jobs = load_jobs()
+        except Exception:
+            return _unavailable_cron_model_impact(guard_enabled)
+    if not isinstance(jobs, list):
+        return _unavailable_cron_model_impact(guard_enabled)
+
+    result: Dict[str, Any] = {
+        "available": True,
+        "guard_enabled": guard_enabled,
+        "affected_count": 0,
+        "truncated": False,
+        "jobs": [],
+    }
+    if not guard_enabled:
+        return result
+
+    from cron.jobs import is_job_runnable
+
+    seen_ids: Set[str] = set()
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        if not is_job_runnable(job) or job.get("no_agent"):
+            continue
+        job_id = _valid_cron_impact_job_id(job.get("id"))
+        if not job_id or job_id in seen_ids:
+            continue
+        seen_ids.add(job_id)
+        axes = cron_model_drift_axes(
+            job,
+            current_provider=current_provider,
+            current_model=current_model,
+            config=config,
+        )
+        if not axes:
+            continue
+        result["affected_count"] += 1
+        if len(result["jobs"]) < _CRON_MODEL_IMPACT_JOB_LIMIT:
+            result["jobs"].append(
+                {
+                    "id": job_id,
+                    "name": _cron_impact_job_name(job.get("name"), job_id),
+                    "drifted_axes": axes,
+                }
+            )
+
+    result["truncated"] = result["affected_count"] > len(result["jobs"])
+    return result
+
+
+def _load_cron_jobs_for_config_warning() -> List[Dict[str, Any]]:
+    """Best-effort read of the active profile's cron jobs database."""
     try:
         from cron.jobs import load_jobs
-        return load_jobs()
+
+        jobs = load_jobs()
+        return jobs if isinstance(jobs, list) else []
     except Exception:
         return []
 
@@ -4645,46 +5094,25 @@ def warn_unpinned_cron_jobs_after_model_config_change(
     value: Any,
     config: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Warn when a global model/provider change will trip cron's drift guard.
-
-    Cron intentionally fails closed when an unpinned agent job's current global
-    model/provider differs from its creation-time snapshot. Surface that outcome
-    when the operator changes the global axis instead of letting the next tick
-    be the first visible signal.
-    """
+    """Warn when a global model/provider change will trip cron's drift guard."""
     axis = _cron_model_drift_axis_for_config_key(key)
     if axis is None:
         return
-    if not cron_model_drift_guard_enabled(config):
-        return
-    # A cron-fleet default covering this axis (cron.model /
-    # cron.model_provider) means unpinned jobs no longer follow the global
-    # value at all — the drift guard will not engage, so warning here would
-    # be a false alarm.
-    if _cron_fleet_default_covers_axis(axis, config):
-        return
 
-    new_value = str(value or "").strip().lower()
+    new_value = _model_assignment_text(value)
     if not new_value:
         return
-
-    pinned_field = axis
-    snapshot_field = f"{axis}_snapshot"
-    affected = 0
-    for job in _load_cron_jobs_for_config_warning():
-        if not job.get("enabled", True):
-            continue
-        if job.get("no_agent"):
-            continue
-        if str(job.get(pinned_field) or "").strip():
-            continue
-        snapshot = str(job.get(snapshot_field) or "").strip().lower()
-        if snapshot and snapshot != new_value:
-            affected += 1
-
+    impact = build_cron_model_impact(
+        current_provider=new_value if axis == "provider" else "",
+        current_model=new_value if axis == "model" else "",
+        config=config,
+        jobs=_load_cron_jobs_for_config_warning(),
+    )
+    affected = impact["affected_count"]
     if affected <= 0:
         return
 
+    snapshot_field = f"{axis}_snapshot"
     noun = "job" if affected == 1 else "jobs"
     verb = "has" if affected == 1 else "have"
     print(
@@ -4692,8 +5120,8 @@ def warn_unpinned_cron_jobs_after_model_config_change(
         f"{snapshot_field} values that differ from the new global {axis}. "
         "They will fail closed on their next run instead of silently using the "
         "changed model/provider. Inspect with `hermes cron list`, then pin the "
-        "intended values with `cronjob action=update job_id=<job_id> "
-        "provider=<provider> model=<model>`."
+        "intended values with `hermes cron edit <job_id> --provider <provider> "
+        "--model <model>`."
     )
 
 
@@ -4729,6 +5157,7 @@ _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
     "server_actions",
     "secrets",
     "goals",
+    "loops",
 })
 
 # Top-level keys whose sub-keys are partially schema-defined (e.g. on a
@@ -4742,6 +5171,11 @@ _SCHEMA_DEFINED_DICT_KEYS = frozenset({
     "email", "sms", "dingtalk",
     # MCP server template / dynamic auth dicts
     "sessions", "checkpoints",
+    # Plugin settings — enable/disable lists plus index_url override
+    # (hermes_cli/plugins_cmd.py, hermes_cli/plugin_index.py). Absent from
+    # DEFAULT_CONFIG (written only when used), so listed here for
+    # `hermes config set plugins.index_url ...` validation.
+    "plugins",
 })
 
 # Top-level keys that can be ANY user-supplied name (platform/provider dict
@@ -4885,6 +5319,67 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     return True, None
 
 
+def _looks_structured_value(value: str) -> bool:
+    """Return True when *value* plausibly encodes a YAML/JSON list or mapping.
+
+    Used by :func:`set_config_value` to decide whether to attempt a
+    ``yaml.safe_load`` structured parse. Deliberately conservative so plain
+    scalars are never mangled:
+
+    - Flow style: the value starts with ``[`` or ``{`` (JSON is a YAML
+      subset, so both ``'["a","b"]'`` and ``'{a: 1}'`` qualify).
+    - Block style: the value spans multiple lines AND at least one line is
+      shaped like a YAML sequence item (``- item``) or mapping entry
+      (``key: value``).
+
+    A bare leading ``-`` is NOT a trigger on its own: ``-5``, ``--flag`` and
+    other dash-prefixed single-line scalars must remain strings.
+    """
+    stripped = value.lstrip()
+    if stripped[:1] in ('[', '{'):
+        return True
+    if '\n' not in value:
+        return False
+    for line in value.splitlines():
+        item = line.strip()
+        if item == '-' or item.startswith('- '):
+            return True
+        # ``key: value`` / ``key:`` mapping-entry shape (no whitespace in the
+        # key, colon followed by a space or end-of-line).
+        head, sep, _rest = item.partition(': ')
+        if sep and head and ' ' not in head and not head.startswith('#'):
+            return True
+        if item.endswith(':') and ' ' not in item[:-1] and item[:-1]:
+            return True
+    return False
+
+
+def _coerce_int(value: str):
+    """Return int(value) for a clean integer literal, else None.
+
+    Uses ``int()`` so signs, surrounding whitespace, and underscores parse —
+    unlike ``str.isdigit()`` which rejects "-5"/" 5 ". Rejects float-looking
+    strings (that's ``_coerce_float``'s job) and bools masquerading as ints.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value: str):
+    """Return float(value) for a clean float literal, else None."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    # Reject NaN/inf spellings — they are almost never intended config values
+    # and round-trip confusingly through YAML.
+    if f != f or f in (float("inf"), float("-inf")):
+        return None
+    return f
+
+
 def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value.
 
@@ -4902,6 +5397,21 @@ def set_config_value(key: str, value: str, force: bool = False):
     if is_managed():
         managed_error("set configuration values")
         return
+    # Reject malformed dotted keys with empty segments (leading/trailing/
+    # double dots). ``"agent."`` split to ["agent", ""] and _set_nested wrote
+    # config["agent"][""] = ..., polluting a live schema section with a
+    # garbage empty-string key that round-tripped through get (CFG-04).
+    if key != key.strip() or not key.strip():
+        print(f"✗ Invalid config key: {key!r} (empty or surrounding whitespace).",
+              file=sys.stderr)
+        sys.exit(1)
+    if any(seg == "" for seg in key.split(".")):
+        print(
+            f"✗ Invalid config key: {key!r} — contains an empty path segment "
+            "(leading, trailing, or doubled '.').",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     # Managed scope guard (D2): a key pinned by the managed layer cannot be set by
     # the user — the next load would override it anyway. Hard-reject and name the
     # source. Distinct from is_managed() above (the package-manager write-lock).
@@ -4967,14 +5477,57 @@ def set_config_value(key: str, value: str, force: bool = False):
     # retain the historical best-effort coercion behavior.
     coerced_value: Any = value
     if not isinstance(_default_value_for_key(key), str):
-        if value.lower() in {'true', 'yes', 'on'}:
+        _stripped = value.strip()
+        _lower = _stripped.lower()
+        if _lower in {'true', 'yes', 'on'}:
             coerced_value = True
-        elif value.lower() in {'false', 'no', 'off'}:
+        elif _lower in {'false', 'no', 'off'}:
             coerced_value = False
-        elif value.isdigit():
-            coerced_value = int(value)
-        elif value.replace('.', '', 1).isdigit():
-            coerced_value = float(value)
+        elif _lower in {'null', 'none', '~'}:
+            # YAML null / "off" state. Many DEFAULT_CONFIG leaves default to
+            # None and are documented as "null/absent = off"; without this,
+            # ``config set X null`` stored the truthy string "null" and the
+            # feature could never be cleared via set (CFG-05).
+            coerced_value = None
+        elif _coerce_int(_stripped) is not None:
+            # int() handles signs, surrounding whitespace, and underscores —
+            # unlike the old ``value.isdigit()`` which rejected "-5" and " 5 "
+            # and silently stored them as strings on int-typed keys (CFG-02).
+            coerced_value = _coerce_int(_stripped)
+        elif _coerce_float(_stripped) is not None:
+            coerced_value = _coerce_float(_stripped)
+        elif _looks_structured_value(value):
+            # List/mapping literals -- e.g.
+            #   hermes config set platform_toolsets.line '["file","web"]'
+            # or a multi-line YAML block:
+            #   hermes config set custom_providers '- name: foo
+            #     base_url: https://...'
+            # Without this, such values were stored as a raw STRING, and every
+            # reader that gates on isinstance(..., list) (``_get_platform_tools``,
+            # ``_get_enabled_set``, ...) silently ignored them and fell back to
+            # its default -- the setting looked saved but never took effect.
+            # Folded INSIDE the string-typed guard so a genuinely string-typed
+            # setting whose value merely starts with '[' or '{' is left intact
+            # (preserves the guard added in e4ea0a0ed).  The trigger is
+            # deliberately conservative (see _looks_structured_value): plain
+            # scalars like '-5' or '--flag' never reach the YAML parser.
+            try:
+                parsed = yaml.safe_load(value)
+                if isinstance(parsed, (list, dict)):
+                    coerced_value = parsed
+                else:
+                    print(
+                        f"Warning: value for '{key}' looks like a list/mapping but "
+                        f"parsed as {type(parsed).__name__}; storing as string.",
+                        file=sys.stderr,
+                    )
+            except yaml.YAMLError:
+                print(
+                    f"Warning: value for '{key}' looks like a list/mapping but is "
+                    f"not valid YAML/JSON; storing as string. Most isinstance-gated "
+                    f"readers will ignore a string here.",
+                    file=sys.stderr,
+                )
 
     value = coerced_value
     # Normalize a scalar ``model`` key before writing sub-keys so that

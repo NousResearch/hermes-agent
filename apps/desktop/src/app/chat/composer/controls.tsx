@@ -5,39 +5,20 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import {
-  AudioLines,
-  Ear,
-  EarOff,
-  iconSize,
-  Layers3,
-  Loader2,
-  Square,
-  SteeringWheel,
-  Volume2,
-  VolumeX
-} from '@/lib/icons'
+import { AudioLines, Ear, EarOff, iconSize, Layers3, Loader2, Square, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $hudMode, closeHud } from '@/store/hud'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
+import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
 import type { ChatBarState, VoiceStatus } from './types'
+import { VoiceMenu } from './voice-menu'
 
-export const ICON_BTN = 'size-(--composer-control-size) shrink-0 rounded-md'
-export const GHOST_ICON_BTN = cn(
-  ICON_BTN,
-  'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
-)
-// Send/voice-conversation primary: solid foreground-on-background circle
-// (reads as black-on-white in light mode, white-on-black in dark mode) to
-// match the reference composer's high-contrast CTA. Keeps the pill itself
-// neutral and lets the action visually dominate the row.
-export const PRIMARY_ICON_BTN = cn(
-  'size-(--composer-control-primary-size,var(--composer-control-size)) shrink-0 rounded-full p-0',
-  'bg-foreground text-background hover:bg-foreground/90',
-  'disabled:bg-foreground/30 disabled:text-background disabled:opacity-100'
-)
+// Re-exported: `context-menu.tsx` and other row neighbours have always reached
+// for these here, and the row is where they read as belonging.
+export { ACTIVE_ICON_BTN, GHOST_ICON_BTN, ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 
 interface ConversationProps {
   active: boolean
@@ -58,7 +39,9 @@ export function ComposerControls({
   compactModelPill = false,
   conversation,
   disabled,
+  foldVoice = false,
   hasComposerPayload,
+  minimal = false,
   state,
   voiceStatus,
   onDictate,
@@ -72,7 +55,9 @@ export function ComposerControls({
   compactModelPill?: boolean
   conversation: ConversationProps
   disabled: boolean
+  foldVoice?: boolean
   hasComposerPayload: boolean
+  minimal?: boolean
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
@@ -81,21 +66,52 @@ export function ComposerControls({
 }) {
   const { t } = useI18n()
   const c = t.composer
+  const hudMode = useStore($hudMode)
 
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
   }
 
   const showVoicePrimary = !busy && !hasComposerPayload
-  const busyLabel = busyAction === 'queue' ? c.queueMessage : busyAction === 'steer' ? c.steer : c.stop
+  // Steer is just send: a payload keeps the Send affordance mid-turn. Stop
+  // only when the composer is empty and a turn is running.
+  const showStop = busy && !hasComposerPayload
+  const showQueueButton = busyAction !== 'stop' && hasComposerPayload
+  // The HUD is a Spotlight bar a few hundred pixels wide, so the four separate
+  // voice toggles fold into one menu there and leave the row to the input. A
+  // narrow tile hits the same wall from the other direction and folds for the
+  // same reason — same controls, same state, different budget. Below that
+  // even the menu goes: at `minimal` the row is the send button and nothing
+  // else, which is the one thing that must survive every width.
+  const foldedVoice = hudMode || foldVoice
 
-  return (
-    <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
-      <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
+  const voiceControls = foldedVoice ? (
+    <VoiceMenu
+      autoSpeak={autoSpeak}
+      disabled={disabled}
+      onDictate={onDictate}
+      onStartConversation={conversation.onStart}
+      onToggleAutoSpeak={onToggleAutoSpeak}
+      state={state}
+      voiceStatus={voiceStatus}
+    />
+  ) : (
+    <>
       <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
       <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />
       <WakeWordButton disabled={disabled} />
-      {busyAction === 'steer' ? (
+    </>
+  )
+
+  return (
+    <div className="ml-auto flex min-w-0 shrink items-center gap-(--composer-control-gap)">
+      {minimal ? null : (
+        <>
+          <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
+          {voiceControls}
+        </>
+      )}
+      {showQueueButton ? (
         <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />}>
           <Button
             aria-label={c.queueMessage}
@@ -129,43 +145,55 @@ export function ComposerControls({
       ) : (
         <Tip
           label={
-            busy ? (
-              <TipKeybindLabel
-                actionId={
-                  busyAction === 'steer'
-                    ? 'composer.steer'
-                    : busyAction === 'queue'
-                      ? 'composer.queue'
-                      : 'composer.send'
-                }
-                text={busyLabel}
-              />
+            showStop ? (
+              <TipKeybindLabel actionId="composer.send" text={c.stop} />
             ) : (
               <TipKeybindLabel actionId="composer.send" text={c.send} />
             )
           }
         >
           <Button
-            aria-label={busy ? busyLabel : c.send}
+            aria-label={showStop ? c.stop : c.send}
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
             type="submit"
           >
-            {busy ? (
-              busyAction === 'queue' ? (
-                <Layers3 className={iconSize.sm} />
-              ) : busyAction === 'steer' ? (
-                <SteeringWheel className={iconSize.sm} />
-              ) : (
-                <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
-              )
+            {showStop ? (
+              <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
             ) : (
               <Codicon name="arrow-up" size="0.875rem" />
             )}
           </Button>
         </Tip>
       )}
+      {/* The way out of HUD mode, riding the controls row rather than floating
+          above the bar. The old chip lived in a 26px transparent strip reserved
+          over the composer (--hud-chip-strip), which under glass is bare
+          untinted material with a hidden button in it — a band of chrome above
+          the surface, paid for in every state, for a control that is invisible
+          until hovered. Here it costs no reserved space and sits with the other
+          things you can press. */}
+      {hudMode ? <ExitHudButton /> : null}
     </div>
+  )
+}
+
+function ExitHudButton() {
+  const { t } = useI18n()
+
+  return (
+    <Tip label={t.titlebar.exitHud}>
+      <Button
+        aria-label={t.titlebar.exitHud}
+        className={cn(GHOST_ICON_BTN, 'p-0')}
+        onClick={closeHud}
+        size="icon"
+        type="button"
+        variant="ghost"
+      >
+        <Codicon name="screen-normal" size="0.875rem" />
+      </Button>
+    </Tip>
   )
 }
 
@@ -292,11 +320,7 @@ function AutoSpeakButton({ active, disabled, onToggle }: { active: boolean; disa
       <Button
         aria-label={label}
         aria-pressed={active}
-        className={cn(
-          GHOST_ICON_BTN,
-          'p-0',
-          active && 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary'
-        )}
+        className={cn(GHOST_ICON_BTN, 'p-0', active && ACTIVE_ICON_BTN)}
         disabled={disabled}
         onClick={() => {
           triggerHaptic(active ? 'close' : 'open')
@@ -341,11 +365,7 @@ function WakeWordButton({ disabled, pausedForVoice = false }: { disabled: boolea
       <Button
         aria-label={label}
         aria-pressed={wake.listening && !pausedForVoice}
-        className={cn(
-          GHOST_ICON_BTN,
-          'p-0',
-          wake.listening && !pausedForVoice && 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary'
-        )}
+        className={cn(GHOST_ICON_BTN, 'p-0', wake.listening && !pausedForVoice && ACTIVE_ICON_BTN)}
         disabled={disabled || pausedForVoice || wake.pending}
         onClick={() => {
           triggerHaptic(wake.listening ? 'close' : 'open')
@@ -388,7 +408,7 @@ function DictationButton({
           GHOST_ICON_BTN,
           'p-0',
           'data-[active=true]:bg-accent data-[active=true]:text-foreground',
-          status === 'recording' && 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary',
+          status === 'recording' && ACTIVE_ICON_BTN,
           status === 'transcribing' && 'bg-primary/10 text-primary'
         )}
         data-active={active}

@@ -11,6 +11,73 @@
 
       configMergeScript = pkgs.callPackage ./configMergeScript.nix { };
 
+      # ── How the checks evaluate the modules ───────────────────────────
+      # The checks evaluate both modules for real. The NixOS module goes
+      # through lib.evalModules with the NixOS module list. The Home Manager
+      # module goes through the homeManagerConfiguration function of
+      # home-manager. The option system rejects a wrong type, an option that
+      # does not exist, and a broken activation string. Each of these faults
+      # then stops the check, and not the rebuild of a user.
+      evalNixosModule =
+        settings:
+        inputs.nixpkgs.lib.evalModules {
+          modules = import "${inputs.nixpkgs}/nixos/modules/module-list.nix" ++ [
+            inputs.self.nixosModules.default
+            { _module.args.lib = inputs.nixpkgs.lib; }
+            { nixpkgs.hostPlatform = pkgs.stdenv.hostPlatform.system; }
+            {
+              system.stateVersion = "24.11";
+              boot.loader.grub.enable = false;
+              fileSystems."/" = {
+                device = "/dev/null";
+                fsType = "ext4";
+              };
+            }
+            { services.hermes-agent = settings; }
+          ];
+        };
+
+      evalHomeModule =
+        settings:
+        inputs.home-manager.lib.homeManagerConfiguration {
+          inherit pkgs;
+          modules = [
+            inputs.self.homeManagerModules.default
+            {
+              home = {
+                username = "hermes-check";
+                homeDirectory = "/home/hermes-check";
+                stateVersion = "24.11";
+              };
+            }
+            { services.hermes-agent = settings; }
+          ];
+        };
+
+      # The option names that each module defines under
+      # services.hermes-agent. The internal names that the module system adds
+      # are not in the list.
+      moduleOptionNames =
+        eval: lib.attrNames (lib.filterAttrs (n: _: !lib.hasPrefix "_" n) eval.options.services.hermes-agent);
+
+      # These options belong to one module by design. The check does not
+      # compare the two lists against each other, because that test only
+      # detects a change. The important property is that each shared option
+      # is on both modules.
+      nixosOnlyOptions = [
+        "addToSystemPackages"
+        "container"
+        "createUser"
+        "group"
+        "stateDir"
+        "user"
+      ];
+      homeOnlyOptions = [
+        "gateway"
+        "hermesHome"
+        "installPackage"
+      ];
+
       # Auto-generated config key reference — always in sync with Python
       configKeys = pkgs.runCommand "hermes-config-keys" {} ''
         set -euo pipefail
@@ -74,7 +141,427 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           mkdir -p $out
           echo "ok" > $out/result
         '';
+
+        # ── The Home Manager module ──────────────────────────────────────
+        # This check evaluates homeManagerModules.default through the real
+        # module system of home-manager. It runs on each platform. The module
+        # supports Linux, with systemd user units, and Darwin, with launchd
+        # agents. Each host checks its own kind of process.
+        home-manager-module =
+          let
+            enabled = evalHomeModule {
+              enable = true;
+              gateway.enable = true;
+              backend.mode = "serve";
+              settings.model.default = "test/model";
+              environment.HERMES_TEST = "1";
+              environmentFiles = [ "/run/secrets/hermes-env" ];
+              hermesHomeFiles."SOUL.md" = "test soul";
+              # documents needs an explicit workingDirectory. The check
+              # workspace-files-need-a-directory below asserts that rule.
+              workingDirectory = "/home/test-user/workspace";
+              documents."AGENTS.md" = "test agents";
+              mcpServers.demo = {
+                command = "echo";
+                args = [ "hi" ];
+              };
+            };
+            cfg = enabled.config;
+
+            # The gateway and the backend are two processes with one
+            # HERMES_HOME.
+            processes =
+              if pkgs.stdenv.hostPlatform.isDarwin then
+                lib.mapAttrs (_: agent: {
+                  argv = agent.config.ProgramArguments;
+                  env = agent.config.EnvironmentVariables;
+                }) (lib.filterAttrs (n: _: lib.hasPrefix "hermes" n) cfg.launchd.agents)
+              else
+                lib.mapAttrs (_: unit: {
+                  argv = [ unit.Service.ExecStart ];
+                  env = unit.Service.Environment;
+                }) (lib.filterAttrs (n: _: lib.hasPrefix "hermes" n) cfg.systemd.user.services);
+
+            names = lib.attrNames processes;
+            argvOf = name: lib.concatStringsSep " " (lib.flatten (processes.${name}.argv));
+            # The systemd Environment is a list of "K=V" strings. The launchd
+            # equivalent is an attribute set. Make both into one "K=V K=V"
+            # string, so that the assertions below are the same on each host.
+            envOf =
+              name:
+              let
+                env = processes.${name}.env;
+              in
+              lib.concatStringsSep " " (
+                if lib.isAttrs env then lib.mapAttrsToList (k: v: "${k}=${toString v}") env else env
+              );
+
+            activation = cfg.home.activation.hermesAgentSetup.data;
+
+            failures =
+              lib.optional (names != [
+                "hermes-agent"
+                "hermes-backend"
+              ]) "expected hermes-agent + hermes-backend processes, got: ${toString names}"
+              ++ lib.optional (
+                !lib.hasInfix "bin/hermes gateway" (argvOf "hermes-agent")
+              ) "gateway process does not run `hermes gateway`: ${argvOf "hermes-agent"}"
+              ++ lib.optional (
+                !lib.hasInfix "bin/hermes serve" (argvOf "hermes-backend")
+              ) "backend process does not run `hermes serve`: ${argvOf "hermes-backend"}"
+              ++ lib.optional (
+                !lib.hasInfix "--no-open" (argvOf "hermes-backend")
+              ) "backend must pass --no-open so a service never opens a browser"
+              ++ lib.optional (
+                lib.any (n: !lib.hasInfix "/home/hermes-check/.hermes" (envOf n)) names
+              ) "gateway and backend must share one HERMES_HOME"
+              ++ lib.optional (
+                cfg.home.sessionVariables.HERMES_HOME or null != "/home/hermes-check/.hermes"
+              ) "installPackage must export HERMES_HOME for interactive shells"
+              ++ lib.optional (
+                !lib.hasInfix "hermes-config-merge" activation
+              ) "activation must deep-merge config.yaml, not overwrite it"
+              ++ lib.optional (
+                !lib.hasInfix "/home/hermes-check/.hermes/SOUL.md" activation
+              ) "hermesHomeFiles must install into HERMES_HOME"
+              ++ lib.optional (
+                !lib.hasInfix "/home/test-user/workspace/AGENTS.md" activation
+              ) "documents must install into workingDirectory"
+              # The CLI reads HERMES_MANAGED to name the rebuild command when
+              # it refuses to write the configuration. A Home Manager install
+              # has no nixos-rebuild command. Thus it must not report NixOS.
+              ++ lib.optional (
+                !lib.any (n: lib.hasInfix "HERMES_MANAGED=home-manager" (envOf n)) names
+              ) "processes must report HERMES_MANAGED=home-manager"
+              ++ lib.optional (
+                !lib.hasInfix "hermes-managed" activation
+              ) "activation must write a .managed marker naming the managing system";
+          in
+          pkgs.runCommand "hermes-home-manager-module" { } (
+            if failures != [ ] then
+              throw "Home Manager module check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+            else
+              ''
+                echo "PASS: home-manager module evaluates (${toString (lib.length names)} processes)"
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
+
+        # ── Workspace files need a chosen directory ──────────────────────
+        # `documents` goes into workingDirectory. The default of that option
+        # is bad, and it is different on each module, so the modules refuse
+        # the two options together.
+        #
+        # Home Manager reads the assertions while it builds `config`. Thus a
+        # refused case throws an error and does not return a list. tryEval
+        # makes the error into data again.
+        workspace-files-need-a-directory =
+          let
+            accepts =
+              settings:
+              let
+                cfg = (evalHomeModule ({ enable = true; } // settings)).config;
+                probe = builtins.tryEval (lib.all (a: a.assertion) cfg.assertions);
+              in
+              probe.success && probe.value;
+
+            rejects = settings: !(accepts settings);
+
+            # This directory has the same text as the default. A comparison
+            # of values reads it as untouched, but a comparison of priorities
+            # sees the definition. This row is the reason that the code tests
+            # the priority.
+            sameAsDefault = "/home/hermes-check";
+
+            cases = [
+              {
+                name = "documents without a directory is refused";
+                ok = rejects { documents."AGENTS.md" = "x"; };
+              }
+              {
+                name = "documents with a directory is accepted";
+                ok = accepts {
+                  documents."AGENTS.md" = "x";
+                  workingDirectory = "/srv/workspace";
+                };
+              }
+              {
+                name = "a directory equal to the default still counts as chosen";
+                ok = accepts {
+                  documents."AGENTS.md" = "x";
+                  workingDirectory = sameAsDefault;
+                };
+              }
+              {
+                name = "mkDefault counts as chosen";
+                ok = accepts {
+                  documents."AGENTS.md" = "x";
+                  workingDirectory = lib.mkDefault "/srv/workspace";
+                };
+              }
+              {
+                name = "hermesHomeFiles needs no directory";
+                ok = accepts { hermesHomeFiles."SOUL.md" = "x"; };
+              }
+              {
+                name = "no files at all is accepted";
+                ok = accepts { };
+              }
+            ];
+
+            failed = lib.filter (c: !c.ok) cases;
+          in
+          pkgs.runCommand "hermes-workspace-files-need-a-directory" { } (
+            if failed != [ ] then
+              throw "workspace-files rule failed:\n${
+                lib.concatMapStringsSep "\n" (c: "  - ${c.name}") failed
+              }"
+            else
+              ''
+                ${lib.concatMapStringsSep "\n" (c: ''echo "PASS: ${c.name}"'') cases}
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
+
+        # ── The two modules keep the same options ────────────────────────
+        # The modules share one option set, in nix/moduleCommon.nix. Thus a
+        # NixOS example works on Home Manager without a change. This check
+        # asserts that relation and not the current list of names. An option
+        # that goes into the shared set must appear on both modules. An
+        # option for one module must be in that module's exclusion list.
+        module-option-parity =
+          let
+            nixosNames = moduleOptionNames (evalNixosModule { });
+            homeNames = moduleOptionNames (evalHomeModule { });
+
+            sharedFromNixos = lib.subtractLists nixosOnlyOptions nixosNames;
+            sharedFromHome = lib.subtractLists homeOnlyOptions homeNames;
+
+            missingInHome = lib.subtractLists homeNames sharedFromNixos;
+            missingInNixos = lib.subtractLists nixosNames sharedFromHome;
+
+            # These two values check the exclusion lists. An entry for an
+            # option that does not exist makes the check weaker, and gives no
+            # message.
+            staleNixosOnly = lib.subtractLists nixosNames nixosOnlyOptions;
+            staleHomeOnly = lib.subtractLists homeNames homeOnlyOptions;
+
+            failures =
+              lib.optional (
+                missingInHome != [ ]
+              ) "shared options missing from the Home Manager module: ${toString missingInHome} (add to nix/moduleCommon.nix, or list under nixosOnlyOptions if system-scoped)"
+              ++ lib.optional (
+                missingInNixos != [ ]
+              ) "shared options missing from the NixOS module: ${toString missingInNixos} (add to nix/moduleCommon.nix, or list under homeOnlyOptions if user-scoped)"
+              ++ lib.optional (
+                staleNixosOnly != [ ]
+              ) "nixosOnlyOptions names options the NixOS module no longer defines: ${toString staleNixosOnly}"
+              ++ lib.optional (
+                staleHomeOnly != [ ]
+              ) "homeOnlyOptions names options the Home Manager module no longer defines: ${toString staleHomeOnly}";
+          in
+          pkgs.runCommand "hermes-module-option-parity" { } (
+            if failures != [ ] then
+              throw "Module option parity failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+            else
+              ''
+                echo "PASS: ${toString (lib.length sharedFromNixos)} shared options present on both modules"
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
       } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        # ── The NixOS module ─────────────────────────────────────────────
+        # This check runs on Linux only. The evaluation of a NixOS module
+        # needs a Linux hostPlatform.
+        nixos-module =
+          let
+            cfg = (evalNixosModule {
+              enable = true;
+              backend.mode = "dashboard";
+              settings.model.default = "test/model";
+              environmentFiles = [ "/run/secrets/hermes-env" ];
+              hermesHomeFiles."SOUL.md" = "test soul";
+            }).config;
+
+            units = lib.filterAttrs (n: _: lib.hasPrefix "hermes" n) cfg.systemd.services;
+            names = lib.attrNames units;
+            execOf = name: units.${name}.serviceConfig.ExecStart;
+            activation = cfg.system.activationScripts."hermes-agent-setup".text;
+
+            failures =
+              lib.optional (names != [
+                "hermes-agent"
+                "hermes-backend"
+              ]) "expected hermes-agent + hermes-backend units, got: ${toString names}"
+              ++ lib.optional (
+                !lib.hasInfix "bin/hermes gateway" (execOf "hermes-agent")
+              ) "gateway unit does not run `hermes gateway`: ${execOf "hermes-agent"}"
+              ++ lib.optional (
+                !lib.hasInfix "bin/hermes dashboard" (execOf "hermes-backend")
+              ) "backend unit does not run `hermes dashboard`: ${execOf "hermes-backend"}"
+              ++ lib.optional (
+                units.hermes-agent.environment.HERMES_HOME != units.hermes-backend.environment.HERMES_HOME
+              ) "gateway and backend must share one HERMES_HOME"
+              ++ lib.optional (
+                !lib.hasInfix "/var/lib/hermes/.hermes/SOUL.md" activation
+              ) "hermesHomeFiles must install into HERMES_HOME";
+
+            # You cannot use container mode and the backend together. The
+            # module says so with an assertion. Without the assertion it
+            # makes a unit that never starts.
+            containerConflict = builtins.tryEval (
+              lib.deepSeq
+                (evalNixosModule {
+                  enable = true;
+                  container.enable = true;
+                  backend.mode = "serve";
+                }).config.system.build.toplevel.drvPath
+                true
+            );
+          in
+          pkgs.runCommand "hermes-nixos-module" { } (
+            if failures != [ ] then
+              throw "NixOS module check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+            else if containerConflict.success then
+              throw "NixOS module check failed:\n  - an assertion must reject backend.mode with container.enable"
+            else
+              ''
+                echo "PASS: nixos module evaluates (${toString (lib.length names)} units)"
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
+
+        # ── How .env is built ────────────────────────────────────────────
+        # This check runs the real script that both modules use to build
+        # $HERMES_HOME/.env. The important property is that a second run
+        # gives the same result. Activation runs at each rebuild. If the
+        # script added the secrets to the file that exists, the file would
+        # grow at each rebuild. The script writes the file again from the
+        # base in the Nix store, which prevents that fault. This check proves
+        # it.
+        env-file-assembly =
+          let
+            envScript = (import ./moduleCommon.nix { inherit lib; }).mkEnvScript {
+              inherit pkgs;
+              environment = {
+                HERMES_PUBLIC = "visible";
+              };
+            };
+          in
+          pkgs.runCommand "hermes-env-file-assembly" { } ''
+            set -e
+            workdir=$(mktemp -d)
+            printf 'SECRET_TOKEN=s3cret\n' > "$workdir/secret-a"
+            printf 'OTHER_TOKEN=t0ken\n' > "$workdir/secret-b"
+
+            echo "=== First activation ==="
+            ${envScript} "$workdir/.env" 0600 "$workdir/secret-a" "$workdir/secret-b"
+            first=$(cat "$workdir/.env")
+
+            grep -qx 'HERMES_PUBLIC=visible' "$workdir/.env" || \
+              (echo "FAIL: non-secret environment missing"; cat "$workdir/.env"; exit 1)
+            grep -qx 'SECRET_TOKEN=s3cret' "$workdir/.env" || \
+              (echo "FAIL: secret from environmentFile missing"; cat "$workdir/.env"; exit 1)
+            grep -qx 'OTHER_TOKEN=t0ken' "$workdir/.env" || \
+              (echo "FAIL: second environmentFile missing"; cat "$workdir/.env"; exit 1)
+            echo "PASS: .env contains the declared environment and every secret"
+
+            test "$(stat -c %a "$workdir/.env")" = "600" || \
+              (echo "FAIL: .env mode is $(stat -c %a "$workdir/.env"), want 600"; exit 1)
+            echo "PASS: .env installed with the requested mode"
+
+            echo "=== Re-activation is idempotent ==="
+            ${envScript} "$workdir/.env" 0600 "$workdir/secret-a" "$workdir/secret-b"
+            second=$(cat "$workdir/.env")
+            test "$first" = "$second" || \
+              (echo "FAIL: second run changed .env"; diff <(echo "$first") <(echo "$second") || true; exit 1)
+
+            COUNT=$(grep -c '^SECRET_TOKEN=' "$workdir/.env")
+            test "$COUNT" -eq 1 || \
+              (echo "FAIL: secret appears $COUNT times after two activations"; exit 1)
+            echo "PASS: secrets are not accumulated across activations"
+
+            echo "=== A removed environmentFile disappears ==="
+            ${envScript} "$workdir/.env" 0600 "$workdir/secret-a"
+            if grep -q '^OTHER_TOKEN=' "$workdir/.env"; then
+              echo "FAIL: dropped environmentFile still present in .env"; exit 1
+            fi
+            echo "PASS: .env tracks the declared environmentFiles"
+
+            mkdir -p $out
+            echo "ok" > $out/result
+          '';
+
+        # ── The command lines of the services ────────────────────────────
+        # The modules build these command lines. This check runs each one
+        # through the real parser of the CLI. A subcommand or a flag with a
+        # new name then fails here, and not as a service that restarts again
+        # and again after a rebuild.
+        #
+        # The method: add one sentinel flag that the CLI does not know, and
+        # parse without --help. argparse refuses unknown arguments before it
+        # calls the command, so no process starts and no port is bound. The
+        # error names each argument that argparse did not accept. If the
+        # error names only the sentinel, the parser accepts each other flag.
+        #
+        # `--help` cannot do this job. It returns before argparse reads the
+        # remainder of the command line.
+        service-argv =
+          let
+            common = import ./moduleCommon.nix { inherit lib; };
+            cfgFor = mode: {
+              package = hermes-agent;
+              extraPythonPackages = [ ];
+              extraDependencyGroups = [ ];
+              extraArgs = [ ];
+              backend = {
+                inherit mode;
+                host = "127.0.0.1";
+                port = 9119;
+                extraArgs = [ ];
+              };
+            };
+            sentinel = "--hermes-nix-argv-probe";
+            probe = argv: lib.escapeShellArgs (argv ++ [ sentinel ]);
+          in
+          pkgs.runCommand "hermes-service-argv" { } ''
+            set -e
+            export HOME=$(mktemp -d)
+
+            check() {
+              local label="$1"
+              shift
+              local output
+              output=$("$@" 2>&1) && {
+                echo "FAIL: $label — the sentinel flag was accepted, so this probe proves nothing"
+                exit 1
+              }
+              case "$output" in
+                *"unrecognized arguments: ${sentinel}")
+                  echo "PASS: $label — every flag but the sentinel is recognized" ;;
+                *"unrecognized arguments"*)
+                  echo "FAIL: $label — the CLI also rejected flags the module passes:"
+                  echo "$output" | tail -3
+                  exit 1 ;;
+                *)
+                  echo "FAIL: $label — argv rejected before flag parsing (bad subcommand?):"
+                  echo "$output" | tail -3
+                  exit 1 ;;
+              esac
+            }
+
+            check "gateway"   ${probe (common.gatewayArgv (cfgFor "none"))}
+            check "serve"     ${probe (common.backendArgv (cfgFor "serve"))}
+            check "dashboard" ${probe (common.backendArgv (cfgFor "dashboard"))}
+
+            mkdir -p $out
+            echo "ok" > $out/result
+          '';
+
         # Verify binaries exist and are executable
         package-contents = pkgs.runCommand "hermes-package-contents" { } ''
           set -e
@@ -84,7 +571,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "PASS: All binaries present"
 
           echo "=== Checking version ==="
-          ${hermes-agent}/bin/hermes version 2>&1 | grep -qi "hermes" || (echo "FAIL: version check"; exit 1)
+          ${hermes-agent}/bin/hermes --version 2>&1 | grep -qi "hermes" || (echo "FAIL: version check"; exit 1)
           echo "PASS: Version check"
 
           echo "=== All checks passed ==="
@@ -288,7 +775,10 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             local label="$1"
             shift
             OUTPUT=$(HERMES_MANAGED=true "$@" 2>&1 || true)
-            echo "$OUTPUT" | grep -q "managed by NixOS" || (echo "FAIL: $label not guarded"; echo "$OUTPUT"; exit 1)
+            # Case-insensitive: the message names the managing system as the
+            # identifier it is keyed by, and the display form is not the
+            # property under test here.
+            echo "$OUTPUT" | grep -qi "managed by nixos" || (echo "FAIL: $label not guarded"; echo "$OUTPUT"; exit 1)
             echo "PASS: $label blocked in managed mode"
           }
 

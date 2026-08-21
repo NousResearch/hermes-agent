@@ -2302,12 +2302,15 @@ class ClawHubSource(SkillSource):
         return deduped
 
     def _exact_slug_meta(self, query: str) -> Optional[SkillMeta]:
-        slug = query.strip().split("/")[-1]
+        query = query.strip()
+        parsed = self._parse_identifier(query)
         query_terms = self._query_terms(query)
         candidates: List[str] = []
 
-        if slug and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", slug):
-            candidates.append(slug)
+        if parsed:
+            candidates.append(parsed[0])
+        elif "/" not in query and self._SLUG_RE.fullmatch(query):
+            candidates.append(query)
 
         if query_terms:
             base_slug = "-".join(query_terms)
@@ -2443,11 +2446,73 @@ class ClawHubSource(SkillSource):
         _write_index_cache(cache_key, [_skill_meta_to_dict(s) for s in final_results])
         return final_results
 
-    def fetch(self, identifier: str) -> Optional[SkillBundle]:
-        slug = identifier.split("/")[-1]
+    _SLUG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*$")
 
-        skill_data = self._get_json(f"{self.BASE_URL}/skills/{slug}")
+    @classmethod
+    def _parse_identifier(cls, identifier: str) -> Optional[Tuple[str, Optional[str]]]:
+        """Return ``(slug, expected_owner)`` for a ClawHub identifier.
+
+        Accepts a bare slug, ``clawhub/<slug>``, ``@owner/slug``, and the
+        clawhub.ai URL path ``owner/skills/slug``. GitHub-style
+        ``owner/repo/skill`` and ``owner/repo/skills/skill`` identifiers
+        are not ClawHub's — claiming them by last path segment installs
+        a same-named skill from a different author.
+        """
+        raw = (identifier or "").strip()
+        if not raw:
+            return None
+        had_at = raw.startswith("@")
+        ident = raw[1:] if had_at else raw
+        if ident.startswith("clawhub/"):
+            ident = ident[len("clawhub/"):]
+        parts = [part for part in ident.split("/") if part]
+        if len(parts) == 1:
+            slug = parts[0]
+            return (slug, None) if cls._SLUG_RE.fullmatch(slug) else None
+        if len(parts) == 2 and had_at:
+            owner, slug = parts
+            if cls._SLUG_RE.fullmatch(owner) and cls._SLUG_RE.fullmatch(slug):
+                return slug, owner
+            return None
+        if len(parts) == 3 and parts[1].lower() == "skills":
+            owner, _, slug = parts
+            if cls._SLUG_RE.fullmatch(owner) and cls._SLUG_RE.fullmatch(slug):
+                return slug, owner
+            return None
+        return None
+
+    @staticmethod
+    def _owner_from_payload(data: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not isinstance(data, dict):
+            return None
+        owner = data.get("owner")
+        if isinstance(owner, dict):
+            handle = owner.get("handle")
+            if isinstance(handle, str) and handle.strip():
+                return handle.strip()
+        if isinstance(owner, str) and owner.strip():
+            return owner.strip()
+        return None
+
+    @classmethod
+    def _owner_matches(cls, expected_owner: Optional[str], data: Optional[Dict[str, Any]]) -> bool:
+        if not expected_owner:
+            return True
+        actual = cls._owner_from_payload(data)
+        if not actual:
+            return True
+        return actual.lower() == expected_owner.lower()
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        parsed = self._parse_identifier(identifier)
+        if parsed is None:
+            return None
+        slug, expected_owner = parsed
+
+        skill_data = self._coerce_skill_payload(self._get_json(f"{self.BASE_URL}/skills/{slug}"))
         if not isinstance(skill_data, dict):
+            return None
+        if not self._owner_matches(expected_owner, skill_data):
             return None
 
         latest_version = self._resolve_latest_version(slug, skill_data)
@@ -2486,21 +2551,22 @@ class ClawHubSource(SkillSource):
         )
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
-        slug = identifier.split("/")[-1]
+        parsed = self._parse_identifier(identifier)
+        if parsed is None:
+            return None
+        slug, expected_owner = parsed
         data = self._coerce_skill_payload(self._get_json(f"{self.BASE_URL}/skills/{slug}"))
         if not isinstance(data, dict):
+            return None
+        if not self._owner_matches(expected_owner, data):
             return None
 
         tags = self._normalize_tags(data.get("tags", []))
         extra: Dict[str, Any] = {}
         # The detail API returns owner info — capture it so callers can build
         # valid ClawHub URLs (https://clawhub.ai/{owner}/skills/{slug}).
-        owner = data.get("owner")
-        if isinstance(owner, dict):
-            handle = owner.get("handle")
-            if isinstance(handle, str) and handle:
-                extra["owner"] = handle
-        elif isinstance(owner, str) and owner:
+        owner = self._owner_from_payload(data)
+        if owner:
             extra["owner"] = owner
 
         return SkillMeta(
@@ -2597,14 +2663,8 @@ class ClawHubSource(SkillSource):
                 summary = item.get("summary") or item.get("description") or ""
                 tags = self._normalize_tags(item.get("tags", []))
                 extra: Dict[str, Any] = {}
-                # The listing API may include owner info (handle) in future;
-                # capture it if present so we can build valid detail URLs.
-                owner = item.get("owner")
-                if isinstance(owner, dict):
-                    handle = owner.get("handle")
-                    if isinstance(handle, str) and handle:
-                        extra["owner"] = handle
-                elif isinstance(owner, str) and owner:
+                owner = self._owner_from_payload(item)
+                if owner:
                     extra["owner"] = owner
                 results.append(SkillMeta(
                     name=display_name,
@@ -2708,14 +2768,7 @@ class ClawHubSource(SkillSource):
                 data = self._coerce_skill_payload(raw)
                 if not isinstance(data, dict):
                     return None
-                owner = data.get("owner")
-                if isinstance(owner, dict):
-                    handle = owner.get("handle")
-                    if isinstance(handle, str) and handle:
-                        return handle
-                if isinstance(owner, str) and owner:
-                    return owner
-                return None
+                return self._owner_from_payload(data)
 
             if resp.status_code == 429:
                 # Rate-limited — honour Retry-After if present, else backoff.
@@ -3254,7 +3307,8 @@ class BrowseShSource(SkillSource):
             pass
 
         source_url = item.get("sourceUrl", "") if isinstance(item, dict) else ""
-        if source_url and "raw.githubusercontent.com" in source_url:
+        from utils import base_url_host_matches
+        if source_url and base_url_host_matches(source_url, "raw.githubusercontent.com"):
             return source_url
         return None
 
@@ -3393,7 +3447,7 @@ class OptionalSkillSource(SkillSource):
             name=name,
             files=files,
             source="official",
-            identifier=f"official/{skill_dir.relative_to(self._optional_dir)}",
+            identifier=f"official/{skill_dir.resolve().relative_to(self._optional_dir.resolve()).as_posix()}",
             trust_level="builtin",
         )
 
@@ -3998,7 +4052,7 @@ def install_from_quarantine(
         trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict,
         skill_hash=content_hash(install_dir),
-        install_path=str(install_dir.relative_to(_skills_dir())),
+        install_path=install_dir.resolve().relative_to(_skills_dir().resolve()).as_posix(),
         files=list(bundle.files.keys()),
         metadata=bundle.metadata,
         scan_provenance=scan_provenance or getattr(scan_result, "scan_provenance", None),

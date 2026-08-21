@@ -232,6 +232,7 @@ const TranscriptPane = memo(function TranscriptPane({
                   })}
                   sections={ui.sections}
                   t={ui.theme}
+                  timestamps={ui.timestamps}
                 />
               )}
 
@@ -417,6 +418,7 @@ const ComposerPane = memo(function ComposerPane({
               <Box flexGrow={0} flexShrink={0} height={inputHeight} width={inputColumns}>
                 {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
                 <TextInput
+                  accentColor={ui.theme.color.accent}
                   color={ui.theme.color.text}
                   columns={inputColumns}
                   mouseApiRef={inputMouseRef}
@@ -559,6 +561,7 @@ export const AppLayout = memo(function AppLayout({
                 cols={composer.cols}
                 onApprovalChoice={actions.answerApproval}
                 onClarifyAnswer={actions.answerClarify}
+                onClarifyQuestionAnswer={actions.answerClarifyQuestion}
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}
               />

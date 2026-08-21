@@ -657,6 +657,9 @@ class ProfileInfo:
     # surfaces a "review" badge in this case so the user can edit or
     # accept.
     description_auto: bool = False
+    # Optional user-facing display name from profile.yaml. Presentation
+    # only — resolution/comparison/spawn paths always use ``name``.
+    display_name: str = ""
 
 
 def _read_distribution_meta(profile_dir: Path) -> tuple:
@@ -823,25 +826,27 @@ def _profile_yaml_path(profile_dir: Path) -> Path:
 def read_profile_meta(profile_dir: Path) -> dict:
     """Read ``<profile_dir>/profile.yaml`` and return a dict.
 
-    Returns ``{"description": "", "description_auto": False}`` when the
-    file is missing or unreadable. Never raises — a corrupt
-    profile.yaml on an unrelated profile must not break
-    ``hermes profile list``.
+    Returns ``{"description": "", "description_auto": False,
+    "display_name": ""}`` when the file is missing or unreadable. Never
+    raises — a corrupt profile.yaml on an unrelated profile must not
+    break ``hermes profile list``.
     """
+    empty = {"description": "", "description_auto": False, "display_name": ""}
     path = _profile_yaml_path(profile_dir)
     if not path.is_file():
-        return {"description": "", "description_auto": False}
+        return empty
     try:
         import yaml
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
     except Exception:
-        return {"description": "", "description_auto": False}
+        return empty
     if not isinstance(data, dict):
-        return {"description": "", "description_auto": False}
+        return empty
     return {
         "description": str(data.get("description") or "").strip(),
         "description_auto": bool(data.get("description_auto", False)),
+        "display_name": str(data.get("display_name") or "").strip(),
     }
 
 
@@ -850,6 +855,7 @@ def write_profile_meta(
     *,
     description: Optional[str] = None,
     description_auto: Optional[bool] = None,
+    display_name: Optional[str] = None,
 ) -> None:
     """Update ``<profile_dir>/profile.yaml`` in place.
 
@@ -874,12 +880,48 @@ def write_profile_meta(
         existing["description"] = description.strip()
     if description_auto is not None:
         existing["description_auto"] = bool(description_auto)
+    if display_name is not None:
+        # Empty string clears the key (falls back to the canonical id).
+        if display_name.strip():
+            existing["display_name"] = display_name.strip()
+        else:
+            existing.pop("display_name", None)
     # Atomic write: bare open("w") truncates before the dump, and the read
     # path above swallows parse errors as {}, so a crashed write would
     # silently drop unspecified fields on the next call (#51356, #16743).
     from utils import atomic_yaml_write
 
     atomic_yaml_write(path, existing, sort_keys=False)
+
+
+def format_profile_label(name: str, display_name: Optional[str]) -> str:
+    """Render a profile for display: ``display_name (canonical_id)``.
+
+    Falls back to the bare canonical id when no display name is set (or it
+    equals the id) — byte-for-byte the pre-feature rendering. Display names
+    are presentation-only free text (Unicode fine); they are never a
+    directory name, wrapper filename, or argv token.
+    """
+    dn = (display_name or "").strip()
+    return f"{dn} ({name})" if dn and dn != name else name
+
+
+def set_profile_display_name(profile_name: str, display_name: str) -> str:
+    """Set (or clear, with ``""``) a profile's user-facing display name.
+
+    Presentation-only: the canonical profile id is untouched. Returns the
+    stored value. Raises ``ValueError`` for names over 64 chars.
+    """
+    canon = normalize_profile_name(profile_name)
+    validate_profile_name(canon)
+    profile_dir = get_profile_dir(canon)
+    if not profile_dir.is_dir():
+        raise FileNotFoundError(f"Profile '{canon}' does not exist.")
+    cleaned = (display_name or "").strip()
+    if len(cleaned) > 64:
+        raise ValueError(f"Display name too long ({len(cleaned)} chars, max 64).")
+    write_profile_meta(profile_dir, display_name=cleaned)
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -911,6 +953,7 @@ def list_profiles() -> List[ProfileInfo]:
             distribution_source=dist_source,
             description=meta.get("description", ""),
             description_auto=meta.get("description_auto", False),
+            display_name=meta.get("display_name", ""),
         ))
 
     # Named profiles
@@ -953,6 +996,7 @@ def list_profiles() -> List[ProfileInfo]:
                 distribution_source=dist_source,
                 description=meta.get("description", ""),
                 description_auto=meta.get("description_auto", False),
+                display_name=meta.get("display_name", ""),
             ))
 
     return profiles
@@ -1364,6 +1408,19 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
 
     backend_tokens = {"serve", "dashboard", "gateway"}
     hermes_markers = ("hermes_cli.main", "hermes-gateway", "tui_gateway")
+    # Matches python / python3 / python3.12 / pythonw(.exe) — the interpreter
+    # basenames a `#!/…/python3` console-script shim gets exec'd through when
+    # something (e.g. Electron's `findOnPath('hermes')` resolution) spawns the
+    # shim by handing the interpreter its path explicitly instead of running
+    # the shim directly. In that shape the OS-reported argv[0] is the
+    # interpreter, not "hermes", so the checks below would otherwise miss it.
+    _python_interpreter_re = re.compile(r"^python[\d.]*w?(\.exe)?$")
+    # The actual console-script entry points this project ships (see
+    # pyproject.toml [project.scripts]) -- used to validate argv[1] against
+    # a known shim identity rather than a loose prefix match, since argv[1]
+    # can be ANY user-invoked python script path when argv[0] is a bare
+    # interpreter.
+    _HERMES_CONSOLE_SCRIPT_NAMES = frozenset({"hermes", "hermes-agent", "hermes-acp"})
     pids: list[int] = []
 
     for proc in psutil.process_iter(["pid", "name", "username", "cmdline"]):
@@ -1379,8 +1436,10 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
             if not argv:
                 continue
 
-            # Must be a Hermes process: either an entrypoint marker in argv, or
-            # a resolved executable named `hermes`.
+            # Must be a Hermes process: either an entrypoint marker in argv, a
+            # resolved executable named `hermes`, or a python interpreter
+            # directly exec'ing a `hermes`-named console-script shim (argv[0]
+            # is the interpreter, argv[1] is the shim's path).
             joined = " ".join(argv)
             exe_name = os.path.basename(argv[0]).lower()
             is_hermes = (
@@ -1388,6 +1447,20 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
                 or exe_name == "hermes"
                 or exe_name.startswith("hermes")
             )
+            if not is_hermes and len(argv) >= 2 and _python_interpreter_re.match(exe_name):
+                # Match against the actual known console-script entry points
+                # (pyproject.toml [project.scripts]: hermes, hermes-agent,
+                # hermes-acp) rather than a bare `startswith("hermes")` --
+                # that looser check is fine for a directly-resolved executable
+                # name (argv[0] IS the interpreter there, so a false match is
+                # rare), but here argv[1] can be ANY user-invoked python
+                # script path, and a bare prefix match would misidentify an
+                # unrelated script the user happens to name e.g.
+                # "hermes-notes.py" or "hermes-unrelated-tool" as the shim,
+                # making it killable by profile delete.
+                script_name = os.path.basename(str(argv[1])).lower()
+                script_stem = script_name.rsplit(".", 1)[0] if "." in script_name else script_name
+                is_hermes = script_stem in _HERMES_CONSOLE_SCRIPT_NAMES
             if not is_hermes:
                 continue
 
@@ -1584,6 +1657,22 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # the rmtree below fail with ENOTEMPTY and — before the ensure_hermes_home
     # guard — resurrected the deleted tree.
     _stop_profile_backends(canon, profile_dir)
+
+    # 2c. Release this process's holographic memory-store connections into
+    # the profile. The Desktop's *main* serve process opens memory_store.db
+    # for every known profile and is deliberately not stopped above, so on
+    # Windows its open handles make the rmtree below fail with WinError 32
+    # (#88347). When this delete runs inside serve (the DELETE
+    # /api/profiles/<name> route) the handles live in this process and are
+    # closed here; from the CLI this finds nothing and is a no-op.
+    try:
+        from plugins.memory.holographic.store import MemoryStore as _MemoryStore
+
+        _released = _MemoryStore.release_all_under(profile_dir)
+        if _released:
+            print(f"✓ Released {_released} memory-store connection(s) held by this process")
+    except Exception:
+        pass  # best-effort: never block the delete on the release path
 
     # 3. Remove wrapper script
     if has_wrapper:
@@ -2299,15 +2388,26 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile.
 
-    Returns the new profile directory.
+    The default profile's home IS the installation root, so "renaming" it
+    sets a presentation-only ``display_name`` in profile.yaml instead —
+    the canonical id stays ``default`` and every resolution path is
+    untouched.
+
+    Returns the (new) profile directory.
     """
     old_canon = normalize_profile_name(old_name)
-    new_canon = normalize_profile_name(new_name)
     validate_profile_name(old_canon)
-    validate_profile_name(new_canon)
 
     if old_canon == "default":
-        raise ValueError("Cannot rename the default profile.")
+        if not (new_name or "").strip():
+            raise ValueError("Display name cannot be empty.")
+        cleaned = set_profile_display_name("default", new_name)
+        print(f"✓ Display name set: {cleaned} (canonical id remains 'default')")
+        return _get_default_hermes_home()
+
+    new_canon = normalize_profile_name(new_name)
+    validate_profile_name(new_canon)
+
     if new_canon == "default":
         raise ValueError("Cannot rename to 'default' — it is reserved.")
 
@@ -2360,12 +2460,30 @@ def resolve_profile_env(profile_name: str) -> str:
 
     Called early in the CLI entry point, before any hermes modules
     are imported, to set the HERMES_HOME environment variable.
+
+    When HERMES_HOME is already set, the configured spelling IS the
+    launch root (it may be a junction/symlink alias of the platform
+    default).  Keep that spelling so profile re-home does not destroy
+    the launcher's lexical provenance -- the subprocess sanitizer needs
+    it to match Hermes-owned PYTHONPATH entries written in the same
+    spelling (#82581 junction follow-up).  Physically the paths are
+    identical (junction-transparent); only the spelling is preserved.
     """
     canon = normalize_profile_name(profile_name)
     validate_profile_name(canon)
-    profile_dir = get_profile_dir(canon)
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    if env_home:
+        env_path = Path(env_home)
+        # A profile-shaped env value means the root is the grandparent
+        # (mirrors get_default_hermes_root()).
+        root = env_path.parent.parent if env_path.parent.name == "profiles" else env_path
+    else:
+        root = _get_default_hermes_home()
+    if canon == "default":
+        return str(root)
+    profile_dir = root / "profiles" / canon
 
-    if canon != "default" and not profile_dir.is_dir():
+    if not profile_dir.is_dir():
         raise FileNotFoundError(
             f"Profile '{canon}' does not exist. "
             f"Create it with: hermes profile create {canon}"

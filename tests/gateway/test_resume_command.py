@@ -376,6 +376,123 @@ class TestHandleSessionsCommand:
     """Tests for GatewayRunner._handle_sessions_command."""
 
     @pytest.mark.asyncio
+    async def test_sessions_full_keeps_legacy_reset_child_after_parent_resume(
+        self, tmp_path
+    ):
+        import json
+
+        from gateway.config import GatewayConfig
+        from gateway.session import AsyncSessionStore, SessionStore
+        from hermes_state import AsyncSessionDB
+
+        event = _make_event(text="/sessions full")
+        store = SessionStore(
+            sessions_dir=tmp_path / "sessions",
+            config=GatewayConfig(),
+        )
+        db = store._db
+        assert db is not None
+
+        root = store.get_or_create_session(event.source)
+        root_id = root.session_id
+        db.set_session_title(root_id, "Legacy reset parent")
+        child = store.reset_session(root.session_key)
+        assert child is not None
+        child_id = child.session_id
+        db.set_session_title(child_id, "Legacy reset child")
+        # Reproduce the on-disk shape from before _reset_from existed.
+        db._conn.execute(
+            "UPDATE sessions SET model_config = NULL WHERE id = ?",
+            (child_id,),
+        )
+        db._conn.commit()
+
+        runner = _make_runner(session_db=None, event=event)
+        runner.session_store = store
+        runner._async_session_store = AsyncSessionStore(store)
+        runner._session_db = AsyncSessionDB(db)
+
+        before_resume = await runner._handle_sessions_command(event)
+        assert "Legacy reset parent" in before_resume
+
+        switched = store.switch_session(root.session_key, root_id)
+        assert switched is not None
+        after_resume = await runner._handle_sessions_command(event)
+
+        assert "Legacy reset child" in after_resume
+        assert "Legacy reset parent" not in after_resume
+        child_row = db.get_session(child_id)
+        assert child_row is not None
+        assert json.loads(child_row["model_config"])["_reset_from"] == root_id
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_full_lists_conversations_created_by_gateway_resets(
+        self, tmp_path
+    ):
+        import json
+
+        from gateway.config import GatewayConfig
+        from gateway.session import AsyncSessionStore, SessionStore
+        from hermes_state import AsyncSessionDB
+
+        event = _make_event(text="/sessions full")
+        store = SessionStore(
+            sessions_dir=tmp_path / "sessions",
+            config=GatewayConfig(),
+        )
+        db = store._db
+        assert db is not None
+
+        entry = store.get_or_create_session(event.source)
+        db.set_session_title(entry.session_id, "Greeting via Telegram")
+        for title in (
+            "Store memories with priority",
+            "Extract AI news to Telegram",
+            "Current Telegram work",
+        ):
+            previous_id = entry.session_id
+            entry = store.reset_session(entry.session_key)
+            assert entry is not None
+            db.set_session_title(entry.session_id, title)
+            reset_row = db.get_session(entry.session_id)
+            assert reset_row is not None
+            assert json.loads(reset_row["model_config"])["_reset_from"] == previous_id
+
+        # The gateway creates the identity row before the agent exists. Its
+        # first-turn create_session upsert must enrich the marker-only config,
+        # while later bare/retry upserts must not replace the established data.
+        db.create_session(
+            entry.session_id,
+            "telegram",
+            model_config={"max_iterations": 60},
+        )
+        enriched = json.loads(db.get_session(entry.session_id)["model_config"])
+        assert enriched == {
+            "max_iterations": 60,
+            "_reset_from": previous_id,
+        }
+        db.create_session(
+            entry.session_id,
+            "telegram",
+            model_config={"max_iterations": 999},
+        )
+        assert json.loads(db.get_session(entry.session_id)["model_config"]) == enriched
+
+        runner = _make_runner(session_db=None, event=event)
+        runner.session_store = store
+        runner._async_session_store = AsyncSessionStore(store)
+        runner._session_db = AsyncSessionDB(db)
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "Greeting via Telegram" in result
+        assert "Store memories with priority" in result
+        assert "Extract AI news to Telegram" in result
+        assert "Current Telegram work" not in result
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_sessions_busy_platform_lists_exact_lane_and_excludes_current_tip(
         self, tmp_path
     ):
@@ -766,5 +883,3 @@ class TestSameMatrixRoomThreadScoping:
         caller = self._msrc(thread_id="thread-a")
         victim_origin = self._msrc(thread_id="thread-b")
         assert runner._same_matrix_room(caller, victim_origin) is False
-
-

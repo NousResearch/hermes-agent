@@ -354,3 +354,28 @@ class TestUnparseableCommands:
     def test_subshell_syntax_does_not_crash(self, repo):
         hit, _ = _detect("VAL=$(git rev-parse HEAD) git checkout main", repo, repo)
         assert hit is True
+
+
+class TestBlockMessageGuidance:
+    """The block message must steer agents to a disk-backed scratch clone,
+    not a bare "temporary clone" (agents defaulted to /tmp, which is tmpfs
+    on most distros — parallel salvage clones running npm ci filled a 32GB
+    tmpfs to 97% in one campaign)."""
+
+    def test_message_recommends_shared_clone_on_disk(self, repo):
+        hit, msg = _detect("git rebase origin/main", repo, repo)
+        assert hit is True
+        assert "git clone --shared" in msg
+        assert "scratch" in msg
+
+    def test_message_warns_against_tmp_for_dep_installs(self, repo):
+        hit, msg = _detect("git rebase origin/main", repo, repo)
+        assert hit is True
+        assert "tmpfs" in msg
+        assert "Delete the clone" in msg
+
+    def test_scratch_hint_honors_hermes_home(self, repo, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", "/custom/hermes-home")
+        hit, msg = _detect("git rebase origin/main", repo, repo)
+        assert hit is True
+        assert "/custom/hermes-home/scratch" in msg

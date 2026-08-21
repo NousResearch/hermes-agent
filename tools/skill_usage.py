@@ -1111,6 +1111,14 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
     if dest.exists():
         dest = archive_root / f"{skill_dir.name}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
 
+    # Audit ledger pre-capture (best-effort; never blocks the archive).
+    _ledger_before = None
+    try:
+        from tools import skill_ledger as _ledger
+        _ledger_before = _ledger.capture_before(skill_dir)
+    except Exception:
+        _ledger = None  # type: ignore[assignment]
+
     try:
         skill_dir.rename(dest)
     except OSError:
@@ -1126,6 +1134,16 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
         add_suppressed_name(skill_name)
 
     set_state(skill_name, STATE_ARCHIVED)
+    try:
+        if _ledger is not None:
+            _ledger.record_mutation(
+                "archive",
+                skill_name,
+                before=_ledger_before if _ledger_before is not None else [],
+                after_root=dest,
+            )
+    except Exception:
+        pass
     return True, f"archived to {dest}"
 
 
@@ -1188,6 +1206,14 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     if dest.exists():
         return False, f"destination already exists: {dest}"
 
+    # Audit ledger pre-capture (best-effort; never blocks the restore).
+    _ledger_before = None
+    try:
+        from tools import skill_ledger as _ledger
+        _ledger_before = _ledger.capture_before(src)
+    except Exception:
+        _ledger = None  # type: ignore[assignment]
+
     try:
         src.rename(dest)
     except OSError:
@@ -1201,6 +1227,16 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     remove_suppressed_name(skill_name)
 
     set_state(skill_name, STATE_ACTIVE)
+    try:
+        if _ledger is not None:
+            _ledger.record_mutation(
+                "restore",
+                skill_name,
+                before=_ledger_before if _ledger_before is not None else [],
+                after_root=dest,
+            )
+    except Exception:
+        pass
     return True, f"restored to {dest}"
 
 

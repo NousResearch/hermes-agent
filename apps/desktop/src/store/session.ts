@@ -5,8 +5,12 @@ import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { activeConnectionScopeSuffix, rescopeConnectionScopedStores } from '@/lib/connection-scoped'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
+import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
+
+import { clearUnreadOnOpen } from './session-unread-remote'
 
 type Updater<T> = T | ((current: T) => T)
 export type ComposerModelSource = '' | 'default' | 'manual'
@@ -39,7 +43,12 @@ const LAST_ROUTE_KEY = 'hermes.desktop.lastRoute'
 function profileNavigationKey(base: string, profile: string): string {
   const key = profile.trim() || 'default'
 
-  return `${base}.profile.${encodeURIComponent(key)}`
+  // Also carries the CONNECTION scope: the same profile name on a different
+  // gateway is a different backend with its own sessions, and windows on
+  // different gateways share this localStorage area — restoring one
+  // gateway's remembered session under another navigates to a session that
+  // backend has never seen (#77318).
+  return `${base}.profile.${encodeURIComponent(key)}${activeConnectionScopeSuffix()}`
 }
 
 // Discard legacy global keys once per tick. A module-level flag avoids
@@ -436,7 +445,41 @@ export function mergeSessionPage(
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
   )
 
-  return survivors.length ? [...survivors, ...merged] : merged
+  if (!survivors.length) {
+    return merged
+  }
+
+  // Survivors carry their old relative positions from `previous`, which can be
+  // stale — the server page is the fresh `order=recent` truth. Sort survivors
+  // by the same effective-recency key the backend sorts by (last_active with a
+  // started_at fallback) and interleave them into the title-preserving merged
+  // rows so a retained session lands where recency puts it instead of the
+  // whole set forming a stale block at the top of the sidebar (fixes #47203).
+  // Ties keep the survivor first, matching the old prepend behavior.
+  const recency = (session: SessionInfo): number => Math.max(session.last_active || 0, session.started_at || 0)
+
+  const sortedSurvivors = [...survivors].sort((a, b) => recency(b) - recency(a))
+  const interleaved: SessionInfo[] = []
+  let survivorIndex = 0
+  let mergedIndex = 0
+
+  while (survivorIndex < sortedSurvivors.length && mergedIndex < merged.length) {
+    if (recency(sortedSurvivors[survivorIndex]) >= recency(merged[mergedIndex])) {
+      interleaved.push(sortedSurvivors[survivorIndex++])
+    } else {
+      interleaved.push(merged[mergedIndex++])
+    }
+  }
+
+  while (survivorIndex < sortedSurvivors.length) {
+    interleaved.push(sortedSurvivors[survivorIndex++])
+  }
+
+  while (mergedIndex < merged.length) {
+    interleaved.push(merged[mergedIndex++])
+  }
+
+  return interleaved
 }
 
 /** Raise a session in recents on user send (before stream / turn resolve). */
@@ -555,6 +598,12 @@ export const $awaitingResponse = atom(false)
 // resume on the next render/focus/reconnect instead of stranding the window.
 // Null whenever the active route has a healthy (or in-flight) resume.
 export const $resumeFailedSessionId = atom<string | null>(null)
+export interface SessionResumeRequest {
+  sequence: number
+  sessionId: string
+}
+let sessionResumeRequestSequence = 0
+export const $sessionResumeRequest = atom<SessionResumeRequest | null>(null)
 // Stored-session id whose resume has EXHAUSTED its bounded auto-retries (the
 // terminal-failure latch above kept failing through all MAX_RESUME_RETRIES
 // attempts). Distinct from $resumeFailedSessionId, which is armed *during* the
@@ -621,7 +670,16 @@ export const $contextSuggestions = atom<ContextSuggestion[]>([])
 export const $modelPickerOpen = atom(false)
 export const $sessionPickerOpen = atom(false)
 
-export const setConnection = (next: Updater<HermesConnection | null>) => updateAtom($connection, next)
+export const setConnection = (next: Updater<HermesConnection | null>) => {
+  updateAtom($connection, next)
+  // Repoint connection-scoped persistence (pins, manual session order,
+  // remembered navigation) at the new backend's storage scope before any
+  // consumer reconciles against it. A null descriptor (reconnect blip)
+  // keeps the current scope.
+  rescopeConnectionScopedStores($connection.get())
+  syncCronModelImpactConnection($connection.get())
+}
+
 export const setGatewayState = (next: Updater<ConnectionState>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
 export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
@@ -638,29 +696,98 @@ export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($
 export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStoredIdRotation | null>) =>
   updateAtom($activeSessionStoredIdRotation, next)
 
-// Transient: a background session finished and the user hasn't opened it since.
-// Written by session-states.ts (handleTransition), cleared here on session open.
+// A background session finished and the user hasn't opened it since. This atom
+// is the transient PAINT layer (what the dots subscribe to); durability lives
+// in session-unread.ts, which persists explicit finish markers + per-session
+// "seen message_count" watermarks and rebuilds this atom from them on every
+// list refresh — so the green dot survives an app restart, and a session that
+// finished while the app was CLOSED still comes up unread. The explicit
+// Mark-as-unread toggle rides the BACKEND watermark instead
+// (SessionDB.set_session_read, session-unread-remote.ts). Written by
+// session-states.ts (live busy→idle edge), cleared here on session open.
 export const $unreadFinishedSessionIds = atom<string[]>([])
 
-export const markAllSessionsRead = () => {
-  if ($unreadFinishedSessionIds.get().length) {
+/** Sidebar "mark all as read" — clears every finished-unread dot. Purely
+ *  renderer-local, like the atom itself. */
+export function markAllSessionsRead() {
+  if ($unreadFinishedSessionIds.get().length > 0) {
     $unreadFinishedSessionIds.set([])
+  }
+}
+
+// Last time the user actually viewed a session. A finished turn should only
+// re-arm the unread marker if it settles AFTER this baseline; otherwise an
+// already-viewed completion keeps re-lighting the row.
+export const $lastReadAtBySessionId = atom<Record<string, number>>({})
+
+/** A new turn started for this session: the read baseline only guarded the
+ *  PREVIOUS completion's re-asserts, so drop it — the new turn's finish must
+ *  re-light even when it lands in the same millisecond as the last read. */
+export const clearReadBaseline = (storedSessionId: string) => {
+  const map = $lastReadAtBySessionId.get()
+
+  if (storedSessionId in map) {
+    const { [storedSessionId]: _dropped, ...rest } = map
+    $lastReadAtBySessionId.set(rest)
   }
 }
 
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
   updateAtom($selectedStoredSessionId, next)
   // Opening a session clears its unread state — the user is now looking at it.
+  // Clear the whole conversation family (branch children + compression lineage
+  // root), not just the exact row: the sidebar lights the dot for every alias
+  // of a lineage, so reading any row must clear all of them.
   const id = $selectedStoredSessionId.get()
 
-  if (id && $unreadFinishedSessionIds.get().includes(id)) {
-    $unreadFinishedSessionIds.set($unreadFinishedSessionIds.get().filter(x => x !== id))
+  if (id) {
+    markSessionRead(id)
   }
+
+  // ...and the persisted watermark flag, when the row carried one.
+  if (id) {
+    void clearUnreadOnOpen(id)
+  }
+}
+
+/** Record that the user has seen a session (and its conversation family) at
+ *  this moment. Clears the unread set for the family and stores a last-read
+ *  baseline so a later completion that settles BEFORE this view is not
+ *  re-lit. Must be callable before any focus short-circuit (openSession top)
+ *  so re-clicking an already-visible session still clears its dot. */
+export const markSessionRead = (storedSessionId: string | null | undefined) => {
+  if (!storedSessionId) {
+    return
+  }
+
+  const sessions = $sessions.get()
+  const familyIds = new Set<string>(lineageAliases(storedSessionId, sessions))
+
+  const lastReadAt = Date.now()
+  const nextReadMap = { ...$lastReadAtBySessionId.get() }
+
+  for (const id of familyIds) {
+    nextReadMap[id] = lastReadAt
+  }
+
+  $lastReadAtBySessionId.set(nextReadMap)
+  $unreadFinishedSessionIds.set($unreadFinishedSessionIds.get().filter(id => !familyIds.has(id)))
 }
 
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
+
+export const requestSessionResume = (sessionId: string) => {
+  const id = sessionId.trim()
+
+  if (!id) {
+    return
+  }
+
+  $sessionResumeRequest.set({ sequence: ++sessionResumeRequestSequence, sessionId: id })
+}
+
 export const setResumeExhaustedSessionId = (next: Updater<string | null>) => updateAtom($resumeExhaustedSessionId, next)
 export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)
 export const setAwaitingResponse = (next: Updater<boolean>) => updateAtom($awaitingResponse, next)

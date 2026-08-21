@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import { BrandMark } from '../components/brand-mark'
 import { Button } from '../components/button'
 import { Loader } from '../components/loader'
+import { formatDuration, formatElapsed } from '../lib/format'
 import {
   $mode,
   $progress,
@@ -189,22 +190,3 @@ function StateIcon({ state }: { state: StageState | null }) {
   return null
 }
 
-function formatDuration(ms: number): string {
-  if (ms < 1000) {return `${ms}ms`}
-
-  if (ms < 60000) {return `${(ms / 1000).toFixed(1)}s`}
-  const m = Math.floor(ms / 60000)
-  const s = Math.round((ms % 60000) / 1000)
-
-  return `${m}m ${s}s`
-}
-
-// Live elapsed for a running stage: bare seconds under a minute, then m:ss.
-function formatElapsed(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000))
-
-  if (s < 60) {return `${s}s`}
-  const m = Math.floor(s / 60)
-
-  return `${m}:${String(s - m * 60).padStart(2, '0')}`
-}

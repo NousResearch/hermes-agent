@@ -46,6 +46,38 @@ That does not stop Hermes from working well as a phone-native CLI agent — it j
 
 ---
 
+## Community-maintained native `pkg` option
+
+:::caution Contributor-operated distribution
+This APT repository is **community-maintained by `@adybag14-cyber` and is not an official NousResearch distribution**. NousResearch does not build, sign, host, or audit these packages. Enabling the repository means trusting the contributor-operated repository and its signing key. Termux itself remains a Tier 2 / best-effort platform.
+:::
+
+For users who prefer a native package-manager install rather than building Python/Rust dependencies on the phone, a community-maintained APT repository is available. The repository bootstrap and packaging sources are published in [`adybag14-cyber/termux-python`](https://github.com/adybag14-cyber/termux-python), with the Hermes package build in [`adybag14-cyber/termux-hermes`](https://github.com/adybag14-cyber/termux-hermes).
+
+Install the repository key/source and Hermes with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/adybag14-cyber/termux-python/main/scripts/setup_apt_repo.sh | bash
+pkg install hermes-agent
+```
+
+The repository signing-key fingerprint currently documented by the community distribution is:
+
+```text
+EAD24A2124EFA7393A78B7B14699F966313F7A6B
+```
+
+APT-managed Hermes installs are marked with install method `apt`. Hermes therefore does not run its Git self-updater against package-owned files; use the package manager instead:
+
+```bash
+pkg update
+pkg upgrade hermes-agent
+```
+
+Packaging/repository/signing problems for this option should be reported to the community packaging repositories above. Hermes runtime bugs can still be reported here, keeping in mind that Android/Termux support is best-effort.
+
+---
+
 ## Option 1: One-line installer
 
 Hermes now ships a Termux-aware installer path:
@@ -125,7 +157,7 @@ ln -sf "$PWD/venv/bin/hermes" "$PREFIX/bin/hermes"
 ### 6. Verify the install
 
 ```bash
-hermes version
+hermes --version
 hermes doctor
 ```
 
@@ -155,12 +187,20 @@ hermes setup
 
 ### Install optional Node dependencies manually
 
-The tested Termux path skips Node/browser bootstrap on purpose. If you want to experiment with browser tooling later:
+The tested Termux path skips Node/browser bootstrap on purpose. If you want to experiment with browser tooling later, what you need depends on which backend you use:
 
-```bash
-pkg install nodejs-lts
-npm install
-```
+- **Cloud browser providers** (Browserbase, Browser Use, Firecrawl) host their own Chromium, so Node.js alone is enough — `agent-browser` resolves lazily via `npx agent-browser` on first use:
+
+  ```bash
+  pkg install nodejs-lts
+  ```
+
+- **Local browser automation** on Termux needs a real `agent-browser` install — the bare npx fallback is deliberately rejected in local mode as too fragile to advertise as ready:
+
+  ```bash
+  pkg install nodejs-lts
+  npm install -g agent-browser && agent-browser install
+  ```
 
 The browser tool automatically includes Termux directories (`/data/data/com.termux/files/usr/bin`) in its PATH search, so `agent-browser` and `npx` are discovered without any extra PATH configuration.
 

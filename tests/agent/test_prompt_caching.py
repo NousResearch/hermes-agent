@@ -1,12 +1,15 @@
 """Tests for agent/prompt_caching.py — Anthropic cache control injection."""
 
+import copy
 
 from agent.prompt_caching import (
     _apply_cache_marker,
     _build_marker,
     _can_carry_marker,
+    _count_cache_markers,
     apply_anthropic_cache_control,
     build_prompt_cache_plan,
+    effective_cache_ttl,
     strip_anthropic_cache_control,
     strip_anthropic_tool_cache_control,
 )
@@ -165,6 +168,25 @@ class TestPromptCachePlan:
         assert "cache_control" in tools[-1]
         assert "cache_control" not in stripped[-1]
 
+    def test_direct_tool_cache_with_no_tools_falls_back_safely(self):
+        """direct_native_tool_cache=True with an empty tools list must fall
+        back to the message-only layout: exactly one marker per message here
+        (system + user + assistant), none on tools.
+        """
+        messages = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "Question"},
+            {"role": "assistant", "content": "Answer"},
+        ]
+        plan = build_prompt_cache_plan(
+            messages,
+            [],
+            native_anthropic=True,
+            direct_native_tool_cache=True,
+        )
+        assert plan.marker_count == 3
+        assert len(plan.tools) == 0
+
 
 class TestApplyCacheMarker:
     def test_tool_message_gets_top_level_marker_on_native_anthropic(self):
@@ -204,6 +226,12 @@ class TestCanCarryMarker:
         assert _can_carry_marker({"role": "assistant", "content": None}, native_anthropic=False) is False
         assert _can_carry_marker({"role": "tool", "content": "result"}, native_anthropic=False) is True
         assert _can_carry_marker({"role": "tool", "content": ""}, native_anthropic=False) is False
+
+    def test_native_anthropic_empty_assistant_still_carries_marker(self):
+        """Native envelope can attach a top-level marker even to an empty
+        assistant turn; only the OpenRouter-style layout must skip it.
+        """
+        assert _can_carry_marker({"role": "assistant", "content": None}, native_anthropic=True) is True
 
     def test_openrouter_list_carrier_requires_last_part_dict(self):
         """Carrier predicate must agree with _apply_cache_marker, which only marks
@@ -463,6 +491,117 @@ class TestStripAnthropicCacheControl:
         assert isinstance(content, list) and len(content) == 2
         assert content[0] == {"type": "text", "text": "see"}
         assert content[1]["type"] == "image_url"
+
+
+class TestEffectiveCacheTtl:
+    """#84733: Qwen/Alibaba routes document a 5-minute context cache only.
+
+    ``effective_cache_ttl`` clamps a requested ``1h`` tier down to ``5m`` on
+    those routes so the marker the provider would ignore/reject is never
+    shipped and no false 1h-cache expectation survives.
+    """
+
+    def test_none_resolves_to_default_5m(self):
+        assert effective_cache_ttl(None) == "5m"
+        assert effective_cache_ttl(None, provider="anthropic", model="claude-x") == "5m"
+
+    def test_5m_passthrough_everywhere(self):
+        assert effective_cache_ttl("5m") == "5m"
+        assert effective_cache_ttl("5m", provider="opencode", model="qwen3.6-plus") == "5m"
+
+    def test_1h_preserved_on_non_qwen_routes(self):
+        assert effective_cache_ttl("1h", provider="anthropic", model="claude-opus-4.8") == "1h"
+        assert effective_cache_ttl("1h", provider="openrouter", model="claude-3-5-sonnet") == "1h"
+        assert effective_cache_ttl("1h", provider="", model="") == "1h"
+
+    def test_1h_clamped_for_qwen_model_on_any_route(self):
+        assert effective_cache_ttl("1h", provider="openrouter", model="qwen3.6-plus") == "5m"
+        assert effective_cache_ttl("1h", provider="anthropic", model="Qwen-Max") == "5m"
+
+    def test_1h_clamped_for_alibaba_family_providers(self):
+        for provider in ("opencode", "opencode-zen", "opencode-go", "alibaba"):
+            assert effective_cache_ttl("1h", provider=provider, model="qwen-max") == "5m", provider
+            assert effective_cache_ttl("1h", provider=provider.upper(), model="claude-x") == "5m", provider
+
+    def test_marker_built_from_clamped_ttl_has_no_1h_key(self):
+        marker = _build_marker(effective_cache_ttl("1h", provider="opencode", model="qwen3.6-plus"))
+        assert marker == {"type": "ephemeral"}
+        marker = _build_marker(effective_cache_ttl("1h", provider="anthropic", model="claude-x"))
+        assert marker == {"type": "ephemeral", "ttl": "1h"}
+
+
+class TestApplyIdempotency:
+    """apply_anthropic_cache_control on pre-decorated input (#90971).
+
+    Before the idempotency fix, a second call on already-marked messages
+    pushed the marker total to 5, reproducing the ``cache_control can only
+    be specified up to 4 times`` HTTP 400.
+    """
+
+    @staticmethod
+    def _fixture_messages():
+        messages = [{"role": "system", "content": "STATIC_PREFIX rest of the prompt"}]
+        for i in range(8):
+            messages.append({"role": "user", "content": f"Hello {i}"})
+            messages.append({"role": "assistant", "content": f"Hi {i}"})
+        return messages
+
+    def test_empty_messages_is_noop(self):
+        assert apply_anthropic_cache_control([]) == []
+
+    def test_repeated_apply_is_idempotent_and_keeps_exact_layout(self):
+        """Repeated calls on the function's own output (no intervening
+        strip_anthropic_cache_control) must converge to the exact same
+        marker placement AND keep the intended four-breakpoint layout.
+        Structural equality alone would still pass if a later round moved
+        the breakpoints or dropped every marker; the exact count pins the
+        layout.
+        """
+        messages = self._fixture_messages()
+
+        round1 = apply_anthropic_cache_control(messages, static_system_prefix="STATIC_PREFIX")
+        round2 = apply_anthropic_cache_control(round1, static_system_prefix="STATIC_PREFIX")
+        round3 = apply_anthropic_cache_control(round2, static_system_prefix="STATIC_PREFIX")
+
+        assert round1 == round2 == round3
+        assert _count_cache_markers(round1, []) == 4
+
+    def test_does_not_mutate_caller_messages_with_stale_top_level_markers(self):
+        """A caller's live message list must never be mutated in place, even
+        when it already carries stale cache_control markers (e.g. replayed
+        history). The function's contract is copy-on-write.
+        """
+        caller_history = [
+            {"role": "user", "content": f"u{i}", "cache_control": {"type": "ephemeral"}}
+            for i in range(5)
+        ]
+        snapshot = copy.deepcopy(caller_history)
+
+        apply_anthropic_cache_control(caller_history)
+
+        assert caller_history == snapshot
+
+    def test_does_not_mutate_caller_messages_with_stale_part_markers(self):
+        """Same contract for the other detection branch: markers living on
+        content parts (the shape decoration itself produces), where part-dict
+        aliasing is the mutation risk.
+        """
+        caller_history = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"u{i}", "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": "tail"},
+                ],
+            }
+            for i in range(5)
+        ]
+        snapshot = copy.deepcopy(caller_history)
+
+        result = apply_anthropic_cache_control(caller_history)
+
+        assert caller_history == snapshot
+        assert _count_cache_markers(result, []) <= 4
 
 
 

@@ -1,0 +1,13 @@
+{
+  "changed_count": 4,
+  "ok": true,
+  "risk_flags": [],
+  "scope_summary": "hermes_cli/mcp_config.py | hermes_cli/subcommands/mcp.py | mcp_serve.py | uv.lock",
+  "stage": "02_plan",
+  "validation_gates": [
+    "stage_contracts_present",
+    "deterministic_scripts_executable",
+    "focused_tests_pass"
+  ],
+  "version_candidate": "v2026.8.18-audit"
+}

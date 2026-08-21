@@ -1098,8 +1098,13 @@ def mcp_command(args):
     action = getattr(args, "mcp_action", None)
 
     if action == "serve":
-        from mcp_serve import run_mcp_server
-        run_mcp_server(verbose=getattr(args, "verbose", False))
+        target = getattr(args, "serve_target", None) or "hermes"
+        if target == "graphify":
+            from mcp_serve import run_graphify_mcp_server
+            run_graphify_mcp_server(verbose=getattr(args, "verbose", False))
+        else:
+            from mcp_serve import run_mcp_server
+            run_mcp_server(verbose=getattr(args, "verbose", False))
         return
 
     # Catalog subcommands live in mcp_picker / mcp_catalog. Import lazily so

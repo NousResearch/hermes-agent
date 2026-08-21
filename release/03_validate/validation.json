@@ -1,0 +1,9 @@
+{
+  "checks": {
+    "deterministic_scripts_executable": true,
+    "stage_contracts_present": true,
+    "upstream_artifacts_ok": true
+  },
+  "ok": true,
+  "stage": "03_validate"
+}

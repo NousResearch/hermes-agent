@@ -53,10 +53,11 @@ logger = logging.getLogger("hermes.mcp_serve")
 _MCP_SERVER_AVAILABLE = False
 try:
     from mcp.server import MCPServer
-
-    _MCP_SERVER_AVAILABLE = True
-except ImportError:
-    MCPServer = None  # type: ignore[assignment,misc]
+except Exception:
+    try:
+        from mcp.server.fastmcp import FastMCP as MCPServer
+    except Exception:
+        MCPServer = None  # type: ignore[assignment,misc]
 
 
 # ---------------------------------------------------------------------------
@@ -1048,7 +1049,7 @@ def run_mcp_server(verbose: bool = False) -> None:
 
     import asyncio
 
-    async def _run():
+    async def _run() -> None:
         try:
             await server.run_stdio_async()
         finally:
@@ -1058,3 +1059,38 @@ def run_mcp_server(verbose: bool = False) -> None:
         asyncio.run(_run())
     except KeyboardInterrupt:
         bridge.stop()
+
+
+def run_graphify_mcp_server(verbose: bool = False) -> None:
+    """Start the Graphify MCP server on stdio."""
+    if not _MCP_SERVER_AVAILABLE:
+        print(
+            "Error: MCP server requires the 'mcp' package.\n"
+            f"Install with: {sys.executable} -m pip install 'mcp'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if verbose:
+        logging.basicConfig(level=logging.DEBUG, stream=sys.stderr)
+    else:
+        logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+
+    try:
+        from tools.graphify_mcp_server import create_mcp_server as _create_graphify_server
+    except ImportError as exc:
+        print(
+            "Error: Graphify MCP server could not be initialized: %s" % exc,
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    server = _create_graphify_server()
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:
+        logger.exception("Graphify MCP server crashed")
+        print("Graphify MCP server error: %s" % exc, file=sys.stderr)
+        sys.exit(1)

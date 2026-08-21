@@ -1,0 +1,20 @@
+{
+  "base_ref": "HEAD",
+  "changed_count": 4,
+  "changed_files": [
+    "hermes_cli/mcp_config.py",
+    "hermes_cli/subcommands/mcp.py",
+    "mcp_serve.py",
+    "uv.lock"
+  ],
+  "changed_langs": {
+    "other": 1,
+    "python": 3
+  },
+  "dirty": true,
+  "head_branch": "main",
+  "head_commit": "73a1d583e343c824aaf3478a40b8b5e2acbedfb6",
+  "ok": true,
+  "risk_flags": [],
+  "stage": "01_audit"
+}

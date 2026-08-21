@@ -1,0 +1,7 @@
+{
+  "error": {
+    "missing": "release/03_validate/validation.json"
+  },
+  "ok": false,
+  "stage": "05_ship"
+}

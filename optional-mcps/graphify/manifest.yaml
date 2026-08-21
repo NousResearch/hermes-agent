@@ -1,0 +1,63 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: graphify
+description: >-
+  Query your repo's knowledge graph — nodes, edges, shortest paths,
+  communities, and god nodes — as MCP tools.
+source: https://graphify.com/mcp
+
+# Local stdio server: Hermes spawns the wrapper, which in turn loads the
+# local graphifyy package and the repo's graph.json. No network service
+# is required.
+transport:
+  type: stdio
+  command: hermes
+  args:
+    - mcp
+    - serve
+    - --target
+    - graphify
+  env:
+    # Hermes forwards these through the MCP stdio subprocess env.
+    # Secrets/config are kept external; see docs for the graph path options.
+    GRAPHIFY_PROJECT_DIR: "${GRAPHIFY_PROJECT_DIR:-.}"
+    GRAPHIFY_GRAPH_PATH: "${GRAPHIFY_GRAPH_PATH:-}"
+
+auth:
+  type: none
+
+# Tool selection at install time:
+# All seven core graph tools are exposed; users can prune in the tool
+# checklist after install.
+tools:
+  default_enabled:
+    - query_graph
+    - get_node
+    - get_neighbors
+    - shortest_path
+    - get_community
+    - god_nodes
+    - graph_stats
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - graphify
+    - knowledge graph
+    - code graph
+  hosts:
+    - graphify.com
+
+post_install: |-
+  Build the graph first, if you haven't already:
+    graphify .
+  Then restart your Hermes session so the Graphify tools load.
+  You can re-run the tool checklist any time with:
+    hermes mcp configure graphify
+
+  Configure the graph path with env/config if your repo is elsewhere:
+    GRAPHIFY_PROJECT_DIR=/path/to/repo
+  or
+    GRAPHIFY_GRAPH_PATH=/absolute/path/to/graphify-out/graph.json

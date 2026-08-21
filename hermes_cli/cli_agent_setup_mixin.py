@@ -92,6 +92,7 @@ class CLIAgentSetupMixin:
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
+        resolved_request_overrides = dict(runtime.get("request_overrides") or {})
         # A callable api_key is a bearer-token provider (Azure Foundry
         # Entra ID — ``azure_identity_adapter.build_token_provider``).
         # The OpenAI SDK accepts ``Callable[[], str]`` for ``api_key`` and
@@ -136,12 +137,14 @@ class CLIAgentSetupMixin:
             or resolved_api_mode != self.api_mode
             or resolved_acp_command != self.acp_command
             or resolved_acp_args != self.acp_args
+            or resolved_request_overrides != getattr(self, "_runtime_request_overrides", {})
         )
         self.provider = resolved_provider
         self.api_mode = resolved_api_mode
         self.acp_command = resolved_acp_command
         self.acp_args = resolved_acp_args
         self._credential_pool = resolved_credential_pool
+        self._runtime_request_overrides = resolved_request_overrides
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
@@ -310,10 +313,16 @@ class CLIAgentSetupMixin:
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
         }
+        request_overrides = dict(
+            getattr(self, "_runtime_request_overrides", {}) or {}
+        )
         route = {
             "model": self.model,
             "runtime": runtime,
-            "signature": (
+        }
+
+        def _set_signature() -> None:
+            route["signature"] = (
                 self.model,
                 runtime["provider"],
                 runtime["requested_provider"],
@@ -321,19 +330,23 @@ class CLIAgentSetupMixin:
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
-            ),
-        }
+                repr(route["request_overrides"] or {}),
+            )
 
         service_tier = getattr(self, "service_tier", None)
         if not service_tier:
-            route["request_overrides"] = None
+            route["request_overrides"] = request_overrides or None
+            _set_signature()
             return route
 
         try:
             overrides = resolve_fast_mode_overrides(route["model"])
         except Exception:
             overrides = None
-        route["request_overrides"] = overrides
+        if overrides:
+            request_overrides.update(overrides)
+        route["request_overrides"] = request_overrides or None
+        _set_signature()
         return route
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
@@ -487,6 +500,10 @@ class CLIAgentSetupMixin:
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
+            if request_overrides is None:
+                request_overrides = dict(
+                    getattr(self, "_runtime_request_overrides", {}) or {}
+                ) or None
             effective_model = model_override or self.model
             self.agent = AIAgent(
                 model=effective_model,
@@ -574,6 +591,7 @@ class CLIAgentSetupMixin:
                 runtime.get("api_mode"),
                 runtime.get("command"),
                 tuple(runtime.get("args") or ()),
+                repr(request_overrides or {}),
             )
 
             # Force-create DB row on /title intent, then apply title.

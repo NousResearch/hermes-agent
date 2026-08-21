@@ -1763,7 +1763,7 @@ def _resolve_explicit_runtime(
     return None
 
 
-def resolve_runtime_provider(
+def _resolve_runtime_provider(
     *,
     requested: Optional[str] = None,
     explicit_api_key: Optional[str] = None,
@@ -2415,6 +2415,59 @@ def resolve_runtime_provider(
     )
     runtime["requested_provider"] = requested_provider
     return runtime
+
+
+def _deep_merge_extra_body(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge request-body mappings recursively, with ``override`` winning."""
+    merged = dict(base)
+    for key, value in override.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_extra_body(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _apply_model_extra_body(runtime: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach ``model.extra_body`` to every resolved main-agent runtime.
+
+    A model-level payload is the user's explicit request configuration, so it
+    wins over a named custom provider's defaults. Nested mappings are merged
+    so a targeted override (for example ``options.seed``) keeps provider and
+    Hermes-generated siblings such as ``options.num_ctx``.
+    """
+    model_cfg = _get_model_config()
+    extra_body = model_cfg.get("extra_body") if isinstance(model_cfg, dict) else None
+    if not isinstance(extra_body, dict) or not extra_body:
+        return runtime
+
+    resolved = dict(runtime)
+    overrides = dict(resolved.get("request_overrides") or {})
+    existing_extra_body = overrides.get("extra_body")
+    overrides["extra_body"] = _deep_merge_extra_body(
+        existing_extra_body if isinstance(existing_extra_body, dict) else {},
+        extra_body,
+    )
+    resolved["request_overrides"] = overrides
+    return resolved
+
+
+def resolve_runtime_provider(
+    *,
+    requested: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve a main-agent runtime and attach model-level request fields."""
+    runtime = _resolve_runtime_provider(
+        requested=requested,
+        explicit_api_key=explicit_api_key,
+        explicit_base_url=explicit_base_url,
+        target_model=target_model,
+    )
+    return _apply_model_extra_body(runtime)
 
 
 def format_runtime_provider_error(error: Exception) -> str:

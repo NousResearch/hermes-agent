@@ -1847,6 +1847,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             base_url=getattr(agent, "_anthropic_base_url", None),
             fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
             drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
+            request_overrides=agent.request_overrides,
         )
         # Nous Portal reads ``tags`` and ``session_id`` as top-level body fields
         # on its Messages route the same way it does on /chat/completions, but

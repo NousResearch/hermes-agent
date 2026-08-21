@@ -1319,6 +1319,26 @@ providers:
       reasoning_effort: high
 ```
 
+For a request setting that belongs to your active main model rather than a
+named endpoint, put the same map under `model.extra_body` instead. This is an
+advanced escape hatch for provider-specific fields that Hermes does not expose
+as a first-class setting:
+
+```yaml
+model:
+  provider: ollama
+  default: qwen3:32b
+  extra_body:
+    options:
+      num_ctx: 65536
+      seed: 42
+```
+
+Hermes recursively merges `model.extra_body` with provider-generated request
+fields and custom-provider `extra_body` defaults. Fields you set under
+`model.extra_body` win on a conflict, while unrelated nested fields are kept.
+Use the request shape documented by your endpoint.
+
 Use the shape your server documents. For example, vLLM Gemma deployments and some NVIDIA NIM endpoints expect `enable_thinking` under `chat_template_kwargs` instead of as a top-level `extra_body` field:
 
 ```yaml

@@ -25,8 +25,12 @@ CLEANUP_SNAPSHOT_DAYS = 30
 
 
 def get_latest_backup(backup_dir=None):
-    """Find the most recent file in the backup directory."""
-    backup_dir = backup_dir if backup_dir is not None else BACKUP_DIR
+    """Find the most recent file in the backup directory.
+
+    Monitors daily/ (the actual rotation output) rather than the top level,
+    which contains one-off snapshots and would mask a dead rotation.
+    """
+    backup_dir = backup_dir if backup_dir is not None else BACKUP_DIR / "daily"
     if not backup_dir.exists():
         return None, 0, []
     files = sorted(backup_dir.iterdir(), key=lambda f: f.stat().st_mtime, reverse=True)
@@ -165,12 +169,12 @@ def main(argv=None):
 
     # Output alerts and cleanup info
     if alerts:
-        print(f"**🟡 Backup Staleness Alert - {now.strftime('%d/%m/%y %H:%M')}**\\n")
+        print(f"**🟡 Backup Staleness Alert - {now.strftime('%d/%m/%y %H:%M')}**\n")
         for alert in alerts:
             print(f"• {alert}")
         print()
     if cleanup_msgs:
-        print(f"**🔧 Backup Cleanup - {now.strftime('%d/%m/%y %H:%M')}**\\n")
+        print(f"**🔧 Backup Cleanup - {now.strftime('%d/%m/%y %H:%M')}**\n")
         for msg in cleanup_msgs:
             print(f"• {msg}")
         print()

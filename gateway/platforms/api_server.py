@@ -441,20 +441,15 @@ def _project_client_message(message: Dict[str, Any]) -> Dict[str, Any]:
     summary delimiter. Tool calls are dropped from both shapes because a
     carrier's inherited calls are historical context, not live client output.
     """
-    from agent.compaction_display import project_compaction_message_for_display
+    from agent.compaction_display import (
+        _COMPACTION_INTERNAL_FIELDS,
+        project_compaction_message_for_display,
+    )
 
     projected = project_compaction_message_for_display(message)
     if projected is None:
         projected = message.copy()
-        for internal_key in (
-            "tool_calls",
-            "finish_reason",
-            "reasoning",
-            "reasoning_content",
-            "reasoning_details",
-            "codex_reasoning_items",
-            "codex_message_items",
-        ):
+        for internal_key in _COMPACTION_INTERNAL_FIELDS:
             projected.pop(internal_key, None)
         projected["content"] = ""
         projected["display_kind"] = "hidden"

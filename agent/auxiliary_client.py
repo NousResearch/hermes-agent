@@ -671,7 +671,9 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
     via prefix so the override tracks every 272K-capped family (5.4, 5.5,
     5.6 sol/terra/luna incl. their ``-pro`` modes) without re-listing every
     variant. (Name kept for backward compatibility with the
-    ``compression.codex_gpt55_autoraise`` config key.)
+    ``compression.codex_gpt55_autoraise`` config key.) The exact
+    ``gpt-daybreak-blue-latest`` Codex slug is also a verified Sol-family
+    alias and receives the same autoraise.
     """
     prov = (provider or "").strip().lower()
     if prov != "openai-codex":
@@ -687,6 +689,7 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
         or bare == "gpt-5.6"
         or bare.startswith("gpt-5.6-")
         or bare.startswith("gpt-5.6.")
+        or bare == "gpt-daybreak-blue-latest"
     )
 
 
@@ -741,7 +744,8 @@ def _compression_threshold_for_model(
 
     Per-model/route overrides:
       - Arcee Trinity Large Thinking → 0.75 (preserve reasoning context).
-      - gpt-5.4 / gpt-5.5 / gpt-5.6 on the Codex OAuth route → 0.85, because
+      - gpt-5.4 / gpt-5.5 / gpt-5.6 and the exact Daybreak Sol alias on the
+        Codex OAuth route → 0.85, because
         Codex caps all three families at 272K and the default 50% trigger
         would compact at ~136K. Gated by ``allow_codex_gpt55_autoraise``
         (historical config-key name kept for backward compatibility) so the

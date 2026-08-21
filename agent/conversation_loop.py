@@ -38,6 +38,7 @@ from agent.conversation_compression import (
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.usage_limits import TurnUsageTracker
 from agent.message_metadata import append_message
 from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
@@ -1887,6 +1888,13 @@ def run_conversation(
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
+    # Opt-in wall-clock/token belts (agent/usage_limits.py). Captures the turn
+    # start instant and the session token watermark; checked at every loop
+    # boundary next to the iteration-budget gate.
+    _usage_tracker = TurnUsageTracker(
+        getattr(agent, "_usage_limits_config", None),
+        getattr(agent, "session_total_tokens", 0),
+    )
     final_response = None
     interrupted = False
     failed = False
@@ -1974,6 +1982,13 @@ def run_conversation(
                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
             break
         
+        _usage_breach = _usage_tracker.check(getattr(agent, "session_total_tokens", 0))
+        if _usage_breach is not None:
+            _turn_exit_reason = _usage_breach.code
+            if not agent.quiet_mode:
+                agent._safe_print(f"\n⚠️  {_usage_breach.message}")
+            break
+
         api_call_count += 1
         agent._api_call_count = api_call_count
         agent._touch_activity(f"starting API call #{api_call_count}")

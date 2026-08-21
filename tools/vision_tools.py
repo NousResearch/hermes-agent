@@ -33,6 +33,7 @@ import contextlib
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
 import logging
 import os
 import uuid
@@ -251,6 +252,15 @@ def _detect_image_mime_type_from_bytes(data: bytes) -> Optional[str]:
     """
     header = data[:64]
     if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        # Magic bytes alone are insufficient: native vision history is
+        # immutable, so reject corrupt PNGs before they can be embedded.
+        try:
+            from PIL import Image
+
+            with Image.open(BytesIO(data)) as image:
+                image.verify()
+        except Exception:
+            return None
         return "image/png"
     if header.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"

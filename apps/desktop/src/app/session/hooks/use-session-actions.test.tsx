@@ -82,7 +82,7 @@ const RUNTIME_SESSION_ID = 'rt-new-001'
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'selectSidebarItem' | 'startFreshSessionDraft'
+  'createBackendSessionForSend' | 'openNewSessionTile' | 'selectSidebarItem' | 'startFreshSessionDraft'
 >
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -2523,6 +2523,57 @@ describe('createBackendSessionForSend workspace target', () => {
     expect(params).toMatchObject({ cwd: '/clicked-workspace' })
   })
 })
+
+describe('openNewSessionTile workspace target', () => {
+  afterEach(() => {
+    cleanup()
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
+    $sessionTiles.set([])
+    setCurrentCwd('')
+    vi.restoreAllMocks()
+  })
+
+  it('omits cwd when Home explicitly requests a detached session', async () => {
+    $projectTree.set([
+      {
+        id: 'p_app',
+        label: 'App',
+        path: '/repo/app',
+        repos: [{ groups: [], id: '/repo/app', label: 'app', path: '/repo/app', sessionCount: 0 }],
+        sessionCount: 0
+      }
+    ])
+    $projectScope.set('p_app')
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return {
+          info: {},
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'stored-home'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.openNewSessionTile('center', { cwd: null, listed: false })
+    })
+
+    expect(createParams).not.toHaveProperty('cwd')
+  })
+})
+
 describe('selectSidebarItem', () => {
   it('fronts the workspace pane when navigating to a sidebar route (issue #72602)', async () => {
     const navigate = vi.fn()

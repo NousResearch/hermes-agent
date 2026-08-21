@@ -711,6 +711,14 @@ def _codex_wait_notice_recovery(
 # restore_primary_runtime — since the streak measured the OLD provider).
 # Past the give-up threshold, calls abort immediately with an actionable
 # error instead of re-waiting out the stale timeout.
+#
+# Half-open recovery (#89587): an unattended single-provider session has no
+# human to switch models and no fallback chain to swap to, so a tripped
+# breaker used to latch failed forever even after the provider recovered.
+# Once per ``HERMES_STREAM_STALE_PROBE_INTERVAL_S`` window, one real probe
+# attempt is allowed through instead of raising; success clears the streak
+# via the existing completed-call resets, a stale probe re-bumps it and the
+# window re-arms at probe-attempt time.
 
 def _stale_streak(agent) -> int:
     try:
@@ -729,11 +737,21 @@ def _bump_stale_streak(agent) -> None:
 def _reset_stale_streak(agent) -> None:
     try:
         agent._consecutive_stale_streams = 0
+        # A future fresh trip should start un-armed: its first over-threshold
+        # call insta-fails and arms the probe window, rather than inheriting a
+        # long-expired window and burning a stale-timeout wait immediately.
+        agent._stale_probe_after = 0.0
     except Exception:
         pass
 
 
 _INTERRUPTED_WAIT_STALE_SECONDS = 30.0
+
+# Half-open probe window for the tripped give-up breaker (#89587). Worst
+# case a probe against a still-wedged LOCAL endpoint burns up to the 900s
+# local stale ceiling, so 300s bounds the duty cycle to one wedged wait per
+# ~15 min while cloud providers (180s stale timeout) recover within ~5 min.
+_STALE_PROBE_INTERVAL_S = 300.0
 
 
 def _record_interrupted_provider_wait(
@@ -806,18 +824,64 @@ def _touch_stale_kill_activity(agent, elapsed: float) -> None:
         logger.debug("stale activity touch failed", exc_info=True)
 
 
-def _check_stale_giveup(agent) -> None:
+def _check_stale_giveup(agent, *, allow_probe: bool = True) -> None:
     """Raise immediately when the consecutive-stale streak is past the
-    give-up threshold — no network attempt, no stale-timeout wait."""
+    give-up threshold — no network attempt, no stale-timeout wait.
+
+    Half-open recovery (#89587): when ``allow_probe`` is True (the
+    pre-network entry guards), one real probe attempt per
+    ``HERMES_STREAM_STALE_PROBE_INTERVAL_S`` window is allowed through
+    instead of raising, so an unattended session can self-heal once the
+    provider recovers. The window is armed at probe-ATTEMPT time, so a
+    probe that itself wedges (a full stale-timeout wait) cannot be
+    followed by another until the next window. ``allow_probe=False``
+    (the Bedrock mid-call escalation) keeps the unconditional raise —
+    returning there would leave an un-abortable worker polling.
+    """
     _giveup = env_int("HERMES_STREAM_STALE_GIVEUP", 5)
     _streak = _stale_streak(agent)
-    if _giveup > 0 and _streak >= _giveup:
-        raise RuntimeError(
-            "Provider has been unresponsive (no response received) for "
-            f"{_streak} consecutive stale attempts — aborting this call to "
-            "avoid an indefinite stall. Switch models or start a new "
-            "session, then retry."
-        )
+    if _giveup <= 0 or _streak < _giveup:
+        # NOTE: keep this early-out ahead of any ``_stale_probe_after``
+        # access — below-threshold agents (including bare-mock test agents)
+        # must never touch the probe state.
+        return
+    _extra = ""
+    _interval = env_float(
+        "HERMES_STREAM_STALE_PROBE_INTERVAL_S", _STALE_PROBE_INTERVAL_S
+    )
+    if allow_probe and _interval > 0:
+        try:
+            _now = time.monotonic()
+            _probe_after = float(
+                getattr(agent, "_stale_probe_after", 0.0) or 0.0
+            )
+            if _probe_after and _now >= _probe_after:
+                agent._stale_probe_after = _now + _interval
+                logger.warning(
+                    "Stale give-up breaker half-open: allowing one probe "
+                    "attempt (streak=%d, next window in %.0fs).",
+                    _streak,
+                    _interval,
+                )
+                return
+            if not _probe_after:
+                # First short-circuit past the threshold (the trip call, or
+                # an interrupt-counted overshoot that never ran this guard):
+                # arm the window so the probe fires only after a cooldown,
+                # never as an immediate re-wait of the stale timeout.
+                _probe_after = _now + _interval
+                agent._stale_probe_after = _probe_after
+            _extra = (
+                f" Next automatic probe in ~{max(0, int(_probe_after - _now))}s."
+            )
+        except Exception:
+            _extra = ""
+    raise RuntimeError(
+        "Provider has been unresponsive (no response received) for "
+        f"{_streak} consecutive stale attempts — aborting this call to "
+        "avoid an indefinite stall. Switch models or start a new "
+        "session, then retry." + _extra
+    )
 
 
 def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
@@ -3576,7 +3640,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     # Escalate across turns: raises RuntimeError once the streak
                     # crosses HERMES_STREAM_STALE_GIVEUP, so a persistently wedged
                     # Bedrock provider aborts fast instead of re-waiting the timeout.
-                    _check_stale_giveup(agent)
+                    # Mid-call: never probe — returning here would leave the
+                    # un-abortable worker polling instead of ending the call.
+                    _check_stale_giveup(agent, allow_probe=False)
                     # Streak still under the give-up threshold: end THIS call with a
                     # TimeoutError so the outer retry loop / next turn re-evaluates
                     # and the streak carries forward.  Break rather than keep polling

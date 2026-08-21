@@ -2608,9 +2608,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 scanned += 1
                 message_id = str(getattr(message, "id", ""))
                 self._record_discord_message_seen(message, status="discovered")
-                # A live gateway event may race this REST scan. Check without
-                # claiming the ID; the shared ingress helper owns the dedup
-                # write immediately before normal auth/filter dispatch.
+                # A live gateway event may race this REST scan. Cheap
+                # pre-filter only: the actual claim happens atomically in
+                # _dispatch_recovered_message via claim=True, so whichever
+                # path (live or backfill) claims first wins and the other
+                # drops the duplicate.
                 if self._dedup.contains(message_id):
                     continue
                 if not await self._should_backfill_discord_message(message):
@@ -2694,7 +2696,12 @@ class DiscordAdapter(BasePlatformAdapter):
             ):
                 return False
         admitted, role_authorized = self._discord_message_admission(
-            message, claim=False,
+            # Claim the ID: without this the message never enters the dedup
+            # cache, so a live gateway replay of the same event (Discord
+            # replays missed events on resume, racing this REST scan) is
+            # admitted again and the user gets two runs / two replies.
+            # Failure paths in the caller release the claim via discard().
+            message, claim=True,
         )
         if not admitted:
             return False

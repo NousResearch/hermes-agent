@@ -7280,6 +7280,10 @@ class BasePlatformAdapter(ABC):
         INDICATOR_RESERVE = 10   # room for " (XX/XX)"
         FENCE_CLOSE = "\n```"
 
+        def _backtick_fence_suffix(line: str) -> str | None:
+            stripped = line.strip()
+            return stripped.lstrip("`") if stripped.startswith("```") else None
+
         chunks: List[str] = []
         remaining = content
         # When the previous chunk ended mid-code-block, this holds the
@@ -7310,14 +7314,15 @@ class BasePlatformAdapter(ABC):
                 _final_lang = carry_lang or ""
                 if _final_in_code:
                     for _line in remaining.split("\n"):
-                        _stripped = _line.strip()
-                        if _stripped.startswith("```"):
+                        _trailing = _backtick_fence_suffix(_line)
+                        if _trailing is not None:
                             if _final_in_code:
-                                _final_in_code = False
-                                _final_lang = ""
+                                if _trailing.strip() == "":
+                                    _final_in_code = False
+                                    _final_lang = ""
                             else:
                                 _final_in_code = True
-                                _tag = _stripped[3:].strip()
+                                _tag = _trailing.strip()
                                 _final_lang = _tag.split()[0] if _tag else ""
                     if _final_in_code:
                         final_chunk += FENCE_CLOSE
@@ -7391,14 +7396,17 @@ class BasePlatformAdapter(ABC):
             in_code = carry_lang is not None
             lang = carry_lang or ""
             for line in chunk_body.split("\n"):
-                stripped = line.strip()
-                if stripped.startswith("```"):
+                trailing = _backtick_fence_suffix(line)
+                if trailing is not None:
                     if in_code:
-                        in_code = False
-                        lang = ""
+                        # Per CommonMark, a closing fence may be followed only
+                        # by whitespace. Lines like "``` not a close" are code.
+                        if trailing.strip() == "":
+                            in_code = False
+                            lang = ""
                     else:
                         in_code = True
-                        tag = stripped[3:].strip()
+                        tag = trailing.strip()
                         lang = tag.split()[0] if tag else ""
 
             if in_code:

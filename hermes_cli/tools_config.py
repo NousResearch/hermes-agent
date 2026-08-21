@@ -1012,6 +1012,11 @@ def install_cua_driver(
     ``hermes update`` already prints a contextual line before its update
     check, so it disables this to avoid printing the refresh twice.
 
+    The confirmed-update path is also bounded by
+    ``_CUA_BACKGROUND_UPDATE_TIMEOUT``. It runs as an optional, quiet part of
+    ``hermes update`` and must not inherit the explicit install command's
+    11-minute ceiling when an upstream prompt or UAC dialog is unattended.
+
     Returns True iff cua-driver is installed (or successfully refreshed)
     when the function returns. Supported on macOS, Windows, and Linux
     (Linux is alpha). Silently returns False on unsupported platforms.
@@ -1209,6 +1214,11 @@ def install_cua_driver(
         verbose=False,
         pin_version=confirmed_version,
         show_progress=show_installer_progress,
+        installer_timeout=(
+            _CUA_BACKGROUND_UPDATE_TIMEOUT
+            if require_confirmed_update
+            else None
+        ),
     )
     if ok and repair_existing:
         repaired = _cua_driver_contract_status()
@@ -1244,6 +1254,16 @@ def install_cua_driver(
 # "always times out" wedge (issue #58762). 660s = 600s lock window + 60s
 # headroom for the actual download/swap.
 _CUA_INSTALLER_TIMEOUT = 660
+
+# Optional refreshes launched by ``hermes update`` are quiet and unattended.
+# Keep their interruption bounded even when upstream waits on Read-Host or a
+# Windows UAC consent dialog. Explicit ``computer-use install --upgrade`` runs
+# retain the full installer ceiling above.
+_CUA_BACKGROUND_UPDATE_TIMEOUT = 120
+
+# Once the tree-kill has been issued, never wait indefinitely for a descendant
+# that inherited the captured stdout pipe to close it.
+_CUA_INSTALLER_REAP_TIMEOUT = 5
 
 # Upstream installer's stale-lock threshold (LOCK_STALE_AFTER_SECONDS in
 # _install-rust.sh). Used by the pre-clear below to avoid yanking a lock
@@ -1497,6 +1517,7 @@ def _run_cua_driver_installer(
     verbose: bool = True,
     pin_version: Optional[str] = None,
     show_progress: bool = True,
+    installer_timeout: Optional[float] = None,
 ) -> bool:
     """Run the upstream cua-driver installer for this platform.
 
@@ -1513,6 +1534,9 @@ def _run_cua_driver_installer(
     is bumped by Release Please *before* the release assets are published,
     so an unpinned run inside that window fails with a 404; pinning to the
     version ``check-update`` confirmed sidesteps the race entirely.
+
+    ``installer_timeout`` lets quiet callers use a shorter ceiling without
+    weakening the explicit install path's stale-lock recovery window.
     """
     import platform as _plat
     import shutil
@@ -1584,6 +1608,11 @@ def _run_cua_driver_installer(
         else:
             _print_info(f"→ {label} cua-driver (Computer Use)...")
     driver_cmd = _cua_driver_cmd()
+    timeout = (
+        _CUA_INSTALLER_TIMEOUT
+        if installer_timeout is None
+        else installer_timeout
+    )
 
     installer_env = _cua_driver_env()
     if pin_version:
@@ -1668,10 +1697,10 @@ def _run_cua_driver_installer(
                 **popen_kwargs
             )
             try:
-                proc.communicate(timeout=_CUA_INSTALLER_TIMEOUT)
+                proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
                 _kill_installer_tree(proc)
-                proc.communicate()
+                proc.communicate(timeout=_CUA_INSTALLER_REAP_TIMEOUT)
                 raise
             result = subprocess.CompletedProcess(
                 install_cmd, proc.returncode, stdout=None, stderr=None
@@ -1679,16 +1708,17 @@ def _run_cua_driver_installer(
         else:
             proc = subprocess.Popen(
                 install_cmd, shell=use_shell, env=installer_env,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace",
                 creationflags=_post_setup_no_window_flags(),
                 **popen_kwargs
             )
             try:
-                out, _ = proc.communicate(timeout=_CUA_INSTALLER_TIMEOUT)
+                out, _ = proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
                 _kill_installer_tree(proc)
-                proc.communicate()
+                proc.communicate(timeout=_CUA_INSTALLER_REAP_TIMEOUT)
                 raise
             result = subprocess.CompletedProcess(
                 install_cmd, proc.returncode, stdout=out, stderr=None
@@ -1739,7 +1769,7 @@ def _run_cua_driver_installer(
     except subprocess.TimeoutExpired:
         _print_warning(
             f"    cua-driver {label.lower()} timed out after "
-            f"{_CUA_INSTALLER_TIMEOUT}s."
+            f"{timeout}s."
         )
         if not is_windows:
             _print_info(

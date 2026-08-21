@@ -118,23 +118,22 @@ class TestPerJobToolsetMcpMerge:
         assert m_platform.call_args[0][1] == "cron"
         assert set(result) == set(sentinel)
 
-    def test_resolver_strips_memory_from_per_job_list(self):
+    def test_resolver_keeps_memory_in_per_job_list(self):
         result = _resolve_cron_enabled_toolsets(
             {"enabled_toolsets": ["memory", "file"]},
             {"mcp_servers": {}},
         )
-        assert "memory" not in result
+        assert "memory" in result
         assert "file" in result
 
-    def test_resolver_strips_memory_from_platform_fallback(self):
+    def test_resolver_keeps_memory_from_platform_fallback(self):
         job = {"enabled_toolsets": None}
         with patch(
             "hermes_cli.tools_config._get_platform_tools",
             return_value={"web", "memory", "file"},
         ):
             result = _resolve_cron_enabled_toolsets(job, {})
-        assert result == ["file", "web"]
-        assert "memory" not in result
+        assert result == ["file", "memory", "web"]
 
 
 class TestResolveOrigin:
@@ -628,15 +627,15 @@ class TestRunJobSessionPersistence:
             yield fake_db, mock_agent_cls
 
 
-    def test_run_job_memory_toolset_disabled_in_cron(self, tmp_path):
-        """memory toolset must be disabled in cron sessions — issue #38129.
+    def test_run_job_memory_enabled_in_cron(self, tmp_path):
+        """Cron agents get memory like any other agent run.
 
-        Cron agents are constructed with skip_memory=True. The memory tool
-        stays off the schema, and memory is stripped from enabled_toolsets
-        so MEMORY.md is not loaded into the job prompt.
+        skip_memory=False and the memory toolset is not policy-denied, so
+        MEMORY.md/USER.md load and the memory tool follows normal toolset
+        resolution.
         """
         job = {
-            "id": "memory-hide-job",
+            "id": "memory-enabled-job",
             "name": "test",
             "prompt": "hello",
         }
@@ -644,17 +643,13 @@ class TestRunJobSessionPersistence:
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
-        assert "memory" in (kwargs["disabled_toolsets"] or []), (
-            "memory toolset should be disabled in cron to match skip_memory=True"
+        assert kwargs["skip_memory"] is False
+        assert "memory" not in (kwargs["disabled_toolsets"] or []), (
+            "memory toolset must not be policy-denied in cron"
         )
 
-    def test_run_job_disables_memory_even_when_per_job_enables_it(self, tmp_path):
-        """Cron runs pass skip_memory=True, so memory must not be exposed.
-
-        A cron job can name the memory toolset in enabled_toolsets. The
-        resolver drops it, and the denylist still lists it, so the model
-        never gets the tool and init never builds MemoryStore.
-        """
+    def test_run_job_keeps_per_job_memory_toolset(self, tmp_path):
+        """A per-job enabled_toolsets naming memory keeps it."""
         job = {
             "id": "memory-toolset-job",
             "name": "test",
@@ -665,10 +660,10 @@ class TestRunJobSessionPersistence:
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
-        assert kwargs["skip_memory"] is True
-        assert kwargs["enabled_toolsets"] == ["file"]
-        assert "memory" not in (kwargs["enabled_toolsets"] or [])
-        assert "memory" in kwargs["disabled_toolsets"]
+        assert kwargs["skip_memory"] is False
+        assert "memory" in (kwargs["enabled_toolsets"] or [])
+        assert "file" in (kwargs["enabled_toolsets"] or [])
+        assert "memory" not in kwargs["disabled_toolsets"]
 
     def test_tick_skips_due_jobs_while_dispatch_is_paused(self, tmp_path):
         """The drain gate runs before advancing a due job's schedule."""

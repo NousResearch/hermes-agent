@@ -33,7 +33,9 @@ def _default_mock_probe(monkeypatch):
     # module\'s plumbing).
     import hermes_cli.mcp_catalog as mc
 
+    real_probe = mc._probe_tools
     monkeypatch.setattr(mc, "_probe_tools", lambda name: None)
+    return real_probe
 
 
 @pytest.fixture
@@ -371,6 +373,32 @@ class TestToolSelection:
     def _make_probed(self, *names):
         """Return a list of (tool_name, description) tuples for mocking."""
         return [(n, f"description of {n}") for n in names]
+
+    def test_catalog_probe_error_redacts_server_env_file_values(
+        self, tmp_path, monkeypatch, capsys, _default_mock_probe
+    ):
+        import hermes_cli.mcp_catalog as mc
+
+        env_file = tmp_path / "server.env"
+        env_file.write_text(
+            "MCP_PRIVATE_TOKEN=server-secret-value\n", encoding="utf-8"
+        )
+        server_cfg = {
+            "url": "https://example.invalid/${MCP_PRIVATE_TOKEN}",
+            "env_file": str(env_file),
+        }
+        monkeypatch.setattr(mc, "installed_servers", lambda: {"private": server_cfg})
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("request failed at /server-secret-value")
+            ),
+        )
+
+        assert _default_mock_probe("private") is None
+        output = capsys.readouterr().out
+        assert "server-secret-value" not in output
+        assert "[REDACTED]" in output
 
 
     def test_probe_fail_with_default_applies_directly(self, catalog_dir):

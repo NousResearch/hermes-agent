@@ -254,16 +254,15 @@ def _apply_mcp_preset(
 def _resolve_mcp_server_config(config: dict) -> dict:
     """Resolve ``${ENV}`` placeholders in a server config before connecting.
 
-    Mirrors ``_load_mcp_config()`` in ``tools/mcp_tool.py``: load
-    ``~/.hermes/.env`` into ``os.environ`` and recursively interpolate any
-    ``${VAR}`` placeholders. The CLI builds header templates like
+    Mirrors ``_load_mcp_config()`` in ``tools/mcp_tool.py``: initialize the
+    active profile fallback scope, load the server's optional ``env_file`` into
+    an isolated mapping, and recursively interpolate any ``${VAR}``
+    placeholders. The CLI builds header templates like
     ``Authorization: Bearer ${MCP_X_API_KEY}`` but the probe path never
     resolved them, so the discovery probe sent the literal placeholder and
     auth-requiring servers (e.g. n8n) returned 401 — while runtime tool
     loading worked because it interpolates. (#37792)
     """
-    from tools.mcp_tool import _interpolate_env_vars
-
     from agent.secret_scope import current_secret_scope
 
     if current_secret_scope() is None:
@@ -272,7 +271,22 @@ def _resolve_mcp_server_config(config: dict) -> dict:
             load_hermes_dotenv()
         except Exception:  # pragma: no cover — defensive
             pass
-    return _interpolate_env_vars(config)
+    from tools.mcp_tool import _resolve_mcp_server_config as _resolve_config
+
+    return _resolve_config(config)
+
+
+def _sanitize_mcp_probe_error(exc: object, config: dict) -> str:
+    """Redact known patterns and exact per-server env-file values from errors."""
+    from tools.mcp_tool import (
+        _load_mcp_server_env,
+        _sanitize_error,
+    )
+
+    return _sanitize_error(
+        str(exc),
+        _load_mcp_server_env(config).values(),
+    )
 
 
 def _probe_single_server(
@@ -300,6 +314,9 @@ def _probe_single_server(
     )
 
     config = _resolve_mcp_server_config(config)
+    resolved_issues = validate_mcp_server_entry(name, config)
+    if resolved_issues:
+        raise ValueError("; ".join(resolved_issues))
     if connect_timeout is None:
         raw_timeout = config.get("connect_timeout", 30)
         try:
@@ -565,7 +582,7 @@ def cmd_mcp_add(args):
     try:
         tools = _probe_single_server(name, server_config)
     except Exception as exc:
-        _error(f"Failed to connect: {exc}")
+        _error(f"Failed to connect: {_sanitize_mcp_probe_error(exc, server_config)}")
         if _confirm("Save config anyway (you can test later)?", default=False):
             server_config["enabled"] = False
             if _save_mcp_server(name, server_config):
@@ -791,7 +808,10 @@ def cmd_mcp_test(args):
         elapsed_ms = (time.monotonic() - start) * 1000
     except Exception as exc:
         elapsed_ms = (time.monotonic() - start) * 1000
-        _error(f"Connection failed ({elapsed_ms:.0f}ms): {exc}")
+        _error(
+            f"Connection failed ({elapsed_ms:.0f}ms): "
+            f"{_sanitize_mcp_probe_error(exc, cfg)}"
+        )
         return
 
     _success(f"Connected ({elapsed_ms:.0f}ms)")
@@ -903,7 +923,10 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
             )
         except Exception:
             humanized = None
-        _error(f"Authentication failed: {humanized or exc}")
+        _error(
+            "Authentication failed: "
+            f"{_sanitize_mcp_probe_error(humanized or exc, server_config)}"
+        )
         return False
 
 
@@ -1009,7 +1032,7 @@ def cmd_mcp_configure(args):
     try:
         all_tools = _probe_single_server(name, cfg)
     except Exception as exc:
-        _error(f"Failed to connect: {exc}")
+        _error(f"Failed to connect: {_sanitize_mcp_probe_error(exc, cfg)}")
         return
 
     if not all_tools:

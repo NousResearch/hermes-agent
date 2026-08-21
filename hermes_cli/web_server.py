@@ -13483,7 +13483,9 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                 msg = humanized
         except Exception:
             pass
-        flow.mark_error(msg)
+        from hermes_cli.mcp_config import _sanitize_mcp_probe_error
+
+        flow.mark_error(_sanitize_mcp_probe_error(msg, cfg))
     finally:
         flow.mark_worker_done()
 

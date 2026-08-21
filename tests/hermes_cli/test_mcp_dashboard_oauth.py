@@ -1,5 +1,6 @@
 """Dashboard HTTP contract for hosted MCP OAuth."""
 
+from contextlib import nullcontext
 from unittest.mock import patch
 
 import pytest
@@ -139,3 +140,50 @@ def test_flow_status_does_not_expose_authorization_code():
     assert body["status"] == "approved"
     assert "secret-code" not in response.text
     assert "secret-state" not in response.text
+
+
+def test_oauth_worker_error_redacts_server_env_file_values(tmp_path):
+    from hermes_cli import web_server
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    env_file = tmp_path / "server.env"
+    env_file.write_text(
+        "MCP_PRIVATE_TOKEN=server-secret-value\n", encoding="utf-8"
+    )
+    flow = DashboardOAuthFlow(
+        flow_id="flow-private",
+        server_name="private",
+        profile=None,
+        hermes_home=str(tmp_path),
+        redirect_uri="https://agent.example/api/mcp/oauth/callback/private",
+    )
+    cfg = {
+        "url": "https://example.invalid/${MCP_PRIVATE_TOKEN}",
+        "env_file": str(env_file),
+    }
+
+    with patch(
+        "hermes_cli.mcp_config._probe_single_server",
+        side_effect=RuntimeError("request failed at /server-secret-value"),
+    ), patch(
+        "tools.mcp_oauth_manager.get_manager"
+    ) as get_manager, patch(
+        "tools.mcp_oauth.HermesTokenStorage"
+    ) as token_storage, patch(
+        "tools.mcp_oauth.force_interactive_oauth",
+        return_value=nullcontext(),
+    ), patch(
+        "tools.mcp_dashboard_oauth.dashboard_oauth_flow",
+        return_value=nullcontext(),
+    ), patch(
+        "tools.mcp_oauth.humanize_oauth_registration_error",
+        return_value=None,
+    ):
+        token_storage.return_value.snapshot.return_value = object()
+        get_manager.return_value.remove.return_value = None
+        web_server._run_dashboard_mcp_oauth(flow, cfg)
+
+    assert flow.status == "error"
+    assert flow.error is not None
+    assert "server-secret-value" not in flow.error
+    assert "[REDACTED]" in flow.error

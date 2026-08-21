@@ -851,6 +851,10 @@ class UpdateTaskBody(BaseModel):
     # override doesn't silently reset the depth the operator chose.
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
+    # Forwarded to archive_task(force=...). Only consulted when
+    # status='archived'. Lets the dashboard surface an "archive anyway"
+    # affordance when the refusal fires on a stuck worker.
+    force: bool = False
 
 
 def _reopen_if_review(conn, task_id: str, current) -> Optional[bool]:
@@ -934,7 +938,28 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     # Direct status write for drag-drop (todo -> ready etc).
                     ok = reopened if reopened is not None else _set_status_direct(conn, task_id, "ready")
             elif s == "archived":
-                ok = kanban_db.archive_task(conn, task_id)
+                # PATCH path: honor UpdateTaskBody.force so the dashboard
+                # "force archive" button can reclaim a stuck worker; without
+                # force we surface the active-run refusal to the caller.
+                try:
+                    ok = kanban_db.archive_task(
+                        conn, task_id, force=bool(payload.force),
+                    )
+                except kanban_db.TaskHasActiveRunError as exc:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "task_has_active_run",
+                            "task_id": exc.task_id,
+                            "run_id": exc.run_id,
+                            "message": (
+                                f"task {exc.task_id} has an active worker "
+                                f"run (id={exc.run_id}); retry with "
+                                f"force=true to reclaim the run and "
+                                f"archive anyway."
+                            ),
+                        },
+                    )
             elif s == "running":
                 raise HTTPException(
                     status_code=400,
@@ -1064,7 +1089,23 @@ def delete_task(task_id: str, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        ok = kanban_db.delete_task(conn, task_id)
+        try:
+            ok = kanban_db.delete_task(conn, task_id)
+        except kanban_db.TaskHasActiveRunError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "task_has_active_run",
+                    "task_id": exc.task_id,
+                    "run_id": exc.run_id,
+                    "message": (
+                        f"task {exc.task_id} has an active worker run "
+                        f"(id={exc.run_id}); block the card first so the "
+                        f"worker can land its own result, then retry the "
+                        f"delete."
+                    ),
+                },
+            )
         if not ok:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
         return {"deleted": True, "task_id": task_id}
@@ -1311,6 +1352,8 @@ class BulkTaskBody(BaseModel):
     # Bulk thinking-depth override — same semantics as UpdateTaskBody.
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
+    # Forwarded to archive_task(force=...). Only used when archive=True.
+    force: bool = False
 
 
 @router.post("/tasks/bulk")
@@ -1336,8 +1379,18 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                     results.append(entry)
                     continue
                 if payload.archive:
-                    if not kanban_db.archive_task(conn, tid):
-                        entry.update(ok=False, error="archive refused")
+                    try:
+                        if not kanban_db.archive_task(
+                            conn, tid, force=bool(payload.force),
+                        ):
+                            entry.update(ok=False, error="archive refused")
+                    except kanban_db.TaskHasActiveRunError as exc:
+                        entry.update(
+                            ok=False,
+                            error="task_has_active_run",
+                            run_id=exc.run_id,
+                            message=str(exc),
+                        )
                 if payload.status is not None and not payload.archive:
                     s = payload.status
                     if s == "done":

@@ -161,3 +161,79 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert "not in triage" in outcome.reason
 
 
+def test_decompose_child_priority_inherit_and_override(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="p10 triage", triage=True, priority=10)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "priority test",
+        "tasks": [
+            # No priority key -> inherit p10.
+            {"title": "inherit me", "body": "b", "assignee": "engineer", "parents": []},
+            # Explicit higher priority -> override wins.
+            {"title": "run ahead", "body": "b", "assignee": "engineer", "parents": [],
+             "priority": 12},
+            # Lower priority WITHOUT a reason -> clamped back to p10.
+            {"title": "sneaky low", "body": "b", "assignee": "engineer", "parents": [],
+             "priority": 0},
+            # Lower priority WITH a reason -> honored.
+            {"title": "justified low", "body": "b", "assignee": "engineer", "parents": [],
+             "priority": 3, "priority_reason": "background cleanup, non-urgent"},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids and len(outcome.child_ids) == 4
+    with kb.connect() as conn:
+        c0 = kb.get_task(conn, outcome.child_ids[0])
+        c1 = kb.get_task(conn, outcome.child_ids[1])
+        c2 = kb.get_task(conn, outcome.child_ids[2])
+        c3 = kb.get_task(conn, outcome.child_ids[3])
+    assert c0.priority == 10      # inherited
+    assert c1.priority == 12      # higher override
+    assert c2.priority == 10      # silent downgrade clamped
+    assert c3.priority == 3       # justified downgrade honored
+
+
+def test_decompose_child_priority_non_int_and_bool_inherit(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="junk priority", triage=True, priority=7)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "junk priority",
+        "tasks": [
+            {"title": "str priority", "body": "b", "assignee": "engineer", "parents": [],
+             "priority": "10"},
+            {"title": "bool priority", "body": "b", "assignee": "engineer", "parents": [],
+             "priority": True},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kb.connect() as conn:
+        c0 = kb.get_task(conn, outcome.child_ids[0])
+        c1 = kb.get_task(conn, outcome.child_ids[1])
+    assert c0.priority == 7   # non-int strings ignored -> inherit
+    assert c1.priority == 7   # bool rejected -> inherit

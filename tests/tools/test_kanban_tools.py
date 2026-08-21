@@ -416,6 +416,27 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_happy_path_persists_priority(worker_env):
+    """kanban_create must store the caller's priority verbatim (the
+    decomposer's per-child inheritance relies on create honoring it)."""
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "priority child",
+        "assignee": "peer",
+        "parents": [worker_env],
+        "priority": 7,
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.priority == 7
+    finally:
+        conn.close()
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()

@@ -1614,3 +1614,81 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Active-run guard on archive / delete
+# ---------------------------------------------------------------------------
+
+
+def test_archive_task_refuses_while_run_active(kanban_home):
+    """archive_task must refuse when a worker run is still in flight, and
+    the error must name the run id so the caller knows what to land first.
+    Regression for RV2 cleanup that archived running cards mid-run.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="running", assignee="worker")
+        claimed = kb.claim_task(conn, tid, claimer="test:worker")
+        assert claimed is not None
+        assert kb.get_task(conn, tid).status == "running"
+        run_id = kb.get_task(conn, tid).current_run_id
+        assert run_id, "claim_task must record a current run"
+
+        with pytest.raises(kb.TaskHasActiveRunError) as ei:
+            kb.archive_task(conn, tid)
+        assert ei.value.task_id == tid
+        assert ei.value.run_id == run_id
+        # The card is untouched — still running, not archived.
+        assert kb.get_task(conn, tid).status == "running"
+
+
+def test_archive_task_force_reclaims_active_run(kanban_home):
+    """force=True keeps the archive path live and reclaims the active run
+    so cleanup can still race past a stuck worker."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="stuck", assignee="worker")
+        kb.claim_task(conn, tid, claimer="test:stuck")
+        run_id = kb.get_task(conn, tid).current_run_id
+
+        assert kb.archive_task(conn, tid, force=True) is True
+        task = kb.get_task(conn, tid)
+        assert task.status == "archived"
+        # Run row closed with outcome='reclaimed' so attempt history isn't orphaned.
+        run = conn.execute(
+            "SELECT status, outcome FROM task_runs WHERE id = ?", (run_id,),
+        ).fetchone()
+        assert run["status"] == "reclaimed"
+        assert run["outcome"] == "reclaimed"
+
+
+def test_delete_task_refuses_while_run_active(kanban_home):
+    """delete_task must refuse when a worker run is still in flight. No
+    force escape hatch — delete the row only when no worker can still
+    reference it."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="running", assignee="worker")
+        kb.claim_task(conn, tid, claimer="test:worker")
+        run_id = kb.get_task(conn, tid).current_run_id
+
+        with pytest.raises(kb.TaskHasActiveRunError) as ei:
+            kb.delete_task(conn, tid)
+        assert ei.value.task_id == tid
+        assert ei.value.run_id == run_id
+        # Row still present.
+        assert kb.get_task(conn, tid) is not None
+
+
+def test_archive_and_delete_proceed_after_run_ends(kanban_home):
+    """Once the active run is closed, archive/delete must succeed again.
+    Guards against an over-broad check that would lock the card forever."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="will-finish", assignee="worker")
+        kb.claim_task(conn, tid, claimer="test:w")
+        # Simulate the worker landing its result.
+        assert kb.complete_task(conn, tid, result="ok")
+        assert kb.get_task(conn, tid).status == "done"
+
+        assert kb.archive_task(conn, tid) is True
+        assert kb.get_task(conn, tid).status == "archived"
+        assert kb.delete_archived_task(conn, tid) is True
+        assert kb.get_task(conn, tid) is None

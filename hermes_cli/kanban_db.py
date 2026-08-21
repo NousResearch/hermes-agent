@@ -5349,6 +5349,43 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class TaskHasActiveRunError(RuntimeError):
+    """Raised when delete/archive is attempted while a worker run is still active.
+
+    Carries ``task_id`` and ``run_id`` so callers can surface the live run
+    identifier and an actionable next step (complete/block the run first, or
+    pass ``force=True`` to archive and reclaim the run). Workers always need a
+    way to complete or comment on their own card; deleting or archiving the
+    card mid-run orphans the worker session.
+    """
+
+    def __init__(self, task_id: str, run_id: int):
+        self.task_id = task_id
+        self.run_id = run_id
+        super().__init__(
+            f"task {task_id} has an active worker run (id={run_id}); "
+            f"complete or block the run first "
+            f"(or pass force=True to archive and reclaim the run)"
+        )
+
+
+def _has_active_run(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
+    """Return the active run id for ``task_id`` or ``None``.
+
+    "Active" = ``task_runs.status='running'`` AND ``ended_at IS NULL``. This
+    matches what the dispatcher treats as in-flight; stale claim rows whose
+    ``ended_at`` is set are excluded so the refusal does not fire on
+    long-completed work.
+    """
+    row = conn.execute(
+        "SELECT id FROM task_runs "
+        "WHERE task_id = ? AND status = 'running' AND ended_at IS NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -7285,6 +7322,7 @@ def decompose_triage_task(
     children: list[dict],
     author: Optional[str] = None,
     auto_promote: bool = True,
+    child_priority: Optional[int] = None,
 ) -> Optional[list[str]]:
     """Fan a triage task out into child tasks and promote the root to ``todo``.
 
@@ -7300,6 +7338,8 @@ def decompose_triage_task(
             "body": "...",                     # optional
             "assignee": "profile-name",        # optional, None -> default fallback
             "parents": [0, 2],                 # indices into this same children list
+            "priority": 10,                    # optional; falls back to child_priority,
+                                               # which itself defaults to the root's stored priority
         }
 
     Returns the list of created child task ids (in input order) on
@@ -7311,6 +7351,12 @@ def decompose_triage_task(
     Validation of titles/assignees happens inside the same write_txn as
     the inserts so a malformed entry aborts the whole decomposition
     cleanly (no orphan children).
+
+    Priority resolution per child: per-child ``priority`` (if a valid int)
+    wins, else ``child_priority`` if given, else the root task's stored
+    priority at read time. ``None`` is only used when the root itself
+    has ``priority IS NULL`` — the schema default is 0, so a missing
+    value is treated as 0 to match the existing column contract.
     """
     if not children:
         return None
@@ -7370,8 +7416,8 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
-            "FROM tasks WHERE id = ?",
+            "SELECT id, status, tenant, workspace_kind, workspace_path, "
+            "priority FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if root_row is None:
@@ -7385,6 +7431,15 @@ def decompose_triage_task(
         # override with its own 'workspace_kind' / 'workspace_path'.
         root_ws_kind = root_row["workspace_kind"] or "scratch"
         root_ws_path = root_row["workspace_path"]
+        # Priority inheritance: child_priority (caller-supplied) wins;
+        # otherwise use the root's stored priority. The schema default
+        # is 0, so COALESCE ensures we store an int even when the root
+        # has NULL priority (treated as 0 — same column contract as
+        # before this change).
+        root_priority = root_row["priority"] if root_row["priority"] is not None else 0
+        effective_child_priority = (
+            int(child_priority) if child_priority is not None else int(root_priority)
+        )
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -7416,11 +7471,17 @@ def decompose_triage_task(
                 child_ws_path = root_ws_path
             else:
                 child_ws_path = None
+            # Per-child priority override > effective_child_priority (caller
+            # flag/root default). Stored exactly as resolved; no coalesce
+            # at this layer so callers see what they asked for.
+            child_pri = child.get("priority")
+            if not isinstance(child_pri, int):
+                child_pri = effective_child_priority
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, priority, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -7429,6 +7490,7 @@ def decompose_triage_task(
                     child_ws_kind,
                     child_ws_path,
                     tenant,
+                    child_pri,
                     now,
                     (author or "decomposer"),
                 ),
@@ -7510,7 +7572,20 @@ def decompose_triage_task(
     return child_ids
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def archive_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    force: bool = False,
+) -> bool:
+    """Archive a task.
+
+    Refuses with :class:`TaskHasActiveRunError` when a worker run is still
+    in flight, unless ``force=True``. Force reclaims the active run (closes
+    it with ``outcome='reclaimed'``) so cleanup can still race past a stuck
+    worker; without ``force`` we want a worker to always finish or block
+    on its own card before the card is removed.
+    """
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -7520,13 +7595,19 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
-        # If archive happened while a run was still in flight (e.g. user
-        # archived a running task from the dashboard), close that run with
-        # outcome='reclaimed' so attempt history isn't orphaned.
+        active_run = _has_active_run(conn, task_id)
+        if active_run is not None and not force:
+            # Roll back the archive we just did — refuse, don't silently
+            # orphan a worker. Force-mode keeps the archive and reclaims
+            # the run below.
+            raise TaskHasActiveRunError(task_id, active_run)
+        # If archive happened while a run was still in flight (force path,
+        # or the user archived a long-running task from the dashboard), close
+        # that run with outcome='reclaimed' so attempt history isn't orphaned.
         run_id = _end_run(
             conn, task_id,
             outcome="reclaimed", status="reclaimed",
-            summary="task archived with run still active",
+            summary="task archived with run still active" if force else None,
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
     # ``archived`` parents no longer block children, same as ``done``.
@@ -7572,10 +7653,18 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     we explicitly delete from child tables first, then the task row.
     This keeps the operation atomic (single ``write_txn``).
 
+    Refuses with :class:`TaskHasActiveRunError` if a worker run is still
+    in flight. Delete has no force-mode escape hatch — there is no
+    graceful close path; the operator must ``kanban_block`` (kind=capability)
+    the card first so the run lands cleanly before the row goes away.
+
     Returns ``True`` if the task existed and was deleted, ``False``
     if the task was not found.
     """
     with write_txn(conn):
+        active_run = _has_active_run(conn, task_id)
+        if active_run is not None:
+            raise TaskHasActiveRunError(task_id, active_run)
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False

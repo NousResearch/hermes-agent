@@ -162,6 +162,8 @@ class FakeTopicSender:
 
 
 class FakeTopicController:
+    method = "bot_api_private_topic"
+
     def __init__(self, outcomes: list[object] | None = None) -> None:
         self.outcomes = list(outcomes or [])
         self.calls: list[dict[str, str]] = []
@@ -1884,6 +1886,63 @@ async def test_bridge_close_uses_connected_controller_and_replays_idempotently()
     assert first["result"]["source_state"] == "closed"
     assert first["result"] == second["result"]
     assert controller.calls == [{"chat_id": "123456789", "thread_id": "20197"}]
+
+
+@pytest.mark.asyncio
+async def test_bridge_close_reports_mtproto_control_method() -> None:
+    controller = FakeTopicController()
+    controller.method = "mtproto_private_topic"
+    server = BeckyLoopsBridgeServer(
+        config=BeckyLoopsConfig(
+            enabled=True,
+            chat_id="123456789",
+            token="t" * 64,
+            port=0,
+            topic_control="mtproto_private_topic",
+        ),
+        store=FakeStore(),
+        summarizer=FakeSummarizer(),
+        topic_controller=controller,
+    )
+
+    capabilities = await server._method("becky.loops.capabilities", {})
+    assert capabilities["topic_control"] == "mtproto_private_topic"
+
+    response = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.close",
+            "params": {
+                "source_ref": SOURCE_REF,
+                "expected_revision": REVISION,
+                "idempotency_key": IDEMPOTENCY_KEY,
+            },
+        })
+    )
+
+    assert response["result"]["control_method"] == "mtproto_private_topic"
+
+
+@pytest.mark.asyncio
+async def test_bridge_requires_explicit_controller_method_for_mtproto() -> None:
+    controller = SimpleNamespace(is_connected=True, supports_close=True)
+    server = BeckyLoopsBridgeServer(
+        config=BeckyLoopsConfig(
+            enabled=True,
+            chat_id="123456789",
+            token="t" * 64,
+            port=0,
+            topic_control="mtproto_private_topic",
+        ),
+        store=FakeStore(),
+        summarizer=FakeSummarizer(),
+        topic_controller=controller,
+    )
+
+    capabilities = await server._method("becky.loops.capabilities", {})
+
+    assert capabilities["topic_control"] == "unavailable"
 
 
 @pytest.mark.asyncio

@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -148,3 +149,98 @@ async def test_runner_passes_only_a_connected_explicitly_proven_telegram_sender(
         assert sender._adapter is adapter
     else:
         assert sender is None
+
+
+@pytest.mark.asyncio
+async def test_runner_starts_and_stops_proven_mtproto_controller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = BeckyLoopsConfig(
+        enabled=True,
+        chat_id="8837347581",
+        token="t" * 64,
+        port=0,
+        topic_control="mtproto_private_topic",
+    )
+
+    class FakeMtprotoController:
+        method = "mtproto_private_topic"
+        is_connected = True
+        supports_close = True
+
+        def __init__(self) -> None:
+            self.started = False
+            self.stopped = False
+
+        @classmethod
+        def from_environment(cls, *, chat_id: str):
+            assert chat_id == "8837347581"
+            return instance
+
+        async def start(self) -> None:
+            self.started = True
+
+        async def stop(self) -> None:
+            self.stopped = True
+
+    instance = FakeMtprotoController()
+    captured: list[dict] = []
+
+    async def fake_start(**kwargs):
+        captured.append(kwargs)
+        return "server"
+
+    async def fake_stop(server) -> None:
+        assert server == "server"
+
+    monkeypatch.setattr(becky_loops, "load_becky_loops_config", lambda: config)
+    monkeypatch.setattr(becky_loops, "start_becky_loops_bridge", fake_start)
+    monkeypatch.setattr(becky_loops, "stop_becky_loops_bridge", fake_stop)
+    monkeypatch.setattr(
+        "gateway.telegram_mtproto.MTProtoPrivateTopicController",
+        FakeMtprotoController,
+    )
+    runner = object.__new__(GatewayRunner)
+    runner._session_db = SimpleNamespace(_db=EmptyDB())
+    runner._becky_loops_bridge = None
+    runner._becky_loops_topic_controller = None
+    runner.adapters = {}
+
+    await runner._start_becky_loops_bridge()
+
+    assert instance.started is True
+    assert captured[0]["topic_controller"] is instance
+    assert runner._becky_loops_topic_controller is instance
+
+    await runner._stop_becky_loops_bridge()
+
+    assert instance.stopped is True
+    assert runner._becky_loops_topic_controller is None
+
+
+@pytest.mark.asyncio
+async def test_runner_stops_mtproto_controller_when_bridge_stop_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeController:
+        stopped = False
+
+        async def stop(self) -> None:
+            self.stopped = True
+
+    controller = FakeController()
+
+    async def cancelled_stop(server) -> None:
+        assert server == "server"
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(becky_loops, "stop_becky_loops_bridge", cancelled_stop)
+    runner = object.__new__(GatewayRunner)
+    runner._becky_loops_bridge = "server"
+    runner._becky_loops_topic_controller = controller
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner._stop_becky_loops_bridge()
+
+    assert controller.stopped is True
+    assert runner._becky_loops_topic_controller is None

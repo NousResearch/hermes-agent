@@ -33,6 +33,7 @@ from gateway.becky_loop_reply import (
     LoopReplyGenerator,
     ReplyGenerator,
 )
+from gateway.telegram_mtproto import MtprotoTopicControlError
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.http11 import Headers, Request, Response
 
@@ -201,6 +202,8 @@ class TelegramTopicSender:
 
 class TelegramTopicController:
     """Small, Bot API-only seam for closing a proven Telegram topic."""
+
+    method = "bot_api_private_topic"
 
     def __init__(self, adapter: Any) -> None:
         self._adapter = adapter
@@ -609,11 +612,7 @@ class BeckyLoopsBridgeServer:
                 "schema_version": "2",
                 "summary_schema_version": "1",
                 "methods": _METHODS,
-                "topic_control": (
-                    "bot_api_private_topic"
-                    if self._topic_control_available()
-                    else "unavailable"
-                ),
+                "topic_control": self._topic_control_method(),
                 "topic_reply": (
                     "bot_api_private_topic"
                     if self._topic_reply_available()
@@ -770,7 +769,8 @@ class BeckyLoopsBridgeServer:
 
     def _topic_control_available(self) -> bool:
         if (
-            self.config.topic_control != "bot_api_private_topic"
+            self.config.topic_control
+            not in {"bot_api_private_topic", "mtproto_private_topic"}
             or self.topic_controller is None
         ):
             return False
@@ -782,7 +782,15 @@ class BeckyLoopsBridgeServer:
                 return False
             if not bool(state):
                 return False
-        return True
+        return getattr(self.topic_controller, "method", None) == self.config.topic_control
+
+    def _topic_control_method(self) -> str:
+        if not self._topic_control_available():
+            return "unavailable"
+        method = getattr(self.topic_controller, "method", None)
+        if method != self.config.topic_control:
+            return "unavailable"
+        return method
 
     async def _close_topic(
         self, *, source_ref: str, expected_revision: str, idempotency_key: str
@@ -809,6 +817,13 @@ class BeckyLoopsBridgeServer:
                     )
                 except _TopicControlFailure as failure:
                     raise _RemoteFailure(failure.code) from None
+                except MtprotoTopicControlError as failure:
+                    code = (
+                        "topic_control_unavailable"
+                        if failure.code == "topic_control_forbidden"
+                        else failure.code
+                    )
+                    raise _RemoteFailure(code) from None
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -817,11 +832,17 @@ class BeckyLoopsBridgeServer:
                 raise _RemoteFailure("topic_state_read_failed")
             if closed_at.tzinfo is None:
                 closed_at = closed_at.replace(tzinfo=UTC)
+            control_method = getattr(self.topic_controller, "method", None)
+            if control_method not in {
+                "bot_api_private_topic",
+                "mtproto_private_topic",
+            }:
+                control_method = self.config.topic_control
             result = {
                 "source_ref": source_ref,
                 "source_state": "closed",
                 "closed_at": closed_at.isoformat(),
-                "control_method": "bot_api_private_topic",
+                "control_method": control_method,
                 "idempotency_key": idempotency_key,
             }
             self._close_results[idempotency_key] = (
@@ -1338,10 +1359,27 @@ def load_becky_loops_config(config_path: Path | None = None) -> BeckyLoopsConfig
         and _valid_telegram_id(chat_id)
         and _has_configured_loop_topic(raw, section, chat_id)
     )
+    raw_requested_control = section.get("proven_topic_control")
+    requested_control: str | None
+    if raw_requested_control is True:
+        # Backward-compatible configuration for the original Bot API proof.
+        requested_control = "bot_api_private_topic"
+    elif isinstance(raw_requested_control, str) and raw_requested_control in {
+        "bot_api_private_topic",
+        "mtproto_private_topic",
+    }:
+        requested_control = raw_requested_control
+    else:
+        requested_control = None
+    mtproto_credentials = (
+        requested_control != "mtproto_private_topic"
+        or _mtproto_credentials_configured()
+    )
     proven_topic_control = (
-        section.get("proven_topic_control") is True
+        requested_control is not None
         and os.getenv("HERMES_BECKY_LOOPS_PROVEN_TOPIC_CONTROL", "") == "1"
         and bool(token)
+        and bool(mtproto_credentials)
         and _valid_telegram_id(chat_id)
         and _has_configured_loop_topic(raw, section, chat_id)
     )
@@ -1350,18 +1388,29 @@ def load_becky_loops_config(config_path: Path | None = None) -> BeckyLoopsConfig
         chat_id=chat_id,
         token=token,
         port=port,
-        # The Bot API control is advertised only after the separate proof
-        # flag and same-chat topic binding are both present. GatewayRunner
-        # additionally checks the live adapter and method before injection.
-        topic_control=(
-            "bot_api_private_topic" if proven_topic_control else "unavailable"
-        ),
+        # Topic control is advertised only after the separate proof flag,
+        # same-chat topic binding, and (for MTProto) credentials are present.
+        # GatewayRunner additionally checks the live controller before
+        # injection.
+        topic_control=(requested_control if proven_topic_control else "unavailable"),
         # Topic sends require the profile proof, the gateway-start environment
         # proof, a bridge token, and a configured Telegram chat/topic. The
         # connected adapter is checked separately by GatewayRunner before it
         # is injected into the bridge.
         topic_reply=("bot_api_private_topic" if proven_topic_reply else "unavailable"),
     )
+
+
+def _mtproto_credentials_configured() -> bool:
+    raw_api_id = os.getenv("TELEGRAM_API_ID", "").strip()
+    api_hash = os.getenv("TELEGRAM_API_HASH", "").strip()
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not raw_api_id or not api_hash or not bot_token:
+        return False
+    try:
+        return int(raw_api_id) > 0 and bool(re.fullmatch(r"[0-9a-fA-F]{32}", api_hash))
+    except ValueError:
+        return False
 
 
 def _valid_telegram_id(value: Any) -> bool:

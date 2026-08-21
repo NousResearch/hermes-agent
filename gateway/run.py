@@ -2931,6 +2931,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # the gateway is running and is always stopped before adapter teardown.
         # Keeping the handle on the runner makes restart/stop idempotent.
         self._becky_loops_bridge = None
+        self._becky_loops_topic_controller = None
 
         # Opportunistic state.db maintenance: prune ended sessions older
         # than sessions.retention_days + optional VACUUM. Tracks last-run
@@ -3001,6 +3002,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _start_becky_loops_bridge(self) -> None:
         """Start the opt-in loopback bridge over the gateway's read-only DB."""
+        mtproto_controller = None
         try:
             from gateway.becky_loops import (
                 TelegramTopicController,
@@ -3008,6 +3010,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 load_becky_loops_config,
                 start_becky_loops_bridge,
             )
+            from gateway.telegram_mtproto import MTProtoPrivateTopicController
 
             config = load_becky_loops_config()
             db = getattr(self._session_db, "_db", None)
@@ -3023,13 +3026,58 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 telegram_adapter = self.adapters.get(Platform.TELEGRAM)
                 if telegram_adapter is not None:
                     topic_controller = TelegramTopicController(telegram_adapter)
+            elif config.topic_control == "mtproto_private_topic":
+                mtproto_controller = MTProtoPrivateTopicController.from_environment(
+                    chat_id=config.chat_id
+                )
+                if mtproto_controller is not None:
+                    try:
+                        await mtproto_controller.start()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.error(
+                            "Becky MTProto topic controller startup failed",
+                            exc_info=True,
+                        )
+                        mtproto_controller = None
+                    else:
+                        if (
+                            bool(getattr(mtproto_controller, "is_connected", False))
+                            and bool(getattr(mtproto_controller, "supports_close", False))
+                        ):
+                            topic_controller = mtproto_controller
+                            self._becky_loops_topic_controller = mtproto_controller
+                        else:
+                            await mtproto_controller.stop()
+                            mtproto_controller = None
             self._becky_loops_bridge = await start_becky_loops_bridge(
                 config=config,
                 db=db,
                 topic_sender=topic_sender,
                 topic_controller=topic_controller,
             )
+            if self._becky_loops_bridge is None and mtproto_controller is not None:
+                await mtproto_controller.stop()
+                self._becky_loops_topic_controller = None
+        except asyncio.CancelledError:
+            if mtproto_controller is not None:
+                try:
+                    await asyncio.shield(mtproto_controller.stop())
+                except BaseException:
+                    pass
+                self._becky_loops_topic_controller = None
+            raise
         except Exception:
+            if mtproto_controller is not None:
+                try:
+                    await mtproto_controller.stop()
+                except Exception:
+                    logger.debug(
+                        "Becky MTProto topic controller cleanup failed",
+                        exc_info=True,
+                    )
+                self._becky_loops_topic_controller = None
             # The bridge is optional; never prevent Telegram or other adapters
             # from starting when its local listener is unavailable.
             logger.error("Becky loop bridge startup failed", exc_info=True)
@@ -3037,14 +3085,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _stop_becky_loops_bridge(self) -> None:
         """Stop the optional bridge before closing Hermes session state."""
         bridge, self._becky_loops_bridge = self._becky_loops_bridge, None
-        if bridge is None:
-            return
-        try:
-            from gateway.becky_loops import stop_becky_loops_bridge
+        mtproto_controller, self._becky_loops_topic_controller = (
+            self._becky_loops_topic_controller,
+            None,
+        )
+        if bridge is not None:
+            try:
+                from gateway.becky_loops import stop_becky_loops_bridge
 
-            await stop_becky_loops_bridge(bridge)
-        except Exception:
-            logger.debug("Becky loop bridge shutdown failed", exc_info=True)
+                await stop_becky_loops_bridge(bridge)
+            except asyncio.CancelledError:
+                if mtproto_controller is not None:
+                    try:
+                        await asyncio.shield(mtproto_controller.stop())
+                    except BaseException:
+                        pass
+                raise
+            except Exception:
+                logger.debug("Becky loop bridge shutdown failed", exc_info=True)
+        if mtproto_controller is not None:
+            try:
+                await mtproto_controller.stop()
+            except Exception:
+                logger.debug(
+                    "Becky MTProto topic controller shutdown failed",
+                    exc_info=True,
+                )
 
 
     def _wire_teams_pipeline_runtime(self) -> None:

@@ -207,6 +207,65 @@ class TestCodexBuildKwargs:
         )
         assert "prompt_cache_retention" not in kw
 
+    def test_azure_foundry_build_kwargs_keeps_reasoning_id(self, transport):
+        messages = [
+            {"role": "system", "content": "You are Hermes."},
+            {
+                "role": "assistant",
+                "content": "thinking",
+                "codex_reasoning_items": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_123",
+                        "encrypted_content": "enc_blob",
+                        "summary": [{"type": "summary_text", "text": "brief"}],
+                        "status": "completed",
+                        "response_id": "resp_123",
+                    }
+                ],
+            },
+        ]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+            base_url="https://paperclip.services.ai.azure.com/models",
+        )
+
+        reasoning_item = next(item for item in kw["input"] if item.get("type") == "reasoning")
+        assert reasoning_item == {
+            "type": "reasoning",
+            "id": "rs_123",
+            "encrypted_content": "enc_blob",
+            "summary": [{"type": "summary_text", "text": "brief"}],
+        }
+
+    def test_azure_foundry_preflight_keeps_reasoning_id(self, transport):
+        kw = {
+            "model": "gpt-5.5",
+            "instructions": "You are Hermes.",
+            "input": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_123",
+                    "encrypted_content": "enc_blob",
+                    "summary": [{"type": "summary_text", "text": "brief"}],
+                    "status": "completed",
+                    "response_id": "resp_123",
+                }
+            ],
+            "store": False,
+        }
+
+        preflight = transport.preflight_kwargs(kw, is_azure_foundry=True)
+        assert preflight["input"][0] == {
+            "type": "reasoning",
+            "id": "rs_123",
+            "encrypted_content": "enc_blob",
+            "summary": [{"type": "summary_text", "text": "brief"}],
+        }
+
     def test_xai_responses_sends_cache_key_via_extra_body(self, transport):
         """xAI's Responses API documents ``prompt_cache_key`` as the
         body-level cache-routing key (the ``x-grok-conv-id`` header is
@@ -1337,3 +1396,236 @@ class TestPreflightSlashEnumStrip:
         assert params["properties"]["model_id"].get("enum") == [
             "Qwen/Qwen3.5-0.8B", "plain-id"
         ]
+
+
+class TestAzureFoundryWireShape:
+    """Azure AI Foundry Responses wire-shape normalization (#63257).
+
+    Foundry re-validates replayed items against a stricter schema than
+    OpenAI/Codex: encrypted ``reasoning`` items must keep their ``id``, and
+    assistant ``output_text`` parts must carry an ``annotations`` array.
+    These tests pin the *behaviour contract* — which items get which
+    Foundry-only fields, and which endpoints count as Foundry — rather than
+    freezing a payload snapshot.
+    """
+
+    @staticmethod
+    def _reasoning_history():
+        return [
+            {
+                "role": "assistant",
+                "content": "ok",
+                "codex_reasoning_items": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "encrypted_content": "enc",
+                        "summary": [],
+                    }
+                ],
+            },
+            {"role": "user", "content": "next"},
+        ]
+
+    @staticmethod
+    def _reasoning_item(kwargs):
+        items = [
+            item
+            for item in kwargs["input"]
+            if isinstance(item, dict) and item.get("type") == "reasoning"
+        ]
+        assert items, "expected a replayed reasoning item on the wire"
+        return items[0]
+
+    # ── Detection: provider id and host must agree ────────────────────
+
+    @pytest.mark.parametrize(
+        "base_url,provider",
+        [
+            # Host-detected, both Foundry spellings.
+            ("https://r.services.ai.azure.com/openai/v1", None),
+            ("https://r.openai.azure.com/openai/v1", None),
+            # Provider-detected: a registered azure-foundry entry behind a
+            # gateway/proxy URL is still Foundry and still needs the id.
+            # Regression guard for the two-predicate drift where the
+            # post-tool suppression saw Foundry but the wire shape did not.
+            ("https://gateway.corp.example/v1", "azure-foundry"),
+            ("", "azure-foundry"),
+        ],
+    )
+    def test_reasoning_id_preserved_for_foundry(self, transport, base_url, provider):
+        kwargs = transport.build_kwargs(
+            "gpt-5.5",
+            self._reasoning_history(),
+            [],
+            base_url=base_url,
+            provider=provider,
+        )
+        assert self._reasoning_item(kwargs)["id"] == "rs_1"
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://api.openai.com/v1",
+            "https://chatgpt.com/backend-api/codex",
+            # Substring look-alikes must NOT be treated as Foundry: with
+            # store=False a non-Foundry surface 404s on a replayed item id.
+            "https://evil.com/services.ai.azure.com/v1",
+            "https://openai.azure.com.evil.net/v1",
+        ],
+    )
+    def test_reasoning_id_stripped_for_non_foundry(self, transport, base_url):
+        kwargs = transport.build_kwargs(
+            "gpt-5.5", self._reasoning_history(), [], base_url=base_url
+        )
+        assert "id" not in self._reasoning_item(kwargs)
+
+    @pytest.mark.parametrize(
+        "url,expected",
+        [
+            ("https://r.services.ai.azure.com/openai/v1", True),
+            ("https://r.openai.azure.com/openai/v1", True),
+            ("https://R.OPENAI.AZURE.COM/openai/v1", True),
+            ("https://api.openai.com/v1", False),
+            # Substring false-positive class — the reason this is
+            # hostname-aware rather than ``domain in base_url``.
+            ("https://evil.com/openai.azure.com/v1", False),
+            ("https://openai.azure.com.evil.net/v1", False),
+            ("", False),
+            (None, False),
+        ],
+    )
+    def test_host_detection(self, url, expected):
+        from agent.transports.codex import _is_azure_foundry_base_url
+
+        assert _is_azure_foundry_base_url(url) is expected
+
+    def test_foundry_predicates_agree(self):
+        """Suppression and wire shape must key off the same predicate."""
+        from agent.transports.codex import (
+            _is_azure_foundry_base_url,
+            _is_azure_foundry_responses,
+        )
+
+        params = {"base_url": "https://gateway.corp.example/v1",
+                  "provider": "azure-foundry"}
+        assert _is_azure_foundry_responses(params) is True
+        # The URL-only helper is intentionally narrower; the transport must
+        # use the provider-aware predicate for BOTH decisions.
+        assert _is_azure_foundry_base_url(params["base_url"]) is False
+
+    # ── annotations: output_text only ─────────────────────────────────
+
+    def test_annotations_only_on_output_text_parts(self):
+        """``annotations`` belongs to text parts, never to images.
+
+        Stamping it on an ``input_image`` part sends a shape Azure's schema
+        does not define. Covers both the converter and the preflight.
+        """
+        from agent.codex_responses_adapter import (
+            _chat_messages_to_responses_input,
+            _preflight_codex_input_items,
+        )
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    {"type": "image_url",
+                     "image_url": "https://example.com/a.png"},
+                ],
+            }
+        ]
+
+        converted = _chat_messages_to_responses_input(
+            messages, is_azure_foundry=True
+        )
+        preflighted = _preflight_codex_input_items(
+            converted, is_azure_foundry=True
+        )
+
+        for stage, items in (("convert", converted), ("preflight", preflighted)):
+            parts = items[0]["content"]
+            by_type = {part["type"]: part for part in parts}
+            assert "annotations" in by_type["output_text"], stage
+            assert "annotations" not in by_type["input_image"], stage
+
+    def test_annotations_absent_for_non_foundry(self):
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+        items = _chat_messages_to_responses_input(
+            [{"role": "assistant",
+              "content": [{"type": "text", "text": "look"}]}],
+            is_azure_foundry=False,
+        )
+        assert "annotations" not in items[0]["content"][0]
+
+    # ── Foundry + Harmony sanitization compose ────────────────────────
+
+    def test_foundry_and_harmony_sanitization_compose(self):
+        """Both merged features must survive the same request (#63257).
+
+        The Azure fix (keep reasoning ``id``, add ``annotations``) and the
+        upstream Harmony defang (neutralize reserved wire tokens) touch the
+        same preflight branches; a merge that drops either one still passes
+        the single-flag tests.
+        """
+        from agent.codex_responses_adapter import (
+            _chat_messages_to_responses_input,
+            _preflight_codex_input_items,
+        )
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "before <|end|> after"}],
+                "codex_reasoning_items": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_combined",
+                        "encrypted_content": "enc",
+                        "summary": [
+                            {"type": "summary_text", "text": "<|start|>plan"}
+                        ],
+                    }
+                ],
+            }
+        ]
+
+        items = _preflight_codex_input_items(
+            _chat_messages_to_responses_input(messages, is_azure_foundry=True),
+            is_azure_foundry=True,
+            sanitize_harmony_tokens=True,
+        )
+
+        reasoning = next(i for i in items if i.get("type") == "reasoning")
+        # Assistant list-content replays as a role item (``{"role":
+        # "assistant", "content": [...]}``), not a ``type: message`` item —
+        # both shapes must get the Foundry/Harmony treatment.
+        message = next(
+            i for i in items
+            if i.get("role") == "assistant" and isinstance(i.get("content"), list)
+        )
+        text_part = message["content"][0]
+
+        # Azure half: id kept, annotations present.
+        assert reasoning["id"] == "rs_combined"
+        assert text_part["annotations"] == []
+        # Harmony half: reserved tokens defanged in BOTH the reasoning
+        # summary and the assistant text.
+        assert "<|start|>" not in reasoning["summary"][0]["text"]
+        assert "\uff5c" in reasoning["summary"][0]["text"]
+        assert "<|end|>" not in text_part["text"]
+        assert "\uff5c" in text_part["text"]
+
+    def test_harmony_sanitization_still_works_without_foundry(self):
+        from agent.codex_responses_adapter import _preflight_codex_input_items
+
+        items = _preflight_codex_input_items(
+            [{"role": "user", "content": "hi <|call|> there"}],
+            is_azure_foundry=False,
+            sanitize_harmony_tokens=True,
+        )
+        assert "<|call|>" not in items[0]["content"]
+        assert "\uff5c" in items[0]["content"]

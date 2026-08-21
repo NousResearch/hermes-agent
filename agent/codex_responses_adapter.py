@@ -151,6 +151,21 @@ def _neutralize_harmony_structure(value: Any) -> Any:
 # Multimodal content helpers
 # ---------------------------------------------------------------------------
 
+def _apply_azure_output_text_annotations(parts: List[Dict[str, Any]]) -> None:
+    """Add the ``annotations`` field Azure AI Foundry requires on output text.
+
+    Azure's Responses schema validates replayed assistant ``output_text``
+    parts against the *output* message shape, which carries a mandatory
+    ``annotations`` array; omitting it is rejected. The field belongs to
+    text parts only — ``input_image`` parts have no ``annotations`` member
+    in the schema, so stamping one there sends a part shape Azure never
+    documented. Scope the default strictly to ``output_text`` (#63257).
+    """
+    for part in parts:
+        if isinstance(part, dict) and part.get("type") == "output_text":
+            part.setdefault("annotations", [])
+
+
 def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> List[Dict[str, Any]]:
     """Convert chat-style multimodal content to Responses API input parts.
 
@@ -412,6 +427,7 @@ def _chat_messages_to_responses_input(
     *,
     is_xai_responses: bool = False,
     is_github_responses: bool = False,
+    is_azure_foundry: bool = False,
     replay_encrypted_reasoning: bool = True,
     current_issuer_kind: Optional[str] = None,
     native_compaction_eligible: bool = False,
@@ -515,6 +531,7 @@ def _chat_messages_to_responses_input(
                 if isinstance(codex_reasoning, list):
                     for ri in codex_reasoning:
                         if isinstance(ri, dict) and ri.get("encrypted_content"):
+                            encrypted = ri.get("encrypted_content")
                             item_id = ri.get("id")
                             if item_id and item_id in seen_item_ids:
                                 continue
@@ -555,17 +572,37 @@ def _chat_messages_to_responses_input(
                                     )
                                     _CROSS_ISSUER_WARN_EMITTED = True
                                 continue
-                            # Strip the "id" field — with store=False the
-                            # Responses API cannot look up items by ID and
-                            # returns 404.  The encrypted_content blob is
-                            # self-contained for reasoning chain continuity.
-                            # Also strip the internal "_issuer_kind" stamp;
-                            # it is a Hermes-side metadata key and not part
-                            # of the Responses API schema.
-                            replay_item = {
-                                k: v for k, v in ri.items()
-                                if k not in ("id", "_issuer_kind")
-                            }
+                            # Azure AI Foundry re-validates replayed reasoning
+                            # items against its stricter wire schema and
+                            # requires the original ``id`` to be present.
+                            # Preserve only the fields it accepts; other
+                            # Responses surfaces reject or ignore the same
+                            # extras, so keep the narrower payload Azure-only.
+                            if is_azure_foundry:
+                                replay_item = {
+                                    "type": "reasoning",
+                                    "encrypted_content": encrypted,
+                                    "summary": (
+                                        ri.get("summary")
+                                        if isinstance(ri.get("summary"), list)
+                                        else []
+                                    ),
+                                }
+                                if isinstance(item_id, str) and item_id:
+                                    replay_item["id"] = item_id
+                            else:
+                                # Strip the "id" field — with store=False the
+                                # OpenAI/Codex Responses API cannot look up
+                                # items by ID and returns 404. The
+                                # encrypted_content blob is self-contained for
+                                # reasoning chain continuity. Also strip the
+                                # internal "_issuer_kind" stamp; it is a
+                                # Hermes-side metadata key and not part of the
+                                # Responses API schema.
+                                replay_item = {
+                                    k: v for k, v in ri.items()
+                                    if k not in ("id", "_issuer_kind")
+                                }
                             items.append(replay_item)
                             if item_id:
                                 seen_item_ids.add(item_id)
@@ -604,6 +641,9 @@ def _chat_messages_to_responses_input(
                         if not normalized_content_parts:
                             continue
 
+                        if is_azure_foundry:
+                            _apply_azure_output_text_annotations(normalized_content_parts)
+
                         replay_item = {
                             "type": "message",
                             "role": "assistant",
@@ -628,6 +668,8 @@ def _chat_messages_to_responses_input(
                 if replayed_message_items > 0:
                     pass
                 elif content_parts:
+                    if is_azure_foundry:
+                        _apply_azure_output_text_annotations(content_parts)
                     items.append({"role": "assistant", "content": content_parts})
                 elif content_text.strip():
                     items.append({"role": "assistant", "content": content_text})
@@ -750,6 +792,7 @@ def _preflight_codex_input_items(
     raw_items: Any,
     *,
     is_github_responses: bool = False,
+    is_azure_foundry: bool = False,
     sanitize_harmony_tokens: bool = False,
 ) -> List[Dict[str, Any]]:
     if not isinstance(raw_items, list):
@@ -855,10 +898,14 @@ def _preflight_codex_input_items(
                     "type": "reasoning",
                     "encrypted_content": encrypted,
                 }
-                # Do NOT include the "id" in the outgoing item — with
-                # store=False (our default) the API tries to resolve the
-                # id server-side and returns 404.  The id is still used
-                # above for local deduplication via seen_ids.
+                # Do NOT include the "id" in the outgoing item for general
+                # Responses surfaces — with store=False (our default) OpenAI/
+                # Codex tries to resolve the id server-side and returns 404.
+                # Azure AI Foundry expects the replayed reasoning id, so
+                # preserve it only there. The id is still used above for local
+                # deduplication via seen_ids.
+                if is_azure_foundry and isinstance(item_id, str) and item_id:
+                    reasoning_item["id"] = item_id
                 summary = item.get("summary")
                 if isinstance(summary, list):
                     reasoning_item["summary"] = (
@@ -906,6 +953,8 @@ def _preflight_codex_input_items(
                 if not isinstance(text, str):
                     text = str(text)
                 normalized_content.append({"type": "output_text", "text": sanitize_text(text)})
+            if is_azure_foundry:
+                _apply_azure_output_text_annotations(normalized_content)
             if not normalized_content:
                 raise ValueError(f"Codex Responses input[{idx}] message item must contain at least one text part.")
             normalized_item: Dict[str, Any] = {
@@ -975,6 +1024,8 @@ def _preflight_codex_input_items(
                         raise ValueError(
                             f"Codex Responses input[{idx}].content[{part_idx}] has unsupported type {part.get('type')!r}."
                         )
+                if is_azure_foundry and role == "assistant":
+                    _apply_azure_output_text_annotations(validated)
                 normalized.append({"role": role, "content": validated})
                 continue
             if not isinstance(content, str):
@@ -995,6 +1046,7 @@ def _preflight_codex_api_kwargs(
     *,
     allow_stream: bool = False,
     is_github_responses: bool = False,
+    is_azure_foundry: bool = False,
     sanitize_harmony_tokens: bool = False,
 ) -> Dict[str, Any]:
     if not isinstance(api_kwargs, dict):
@@ -1022,6 +1074,7 @@ def _preflight_codex_api_kwargs(
     normalized_input = _preflight_codex_input_items(
         api_kwargs.get("input"),
         is_github_responses=is_github_responses,
+        is_azure_foundry=is_azure_foundry,
         sanitize_harmony_tokens=sanitize_harmony_tokens,
     )
 

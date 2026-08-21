@@ -2931,6 +2931,7 @@ def run_conversation(
                         api_kwargs,
                         allow_stream=False,
                         is_github_responses=agent._is_copilot_url(),
+                        is_azure_foundry=agent._is_azure_foundry_url(),
                         sanitize_harmony_tokens=agent._is_codex_backend(),
                     )
                 # Copilot x-initiator: the first API call of a user turn is
@@ -3116,6 +3117,7 @@ def run_conversation(
                             next_api_kwargs,
                             allow_stream=False,
                             is_github_responses=agent._is_copilot_url(),
+                            is_azure_foundry=agent._is_azure_foundry_url(),
                             sanitize_harmony_tokens=agent._is_codex_backend(),
                         )
                     if _use_streaming:

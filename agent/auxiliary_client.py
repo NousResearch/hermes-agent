@@ -1515,6 +1515,10 @@ class _CodexCompletionsAdapter:
         # build_kwargs, so they need the same guard applied independently.
         _host_for_input = str(getattr(self._client, "base_url", "") or "")
         _is_github_for_input = base_url_host_matches(_host_for_input, "githubcopilot.com")
+        _is_azure_foundry_for_input = (
+            base_url_host_matches(_host_for_input, "services.ai.azure.com")
+            or base_url_host_matches(_host_for_input, "openai.azure.com")
+        )
         # Auxiliary calls never send ``context_management`` (native
         # compaction is a main-turn feature), so they must never replay a
         # compaction checkpoint from the replayed history nor let one
@@ -1523,6 +1527,7 @@ class _CodexCompletionsAdapter:
         input_items = _chat_messages_to_responses_input(
             replay_messages,
             is_github_responses=_is_github_for_input,
+            is_azure_foundry=_is_azure_foundry_for_input,
             native_compaction_eligible=False,
         )
 

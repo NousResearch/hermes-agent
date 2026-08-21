@@ -36,6 +36,25 @@ from agent.reasoning_effort import (
 )
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
+from utils import base_url_host_matches
+
+
+def _is_azure_foundry_base_url(base_url: Optional[str]) -> bool:
+    """Return True when base_url targets an Azure AI Foundry endpoint.
+
+    Hostname-aware matching, so a relay/proxy URL carrying an Azure domain
+    only in its path or as a suffix (``https://evil.com/openai.azure.com/v1``,
+    ``https://openai.azure.com.evil.net/v1``) is not misclassified.
+
+    URL test only — ``_is_azure_foundry_responses`` is the predicate the
+    transport actually uses, since it also honours an explicit
+    ``provider: azure-foundry`` config entry.
+    """
+    url = str(base_url or "")
+    return (
+        base_url_host_matches(url, "services.ai.azure.com")
+        or base_url_host_matches(url, "openai.azure.com")
+    )
 
 
 def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
@@ -244,16 +263,21 @@ def _is_azure_foundry_responses(params: Dict[str, Any]) -> bool:
     substring test, so a path or query segment carrying the Foundry domain
     (``https://proxy.example.com/.services.ai.azure.com/v1``) is not
     misclassified as Foundry.
-    """
-    from utils import base_url_host_matches
 
+    This is the single Foundry predicate for the transport: both the
+    post-tool reasoning suppression and the Foundry wire-shape
+    normalization (reasoning ``id`` preservation, ``annotations`` on
+    assistant ``output_text``) key off it. They previously used two
+    different tests — provider-or-host here, host-only for the wire shape —
+    so a ``provider: azure-foundry`` entry pointed at a gateway/proxy URL
+    got the suppression but not the wire shape, and Foundry rejected the
+    replayed reasoning item for a missing ``id`` (#63257).
+    """
     provider = str(params.get("provider") or "").strip().lower()
     if provider == "azure-foundry":
         return True
 
-    return base_url_host_matches(
-        str(params.get("base_url") or ""), "services.ai.azure.com"
-    )
+    return _is_azure_foundry_base_url(params.get("base_url"))
 
 
 def _is_post_tool_replay(messages: Optional[List[Dict[str, Any]]]) -> bool:
@@ -377,6 +401,7 @@ class ResponsesApiTransport(ProviderTransport):
             messages,
             is_xai_responses=kwargs.get("is_xai_responses") is True,
             is_github_responses=kwargs.get("is_github_responses") is True,
+            is_azure_foundry=_is_azure_foundry_responses(kwargs),
             replay_encrypted_reasoning=bool(
                 kwargs.get("replay_encrypted_reasoning", True)
             ),
@@ -445,10 +470,11 @@ class ResponsesApiTransport(ProviderTransport):
         is_github_responses = params.get("is_github_responses") is True
         is_codex_backend = params.get("is_codex_backend") is True
         is_xai_responses = params.get("is_xai_responses") is True
+        is_azure_foundry = _is_azure_foundry_responses(params)
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
         )
-        if replay_encrypted_reasoning and _is_azure_foundry_responses(params):
+        if replay_encrypted_reasoning and is_azure_foundry:
             # Microsoft Foundry accepts the initial Responses function-call
             # request and ordinary (non-tool) multi-turn continuity, but
             # rejects the post-tool follow-up payload that carries prior
@@ -574,6 +600,7 @@ class ResponsesApiTransport(ProviderTransport):
                 payload_messages,
                 is_xai_responses=is_xai_responses,
                 is_github_responses=is_github_responses,
+                is_azure_foundry=is_azure_foundry,
                 replay_encrypted_reasoning=replay_encrypted_reasoning,
                 current_issuer_kind=issuer_kind,
                 native_compaction_eligible=native_compaction_active,
@@ -851,6 +878,7 @@ class ResponsesApiTransport(ProviderTransport):
         *,
         allow_stream: bool = False,
         is_github_responses: bool = False,
+        is_azure_foundry: bool = False,
         sanitize_harmony_tokens: bool = False,
     ) -> dict:
         """Validate and sanitize Codex API kwargs before the call.
@@ -865,6 +893,7 @@ class ResponsesApiTransport(ProviderTransport):
             api_kwargs,
             allow_stream=allow_stream,
             is_github_responses=is_github_responses,
+            is_azure_foundry=is_azure_foundry,
             sanitize_harmony_tokens=sanitize_harmony_tokens,
         )
         if "prompt_cache_key" in normalized:

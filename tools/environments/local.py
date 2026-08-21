@@ -23,6 +23,68 @@ _IS_WINDOWS = platform.system() == "Windows"
 logger = logging.getLogger(__name__)
 
 
+_MIN_LOCAL_MEMORY_MAX_MB = 64
+
+
+def _configured_local_memory_max_bytes() -> int | None:
+    """Return the opt-in per-command local memory cap in bytes.
+
+    ``terminal.local_memory_max_mb`` is bridged into
+    ``TERMINAL_LOCAL_MEMORY_MAX_MB`` by the config layer so child processes and
+    background executors see the same setting. Empty/0 disables the foreground
+    cap. Invalid values are ignored with a warning instead of breaking terminal
+    startup.
+    """
+    raw = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
+    if not raw:
+        return None
+    try:
+        mb = int(raw)
+    except ValueError:
+        logger.warning(
+            "Ignoring invalid TERMINAL_LOCAL_MEMORY_MAX_MB=%r; expected an integer MiB value.",
+            raw,
+        )
+        return None
+    if mb <= 0:
+        return None
+    if mb < _MIN_LOCAL_MEMORY_MAX_MB:
+        logger.warning(
+            "Ignoring TERMINAL_LOCAL_MEMORY_MAX_MB=%r; minimum is %d MiB.",
+            raw,
+            _MIN_LOCAL_MEMORY_MAX_MB,
+        )
+        return None
+    return mb * 1024 * 1024
+
+
+def _local_memory_limit_preexec():
+    """Build a POSIX preexec_fn that caps foreground local shell memory.
+
+    The limit applies to the bash wrapper and descendants via ``RLIMIT_AS``.
+    This is a best-effort local equivalent of Claude Code's opt-in Bash memory
+    cgroup guard; it is intentionally disabled on Windows where ``resource`` is
+    unavailable.
+    """
+    if _IS_WINDOWS:
+        return None
+    memory_max = _configured_local_memory_max_bytes()
+    if memory_max is None:
+        return None
+
+    def _apply_limit() -> None:
+        try:
+            import resource
+
+            resource.setrlimit(resource.RLIMIT_AS, (memory_max, memory_max))
+        except Exception:
+            # Avoid logging from preexec_fn: after fork in a multi-threaded
+            # process, taking locks can deadlock the child before exec.
+            pass
+
+    return _apply_limit
+
+
 def _msys_to_windows_path(cwd: str) -> str:
     """Translate a Git Bash / MSYS-style POSIX path (``/c/Users/x``) to the
     native Windows form (``C:\\Users\\x``) so ``os.path.isdir`` and
@@ -1822,6 +1884,9 @@ class LocalEnvironment(BaseEnvironment):
         _popen_cwd = self.cwd
 
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+        memory_limit_preexec = _local_memory_limit_preexec()
+        if memory_limit_preexec is not None:
+            _popen_kwargs["preexec_fn"] = memory_limit_preexec
 
         proc = subprocess.Popen(
             args,

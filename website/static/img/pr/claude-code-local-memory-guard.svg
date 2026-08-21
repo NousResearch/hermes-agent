@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200" width="1200" height="1200" role="img" aria-labelledby="title desc">
+  <title id="title">Local Terminal Memory Guard</title>
+  <desc id="desc">A mission-patch style infographic for a Hermes Agent PR adding an opt-in local terminal memory cap.</desc>
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="45%" r="70%">
+      <stop offset="0" stop-color="#151922"/>
+      <stop offset="1" stop-color="#050608"/>
+    </radialGradient>
+    <linearGradient id="blue" x1="0" x2="1">
+      <stop offset="0" stop-color="#6ad8ff"/>
+      <stop offset="1" stop-color="#2f7dff"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000" flood-opacity="0.45"/>
+    </filter>
+    <pattern id="stitch" width="12" height="12" patternUnits="userSpaceOnUse">
+      <path d="M0 6h6" stroke="#2b3039" stroke-width="2"/>
+      <path d="M6 0v6" stroke="#1b2028" stroke-width="2"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="1200" fill="#06070a"/>
+  <circle cx="600" cy="600" r="552" fill="url(#bg)" stroke="#d8cfbd" stroke-width="18"/>
+  <circle cx="600" cy="600" r="518" fill="url(#stitch)" opacity="0.42" stroke="#a9693f" stroke-width="6" stroke-dasharray="20 16"/>
+  <circle cx="600" cy="600" r="468" fill="none" stroke="#445064" stroke-width="3" stroke-dasharray="4 12"/>
+
+  <text x="600" y="130" text-anchor="middle" fill="#f3ead8" font-family="Arial Black, Impact, sans-serif" font-size="48" letter-spacing="4">LOCAL TERMINAL</text>
+  <text x="600" y="184" text-anchor="middle" fill="#f3ead8" font-family="Arial Black, Impact, sans-serif" font-size="48" letter-spacing="4">MEMORY GUARD</text>
+  <text x="600" y="226" text-anchor="middle" fill="#82d8ff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="23" letter-spacing="2">Claude Code-inspired safety cap</text>
+
+  <g filter="url(#soft)">
+    <rect x="220" y="290" width="360" height="210" rx="28" fill="#111722" stroke="#d8cfbd" stroke-width="5"/>
+    <rect x="620" y="290" width="360" height="210" rx="28" fill="#111722" stroke="#d8cfbd" stroke-width="5"/>
+    <rect x="220" y="540" width="360" height="210" rx="28" fill="#111722" stroke="#d8cfbd" stroke-width="5"/>
+    <rect x="620" y="540" width="360" height="210" rx="28" fill="#111722" stroke="#d8cfbd" stroke-width="5"/>
+  </g>
+
+  <g font-family="Arial Black, Impact, sans-serif" letter-spacing="2">
+    <text x="400" y="350" text-anchor="middle" fill="#f3ead8" font-size="26">CONFIG KNOB</text>
+    <text x="800" y="350" text-anchor="middle" fill="#f3ead8" font-size="26">FOREGROUND CAP</text>
+    <text x="400" y="600" text-anchor="middle" fill="#f3ead8" font-size="26">SHARED BRIDGE</text>
+    <text x="800" y="600" text-anchor="middle" fill="#f3ead8" font-size="26">VERIFIED</text>
+  </g>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="26" fill="#9fe6ff">
+    <text x="400" y="410" text-anchor="middle">terminal.</text>
+    <text x="400" y="445" text-anchor="middle">local_memory_max_mb</text>
+    <text x="800" y="425" text-anchor="middle">RLIMIT_AS</text>
+    <text x="800" y="460" text-anchor="middle">per command</text>
+    <text x="400" y="665" text-anchor="middle">TERMINAL_LOCAL</text>
+    <text x="400" y="700" text-anchor="middle">_MEMORY_MAX_MB</text>
+    <text x="800" y="665" text-anchor="middle">3 tests</text>
+    <text x="800" y="700" text-anchor="middle">+ isolated E2E</text>
+  </g>
+
+  <g transform="translate(600 850)">
+    <circle cx="0" cy="0" r="96" fill="#0e141f" stroke="url(#blue)" stroke-width="10"/>
+    <path d="M-54 30h108M-42 0h84M-30-30h60" stroke="#f3ead8" stroke-width="14" stroke-linecap="round"/>
+    <path d="M-78-70l78-28 78 28-18 122L0 88-60 52z" fill="none" stroke="#a9693f" stroke-width="8" stroke-linejoin="round"/>
+    <text x="0" y="142" text-anchor="middle" fill="#f3ead8" font-family="Arial Black, Impact, sans-serif" font-size="25" letter-spacing="3">RUNAWAY BUILD CONTAINED</text>
+  </g>
+
+  <text x="600" y="1110" text-anchor="middle" fill="#d8cfbd" font-family="Arial Black, Impact, sans-serif" font-size="34" letter-spacing="5">Nous Research</text>
+</svg>

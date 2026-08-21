@@ -391,6 +391,13 @@ DEFAULT_CONFIG = {
         # it here without patching the built desktop app.
         "font_family": "",
         "timeout": 180,
+        # Optional local-backend address-space cap for each foreground shell
+        # command, in MiB. Inspired by Claude Code's opt-in Bash memory cgroup
+        # guard: a runaway build should fail inside the tool call instead of
+        # stalling the Hermes session. Empty/0 disables the foreground cap.
+        # Gateway background tasks use the same value when systemd scope
+        # isolation is available.
+        "local_memory_max_mb": "",
         # Bounded grace period (seconds) between SIGTERM and an escalated
         # SIGKILL when terminating a host process tree (browser daemons, etc.).
         # A daemon that stalls in its SIGTERM handler is force-killed after this

@@ -22,8 +22,10 @@ enabler: #80774.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
+import threading
 
 import pytest
 
@@ -76,7 +78,12 @@ def _install_agent_stubs(monkeypatch, observed: dict):
         def run_conversation(self, prompt, *_a, **_kw):
             observed["agent_runs"] += 1
             observed["prompts"].append(prompt)
-            return {"final_response": "agent done", "messages": []}
+            if observed.get("raise_error"):
+                raise RuntimeError(str(observed["raise_error"]))
+            return {
+                "final_response": observed.get("final_response", "agent done"),
+                "messages": [],
+            }
 
         def get_activity_summary(self):
             return {"seconds_since_activity": 0.0}
@@ -250,6 +257,99 @@ def test_hash_is_exact_bytes(hermes_env):
     assert hash_monitor_output("a\nb") != hash_monitor_output("a\nb ")
 
 
+def test_deferred_monitor_commit_propagates_snapshot_write_failure(
+    hermes_env, monkeypatch
+):
+    from pathlib import Path
+
+    from cron.jobs import create_job, get_job
+    from cron.monitor import commit_monitor_state
+
+    job = create_job(prompt="p", schedule="every 5m", deliver="local")
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("simulated snapshot write failure")
+
+    monkeypatch.setattr(Path, "write_text", fail_write)
+
+    with pytest.raises(OSError, match="snapshot write failure"):
+        commit_monitor_state(job["id"], "abc123", "state A")
+
+    assert get_job(job["id"]).get("monitor_state") is None
+
+
+def test_deferred_monitor_commit_rolls_back_snapshot_when_hash_update_fails(
+    hermes_env, monkeypatch
+):
+    import cron.jobs as jobs
+    from cron.jobs import create_job, get_job
+    from cron.monitor import _read_last_output, commit_monitor_state
+
+    job = create_job(prompt="p", schedule="every 5m", deliver="local")
+    commit_monitor_state(job["id"], "a" * 64, "state A")
+
+    def fail_update(*_args, **_kwargs):
+        raise OSError("simulated jobs write failure")
+
+    monkeypatch.setattr(jobs, "update_job", fail_update)
+    with pytest.raises(OSError, match="jobs write failure"):
+        commit_monitor_state(job["id"], "b" * 64, "state B")
+
+    assert _read_last_output(job["id"]) == "state A"
+    assert get_job(job["id"])["monitor_state"]["last_output_hash"] == "a" * 64
+
+
+def test_deferred_monitor_commit_fails_before_write_if_old_snapshot_is_unreadable(
+    hermes_env, monkeypatch
+):
+    from pathlib import Path
+
+    from cron.jobs import create_job, get_job
+    from cron.monitor import _read_last_output, commit_monitor_state
+
+    job = create_job(prompt="p", schedule="every 5m", deliver="local")
+    commit_monitor_state(job["id"], "a" * 64, "state A")
+    real_read_text = Path.read_text
+
+    def fail_snapshot_read(path, *args, **kwargs):
+        if path.name == "monitor_last_output.txt":
+            raise OSError("simulated snapshot read failure")
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_snapshot_read)
+    with pytest.raises(OSError, match="snapshot read failure"):
+        commit_monitor_state(job["id"], "b" * 64, "state B")
+    monkeypatch.setattr(Path, "read_text", real_read_text)
+
+    assert _read_last_output(job["id"]) == "state A"
+    assert get_job(job["id"])["monitor_state"]["last_output_hash"] == "a" * 64
+
+
+def test_after_delivery_policy_records_commit_failure_without_advancing_hash(
+    hermes_env, monkeypatch
+):
+    import cron.monitor as monitor
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(job["id"], {"monitor_commit_policy": "after_delivery"})
+    job = get_job(job["id"])
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+
+    def fail_commit(*_args, **_kwargs):
+        raise OSError("simulated commit failure")
+
+    monkeypatch.setattr(monitor, "commit_monitor_state", fail_commit)
+
+    assert sched.run_one_job(job) is False
+
+    stored = get_job(job["id"])
+    assert stored.get("monitor_state") is None
+    assert stored["last_status"] == "error"
+
+
 def test_unified_diff_is_capped(hermes_env):
     from cron.monitor import MAX_DIFF_CHARS, build_monitor_diff
 
@@ -290,6 +390,560 @@ def test_first_run_always_runs_agent(hermes_env, monkeypatch):
     assert observed["agent_runs"] == 1
     # First run: new output is injected as monitor context.
     assert "state A" in observed["prompts"][0]
+
+
+def test_after_delivery_policy_defers_monitor_hash_commit(hermes_env, monkeypatch):
+    from cron.jobs import get_job, update_job
+    from cron.scheduler import run_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(job["id"], {"monitor_commit_policy": "after_delivery"})
+    job = get_job(job["id"])
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+    pending_commits = []
+
+    success, doc, final, error = run_job(
+        job, defer_monitor_commit=pending_commits
+    )
+
+    assert success is True
+    assert error is None
+    assert observed["agent_runs"] == 1
+    assert get_job(job["id"]).get("monitor_state") is None
+    pending = job.get("_monitor_pending_commit")
+    assert pending and pending["new_hash"] and pending["output"] == "state A"
+    assert pending_commits == [pending]
+
+
+def test_after_delivery_policy_commits_after_successful_end_to_end_run(
+    hermes_env, monkeypatch
+):
+    from cron.jobs import get_job, update_job
+    from cron.scheduler import run_one_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(job["id"], {"monitor_commit_policy": "after_delivery"})
+    job = get_job(job["id"])
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+
+    assert run_one_job(job) is True
+
+    stored = get_job(job["id"])
+    assert stored["last_status"] == "ok"
+    assert stored["monitor_state"]["last_output_hash"]
+
+
+def test_after_delivery_policy_silent_success_commits_without_delivery(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(job["id"], {"monitor_commit_policy": "after_delivery"})
+    job = get_job(job["id"])
+    observed = {"final_response": "[SILENT]"}
+    _install_agent_stubs(monkeypatch, observed)
+    deliveries = []
+    monkeypatch.setattr(
+        sched,
+        "_deliver_result",
+        lambda *_a, **_kw: deliveries.append(_a[1]) or None,
+    )
+
+    assert sched.run_one_job(job) is True
+
+    stored = get_job(job["id"])
+    assert stored["last_status"] == "ok"
+    assert stored["monitor_state"]["last_output_hash"]
+    assert deliveries == []
+
+
+def test_required_delivery_event_rejects_silent_agent_response(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+
+    body = (
+        "echo '{\"version\":4,\"events\":{\"event\":"
+        "{\"event_id\":\"health-1\",\"requires_delivery\":true}}}'\n"
+    )
+    job = _make_monitor_job(hermes_env, body)
+    update_job(job["id"], {"monitor_commit_policy": "after_delivery"})
+    job = get_job(job["id"])
+    observed = {"final_response": "[SILENT]"}
+    _install_agent_stubs(monkeypatch, observed)
+    deliveries = []
+    monkeypatch.setattr(
+        sched,
+        "_deliver_result",
+        lambda *_a, **_kw: deliveries.append(_a[1]) or None,
+    )
+
+    assert sched.run_one_job(job) is True
+
+    stored = get_job(job["id"])
+    assert stored["last_status"] == "monitor_retry"
+    assert stored.get("monitor_state") is None
+    assert deliveries == []
+
+
+def test_required_delivery_event_rejects_local_only_delivery(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+
+    body = (
+        "echo '{\"version\":4,\"events\":{\"event\":"
+        "{\"event_id\":\"health-1\",\"requires_delivery\":true}}}'\n"
+    )
+    job = _make_monitor_job(hermes_env, body)
+    update_job(job["id"], {"monitor_commit_policy": "after_delivery"})
+    job = get_job(job["id"])
+    observed = {"final_response": "health alert"}
+    _install_agent_stubs(monkeypatch, observed)
+    monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
+
+    assert sched.run_one_job(job) is True
+
+    stored = get_job(job["id"])
+    assert stored["last_status"] == "monitor_retry"
+    assert stored.get("monitor_state") is None
+
+
+def test_after_delivery_policy_retry_marker_suppresses_delivery_and_commit(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(job["id"], {"monitor_commit_policy": "after_delivery"})
+    job = get_job(job["id"])
+    observed = {"final_response": "[MONITOR_RETRY]"}
+    _install_agent_stubs(monkeypatch, observed)
+    deliveries = []
+    monkeypatch.setattr(
+        sched,
+        "_deliver_result",
+        lambda *_a, **_kw: deliveries.append(_a[1]) or None,
+    )
+
+    assert sched.run_one_job(job) is True
+
+    stored = get_job(job["id"])
+    assert stored["last_status"] == "monitor_retry"
+    assert stored.get("monitor_state") is None
+    assert deliveries == []
+
+
+def test_after_delivery_policy_retry_then_success_commits_and_suppresses_next_tick(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(job["id"], {"monitor_commit_policy": "after_delivery"})
+    job = get_job(job["id"])
+    observed = {"final_response": "[MONITOR_RETRY]"}
+    _install_agent_stubs(monkeypatch, observed)
+    deliveries = []
+    monkeypatch.setattr(
+        sched,
+        "_deliver_result",
+        lambda *_a, **_kw: deliveries.append(_a[1]) or None,
+    )
+
+    assert sched.run_one_job(job) is True
+    assert get_job(job["id"]).get("monitor_state") is None
+    assert observed["agent_runs"] == 1
+
+    observed["final_response"] = "verified report"
+    assert sched.run_one_job(get_job(job["id"])) is True
+    assert get_job(job["id"])["monitor_state"]["last_output_hash"]
+    assert observed["agent_runs"] == 2
+
+    assert sched.run_one_job(get_job(job["id"])) is True
+    assert observed["agent_runs"] == 2
+    assert deliveries == ["verified report"]
+
+
+def test_plain_cron_treats_monitor_retry_marker_as_normal_output(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import create_job, get_job
+
+    job = create_job(
+        prompt="ordinary job",
+        schedule="every 5m",
+        deliver="local",
+    )
+    observed = {"final_response": "[MONITOR_RETRY]"}
+    _install_agent_stubs(monkeypatch, observed)
+    deliveries = []
+    monkeypatch.setattr(
+        sched,
+        "_deliver_result",
+        lambda *_a, **_kw: deliveries.append(_a[1]) or None,
+    )
+
+    assert sched.run_one_job(job) is True
+
+    assert deliveries == ["[MONITOR_RETRY]"]
+    assert get_job(job["id"])["last_status"] == "ok"
+
+
+def test_default_eager_monitor_treats_retry_marker_as_normal_output(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    observed = {"final_response": "[MONITOR_RETRY]"}
+    _install_agent_stubs(monkeypatch, observed)
+    deliveries = []
+    monkeypatch.setattr(
+        sched,
+        "_deliver_result",
+        lambda *_a, **_kw: deliveries.append(_a[1]) or None,
+    )
+
+    assert sched.run_one_job(job) is True
+
+    stored = get_job(job["id"])
+    assert deliveries == ["[MONITOR_RETRY]"]
+    assert stored["monitor_state"]["last_output_hash"]
+
+
+def test_after_delivery_policy_does_not_commit_on_delivery_failure(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(job["id"], {"monitor_commit_policy": "after_delivery"})
+    job = get_job(job["id"])
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+    monkeypatch.setattr(
+        sched,
+        "_deliver_result",
+        lambda *_a, **_kw: "simulated delivery failure",
+    )
+
+    assert sched.run_one_job(job) is True
+
+    stored = get_job(job["id"])
+    assert stored.get("monitor_state") is None
+    assert stored["last_delivery_error"] == "simulated delivery failure"
+
+
+def test_after_delivery_policy_does_not_commit_on_empty_message_delivery_exception(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(job["id"], {"monitor_commit_policy": "after_delivery"})
+    job = get_job(job["id"])
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+
+    def fail_delivery(*_a, **_kw):
+        raise TimeoutError()
+
+    monkeypatch.setattr(sched, "_deliver_result", fail_delivery)
+
+    assert sched.run_one_job(job) is True
+
+    stored = get_job(job["id"])
+    assert stored.get("monitor_state") is None
+    assert stored["last_delivery_error"] == "TimeoutError"
+
+
+def test_after_delivery_policy_does_not_commit_when_origin_is_unresolved(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(
+        job["id"],
+        {"monitor_commit_policy": "after_delivery", "deliver": "origin"},
+    )
+    job = get_job(job["id"])
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+
+    assert sched.run_one_job(job) is True
+
+    stored = get_job(job["id"])
+    assert stored.get("monitor_state") is None
+
+
+def test_after_delivery_policy_fences_monitor_commit_against_owner_loss(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(
+        job["id"],
+        {
+            "monitor_commit_policy": "after_delivery",
+            "fire_claim": {"by": "owner-a", "at": "2026-01-01T00:00:00+00:00"},
+        },
+    )
+    job = get_job(job["id"])
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+    fence_calls = []
+
+    @contextlib.contextmanager
+    def lose_owner_before_commit(_job_id, *, expected_owner):
+        fence_calls.append(expected_owner)
+        # Saving output and delivery still belong to owner-a. The claim is
+        # lost only at the deferred monitor-commit boundary.
+        yield len(fence_calls) <= 2
+
+    monkeypatch.setattr(sched, "fire_claim_fence", lose_owner_before_commit)
+
+    assert sched._run_one_job_body(
+        job,
+        fire_claim_lost=threading.Event(),
+        execution_token=object(),
+    ) is True
+
+    assert len(fence_calls) >= 3
+    assert get_job(job["id"]).get("monitor_state") is None
+
+
+def test_after_delivery_policy_real_fire_owner_commits_without_nested_fence(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(
+        job["id"],
+        {
+            "monitor_commit_policy": "after_delivery",
+            "fire_claim": {"by": "owner-a", "at": "2026-08-20T00:00:00+00:00"},
+        },
+    )
+    job = get_job(job["id"])
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+
+    assert sched._run_one_job_body(
+        job,
+        fire_claim_lost=threading.Event(),
+        execution_token=object(),
+    ) is True
+
+    stored = get_job(job["id"])
+    assert stored["last_status"] == "ok"
+    assert stored["monitor_state"]["last_output_hash"]
+
+
+def test_after_delivery_policy_rechecks_interrupt_inside_commit_fence(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(
+        job["id"],
+        {
+            "monitor_commit_policy": "after_delivery",
+            "fire_claim": {"by": "owner-a", "at": "2026-01-01T00:00:00+00:00"},
+        },
+    )
+    job = get_job(job["id"])
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+    cancellation = threading.Event()
+    fence_calls = []
+
+    @contextlib.contextmanager
+    def interrupt_at_commit(_job_id, *, expected_owner):
+        fence_calls.append(expected_owner)
+        if len(fence_calls) == 3:
+            cancellation.set()
+        yield True
+
+    monkeypatch.setattr(sched, "fire_claim_fence", interrupt_at_commit)
+
+    assert sched._run_one_job_body(
+        job,
+        fire_claim_lost=cancellation,
+        execution_token=object(),
+    ) is True
+
+    assert len(fence_calls) >= 3
+    assert get_job(job["id"]).get("monitor_state") is None
+
+
+def test_after_delivery_commit_serializes_against_shutdown_interrupt_flag(
+    hermes_env, monkeypatch
+):
+    import cron.monitor as monitor
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(
+        job["id"],
+        {
+            "monitor_commit_policy": "after_delivery",
+            "fire_claim": {"by": "owner-a", "at": "2026-01-01T00:00:00+00:00"},
+        },
+    )
+    job = get_job(job["id"])
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+    commit_entered = threading.Event()
+    allow_commit = threading.Event()
+    interrupt_mark_called = threading.Event()
+
+    def slow_commit(*_args, **_kwargs):
+        commit_entered.set()
+        assert allow_commit.wait(timeout=2)
+
+    def record_mark(_job_id, success, *_args, **_kwargs):
+        if success is False:
+            interrupt_mark_called.set()
+        return True
+
+    monkeypatch.setattr(monitor, "commit_monitor_state", slow_commit)
+    monkeypatch.setattr(sched, "mark_job_run", record_mark)
+
+    @contextlib.contextmanager
+    def in_memory_fire_fence(*_args, **_kwargs):
+        yield True
+
+    monkeypatch.setattr(sched, "fire_claim_fence", in_memory_fire_fence)
+
+    execution_token = object()
+    with sched._running_lock:
+        sched._running_fire_owners.setdefault(job["id"], {})[execution_token] = (
+            "owner-a",
+            hermes_env,
+        )
+
+    run_thread = threading.Thread(
+        target=sched._run_one_job_body,
+        kwargs={
+            "job": job,
+            "fire_claim_lost": threading.Event(),
+            "execution_token": execution_token,
+        },
+    )
+    run_thread.start()
+    assert commit_entered.wait(timeout=2)
+
+    interrupt_thread = threading.Thread(
+        target=sched.mark_running_jobs_interrupted,
+        args=("simulated shutdown",),
+    )
+    interrupt_thread.start()
+    interrupt_reached_terminal_mark_before_commit = interrupt_mark_called.wait(
+        timeout=0.2
+    )
+
+    allow_commit.set()
+    run_thread.join(timeout=3)
+    interrupt_thread.join(timeout=3)
+    with sched._running_lock:
+        sched._running_fire_owners.pop(job["id"], None)
+
+    assert not run_thread.is_alive()
+    assert not interrupt_thread.is_alive()
+    assert interrupt_reached_terminal_mark_before_commit is False
+
+
+def test_after_delivery_commit_stays_linearized_through_terminal_mark(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(job["id"], {"monitor_commit_policy": "after_delivery"})
+    job = get_job(job["id"])
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+    execution_token = object()
+    protected_at_mark = []
+
+    def record_mark(_job_id, success, *_args, **_kwargs):
+        if success:
+            protected_at_mark.append(
+                execution_token in sched._monitor_commit_in_progress
+            )
+        return True
+
+    monkeypatch.setattr(sched, "mark_job_run", record_mark)
+
+    assert sched._run_one_job_body(
+        job,
+        fire_claim_lost=threading.Event(),
+        execution_token=execution_token,
+    ) is True
+    sched._monitor_commit_in_progress.discard(execution_token)
+
+    assert protected_at_mark == [True]
+
+
+def test_after_delivery_policy_does_not_commit_on_agent_failure(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(job["id"], {"monitor_commit_policy": "after_delivery"})
+    job = get_job(job["id"])
+    observed = {"raise_error": "simulated agent failure"}
+    _install_agent_stubs(monkeypatch, observed)
+
+    assert sched.run_one_job(job) is True
+
+    stored = get_job(job["id"])
+    assert stored.get("monitor_state") is None
+    assert stored["last_status"] == "error"
+
+
+def test_after_delivery_policy_does_not_commit_on_empty_agent_response(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(job["id"], {"monitor_commit_policy": "after_delivery"})
+    job = get_job(job["id"])
+    observed = {"final_response": ""}
+    _install_agent_stubs(monkeypatch, observed)
+
+    assert sched.run_one_job(job) is True
+
+    stored = get_job(job["id"])
+    assert stored.get("monitor_state") is None
+    assert stored["last_status"] == "error"
 
 
 def test_unchanged_output_suppresses_agent_run(hermes_env, monkeypatch):

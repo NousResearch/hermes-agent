@@ -369,7 +369,14 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
         lost_seen.set()
         return False
 
-    def _run_job(job, *, defer_agent_teardown=None, extra_prompt=None, cancel_event=None):
+    def _run_job(
+        job,
+        *,
+        defer_agent_teardown=None,
+        defer_monitor_commit=None,
+        extra_prompt=None,
+        cancel_event=None,
+    ):
         assert lost_seen.wait(timeout=2)
         return True, "stale output", "stale response", None
 

@@ -4173,47 +4173,81 @@ class TelegramAdapter(BasePlatformAdapter):
         """Normalize a ``message_reaction`` update (event_type ``reaction``).
 
         Reaction (the motivating use case: a plugin that re-renders or reacts to
-        a message when the user reacts to it) is normalized to the fields a
-        plugin consumes: ``emojis`` (standard unicode), ``custom_emoji_ids``
-        (custom reaction emojis — PTB exposes ``custom_emoji_id`` with no
-        ``.emoji``), ``chat_id``, ``message_id``, ``thread_id``.
+        a message when the user reacts to it) is normalized to bounded event,
+        actor, timestamp, and reaction-state fields without exposing SDK objects.
         """
         mr = getattr(update, "message_reaction", None)
         if mr is None:
             return None
         chat = getattr(mr, "chat", None)
+        actor = getattr(mr, "user", None) or getattr(mr, "actor_chat", None)
+        old_reaction = getattr(mr, "old_reaction", None) or []
         new_reaction = getattr(mr, "new_reaction", None) or []
-        if not isinstance(new_reaction, (list, tuple)):
-            return None
-        chat_id = getattr(chat, "id", None) if chat is not None else None
-        message_id = getattr(mr, "message_id", None)
-        if (
-            isinstance(chat_id, bool)
-            or not isinstance(chat_id, (str, int))
-            or isinstance(message_id, bool)
-            or not isinstance(message_id, (str, int))
+        if not isinstance(old_reaction, (list, tuple)) or not isinstance(
+            new_reaction, (list, tuple)
         ):
             return None
-        emojis: List[str] = []
-        custom_emoji_ids: List[str] = []
-        for r in new_reaction[:64]:
-            emoji = getattr(r, "emoji", None)
-            if isinstance(emoji, str) and emoji:
-                emojis.append(emoji[:64])
-            custom_id = getattr(r, "custom_emoji_id", None)
-            if (
-                not isinstance(custom_id, bool)
-                and isinstance(custom_id, (str, int))
-            ):
-                custom_emoji_ids.append(str(custom_id)[:128])
+
+        def _bounded_identifier(value: Any) -> Optional[str]:
+            if isinstance(value, bool) or not isinstance(value, (str, int)):
+                return None
+            normalized = str(value).strip()
+            return normalized[:128] if normalized else None
+
+        update_id = _bounded_identifier(getattr(update, "update_id", None))
+        actor_id = _bounded_identifier(getattr(actor, "id", None))
+        chat_id = _bounded_identifier(
+            getattr(chat, "id", None) if chat is not None else None
+        )
+        message_id = _bounded_identifier(getattr(mr, "message_id", None))
+        if None in (update_id, actor_id, chat_id, message_id):
+            return None
+
+        actor_name = None
+        for attribute in ("username", "full_name", "title"):
+            candidate = getattr(actor, attribute, None)
+            if isinstance(candidate, str) and candidate.strip():
+                actor_name = candidate.strip()[:256]
+                break
+
+        occurred_at = None
+        event_date = getattr(mr, "date", None)
+        if isinstance(event_date, datetime):
+            if event_date.tzinfo is None:
+                event_date = event_date.replace(tzinfo=timezone.utc)
+            occurred_at = event_date.isoformat()[:64]
+
+        def _reaction_parts(reactions: list | tuple) -> tuple[List[str], List[str]]:
+            emojis: List[str] = []
+            custom_ids: List[str] = []
+            for reaction in reactions[:64]:
+                emoji = getattr(reaction, "emoji", None)
+                if isinstance(emoji, str) and emoji:
+                    emojis.append(emoji[:64])
+                custom_id = getattr(reaction, "custom_emoji_id", None)
+                if (
+                    not isinstance(custom_id, bool)
+                    and isinstance(custom_id, (str, int))
+                ):
+                    custom_ids.append(str(custom_id)[:128])
+            return emojis, custom_ids
+
+        old_emojis, old_custom_emoji_ids = _reaction_parts(old_reaction)
+        emojis, custom_emoji_ids = _reaction_parts(new_reaction)
         return {
             "platform": "telegram",
             "event_type": "reaction",
             "payload": {
+                "update_id": update_id,
+                "actor_id": actor_id,
+                "actor_name": actor_name,
+                "occurred_at": occurred_at,
+                "old_emojis": old_emojis,
+                "old_custom_emoji_ids": old_custom_emoji_ids,
                 "emojis": emojis,
                 "custom_emoji_ids": custom_emoji_ids,
-                "chat_id": str(chat_id)[:128],
-                "message_id": str(message_id)[:128],
+                "chat_id": chat_id,
+                "message_id": message_id,
                 # Reactions don't carry thread_id; do not guess it or expose an
                 # adapter object as a routing escape hatch.
                 "thread_id": None,

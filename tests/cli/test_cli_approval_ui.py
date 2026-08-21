@@ -147,11 +147,12 @@ class TestCliApprovalUi:
 
 
 
-    def test_approval_display_truncates_giant_command_in_view_mode(self):
+    def test_approval_display_scrolls_giant_command_in_view_mode(self):
         """If the user hits /view on a massive command, choices still render.
 
-        The command gets truncated with a marker; the description gets dropped
-        if there's no remaining row budget.
+        The command is no longer truncated with a marker: full-view mode
+        scrolls the command viewport (↑/↓, PgUp/PgDn) so the complete command
+        stays reviewable before approving (#77764).
         """
         cli = _make_cli_stub()
         # 50 lines of command when wrapped at ~64 chars.
@@ -178,8 +179,78 @@ class TestCliApprovalUi:
                       "Add to permanent allowlist", "Deny"):
             assert label in rendered, f"choice {label!r} missing"
 
-        # Command got truncated with a marker.
-        assert "(command truncated" in rendered
+        # The command is NOT truncated — the viewport scrolls instead, and the
+        # viewport metrics are recorded for the arrow-key bindings.
+        assert "(command truncated" not in rendered
+        assert "approve/deny" in rendered
+        assert cli._approval_state["_cmd_overflow"] is True
+        assert cli._approval_state["_cmd_scroll"] == 0
+        assert cli._approval_state["_cmd_total_lines"] > 1
+
+    def test_approval_display_scrolls_command_viewport_to_end(self):
+        """Scrolling the full-command viewport reveals the command tail.
+
+        The rendered slice tracks _cmd_scroll, the scroll hint reflects the
+        visible range, and out-of-range offsets clamp to the last line, so a
+        multi-hundred-character command is fully reviewable (#77764).
+        """
+        cli = _make_cli_stub()
+        giant_cmd = "bash -c 'echo " + ("x" * 3000) + "'"
+        cli._approval_state = {
+            "command": giant_cmd,
+            "description": "shell command via -c/-lc flag",
+            "choices": ["once", "session", "always", "deny"],
+            "selected": 0,
+            "show_full": True,
+            "response_queue": queue.Queue(),
+        }
+
+        import shutil as _shutil
+
+        term_size = _shutil.os.terminal_size((100, 24))
+        with patch("cli.shutil.get_terminal_size", return_value=term_size):
+            cli._get_approval_display_fragments()
+
+        total = cli._approval_state["_cmd_total_lines"]
+        visible = cli._approval_state["_cmd_visible_lines"]
+        assert total > visible
+
+        # Scroll to the end: the hint reports the last visible range and the
+        # command tail renders.
+        cli._approval_state["_cmd_scroll"] = total - visible
+        with patch("cli.shutil.get_terminal_size", return_value=term_size):
+            fragments = cli._get_approval_display_fragments()
+        rendered = "".join(text for _style, text in fragments)
+        expected_hint = f"▲▼ {total - visible + 1}–{total}/{total}"
+        assert expected_hint in rendered
+        # The command body (x-filled wrapped lines) renders in the tail slice.
+        assert "xxx" in rendered
+
+        # Overflowing scroll positions clamp to the last line.
+        cli._approval_state["_cmd_scroll"] = total + 100
+        with patch("cli.shutil.get_terminal_size", return_value=term_size):
+            cli._get_approval_display_fragments()
+        assert cli._approval_state["_cmd_scroll"] == total - visible
+
+    def test_approval_display_view_resets_scroll_on_entry(self):
+        """Selecting "view" resets the full-command viewport to the top."""
+        cli = _make_cli_stub()
+        cli._approval_state = {
+            "command": "sudo dd if=/tmp/in of=/usr/share/keyrings/githubcli-archive-keyring.gpg bs=4M status=progress",
+            "description": "disk copy",
+            "choices": ["once", "session", "always", "deny", "view"],
+            "selected": 4,
+            "response_queue": queue.Queue(),
+        }
+        cli._approval_state["_cmd_scroll"] = 7
+        cli._approval_state["_cmd_overflow"] = True
+
+        cli._handle_approval_selection()
+
+        assert cli._approval_state["show_full"] is True
+        assert cli._approval_state["_cmd_scroll"] == 0
+        assert cli._approval_state["_cmd_overflow"] is False
+        assert "view" not in cli._approval_state["choices"]
 
     def test_background_task_registers_thread_local_approval_callbacks(self):
         """Background /btw tasks must use the prompt_toolkit approval UI.

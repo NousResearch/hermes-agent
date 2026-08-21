@@ -15689,6 +15689,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     smart_denied=smart_denied,
                 ),
                 "selected": 0,
+                # Full-command view viewport: scroll offset for commands too
+                # long to fit the panel; _cmd_overflow is set by the renderer
+                # when scrolling is active (#77764).
+                "_cmd_scroll": 0,
+                "_cmd_overflow": False,
                 "response_queue": response_queue,
             }
             self._approval_deadline = _time.monotonic() + timeout
@@ -15785,6 +15790,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         chosen = choices[selected]
         if chosen == "view":
             state["show_full"] = True
+            # Reset the full-command viewport; re-entering view always starts
+            # at the top of the command (#77764).
+            state["_cmd_scroll"] = 0
+            state["_cmd_overflow"] = False
             state["choices"] = [choice for choice in choices if choice != "view"]
             if state["selected"] >= len(state["choices"]):
                 state["selected"] = max(0, len(state["choices"]) - 1)
@@ -15914,15 +15923,40 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         chrome_rows = chrome_tight if use_compact_chrome else chrome_full
 
         # If the command itself is too long to leave room for choices (e.g. user
-        # hit "view" on a multi-hundred-character command), truncate it so the
-        # approve/deny buttons still render. Keep at least 1 row of command.
+        # hit "view" on a multi-hundred-character command), the approve/deny
+        # buttons must still render. Preview mode truncates; full-view mode
+        # scrolls the command viewport (↑/↓, PgUp/PgDn) so the complete command
+        # stays reviewable before approving (#77764).
         max_cmd_rows = max(1, available - chrome_rows - len(choice_wrapped))
-        if len(cmd_wrapped) > max_cmd_rows:
-            keep = max(1, max_cmd_rows - 1) if max_cmd_rows > 1 else 1
-            cmd_wrapped = cmd_wrapped[:keep] + _wrap_panel_text(
-                "… (command truncated — use /logs or /debug for full text)",
-                inner_text_width,
-            )
+        cmd_overflow = len(cmd_wrapped) > max_cmd_rows
+        if cmd_overflow:
+            if show_full:
+                # Scrollable full view: render the slice that fits and record
+                # the viewport metrics so the arrow-key bindings can scroll.
+                hint_rows = 1 if max_cmd_rows > 2 else 0
+                view_rows = max(1, max_cmd_rows - hint_rows)
+                total_lines = len(cmd_wrapped)
+                max_scroll = max(0, total_lines - view_rows)
+                scroll = max(0, min(state.get("_cmd_scroll", 0), max_scroll))
+                state["_cmd_scroll"] = scroll
+                state["_cmd_overflow"] = True
+                state["_cmd_total_lines"] = total_lines
+                state["_cmd_visible_lines"] = view_rows
+                cmd_wrapped = cmd_wrapped[scroll:scroll + view_rows]
+                if hint_rows:
+                    cmd_wrapped = cmd_wrapped + _wrap_panel_text(
+                        f"▲▼ {scroll + 1}–{scroll + view_rows}/{total_lines} (1–9 approve/deny)",
+                        inner_text_width,
+                    )
+            else:
+                state["_cmd_overflow"] = False
+                keep = max(1, max_cmd_rows - 1) if max_cmd_rows > 1 else 1
+                cmd_wrapped = cmd_wrapped[:keep] + _wrap_panel_text(
+                    "… (command truncated — use /logs or /debug for full text)",
+                    inner_text_width,
+                )
+        else:
+            state["_cmd_overflow"] = False
 
         # Allocate any remaining rows to description. The extra -1 in full mode
         # accounts for the blank separator between choices and description.
@@ -18249,16 +18283,55 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         @kb.add('up', filter=Condition(lambda: bool(self._approval_state)))
         def approval_up(event):
-            if self._approval_state:
-                self._approval_state["selected"] = max(0, self._approval_state["selected"] - 1)
+            state = self._approval_state
+            if not state:
+                return
+            if state.get("show_full") and state.get("_cmd_overflow"):
+                # Full-command view: ↑ scrolls the command; number keys decide.
+                state["_cmd_scroll"] = max(0, state.get("_cmd_scroll", 0) - 1)
                 event.app.invalidate()
+                return
+            state["selected"] = max(0, state["selected"] - 1)
+            event.app.invalidate()
 
         @kb.add('down', filter=Condition(lambda: bool(self._approval_state)))
         def approval_down(event):
-            if self._approval_state:
-                max_idx = len(self._approval_state["choices"]) - 1
-                self._approval_state["selected"] = min(max_idx, self._approval_state["selected"] + 1)
+            state = self._approval_state
+            if not state:
+                return
+            if state.get("show_full") and state.get("_cmd_overflow"):
+                # Full-command view: ↓ scrolls the command; number keys decide.
+                total = state.get("_cmd_total_lines", 0)
+                visible = state.get("_cmd_visible_lines", 1)
+                max_scroll = max(0, total - visible)
+                state["_cmd_scroll"] = min(max_scroll, state.get("_cmd_scroll", 0) + 1)
                 event.app.invalidate()
+                return
+            max_idx = len(state["choices"]) - 1
+            state["selected"] = min(max_idx, state["selected"] + 1)
+            event.app.invalidate()
+
+        @kb.add('pageup', filter=Condition(lambda: bool(self._approval_state)))
+        def approval_pageup(event):
+            state = self._approval_state
+            if not state or not (state.get("show_full") and state.get("_cmd_overflow")):
+                return
+            # Page-scroll the full-command view; number keys still decide.
+            step = max(1, state.get("_cmd_visible_lines", 1) - 1)
+            state["_cmd_scroll"] = max(0, state.get("_cmd_scroll", 0) - step)
+            event.app.invalidate()
+
+        @kb.add('pagedown', filter=Condition(lambda: bool(self._approval_state)))
+        def approval_pagedown(event):
+            state = self._approval_state
+            if not state or not (state.get("show_full") and state.get("_cmd_overflow")):
+                return
+            total = state.get("_cmd_total_lines", 0)
+            visible = state.get("_cmd_visible_lines", 1)
+            max_scroll = max(0, total - visible)
+            step = max(1, visible - 1)
+            state["_cmd_scroll"] = min(max_scroll, state.get("_cmd_scroll", 0) + step)
+            event.app.invalidate()
 
         # --- Slash-command confirmation: arrow-key navigation ---
         @kb.add('up', filter=Condition(lambda: bool(self._slash_confirm_state)))

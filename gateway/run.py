@@ -30101,6 +30101,14 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
             except Exception as e:
                 logger.debug("Org sync pull tick error: %s", e)
 
+            # Wisdom share pass — dry-run scoring of skill share candidates.
+            # Runs at most weekly; gate-and-swallow like the sync pulls above.
+            try:
+                from tools.wisdom_share_pass import maybe_run_share_pass
+                maybe_run_share_pass()
+            except Exception as e:
+                logger.debug("Wisdom share pass tick error: %s", e)
+
         # Stale-session auto-archive — a live timer, so gateways that stay up
         # for weeks keep sweeping on schedule (the startup hook fires once).
         # maybe_auto_archive() is gated by sessions.min_interval_hours in

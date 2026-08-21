@@ -17521,6 +17521,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             maybe_pull_org_skills()
         except Exception:
             pass
+
+        # Wisdom share pass — dry-run scoring of skill share candidates.
+        # Runs at most weekly; never blocks startup; swallows all errors.
+        try:
+            from tools.wisdom_share_pass import maybe_run_share_pass
+            maybe_run_share_pass()
+        except Exception:
+            pass
         _skills_for_line = self.preloaded_skills or list(
             getattr(self, "_preload_skills_requested", []) or []
         )

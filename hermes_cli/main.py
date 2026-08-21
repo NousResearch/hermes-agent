@@ -442,6 +442,7 @@ import functools as _functools
 from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.sync import build_sync_parser
+from hermes_cli.subcommands.wisdom import build_wisdom_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
@@ -5413,22 +5414,211 @@ def cmd_sync(args):
         from tools import skills_sync_client as ssc
 
         name = args.name
+        collective = getattr(args, "collective", None)
         try:
-            result = ssc.propose_skill(name, message=args.message)
+            result = ssc.propose_skill(
+                name, message=args.message, collective=collective
+            )
         except ssc.SyncInertError as e:
             print(f"cannot share this skill: {e}", file=sys.stderr)
             return 1
         except ssc.SyncError as e:
             print(f"could not share '{name}': {e}", file=sys.stderr)
             return 1
+        target = f"collective '{collective}'" if collective else "your organisation"
         if result.get("proposal_pending"):
             print(
-                f"Shared '{name}' with your organisation — an admin needs to "
+                f"Shared '{name}' with {target} — an admin needs to "
                 f"approve it (proposal #{result.get('proposal_id')}). It is "
                 f"not live for the team until then."
             )
         else:
-            print(f"Added '{name}' to your organisation's shared skills.")
+            print(f"Added '{name}' to {target}'s shared skills.")
+        return 0
+
+    if sub == "collective":
+        coll_sub = getattr(args, "collective_command", None)
+        if not coll_sub:
+            print(
+                "usage: hermes sync collective <create|list|delete>",
+                file=sys.stderr,
+            )
+            return 1
+
+        from tools import skills_sync_client as ssc
+
+        try:
+            identity = ssc.resolve_org_identity()
+        except ssc.SyncInertError as e:
+            print(f"cannot manage collectives: {e}", file=sys.stderr)
+            return 1
+
+        base_url = ssc.resolve_sync_base_url()
+        if not base_url:
+            print("no sync base URL configured", file=sys.stderr)
+            return 1
+
+        import requests
+
+        client = ssc.SyncClient(base_url, identity["api_key"])
+
+        if coll_sub == "create":
+            members = [m.strip() for m in args.members.split(",") if m.strip()]
+            name = args.name
+            resp = client._session.put(
+                client._url(f"org/collectives/{name}"),
+                json={"members": members},
+                timeout=client.timeout,
+            )
+            if resp.status_code == 200:
+                print(
+                    f"Collective '{name}' created with {len(members)} member(s)."
+                )
+            else:
+                body = resp.json() if resp.content else {}
+                print(
+                    f"failed to create collective: {body.get('error', resp.status_code)}",
+                    file=sys.stderr,
+                )
+                return 1
+            return 0
+
+        if coll_sub == "list":
+            resp = client._session.get(
+                client._url("org/collectives"),
+                timeout=client.timeout,
+            )
+            if resp.status_code != 200:
+                body = resp.json() if resp.content else {}
+                print(
+                    f"failed to list collectives: {body.get('error', resp.status_code)}",
+                    file=sys.stderr,
+                )
+                return 1
+            data = resp.json()
+            collectives = data.get("collectives", [])
+            if not collectives:
+                print("No collectives yet.")
+            else:
+                for c in collectives:
+                    print(f"  {c['name']}")
+            return 0
+
+        if coll_sub == "delete":
+            name = args.name
+            resp = client._session.delete(
+                client._url(f"org/collectives/{name}"),
+                timeout=client.timeout,
+            )
+            if resp.status_code == 200:
+                print(f"Collective '{name}' deleted.")
+            else:
+                body = resp.json() if resp.content else {}
+                print(
+                    f"failed to delete collective: {body.get('error', resp.status_code)}",
+                    file=sys.stderr,
+                )
+                return 1
+            return 0
+
+        return 1
+
+    if sub == "shares":
+        from tools import skills_sync_client as ssc
+        from tools import skill_adoption
+
+        try:
+            identity = ssc.resolve_org_identity()
+        except ssc.SyncInertError:
+            print(
+                "not part of a shared organisation — no shares to review.",
+                file=sys.stderr,
+            )
+            return 1
+
+        org_id = identity["org_id"]
+        pending = skill_adoption.pending_shares(org_id)
+        if not pending:
+            print("No pending shares. You're caught up.")
+            return 0
+
+        print(f"Pending shares ({len(pending)}):\n")
+        for s in pending:
+            print(f"  {s['rel_path']}")
+        print(
+            "\nTo adopt:  hermes sync adopt <category/name>"
+            "\nTo decline: hermes sync decline-share <category/name>"
+        )
+        return 0
+
+    if sub == "adopt":
+        from tools import skills_sync_client as ssc
+        from tools import skill_adoption
+
+        try:
+            identity = ssc.resolve_org_identity()
+        except ssc.SyncInertError:
+            print(
+                "not part of a shared organisation — nothing to adopt.",
+                file=sys.stderr,
+            )
+            return 1
+
+        org_id = identity["org_id"]
+        skill_path = args.skill
+
+        # Read org provenance for the adoption record.
+        provenance_data = {}
+        try:
+            from agent.skill_utils import ORG_PROVENANCE_FILE
+
+            prov_path = skill_adoption._org_dir() / org_id / ORG_PROVENANCE_FILE
+            if prov_path.exists():
+                provenance_data = json.loads(
+                    prov_path.read_text(encoding="utf-8")
+                )
+        except Exception:
+            pass
+
+        result = skill_adoption.adopt_skill(
+            org_id,
+            skill_path,
+            source_commit=provenance_data.get("head"),
+            author=provenance_data.get("author_user_id"),
+        )
+
+        if not result.get("ok"):
+            print(f"cannot adopt: {result.get('error')}", file=sys.stderr)
+            return 1
+
+        print(
+            f"Adopted '{result['skill_name']}' into your personal skills. "
+            f"It's a local copy — edit it freely; changes don't write back."
+        )
+        return 0
+
+    if sub == "decline-share":
+        from tools import skills_sync_client as ssc
+        from tools import skill_adoption
+
+        try:
+            identity = ssc.resolve_org_identity()
+        except ssc.SyncInertError:
+            print(
+                "not part of a shared organisation — nothing to decline.",
+                file=sys.stderr,
+            )
+            return 1
+
+        org_id = identity["org_id"]
+        skill_path = args.skill
+
+        result = skill_adoption.decline_share(org_id, skill_path)
+        if not result.get("ok"):
+            print(f"cannot decline: {result.get('error')}", file=sys.stderr)
+            return 1
+
+        print(f"'{skill_path}' declined — it won't be re-offered.")
         return 0
 
     if sub in {"enable", "disable"}:
@@ -5555,6 +5745,132 @@ def cmd_sync(args):
 
     print(_json.dumps(result, indent=2, ensure_ascii=False))
     return 0
+
+
+def cmd_wisdom(args):
+    """Wisdom — review and act on skill share candidates (PRD 1, M0)."""
+    import json as _json
+
+    sub = getattr(args, "wisdom_command", None)
+
+    if sub in {None, ""}:
+        print(
+            "usage: hermes wisdom <candidates|run|approve|decline>\n"
+            "\n"
+            "  candidates        Show current share candidates with evidence\n"
+            "  run               Force a share-candidate scoring pass now (dry-run)\n"
+            "  approve <skill>   Share a skill with your organisation\n"
+            "  decline <skill>   Stop nominating a skill for sharing",
+            file=sys.stderr,
+        )
+        return 1
+
+    from tools import wisdom_share_pass as wsp
+
+    if sub == "candidates":
+        state = wsp.load_state()
+        candidates = state.get("last_candidates") or []
+        if not candidates:
+            print(
+                "No share candidates yet. The curator's weekly pass scores "
+                "your skills and nominates candidates; run `hermes wisdom run` "
+                "to force a pass now."
+            )
+            return 0
+        print(f"Share candidates (last pass: {state.get('last_run_at', 'never')}):\n")
+        # Re-score to get fresh evidence lines for the stored candidate names.
+        result = wsp.run_share_pass(dry_run=True)
+        for c in result.get("candidates", []):
+            print(f"  {c['evidence']}")
+            print(f"    score: {c['score']}")
+        if result.get("skipped_declined"):
+            print(f"\n  declined (not re-nominated): {', '.join(result['skipped_declined'])}")
+        return 0
+
+    if sub == "run":
+        result = wsp.run_share_pass(dry_run=True)
+        if not result.get("ok"):
+            print(f"share pass failed: {result.get('error')}", file=sys.stderr)
+            return 1
+        candidates = result.get("candidates", [])
+        if not candidates:
+            print("No share candidates found (all skills below the activity floor).")
+            return 0
+        print(f"Share candidates ({len(candidates)}):\n")
+        for c in candidates:
+            print(f"  {c['evidence']}")
+            print(f"    score: {c['score']}")
+        print(
+            f"\n{result.get('skipped_below_floor', 0)} skills below the activity floor."
+        )
+        if result.get("skipped_declined"):
+            print(f"{len(result['skipped_declined'])} declined (not re-nominated).")
+        never_tracked = result.get("never_tracked", [])
+        if never_tracked:
+            print(
+                f"\n{len(never_tracked)} agent-authored skill(s) with no usage record "
+                f"(invisible to scoring):"
+            )
+            for name in never_tracked:
+                print(f"  {name}")
+        print(
+            "\nThis is a dry-run — nothing was shared. To share a skill:\n"
+            "  hermes sync propose <skill>"
+        )
+        return 0
+
+    if sub == "approve":
+        skill = args.skill
+        message = getattr(args, "message", None)
+        collective = getattr(args, "collective", None)
+
+        # Check if the skill is a current candidate (advisory, not blocking).
+        state = wsp.load_state()
+        last_candidates = state.get("last_candidates") or []
+        if skill not in last_candidates:
+            print(
+                f"note: '{skill}' is not a current share candidate. "
+                f"Sharing anyway (owner's call).",
+                file=sys.stderr,
+            )
+
+        # Submit via the existing proposal path.
+        from tools import skills_sync_client as ssc
+
+        try:
+            result = ssc.propose_skill(skill, message=message, collective=collective)
+        except ssc.SyncInertError as e:
+            print(f"cannot share: {e}", file=sys.stderr)
+            return 1
+        except ssc.SyncError as e:
+            print(f"could not share '{skill}': {e}", file=sys.stderr)
+            return 1
+
+        target = f"collective '{collective}'" if collective else "your organisation"
+        if result.get("proposal_pending"):
+            print(
+                f"Shared '{skill}' with {target} — an admin needs to "
+                f"approve it (proposal #{result.get('proposal_id')}). It is "
+                f"not live for the team until then."
+            )
+        else:
+            print(f"Added '{skill}' to your organisation's shared skills.")
+
+        # Remove from candidates so it doesn't re-nominate.
+        if skill in last_candidates:
+            last_candidates.remove(skill)
+            state["last_candidates"] = last_candidates
+            wsp.save_state(state)
+
+        return 0
+
+    if sub == "decline":
+        skill = args.skill
+        wsp.decline_candidate(skill)
+        print(f"'{skill}' declined — it won't be nominated for sharing again.")
+        return 0
+
+    return 1
 
 
 def cmd_webhook(args):
@@ -12782,6 +13098,7 @@ def main():
     # =========================================================================
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
     build_sync_parser(subparsers, cmd_sync=cmd_sync)
+    build_wisdom_parser(subparsers, cmd_wisdom=cmd_wisdom)
 
     # =========================================================================
     # webhook command  (parser built in hermes_cli/subcommands/webhook.py)

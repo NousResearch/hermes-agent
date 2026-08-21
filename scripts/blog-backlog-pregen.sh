@@ -84,6 +84,15 @@ if [[ "$rc" -ne 0 ]]; then
   # Guarded: under set -euo pipefail an unmatched grep exits 1 and would kill
   # the script BEFORE the fallback grep below could match "usage limit".
   reset_ts=$(grep -oE 'limit resets at [0-9TZ:.\-]+' "$LOG" 2>/dev/null | head -1 | sed 's/limit resets at //' || true)
+  # Codex CLI format: "try again at Aug 24th, 2026 7:45 PM" — parse to ISO.
+  if [[ -z "$reset_ts" ]]; then
+    human=$(grep -oE 'try again at [A-Za-z]+ [0-9]{1,2}(st|nd|rd|th),? [0-9]{4} [0-9]{1,2}:[0-9]{2} (AM|PM)' "$LOG" 2>/dev/null | head -1 | sed 's/try again at //' || true)
+    if [[ -n "$human" ]]; then
+      clean=$(printf '%s' "$human" | sed -E 's/([0-9]{1,2})(st|nd|rd|th)/\1/; s/,//')
+      parsed=$(date -d "$clean" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+      [[ -n "$parsed" ]] && reset_ts="$parsed"
+    fi
+  fi
   if [[ -n "$reset_ts" ]] || grep -qE 'usage limit|usage cap|Codex usage cap|weekly usage' "$LOG" 2>/dev/null; then
     if [[ -z "$reset_ts" ]]; then
       # No explicit reset timestamp: default to 12h (next scheduled tick).

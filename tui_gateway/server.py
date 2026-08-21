@@ -153,6 +153,10 @@ _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
+# Shared profile UI metadata can be updated concurrently by Desktop, mobile,
+# and multiple worker-pool RPCs.  Its compare/check/write transaction needs a
+# dedicated lock rather than the unrelated process-config cache lock.
+_profile_ui_meta_lock = threading.Lock()
 _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
 _prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
@@ -13885,14 +13889,17 @@ def _format_live_usage_output(session: dict) -> str:
 def _format_live_history_output(session: dict) -> str:
     with session["history_lock"]:
         history = list(session.get("history", []))
-    db = _get_db()
-    if db is not None and session.get("session_key"):
-        try:
-            history = db.get_messages_as_conversation(
-                session["session_key"], include_ancestors=True, include_row_ids=True
-            )
-        except Exception:
-            pass
+    # _session_db, not _get_db(): a profile session's transcript lives in its
+    # own profile's state.db, and this read is scoped by session id — through
+    # the launch handle it comes back empty and /history renders nothing.
+    with _session_db(session) as db:
+        if db is not None and session.get("session_key"):
+            try:
+                history = db.get_messages_as_conversation(
+                    session["session_key"], include_ancestors=True, include_row_ids=True
+                )
+            except Exception:
+                pass
     messages = _history_to_messages(history)
     if not messages:
         return "No conversation history yet."
@@ -13925,16 +13932,18 @@ def _format_live_prompt_output(session: dict) -> str:
 
 def _format_live_context_output(session: dict) -> str:
     messages = []
-    db = _get_db()
-    if db is not None and session.get("session_key"):
-        try:
-            messages = _history_to_messages(
-                db.get_messages_as_conversation(
-                    session["session_key"], include_ancestors=True, include_row_ids=True
+    # Same session-scoped read as /history — resolve it against the db that
+    # owns this session's rows, not the launch profile's handle.
+    with _session_db(session) as db:
+        if db is not None and session.get("session_key"):
+            try:
+                messages = _history_to_messages(
+                    db.get_messages_as_conversation(
+                        session["session_key"], include_ancestors=True, include_row_ids=True
+                    )
                 )
-            )
-        except Exception:
-            messages = []
+            except Exception:
+                messages = []
     if not messages:
         with session["history_lock"]:
             messages = _history_to_messages(list(session.get("history", [])))

@@ -280,10 +280,12 @@ import {
   glassActive,
   glassSupportedOn,
   normalizeState as normalizeTranslucency,
+  opacityNeedsSetting,
   translucencySupportedOn,
   vibrancyFor as vibrancyForTranslucency,
   windowBackingOptions,
-  windowOpacityFor
+  windowOpacityFor,
+  windowOpacityOptions
 } from './translucency'
 import {
   compareApiUrl,
@@ -908,15 +910,23 @@ let translucencyState = readPersistedTranslucency()
 // painting a themed backing onto them would turn them into opaque rectangles.
 const translucencyBackedWindows = new WeakSet()
 
-function windowOpacity() {
-  return windowOpacityFor(translucencyState)
+// Set a live window's native opacity, but only when the state asks it to fade
+// — or when the window is already faded and is on its way back to opaque. The
+// window's own opacity is the record of whether that door was ever opened; see
+// opacityNeedsSetting for why it matters that it stays shut.
+function applyWindowOpacity(win) {
+  const opacity = windowOpacityFor(translucencyState)
+
+  if (typeof win.setOpacity === 'function' && opacityNeedsSetting(opacity, win.getOpacity?.() ?? 1)) {
+    win.setOpacity(opacity)
+  }
 }
 
 // Re-apply translucency to a live window (runtime toggle, no recreation).
-// `setOpacity` is a no-op on Linux, which is fine — it just stays opaque there.
-// The backing swap is the glass half: Chromium composites the page against
-// the window backing BEFORE the OS composites the window, so glass needs the
-// backing dropped for the platform material to reach a transparent page, and
+// Opacity goes through applyWindowOpacity, which knows when the call is worth
+// making at all. The backing swap is the glass half: Chromium composites the
+// page against the window backing BEFORE the OS composites the window, so
+// glass needs the backing dropped for the platform material to reach it, and
 // every other state needs the opaque themed backing (anti-flash, and it is
 // what makes clear mode fade to the desktop instead of to black).
 //
@@ -965,8 +975,8 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
       }
     }
 
-    if (changed.opacity && typeof win.setOpacity === 'function') {
-      win.setOpacity(windowOpacity())
+    if (changed.opacity) {
+      applyWindowOpacity(win)
     }
   } catch (error) {
     rememberLog(`[translucency] apply failed: ${error.message}`)
@@ -974,11 +984,12 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
 }
 
 // Constructor options every chat window shares for its translucency surface:
-// the vibrancy material, the native opacity, and the webContents backing under
-// the CURRENT state. Glass omits backgroundColor so vibrancy shows from the
-// first frame (a non-transparent window silently ignores constructor alpha,
-// and runtime swaps are lost early in a window's life — see
-// applyWindowTranslucency); otherwise the opaque themed anti-flash backing.
+// the platform material, the webContents backing, and a native opacity only if
+// the state actually fades — all under the CURRENT state. Glass omits
+// backgroundColor so the material shows from the first frame (Electron hands a
+// translucent window a transparent default backing, and runtime swaps are lost
+// early in a window's life — see applyWindowTranslucency); otherwise the opaque
+// themed anti-flash backing.
 //
 // Call sites also register the window in translucencyBackedWindows so a live
 // toggle can re-apply. The HUD, pet overlay, quick entry and wake indicator
@@ -994,13 +1005,22 @@ function chatWindowSurfaceOptions() {
     // user's frost choice whenever they click elsewhere. Only observable
     // under glass — everywhere else the page buries the material.
     visualEffectState: IS_MAC ? ('active' as const) : undefined,
-    // Win11 DWM materials only reach the client area on a transparent window
-    // (electron#49443). Chat windows on glass-capable Windows are born
-    // transparent so a live Clear→Glass toggle doesn't need a recreate; the
-    // opaque themed backgroundColor covers it while glass is off.
-    ...(IS_WINDOWS && GLASS_SUPPORTED ? { transparent: true } : {}),
+    // NOT `transparent: true` on Windows. The backdrop material already makes
+    // the window translucent on its own: `IsTranslucent` answers yes off
+    // `background_material_` alone, which is what gives the page its transparent
+    // default backing, and `SetBackgroundMaterial` flips widget translucency
+    // live, so a Clear→Glass toggle needs no recreate either way. Its one gate
+    // is a frameless window, and `titleBarStyle: 'hidden'` already makes
+    // `has_frame()` false here.
+    //
+    // What `transparent` adds on top is permanent and unwanted: it pins the
+    // widget to kTranslucent for the window's whole life, so even glass-OFF
+    // windows pay a DirectComposition redraw per frame (electron#39895), and it
+    // opts into the documented transparent-window limits — including that a
+    // RESIZABLE transparent window is unsupported and breaks (electron#48421).
+    // Every chat window is resizable.
     backgroundMaterial: IS_WINDOWS && GLASS_SUPPORTED ? backgroundMaterialFor(translucencyState) : undefined,
-    opacity: windowOpacity(),
+    ...windowOpacityOptions(translucencyState),
     ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
   }
 }

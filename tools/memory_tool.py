@@ -23,15 +23,18 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import copy
 import json
 import logging
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
 
-from utils import atomic_write_text
+from utils import atomic_write_text, is_truthy_value
+from tools.registry import no_cache_check_fn
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -45,6 +48,14 @@ except ImportError:
         pass
 
 logger = logging.getLogger(__name__)
+
+# One tool-definition pass must use one config decision for both availability
+# and the dynamic target schema. ContextVar keeps concurrent profile/session
+# builds isolated while allowing the check_fn result to flow to the immediately
+# following dynamic_schema_overrides call in ToolRegistry.get_definitions().
+_memory_surface_flags: ContextVar[Optional[Tuple[bool, bool]]] = ContextVar(
+    "memory_surface_flags", default=None
+)
 
 # Where memory files live — resolved dynamically so profile overrides
 # (HERMES_HOME env var changes) are always respected.  The old module-level
@@ -162,16 +173,29 @@ class MemoryStore:
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(
+        self,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+        *,
+        memory_enabled: bool = True,
+        user_profile_enabled: bool = True,
+    ):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self.memory_enabled = memory_enabled
+        self.user_profile_enabled = user_profile_enabled
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         # Per-turn counter of failed at-capacity consolidation attempts; reset
         # at each turn boundary by reset_consolidation_failures() (#42405).
         self._consolidation_failures = 0
+
+    def target_enabled(self, target: str) -> bool:
+        """Return whether this session's selected built-in store is writable."""
+        return self.user_profile_enabled if target == "user" else self.memory_enabled
 
     def reset_consolidation_failures(self) -> None:
         """Reset the per-turn consolidation-failure counter (call at turn start)."""
@@ -899,10 +923,14 @@ def load_on_disk_store() -> "MemoryStore":
     """
     memory_char_limit = 2200
     user_char_limit = 1375
+    memory_enabled = True
+    user_profile_enabled = True
     try:
         from hermes_cli.config import load_config
 
-        mem_cfg = (load_config() or {}).get("memory", {}) or {}
+        config = load_config() or {}
+        mem_cfg = get_builtin_memory_config(config)
+        memory_enabled, user_profile_enabled = get_builtin_memory_store_flags(config)
         memory_char_limit = int(mem_cfg.get("memory_char_limit", memory_char_limit))
         user_char_limit = int(mem_cfg.get("user_char_limit", user_char_limit))
     except Exception:
@@ -911,6 +939,8 @@ def load_on_disk_store() -> "MemoryStore":
     store = MemoryStore(
         memory_char_limit=memory_char_limit,
         user_char_limit=user_char_limit,
+        memory_enabled=memory_enabled,
+        user_profile_enabled=user_profile_enabled,
     )
     store.load_from_disk()
     return store
@@ -1092,8 +1122,9 @@ def memory_tool(
     if target is None:
         target = "memory"
 
-    if target not in {"memory", "user"}:
-        return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
+    target_error = _memory_target_error(store, target)
+    if target_error is not None:
+        return json.dumps(target_error)
 
     # --- Batch path -------------------------------------------------------
     if operations:
@@ -1143,34 +1174,64 @@ def memory_tool(
     return json.dumps(result, ensure_ascii=False)
 
 
-def builtin_memory_stores_enabled() -> bool:
-    """Return whether either built-in store (MEMORY.md / USER.md) is enabled.
+def get_builtin_memory_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return a normalized built-in memory config mapping.
 
-    ``agent_init`` only builds a ``MemoryStore`` when at least one of
-    ``memory.memory_enabled`` / ``memory.user_profile_enabled`` is true, so with
-    both off the tool dispatches against ``store=None`` and every call fails
-    with "Memory is not available".
-
-    Fails open when config can't be read: an unreadable config must not strip a
-    tool that would otherwise work.
+    Missing, unreadable, or malformed sections become an empty mapping, whose
+    missing flags resolve to the enabled defaults. ``agent_init`` consumes this
+    same normalized section so tool availability and store construction cannot
+    diverge.
     """
-    try:
-        from hermes_cli.config import load_config_readonly
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
 
-        section = (load_config_readonly() or {}).get("memory")
-        if not isinstance(section, dict):
-            return True
-        return bool(section.get("memory_enabled", True)) or bool(
-            section.get("user_profile_enabled", True)
-        )
-    except Exception:
-        logger.debug("Could not read memory config for availability", exc_info=True)
-        return True
+            config = load_config_readonly()
+        except Exception:
+            logger.debug("Could not read memory config for availability", exc_info=True)
+            return {}
+
+    section = config.get("memory") if isinstance(config, dict) else None
+    return section if isinstance(section, dict) else {}
 
 
+def get_builtin_memory_store_flags(config: Optional[Dict[str, Any]] = None) -> Tuple[bool, bool]:
+    """Return ``(memory_enabled, user_profile_enabled)`` from resolved config."""
+    section = get_builtin_memory_config(config)
+    return (
+        is_truthy_value(section.get("memory_enabled"), default=True),
+        is_truthy_value(section.get("user_profile_enabled"), default=True),
+    )
+
+
+@no_cache_check_fn
 def check_memory_requirements() -> bool:
-    """Available unless both built-in memory stores are disabled in config."""
-    return builtin_memory_stores_enabled()
+    """Snapshot store flags and report whether the built-in tool is available."""
+    _memory_surface_flags.set(None)
+    flags = get_builtin_memory_store_flags()
+    _memory_surface_flags.set(flags)
+    return flags[0] or flags[1]
+
+
+def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str, Any]]:
+    """Return a shared validation error for an invalid or disabled target."""
+    if target not in {"memory", "user"}:
+        from tools.registry import _bound_error_text
+
+        return {
+            "success": False,
+            "error": _bound_error_text(
+                f"Invalid memory target '{target}'. Use 'memory' or 'user'."
+            ),
+        }
+    if store.target_enabled(target):
+        return None
+    label = "USER.md" if target == "user" else "MEMORY.md"
+    return {
+        "success": False,
+        "error": f"Built-in {label} writes are disabled in memory config.",
+        "target": target,
+    }
 
 
 def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
@@ -1181,6 +1242,9 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     """
     action = payload.get("action")
     target = payload.get("target", "memory")
+    target_error = _memory_target_error(store, target)
+    if target_error is not None:
+        return target_error
     content = payload.get("content") or ""
     old_text = payload.get("old_text") or ""
     if action == "batch":
@@ -1268,6 +1332,43 @@ MEMORY_SCHEMA = {
 }
 
 
+def _build_memory_schema_overrides() -> Dict[str, Any]:
+    """Narrow the advertised target surface using the availability snapshot."""
+    flags = _memory_surface_flags.get()
+    _memory_surface_flags.set(None)
+    if flags is None:
+        flags = get_builtin_memory_store_flags()
+    memory_enabled, user_profile_enabled = flags
+    targets = []
+    if memory_enabled:
+        targets.append("memory")
+    if user_profile_enabled:
+        targets.append("user")
+
+    parameters = copy.deepcopy(MEMORY_SCHEMA["parameters"])
+    target_schema = parameters["properties"]["target"]
+    target_schema["enum"] = targets
+
+    description = MEMORY_SCHEMA["description"]
+    if targets == ["memory"]:
+        target_schema["description"] = "The enabled built-in store: 'memory' for personal notes."
+        description = description.replace(
+            "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
+            "notes (environment, conventions, tool quirks, lessons).",
+            "TARGET: only 'memory' is enabled for personal notes (environment, conventions, "
+            "tool quirks, lessons).",
+        )
+    elif targets == ["user"]:
+        target_schema["description"] = "The enabled built-in store: 'user' for user profile."
+        description = description.replace(
+            "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
+            "notes (environment, conventions, tool quirks, lessons).",
+            "TARGET: only 'user' is enabled for user profile facts (name, role, preferences, style).",
+        )
+
+    return {"description": description, "parameters": parameters}
+
+
 # --- Registry ---
 from tools.registry import registry, tool_error
 
@@ -1285,6 +1386,7 @@ registry.register(
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
+    dynamic_schema_overrides=_build_memory_schema_overrides,
 )
 
 

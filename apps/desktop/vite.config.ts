@@ -1,5 +1,17 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import babel from '@rolldown/plugin-babel'
+import react, { reactCompilerPreset } from '@vitejs/plugin-react'
+
+/** React Compiler preset scoped to modules that can actually contain
+ *  components/hooks (JSX syntax or a react-ish import). The preset's default
+ *  code filter matches any PascalCase/use* declaration — effectively every TS
+ *  module — which made the babel pass parse all ~1.5k source files when only
+ *  ~750 are React-bearing. */
+function compilerPreset() {
+  const preset = reactCompilerPreset()
+  preset.rolldown.filter.code = /\/>|<\/|from\s*['"][^'"]*react/
+  return preset
+}
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 import fs from 'fs'
@@ -91,7 +103,7 @@ const emojibaseAssets = () => ({
 
 export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [react(), tailwindcss(), emojibaseAssets()],
+  plugins: [react(), babel({ presets: [compilerPreset()] }), tailwindcss(), emojibaseAssets()],
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and

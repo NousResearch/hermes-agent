@@ -18,6 +18,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Dict, Optional
 
@@ -328,6 +329,11 @@ async def test_expired_own_prompt_notifies_instead_of_unknown_command():
 
     event = _event({"prompt_id": prompt_id, "option_id": "c1"})
     assert await adapter._consume_prompt_response(event) is True
+    # The notice is fire-and-forget now (read-loop self-deadlock fix:
+    # awaiting a send from _consume_prompt_response blocks the very read
+    # loop that resolves the send's result future). Yield so the
+    # background ack task runs before asserting egress.
+    await asyncio.sleep(0.05)
     notices = [a for a in stub.sent if a["op"] == "send"]
     assert len(notices) == 1
     assert "no longer waiting" in notices[0]["content"]

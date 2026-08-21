@@ -475,7 +475,7 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
     expect(submit?.params?.confirm_truncate).toBeUndefined()
   })
 
-  it('leaves a bound durable rowId untouched (no extra history call)', async () => {
+  it('leaves a bound durable rowId untouched (no extra history call) and drops the client ordinal', async () => {
     const calls: Call[] = []
 
     await runRewindSubmit(makeGateway(calls), 'sid', 'fixed prompt', 1, undefined, false, undefined, 13, 'typo prompt')
@@ -485,7 +485,77 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
     const submit = calls.find(call => call.method === 'prompt.submit')
 
     expect(submit?.params?.truncate_before_row_id).toBe(13)
-    expect(submit?.params?.truncate_before_user_ordinal).toBe(1)
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+  })
+
+  it('drops the client ordinal whenever a durable row id is present, including a complete live transcript (#88082, #89244)', async () => {
+    const calls: Call[] = []
+
+    await runRewindSubmit(
+      makeGateway(calls),
+      'sid',
+      'fixed prompt',
+      1, // display-lineage / window-relative — not the gateway tip
+      undefined,
+      false,
+      undefined,
+      13,
+      'typo prompt'
+    )
+
+    // No content-resolution read needed — the bubble already holds a durable id.
+    expect(calls.some(call => call.method === 'session.history')).toBe(false)
+
+    const submit = calls.find(call => call.method === 'prompt.submit')
+
+    expect(submit?.params?.confirm_truncate).toBe(true)
+    expect(submit?.params?.truncate_before_row_id).toBe(13)
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+  })
+
+  it('drops the client ordinal when the cut is addressed by durable message id alone', async () => {
+    const calls: Call[] = []
+
+    await runRewindSubmit(
+      makeGateway(calls),
+      'sid',
+      'fixed prompt',
+      1,
+      'durable-platform-msg-1',
+      false,
+      undefined,
+      undefined,
+      'typo prompt'
+    )
+
+    const submit = calls.find(call => call.method === 'prompt.submit')
+
+    expect(submit?.params?.confirm_truncate).toBe(true)
+    expect(submit?.params?.truncate_before_message_id).toBe('durable-platform-msg-1')
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+  })
+
+  it('still confirms an empty truncate when the dropped ordinal was 0', async () => {
+    const calls: Call[] = []
+
+    await runRewindSubmit(
+      makeGateway(calls),
+      'sid',
+      'fixed prompt',
+      0,
+      'durable-platform-msg-1',
+      false,
+      undefined,
+      13,
+      'typo prompt'
+    )
+
+    const submit = calls.find(call => call.method === 'prompt.submit')
+
+    expect(submit?.params?.confirm_truncate).toBe(true)
+    expect(submit?.params?.confirm_empty_truncate).toBe(true)
+    expect(submit?.params?.truncate_before_row_id).toBe(13)
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
   })
 })
 

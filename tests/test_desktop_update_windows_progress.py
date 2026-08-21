@@ -26,9 +26,29 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 WINDOWS_UPDATE_PS1 = REPO_ROOT / "scripts" / "desktop-update" / "windows.ps1"
 
 
-def _read_progress(url: str) -> dict[str, object]:
-    with urlopen(f"{url}progress", timeout=5) as response:
-        return json.loads(response.read().decode("utf-8"))
+def _read_progress(url: str, deadline: float) -> dict[str, object]:
+    """Poll /progress, retrying transient socket stalls until ``deadline``.
+
+    A single slow answer from the PS runspace listener is NOT the bug this
+    test guards (the listener can lose the CPU for seconds on a loaded CI
+    runner while it still serves fine a moment later). One raw
+    ``urlopen(timeout=5)`` propagating TimeoutError was exactly the Aug 2026
+    flake (run 32440286339). Only a listener that stays unresponsive until
+    the deadline fails the test.
+    """
+    last_exc: Exception | None = None
+    attempted = False
+    while not attempted or time.monotonic() < deadline:
+        attempted = True
+        try:
+            with urlopen(f"{url}progress", timeout=5) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except (TimeoutError, OSError) as exc:  # transient stall — retry
+            last_exc = exc
+            time.sleep(0.2)
+    raise AssertionError(
+        f"/progress unresponsive until deadline (last error: {last_exc!r})"
+    )
 
 
 def test_progress_advances_while_the_orchestrator_blocks(tmp_path: Path) -> None:
@@ -42,8 +62,12 @@ def test_progress_advances_while_the_orchestrator_blocks(tmp_path: Path) -> None
     # Generous hold: the assertions below must both land INSIDE it. 4s was
     # too tight for a slow runner — the second sample slid past the hold,
     # caught the cleared terminal state, and failed '' == 'Testing quiet
-    # update' (PR #90358 rerun, Aug 2026).
-    env["HERMES_SELFTEST_HOLD_SECONDS"] = "10"
+    # update' (PR #90358 rerun, Aug 2026). 10s left no headroom once
+    # transient /progress retries entered the budget (publish wait ≤10s +
+    # stability window + retry sleeps), so: 30s, and every sampling deadline
+    # below is derived from the moment the held stage lands, keeping the
+    # whole window comfortably inside the hold.
+    env["HERMES_SELFTEST_HOLD_SECONDS"] = "30"
 
     with output_path.open("wb") as output:
         process = subprocess.Popen(
@@ -84,14 +108,14 @@ def test_progress_advances_while_the_orchestrator_blocks(tmp_path: Path) -> None
         # stage to actually land, THEN start the stability window.
         held_stage = "Testing quiet update"
         publish_deadline = time.monotonic() + 10
-        first = _read_progress(shim_url)
+        first = _read_progress(shim_url, publish_deadline)
         while first.get("message") != held_stage and time.monotonic() < publish_deadline:
             time.sleep(0.1)
-            first = _read_progress(shim_url)
+            first = _read_progress(shim_url, publish_deadline)
         assert first["message"] == held_stage, first
 
         time.sleep(1.5)
-        second = _read_progress(shim_url)
+        second = _read_progress(shim_url, time.monotonic() + 10)
 
         # The stage is whatever the orchestrator last published -- it must
         # reach the page verbatim and must not churn on its own.
@@ -103,7 +127,7 @@ def test_progress_advances_while_the_orchestrator_blocks(tmp_path: Path) -> None
         # -- which is what a stalled update looks like to the user.
         assert int(second["elapsed_seconds"]) > int(first["elapsed_seconds"])
 
-        assert process.wait(timeout=20) == 0
+        assert process.wait(timeout=60) == 0
     finally:
         if process.poll() is None:
             process.kill()

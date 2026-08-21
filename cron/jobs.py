@@ -1692,6 +1692,41 @@ def _normalize_job_optional_text(value: Any, *, strip_trailing_slash: bool = Fal
     return text or None
 
 
+def _normalize_reasoning_effort(value: Any) -> Optional[str]:
+    """Validate a per-job reasoning effort against the canonical grammar.
+
+    Spelling-only validation at the storage choke point: the SAME parser
+    every other effort surface uses (``hermes_constants.parse_reasoning_effort``)
+    decides validity, so the cron knob can never be stricter or looser than
+    its config.yaml sibling. Capability (whether the resolved model supports
+    the level) is intentionally NOT checked here — the model is not knowable
+    at create time (unpinned jobs, auth fallback), and the provider
+    transports already clamp/omit at send time.
+
+    Returns None for unset (None/empty string), the normalized lowercase
+    level for valid input, and raises ValueError otherwise so nothing
+    invalid ever persists for a fire-and-forget job.
+    """
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    from hermes_constants import parse_reasoning_effort
+
+    if parse_reasoning_effort(text) is None:
+        raise ValueError(
+            f"Invalid reasoning_effort {value!r}. Valid levels: "
+            "none, minimal, low, medium, high, xhigh, max, ultra "
+            "(empty string clears the override)."
+        )
+    # parse_reasoning_effort accepts disable aliases ("false", "disabled");
+    # store the canonical spelling so the record reads unambiguously.
+    if text in {"false", "disabled"}:
+        return "none"
+    return text
+
+
 def _compute_provider_model_snapshots(
     *,
     provider: Any,
@@ -1797,6 +1832,7 @@ def create_job(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1854,6 +1890,16 @@ def create_job(
         monitor_url: Optional http(s) URL used as the monitor source instead
                 of a script — fetched with a bounded GET each tick. Same
                 hash-suppression semantics as ``monitor_script``.
+        reasoning_effort: Optional per-job reasoning effort pin. One of the
+                canonical Hermes levels (none|minimal|low|medium|high|xhigh|
+                max|ultra, case-insensitive). When set, it wins over BOTH the
+                global ``agent.reasoning_effort`` and per-model
+                ``agent.reasoning_overrides`` at fire time. Capability is NOT
+                validated here: levels above what the resolved model supports
+                are clamped or omitted by the provider transport at send time,
+                exactly like config-set effort. Inert with ``no_agent=True``
+                (no LLM call to configure). None/empty = unset (job follows
+                config resolution, pre-existing behavior).
 
     Returns:
         The created job dict
@@ -1886,6 +1932,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
     normalized_monitor_script = str(monitor_script).strip() if isinstance(monitor_script, str) else None
     normalized_monitor_script = normalized_monitor_script or None
     normalized_monitor_url = str(monitor_url).strip() if isinstance(monitor_url, str) else None
@@ -1995,6 +2042,10 @@ def create_job(
     # global cron.mirror_delivery config, default off).
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
+    # Same conditional-persist rule for the per-job reasoning effort pin:
+    # absent key = job follows config resolution (pre-feature behavior).
+    if normalized_reasoning_effort is not None:
+        job["reasoning_effort"] = normalized_reasoning_effort
 
     with _jobs_lock():
         jobs = load_jobs()
@@ -2100,6 +2151,15 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     _mv = updates[_mon_field]
                     _mv = str(_mv).strip() if isinstance(_mv, str) else None
                     updates[_mon_field] = _mv or None
+
+            # Validate/normalize the per-job reasoning effort pin the same
+            # way create_job does: canonical grammar only, empty string (or
+            # None) clears. Invalid values raise BEFORE the merge so the
+            # stored value stays untouched.
+            if "reasoning_effort" in updates:
+                updates["reasoning_effort"] = _normalize_reasoning_effort(
+                    updates["reasoning_effort"]
+                )
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})

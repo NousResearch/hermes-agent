@@ -1576,6 +1576,14 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     # Don't stop a working dashboard when the Node refresh failed — see the
     # git-update path for rationale (#30271).
     _finish_dashboard_update_cleanup(node_failures)
+    try:
+        from hermes_cli.update_receipt import finalize_update_receipt
+
+        finalize_update_receipt(
+            "success" if (desktop_build_ok and not node_failures) else "partial"
+        )
+    except Exception as _receipt_exc:
+        logger.debug("Update receipt finalize (zip path) failed: %s", _receipt_exc)
     return desktop_build_ok
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -5000,6 +5008,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
     print("⚕ Updating Hermes Agent...")
     print()
 
+    # Phase 1 (#91277): structured update receipt — record what this run
+    # discovers, does, and skips, so silent-failure classes (#88848,
+    # #74973, #85753, #81193) become diagnosable from disk.
+    try:
+        from hermes_cli.update_receipt import begin_update_receipt
+
+        begin_update_receipt()
+    except Exception as _receipt_exc:
+        logger.debug("Update receipt unavailable: %s", _receipt_exc)
+
     # On Windows, abort early if another hermes.exe is holding the venv shim
     # open. Continuing would result in a string of WinError 32 warnings and
     # then either a deferred-rename leftover or a failed git-pull fast path
@@ -5017,6 +5035,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # Returns the quick-snapshot id (or None when disabled/failed); the
     # post-update cron-jobs safety net uses it to detect job loss.
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
+    try:
+        from hermes_cli.update_receipt import record_step
+
+        record_step(
+            "pre_update_backup",
+            pre_update_snapshot_id is not None,
+            f"snapshot={pre_update_snapshot_id}" if pre_update_snapshot_id else "disabled or failed",
+        )
+    except Exception:
+        pass
 
     _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
     if _windows_gateway_resume:
@@ -6400,6 +6428,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # needed to forward already-restarted units to
         # ``_finish_dashboard_update_cleanup`` (review on #83595).
         restarted_services: list = []
+        # Same outside-the-try treatment: the post-restart fleet version
+        # check consults killed_pids to decide whether to wait for
+        # freshly-restarted gateways to settle, and the phase's except
+        # path forwards it to the update receipt.
+        killed_pids: set = set()
 
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
@@ -7087,6 +7120,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         pass
             _warn_incomplete_gateway_fleet_restart(failed_or_stale_units)
 
+            try:
+                from hermes_cli.update_receipt import record_gateway_restart
+
+                record_gateway_restart(
+                    restarted_services=restarted_services,
+                    relaunched_profiles=relaunched_profiles,
+                    externally_supervised_profiles=externally_supervised_profiles,
+                    killed_pids=sorted(killed_pids),
+                    failed_units=failed_or_stale_units,
+                    incomplete=bool(failed_or_stale_units),
+                )
+            except Exception:
+                pass
+
             if not restarted_services and not killed_pids:
                 # No gateways were running — nothing to do
                 pass
@@ -7157,6 +7204,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         _exit_code_path.write_text("1", encoding="utf-8")
                     except OSError:
                         pass
+            try:
+                from hermes_cli.update_receipt import record_gateway_restart
+
+                record_gateway_restart(
+                    restarted_services=restarted_services,
+                    incomplete=gateway_fleet_restart_incomplete,
+                    phase_error=str(e),
+                )
+            except Exception:
+                pass
 
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
 
@@ -7206,6 +7263,41 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("Tip: You can now select a provider and model:")
         print("  hermes model              # Select provider and model")
 
+        # Phase 1 (#91277): post-update fleet version verification. Compare
+        # every live gateway's stamped code_sha against the freshly-updated
+        # checkout and surface any gateway still serving pre-update code —
+        # instead of assuming the restart phase worked (#88654, #69754).
+        _fleet_snapshot: list = []
+        try:
+            from hermes_cli.update_receipt import (
+                collect_fleet_versions,
+                print_fleet_version_matrix,
+            )
+
+            # A brief settle window: freshly restarted gateways need a
+            # moment to rewrite gateway_state.json with their new identity.
+            # Skipped when the restart phase touched nothing (no gateways
+            # were running) — nothing to settle.
+            if restarted_services or killed_pids:
+                _time.sleep(2.0)
+            _fleet_snapshot = collect_fleet_versions()
+            if print_fleet_version_matrix(_fleet_snapshot):
+                gateway_fleet_restart_incomplete = True
+        except Exception as _fleet_exc:
+            logger.debug("Fleet version verification failed: %s", _fleet_exc)
+
+        try:
+            from hermes_cli.update_receipt import finalize_update_receipt
+
+            _receipt_path = finalize_update_receipt(
+                "partial" if gateway_fleet_restart_incomplete else "success",
+                fleet=_fleet_snapshot,
+            )
+            if _receipt_path is not None:
+                logger.info("Update receipt written: %s", _receipt_path)
+        except Exception as _receipt_exc:
+            logger.debug("Update receipt finalize failed: %s", _receipt_exc)
+
         if gateway_fleet_restart_incomplete:
             # Code update itself succeeded, but at least one gateway still
             # runs pre-update modules — surface that as a failed update so
@@ -7225,6 +7317,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _write_gateway_update_exit_code(desktop_build_ok)
         else:
             print(f"✗ Update failed: {e}")
+            try:
+                from hermes_cli.update_receipt import finalize_update_receipt
+
+                finalize_update_receipt("failed")
+            except Exception:
+                pass
             sys.exit(1)
 
 # --- Hoisted from the body of _cmd_update_impl (self-contained, no closure state) ---

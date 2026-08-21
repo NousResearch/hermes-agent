@@ -4398,6 +4398,23 @@ def _bind_prompt_submit_keys(
         kb.add("c-j")(handler)
 
 
+def resolve_ctrl_c_composer_action(*, has_draft: bool, agent_running: bool) -> str:
+    """Priority for the Ctrl+C/Ctrl+Q clear/interrupt/exit chord.
+
+    A non-empty draft (typed text or pending attachments) always wins, even
+    while the agent is running — otherwise a Ctrl+C meant to clear a typo or
+    half-typed correction instead kills the in-flight turn. Mirrors the
+    TUI's resolveCtrlCComposerAction fix (#89171): clear the draft first,
+    interrupt a running agent only when the draft is already empty, exit
+    only when both are idle.
+    """
+    if has_draft:
+        return "clear"
+    if agent_running:
+        return "interrupt"
+    return "exit"
+
+
 def _disable_prompt_toolkit_cpr_warning(app) -> None:
     """Let prompt_toolkit fall back from CPR without printing into the prompt."""
     try:
@@ -18487,12 +18504,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         @kb.add('c-c')
         def handle_ctrl_c(event):
             """Handle Ctrl+C - cancel interactive prompts, interrupt agent, or exit.
-            
+
             Priority:
             0. Cancel active voice recording
             1. Cancel active sudo/approval/clarify prompt
-            2. Interrupt the running agent (first press)
-            3. Force exit (second press within 2s, or when idle)
+            2. Clear a non-empty draft, even mid-stream — a typed correction
+               must never accidentally kill a running turn
+            3. Interrupt the running agent (first press)
+            4. Force exit (second press within 2s, or when idle)
             """
             now = time.time()
 
@@ -18560,22 +18579,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if _overlay_cleared and not (self._agent_running and self.agent):
                 return
 
-            if self._agent_running and self.agent:
+            ctrl_c_action = resolve_ctrl_c_composer_action(
+                has_draft=bool(event.app.current_buffer.text or self._attached_images),
+                agent_running=bool(self._agent_running and self.agent),
+            )
+            if ctrl_c_action == "clear":
+                event.app.current_buffer.reset()
+                self._attached_images.clear()
+                event.app.invalidate()
+            elif ctrl_c_action == "interrupt":
                 if now - self._last_ctrl_c_time < 2.0:
                     print("\n⚡ Force exiting...")
                     self._should_exit = True
                     event.app.exit()
                     return
-                
+
                 self._last_ctrl_c_time = now
                 print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
                 request_hard_interrupt(self.agent)
-            # If there's text or images, clear them (like bash).
-            # If everything is already empty, exit.
-            elif event.app.current_buffer.text or self._attached_images:
-                event.app.current_buffer.reset()
-                self._attached_images.clear()
-                event.app.invalidate()
             else:
                 self._should_exit = True
                 event.app.exit()
@@ -18645,13 +18666,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if _overlay_cleared and not (self._agent_running and self.agent):
                 return
 
-            if self._agent_running and self.agent:
-                print("\n⚡ Interrupting agent...")
-                request_hard_interrupt(self.agent)
-            elif event.app.current_buffer.text or self._attached_images:
+            ctrl_q_action = resolve_ctrl_c_composer_action(
+                has_draft=bool(event.app.current_buffer.text or self._attached_images),
+                agent_running=bool(self._agent_running and self.agent),
+            )
+            if ctrl_q_action == "clear":
                 event.app.current_buffer.reset()
                 self._attached_images.clear()
                 event.app.invalidate()
+            elif ctrl_q_action == "interrupt":
+                print("\n⚡ Interrupting agent...")
+                request_hard_interrupt(self.agent)
             else:
                 self._should_exit = True
                 event.app.exit()

@@ -1,0 +1,25 @@
+manifest_version: 1
+
+name: context
+description: Search, scrape, crawl, extract, parse, monitor, and process the live web with Context.dev.
+source: https://docs.context.dev
+
+transport:
+  type: http
+  url: https://mcp.context.dev/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - context.dev
+  hosts:
+    - context.dev
+
+post_install: |
+  On first connection, Hermes opens a browser to authenticate with Context.dev.
+  Approve access, then restart the Hermes session so the tools load.
+
+  Re-run the tool checklist at any time with:
+    hermes mcp configure context

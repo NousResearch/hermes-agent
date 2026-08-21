@@ -7,7 +7,15 @@ import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-
  *  a model is never shown under a different provider. */
 export function currentPickerSelection(
   store: { model: string; provider: string },
-  options?: { model?: string; provider?: string }
+  options?: {
+    model?: string
+    provider?: string
+    providers?: ReadonlyArray<{
+      is_current?: boolean
+      models?: readonly string[]
+      slug?: string
+    }>
+  }
 ): { model: string; provider: string } {
   const storeSelection = {
     model: String(store.model || ''),
@@ -20,6 +28,23 @@ export function currentPickerSelection(
   }
 
   if (storeSelection.model && storeSelection.provider) {
+    // A named custom provider resolves to the billing/runtime class `custom`
+    // inside AIAgent, so SessionView cannot identify which configured picker
+    // row owns the model. The session-scoped model.options response can: its
+    // current row carries the exact slug the menu renders. Recover only when
+    // the model agrees, preserving the sticky SessionView pair when options
+    // are stale or belong to another session.
+    if (storeSelection.provider.toLowerCase() === 'custom' && optionsSelection.model === storeSelection.model) {
+      const currentRow = options?.providers?.find(
+        provider => provider.is_current === true && provider.models?.includes(storeSelection.model)
+      )
+      const currentProvider = String(currentRow?.slug || '')
+
+      if (currentProvider) {
+        return { model: storeSelection.model, provider: currentProvider }
+      }
+    }
+
     return storeSelection
   }
 

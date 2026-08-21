@@ -2830,8 +2830,11 @@ _paid_lane_warned: set = set()
 
 
 def _is_free_model(model: Optional[str]) -> bool:
-    """True when ``model`` is an OpenRouter free SKU (``:free`` suffix)."""
-    return bool(model) and str(model).strip().endswith(":free")
+    """True when ``model`` is a free SKU (``:free`` suffix or ``stealth/`` prefix)."""
+    if not model:
+        return False
+    normalized = str(model).strip()
+    return normalized.endswith(":free") or normalized.startswith("stealth/")
 
 
 def _aux_openrouter_settings() -> Tuple[bool, str]:

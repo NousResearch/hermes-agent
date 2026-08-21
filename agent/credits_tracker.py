@@ -244,13 +244,9 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
         return False
     if model.endswith(":free"):
         return True
-    # Stealth-preview SKUs (e.g. stealth/ox-alpha) are free-tier but carry no
-    # ``:free`` suffix.  Spend is forced to zero server-side, so a ``paid_access:
-    # false`` header on these models is a false positive for the depleted banner.
-    # The ``stealth/`` prefix is the Nous naming convention for these SKUs and
-    # is checked here as a zero-network signal, same design as the ``:free``
-    # suffix above.  Fail-open to False (the banner still shows) if the prefix
-    # ever changes — recoverable noise, never a masked depletion on a paid model.
+    # Stealth-preview SKUs are free-tier but carry no ``:free`` suffix (see
+    # docstring point 2). Naming-convention trust: if a PAID model ever shipped
+    # under ``stealth/`` this would wrongly suppress the banner on it.
     if model.startswith("stealth/"):
         return True
     if not base_url:

@@ -7521,7 +7521,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             _auto_tts_default = False
         if hasattr(adapter, "_auto_tts_default"):
-            adapter._auto_tts_default = _auto_tts_default
+            # A2A never inherits the global speak default. Desktop/wake-word
+            # may flip voice.auto_tts; agent peers still get text only.
+            if getattr(platform, "value", None) == "a2a":
+                adapter._auto_tts_default = False
+            else:
+                adapter._auto_tts_default = _auto_tts_default
 
         prefix = f"{platform.value}:"
         if isinstance(disabled_chats, set):
@@ -22024,6 +22029,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
           runner must handle it.
         """
         if not response or response.startswith("Error:"):
+            return False
+
+        # A2A is agent-to-agent text. The adapter has no native send_voice, so
+        # global voice.auto_tts (Desktop "Read replies aloud") would synthesize
+        # an MP3 and then fail delivery with "Couldn't deliver the audio
+        # attachment." Keep /voice scoped to human platforms.
+        if getattr(event.source.platform, "value", None) == "a2a":
             return False
 
         chat_id = event.source.chat_id

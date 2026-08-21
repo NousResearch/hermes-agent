@@ -42,6 +42,7 @@ const pollOAuthSession = vi.fn()
 const getHermesConfigRecord = vi.fn()
 const getHermesConfigSchema = vi.fn()
 const saveHermesConfig = vi.fn()
+const saveHermesConfigRecord = vi.fn()
 const getElevenLabsVoices = vi.fn()
 
 vi.mock('@/hermes', () => ({
@@ -62,6 +63,7 @@ vi.mock('@/hermes', () => ({
   getHermesConfigRecord: () => getHermesConfigRecord(),
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown) => saveHermesConfig(config),
+  saveHermesConfigRecord: (config: unknown, profile?: unknown) => saveHermesConfigRecord(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
   // @/store/profile (pulled in transitively via use-config-record's
   // normalizeProfileKey import) calls this at module-init; the full-replacement
@@ -149,6 +151,7 @@ beforeEach(() => {
   })
   getHermesConfigSchema.mockResolvedValue({ fields: {}, category_order: [] })
   saveHermesConfig.mockResolvedValue({ ok: true })
+  saveHermesConfigRecord.mockResolvedValue({ ok: true })
   getElevenLabsVoices.mockResolvedValue({ available: false, voices: [] })
 })
 
@@ -193,9 +196,12 @@ describe('ToolsetConfigPanel', () => {
     // closed Select.
     const voiceInput = screen.getByDisplayValue('alloy')
     fireEvent.change(voiceInput, { target: { value: 'marin' } })
-    await waitFor(() => expect(saveHermesConfig).toHaveBeenCalled(), { timeout: 3000 })
-    const saved = saveHermesConfig.mock.calls.at(-1)?.[0] as Record<string, Record<string, Record<string, string>>>
+    await waitFor(() => expect(saveHermesConfigRecord).toHaveBeenCalled(), { timeout: 3000 })
+    const saved = saveHermesConfigRecord.mock.calls.at(-1)?.[0] as Record<string, Record<string, Record<string, string>>>
     expect(saved.tts.openai.voice).toBe('marin')
+    // Unscoped panel (no Capabilities override) → profile rides as undefined,
+    // preserving the active-profile default. A scoped panel forwards its scope.
+    expect(saveHermesConfigRecord.mock.calls.at(-1)?.[1]).toBeUndefined()
   })
 
   it('renders no inline voice fields for rows without tts_provider (older backend)', async () => {

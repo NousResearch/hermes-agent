@@ -889,8 +889,11 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
                 {toolset === 'tts' && provider.tts_provider && (
                   // Voice/model settings for this backend (tts.<key>.*) —
                   // the same fields Settings → Voice renders, inline so the
-                  // Capabilities panel is a complete setup surface.
-                  <VoiceProviderFields providerKey={provider.tts_provider} section="tts" />
+                  // Capabilities panel is a complete setup surface. Profile
+                  // threaded like every other fetch in this panel: unscoped,
+                  // these fields read AND autosaved the ACTIVE profile's
+                  // config while the panel claimed to configure another.
+                  <VoiceProviderFields profile={profile} providerKey={provider.tts_provider} section="tts" />
                 )}
                 {MODEL_CATALOG_TOOLSETS.has(toolset) && (
                   <ModelCatalogPicker

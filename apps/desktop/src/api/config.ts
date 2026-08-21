@@ -99,6 +99,19 @@ export function saveHermesConfig(config: HermesConfigRecord, profile?: null | st
   })
 }
 
+/** Capability-scoped variant of ``saveHermesConfig``: accepts the full
+ *  ProfileScope shape (profile + optional connectionId) so a panel configuring
+ *  another gateway's profile writes THAT backend's config — symmetric with
+ *  ``getHermesConfigRecord``. Omitted scope = the active profile. */
+export function saveHermesConfigRecord(config: HermesConfigRecord, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...capabilityScoped(profile),
+    path: '/api/config',
+    method: 'PUT',
+    body: { config }
+  })
+}
+
 export function getEnvVars(profile?: null | string): Promise<Record<string, EnvVarInfo>> {
   return hermesApi<Record<string, EnvVarInfo>>({
     ...profileScoped(profile),

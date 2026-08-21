@@ -807,10 +807,12 @@ def check_command_security(command: str) -> dict:
 
     # Map exit code to action
     exit_code = result.returncode
+    if exit_code in (0, 1, 2):
+        # All documented verdict exits mean the scanner ran successfully.
+        _crash_count = 0
+
     if exit_code == 0:
         action = "allow"
-        # Successful execution — reset circuit breaker
-        _crash_count = 0
     elif exit_code == 1:
         action = "block"
     elif exit_code == 2:

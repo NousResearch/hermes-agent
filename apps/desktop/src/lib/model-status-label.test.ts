@@ -7,7 +7,7 @@ describe('model-status-label', () => {
   it('formats display names consistently', () => {
     expect(displayModelName('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8')
     expect(displayModelName('openai/gpt-5.5-fast')).toBe('GPT-5.5')
-    expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('Deepseek V4 Pro')
+    expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('DeepSeek V4 Pro')
     expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
   })
 
@@ -44,6 +44,28 @@ describe('model-status-label', () => {
 
   it('returns just the placeholder name when there is no model', () => {
     expect(formatModelStatusLabel('')).toBe('No model')
+  })
+
+  it('keeps vendor casing that the model id does not carry', () => {
+    expect(displayModelName('glm-5.2')).toBe('GLM 5.2')
+    expect(displayModelName('zai-org/glm-5.1')).toBe('GLM 5.1')
+    expect(displayModelName('deepseek-v4-flash')).toBe('DeepSeek V4 Flash')
+    expect(displayModelName('minimax/minimax-01')).toBe('MiniMax 01')
+    expect(displayModelName('xiaomi/mimo-v2.5')).toBe('MiMo V2.5')
+    expect(displayModelName('ernie-5.1')).toBe('ERNIE 5.1')
+    expect(displayModelName('baai/bge-m3')).toBe('BGE M3')
+  })
+
+  it('capitalises parameter counts the way vendors write them', () => {
+    expect(displayModelName('qwen3-32b')).toBe('Qwen3 32B')
+    expect(displayModelName('qwen/qwen3.5-35b-a3b')).toBe('Qwen3.5 35B A3B')
+    expect(displayModelName('meta/llama-3.1-8b-instruct-fp8')).toBe('Llama 3.1 8B Instruct FP8')
+  })
+
+  it('title-cases gemini names like every other branch', () => {
+    expect(displayModelName('gemini-2.5-pro')).toBe('Gemini 2.5 Pro')
+    expect(displayModelName('gemini-2.0-flash')).toBe('Gemini 2.0 Flash')
+    expect(displayModelName('google/gemini-2.5-flash-lite')).toBe('Gemini 2.5 Flash Lite')
   })
 
   describe('currentPickerSelection', () => {

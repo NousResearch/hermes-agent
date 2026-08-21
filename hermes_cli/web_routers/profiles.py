@@ -71,9 +71,11 @@ router = APIRouter()
 # Late-bound web_server helpers (resolved at call time; cycle-safe,
 # monkeypatch-transparent).
 _cron_profile_home = late("_cron_profile_home")
+_current_profile_name = late("_current_profile_name")
 _disable_unselected_skills = late("_disable_unselected_skills")
 _fallback_profile_dicts = late("_fallback_profile_dicts")
 _hub_action_name = late("_hub_action_name")
+_is_isolated_server = late("_is_isolated_server")
 _open_session_db_at_path = late("_open_session_db_at_path")
 _profile_setup_command = late("_profile_setup_command")
 _profile_to_dict = late("_profile_to_dict")
@@ -941,11 +943,13 @@ async def set_active_profile_endpoint(body: ProfileActiveUpdate):
 
 @router.get("/api/profiles/{name}/setup-command")
 async def get_profile_setup_command(name: str):
+    _assert_profile_in_scope(name)
     return {"command": _profile_setup_command(name)}
 
 
 @router.post("/api/profiles/{name}/open-terminal")
 async def open_profile_terminal_endpoint(name: str):
+    _assert_profile_in_scope(name)
     try:
         command = _profile_setup_command(name)
 
@@ -1000,6 +1004,7 @@ async def open_profile_terminal_endpoint(name: str):
 
 @router.patch("/api/profiles/{name}")
 async def rename_profile_endpoint(name: str, body: ProfileRename):
+    _assert_profile_in_scope(name)
     from hermes_cli import profiles as profiles_mod
     try:
         path = profiles_mod.rename_profile(name, body.new_name)
@@ -1036,6 +1041,7 @@ async def delete_profile_endpoint(name: str):
     """Delete a profile. The dashboard collects the user's confirmation in
     its own dialog before this request, so we always pass ``yes=True`` to
     skip the CLI's interactive prompt."""
+    _assert_profile_in_scope(name)
     from hermes_cli import profiles as profiles_mod
     try:
         path = profiles_mod.delete_profile(name, yes=True)
@@ -1049,8 +1055,44 @@ async def delete_profile_endpoint(name: str):
     return {"ok": True, "path": str(path)}
 
 
+def _assert_profile_in_scope(name: str) -> None:
+    """Reject cross-profile access from a scoped (isolated) server.
+
+    A dashboard/serve process launched with ``--isolated`` is scoped to a
+    single profile (its own HERMES_HOME). Such a server must not read,
+    mutate, export, or destroy another profile's data: that is the
+    prompt/identity-injection and data-exfiltration boundary behind #91330
+    (an attacker who can reach an isolated dashboard could otherwise rewrite
+    a different profile's persona — or export its config/secrets — to inject
+    a malicious prompt or steal data).
+
+    Isolation is tracked explicitly on ``app.state.isolated`` (threaded from
+    the ``--isolated`` launch flag through :func:`start_server`), not inferred
+    from the profile name — an isolated server may be scoped to the default
+    profile too, and must still be restricted. The default (unified) machine
+    dashboard (isolated=False) is *intentionally* a machine-wide management
+    surface, so this guard is a no-op there. Every ``/api/profiles/{name}/*``
+    read/mutate/export/delete endpoint routes through this guard.
+    """
+    if not _is_isolated_server():
+        # Unified machine dashboard: cross-profile management is by design.
+        return
+    current = _current_profile_name()
+    # Asking for the very profile this server is scoped to is always fine.
+    if current == name:
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            f"This dashboard is isolated to profile '{current}'. "
+            f"Refusing to access another profile ('{name}')."
+        ),
+    )
+
+
 @router.get("/api/profiles/{name}/soul")
 async def get_profile_soul(name: str):
+    _assert_profile_in_scope(name)
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
     if soul_path.exists():
         try:
@@ -1062,6 +1104,7 @@ async def get_profile_soul(name: str):
 
 @router.put("/api/profiles/{name}/soul")
 async def update_profile_soul(name: str, body: ProfileSoulUpdate):
+    _assert_profile_in_scope(name)
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
     try:
         from utils import atomic_write_text
@@ -1097,6 +1140,7 @@ async def update_profile_description_endpoint(name: str, body: ProfileDescriptio
     user-authored description (``description_auto: false``) so the
     auto-describer won't overwrite it on a sweep.
     """
+    _assert_profile_in_scope(name)
     from hermes_cli import profiles as profiles_mod
     profile_dir = _resolve_profile_dir(name)
     text = (body.description or "").strip()
@@ -1119,6 +1163,7 @@ async def update_profile_model_endpoint(name: str, body: ProfileModelUpdate):
     active profile. Mirrors ``POST /api/model/set`` (main scope) but scoped
     to the named profile via the HERMES_HOME override.
     """
+    _assert_profile_in_scope(name)
     profile_dir = _resolve_profile_dir(name)
     provider = (body.provider or "").strip()
     model = (body.model or "").strip()
@@ -1142,6 +1187,7 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
     ``ok: false`` with a reason rather than an HTTP error so the UI can
     surface it inline and let the operator fix config and retry.
     """
+    _assert_profile_in_scope(name)
     _resolve_profile_dir(name)
     try:
         from hermes_cli import profile_describer
@@ -1169,6 +1215,7 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
 
 @router.post("/api/profiles/{name}/export")
 async def export_profile_endpoint(name: str, body: ProfileExport):
+    _assert_profile_in_scope(name)
     from hermes_cli import profiles as profiles_mod
 
     output = (body.output or "").strip()
@@ -1252,6 +1299,7 @@ async def import_profile_endpoint(body: ProfileImport):
 async def get_profile_desktop_overlay(name: str):
     """The desktop appearance/interface overlay bundled with an imported
     profile (``desktop.json`` at the profile root), or ``exists: false``."""
+    _assert_profile_in_scope(name)
     overlay_path = _resolve_profile_dir(name) / "desktop.json"
     if not overlay_path.is_file():
         return {"exists": False, "desktop": None}

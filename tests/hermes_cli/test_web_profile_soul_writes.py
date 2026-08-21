@@ -12,6 +12,7 @@ small and focused on this one endpoint pair.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import stat
 import sys
@@ -129,3 +130,143 @@ class TestSoulWriteDurability:
         assert r.status_code == 200, r.text
         mode = stat.S_IMODE(soul.stat().st_mode)
         assert mode == 0o644, f"first save created SOUL.md as {oct(mode)}"
+
+
+class TestIsolatedProfileSoulScope:
+    """An isolated (``--isolated``) dashboard scoped to one named profile must
+    not read or write another profile's SOUL.md (#91330).
+
+    The unified machine dashboard is intentionally a machine-wide management
+    surface (cross-profile access is by design). But a server launched with
+    ``--isolated`` from a named profile runs scoped to that profile, and
+    letting it rewrite another profile's persona is a prompt-injection vector.
+    """
+
+    @pytest.fixture()
+    def isolated_home(self, tmp_path, monkeypatch):
+        """A hermes root with two real profiles; server scoped to ``alice``."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        profiles_root = tmp_path / ".hermes" / "profiles"
+        for p in ("alice", "bob"):
+            (profiles_root / p).mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(profiles_root / "alice"))
+        return profiles_root
+
+    @contextlib.contextmanager
+    def _client(self, monkeypatch, *, isolated: bool):
+        """A TestClient with the shared app scoped as isolated or not.
+
+        ``app.state.isolated`` is a process-global; snapshot it and restore it
+        on exit so an isolated test can't leak into a later non-isolated test
+        in the same process (its only default is when the attribute is never
+        set at all).
+        """
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "soul-test-token")
+        from hermes_cli import web_server
+
+        prev = getattr(web_server.app.state, "isolated", None)
+        had = hasattr(web_server.app.state, "isolated")
+        web_server.app.state.isolated = isolated
+        c = TestClient(web_server.app, raise_server_exceptions=False)
+        c.headers["Authorization"] = "Bearer soul-test-token"
+        try:
+            with c:
+                yield c
+        finally:
+            if had:
+                web_server.app.state.isolated = prev
+            else:
+                delattr(web_server.app.state, "isolated")
+
+    def test_cross_profile_soul_write_refused(self, isolated_home, monkeypatch):
+        bob = isolated_home / "bob"
+        (bob / "SOUL.md").write_text("# Bob's persona\n", encoding="utf-8")
+        before = (bob / "SOUL.md").read_text(encoding="utf-8")
+
+        with self._client(monkeypatch, isolated=True) as c:
+            r = c.put("/api/profiles/bob/soul", json={"content": "# Pwned\n"})
+
+        assert r.status_code == 403, r.text
+        # Bob's persona must be untouched.
+        assert (bob / "SOUL.md").read_text(encoding="utf-8") == before
+
+    def test_cross_profile_soul_read_refused(self, isolated_home, monkeypatch):
+        (isolated_home / "bob" / "SOUL.md").write_text("# Bob\n", encoding="utf-8")
+
+        with self._client(monkeypatch, isolated=True) as c:
+            r = c.get("/api/profiles/bob/soul")
+
+        assert r.status_code == 403, r.text
+
+    def test_isolated_default_profile_blocks_named_profiles(
+        self, tmp_path, monkeypatch
+    ):
+        """An isolated server scoped to the DEFAULT profile must still refuse
+        cross-profile persona access (#91330 P1)."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        profiles_root = tmp_path / ".hermes" / "profiles"
+        bob = profiles_root / "bob"
+        bob.mkdir(parents=True, exist_ok=True)
+        (bob / "SOUL.md").write_text("# Bob\n", encoding="utf-8")
+        # Isolated server running as the default (root) profile.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+        with self._client(monkeypatch, isolated=True) as c:
+            r = c.put("/api/profiles/bob/soul", json={"content": "# nope\n"})
+
+        assert r.status_code == 403, r.text
+        assert (bob / "SOUL.md").read_text(encoding="utf-8") == "# Bob\n"
+
+    def test_same_profile_soul_still_works(self, isolated_home, monkeypatch):
+        with self._client(monkeypatch, isolated=True) as c:
+            put = c.put("/api/profiles/alice/soul", json={"content": SOUL})
+            get = c.get("/api/profiles/alice/soul")
+
+        assert put.status_code == 200, put.text
+        assert get.status_code == 200, get.text
+        assert get.json()["content"] == SOUL
+
+    def test_machine_dashboard_keeps_cross_profile_access(self, tmp_path, monkeypatch):
+        """Control: the default machine dashboard is intentionally machine-wide
+        and must not start refusing cross-profile SOUL edits."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        profiles_root = tmp_path / ".hermes" / "profiles"
+        bob = profiles_root / "bob"
+        bob.mkdir(parents=True, exist_ok=True)
+        # Machine dashboard runs from the root home, NOT isolated.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+        with self._client(monkeypatch, isolated=False) as c:
+            r = c.put("/api/profiles/bob/soul", json={"content": "# ok\n"})
+
+        assert r.status_code == 200, r.text
+        assert (bob / "SOUL.md").read_text(encoding="utf-8") == "# ok\n"
+
+    def test_cross_profile_endpoints_gated_in_isolated(self, isolated_home, monkeypatch):
+        """DELETE/rename/model/export for another profile are refused from an
+        isolated server — the full isolation boundary, not just SOUL.md."""
+        (isolated_home / "bob" / "SOUL.md").write_text("# Bob\n", encoding="utf-8")
+
+        with self._client(monkeypatch, isolated=True) as c:
+            d = c.delete("/api/profiles/bob")
+            x = c.post("/api/profiles/bob/export", json={})
+
+        assert d.status_code == 403, d.text
+        assert x.status_code == 403, x.text
+
+    def test_cross_profile_endpoints_work_on_machine_dashboard(
+        self, tmp_path, monkeypatch
+    ):
+        """Control: the unified machine dashboard keeps cross-profile
+        management (delete/export) — the boundary only bites when isolated."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        profiles_root = tmp_path / ".hermes" / "profiles"
+        (profiles_root / "bob").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+        with self._client(monkeypatch, isolated=False) as c:
+            d = c.delete("/api/profiles/bob")
+
+        # Machine dashboard may delete another profile.
+        assert d.status_code == 200, d.text
+        assert not (profiles_root / "bob").exists()

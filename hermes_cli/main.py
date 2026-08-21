@@ -11505,6 +11505,7 @@ def cmd_dashboard(args):
         allow_public=getattr(args, "insecure", False),
         initial_profile=getattr(args, "open_profile", "") or "",
         headless=_headless_backend,
+        isolated=getattr(args, "isolated", False),
         ssh_session_token=_ssh_session_token,
         ssh_owner_nonce=_ssh_owner_nonce,
     )

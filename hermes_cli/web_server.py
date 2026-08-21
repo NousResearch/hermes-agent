@@ -14658,6 +14658,28 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
     return profiles
 
 
+def _is_isolated_server() -> bool:
+    """True when this server was launched with ``--isolated``.
+
+    Threaded from the ``--isolated`` flag through :func:`start_server` into
+    ``app.state.isolated``. Defaults to False so a server that never ran
+    ``start_server`` (e.g. a bare TestClient without the helper setting it)
+    is treated as the unified machine dashboard, which is the safe
+    non-restricting default.
+    """
+    return bool(getattr(app.state, "isolated", False))
+
+
+def _current_profile_name() -> str:
+    """Return the profile this dashboard process is scoped to (or 'default')."""
+    from hermes_cli import profiles as profiles_mod
+
+    try:
+        return profiles_mod.get_active_profile_name() or "default"
+    except Exception:
+        return "default"
+
+
 def _resolve_profile_dir(name: str) -> Path:
     """Validate ``name`` and resolve to its directory or raise an HTTPException."""
     from hermes_cli import profiles as profiles_mod
@@ -18852,6 +18874,7 @@ def start_server(
     allow_public: bool = False,
     initial_profile: str = "",
     headless: bool = False,
+    isolated: bool = False,
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
 ):
@@ -18866,11 +18889,19 @@ def start_server(
     build and no SPA mount (mount_spa() honours ``HERMES_SERVE_HEADLESS``), so
     the banner announces the bind rather than a browser URL.
 
+    ``isolated`` marks a server launched with ``--isolated``: it is scoped
+    to a single profile (its own HERMES_HOME) and must not read, mutate,
+    export, or delete another profile's data (enforced by the per-profile
+    guard ``_assert_profile_in_scope`` on the profiles router). The unified
+    machine dashboard (isolated=False) remains a machine-wide management
+    surface.
+
     ``ssh_session_token`` and ``ssh_owner_nonce`` are process-local Desktop SSH
     bootstrap state. Neither is persisted or exported to child processes.
     """
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
+    app.state.isolated = bool(isolated)
 
     # Raise RLIMIT_NOFILE for dashboard-mode starts that don't route through
     # the `serve` path in main.py (which applies the same floor). Canonical

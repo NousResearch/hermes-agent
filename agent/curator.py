@@ -544,10 +544,12 @@ CURATOR_REVIEW_PROMPT = (
     "  - skill_manage action=write_file — add a references/, templates/, "
     "or scripts/ file under an existing skill (the skill must already "
     "exist)\n"
-    "  - skill_manage action=delete     — archive a skill. MUST pass "
-    "`absorbed_into=<umbrella>` when you've merged its content into another "
-    "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
-    "forwarding target. This drives cron-job skill-reference migration — "
+    "  - skill_manage action=delete     — archive a skill you have merged "
+    "into an umbrella. MUST pass `absorbed_into=<umbrella>` (the umbrella "
+    "must already exist on disk); a delete without a verified consolidation "
+    "target is rejected fail-closed. Pruning with no forwarding target is "
+    "NOT part of this pass — the deterministic inactivity prune handles "
+    "that. This drives cron-job skill-reference migration — "
     "guessing from your YAML summary after the fact is fragile.\n"
     "  - terminal                       — move LOCAL candidate content into "
     "a support subfile when package integrity requires it; never mv, cp, rm, "
@@ -838,8 +840,12 @@ def _extract_absorbed_into_declarations(
     """Walk this run's tool calls and extract model-declared absorption targets.
 
     The curator prompt requires every ``skill_manage(action='delete')`` call
-    to pass ``absorbed_into=<umbrella>`` when consolidating, or
-    ``absorbed_into=""`` when truly pruning. This is the single authoritative
+    to pass ``absorbed_into=<umbrella>`` — a verified consolidation. The
+    background-pass guard rejects deletes with an empty/omitted target
+    fail-closed (#29912), so current runs only produce declared
+    consolidations; ``absorbed_into=""`` values are still parsed as explicit
+    prunings for backward compat with pre-guard runs and non-background
+    callers. This is the single authoritative
     signal for classification — the model's own declaration at the moment of
     deletion, which beats both post-hoc YAML summary parsing and substring
     heuristics on other tool calls.

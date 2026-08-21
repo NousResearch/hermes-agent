@@ -516,6 +516,32 @@ def test_rename_summary_mixed_consolidation_and_pruning(curator_env):
 # ---------------------------------------------------------------------------
 
 
+class TestConsolidationPromptMatchesDeleteGuard:
+    """The consolidation prompt must not instruct the model to make calls the
+    fail-closed guard deterministically refuses (#88882).
+
+    ``_curator_consolidation_delete_guard`` rejects a background-pass delete
+    with an empty/omitted ``absorbed_into`` (bare prune, #29912) — the prompt
+    used to teach exactly that call ("pass an empty absorbed_into when truly
+    pruning"), so an obedient model hit a guaranteed refusal. The prompt must
+    only advertise declared-consolidation deletes and point pruning at the
+    deterministic inactivity prune.
+    """
+
+    def test_prompt_never_advertises_empty_target_delete(self):
+        from agent.curator import CURATOR_REVIEW_PROMPT
+
+        assert 'absorbed_into=""' not in CURATOR_REVIEW_PROMPT
+        assert "truly pruning" not in CURATOR_REVIEW_PROMPT
+
+    def test_prompt_states_fail_closed_and_prune_outlet(self):
+        from agent.curator import CURATOR_REVIEW_PROMPT
+
+        assert "rejected fail-closed" in CURATOR_REVIEW_PROMPT
+        assert "inactivity prune" in CURATOR_REVIEW_PROMPT
+        assert "MUST pass `absorbed_into=<umbrella>`" in CURATOR_REVIEW_PROMPT
+
+
 
 
 

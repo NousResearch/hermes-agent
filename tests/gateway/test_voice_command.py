@@ -722,6 +722,9 @@ class TestDiscordVoiceChannelMethods:
         adapter._voice_timeout_tasks = {}
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
+        adapter._voice_mixers = {}
+        adapter._streaming_tts_handles = {}
+        adapter._voice_leaving = set()
         adapter._voice_input_callback = None
         adapter._allowed_user_ids = set()
         adapter._running = True
@@ -736,8 +739,8 @@ class TestDiscordVoiceChannelMethods:
 
 
     @pytest.mark.asyncio
-    async def test_leave_voice_channel_processes_pending_audio_before_disconnect(self):
-        """Recent speech is transcribed before the voice connection is torn down."""
+    async def test_leave_voice_channel_terminates_stream_and_disconnects_before_pending_audio(self):
+        """Leave cancels speech promptly, then preserves pending input as text work."""
         adapter = self._make_adapter()
         events = []
         mock_vc = MagicMock()
@@ -748,6 +751,15 @@ class TestDiscordVoiceChannelMethods:
 
         mock_vc.disconnect = disconnect
         adapter._voice_clients[111] = mock_vc
+        child = MagicMock()
+        handle = SimpleNamespace(
+            guild_id=111,
+            child=child,
+            aborted=False,
+            interrupted=False,
+            on_interrupt=lambda _reason: events.append("terminate"),
+        )
+        adapter._streaming_tts_handles[111] = handle
 
         mock_receiver = MagicMock()
         mock_receiver.flush_pending.side_effect = lambda: events.append("flush") or [(42, b"pcm")]
@@ -757,13 +769,19 @@ class TestDiscordVoiceChannelMethods:
         adapter._is_allowed_user = MagicMock(return_value=True)
 
         async def process(guild_id, user_id, pcm_data):
+            assert guild_id not in adapter._voice_clients
+            assert adapter._voice_locks[guild_id].locked() is False
             events.append("process")
 
         adapter._process_voice_input = process
+        adapter._voice_timeout_tasks[111] = asyncio.current_task()
 
         await adapter.leave_voice_channel(111)
 
-        assert events == ["flush", "stop", "process", "disconnect"]
+        assert events == ["flush", "stop", "terminate", "disconnect", "process"]
+        assert handle.aborted is True
+        child.abort.assert_called_once()
+        assert adapter._voice_leaving == set()
         adapter._is_allowed_user.assert_called_once_with("42", guild=adapter._client.get_guild(111), is_dm=False)
 
 
@@ -1266,6 +1284,9 @@ class TestVoiceTimeoutCleansRunnerState:
         adapter._voice_timeout_tasks = {}
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
+        adapter._voice_mixers = {}
+        adapter._streaming_tts_handles = {}
+        adapter._voice_leaving = set()
         adapter._voice_input_callback = None
         adapter._on_voice_disconnect = None
         adapter._client = None
@@ -1329,6 +1350,9 @@ class TestPlaybackTimeout:
         adapter._voice_timeout_tasks = {}
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
+        adapter._voice_mixers = {}
+        adapter._streaming_tts_handles = {}
+        adapter._voice_leaving = set()
         adapter._voice_input_callback = None
         adapter._on_voice_disconnect = None
         adapter._client = None

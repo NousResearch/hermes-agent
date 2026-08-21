@@ -52,6 +52,17 @@ _ABORT = object()
 _DONE = object()
 
 
+def interrupt_streaming_tts_consumer(
+    holder: list[Any], reason: str = "barge-in"
+) -> bool:
+    """Interrupt the active per-turn consumer, if any, with fallback suppression."""
+    consumer = holder[0] if holder else None
+    if consumer is None:
+        return False
+    consumer.interrupt(reason)
+    return True
+
+
 class StreamingTTSConsumer:
     """Consumes LLM text deltas and produces streaming PCM audio for an adapter."""
 
@@ -75,7 +86,9 @@ class StreamingTTSConsumer:
 
         # Resolve the streaming provider once. If unavailable, the consumer is
         # inactive and the gateway falls back to whole-file TTS.
-        self._streamer = resolve_streaming_provider(tts_config)
+        self._streamer = resolve_streaming_provider(
+            tts_config, require_transport_cancellation=True
+        )
         self._chunker = SentenceChunker()
 
         if self._streamer is not None:
@@ -96,6 +109,8 @@ class StreamingTTSConsumer:
         self._completed = False
         self._partial = False
         self._aborted = False
+        self._interrupted = False
+        self._abort_reason = "cancelled"
         self._finished = False
         self._dropped = False
         self._suppress_whole_file = False
@@ -131,7 +146,7 @@ class StreamingTTSConsumer:
 
     @property
     def audible(self) -> bool:
-        """True once the first PCM chunk has been written."""
+        """True once the platform has emitted its first non-silent PCM frame."""
         return bool(self._handle and self._handle.audible)
 
     @property
@@ -141,8 +156,11 @@ class StreamingTTSConsumer:
 
     @property
     def suppress_whole_file(self) -> bool:
-        """True when the gateway should skip the legacy whole-file TTS fallback."""
-        return self._suppress_whole_file
+        """True when the gateway should skip legacy whole-file TTS fallback."""
+        return bool(
+            self._suppress_whole_file
+            or (self._handle and (self._handle.audible or self._handle.interrupted))
+        )
 
     @property
     def done(self) -> bool:
@@ -217,7 +235,7 @@ class StreamingTTSConsumer:
 
     async def _run(self) -> None:
         """Drain clauses from the queue, synthesise, and write to the adapter."""
-        if not self.active:
+        if not self.active or self._aborted:
             return
 
         if not self._adapter.supports_streaming_tts(self._chat_id, self._audio_format):
@@ -238,8 +256,17 @@ class StreamingTTSConsumer:
         if self._handle is None:
             return
 
+        # Surfaces can notify the owner about intentional interruptions or an
+        # unexpected sink failure so provider transport is cancelled promptly.
+        self._handle.on_interrupt = self.interrupt
+        self._handle.on_abort = self.abort
         self._started = True
-        self._suppress_whole_file = False
+        if self._aborted:
+            if self._interrupted:
+                self._handle.interrupted = True
+                self._suppress_whole_file = True
+            await self._safe_abort(self._abort_reason)
+            return
 
         try:
             while True:
@@ -263,8 +290,10 @@ class StreamingTTSConsumer:
                     await self._synthesise_and_write(item)
                 except Exception as exc:
                     logger.warning("streaming TTS clause failed: %s", exc)
-                    if self._handle and self._handle.audible:
-                        self._partial = True
+                    if self._handle and (
+                        self._handle.audible or self._handle.interrupted
+                    ):
+                        self._partial = self._handle.audible
                         self._suppress_whole_file = True
                     else:
                         self._suppress_whole_file = False
@@ -273,6 +302,13 @@ class StreamingTTSConsumer:
                     return
 
             if not self._aborted and self._handle is not None:
+                if self._handle.interrupted:
+                    # Intentional barge-in must never replay from the start,
+                    # even when it arrived before Discord emitted frame one.
+                    self._partial = self._handle.audible
+                    self._completed = False
+                    self._suppress_whole_file = True
+                    return
                 _finish_failed = False
                 try:
                     await self._adapter.finish_streaming_tts(self._handle, interrupted=self._aborted)
@@ -331,15 +367,18 @@ class StreamingTTSConsumer:
                 return
             if not chunk:
                 continue
-            was_audible = self._handle.audible
             await self._adapter.write_streaming_tts(self._handle, chunk)
-            if not was_audible:
-                self._handle.audible = True
-                self._suppress_whole_file = True
+            # The adapter owns ``handle.audible`` and sets it only after the
+            # platform has actually emitted non-silent PCM.
 
     async def _iter_stream_chunks(self, text: str):
         """Yield provider PCM chunks one at a time without blocking the loop."""
         if self._streamer is None:
+            return
+        async_stream = getattr(self._streamer, "astream", None)
+        if callable(async_stream):
+            async for chunk in async_stream(text):
+                yield chunk
             return
         iterator = iter(self._streamer.stream(text))
         while True:
@@ -381,12 +420,30 @@ class StreamingTTSConsumer:
     # Cancellation and completion
     # ------------------------------------------------------------------
 
+    def interrupt(self, reason: str = "user interrupted speech") -> None:
+        """Cancel an intentional barge-in and permanently suppress replay."""
+        with self._lock:
+            self._interrupted = True
+            self._abort_reason = reason
+            self._suppress_whole_file = True
+        if self._handle is not None:
+            self._handle.interrupted = True
+        self.abort(reason)
+
     def abort(self, reason: str = "cancelled") -> None:
         """Idempotent cancellation from any thread."""
         with self._lock:
+            self._abort_reason = reason
             if self._aborted:
                 return
             self._aborted = True
+        # Close provider transport immediately so a blocked ``to_thread(next)``
+        # does not occupy the shared executor until its socket timeout.
+        try:
+            if self._streamer is not None:
+                self._streamer.cancel()
+        except Exception:
+            pass
         # Guarantee the _ABORT sentinel reaches the queue.  If the bounded
         # queue is full, drain one item to make room — the sentinel must
         # not be lost (#60671 hardening).

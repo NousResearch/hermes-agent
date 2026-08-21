@@ -26,6 +26,7 @@ import gateway.run as gateway_run
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
+from tests.gateway.test_run_cleanup_progress import CleanupCaptureAdapter
 
 
 class _NoopAgent:
@@ -153,5 +154,126 @@ def test_run_agent_voice_turn_no_name_error(monkeypatch, tmp_path):
 
     result = asyncio.new_event_loop().run_until_complete(_run())
     assert result["final_response"] == "Hello from the agent."
+
+
+@pytest.mark.parametrize("route", ["direct", "unlimited-backup", "timed-backup"])
+def test_all_gateway_barge_in_routes_interrupt_active_streaming_consumer(
+    monkeypatch, tmp_path, route
+):
+    """Exercise the direct monitor and both real backup poll branches."""
+    _setup_monkeypatches(monkeypatch, tmp_path)
+    session_key = "agent:main:telegram:dm:12345"
+
+    class InterruptibleAgent(_NoopAgent):
+        runs = 0
+        interrupted = threading.Event()
+
+        def run_conversation(self, *args, **kwargs):
+            type(self).runs += 1
+            if type(self).runs == 1:
+                assert type(self).interrupted.wait(timeout=2.0)
+            return super().run_conversation(*args, **kwargs)
+
+        def interrupt(self, text=None):
+            self.is_interrupted = True
+            self.interrupt_message = text
+            type(self).interrupted.set()
+
+        def get_activity_summary(self):
+            return {"seconds_since_activity": 0.0}
+
+    class FakeStreamingConsumer:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.active = True
+            self.done = False
+            self.suppress_whole_file = False
+            self.interrupt_reasons = []
+            type(self).instances.append(self)
+
+        def start(self):
+            return None
+
+        def on_delta(self, text):
+            return None
+
+        def interrupt(self, reason):
+            self.interrupt_reasons.append(reason)
+            self.suppress_whole_file = True
+            self.done = True
+
+        def finish(self):
+            self.done = True
+
+        async def wait_complete(self, timeout=10.0):
+            return False
+
+        def abort(self, reason="cancelled"):
+            self.done = True
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = InterruptibleAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import gateway.streaming_tts_consumer as stts_module
+
+    monkeypatch.setattr(stts_module, "StreamingTTSConsumer", FakeStreamingConsumer)
+    adapter = CleanupCaptureAdapter()
+    adapter._auto_tts_default = True
+    source = _make_voice_source()
+    pending = MessageEvent(text="stop talking", source=source)
+    adapter._pending_messages[session_key] = pending
+    adapter._active_sessions[session_key] = threading.Event()
+    adapter._active_sessions[session_key].set()
+
+    original_has_pending = adapter.has_pending_interrupt
+
+    def routed_has_pending(key):
+        if route != "direct":
+            task = asyncio.current_task()
+            qualname = getattr(task.get_coro(), "__qualname__", "") if task else ""
+            if "monitor_for_interrupt" in qualname:
+                return False
+        return original_has_pending(key)
+
+    adapter.has_pending_interrupt = routed_has_pending
+    runner = _make_runner()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    monkeypatch.setattr(
+        gateway_run.GatewayRunner,
+        "_adapter_for_source",
+        lambda self, event_source: adapter,
+    )
+    monkeypatch.setenv(
+        "HERMES_AGENT_TIMEOUT", "0" if route == "unlimited-backup" else "60"
+    )
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT_WARNING", "0")
+
+    if route != "direct":
+        original_wait = asyncio.wait
+
+        async def fast_poll(awaitables, *, timeout=None, **kwargs):
+            if timeout == 5.0:
+                timeout = 0.01
+            return await original_wait(awaitables, timeout=timeout, **kwargs)
+
+        monkeypatch.setattr(asyncio, "wait", fast_poll)
+
+    async def run_turn():
+        runner._gateway_loop = asyncio.get_running_loop()
+        return await runner._run_agent(
+            message="Hello Jarvis",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="session-1",
+            session_key=session_key,
+            message_type=MessageType.VOICE,
+        )
+
+    asyncio.run(run_turn())
+
+    assert FakeStreamingConsumer.instances
+    assert FakeStreamingConsumer.instances[0].interrupt_reasons == ["barge-in"]
 
 

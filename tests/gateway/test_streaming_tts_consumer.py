@@ -16,7 +16,10 @@ import time
 import pytest
 
 from gateway.platforms.base import AudioFormat, StreamingTTSHandle
-from gateway.streaming_tts_consumer import StreamingTTSConsumer
+from gateway.streaming_tts_consumer import (
+    StreamingTTSConsumer,
+    interrupt_streaming_tts_consumer,
+)
 from tools.tts_streaming import SentenceChunker
 
 
@@ -105,6 +108,28 @@ class SlowStreamer(FakeStreamer):
             self.finished.set()
 
 
+class CancellableFirstChunkStreamer(FakeStreamer):
+    """Blocks before frame one until consumer cancellation closes the stream."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.started = threading.Event()
+        self.cancelled = threading.Event()
+        self.finished = threading.Event()
+
+    def stream(self, text: str):
+        self.started.set()
+        try:
+            self.cancelled.wait(timeout=5.0)
+            return
+            yield b"unreachable"  # pragma: no cover
+        finally:
+            self.finished.set()
+
+    def cancel(self):
+        self.cancelled.set()
+
+
 class SlowFirstChunkStreamer(FakeStreamer):
     """Blocks before the first chunk so timeout happens before audio starts."""
 
@@ -121,6 +146,10 @@ class SlowFirstChunkStreamer(FakeStreamer):
             yield b"chunk-1-0"
         finally:
             self.finished.set()
+
+
+    def cancel(self):
+        self.allow_first_chunk.set()
 
 
 class BlockingSecondChunkStreamer(FakeStreamer):
@@ -142,6 +171,23 @@ class BlockingSecondChunkStreamer(FakeStreamer):
             yield b"chunk-1-1"
         finally:
             self.finished.set()
+
+    def cancel(self):
+        self.allow_remaining_chunks.set()
+
+
+class AsyncOnlyStreamer(FakeStreamer):
+    def __init__(self):
+        super().__init__()
+        self.stream_calls = []
+
+    def stream(self, _text):
+        raise AssertionError("sync stream path must not run")
+
+    async def astream(self, text):
+        self.stream_calls.append(text)
+        yield b"\x01\x02"
+        yield b"\x03\x04"
 
 
 class UnsupportedAdapter:
@@ -290,6 +336,104 @@ class TestConsumerLifecycle:
 
         _run_test(run)
 
+    def test_immediate_barge_in_before_task_runs_never_opens_platform_stream(self):
+        async def run(loop):
+            adapter = FakeVoiceAdapter()
+            streamer = CancellableFirstChunkStreamer()
+            consumer = _make_consumer(adapter, "chat1", loop, streamer)
+
+            consumer.start()
+            interrupt_streaming_tts_consumer([consumer], "voice barge-in")
+
+            assert await consumer.wait_complete(timeout=2.0) is False
+            assert adapter.begin_count == 0
+            assert adapter.abort_count == 0
+            assert adapter.handle is None
+            assert consumer.suppress_whole_file is True
+
+        _run_test(run)
+
+    def test_barge_in_racing_platform_begin_aborts_new_handle(self):
+        async def run(loop):
+            class BlockingBeginAdapter(FakeVoiceAdapter):
+                def __init__(self):
+                    super().__init__()
+                    self.begin_entered = asyncio.Event()
+                    self.release_begin = asyncio.Event()
+
+                async def begin_streaming_tts(self, chat_id, audio_format, metadata=None):
+                    self.begin_count += 1
+                    self.begin_entered.set()
+                    await self.release_begin.wait()
+                    self.handle = StreamingTTSHandle(
+                        chat_id=chat_id, audio_format=audio_format
+                    )
+                    return self.handle
+
+            adapter = BlockingBeginAdapter()
+            consumer = _make_consumer(adapter, "chat1", loop, FakeStreamer())
+            consumer.start()
+            await adapter.begin_entered.wait()
+
+            interrupt_streaming_tts_consumer([consumer], "voice barge-in")
+            adapter.release_begin.set()
+
+            assert await consumer.wait_complete(timeout=2.0) is False
+            assert adapter.begin_count == 1
+            assert adapter.abort_count == 1
+            assert adapter.handle.aborted is True
+            assert adapter.handle.interrupted is True
+            assert consumer.suppress_whole_file is True
+
+        _run_test(run)
+
+    def test_barge_in_before_first_frame_cancels_provider_and_suppresses_fallback(self):
+        async def run(loop):
+            adapter = FakeVoiceAdapter()
+            streamer = CancellableFirstChunkStreamer()
+            consumer = _make_consumer(adapter, "chat1", loop, streamer)
+
+            consumer.start()
+            consumer.on_delta("This sentence is interrupted before frame one. ")
+            consumer.finish()
+            assert await asyncio.to_thread(streamer.started.wait, 1.0)
+            assert adapter.handle is not None
+
+            interrupt_streaming_tts_consumer([consumer], "voice barge-in")
+
+            assert await consumer.wait_complete(timeout=2.0) is False
+            assert streamer.cancelled.is_set()
+            assert streamer.finished.is_set()
+            assert adapter.handle.interrupted is True
+            assert adapter.handle.audible is False
+            assert consumer.suppress_whole_file is True
+            assert adapter.written_chunks == []
+
+        _run_test(run)
+
+    def test_unexpected_platform_sink_abort_cancels_provider_before_first_frame(self):
+        async def run(loop):
+            adapter = FakeVoiceAdapter()
+            streamer = CancellableFirstChunkStreamer()
+            consumer = _make_consumer(adapter, "chat1", loop, streamer)
+
+            consumer.start()
+            consumer.on_delta("This sentence loses its Discord mixer sink. ")
+            consumer.finish()
+            assert await asyncio.to_thread(streamer.started.wait, 1.0)
+            assert adapter.handle is not None
+
+            adapter.handle.platform_failed = True
+            adapter.handle.aborted = True
+            adapter.handle.on_abort("Discord voice mixer stopped unexpectedly")
+
+            assert await consumer.wait_complete(timeout=2.0) is False
+            assert streamer.cancelled.is_set()
+            assert streamer.finished.is_set()
+            assert consumer.suppress_whole_file is False
+            assert adapter.written_chunks == []
+
+        _run_test(run)
 
     def test_post_audio_timeout_keeps_suppression_then_aborts(self):
         """After audible audio, a finalisation timeout aborts the consumer.
@@ -335,6 +479,17 @@ class TestConsumerLifecycle:
 
 class TestStreamerFormatAndLooping:
     """Constructor wiring should derive format and keep provider I/O off-loop."""
+
+    def test_prefers_native_async_stream_without_executor_bridge(self):
+        async def run(loop):
+            adapter = FakeVoiceAdapter()
+            streamer = AsyncOnlyStreamer()
+            consumer = _make_consumer(adapter, "chat", loop, streamer)
+            chunks = [chunk async for chunk in consumer._iter_stream_chunks("hello")]
+            assert chunks == [b"\x01\x02", b"\x03\x04"]
+            assert streamer.stream_calls == ["hello"]
+
+        _run_test(run)
 
     def test_audio_format_tracks_resolved_streamer(self):
         streamer = FakeStreamer(chunks_per_clause=1, sample_rate=48000, channels=2, sample_width=4)
@@ -640,36 +795,3 @@ class TestPostAudioTimeoutAbort:
             assert consumer._aborted is True
 
         _run_test(run)
-
-
-# ---------------------------------------------------------------------------
-# Real gateway regression: no _streaming_tts_consumer NameError (#60671)
-# ---------------------------------------------------------------------------
-
-
-class TestGatewayOuterFinalisationNoNameError:
-    """Exercise the real outer finalisation path to prove no NameError.
-
-    This test does NOT use the StreamingTTSConsumer helper tests alone —
-    it verifies that ``gateway/run.py``'s outer finalisation code can
-    reference ``streaming_tts_consumer_holder[0]`` without hitting a
-    NameError on a normal gateway turn.  We do this by importing the
-    symbol and exercising the code path that would have failed.
-    """
-
-    def test_streaming_tts_consumer_holder_is_list_not_name(self):
-        """The outer scope uses a holder list, not a bare local name.
-
-        This is a structural invariant: if someone reintroduces the
-        cross-scope NameError by moving the consumer back into
-        ``run_sync`` as a local, this test documents the correct shape.
-        """
-        # The holder pattern is the fix.  Verify it is a mutable container.
-        holder: list = [None]
-        assert holder[0] is None
-        holder[0] = "sentinel"
-        assert holder[0] == "sentinel"
-        # The outer scope must be able to read it without a NameError.
-        # This is trivially true with a holder, but was NOT true when
-        # the consumer was a run_sync local.
-        _ = holder[0]

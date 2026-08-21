@@ -611,13 +611,24 @@ class StreamingTTSHandle:
     """
     chat_id: str = ""
     audio_format: AudioFormat = field(default_factory=AudioFormat)
-    # Set to True after the first PCM chunk has been written (audible output
-    # has started).  The consumer uses this to decide whether a failure
-    # should fall back to whole-file TTS (not yet audible) or just end
+    # Set by the adapter only after Discord requests the frame following the
+    # first non-silent PCM frame, which confirms the preceding packet send
+    # returned successfully. The consumer uses this to decide whether a
+    # failure should fall back to whole-file TTS (not yet audible) or end
     # cleanly (already audible — don't replay from the beginning).
     audible: bool = False
+    # Set for intentional user interruption (for example voice barge-in). Such
+    # turns never fall back to whole-file TTS, even before the first frame.
+    interrupted: bool = False
     # Set to True by abort_streaming_tts; late chunks are dropped.
     aborted: bool = False
+    # Unexpected platform sink termination; finish must not report success.
+    platform_failed: bool = False
+    # Adapter-to-consumer lifecycle callbacks. ``on_interrupt`` is reserved for
+    # intentional user/lifecycle stops; ``on_abort`` reports an unexpected
+    # platform sink failure while preserving pre-audio fallback semantics.
+    on_interrupt: Optional[Callable[[str], None]] = field(default=None, repr=False)
+    on_abort: Optional[Callable[[str], None]] = field(default=None, repr=False)
 
 
 def streaming_tts_turn_key(session_key: str | None, turn_marker: Any = None, *, event: Any = None) -> str | None:

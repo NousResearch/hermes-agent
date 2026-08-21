@@ -1330,6 +1330,37 @@ platform_toolsets:
 #     optimize_streaming_latency: 0  # 0-2, trades quality for lower latency
 #     sample_rate: 24000    # 22050 / 24000 / 44100 / 48000
 #     bit_rate: 128000      # MP3 bitrate (codec=mp3 only)
+#
+#   # Streaming TTS (chunked PCM, starts speaking before the full clip is
+#   # synthesized). Only some providers/models support it; the resolver never
+#   # silently swaps your voice — set `provider` to pin a streamer or `auto`
+#   # to take the first usable one (elevenlabs → gemini → openai → xai).
+#   # Gemini TTS note: gemini-3.6-flash is a text/multimodal model, NOT a TTS
+#   # model. The Gemini TTS model with incremental audio streaming is
+#   # gemini-3.1-flash-tts-preview (streamGenerateContent SSE).
+#   streaming:
+#     provider: ""           # "" (default) = stream with tts.provider when it has a chunked API; name pins a streamer; "auto" walks the priority list
+#
+# =============================================================================
+# Discord voice channel extras (voice_fx)
+# =============================================================================
+# Live voice-channel mixer: ambient "thinking" bed, ducked speech clips, and
+# incremental streaming TTS. All OFF by default; opt in per setting.
+#
+# discord:
+#   voice_fx:
+#     enabled: false            # master switch for ambient/ack effects
+#     streaming_tts: false      # incremental PCM TTS in live VC (begin speaking
+#                               # on the first Gemini 3.1 chunk instead of after
+#                               # the full clip). Independent of `enabled`; set
+#                               # tts.gemini.model = gemini-3.1-flash-tts-preview
+#     ambient_enabled: true     # idle "thinking" bed while tools run
+#     ambient_path: ""          # optional custom loop file; "" = synthesised
+#     ambient_gain: 0.18
+#     duck_gain: 0.06
+#     speech_gain: 1.0
+#     lead_silence_ms: 200      # warm-up silence before each clip
+#     ack_enabled: true         # short phrase before tool calls
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)

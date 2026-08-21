@@ -66,6 +66,7 @@ from agent.turn_context import (
 )
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.streaming_tts_consumer import interrupt_streaming_tts_consumer
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -28767,9 +28768,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             agent.interrupt(pending_text)
                             _interrupt_detected.set()
                             # Abort streaming TTS on barge-in (#60671).
-                            _stts = streaming_tts_consumer_holder[0]
-                            if _stts is not None:
-                                _stts.abort("barge-in")
+                            interrupt_streaming_tts_consumer(
+                                streaming_tts_consumer_holder, "barge-in"
+                            )
                             break
                 except asyncio.CancelledError:
                     raise
@@ -29054,9 +29055,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _backup_agent.interrupt(_bp_text)
                             _interrupt_detected.set()
                             # Abort streaming TTS on barge-in (#60671).
-                            _stts = streaming_tts_consumer_holder[0]
-                            if _stts is not None:
-                                _stts.abort("barge-in")
+                            interrupt_streaming_tts_consumer(
+                                streaming_tts_consumer_holder, "barge-in"
+                            )
 
             else:
                 # Poll loop: check the agent's built-in activity tracker
@@ -29156,9 +29157,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _backup_agent.interrupt(_bp_text)
                             _interrupt_detected.set()
                             # Abort streaming TTS on barge-in (#60671).
-                            _stts = streaming_tts_consumer_holder[0]
-                            if _stts is not None:
-                                _stts.abort("barge-in")
+                            interrupt_streaming_tts_consumer(
+                                streaming_tts_consumer_holder, "barge-in"
+                            )
 
             if _inactivity_timeout:
                 # Build a diagnostic summary from the agent's activity tracker.

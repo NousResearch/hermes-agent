@@ -6,6 +6,7 @@ synth path are all mocked. Covers the registry/resolver, provider availability,
 the chunked-streamer playback path, and the universal per-sentence sync fallback.
 """
 
+import asyncio
 import os
 import queue
 import sys
@@ -65,7 +66,13 @@ class TestSpeechInterruptedLatch:
 # ── Registry + resolver ──────────────────────────────────────────────────
 
 
-def _register_fake(monkeypatch, name, available=True, chunks=(b"\x00\x00",)):
+def _register_fake(
+    monkeypatch,
+    name,
+    available=True,
+    chunks=(b"\x00\x00",),
+    async_transport_cancellable=False,
+):
     class _Fake(ts.StreamingTTSProvider):
         sample_rate = 24000
 
@@ -76,6 +83,12 @@ def _register_fake(monkeypatch, name, available=True, chunks=(b"\x00\x00",)):
         def stream(self, text):
             yield from chunks
 
+    _Fake.async_transport_cancellable = async_transport_cancellable
+    if async_transport_cancellable:
+        async def _astream(self, text):
+            for chunk in chunks:
+                yield chunk
+        _Fake.astream = _astream
     monkeypatch.setitem(ts._REGISTRY, name, _Fake)
     return _Fake
 
@@ -91,6 +104,48 @@ def test_never_swaps_provider_for_streaming(monkeypatch):
     # (non-streaming) provider — that would silently change their voice.
     _register_fake(monkeypatch, "elevenlabs")
     assert ts.resolve_streaming_provider({"provider": "edge"}) is None
+
+
+def test_cancellable_resolution_rejects_pinned_legacy_transport(monkeypatch):
+    _register_fake(monkeypatch, "openai", async_transport_cancellable=False)
+    assert ts.resolve_streaming_provider(
+        {"streaming": {"provider": "openai"}},
+        require_transport_cancellation=True,
+    ) is None
+
+
+def test_async_cancellable_resolution_rejects_claim_without_astream(monkeypatch):
+    class FalseClaim(ts.StreamingTTSProvider):
+        async_transport_cancellable = True
+
+        @staticmethod
+        def available():
+            return True
+
+        def stream(self, text):
+            yield b"legacy"
+
+    monkeypatch.setitem(ts._REGISTRY, "false-claim", FalseClaim)
+    assert ts.resolve_streaming_provider(
+        {"streaming": {"provider": "false-claim"}},
+        require_transport_cancellation=True,
+    ) is None
+
+
+def test_cancellable_auto_skips_legacy_provider_for_gemini(monkeypatch):
+    legacy = _register_fake(monkeypatch, "elevenlabs")
+    cancellable = _register_fake(
+        monkeypatch, "gemini", async_transport_cancellable=True
+    )
+    monkeypatch.setattr(ts, "_PROVIDER_PRIORITY", ["elevenlabs", "gemini"])
+
+    provider = ts.resolve_streaming_provider(
+        {"streaming": {"provider": "auto"}},
+        require_transport_cancellation=True,
+    )
+
+    assert not isinstance(provider, legacy)
+    assert isinstance(provider, cancellable)
 
 
 # ── Built-in provider availability ───────────────────────────────────────
@@ -215,16 +270,17 @@ def test_xai_available_uses_oauth_credential_resolver(monkeypatch):
 # ── 16 MiB per-sentence stream cap ───────────────────────────────────────
 
 
-def test_stream_cap_truncates_runaway_upstream(monkeypatch):
+def test_stream_cap_raises_instead_of_silently_truncating(monkeypatch):
     monkeypatch.setattr(ts, "_STREAM_SENTENCE_BYTE_CAP", 100)
 
     def _endless():
         while True:
             yield b"\x00" * 64
 
-    out = list(ts._capped(_endless(), "test"))
-    assert len(out) == 1  # 64 ok, 128 > cap → stop
-    assert sum(len(c) for c in out) <= 100
+    iterator = ts._capped(_endless(), "test")
+    assert next(iterator) == b"\x00" * 64
+    with pytest.raises(ts.StreamingTTSLimitError, match="decoded audio cap"):
+        next(iterator)
 
 
 # ── Dispatch: chunked streamer path (regression tests) ───────────────────
@@ -958,3 +1014,398 @@ def test_sync_pipeline_cleans_temp_files(monkeypatch):
     assert created, "expected temp files to be created via mkstemp"
     leftovers = [p for p in created if os.path.exists(p)]
     assert not leftovers, f"temp files not cleaned: {leftovers}"
+
+
+# ── Gemini 3.1 streamGenerateContent transport ───────────────────────────
+#
+# Gemini 3.1 Flash TTS Preview emits incremental PCM through the existing
+# streamGenerateContent SSE API. Credentials stay in the x-goog-api-key header
+# and redirects are disabled so requests cannot forward the key cross-origin.
+
+import base64 as _b64
+import json as _json
+
+
+def _sse_context(events):
+    resp = MagicMock()
+    body = b"".join(
+        b"data: "
+        + (_json.dumps(ev) if not isinstance(ev, str) else ev).encode()
+        + b"\n\n"
+        for ev in events
+    )
+    resp.headers = {"content-type": "text/event-stream; charset=utf-8"}
+    # Split arbitrarily to prove the bounded parser handles network chunking.
+    resp.iter_content.return_value = iter(
+        body[i:i + 17] for i in range(0, len(body), 17)
+    )
+    resp.__enter__.return_value = resp
+    return resp
+
+
+def _gemini_audio_event(b64_data: str) -> dict:
+    return {
+        "candidates": [{
+            "content": {"parts": [{
+                "inlineData": {"mimeType": "audio/L16;rate=24000", "data": b64_data},
+            }]},
+        }],
+    }
+
+
+class TestGeminiStreamingTransport:
+    def _streamer(self):
+        return ts.GeminiStreamer(
+            {"gemini": {"model": "gemini-3.1-flash-tts-preview"}},
+            {"model": "gemini-3.1-flash-tts-preview"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_async_transport_streams_pcm_without_sync_thread(self, monkeypatch):
+        import httpx
+
+        monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+        event = _gemini_audio_event(_b64.b64encode(b"\x09\x0a").decode())
+        wire = b"data: " + _json.dumps(event).encode() + b"\n\n"
+        captured = {}
+
+        class Response:
+            headers = {"content-type": "text/event-stream"}
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_bytes(self, chunk_size):
+                assert chunk_size == 8192
+                yield wire[:7]
+                yield wire[7:]
+
+        class StreamContext:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return None
+
+        class Client:
+            def __init__(self, **kwargs):
+                captured["client"] = kwargs
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def stream(self, method, url, **kwargs):
+                captured.update(method=method, url=url, request=kwargs)
+                return StreamContext()
+
+        monkeypatch.setattr(httpx, "AsyncClient", Client)
+        chunks = [chunk async for chunk in self._streamer().astream("Async")]
+        assert chunks == [b"\x09\x0a"]
+        assert captured["method"] == "POST"
+        assert captured["client"]["follow_redirects"] is False
+        assert captured["request"]["headers"] == {"x-goog-api-key": "g-key"}
+
+    @pytest.mark.asyncio
+    async def test_async_cancel_interrupts_pre_header_wait(self, monkeypatch):
+        import httpx
+
+        monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        class StreamContext:
+            async def __aenter__(self):
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+
+            async def __aexit__(self, *_args):
+                return None
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def stream(self, *_args, **_kwargs):
+                return StreamContext()
+
+        monkeypatch.setattr(httpx, "AsyncClient", Client)
+        streamer = self._streamer()
+
+        async def consume():
+            return [chunk async for chunk in streamer.astream("Cancel headers")]
+
+        task = asyncio.create_task(consume())
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        streamer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1.0)
+        assert cancelled.is_set()
+
+    @pytest.mark.asyncio
+    async def test_async_deadline_covers_pre_header_wait(self, monkeypatch):
+        import httpx
+
+        monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+        monkeypatch.setattr(ts, "_GEMINI_STREAM_DEADLINE_S", 0.05)
+
+        class StreamContext:
+            async def __aenter__(self):
+                await asyncio.Event().wait()
+
+            async def __aexit__(self, *_args):
+                return None
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def stream(self, *_args, **_kwargs):
+                return StreamContext()
+
+        monkeypatch.setattr(httpx, "AsyncClient", Client)
+        start = time.monotonic()
+        with pytest.raises(TimeoutError):
+            _ = [chunk async for chunk in self._streamer().astream("Deadline")]
+        assert time.monotonic() - start < 0.5
+
+    def test_31_uses_stream_generate_content_with_header_auth(self, monkeypatch):
+        captured = {}
+
+        def fake_post(url, **kwargs):
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            return _sse_context([
+                _gemini_audio_event(_b64.b64encode(b"\x01\x02").decode()),
+            ])
+
+        monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+        with patch("requests.post", side_effect=fake_post):
+            assert list(self._streamer().stream("Hello")) == [b"\x01\x02"]
+
+        assert captured["url"].endswith(
+            "/models/gemini-3.1-flash-tts-preview:streamGenerateContent"
+        )
+        assert captured["kwargs"]["params"] == {"alt": "sse"}
+        assert captured["kwargs"]["headers"]["x-goog-api-key"] == "g-key"
+        assert captured["kwargs"]["allow_redirects"] is False
+        body = captured["kwargs"]["json"]
+        assert body["generationConfig"]["responseModalities"] == ["AUDIO"]
+        voice = body["generationConfig"]["speechConfig"]["voiceConfig"]
+        assert voice["prebuiltVoiceConfig"]["voiceName"] == "Kore"
+
+    def test_yields_pcm_from_multiple_audio_events(self, monkeypatch):
+        chunks = [b"\x01\x02\x03\x04", b"\x05\x06"]
+        events = [_gemini_audio_event(_b64.b64encode(c).decode()) for c in chunks]
+        with patch("requests.post", return_value=_sse_context(events)):
+            assert list(self._streamer().stream("Speak")) == chunks
+
+    def test_ignores_non_audio_and_malformed_events(self, monkeypatch):
+        good = _gemini_audio_event(_b64.b64encode(b"\x0a\x0b").decode())
+        events = [
+            [],
+            "not json",
+            {"candidates": []},
+            {"candidates": [{"content": {"parts": [None, "text"]}}]},
+            {"candidates": [{"content": {"parts": [{"text": "hello"}]}}]},
+            good,
+        ]
+        with patch("requests.post", return_value=_sse_context(events)):
+            assert list(self._streamer().stream("Robust")) == [b"\x0a\x0b"]
+
+    def test_invalid_base64_is_ignored(self, monkeypatch):
+        bad = _gemini_audio_event("not-valid-base64!!!")
+        good = _gemini_audio_event(_b64.b64encode(b"\x0c\x0d").decode())
+        with patch("requests.post", return_value=_sse_context([bad, good])):
+            assert list(self._streamer().stream("Robust")) == [b"\x0c\x0d"]
+
+    def test_uses_provider_secret_resolver(self, monkeypatch):
+        captured = {}
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.setattr(
+            ts,
+            "_resolve_key",
+            lambda env_name, provider: "secret-source-key" if env_name == "GEMINI_API_KEY" else "",
+        )
+
+        def fake_post(_url, **kwargs):
+            captured["headers"] = kwargs["headers"]
+            return _sse_context([])
+
+        with patch("requests.post", side_effect=fake_post):
+            list(self._streamer().stream("Secret"))
+        assert captured["headers"]["x-goog-api-key"] == "secret-source-key"
+
+    def test_rejects_non_sse_or_missing_content_type(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+        for headers in ({"content-type": "application/json"}, {}):
+            response = _sse_context([])
+            response.headers = headers
+            with patch("requests.post", return_value=response):
+                with pytest.raises(RuntimeError, match="unexpected content type"):
+                    list(self._streamer().stream("Wrong response"))
+
+    def test_rejects_oversized_unterminated_sse_event(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+        response = _sse_context([])
+        response.iter_content.return_value = iter([b"data: " + b"x" * (4 * 1024 * 1024 + 1)])
+        with patch("requests.post", return_value=response):
+            with pytest.raises(RuntimeError, match="SSE event exceeds"):
+                list(self._streamer().stream("Oversized"))
+
+    def test_ignores_inline_data_with_wrong_or_missing_audio_mime(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+        encoded = _b64.b64encode(b"\x01\x02").decode()
+        invalid_mimes = [
+            "image/png",
+            "audio/L16evil;rate=24000",
+            "audio/L16;rate=24000;channels=2",
+            "audio/L16;rate=16000",
+            "audio/L16;rate=not-a-number",
+        ]
+        invalid_events = []
+        for mime in invalid_mimes:
+            event = _gemini_audio_event(encoded)
+            event["candidates"][0]["content"]["parts"][0]["inlineData"][
+                "mimeType"
+            ] = mime
+            invalid_events.append(event)
+        missing = _gemini_audio_event(encoded)
+        del missing["candidates"][0]["content"]["parts"][0]["inlineData"][
+            "mimeType"
+        ]
+        good = _gemini_audio_event(_b64.b64encode(b"\x03\x04").decode())
+        with patch(
+            "requests.post",
+            return_value=_sse_context([*invalid_events, missing, good]),
+        ):
+            assert list(self._streamer().stream("Formats")) == [b"\x03\x04"]
+
+    def test_raw_sse_cap_is_cumulative_before_json_decode(self):
+        response = _sse_context([])
+        response.iter_content.return_value = iter([b": keepalive\n", b": keepalive\n"])
+        with pytest.raises(RuntimeError, match="raw SSE bytes"):
+            list(
+                ts._iter_bounded_sse_data(
+                    response,
+                    label="test SSE",
+                    deadline=time.monotonic() + 1,
+                    raw_byte_cap=15,
+                )
+            )
+
+    def test_absolute_deadline_rejects_trickled_sse(self):
+        response = _sse_context([])
+        response.iter_content.return_value = iter([b": keepalive\n"])
+        with pytest.raises(TimeoutError, match="absolute deadline"):
+            list(
+                ts._iter_bounded_sse_data(
+                    response,
+                    label="test SSE",
+                    deadline=time.monotonic() - 1,
+                )
+            )
+
+    def test_deadline_closes_blocked_body_read(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+        monkeypatch.setattr(ts, "_GEMINI_STREAM_DEADLINE_S", 0.05)
+        closed = threading.Event()
+
+        class BlockingResponse:
+            headers = {"content-type": "text/event-stream; charset=utf-8"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+            def raise_for_status(self):
+                return None
+
+            def iter_content(self, chunk_size):
+                assert chunk_size == 8192
+                closed.wait(timeout=1.0)
+                return iter(())
+
+            def close(self):
+                closed.set()
+
+        started = time.monotonic()
+        with patch("requests.post", return_value=BlockingResponse()):
+            with pytest.raises(TimeoutError, match="absolute deadline"):
+                list(self._streamer().stream("Deadline"))
+        assert time.monotonic() - started < 0.5
+        assert closed.is_set()
+
+    def test_cancel_before_request_prevents_network_start(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+        streamer = self._streamer()
+        streamer.cancel()
+        with patch("requests.post") as post:
+            assert list(streamer.stream("Already cancelled")) == []
+        post.assert_not_called()
+
+    def test_cancel_closes_blocked_response_promptly(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+        started = threading.Event()
+        closed = threading.Event()
+
+        class BlockingResponse:
+            headers = {"content-type": "text/event-stream"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+            def raise_for_status(self):
+                return None
+
+            def iter_content(self, chunk_size):
+                assert chunk_size == 8192
+                started.set()
+                closed.wait(timeout=2.0)
+                return iter(())
+
+            def close(self):
+                closed.set()
+
+        streamer = self._streamer()
+        errors = []
+
+        def consume():
+            try:
+                list(streamer.stream("Cancel"))
+            except Exception as exc:  # pragma: no cover - surfaced below
+                errors.append(exc)
+
+        thread = threading.Thread(target=consume)
+        with patch("requests.post", return_value=BlockingResponse()):
+            thread.start()
+            assert started.wait(timeout=1.0)
+            streamer.cancel()
+            thread.join(timeout=1.0)
+
+        assert closed.is_set()
+        assert not thread.is_alive()
+        assert errors == []

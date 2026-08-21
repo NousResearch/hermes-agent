@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from abc import ABC, abstractmethod
 from typing import Callable, Dict, Iterator, List, Optional
@@ -37,6 +38,13 @@ logger = logging.getLogger(__name__)
 # providers (``_read_tts_response_bytes`` in tools.tts_tool): a buggy or
 # hostile endpoint must not be able to feed us unbounded audio.
 _STREAM_SENTENCE_BYTE_CAP = 16 * 1024 * 1024
+_GEMINI_STREAM_DEADLINE_S = 60.0
+_GEMINI_RAW_SSE_BYTE_CAP = 24 * 1024 * 1024
+_GEMINI_SSE_EVENT_BYTE_CAP = 4 * 1024 * 1024
+
+
+class StreamingTTSLimitError(RuntimeError):
+    """A bounded streaming transport exceeded an integrity/resource limit."""
 
 
 def _resolve_key(env_var: str, provider_id: str) -> str:
@@ -134,6 +142,10 @@ class StreamingTTSProvider(ABC):
     sample_rate: int = 24000
     channels: int = 1
     sample_width: int = 2  # bytes/sample (int16)
+    # Gateway streaming requires native async cancellation that can stop DNS,
+    # connect, and header waits. Legacy synchronous stream() implementations
+    # may keep best-effort cancel() without qualifying for gateway use.
+    async_transport_cancellable: bool = False
 
     def __init__(self, tts_config: Dict, section: Dict):
         self.tts_config = tts_config
@@ -147,6 +159,9 @@ class StreamingTTSProvider(ABC):
     @abstractmethod
     def stream(self, text: str) -> Iterator[bytes]:
         """Yield PCM chunks for ``text``. Raise on failure (caller logs)."""
+
+    def cancel(self) -> None:
+        """Best-effort cancellation of an active provider request."""
 
 
 _REGISTRY: Dict[str, type[StreamingTTSProvider]] = {}
@@ -182,6 +197,8 @@ _PROVIDER_PRIORITY: List[str] = ["elevenlabs", "gemini", "openai", "xai"]
 def resolve_streaming_provider(
     tts_config: Dict,
     preferred: Optional[str] = None,
+    *,
+    require_transport_cancellation: bool = False,
 ) -> Optional[StreamingTTSProvider]:
     """Return a ready streamer for the *configured* provider, else ``None``.
 
@@ -198,19 +215,31 @@ def resolve_streaming_provider(
        chosen voice. We never silently swap to a different provider just
        to get streaming.
     """
+    def _acceptable(
+        instance: Optional[StreamingTTSProvider],
+    ) -> Optional[StreamingTTSProvider]:
+        if instance is None:
+            return None
+        if require_transport_cancellation and (
+            not getattr(instance, "async_transport_cancellable", False)
+            or not callable(getattr(instance, "astream", None))
+        ):
+            return None
+        return instance
+
     streaming_cfg = tts_config.get("streaming") or {}
     pinned = str(streaming_cfg.get("provider") or "").lower().strip()
     if pinned == "auto":
         for name in _PROVIDER_PRIORITY:
-            inst = _try_instantiate(name, tts_config)
+            inst = _acceptable(_try_instantiate(name, tts_config))
             if inst is not None:
                 return inst
         return None
     if pinned:
-        return _try_instantiate(pinned, tts_config)
+        return _acceptable(_try_instantiate(pinned, tts_config))
 
     name = (preferred or _get_provider(tts_config)).lower().strip()
-    return _try_instantiate(name, tts_config)
+    return _acceptable(_try_instantiate(name, tts_config))
 
 
 # ---------------------------------------------------------------------------
@@ -304,22 +333,164 @@ def _capped(chunks: Iterator[bytes], label: str) -> Iterator[bytes]:
     for chunk in chunks:
         total += len(chunk)
         if total > _STREAM_SENTENCE_BYTE_CAP:
-            logger.warning("%s exceeded %d bytes for one sentence; truncating",
-                           label, _STREAM_SENTENCE_BYTE_CAP)
-            return
+            raise StreamingTTSLimitError(
+                f"{label} exceeded its decoded audio cap of "
+                f"{_STREAM_SENTENCE_BYTE_CAP} bytes"
+            )
         yield chunk
+
+
+def _safe_close_streaming_response(response) -> None:
+    try:
+        response.close()
+    except Exception:
+        pass
+
+
+def _iter_bounded_sse_data(
+    response,
+    *,
+    label: str,
+    deadline: float,
+    raw_byte_cap: int = _GEMINI_RAW_SSE_BYTE_CAP,
+) -> Iterator[bytes]:
+    """Yield bounded SSE data and close blocked reads at the absolute deadline."""
+    content_type = str(response.headers.get("content-type", ""))
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if media_type != "text/event-stream":
+        raise RuntimeError(f"{label} returned unexpected content type {content_type!r}")
+
+    deadline_timer = threading.Timer(
+        max(0.0, deadline - time.monotonic()),
+        _safe_close_streaming_response,
+        args=(response,),
+    )
+    deadline_timer.daemon = True
+    deadline_timer.start()
+    event_cap = _GEMINI_SSE_EVENT_BYTE_CAP
+    raw_total = 0
+    pending = bytearray()
+    try:
+        for chunk in response.iter_content(chunk_size=8192):
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"{label} exceeded its absolute deadline")
+            if not chunk:
+                continue
+            raw_total += len(chunk)
+            if raw_total > raw_byte_cap:
+                raise RuntimeError(f"{label} exceeded {raw_byte_cap} raw SSE bytes")
+            pending.extend(chunk)
+            while True:
+                newline = pending.find(b"\n")
+                if newline < 0:
+                    if len(pending) > event_cap:
+                        raise RuntimeError(f"{label} SSE event exceeds {event_cap} bytes")
+                    break
+                line = bytes(pending[:newline]).rstrip(b"\r")
+                del pending[:newline + 1]
+                if len(line) > event_cap:
+                    raise RuntimeError(f"{label} SSE event exceeds {event_cap} bytes")
+                if line.startswith(b"data:"):
+                    yield line[len(b"data:"):].lstrip()
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"{label} exceeded its absolute deadline")
+        if len(pending) > event_cap:
+            raise RuntimeError(f"{label} SSE event exceeds {event_cap} bytes")
+        line = bytes(pending).rstrip(b"\r")
+        if line.startswith(b"data:"):
+            yield line[len(b"data:"):].lstrip()
+    finally:
+        deadline_timer.cancel()
+
+
+def _decode_gemini_sse_audio(raw: bytes) -> List[bytes]:
+    """Decode supported mono 24 kHz L16 parts from one Gemini SSE event."""
+    import base64
+    import json
+
+    try:
+        event = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(event, dict):
+        return []
+    try:
+        parts = event["candidates"][0]["content"]["parts"]
+    except (KeyError, IndexError, TypeError):
+        return []
+
+    chunks: List[bytes] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        inline = part.get("inlineData") or part.get("inline_data") or {}
+        if not isinstance(inline, dict):
+            continue
+        mime = str(inline.get("mimeType") or inline.get("mime_type") or "")
+        mime_parts = [item.strip().lower() for item in mime.split(";")]
+        media_type = mime_parts[0] if mime_parts else ""
+        params: Dict[str, str] = {}
+        malformed = False
+        for item in mime_parts[1:]:
+            if "=" not in item:
+                malformed = True
+                break
+            key, value = item.split("=", 1)
+            if not key or key in params:
+                malformed = True
+                break
+            params[key] = value
+        if (
+            malformed
+            or media_type != "audio/l16"
+            or params.get("rate") != "24000"
+            or params.get("channels", "1") != "1"
+        ):
+            logger.warning(
+                "Gemini SSE: ignoring unsupported audio format %r",
+                mime,
+            )
+            continue
+        b64 = inline.get("data", "")
+        if not b64:
+            continue
+        try:
+            chunks.append(base64.b64decode(b64, validate=True))
+        except (ValueError, TypeError) as exc:
+            logger.warning("Gemini SSE: bad base64 audio: %s", exc)
+    return chunks
 
 
 @register("gemini")
 class GeminiStreamer(StreamingTTSProvider):
-    """Gemini ``streamGenerateContent?alt=sse`` → base64 PCM chunks (24 kHz).
+    """Gemini ``streamGenerateContent?alt=sse`` → PCM chunks (24 kHz mono).
 
-    Salvaged from PR #47588 (@Cdddo) and rebased onto the post-campaign
-    infrastructure: credentials via the provider-secret resolver, requests
-    (not httpx) with a bounded streamed body, and main's provider ABC.
+    ``gemini-3.1-flash-tts-preview`` is currently the only Gemini TTS model
+    that emits audio incrementally. Credentials are resolved through the
+    provider-secret chain and sent in ``x-goog-api-key``, never the URL.
     """
 
     sample_rate = 24000
+    async_transport_cancellable = True
+
+    def __init__(self, tts_config: Dict, section: Dict):
+        super().__init__(tts_config, section)
+        self._response_lock = threading.Lock()
+        self._active_response = None
+        self._active_async_loop = None
+        self._active_async_task = None
+        self._cancelled = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+        with self._response_lock:
+            response = self._active_response
+            loop = self._active_async_loop
+            task = self._active_async_task
+        if response is not None:
+            _safe_close_streaming_response(response)
+        if loop is not None and task is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(task.cancel)
 
     @staticmethod
     def available() -> bool:
@@ -328,10 +499,154 @@ class GeminiStreamer(StreamingTTSProvider):
             or _resolve_key("GOOGLE_API_KEY", "gemini")
         )
 
-    def stream(self, text: str) -> Iterator[bytes]:
-        import base64
-        import json as _json
+    async def astream(self, text: str):
+        """Async Gemini transport used by gateway voice for prompt cancellation."""
+        import asyncio
 
+        import httpx
+
+        from tools.tts_tool import (
+            DEFAULT_GEMINI_TTS_BASE_URL,
+            DEFAULT_GEMINI_TTS_MODEL,
+            DEFAULT_GEMINI_TTS_VOICE,
+        )
+
+        if self._cancelled.is_set():
+            return
+        api_key = (
+            _resolve_key("GEMINI_API_KEY", "gemini")
+            or _resolve_key("GOOGLE_API_KEY", "gemini")
+        )
+        model = str(
+            self.section.get("model", DEFAULT_GEMINI_TTS_MODEL)
+        ).strip() or DEFAULT_GEMINI_TTS_MODEL
+        voice = str(
+            self.section.get("voice", DEFAULT_GEMINI_TTS_VOICE)
+        ).strip() or DEFAULT_GEMINI_TTS_VOICE
+        base_url = str(
+            self.section.get("base_url")
+            or get_env_value("GEMINI_BASE_URL")
+            or DEFAULT_GEMINI_TTS_BASE_URL
+        ).strip().rstrip("/")
+        payload = {
+            "contents": [{"parts": [{"text": text}]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": {"voiceName": voice},
+                    },
+                },
+            },
+        }
+        url = f"{base_url}/models/{model}:streamGenerateContent"
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        with self._response_lock:
+            self._active_async_loop = loop
+            self._active_async_task = task
+
+        raw_byte_cap = _GEMINI_RAW_SSE_BYTE_CAP
+        event_cap = _GEMINI_SSE_EVENT_BYTE_CAP
+        raw_total = 0
+        decoded_total = 0
+        pending = bytearray()
+        try:
+            timeout = httpx.Timeout(
+                _GEMINI_STREAM_DEADLINE_S,
+                connect=min(10.0, _GEMINI_STREAM_DEADLINE_S),
+            )
+            async with asyncio.timeout(_GEMINI_STREAM_DEADLINE_S):
+                async with httpx.AsyncClient(
+                    follow_redirects=False,
+                    timeout=timeout,
+                ) as client:
+                    async with client.stream(
+                        "POST",
+                        url,
+                        params={"alt": "sse"},
+                        headers={"x-goog-api-key": api_key},
+                        json=payload,
+                    ) as response:
+                        response.raise_for_status()
+                        content_type = str(response.headers.get("content-type", ""))
+                        media_type = content_type.split(";", 1)[0].strip().lower()
+                        if media_type != "text/event-stream":
+                            raise RuntimeError(
+                                "Gemini streaming TTS returned unexpected "
+                                f"content type {content_type!r}"
+                            )
+                        async for chunk in response.aiter_bytes(chunk_size=8192):
+                            if not chunk:
+                                continue
+                            raw_total += len(chunk)
+                            if raw_total > raw_byte_cap:
+                                raise RuntimeError(
+                                    "Gemini streaming TTS exceeded "
+                                    f"{raw_byte_cap} raw SSE bytes"
+                                )
+                            pending.extend(chunk)
+                            while True:
+                                newline = pending.find(b"\n")
+                                if newline < 0:
+                                    if len(pending) > event_cap:
+                                        raise RuntimeError(
+                                            "Gemini streaming TTS SSE event "
+                                            f"exceeds {event_cap} bytes"
+                                        )
+                                    break
+                                line = bytes(pending[:newline]).rstrip(b"\r")
+                                del pending[:newline + 1]
+                                if len(line) > event_cap:
+                                    raise RuntimeError(
+                                        "Gemini streaming TTS SSE event "
+                                        f"exceeds {event_cap} bytes"
+                                    )
+                                if not line.startswith(b"data:"):
+                                    continue
+                                for pcm in _decode_gemini_sse_audio(
+                                    line[len(b"data:"):].lstrip()
+                                ):
+                                    decoded_total += len(pcm)
+                                    if decoded_total > _STREAM_SENTENCE_BYTE_CAP:
+                                        raise StreamingTTSLimitError(
+                                            "Gemini streaming TTS exceeded its "
+                                            "decoded audio cap of "
+                                            f"{_STREAM_SENTENCE_BYTE_CAP} bytes"
+                                        )
+                                    yield pcm
+                        if len(pending) > event_cap:
+                            raise RuntimeError(
+                                "Gemini streaming TTS SSE event "
+                                f"exceeds {event_cap} bytes"
+                            )
+                        line = bytes(pending).rstrip(b"\r")
+                        if line.startswith(b"data:"):
+                            for pcm in _decode_gemini_sse_audio(
+                                line[len(b"data:"):].lstrip()
+                            ):
+                                decoded_total += len(pcm)
+                                if decoded_total > _STREAM_SENTENCE_BYTE_CAP:
+                                    raise StreamingTTSLimitError(
+                                        "Gemini streaming TTS exceeded its "
+                                        "decoded audio cap of "
+                                        f"{_STREAM_SENTENCE_BYTE_CAP} bytes"
+                                    )
+                                yield pcm
+        finally:
+            with self._response_lock:
+                if self._active_async_task is task:
+                    self._active_async_loop = None
+                    self._active_async_task = None
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        """Legacy synchronous compatibility path.
+
+        Gateway playback never selects this path: only ``astream()`` advertises
+        cancellation across DNS/connect/header/body. Here cancel() is best-effort
+        once ``requests`` has returned a response, with phase timeouts providing
+        the pre-header bound.
+        """
         import requests
 
         from tools.tts_tool import (
@@ -363,36 +678,45 @@ class GeminiStreamer(StreamingTTSProvider):
                 },
             },
         }
-        # ``?alt=sse`` flips the response from a single JSON blob to an SSE
-        # feed of base64 PCM chunks — the whole point of this provider.
         url = f"{base_url}/models/{model}:streamGenerateContent"
 
         def _sse_chunks() -> Iterator[bytes]:
+            deadline = time.monotonic() + _GEMINI_STREAM_DEADLINE_S
+            if self._cancelled.is_set():
+                return
+            remaining = max(0.001, deadline - time.monotonic())
             with requests.post(
                 url,
-                params={"alt": "sse", "key": api_key},
+                params={"alt": "sse"},
+                headers={"x-goog-api-key": api_key},
                 json=payload,
-                timeout=60,
+                timeout=(min(10.0, remaining), min(15.0, remaining)),
                 stream=True,
+                # requests may preserve custom headers across redirects. Do
+                # not risk forwarding the API key to a different origin.
+                allow_redirects=False,
             ) as response:
-                response.raise_for_status()
-                for line in response.iter_lines(decode_unicode=True):
-                    if not line or not line.startswith("data: "):
-                        continue
-                    try:
-                        event = _json.loads(line[len("data: "):])
-                        parts = event["candidates"][0]["content"]["parts"]
-                    except (ValueError, KeyError, IndexError, TypeError):
-                        continue
-                    for part in parts:
-                        inline = part.get("inlineData") or part.get("inline_data") or {}
-                        b64 = inline.get("data", "")
-                        if not b64:
-                            continue
-                        try:
-                            yield base64.b64decode(b64)
-                        except (ValueError, TypeError) as exc:
-                            logger.warning("Gemini SSE: bad base64 audio: %s", exc)
+                with self._response_lock:
+                    self._active_response = response
+                try:
+                    if self._cancelled.is_set():
+                        _safe_close_streaming_response(response)
+                        return
+                    response.raise_for_status()
+                    for raw in _iter_bounded_sse_data(
+                        response,
+                        label="Gemini streaming TTS",
+                        deadline=deadline,
+                    ):
+                        yield from _decode_gemini_sse_audio(raw)
+                    if not self._cancelled.is_set() and time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            "Gemini streaming TTS exceeded its absolute deadline"
+                        )
+                finally:
+                    with self._response_lock:
+                        if self._active_response is response:
+                            self._active_response = None
 
         yield from _capped(_sse_chunks(), "Gemini streaming TTS")
 

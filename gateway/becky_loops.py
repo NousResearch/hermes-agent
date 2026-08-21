@@ -118,6 +118,16 @@ class TopicSender(Protocol):
     ) -> TopicSendReceipt: ...
 
 
+class TopicController(Protocol):
+    @property
+    def is_connected(self) -> bool: ...
+
+    @property
+    def supports_close(self) -> bool: ...
+
+    async def close_topic(self, *, chat_id: str, thread_id: str) -> datetime: ...
+
+
 class TelegramTopicSender:
     """Guard the existing Telegram adapter behind one private-topic seam."""
 
@@ -187,6 +197,50 @@ class TelegramTopicSender:
         ):
             raise _TopicSendFailure()
         return TopicSendReceipt(message_id=message_id)
+
+
+class TelegramTopicController:
+    """Small, Bot API-only seam for closing a proven Telegram topic."""
+
+    def __init__(self, adapter: Any) -> None:
+        self._adapter = adapter
+
+    @property
+    def is_connected(self) -> bool:
+        state = getattr(self._adapter, "is_connected", None)
+        if state is None:
+            return False
+        try:
+            return bool(state() if callable(state) else state)
+        except Exception:
+            return False
+
+    @property
+    def supports_close(self) -> bool:
+        bot = getattr(self._adapter, "_bot", None)
+        return callable(getattr(bot, "close_forum_topic", None))
+
+    async def close_topic(self, *, chat_id: str, thread_id: str) -> datetime:
+        if not self.is_connected:
+            raise _TopicControlFailure("topic_control_unavailable")
+        bot = getattr(self._adapter, "_bot", None)
+        method = getattr(bot, "close_forum_topic", None)
+        if not callable(method):
+            raise _TopicControlFailure("topic_control_unsupported")
+        try:
+            result = await method(
+                chat_id=int(chat_id), message_thread_id=int(thread_id)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            code = _classify_topic_control_error(error)
+            if code == "topic_already_closed":
+                return datetime.now(UTC)
+            raise _TopicControlFailure(code) from None
+        if result is False:
+            raise _TopicControlFailure("topic_control_unavailable")
+        return datetime.now(UTC)
 
 
 @dataclass
@@ -413,6 +467,7 @@ class BeckyLoopsBridgeServer:
         store: BeckyLoopsStore,
         summarizer: LoopSummarizer,
         topic_sender: TopicSender | None = None,
+        topic_controller: TopicController | None = None,
         reply_generator: ReplyGenerator | None = None,
     ) -> None:
         if not config.enabled:
@@ -427,9 +482,12 @@ class BeckyLoopsBridgeServer:
         self.store = store
         self.summarizer = summarizer
         self.topic_sender = topic_sender
+        self.topic_controller = topic_controller
         self.reply_generator = reply_generator
         self._reply_attempts: dict[str, _ReplyAttempt] = {}
         self._reply_attempts_lock = asyncio.Lock()
+        self._close_results: dict[str, tuple[str, str, dict[str, Any]]] = {}
+        self._close_results_lock = asyncio.Lock()
         self._server: Server | None = None
 
     @property
@@ -551,7 +609,11 @@ class BeckyLoopsBridgeServer:
                 "schema_version": "2",
                 "summary_schema_version": "1",
                 "methods": _METHODS,
-                "topic_control": "unavailable",
+                "topic_control": (
+                    "bot_api_private_topic"
+                    if self._topic_control_available()
+                    else "unavailable"
+                ),
                 "topic_reply": (
                     "bot_api_private_topic"
                     if self._topic_reply_available()
@@ -674,7 +736,13 @@ class BeckyLoopsBridgeServer:
         if method == "becky.loops.close":
             if not self._valid_close_params(params):
                 return _PROTOCOL_FAILURE
-            raise _RemoteFailure("topic_control_unavailable")
+            if not self._topic_control_available():
+                raise _RemoteFailure("topic_control_unavailable")
+            return await self._close_topic(
+                source_ref=params["source_ref"],
+                expected_revision=params["expected_revision"],
+                idempotency_key=params["idempotency_key"].lower(),
+            )
         if method == "becky.loops.reopen":
             if not self._valid_reopen_params(params):
                 return _PROTOCOL_FAILURE
@@ -699,6 +767,69 @@ class BeckyLoopsBridgeServer:
             return bool(sender_state() if callable(sender_state) else sender_state)
         except Exception:
             return False
+
+    def _topic_control_available(self) -> bool:
+        if (
+            self.config.topic_control != "bot_api_private_topic"
+            or self.topic_controller is None
+        ):
+            return False
+        for attribute in ("is_connected", "supports_close"):
+            state = getattr(self.topic_controller, attribute, False)
+            try:
+                state = state() if callable(state) else state
+            except Exception:
+                return False
+            if not bool(state):
+                return False
+        return True
+
+    async def _close_topic(
+        self, *, source_ref: str, expected_revision: str, idempotency_key: str
+    ) -> dict[str, Any]:
+        async with self._close_results_lock:
+            existing = self._close_results.get(idempotency_key)
+            if existing is not None:
+                if existing[0] != source_ref or existing[1] != expected_revision:
+                    raise _RemoteFailure("idempotency_conflict")
+                return dict(existing[2])
+            row, _, _ = self._current_topic(source_ref, expected_revision)
+            source_state = str(row.get("source_state") or "active")
+            if source_state == "deleted":
+                raise _RemoteFailure("source_not_found")
+            if source_state == "closed":
+                closed_at = _utc_datetime(row.get("updated_at"))
+            elif source_state == "active":
+                if self.topic_controller is None:
+                    raise _RemoteFailure("topic_control_unavailable")
+                try:
+                    closed_at = await self.topic_controller.close_topic(
+                        chat_id=self.config.chat_id,
+                        thread_id=str(row.get("thread_id") or ""),
+                    )
+                except _TopicControlFailure as failure:
+                    raise _RemoteFailure(failure.code) from None
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    raise _RemoteFailure("topic_control_unavailable") from None
+            else:
+                raise _RemoteFailure("topic_state_read_failed")
+            if closed_at.tzinfo is None:
+                closed_at = closed_at.replace(tzinfo=UTC)
+            result = {
+                "source_ref": source_ref,
+                "source_state": "closed",
+                "closed_at": closed_at.isoformat(),
+                "control_method": "bot_api_private_topic",
+                "idempotency_key": idempotency_key,
+            }
+            self._close_results[idempotency_key] = (
+                source_ref,
+                expected_revision,
+                result,
+            )
+            return dict(result)
 
     def _current_topic(
         self, source_ref: str, expected_revision: str
@@ -1097,6 +1228,53 @@ class _TopicSendFailure(RuntimeError):
         super().__init__("topic_send_failed")
 
 
+class _TopicControlFailure(RuntimeError):
+    def __init__(self, code: str) -> None:
+        self.code = (
+            code
+            if code
+            in {
+                "topic_already_closed",
+                "topic_control_unavailable",
+                "topic_control_unsupported",
+                "topic_not_found",
+                "topic_state_write_failed",
+            }
+            else "topic_control_unavailable"
+        )
+        super().__init__(self.code)
+
+
+def _classify_topic_control_error(error: BaseException) -> str:
+    """Map provider diagnostics to the closed public topic-control set."""
+    text = str(error).lower()
+    if any(
+        marker in text
+        for marker in (
+            "topic_not_modified",
+            "topic is already closed",
+            "already closed",
+        )
+    ):
+        return "topic_already_closed"
+    if any(
+        marker in text
+        for marker in ("message thread not found", "topic not found", "chat not found")
+    ):
+        return "topic_not_found"
+    if any(
+        marker in text
+        for marker in (
+            "not a forum",
+            "forums_disabled",
+            "forum topics are disabled",
+            "method not found",
+        )
+    ):
+        return "topic_control_unsupported"
+    return "topic_control_unavailable"
+
+
 class _ProtocolFailure:
     pass
 
@@ -1160,14 +1338,24 @@ def load_becky_loops_config(config_path: Path | None = None) -> BeckyLoopsConfig
         and _valid_telegram_id(chat_id)
         and _has_configured_loop_topic(raw, section, chat_id)
     )
+    proven_topic_control = (
+        section.get("proven_topic_control") is True
+        and os.getenv("HERMES_BECKY_LOOPS_PROVEN_TOPIC_CONTROL", "") == "1"
+        and bool(token)
+        and _valid_telegram_id(chat_id)
+        and _has_configured_loop_topic(raw, section, chat_id)
+    )
     return BeckyLoopsConfig(
         enabled=True,
         chat_id=chat_id,
         token=token,
         port=port,
-        # No mutation adapter is installed in this deployment.  Never
-        # advertise a configured-but-unimplemented control method.
-        topic_control="unavailable",
+        # The Bot API control is advertised only after the separate proof
+        # flag and same-chat topic binding are both present. GatewayRunner
+        # additionally checks the live adapter and method before injection.
+        topic_control=(
+            "bot_api_private_topic" if proven_topic_control else "unavailable"
+        ),
         # Topic sends require the profile proof, the gateway-start environment
         # proof, a bridge token, and a configured Telegram chat/topic. The
         # connected adapter is checked separately by GatewayRunner before it
@@ -1244,6 +1432,7 @@ async def start_becky_loops_bridge(
     db: Any,
     summarizer: LoopSummarizer | None = None,
     topic_sender: TopicSender | None = None,
+    topic_controller: TopicController | None = None,
     reply_generator: ReplyGenerator | None = None,
 ) -> BeckyLoopsBridgeServer | None:
     """Start the opt-in bridge and return its lifecycle handle."""
@@ -1261,6 +1450,7 @@ async def start_becky_loops_bridge(
                 else LoopSummarizer(AsyncAuxiliarySummaryProvider())
             ),
             topic_sender=topic_sender,
+            topic_controller=topic_controller,
             reply_generator=(
                 reply_generator
                 if reply_generator is not None

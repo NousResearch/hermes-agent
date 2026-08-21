@@ -3003,6 +3003,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Start the opt-in loopback bridge over the gateway's read-only DB."""
         try:
             from gateway.becky_loops import (
+                TelegramTopicController,
                 TelegramTopicSender,
                 load_becky_loops_config,
                 start_becky_loops_bridge,
@@ -3013,14 +3014,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if config is None or db is None:
                 return
             topic_sender = None
+            topic_controller = None
             if config.topic_reply == "bot_api_private_topic":
                 telegram_adapter = self.adapters.get(Platform.TELEGRAM)
                 if telegram_adapter is not None:
                     topic_sender = TelegramTopicSender(telegram_adapter)
+            if config.topic_control == "bot_api_private_topic":
+                telegram_adapter = self.adapters.get(Platform.TELEGRAM)
+                if telegram_adapter is not None:
+                    topic_controller = TelegramTopicController(telegram_adapter)
             self._becky_loops_bridge = await start_becky_loops_bridge(
                 config=config,
                 db=db,
                 topic_sender=topic_sender,
+                topic_controller=topic_controller,
             )
         except Exception:
             # The bridge is optional; never prevent Telegram or other adapters

@@ -161,6 +161,23 @@ class FakeTopicSender:
         return becky_loops.TopicSendReceipt(message_id=str(self.next_message_id))
 
 
+class FakeTopicController:
+    def __init__(self, outcomes: list[object] | None = None) -> None:
+        self.outcomes = list(outcomes or [])
+        self.calls: list[dict[str, str]] = []
+        self.is_connected = True
+        self.supports_close = True
+
+    async def close_topic(self, *, chat_id: str, thread_id: str) -> datetime:
+        self.calls.append({"chat_id": chat_id, "thread_id": thread_id})
+        if self.outcomes:
+            outcome = self.outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return datetime(2026, 8, 14, 12, 0, tzinfo=UTC)
+
+
 class BlockingTopicSender(FakeTopicSender):
     def __init__(self) -> None:
         super().__init__()
@@ -331,6 +348,17 @@ def config(*, port: int = 0, topic_reply: str = "unavailable") -> BeckyLoopsConf
     )
 
 
+def control_config(*, port: int = 0) -> BeckyLoopsConfig:
+    return BeckyLoopsConfig(
+        enabled=True,
+        chat_id="123456789",
+        token="t" * 64,
+        port=port,
+        topic_control="bot_api_private_topic",
+        topic_reply="unavailable",
+    )
+
+
 def reply_params(
     *,
     text: str = "Can you clarify the next step?",
@@ -426,6 +454,27 @@ def test_load_config_requires_exact_dual_reply_proof_and_configured_topic(
     assert loaded is not None
     assert loaded.topic_reply == "bot_api_private_topic"
     assert loaded.chat_id == "123456789"
+
+
+def test_load_config_requires_separate_close_control_proof(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write_bridge_config(tmp_path / "config.yaml", include_platform_topic=True)
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "    proven_topic_reply: true\n",
+            "    proven_topic_reply: true\n    proven_topic_control: true\n",
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_BECKY_LOOPS_TOKEN", "t" * 64)
+    monkeypatch.setenv("HERMES_BECKY_LOOPS_PROVEN_TOPIC_REPLY", "1")
+    monkeypatch.setenv("HERMES_BECKY_LOOPS_PROVEN_TOPIC_CONTROL", "1")
+
+    loaded = becky_loops.load_becky_loops_config(path)
+
+    assert loaded is not None
+    assert loaded.topic_control == "bot_api_private_topic"
 
 
 @pytest.mark.parametrize(
@@ -1794,3 +1843,109 @@ async def test_bridge_close_and_reopen_fail_closed_without_topic_control() -> No
                 }
     finally:
         await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_bridge_close_uses_connected_controller_and_replays_idempotently() -> (
+    None
+):
+    controller = FakeTopicController()
+    server = BeckyLoopsBridgeServer(
+        config=control_config(),
+        store=FakeStore(),
+        summarizer=FakeSummarizer(),
+        topic_controller=controller,
+    )
+
+    capabilities = await server._method("becky.loops.capabilities", {})
+    assert capabilities["topic_control"] == "bot_api_private_topic"
+    params = {
+        "source_ref": SOURCE_REF,
+        "expected_revision": REVISION,
+        "idempotency_key": IDEMPOTENCY_KEY,
+    }
+    first = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.close",
+            "params": params,
+        })
+    )
+    second = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "becky.loops.close",
+            "params": params,
+        })
+    )
+
+    assert first["result"]["source_state"] == "closed"
+    assert first["result"] == second["result"]
+    assert controller.calls == [{"chat_id": "123456789", "thread_id": "20197"}]
+
+
+@pytest.mark.asyncio
+async def test_bridge_close_rechecks_revision_and_maps_controller_failures() -> None:
+    controller = FakeTopicController([
+        becky_loops._TopicControlFailure("topic_control_unsupported")
+    ])
+    server = BeckyLoopsBridgeServer(
+        config=control_config(),
+        store=FakeStore(),
+        summarizer=FakeSummarizer(),
+        topic_controller=controller,
+    )
+    mismatch = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.close",
+            "params": {
+                "source_ref": SOURCE_REF,
+                "expected_revision": NEW_REVISION,
+                "idempotency_key": IDEMPOTENCY_KEY,
+            },
+        })
+    )
+    assert mismatch["error"]["message"] == "revision_conflict"
+    failed = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "becky.loops.close",
+            "params": {
+                "source_ref": SOURCE_REF,
+                "expected_revision": REVISION,
+                "idempotency_key": IDEMPOTENCY_KEY,
+            },
+        })
+    )
+    assert failed["error"]["message"] == "topic_control_unsupported"
+
+
+@pytest.mark.asyncio
+async def test_telegram_topic_controller_calls_bot_api_and_fails_closed() -> None:
+    class Bot:
+        async def close_forum_topic(self, **kwargs: Any) -> bool:
+            self.kwargs = kwargs
+            return True
+
+    adapter = SimpleNamespace(_bot=Bot(), is_connected=True)
+    controller = becky_loops.TelegramTopicController(adapter)
+    closed_at = await controller.close_topic(chat_id="8837347581", thread_id="3964")
+    assert closed_at.tzinfo is not None
+    assert adapter._bot.kwargs == {"chat_id": 8837347581, "message_thread_id": 3964}
+
+    class BrokenBot:
+        async def close_forum_topic(self, **kwargs: Any) -> bool:
+            del kwargs
+            raise RuntimeError("arbitrary provider detail")
+
+    broken = becky_loops.TelegramTopicController(
+        SimpleNamespace(_bot=BrokenBot(), is_connected=True)
+    )
+    with pytest.raises(becky_loops._TopicControlFailure) as error:
+        await broken.close_topic(chat_id="8837347581", thread_id="3964")
+    assert error.value.code == "topic_control_unavailable"

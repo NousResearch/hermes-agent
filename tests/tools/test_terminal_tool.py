@@ -30,6 +30,14 @@ def test_terminal_schema_advertises_persistent_env_state():
     assert "once per session" in description
 
 
+def test_terminal_schema_keeps_fixed_waits_out_of_background_mode():
+    description = terminal_tool.TERMINAL_TOOL_DESCRIPTION
+
+    assert "only for commands that must keep running independently" in description
+    assert "Do not start sleep, timers, cooldowns, delays, or polling loops" in description
+    assert "run the wait as a normal foreground command" in description
+
+
 def test_printf_literal_sudo_does_not_trigger_rewrite(monkeypatch):
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)

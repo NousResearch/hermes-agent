@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200" width="1200" height="1200" role="img" aria-labelledby="title desc">
+  <title id="title">Terminal Waits, Clearly Routed</title>
+  <desc id="desc">Holographic collectible-card infographic about routing fixed waits to foreground terminal calls and independent processes to background mode.</desc>
+  <defs>
+    <radialGradient id="foil" cx="50%" cy="20%" r="80%">
+      <stop offset="0" stop-color="#fff6c7"/>
+      <stop offset="0.18" stop-color="#75f8ff"/>
+      <stop offset="0.38" stop-color="#b987ff"/>
+      <stop offset="0.58" stop-color="#ff7bc3"/>
+      <stop offset="0.78" stop-color="#7cffb2"/>
+      <stop offset="1" stop-color="#0b1020"/>
+    </radialGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#121b35"/>
+      <stop offset="0.5" stop-color="#162047"/>
+      <stop offset="1" stop-color="#080b18"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff0a6"/>
+      <stop offset="0.35" stop-color="#b98326"/>
+      <stop offset="0.65" stop-color="#ffe38a"/>
+      <stop offset="1" stop-color="#7a4c10"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0v48" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="1200" fill="#060812"/>
+  <rect width="1200" height="1200" fill="url(#foil)" opacity="0.22"/>
+  <rect width="1200" height="1200" fill="url(#grid)" opacity="0.7"/>
+
+  <rect x="80" y="55" width="1040" height="1090" rx="54" fill="url(#gold)"/>
+  <rect x="112" y="87" width="976" height="1026" rx="38" fill="url(#card)" stroke="#d6f7ff" stroke-opacity="0.45" stroke-width="2"/>
+  <path d="M160 180h880M160 1010h880" stroke="#ffe38a" stroke-width="3" opacity="0.65"/>
+
+  <text x="600" y="154" fill="#fff8d8" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="54" font-weight="800">Terminal Waits</text>
+  <text x="600" y="212" fill="#9ffcff" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="36" font-weight="700">clearly routed</text>
+
+  <rect x="165" y="265" width="420" height="360" rx="28" fill="#071020" stroke="#7cffd4" stroke-width="3"/>
+  <text x="375" y="318" fill="#7cffd4" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="800">Foreground</text>
+  <text x="375" y="358" fill="#ffffff" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="24">fixed waits</text>
+  <circle cx="375" cy="455" r="62" fill="none" stroke="#7cffd4" stroke-width="8"/>
+  <path d="M375 455v-42M375 455l38 22" stroke="#fff8d8" stroke-width="8" stroke-linecap="round"/>
+  <rect x="225" y="545" width="300" height="46" rx="12" fill="#0d1b34" stroke="#7cffd4" stroke-opacity="0.6"/>
+  <text x="375" y="576" fill="#fff8d8" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="20">sleep 30  timeout=60</text>
+
+  <rect x="615" y="265" width="420" height="360" rx="28" fill="#120b25" stroke="#d89cff" stroke-width="3"/>
+  <text x="825" y="318" fill="#d89cff" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="800">Background</text>
+  <text x="825" y="358" fill="#ffffff" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="24">independent processes</text>
+  <rect x="725" y="408" width="200" height="112" rx="22" fill="#180f32" stroke="#d89cff" stroke-width="5" filter="url(#glow)"/>
+  <circle cx="770" cy="464" r="18" fill="#7cffb2"/>
+  <text x="865" y="473" fill="#fff8d8" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="24">server</text>
+  <rect x="675" y="545" width="300" height="46" rx="12" fill="#1a1231" stroke="#d89cff" stroke-opacity="0.65"/>
+  <text x="825" y="576" fill="#fff8d8" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="18">background=true</text>
+
+  <rect x="165" y="665" width="870" height="86" rx="22" fill="#1b1429" stroke="#ff8fc7" stroke-width="3"/>
+  <text x="600" y="719" fill="#ffb3d8" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="800">No sleep, timers, cooldowns, or polling loops in background mode</text>
+
+  <rect x="165" y="785" width="270" height="130" rx="24" fill="#0d182d" stroke="#ffe38a" stroke-width="2"/>
+  <text x="300" y="832" fill="#ffe38a" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="800">Schema lock</text>
+  <text x="300" y="878" fill="#ffffff" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="22">tool wording</text>
+
+  <rect x="465" y="785" width="270" height="130" rx="24" fill="#0d182d" stroke="#9ffcff" stroke-width="2"/>
+  <text x="600" y="832" fill="#9ffcff" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="800">Validation</text>
+  <text x="600" y="878" fill="#ffffff" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="22">11 tests + E2E</text>
+
+  <rect x="765" y="785" width="270" height="130" rx="24" fill="#0d182d" stroke="#7cffb2" stroke-width="2"/>
+  <text x="900" y="832" fill="#7cffb2" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="800">Port</text>
+  <text x="900" y="878" fill="#ffffff" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="22">Kilo #13224</text>
+
+  <text x="600" y="1058" fill="#fff8d8" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="700">Nous Research</text>
+</svg>

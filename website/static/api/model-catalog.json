@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-21T11:29:05Z",
+  "updated_at": "2026-08-21T19:47:17Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -286,6 +286,9 @@
         },
         {
           "id": "sakana/fugu-ultra"
+        },
+        {
+          "id": "stealth/ox-alpha"
         }
       ]
     }

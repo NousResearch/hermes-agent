@@ -679,7 +679,10 @@ class PairingStore:
         """
         with self._lock:
             self._cleanup_expired(platform)
-            code = code.upper().strip()
+            # Accept codes pasted from chat UIs that insert visual spacing
+            # between characters (NanoClaw #3282). Keep the match exact after
+            # whitespace removal; arbitrary surrounding words still fail.
+            code = "".join(str(code or "").upper().split())
 
             # Lockout check — must run before the pending lookup so a
             # valid code (e.g. one already sitting in pending) cannot be

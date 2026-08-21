@@ -281,12 +281,133 @@ class TestFormatMessageBlockquote:
         assert "\\>" in result
 
 
-    def test_regular_blockquote_with_pipes_escaped(self, adapter):
-        """Regular blockquote ending with || should escape the pipes."""
+    def test_trailing_pipes_without_opener_still_expand(self, adapter):
+        """A '||' closer is honoured even when the '**' opener is missing.
+
+        Requiring both meant a sender who wrote one and forgot the other got
+        '||' escaped into the visible text.
+        """
         result = adapter.format_message("> not expandable||")
-        assert "> not expandable" in result
-        assert "\\|" in result
+        assert result == "**> not expandable||"
+        assert "\\|" not in result
         assert "\\>" not in result
+
+
+    def test_expandable_blockquote_single_line(self, adapter):
+        """A one-line expandable quote keeps its unescaped end marker."""
+        result = adapter.format_message("**> quoted||")
+        assert result == "**> quoted||"
+
+
+    def test_expandable_blockquote_multiline_is_one_quote(self, adapter):
+        """A multi-line expandable quote must stay a single quotation.
+
+        The end marker '||' sits on the *last* line of the block, so it must
+        be recognised there and left unescaped; escaping it would show '||'
+        as literal text and leave the quote non-expandable.
+        """
+        result = adapter.format_message("**> Line one\n> Line two\n> Line three||")
+        assert result == "**> Line one\n> Line two\n> Line three||"
+        assert "\\|" not in result
+        assert "\\>" not in result
+
+
+    def test_blank_line_inside_blockquote_stays_quoted(self, adapter):
+        """An empty quoted line ('>' alone) must not break the block apart.
+
+        Escaped to '\\>' it ends the quotation, so a quoted message split
+        into paragraphs came out as several disjoint quotes.
+        """
+        result = adapter.format_message("**> Bonjour,\n>\n> Merci !\n> Adrien||")
+        assert result == "**> Bonjour,\n>\n> Merci \\!\n> Adrien||"
+        assert "\\>" not in result
+
+
+    def test_blank_line_inside_regular_blockquote(self, adapter):
+        """Same for a non-expandable quote spanning two paragraphs."""
+        result = adapter.format_message("> Para one\n>\n> Para two")
+        assert result == "> Para one\n>\n> Para two"
+        assert "\\>" not in result
+
+
+    def test_lone_gt_line_outside_quote_still_escaped(self, adapter):
+        """A bare '>' line that quotes nothing is not a quotation."""
+        result = adapter.format_message("before\n>\nafter")
+        assert "\\>" in result
+
+
+    def test_two_blockquotes_separated_by_blank_line(self, adapter):
+        """A truly blank line (no '>') still separates two quotations."""
+        result = adapter.format_message("> one\n\n> two")
+        assert result == "> one\n\n> two"
+
+
+    # -- the sender's spelling must not reach the screen ------------------
+
+    # Eleven plausible ways of writing a quotation. Six of them used to leak
+    # escaped markers into the message: the converter honoured exactly one
+    # spelling and sent the rest through the generic escaper, so the reader
+    # got '\\*\\*\\>text\\|\\|' as visible text on a request that returned 200.
+    QUOTE_SPELLINGS = [
+        ("**>text||", "opener glued to the text"),
+        ("**> text||", "canonical, one line"),
+        (">text", "bare marker glued to the text"),
+        ("> text", "bare marker, canonical"),
+        ("**> l1\n>l2||", "second line glued"),
+        ("**> l1\n> l2 ||", "space before the closer"),
+        ("**> l1\n> l2|| ", "space after the closer"),
+        ("> l1\n> l2||", "opener forgotten"),
+        ("**> l1\n\n> l2||", "unmarked blank line"),
+        ("**> l1\n>\n> l2||", "blank line kept quoted"),
+        ("**> texte", "closer forgotten"),
+    ]
+
+    def test_no_marker_survives_any_plausible_spelling(self, adapter):
+        """Whatever the spelling, no escaped marker reaches the screen.
+
+        A single assertion on purpose: the guarantee is 'no marker visible',
+        not a particular rendering per spelling.
+        """
+        leaks = [
+            (source, label)
+            for source, label in self.QUOTE_SPELLINGS
+            if any(marker in adapter.format_message(source)
+                   for marker in ("\\>", "\\|", "\\*"))
+        ]
+        assert leaks == []
+
+    def test_marker_glued_to_the_text_is_still_a_quote(self, adapter):
+        """'>text' means the same as '> text'; the space is optional."""
+        result = adapter.format_message("**>Très bien, on fait comme ça !||")
+        assert result == "**> Très bien, on fait comme ça \\!||"
+
+    def test_prose_line_starting_with_gt_is_quoted_cleanly(self, adapter):
+        """A line opening with '>' is a quotation, glued or not.
+
+        The surrounding prose must be left alone and no marker may show.
+        """
+        result = adapter.format_message(
+            "Une phrase.\n> pas une citation voulue\nSuite du texte."
+        )
+        assert result == (
+            "Une phrase\\.\n> pas une citation voulue\nSuite du texte\\."
+        )
+        assert "\\>" not in result
+
+    def test_gt_inside_a_line_is_still_not_a_quote(self, adapter):
+        """Widening the marker stops at the line start."""
+        result = adapter.format_message("5 > 3 et 2 > 1")
+        assert result == "5 \\> 3 et 2 \\> 1"
+
+    def test_spoiler_inside_a_quote_survives(self, adapter):
+        """A '||' *pair* is a spoiler, converted before quotations.
+
+        Stripping the closer must not eat it, and the spoiler step must not
+        swallow the quotation on its way through.
+        """
+        result = adapter.format_message("**> avant || secret || apres||")
+        assert result == "**> avant || secret || apres||"
+        assert "\\|" not in result
 
 
 # =========================================================================

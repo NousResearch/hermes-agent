@@ -467,6 +467,19 @@ def check_telegram_requirements() -> bool:
 # when it appears outside a code span or fenced code block.
 _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
 
+# A single quoted line: an optional '**' expandable opener, one to three '>'
+# markers, then the quoted text. The space after the marker is OPTIONAL — a
+# sender who writes '>text' means the same thing as one who writes '> text',
+# and a line reduced to its marker is an empty line *inside* the quotation.
+_MDV2_QUOTE_LINE = r'(?:\*\*)?>{1,3} ?[^\n]*'
+_MDV2_QUOTE_LINE_RE = re.compile(r'^((?:\*\*)?>{1,3}) ?([^\n]*)$')
+# A quotation is a run of consecutive quoted lines. Telegram renders such a run
+# as one entity, so the converter has to see it as one block too.
+_MDV2_QUOTE_BLOCK_RE = re.compile(
+    rf'^({_MDV2_QUOTE_LINE}(?:\n{_MDV2_QUOTE_LINE})*)$',
+    re.MULTILINE,
+)
+
 
 def _escape_mdv2(text: str) -> str:
     """Escape Telegram MarkdownV2 special characters with a preceding backslash."""
@@ -8422,24 +8435,44 @@ class TelegramAdapter(BasePlatformAdapter):
             text,
         )
 
-        # 9) Convert blockquotes: > at line start → protect > from escaping
-        #    Handle both regular blockquotes (> text) and expandable blockquotes
-        #    (Telegram MarkdownV2: **> for expandable start, || to end the quote)
+        # 9) Convert blockquotes: > at line start → protect > from escaping.
+        #    A quotation is converted as a *block* rather than line by line:
+        #    Telegram renders a run of consecutive quoted lines as a single
+        #    entity, so an empty quoted line (a bare '>') has to stay part of
+        #    the run instead of falling through to the generic escaper, and the
+        #    expandable end marker '||' has to be recognised on the *last* line
+        #    of the run — where Telegram expects it — not on the first.
+        #    (Telegram MarkdownV2: **> opens an expandable quote, || closes it)
         def _convert_blockquote(m):
-            prefix = m.group(1)  # >, >>, >>>, **>, or **>> etc.
-            content = m.group(2)
-            # Check if content ends with || (expandable blockquote end marker)
-            # In this case, preserve the trailing || unescaped for Telegram
-            if prefix.startswith('**') and content.endswith('||'):
-                return _ph(f'{prefix} {_escape_mdv2(content[:-2])}||')
-            return _ph(f'{prefix} {_escape_mdv2(content)}')
+            lines = m.group(1).split('\n')
+            parsed = [_MDV2_QUOTE_LINE_RE.match(line) for line in lines]
+            # The expandable markers are DECORATION, never content: '**' is
+            # dropped from every prefix that carries it and '||' from the end
+            # of the block, wherever the sender happened to put them and
+            # whether or not its counterpart is there. Only the quotation
+            # itself has to be written correctly; the markup is rebuilt below.
+            # Assumed consequence: a literal '||' ending a quotation is eaten
+            # along with them.
+            prefixes = [p.group(1).lstrip('*') for p in parsed]
+            contents = [p.group(2) for p in parsed]
+            # A run of bare '>' markers quotes nothing: leave it to the
+            # generic escaper, as before.
+            if not any(contents):
+                return m.group(1)
+            expandable = any(p.group(1).startswith('**') for p in parsed)
+            tail = contents[-1].rstrip()
+            if tail.endswith('||'):
+                contents[-1] = tail[:-2]
+                expandable = True
+            rendered = '\n'.join(
+                f'{prefix} {_escape_mdv2(content)}' if content else prefix
+                for prefix, content in zip(prefixes, contents)
+            )
+            if expandable:
+                rendered = f'**{rendered}||'
+            return _ph(rendered)
 
-        text = re.sub(
-            r'^((?:\*\*)?>{1,3}) (.+)$',
-            _convert_blockquote,
-            text,
-            flags=re.MULTILINE,
-        )
+        text = _MDV2_QUOTE_BLOCK_RE.sub(_convert_blockquote, text)
 
         # 10) Escape remaining special characters in plain text
         text = _escape_mdv2(text)

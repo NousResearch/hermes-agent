@@ -12510,6 +12510,17 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.battery", nv_b)
         return _ok(rid, {"key": key, "value": "on" if nv_b else "off"})
 
+    if key == "display.message_reactions":
+        raw = ("" if value is None else str(value)).strip().lower()
+        if raw in {"1", "on", "true", "yes"}:
+            enabled = True
+        elif raw in {"0", "off", "false", "no"}:
+            enabled = False
+        else:
+            return _err(rid, 4002, f"unknown message reactions value: {value}")
+        _write_config_key("display.message_reactions", enabled)
+        return _ok(rid, {"key": key, "value": "on" if enabled else "off"})
+
     if key == "theme":
         # TUI light/dark mode pin: 'light'/'dark' beat background
         # auto-detection (xterm.js hosts misreport OSC 11); 'auto' trusts it.

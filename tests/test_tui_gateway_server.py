@@ -1595,6 +1595,51 @@ def test_config_set_battery_explicit_off(monkeypatch):
     assert writes == {"display.battery": False}
 
 
+@pytest.mark.parametrize(("value", "enabled"), [("true", True), ("false", False)])
+def test_config_set_message_reactions_persists_renderer_value(
+    monkeypatch, value, enabled
+):
+    writes: dict[str, object] = {}
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda k, v: writes.__setitem__(k, v)
+    )
+
+    resp = server.dispatch(
+        {
+            "id": "reactions",
+            "method": "config.set",
+            "params": {"key": "display.message_reactions", "value": value},
+        }
+    )
+
+    assert resp["result"] == {
+        "key": "display.message_reactions",
+        "value": "on" if enabled else "off",
+    }
+    assert writes == {"display.message_reactions": enabled}
+
+
+def test_config_set_message_reactions_rejects_unknown_value(monkeypatch):
+    writes: dict[str, object] = {}
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda k, v: writes.__setitem__(k, v)
+    )
+
+    resp = server.dispatch(
+        {
+            "id": "reactions",
+            "method": "config.set",
+            "params": {"key": "display.message_reactions", "value": "sometimes"},
+        }
+    )
+
+    assert resp["error"] == {
+        "code": 4002,
+        "message": "unknown message reactions value: sometimes",
+    }
+    assert writes == {}
+
+
 def test_voice_toggle_returns_configured_record_key(monkeypatch):
     monkeypatch.setattr(
         server,

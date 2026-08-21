@@ -186,6 +186,42 @@ class TestStreamingAccumulator:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_sparse_choice_allows_missing_delta(self, mock_close, mock_create):
+        """A choice object may omit `delta` entirely (not merely have a
+        sparse one) on some non-compliant OpenAI-compatible providers.
+        The finish_reason on the same choice is already read via getattr
+        for exactly this reason; delta must be too."""
+        from run_agent import AIAgent
+
+        chunks = [
+            SimpleNamespace(
+                choices=[SimpleNamespace(index=0, finish_reason=None)],
+                model="test-model",
+                usage=None,
+            ),
+            _make_stream_chunk(content="hi", finish_reason="stop", model="test-model"),
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "hi"
+        assert response.choices[0].finish_reason == "stop"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_chat_stream_closes_original_provider_resource(
         self,
         mock_close,

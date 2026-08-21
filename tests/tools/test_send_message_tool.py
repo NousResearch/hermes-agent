@@ -717,6 +717,85 @@ class TestSendToPlatformWhatsapp:
         assert _call.args[2] == "hello from hermes"
 
 
+class TestSendToPlatformEmailMedia:
+    def test_email_media_routes_through_plugin_sender(self, tmp_path):
+        from gateway.platform_registry import platform_registry
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+        attachment = tmp_path / "report.pdf"
+        attachment.write_bytes(b"%PDF-1.4 fake")
+        email_entry = platform_registry.get("email")
+        pconfig = SimpleNamespace(enabled=True, token=None, extra={})
+        original_sender = email_entry.standalone_sender_fn
+        sender = AsyncMock(
+            return_value={"success": True, "platform": "email", "chat_id": "user@example.com"}
+        )
+        email_entry.standalone_sender_fn = sender
+
+        try:
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.EMAIL,
+                    pconfig,
+                    "user@example.com",
+                    "See attached.",
+                    media_files=[(str(attachment), False)],
+                )
+            )
+        finally:
+            email_entry.standalone_sender_fn = original_sender
+
+        assert result["success"] is True
+        sender.assert_awaited_once_with(
+            pconfig,
+            "user@example.com",
+            "See attached.",
+            thread_id=None,
+            media_files=[(str(attachment), False)],
+            force_document=False,
+        )
+
+    def test_long_email_media_body_stays_in_one_message(self, tmp_path):
+        from gateway.platform_registry import platform_registry
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+        attachment = tmp_path / "report.pdf"
+        attachment.write_bytes(b"%PDF-1.4 fake")
+        body = "x" * 50_001
+        email_entry = platform_registry.get("email")
+        pconfig = SimpleNamespace(enabled=True, token=None, extra={})
+        original_sender = email_entry.standalone_sender_fn
+        sender = AsyncMock(
+            return_value={"success": True, "platform": "email", "chat_id": "user@example.com"}
+        )
+        email_entry.standalone_sender_fn = sender
+
+        try:
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.EMAIL,
+                    pconfig,
+                    "user@example.com",
+                    body,
+                    media_files=[(str(attachment), False)],
+                )
+            )
+        finally:
+            email_entry.standalone_sender_fn = original_sender
+
+        assert result["success"] is True
+        sender.assert_awaited_once_with(
+            pconfig,
+            "user@example.com",
+            body,
+            thread_id=None,
+            media_files=[(str(attachment), False)],
+            force_document=False,
+        )
+
+
 class TestSendTelegramHtmlDetection:
     """Verify that messages containing HTML tags are sent with parse_mode=HTML
     and that plain / markdown messages use MarkdownV2."""

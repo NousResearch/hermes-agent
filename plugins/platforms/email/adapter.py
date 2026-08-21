@@ -1437,6 +1437,9 @@ async def _standalone_send(
     standalone_sender_fn contract; replaces the legacy _send_email helper."""
     import smtplib
     import ssl as _ssl
+    from email import encoders
+    from email.mime.base import MIMEBase
+    from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
     from email.utils import formatdate
 
@@ -1453,7 +1456,19 @@ async def _standalone_send(
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
 
     try:
-        msg = MIMEText(message, "plain", "utf-8")
+        if media_files:
+            msg = MIMEMultipart()
+            msg.attach(MIMEText(message or "See attached file(s).", "plain", "utf-8"))
+            for media_path, _is_voice in media_files:
+                path = Path(media_path)
+                with path.open("rb") as handle:
+                    part = MIMEBase("application", "octet-stream")
+                    part.set_payload(handle.read())
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", "attachment", filename=path.name)
+                msg.attach(part)
+        else:
+            msg = MIMEText(message, "plain", "utf-8")
         msg["From"] = address
         msg["To"] = chat_id
         msg["Subject"] = "Hermes Agent"

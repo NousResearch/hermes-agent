@@ -294,6 +294,60 @@ describe('scanVenvBlockers', () => {
     assert.equal(c.cwd, '/update/root')
     assert.equal(typeof c.timeout, 'number')
     assert.ok(c.timeout > 0)
+    // The 15s budget was too tight for AV/EDR-stalled psutil scans on
+    // managed Windows hosts (measured 13-16s); 60s keeps the preflight from
+    // aborting every update with a bogus timeout.
+    assert.ok(c.timeout >= 60000)
+  })
+
+  it('retries once when the first scan attempt fails (transient timeout)', async () => {
+    let calls = 0
+
+    const flaky = (async () => {
+      calls += 1
+
+      if (calls === 1) {
+        const e: any = new Error()
+        e.signal = 'SIGTERM' // execFile timeout kill: status/code null
+        throw e
+      }
+
+      return { stdout: okJson, stderr: '' }
+    }) as any
+
+    const o = await scanVenvBlockers('/r', flaky, stubVenv)
+    assert.equal(o.kind, 'clear')
+    assert.equal(calls, 2)
+  })
+
+  it('surfaces probe-failure when both attempts fail', async () => {
+    let calls = 0
+
+    const alwaysBroken = (async () => {
+      calls += 1
+      const e: any = new Error()
+      e.status = 2
+      e.stderr = Buffer.from('ModuleNotFoundError')
+      throw e
+    }) as any
+
+    const o = await scanVenvBlockers('/r', alwaysBroken, stubVenv)
+    assert.equal(o.kind, 'probe-failure')
+    assert.equal(calls, 2)
+  })
+
+  it('does not retry when the venv python is missing (deterministic failure)', async () => {
+    let calls = 0
+
+    const spy = (async () => {
+      calls += 1
+
+      return { stdout: okJson, stderr: '' }
+    }) as any
+
+    const o = await scanVenvBlockers('/r', spy, () => null)
+    assert.equal(o.kind, 'probe-failure')
+    assert.equal(calls, 0)
   })
 })
 

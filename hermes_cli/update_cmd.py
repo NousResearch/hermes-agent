@@ -3617,7 +3617,15 @@ def _detect_venv_python_processes(
 
     matches: list[tuple[int, str, str]] = []
     try:
-        proc_iter = psutil.process_iter(["pid", "exe", "name", "cmdline", "cwd"])
+        # NOTE: deliberately NO "cwd" in the prefetched attrs. On Windows,
+        # psutil resolves cwd by opening the target process and querying its
+        # PEB, which is slow and can stall for seconds per process under
+        # AV/EDR hooks (measured: 53s for a full scan on a managed box vs
+        # <2s without). cwd is only consulted for the narrow
+        # hermes_cli.main-without-root-in-cmdline fallback below, so query it
+        # on demand for those few candidates instead of prefetching for every
+        # process on the system.
+        proc_iter = psutil.process_iter(["pid", "exe", "name", "cmdline"])
     except Exception:
         return []
     for proc in proc_iter:
@@ -3635,7 +3643,6 @@ def _detect_venv_python_processes(
             exe_norm = str(exe).lower()
         cmdline_raw = " ".join(info.get("cmdline") or [])
         cmdline_low = cmdline_raw.lower()
-        cwd_low = str(info.get("cwd") or "").lower().rstrip(os.sep) + os.sep
 
         # Primary match: the executable itself lives under this venv
         # (venv\Scripts\python(w).exe — the desktop backend / gateway case).
@@ -3648,8 +3655,16 @@ def _detect_venv_python_processes(
         if not is_holder and venv_prefix in cmdline_low:
             is_holder = True
         if not is_holder and "hermes_cli.main" in cmdline_low:
-            if root_prefix in cmdline_low or cwd_low.startswith(root_prefix):
+            if root_prefix in cmdline_low:
                 is_holder = True
+            else:
+                # On-demand cwd lookup, only for these rare candidates.
+                try:
+                    cwd_low = str(proc.cwd() or "").lower().rstrip(os.sep) + os.sep
+                except Exception:
+                    cwd_low = ""
+                if cwd_low.startswith(root_prefix):
+                    is_holder = True
         if not is_holder:
             continue
         name = info.get("name") or Path(exe).name

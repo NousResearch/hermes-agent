@@ -39,13 +39,19 @@ export interface VenvBlockerScanResult {
 export type ScanOutcome =
   | { kind: 'clear'; result: VenvBlockerScanResult }
   | { kind: 'blocked'; result: VenvBlockerScanResult }
-  | { kind: 'probe-failure'; error: string }
+  | { kind: 'probe-failure'; error: string; retryable?: boolean }
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const SCAN_TIMEOUT_MS = 15000
+// 15s was too tight for real machines: the scan imports hermes_cli.main
+// (~4s cold) and psutil-enumerates every process's exe/cmdline, which AV/EDR
+// hooks can stretch to 13-16s on managed Windows boxes — the preflight
+// aborted every update with a bogus "exit code -1" timeout (measured 12.8-
+// 16.1s across runs on a 450-process managed host). 60s covers the slowest
+// observed scan with margin; the scan runs once per update attempt.
+const SCAN_TIMEOUT_MS = 60000
 const SCAN_MODULE = 'hermes_cli._scan_venv_blockers'
 
 // ---------------------------------------------------------------------------
@@ -213,12 +219,33 @@ export async function scanVenvBlockers(
   execOverride?: typeof execFileAsync,
   resolveOverride?: typeof resolveVenvPython
 ): Promise<ScanOutcome> {
+  const outcome = await runScan(updateRoot, execOverride, resolveOverride)
+
+  // One automatic retry on a failed probe. The scan can exceed its budget
+  // when AV/EDR hooks stall psutil's process enumeration (measured 13-16s
+  // on a managed 450-process host), or when the machine is busy right after
+  // the backend teardown. A single retry absorbs those transient spikes; a
+  // genuinely broken environment (missing python, crashing module) fails
+  // both attempts and still surfaces as probe-failure. Deterministic
+  // non-retryable failures (venv python missing) skip the retry.
+  if (outcome.kind === 'probe-failure' && outcome.retryable !== false) {
+    return runScan(updateRoot, execOverride, resolveOverride)
+  }
+
+  return outcome
+}
+
+async function runScan(
+  updateRoot: string,
+  execOverride?: typeof execFileAsync,
+  resolveOverride?: typeof resolveVenvPython
+): Promise<ScanOutcome> {
   const execFn = execOverride || execFileAsync
   const resolveFn = resolveOverride || resolveVenvPython
   const venvPython = resolveFn(updateRoot)
 
   if (!venvPython) {
-    return { kind: 'probe-failure', error: 'venv python not found' }
+    return { kind: 'probe-failure', error: 'venv python not found', retryable: false }
   }
 
   let stdout: string

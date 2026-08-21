@@ -4652,6 +4652,122 @@ class TestValidateProviderCredential:
         }
 
 
+    def test_openai_base_url_spa_catchall_returns_warning(self, monkeypatch):
+        """OPENAI_BASE_URL: 200 + text/html must return ok=False, reachable=True."""
+        class _Resp:
+            status_code = 200
+            is_success = True
+            headers = {"content-type": "text/html; charset=utf-8"}
+            def json(self): raise ValueError("not json")
+        class _Client:
+            def __init__(self, *a, **k): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, *a, **k): return _Resp()
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
+        response = self.client.post(
+            "/api/providers/validate",
+            json={"key": "OPENAI_BASE_URL", "value": "http://localhost:3000/v1"},
+        )
+        data = response.json()
+        assert data["ok"] is False
+        assert data["reachable"] is True
+        assert "text/html" in data["message"]
+        assert data["models"] == []
+
+    def test_openai_base_url_no_models_returns_warning(self, monkeypatch):
+        """OPENAI_BASE_URL: 200 + JSON + empty data must return ok=False, reachable=True."""
+        class _Resp:
+            status_code = 200
+            is_success = True
+            headers = {"content-type": "application/json"}
+            def json(self): return {"data": []}
+        class _Client:
+            def __init__(self, *a, **k): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, *a, **k): return _Resp()
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
+        response = self.client.post(
+            "/api/providers/validate",
+            json={"key": "OPENAI_BASE_URL", "value": "http://localhost:8000/v1"},
+        )
+        data = response.json()
+        assert data["ok"] is False
+        assert data["reachable"] is True
+        assert "no models" in data["message"]
+        assert data["models"] == []
+
+    def test_custom_endpoint_spa_catchall_returns_warning(self, monkeypatch):
+        """200 + text/html (SPA catch-all) must return ok=False, reachable=True."""
+        class _Resp:
+            status_code = 200
+            is_success = True
+            headers = {"content-type": "text/html; charset=utf-8"}
+            def json(self):
+                raise ValueError("not json")
+        class _Client:
+            def __init__(self, *a, **k): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, *a, **k): return _Resp()
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
+        response = self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={"name": "Test", "base_url": "http://localhost:3000/v1", "model": "", "api_key": ""},
+        )
+        data = response.json()
+        assert data["ok"] is False
+        assert data["reachable"] is True
+        assert "text/html" in data["message"]
+        assert data["models"] == []
+
+    def test_custom_endpoint_no_models_json_returns_warning(self, monkeypatch):
+        """200 + application/json + empty data must return ok=False, reachable=True."""
+        class _Resp:
+            status_code = 200
+            is_success = True
+            headers = {"content-type": "application/json"}
+            def json(self): return {"data": []}
+        class _Client:
+            def __init__(self, *a, **k): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, *a, **k): return _Resp()
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
+        response = self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={"name": "Test", "base_url": "http://localhost:8000/v1", "model": "", "api_key": ""},
+        )
+        data = response.json()
+        assert data["ok"] is False
+        assert data["reachable"] is True
+        assert "no models" in data["message"]
+        assert data["models"] == []
+
+    def test_custom_endpoint_valid_models_returns_ok(self, monkeypatch):
+        """200 + application/json + models must return ok=True."""
+        class _Resp:
+            status_code = 200
+            is_success = True
+            headers = {"content-type": "application/json"}
+            def json(self): return {"data": [{"id": "gpt-4o"}]}
+        class _Client:
+            def __init__(self, *a, **k): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, *a, **k): return _Resp()
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
+        response = self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={"name": "Test", "base_url": "http://localhost:8000/v1", "model": "gpt-4o", "api_key": ""},
+        )
+        data = response.json()
+        assert data["ok"] is True
+        assert data["reachable"] is True
+        assert data["models"] == ["gpt-4o"]
+
+
 class TestDesktopCronTicker:
     """The dashboard backend fires cron jobs itself only when desktop-spawned."""
 

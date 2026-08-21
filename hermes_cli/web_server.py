@@ -8321,7 +8321,21 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     if not resp.is_success:
         return {"ok": False, "reachable": True, "message": f"Endpoint returned HTTP {resp.status_code}.", "models": []}
 
-    return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
+    models = _parse_model_ids(resp)
+    if not models:
+        ct = resp.headers.get("content-type", "")
+        if "json" not in ct:
+            msg = (
+                f"Connected to {url}, but it returned {ct or 'an unknown content type'} "
+                "instead of JSON — the path may not exist (SPA catch-all or wrong base URL)."
+            )
+        else:
+            msg = (
+                f"Connected to {url}, but it advertised no models. "
+                "Start a model on that endpoint and try again."
+            )
+        return {"ok": False, "reachable": True, "message": msg, "models": []}
+    return {"ok": True, "reachable": True, "message": "", "models": models}
 
 
 @app.post("/api/providers/validate")
@@ -8355,7 +8369,21 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
                 resp = await client.get(url, headers=headers)
-            return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
+            models = _parse_model_ids(resp)
+            if not models:
+                ct = resp.headers.get("content-type", "")
+                if "json" not in ct:
+                    msg = (
+                        f"Connected to {url}, but it returned {ct or 'an unknown content type'} "
+                        "instead of JSON — the path may not exist (SPA catch-all or wrong base URL)."
+                    )
+                else:
+                    msg = (
+                        f"Connected to {url}, but it advertised no models. "
+                        "Start a model on that endpoint and try again."
+                    )
+                return {"ok": False, "reachable": True, "message": msg, "models": []}
+            return {"ok": True, "reachable": True, "message": "", "models": models}
         except Exception:
             return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}
 

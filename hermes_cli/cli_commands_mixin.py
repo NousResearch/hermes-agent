@@ -3191,7 +3191,14 @@ class CLICommandsMixin:
                 if initial_text:
                     fh.write(initial_text)
             try:
-                subprocess.call([*shlex.split(editor), path])
+                # On Windows, shell=True lets subprocess.call resolve
+                # .CMD/.BAT shims (e.g. VS Code's `code` is `code.CMD`).
+                # Without it, CreateProcess only appends .exe and returns
+                # WinError 2, so the editor never opens.
+                if os.name == "nt":
+                    subprocess.call([*shlex.split(editor), path], shell=True)
+                else:
+                    subprocess.call([*shlex.split(editor), path])
             except Exception:
                 # Fall back to a bare invocation (editor value may not be a
                 # simple argv-splittable string on some platforms).

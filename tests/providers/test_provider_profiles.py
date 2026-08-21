@@ -46,6 +46,23 @@ class TestKimiProfile:
 
 
 
+class TestVeniceProfile:
+    def test_registered(self):
+        p = get_provider_profile("venice")
+        assert p is not None
+        assert p.name == "venice"
+        assert p.auth_type == "api_key"
+        assert p.api_mode == "chat_completions"
+
+    def test_base_url(self):
+        p = get_provider_profile("venice")
+        assert p.base_url == "https://api.venice.ai/api/v1"
+
+    def test_fallback_models_nonempty(self):
+        p = get_provider_profile("venice")
+        assert len(p.fallback_models or ()) > 0
+
+
 class TestOpenRouterProfile:
     def test_extra_body_with_prefs(self):
         p = get_provider_profile("openrouter")

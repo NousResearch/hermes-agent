@@ -8429,6 +8429,74 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     return True
 
 
+def inject_external_message(text: Any, target_sid: str | None = None) -> bool:
+    """Deliver an externally-originated message into a chat session, as if
+    the user had typed it.
+
+    This is the dashboard/desktop counterpart of the CLI's inject queues
+    (``hermes_cli.plugins.PluginContext.inject_message``): plugins and watcher
+    threads use it to push completion reports and escalations into the
+    conversation of a headless serving process, where no interactive CLI
+    exists to receive them.
+
+    ``target_sid`` names the session that originated the work. When given,
+    the message is delivered to that session ONLY — if it has been closed
+    (or is unroutable), the message is dropped and False is returned, never
+    rerouted: a report about session A's work must not surface in session
+    B's conversation. Without a target the message goes to the most
+    recently active session (callers that genuinely address "whoever is
+    listening").
+
+    Routing mirrors ``prompt.submit``'s busy policy, minus the interrupt: a
+    busy session gets the message merged into its queued next-turn prompt
+    (``_enqueue_prompt`` is lossless, and a notification must never cancel
+    in-flight work), and an idle session starts a new turn immediately so the
+    model can relay the report right away. ``lazy`` watch sessions are skipped
+    — their runs live in the parent turn.
+
+    Returns True when a session accepted the message; False when no live
+    session exists. Callers own the degraded path (log, webhook, drop).
+    """
+    if not isinstance(text, str) or not text.strip():
+        return False
+    if target_sid is not None:
+        session = _sessions.get(target_sid)
+        candidates = [(target_sid, session)] if session is not None else []
+    else:
+        candidates = sorted(
+            list(_sessions.items()),
+            key=lambda kv: kv[1].get("last_active") or 0,
+            reverse=True,
+        )
+    for sid, session in candidates:
+        if session.get("lazy"):
+            continue
+        lock = session.get("history_lock")
+        if lock is None:
+            continue
+        with lock:
+            # ``_enqueue_prompt``'s latest-transport-wins rule is meant for
+            # user resubmits; an external message carries no transport and
+            # must not clobber the pin of a user prompt already in the slot.
+            queued = session.get("queued_prompt") or {}
+            keep_transport = queued.get("transport")
+            if session.get("running"):
+                _enqueue_prompt(session, text, keep_transport)
+                session["last_active"] = time.time()
+                return True
+            _enqueue_prompt(session, text, keep_transport)
+        # Idle: fire the queued message as a turn now. A user prompt racing
+        # this thread simply claims the session first — the queued message
+        # then drains at that turn's tail instead, so nothing is lost.
+        rid = f"inject-{uuid.uuid4().hex[:8]}"
+        threading.Thread(
+            target=_drain_queued_prompt, args=(rid, sid, session),
+            daemon=True, name=f"external-inject-{sid[:8]}",
+        ).start()
+        return True
+    return False
+
+
 def _inflight_snapshot(session: dict) -> dict | None:
     turn = session.get("inflight_turn")
     if not isinstance(turn, dict):

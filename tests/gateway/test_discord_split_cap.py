@@ -9,13 +9,15 @@ with a short notice.
 
 from __future__ import annotations
 
+import re
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
+from gateway.stream_consumer import GatewayStreamConsumer
 
 
 def _ensure_discord_mock():
@@ -39,7 +41,10 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import (  # noqa: E402
+    DiscordAdapter,
+    _apply_yaml_config,
+)
 
 
 MAX = DiscordAdapter.MAX_MESSAGE_LENGTH
@@ -56,6 +61,51 @@ def _huge_content(chars: int = 60_000) -> str:
 
 
 class TestCapSplitChunks:
+    def test_default_config_declares_chunk_indicator_behavior(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["discord"]["chunk_indicators"] is True
+
+    def test_yaml_config_seeds_chunk_indicator_setting(self):
+        seeded = _apply_yaml_config({}, {"chunk_indicators": False})
+
+        assert seeded == {"chunk_indicators": False}
+
+    def test_chunk_indicators_can_be_disabled_from_discord_config(self):
+        adapter = DiscordAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="***",
+                extra={"chunk_indicators": False},
+            )
+        )
+
+        chunks = adapter.split_message("word " * 1000, MAX)
+
+        assert len(chunks) > 1
+        assert all(
+            re.search(r"\(\d+/\d+\)\s*$", chunk) is None
+            for chunk in chunks
+        )
+
+    def test_stream_split_honors_disabled_chunk_indicators(self):
+        adapter = DiscordAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="***",
+                extra={"chunk_indicators": False},
+            )
+        )
+        consumer = GatewayStreamConsumer(adapter, "555")
+
+        chunks = consumer._truncate_for_stream("word " * 1000, MAX, len)
+
+        assert len(chunks) > 1
+        assert all(
+            re.search(r"\(\d+/\d+\)\s*$", chunk) is None
+            for chunk in chunks
+        )
+
     def test_below_cap_unchanged(self):
         adapter = _make_adapter()
         chunks = ["a", "b", "c"]
@@ -74,6 +124,67 @@ class TestCapSplitChunks:
 
 
 class TestSendCap:
+    @pytest.mark.asyncio
+    async def test_standalone_send_honors_disabled_chunk_indicators(self, monkeypatch):
+        from gateway.platform_registry import platform_registry
+        from hermes_cli.plugins import discover_plugins
+        from tools.send_message_tool import _send_to_platform
+
+        discover_plugins()
+        entry = platform_registry.get("discord")
+        send = AsyncMock(return_value={"success": True, "message_id": "1"})
+        monkeypatch.setattr(entry, "standalone_sender_fn", send)
+        pconfig = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"chunk_indicators": False},
+        )
+
+        result = await _send_to_platform(
+            Platform.DISCORD,
+            pconfig,
+            "ch",
+            "word " * 1000,
+        )
+
+        assert result["success"] is True
+        assert send.await_count >= 3
+        assert all(
+            re.search(r"\(\d+/\d+\)\s*$", call.args[2]) is None
+            for call in send.await_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_honors_disabled_chunk_indicators(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = DiscordAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="***",
+                extra={"chunk_indicators": False},
+            )
+        )
+        sends = []
+
+        async def fake_send(*, content, reference=None):
+            sends.append(content)
+            return SimpleNamespace(id=9000 + len(sends))
+
+        channel = SimpleNamespace(id=555, send=AsyncMock(side_effect=fake_send))
+        adapter._client = SimpleNamespace(
+            get_channel=lambda _cid: channel,
+            fetch_channel=AsyncMock(),
+        )
+
+        result = await adapter.send("555", "word " * 1000)
+
+        assert result.success is True
+        assert len(sends) > 1
+        assert all(
+            re.search(r"\(\d+/\d+\)\s*$", content) is None
+            for content in sends
+        )
+
     @pytest.mark.asyncio
     async def test_send_caps_split_flood(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

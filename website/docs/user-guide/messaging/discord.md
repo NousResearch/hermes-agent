@@ -337,6 +337,7 @@ discord:
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
   reactions: true                 # Add emoji reactions during processing
+  chunk_indicators: true          # Append (N/M) labels to split responses
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
@@ -420,6 +421,12 @@ Controls whether the bot adds emoji reactions to messages as visual feedback:
 - ❌ added if an error occurs during processing
 
 Disable this if you find the reactions distracting or if the bot's role doesn't have the **Add Reactions** permission.
+
+#### `discord.chunk_indicators`
+
+**Type:** boolean — **Default:** `true`
+
+Discord splits responses that exceed its 2,000-character message limit. By default, each message ends with a label such as `(1/3)` or `(2/3)`. Set `chunk_indicators: false` to hide those labels. This setting changes only the labels; Discord still receives every message chunk in order.
 
 #### `discord.ignored_channels`
 

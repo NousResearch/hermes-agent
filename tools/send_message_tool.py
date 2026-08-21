@@ -984,7 +984,21 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     max_len = _MAX_LENGTHS.get(platform)
     if max_len:
         _len_fn = utf16_len if platform == Platform.TELEGRAM else None
-        chunks = BasePlatformAdapter.truncate_message(message, max_len, len_fn=_len_fn)
+        include_chunk_indicators = True
+        if platform == Platform.DISCORD:
+            extra = getattr(pconfig, "extra", {}) or {}
+            raw = extra.get("chunk_indicators", True)
+            include_chunk_indicators = (
+                raw
+                if isinstance(raw, bool)
+                else str(raw).strip().lower() in {"true", "1", "yes", "on"}
+            )
+        chunks = BasePlatformAdapter.truncate_message(
+            message,
+            max_len,
+            len_fn=_len_fn,
+            include_chunk_indicators=include_chunk_indicators,
+        )
     else:
         chunks = [message]
 

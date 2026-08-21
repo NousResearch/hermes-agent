@@ -11,6 +11,7 @@ Covers:
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -119,6 +120,111 @@ class TestReceiptLifecycle:
 
     def test_read_latest_receipt_missing(self, receipt_home):
         assert ur.read_latest_receipt() is None
+
+
+class TestCommandBoundaryFinalization:
+    """Receipt lifetime is owned by the update-command boundary (#91283 review).
+
+    Early sys.exit paths (concurrent-instance preflight exit-2, venv-holder
+    refusal, fetch failure) predate the inner finalize sites; the boundary
+    safety net must persist the receipt exactly once with the stop reason,
+    while inner-finalized runs are untouched.
+    """
+
+    def test_pending_receipt_persisted_on_exit_2_refusal(self, receipt_home):
+        ur.begin_update_receipt()
+        ur.record_step("windows_preflight", False, "another hermes.exe running")
+        path = ur.finalize_pending_update_receipt(2, "sys.exit(2)")
+        assert path is not None and path.is_file()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["outcome"] == "refused"
+        assert payload["exit_code"] == 2
+        assert payload["stop_reason"] == "sys.exit(2)"
+        assert payload["finished_at"] is not None
+        assert ur._current is None
+
+    def test_pending_receipt_persisted_on_exit_1_failure(self, receipt_home):
+        ur.begin_update_receipt()
+        path = ur.finalize_pending_update_receipt(1, "sys.exit(1)")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["outcome"] == "failed"
+        assert payload["exit_code"] == 1
+
+    def test_noop_when_inner_path_already_finalized(self, receipt_home):
+        """Exactly-once: boundary call after an inner finalize writes nothing."""
+        ur.begin_update_receipt()
+        first = ur.finalize_update_receipt("success")
+        assert first is not None
+        second = ur.finalize_pending_update_receipt(0, "boundary")
+        assert second is None
+        directory = receipt_home / "logs" / "update_receipts"
+        assert len(list(directory.glob("update_*.json"))) == 1
+
+    def test_noop_when_never_begun(self, receipt_home):
+        assert ur.finalize_pending_update_receipt(2, "sys.exit(2)") is None
+        assert ur.read_latest_receipt() is None
+
+    def test_cmd_update_boundary_finalizes_on_early_exit(
+        self, receipt_home, monkeypatch
+    ):
+        """End-to-end through the real cmd_update wrapper: an impl that begins
+        a receipt then sys.exit(2)s (the concurrent-instance shape) must leave
+        a finalized 'refused' receipt, preserve the exit code, and clear the
+        singleton."""
+        from types import SimpleNamespace
+
+        from hermes_cli import main as hermes_main
+
+        def _fake_impl(args, gateway_mode):
+            ur.begin_update_receipt()
+            ur.record_step("windows_preflight", False, "hermes.exe holds venv")
+            sys.exit(2)
+
+        monkeypatch.setattr(hermes_main, "_cmd_update_impl", _fake_impl)
+        monkeypatch.setattr(
+            hermes_main, "detect_install_method", lambda *a, **k: "git", raising=False
+        )
+        monkeypatch.setattr(
+            hermes_main,
+            "_install_hangup_protection",
+            lambda gateway_mode: None,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            hermes_main, "_finalize_update_output", lambda state: None, raising=False
+        )
+
+        class _FakeLock:
+            holder = None
+
+            def acquire(self):
+                return True
+
+            def release(self):
+                pass
+
+        import hermes_cli.update_lock as update_lock_mod
+
+        monkeypatch.setattr(update_lock_mod, "UpdateLock", _FakeLock)
+
+        args = SimpleNamespace(
+            check=False, gateway=False, branch=None, yes=False,
+            force=False, force_venv=False,
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            hermes_main.cmd_update(args)
+
+        assert exc_info.value.code == 2  # exit code preserved
+        latest = ur.read_latest_receipt()
+        assert latest is not None
+        assert latest["outcome"] == "refused"
+        assert latest["exit_code"] == 2
+        assert latest["stop_reason"] == "sys.exit(2)"
+        assert latest["steps"][0]["name"] == "windows_preflight"
+        assert ur._current is None
+        # exactly-once: exactly one receipt file
+        directory = receipt_home / "logs" / "update_receipts"
+        assert len(list(directory.glob("update_*.json"))) == 1
 
 
 class TestFleetClassification:

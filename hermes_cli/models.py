@@ -135,11 +135,12 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Free tier
     ("stealth/ox-alpha",                       "free"),  # "Ox Alpha" stealth reasoning model — 1M ctx
     ("openrouter/elephant-alpha",              "free"),
-    ("poolside/laguna-m.1:free",               "free"),
-    ("tencent/hy3:free",                       "free"),
+    ("z-ai/glm-5.2:free",                      "free"),
+    ("poolside/laguna-s-2.1:free",             "free"),
+    ("poolside/laguna-xs-2.1:free",            "free"),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
     ("nvidia/nemotron-3-ultra-550b-a55b:free", "free"),
-    ("inclusionai/ring-2.6-1t:free",           "free"),
+    ("nvidia/nemotron-3.5-lightning:free",     "free"),
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
@@ -519,7 +520,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-opus-4-7",
         "claude-opus-4-6",
         "claude-opus-4-5",
-        "claude-opus-4-1",
         "claude-sonnet-4-6",
         "claude-sonnet-4-5",
         "claude-sonnet-4",
@@ -544,8 +544,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-v4-pro",
         "deepseek-v4-flash",
         "deepseek-v4-flash-free",
-        "qwen3.7-max",
-        "qwen3.7-plus",
         "qwen3.6-plus",
         "qwen3.5-plus",
         "big-pickle",
@@ -559,12 +557,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # OpenCode free tier — keyless (no OpenCode account needed). Synced
     # against live GET /zen/v1/models + anonymous probes (2026-08-21);
     # deepseek-v4-flash-free delisted (promo ended, now 401s).
+    # big-pickle + mimo-v2.5-free delisted (UA-gated: the relay 429s
+    # FreeUsageLimitError for every client except User-Agent
+    # "opencode/latest"; we send honest Hermes attribution and don't
+    # impersonate other clients — verified 2026-08-21).
     "opencode-free": [
         "x-preview-f-free",  # "Ox Alpha" stealth model — free, 1M ctx, ZDR
-        "big-pickle",
         "hy3-free",
         "laguna-s-2.1-free",
-        "mimo-v2.5-free",
         "nemotron-3-ultra-free",
         "nemotron-3.5-lightning-free",
         "muse-spark-1.2-contributor-free",
@@ -599,6 +599,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "hy3",
         "hy3-preview",
         "muse-spark-1.2-contributor",
+        # Go-subscription twin of the Zen keyless Ox Alpha (live go/v1
+        # catalog 2026-08-21; NOT keyless — Go relay requires a Go key).
+        "ox-alpha-free",
     ],
     "kilocode": [
         "anthropic/claude-opus-4.6",
@@ -5399,14 +5402,22 @@ def opencode_zen_free_runtime(provider_id: Optional[str], model_id: Optional[str
     - ``provider_id`` is ``opencode-free`` (the dedicated keyless provider —
       EVERY model on it routes anonymously; that is the provider's contract), or
     - ``provider_id`` is any other OpenCode-family provider and ``model_id``
-      is a free-tier slug (heals a free-model selection made under
-      opencode-zen/opencode-go, whose keys the free tier rejects).
+      is in the VERIFIED keyless catalog (``_PROVIDER_MODELS["opencode-free"]``)
+      — heals a free-model selection made under opencode-zen/opencode-go,
+      whose keys the free tier rejects.
+
+    Membership, not the ``-free`` suffix, is the heal criterion: the suffix
+    stopped being a reliable keyless signal when ``ox-alpha-free`` appeared
+    on the Go relay as a KEYED subscription model (2026-08-21) — suffix-based
+    healing would have routed it to a Zen relay that doesn't serve it.
     """
     family = opencode_provider_family(provider_id)
     if family is None:
         return None
-    if family != "opencode-free" and not is_opencode_zen_free_model(model_id):
-        return None
+    if family != "opencode-free":
+        bare = normalize_opencode_model_id(provider_id, model_id).strip().lower()
+        if bare not in {m.lower() for m in _PROVIDER_MODELS.get("opencode-free", [])}:
+            return None
     normalized = normalize_opencode_model_id(provider_id, model_id)
     api_mode = opencode_model_api_mode("opencode-zen", normalized)
     base_url = normalize_opencode_base_url(

@@ -78,6 +78,13 @@ class TestFreeRuntime:
         assert rt is not None
         assert rt["base_url"] == "https://opencode.ai/zen/v1"
 
+    def test_go_ox_alpha_free_does_not_heal_to_zen(self):
+        """ox-alpha-free is a KEYED Go-subscription model despite its -free
+        suffix (Zen doesn't serve it; Go 401s anonymous). Membership in the
+        verified keyless catalog — not the suffix — gates the heal."""
+        assert opencode_zen_free_runtime("opencode-go", "ox-alpha-free") is None
+        assert opencode_zen_free_runtime("opencode-zen", "ox-alpha-free") is None
+
     def test_paid_model_returns_none(self):
         assert opencode_zen_free_runtime("opencode-zen", "claude-sonnet-5") is None
 
@@ -122,3 +129,47 @@ class TestRuntimeProviderKeylessRouting:
 
         with pytest.raises(AuthError):
             self._resolve("opencode-zen", "claude-sonnet-5")
+
+
+class TestKeylessProviderAlwaysAuthenticated:
+    """opencode-free counts as authenticated everywhere, with zero keys.
+
+    The provider is keyless: there is no credential to configure, so every
+    surface that gates on auth (get_auth_status, provider:model listing,
+    the /model picker source, the desktop explicit-only filter) must treat
+    every install as logged in.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_creds(self, monkeypatch):
+        for var in ("OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_auth_status_logged_in(self):
+        from hermes_cli.auth import get_auth_status
+
+        st = get_auth_status("opencode-free")
+        assert st["logged_in"] is True
+        assert st["configured"] is True
+        assert st["key_source"] == "keyless"
+
+    def test_list_available_providers_authenticated(self):
+        from hermes_cli.models import list_available_providers
+
+        rows = {r["id"]: r["authenticated"] for r in list_available_providers()}
+        assert rows.get("opencode-free") is True
+
+    def test_picker_source_includes_provider_with_models(self):
+        import model_tools  # noqa: F401 — plugin discovery
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        provs = list_authenticated_providers(for_picker=True)
+        free = [p for p in provs if p["slug"] == "opencode-free"]
+        assert free, "opencode-free must appear in the picker with zero keys"
+        assert free[0]["models"], "picker row must carry the curated models"
+
+    def test_explicit_only_filter_keeps_keyless(self):
+        from hermes_cli.inventory import _provider_is_keyless
+
+        assert _provider_is_keyless("opencode-free") is True
+        assert _provider_is_keyless("opencode-zen") is False

@@ -294,7 +294,12 @@ class TestTencentTokenhubAgentInit:
 
 
 class TestTencentTokenhubModelCatalogJSON:
-    """Verify tencent/hy3:free and tencent/hy3 are present in the website model-catalog.json."""
+    """Verify tencent/hy3 is present in the website model-catalog.json.
+
+    tencent/hy3:free was delisted 2026-08-21 — the slug vanished from
+    OpenRouter's live catalog (free promo rotated out), so the paid hy3
+    entry is the surviving assertion target.
+    """
 
     def test_in_model_catalog_json(self):
         catalog_path = os.path.join(
@@ -318,7 +323,6 @@ class TestTencentTokenhubModelCatalogJSON:
             for provider_entry in providers:
                 for model in provider_entry.get("models", []):
                     all_ids.add(model.get("id", ""))
-        assert "tencent/hy3:free" in all_ids
         assert "tencent/hy3" in all_ids
 
 

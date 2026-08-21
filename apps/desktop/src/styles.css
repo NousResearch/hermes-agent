@@ -32,7 +32,17 @@
    behind another app. main.tsx owns this attribute only for the primary
    window; wake/pet overlays retain their purpose-built visibility behavior. */
 :root[data-renderer-animations-paused]
-  :is(.shimmer, .quest-glow, .pet-egg, .pet-egg__glow, .pet-egg-shadow, .pet-wobble, .progress-slide, .kanban-arc),
+  :is(
+    .shimmer,
+    .quest-glow,
+    .pet-egg,
+    .pet-egg__glow,
+    .pet-egg-shadow,
+    .pet-wobble,
+    .progress-slide,
+    .kanban-arc,
+    .glyph-spinner__strip
+  ),
 :root[data-renderer-animations-paused] .arc-border::before,
 :root[data-renderer-animations-paused]
   [data-slot='aui_assistant-message-content']
@@ -982,11 +992,19 @@
 }
 
 @keyframes arc-border {
+  /* Compositor-only travel. The ::before layer is 300% × 300% of the host
+     (mirroring the old `background-size: 300%`), so translating it from
+     -10% → -50% of its own size reproduces the old
+     `background-position: 15% → 75%` exactly (offset = -2·W·p), while
+     `transform` animates on the compositor with zero per-frame style
+     recalc/paint. The old background-position version cost ~3,600
+     main-thread style recalcs per minute per arc, pinning idle renderers
+     (#53902, #73082). */
   0% {
-    background-position: 15% 15%;
+    transform: translate(-10%, -10%);
   }
   100% {
-    background-position: 75% 75%;
+    transform: translate(-50%, -50%);
   }
 }
 
@@ -1067,8 +1085,14 @@
 .arc-border::before {
   content: '';
   position: absolute;
-  inset: 0;
-  border-radius: inherit;
+  top: 0;
+  left: 0;
+  /* The gradient layer IS 300% of the ring (the old version kept a host-sized
+     ::before and slid a 300%-sized background through it). Sizing the layer
+     itself lets the travel be a `transform` — composited, no main-thread
+     style/paint work — while the host's mask + overflow clip it to the ring. */
+  width: 300%;
+  height: 300%;
   background: linear-gradient(
     var(--arc-angle),
     transparent 0%,
@@ -1085,7 +1109,7 @@
     var(--arc-c0) 95%,
     var(--arc-c1) 100%
   );
-  background-size: 300% 300%;
+  will-change: transform;
   animation: arc-border var(--arc-duration) linear infinite;
 }
 
@@ -2489,15 +2513,21 @@ button[data-slot='aui_msg-reactions'] svg {
    flow). Color/positioning come from the primitive; this owns the animation. */
 .progress-slide {
   width: 40%;
+  /* left is pinned; travel is compositor-only (see arc-border note). */
+  left: 0;
+  will-change: transform;
   animation: progress-slide 1.15s ease-in-out infinite;
 }
 
 @keyframes progress-slide {
+  /* Old version animated `left: -42% → 100%`, forcing main-thread layout
+     every frame for the whole hatch flow. The block is 40% of its track, so
+     the same travel in units of its own width is -105% → 250%. */
   0% {
-    left: -42%;
+    transform: translateX(-105%);
   }
   100% {
-    left: 100%;
+    transform: translateX(250%);
   }
 }
 

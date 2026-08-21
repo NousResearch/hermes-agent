@@ -4497,8 +4497,123 @@ def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
     print("  Skipped units may still be running pre-update code (mixed")
     print("  sys.modules). Restart them manually, then verify:")
     print("    hermes gateway status")
-    print("    systemctl --user restart <unit>   # user-scope")
-    print("    sudo systemctl restart <unit>     # system-scope")
+    if any(not name.startswith("ai.hermes.") for name in ordered):
+        print("    systemctl --user restart <unit>   # user-scope")
+        print("    sudo systemctl restart <unit>     # system-scope")
+    if any(name.startswith("ai.hermes.") for name in ordered):
+        print("    launchctl kickstart -k gui/$UID/<label>   # macOS (or user/$UID)")
+
+
+def _restart_macos_launchd_gateways(
+    restarted_services: list,
+    failed_or_stale_units: list,
+    drain_budget: float,
+) -> None:
+    """Restart every launchd-managed gateway after an update (macOS).
+
+    The code update (git pull) is shared across all profiles, so every
+    ``ai.hermes.gateway*`` LaunchAgent must reload it — restarting only the
+    invoking profile's service leaves siblings on pre-update ``sys.modules``
+    until their next agent turn imports a symbol the old module generation
+    doesn't have (#41403).  Parity with the systemd fleet path.
+
+    The invoking profile keeps the existing ``launchd_restart()`` treatment
+    (self-restart request → graceful drain → kickstart).  Siblings get the
+    same drain-first sequence, with their launchd domain resolved per label:
+    a sibling bootstrapped in the other supported domain (``gui/<uid>`` vs
+    ``user/<uid>``) must not be kickstarted in the current profile's domain.
+    ``subprocess.TimeoutExpired`` is isolated per label so one wedged
+    launchctl call cannot leave the rest of the fleet on old code (#68523).
+    """
+    from hermes_cli.gateway import (
+        get_launchd_label,
+        get_launchd_plist_path,
+        launchd_restart,
+        launchd_gateway_labels_for_install,
+        _graceful_restart_via_sigusr1,
+        _launchd_kickstart,
+        _launchd_service_registered,
+        _locate_launchd_gateway_service,
+        _wait_for_launchd_service_pid,
+    )
+
+    # --- Current profile: unchanged single-service path ---------------------
+    # Gate order and predicate mirror the pre-fleet inline block exactly:
+    # plist first (no plist → zero launchctl calls), then the domain-agnostic
+    # `launchctl list` registration check — NOT a domain locate, which fails
+    # on macOS-26 hosts whose per-user domains reject service management
+    # even though launchd_restart() owns that fallback. Gate errors skip
+    # silently (best-effort, as before); only launchd_restart() itself
+    # failing counts toward the incomplete-update warning.
+    current_label = get_launchd_label()
+    try:
+        if get_launchd_plist_path().exists() and _launchd_service_registered(
+            current_label
+        ):
+            try:
+                launchd_restart()
+                restarted_services.append(current_label)
+            except subprocess.CalledProcessError as e:
+                stderr = (getattr(e, "stderr", "") or "").strip()
+                print(f"  ⚠ Gateway restart failed: {stderr}")
+                failed_or_stale_units.append(current_label)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # --- Sibling profiles ---------------------------------------------------
+    for label in launchd_gateway_labels_for_install():
+        if label == current_label:
+            continue
+        try:
+            # Locate = liveness + domain in one domain-explicit probe; the
+            # kickstart and fresh-PID verification below reuse the located
+            # domain, so a sibling in the other gui/user domain can never be
+            # probed in one domain and restarted in another.
+            domain, old_pid = _locate_launchd_gateway_service(label)
+            if domain is None:
+                # Installed but not bootstrapped (stopped/uninstalled
+                # mid-way) — nothing is running old code here.
+                continue
+            graceful_ok = False
+            if old_pid is not None and old_pid > 0:
+                print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
+                graceful_ok = _graceful_restart_via_sigusr1(
+                    old_pid, drain_timeout=drain_budget
+                )
+            if graceful_ok and _wait_for_launchd_service_pid(
+                label, old_pid=old_pid, timeout=10.0, domain=domain
+            ):
+                # Unconditional KeepAlive already respawned it on the new
+                # code — a hard kickstart now would kill the fresh process.
+                restarted_services.append(label)
+                continue
+            try:
+                _launchd_kickstart(label, domain)
+            except subprocess.CalledProcessError as e:
+                stderr = (getattr(e, "stderr", "") or "").strip()
+                failed_or_stale_units.append(label)
+                print(
+                    f"  ⚠ Failed to restart {label}: {stderr}\n"
+                    f"    Recover manually: launchctl kickstart -k {domain}/{label}"
+                )
+                continue
+            if _wait_for_launchd_service_pid(
+                label, old_pid=old_pid, timeout=15.0, domain=domain
+            ):
+                restarted_services.append(label)
+            else:
+                failed_or_stale_units.append(label)
+                print(
+                    f"  ✗ {label} failed to come back after restart.\n"
+                    f"    Check logs, then: launchctl kickstart -k {domain}/{label}"
+                )
+        except subprocess.TimeoutExpired:
+            failed_or_stale_units.append(label)
+            print(
+                f"  ⚠ launchctl timed out restarting {label}; "
+                "continuing with remaining gateways"
+            )
+
 
 def _surviving_gateway_pids_after_failed_restart():
     """Best-effort PIDs of gateways still running after the restart phase died.
@@ -5017,6 +5132,27 @@ def _cmd_update_impl(args, gateway_mode: bool):
         begin_update_receipt()
     except Exception as _receipt_exc:
         logger.debug("Update receipt unavailable: %s", _receipt_exc)
+
+    # Plan phase (#91277 Phase 2): snapshot the pre-update fleet — every
+    # running Hermes runtime, its supervisor, and its running code version —
+    # into the receipt, so a post-mortem can compare what the update SAW
+    # against what it did. Read-only; a probe failure records nothing.
+    try:
+        from hermes_cli.update_inventory import (
+            collect_runtime_inventory,
+            record_plan_in_receipt,
+        )
+
+        _pre_update_plan = collect_runtime_inventory()
+        record_plan_in_receipt(_pre_update_plan)
+        if _pre_update_plan.runtimes:
+            _n = len(_pre_update_plan.runtimes)
+            _profiles = ", ".join(
+                sorted({r.profile for r in _pre_update_plan.runtimes})
+            )
+            print(f"→ Fleet: {_n} running service(s) across profiles: {_profiles}")
+    except Exception as _plan_exc:
+        logger.debug("Update plan phase failed: %s", _plan_exc)
 
     # On Windows, abort early if another hermes.exe is holding the venv shim
     # open. Continuing would result in a string of WinError 32 warnings and
@@ -6966,30 +7102,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     )
 
             # --- Launchd services (macOS) ---
+            # Restart EVERY ai.hermes.gateway* LaunchAgent, not only the
+            # invoking profile's — parity with the systemd branch above
+            # (#41403). Per-label TimeoutExpired isolation happens inside.
             if is_macos():
                 try:
-                    from hermes_cli.gateway import (
-                        launchd_restart,
-                        get_launchd_label,
-                        get_launchd_plist_path,
+                    _restart_macos_launchd_gateways(
+                        restarted_services,
+                        failed_or_stale_units,
+                        _drain_budget,
                     )
-
-                    plist_path = get_launchd_plist_path()
-                    if plist_path.exists():
-                        check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
-                            capture_output=True,
-                            text=True, encoding="utf-8", errors="replace",
-                            timeout=5,
-                        )
-                        if check.returncode == 0:
-                            try:
-                                launchd_restart()
-                                restarted_services.append(get_launchd_label())
-                            except subprocess.CalledProcessError as e:
-                                stderr = (getattr(e, "stderr", "") or "").strip()
-                                print(f"  ⚠ Gateway restart failed: {stderr}")
-                except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
+                except (FileNotFoundError, ImportError):
                     pass
 
             # --- Manual (non-service) gateways ---

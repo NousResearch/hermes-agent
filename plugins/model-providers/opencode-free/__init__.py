@@ -9,6 +9,8 @@ hermes_cli.models.opencode_zen_free_runtime). No OpenCode account needed.
 Select via ``hermes model`` or ``/model free``.
 """
 
+from typing import Any
+
 from hermes_cli import __version__ as _HERMES_VERSION
 from providers import register_provider
 from providers.base import ProviderProfile
@@ -23,7 +25,33 @@ _KEYLESS_HEADERS = {
     "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
 }
 
-opencode_free = ProviderProfile(
+
+class OpenCodeFreeProfile(ProviderProfile):
+    """OpenCode Free — keyless, with Ox Alpha reasoning controls.
+
+    Ox Alpha (x-preview-f-free) is reachable through this provider as well
+    as opencode-zen; both share the same wire contract (reasoning_effort
+    accepts exactly low/high/max — anything else 400s). The translation
+    lives in the zen plugin; resolve it through the registered zen profile's
+    module so the two providers can never drift.
+    """
+
+    def build_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        try:
+            import sys
+
+            from providers import get_provider_profile
+
+            zen_profile = get_provider_profile("opencode-zen")
+            zen_module = sys.modules[type(zen_profile).__module__]
+            return zen_module._build_ox_alpha_reasoning_extras(reasoning_config, model)
+        except Exception:
+            return {}, {}
+
+
+opencode_free = OpenCodeFreeProfile(
     name="opencode-free",
     aliases=("free", "opencode_free"),
     env_vars=(),  # keyless — nothing to configure
@@ -31,7 +59,9 @@ opencode_free = ProviderProfile(
     display_name="OpenCode Free",
     description="OpenCode free models — keyless, no account needed",
     default_headers=dict(_KEYLESS_HEADERS),
-    default_aux_model="big-pickle",
+    # laguna is the fastest non-UA-gated free model; big-pickle 429s every
+    # client except the opencode CLI's own User-Agent (verified 2026-08-21).
+    default_aux_model="laguna-s-2.1-free",
 )
 
 register_provider(opencode_free)

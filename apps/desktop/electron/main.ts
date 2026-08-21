@@ -353,7 +353,7 @@ import { installWindowsSystemCaTrust } from './windows-system-ca'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
-import { resolvePickerDefaultPath } from './wsl-path-bridge'
+import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -9898,6 +9898,7 @@ async function ensureBackend(profile) {
 
   if (route.backend === 'primary') {
     const connection = await startHermes()
+    setWslBridgeProfileState(key, connection.mode !== 'remote')
 
     // A shared backend still owes the caller its profile scope, so renderer-side
     // WebSocket, filesystem, and cache routing target the selected profile.
@@ -9921,8 +9922,10 @@ async function ensureBackend(profile) {
 
   if (existing) {
     existing.lastActiveAt = Date.now()
+    const connection = await existing.connectionPromise
+    setWslBridgeProfileState(key, connection.mode !== 'remote')
 
-    return existing.connectionPromise
+    return connection
   }
 
   evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
@@ -9955,7 +9958,10 @@ async function ensureBackend(profile) {
   backendPool.set(key, entry)
   startPoolIdleReaper()
 
-  return entry.connectionPromise
+  const connection = await entry.connectionPromise
+  setWslBridgeProfileState(key, connection.mode !== 'remote')
+
+  return connection
 }
 
 // ── Registry-scoped backends (multi-connection, PR 2 of the campaign) ──────
@@ -10579,6 +10585,11 @@ async function startHermes() {
   }
 
   const connectionAttempt = backendConnectionState.startAttempt()
+  const primaryProfile = primaryProfileKey()
+
+  // Legacy path callers without an explicit profile belong to the primary
+  // window backend. Profile-scoped callers still pass their key directly.
+  setActiveGatewayProfile(primaryProfile)
 
   // Classify this boot BEFORE the throwing resolve/mint runs: a remote failure
   // must NOT latch (it's transient — see shouldLatchBackendStartFailure), while
@@ -10660,7 +10671,7 @@ async function startHermes() {
         // both for an already-saved remote and after first-run remote Apply.
         attemptedRemote = primaryBackendIsRemote()
 
-        return resolveRemoteBackend(primaryProfileKey())
+        return resolveRemoteBackend(primaryProfile)
       },
       waitForDecision: waitForFirstRunSetupChoice,
       // Mutual exclusion with an in-app update (#50238). Remote connections
@@ -10669,8 +10680,17 @@ async function startHermes() {
     })
 
     if (setup.kind === 'remote') {
+      // Paths from the remote backend belong to a host the Windows desktop
+      // cannot open via wsl.exe — disable WSL path bridging so native dialogs
+      // and file panels don't spawn wsl.exe (or the interactive install prompt
+      // on WSL-less machines) for unresolvable paths. (#66433)
+      setWslBridgeProfileState(primaryProfile, false)
+
       return setup.connection
     }
+
+    // Local WSL backend — paths are bridgeable.
+    setWslBridgeProfileState(primaryProfile, true)
 
     const backend = setup.backend
     // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
@@ -13940,7 +13960,10 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
     try {
       // On a Windows host with a WSL backend the cwd may be a POSIX/WSL path;
       // bridge it to a UNC/drive form the native dialog can actually open.
-      const bridged = IS_WINDOWS ? resolvePickerDefaultPath(String(options.defaultPath)) : String(options.defaultPath)
+      const bridged = IS_WINDOWS
+        ? resolvePickerDefaultPath(String(options.defaultPath), undefined, options?.profile)
+        : String(options.defaultPath)
+
       resolvedDefaultPath = bridged ? path.resolve(bridged) : undefined
     } catch {
       resolvedDefaultPath = undefined
@@ -15030,6 +15053,12 @@ app.whenReady().then(() => {
   registerPowerResumeListeners()
   keepAwake.set(readPersistedKeepAwake())
   f12Blocked = readPersistedDisableF12()
+  // Seed this before the first window exists: a picker can open before
+  // startHermes() finishes resolving the configured backend.
+  const primaryProfile = primaryProfileKey()
+
+  setActiveGatewayProfile(primaryProfile)
+  setWslBridgeProfileState(primaryProfile, !primaryBackendIsRemote())
   // Quick Entry's global chord — registered on ready so a cold launch restores
   // it without the renderer visiting Settings. A failed registration is logged
   // here and surfaced in Settings via the IPC state (never silent).

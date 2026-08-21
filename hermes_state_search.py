@@ -1853,6 +1853,19 @@ class SessionSearchMixin:
         is_cjk = self._contains_cjk(query)
         if is_cjk:
             raw_query = query.strip('"').strip()
+            # Drop the trailing prefix wildcard callers append so partial
+            # English words match ("nimb" -> "nimb*"). None of the three CJK
+            # routes below can honour it: the bigram and trigram routes quote
+            # every token before MATCH, so `*` is matched literally, and LIKE
+            # has no `*` wildcard at all (its wildcards are % and _). Left in
+            # place it turns every CJK search coming from the web/desktop
+            # search box into a search for a term ending in a literal
+            # asterisk, which never matches anything (#90636).
+            raw_query = " ".join(
+                token if token.upper() in {"AND", "OR", "NOT"}
+                else (token.rstrip("*") or token)
+                for token in raw_query.split()
+            ) or raw_query
             cjk_count = self._count_cjk(raw_query)
 
             # Per-token CJK length check (#20494): trigram needs >=3 CJK chars

@@ -636,7 +636,24 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
 
 
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
-    """Build the directory path for a new skill, optionally under a category."""
+    """Build the directory path for a new skill, optionally under a category.
+
+    When ``skills.external_repo.enabled`` (and the repo has been cloned at
+    startup), new skills are created inside the repo checkout so they are
+    shared across every Hermes installation.  Falls back to the local
+    ``~/.hermes/skills/`` when the feature is off or the checkout is not
+    present yet (first run before any sync).
+    """
+    try:
+        from tools.skills_repo_sync import get_repo_write_dir
+
+        repo_dir = get_repo_write_dir()
+        if repo_dir is not None:
+            if category:
+                return repo_dir / category / name
+            return repo_dir / name
+    except Exception:
+        pass
     if category:
         return _skills_dir() / category / name
     return _skills_dir() / name
@@ -958,10 +975,18 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     except Exception:
         pass
 
+    try:
+        rel_path = str(skill_dir.relative_to(_containing_skills_root(skill_dir)))
+    except ValueError:
+        # Skill created under a root that's not yet in the discovery set
+        # (e.g. repo checkout whose external-dir cache is stale): fall back
+        # to a stable identifier so the result JSON never crashes.
+        rel_path = skill_dir.name
+
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(_skills_dir())),
+        "path": rel_path,
         "skill_md": str(skill_md),
         "_change": {"description": _desc},
     }
@@ -1501,19 +1526,38 @@ _SYNC_PUSH_DEBOUNCE_S = 5.0
 def _maybe_debounced_sync_push(skill_name: str) -> None:
     """Schedule a debounced best-effort sync push after a skill write.
 
-    Cheap fast-path: if the skill isn't opted into sync, do nothing (no auth,
-    no network). Otherwise (re)arm a daemon timer; the actual push runs through
-    ``skills_sync_client.maybe_push_skills`` which enforces the access gate
-    and swallows all errors. Never blocks the caller (M1-C: agent never blocks
-    on sync).
+    Fires the two independent push paths whose gates are checked inside each
+    ``maybe_*`` call, so a burst of edits collapses to one push per path:
+
+    * ``skills_sync_client.maybe_push_skills`` — Nous-admin org sync (access
+      gate: user is a Nous admin + opt-in + base URL).
+    * ``skills_repo_sync.maybe_push_external_repo`` — the configured git
+      repo when ``skills.external_repo.enabled`` (repo-is-the-home skills).
+
+    Cheap fast-path: if neither sync is in play (no opt-in, no configured
+    repo), do nothing — no auth, no network.  Never blocks the caller
+    (M1-C: agent never blocks on sync) and never raises.
     """
     global _sync_push_timer, _sync_push_lock
-    try:
-        from tools.skill_usage import is_sync_enabled
 
-        if not is_sync_enabled(skill_name):
-            return
-    except Exception:
+    def _needed() -> bool:
+        try:
+            from tools.skill_usage import is_sync_enabled
+
+            if is_sync_enabled(skill_name):
+                return True
+        except Exception:
+            pass
+        try:
+            from tools.skills_repo_sync import external_repo_enabled
+
+            if external_repo_enabled():
+                return True
+        except Exception:
+            pass
+        return False
+
+    if not _needed():
         return
 
     import threading
@@ -1522,10 +1566,18 @@ def _maybe_debounced_sync_push(skill_name: str) -> None:
         _sync_push_lock = threading.Lock()
 
     def _fire():
+        # Both paths re-check their own gates and swallow their own errors;
+        # a failure in one never affects the other.
         try:
             from tools.skills_sync_client import maybe_push_skills
 
             maybe_push_skills(message=f"sync: {skill_name}")
+        except Exception:
+            pass
+        try:
+            from tools.skills_repo_sync import maybe_push_external_repo
+
+            maybe_push_external_repo(message=f"write {skill_name}")
         except Exception:
             pass
 

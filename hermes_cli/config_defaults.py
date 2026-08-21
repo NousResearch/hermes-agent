@@ -2111,6 +2111,21 @@ DEFAULT_CONFIG = {
         # and single-mutation `hermes curator rollback <entry-id>`.
         # Telemetry, never a gate: ledger failures cannot block a mutation.
         "ledger": True,
+        # Optionally keep the agent's skills in a shared git repo across
+        # multiple Hermes installations (server, laptop, desktop app).  When
+        # enabled, the repo is the *live home* of agent skills: Hermes pulls
+        # it at startup and pushes every agent-created/modified skill back
+        # (debounced, best-effort) into a checkout under
+        # $HERMES_HOME/skills/.repo-sync/, exposed like an entry of
+        # `external_dirs`.  One repo = every install on the same skills.
+        # Sync failures are silent and never block the agent — the last good
+        # checkout keeps serving.
+        "external_repo": {
+            "enabled": False,
+            "url": "",        # e.g. "https://github.com/owner/skills.git"
+            "branch": "",     # empty = the remote default branch
+            "path": "",       # optional subdir of the repo holding SKILL.md files
+        },
     },
 
     # Curator — background skill maintenance.

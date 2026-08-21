@@ -455,6 +455,42 @@ Trust is a repo-level decision, but a repo's skill content changes with every `g
 
 Cron jobs and other non-interactive surfaces inherit your interactive trust decision — they never prompt and never auto-trust. The project root resolves from the surface's working directory (a cron job's `workdir`, via the same mechanism the terminal tool uses). A cron job whose `workdir` is inside a repo you previously trusted loads that repo's project skills; a job in an untrusted or undecided repo loads none.
 
+## Git Repository Skills (`external_repo`)
+
+If you run Hermes on several machines (a server, a laptop, the desktop app) and want them to share the *same* skills, point Hermes at a git repository. The repo becomes the **live home of agent skills**: Hermes pulls it at every start, and every skill the agent creates or edits is pushed back. One repo, every install on the same skills — no manual copying, no drift.
+
+Add `external_repo` under the `skills` section in `~/.hermes/config.yaml`:
+
+```yaml
+skills:
+  external_repo:
+    enabled: true
+    url: https://github.com/you/my-skills.git   # required when enabled
+    branch: main                                 # optional; empty = remote default
+    path: ""                                     # optional; subdir holding SKILL.md files
+```
+
+### How it works
+
+- **Live, two-way**: At startup Hermes clones the repo (first run) or fetches and rebases onto the remote (later runs) into `~/.hermes/skills/.repo-sync/`. When the agent creates or edits a skill, the change is committed and pushed back to the repo (debounced, so a burst of edits collapses to one push). The other machine picks it up on its next start.
+- **Concurrent installs reconcile**: Before pushing, the checkout rebases onto the remote, so two installs editing at different times converge instead of wedging. A genuine conflict (two machines edited the same skill) aborts the push silently and keeps the local change for the next try.
+- **Repo is the home when enabled**: New agent-created skills are written into the repo checkout, and edits to repo skills happen in place — not into a separate `~/.hermes/skills/` copy. Your local skills dir remains the fallback when the feature is off or the repo hasn't been cloned yet.
+- **Failures are silent**: If git is missing, the network is down, the URL is wrong, or a push conflicts, Hermes logs a debug line and keeps working on the checkout it has. A failed push leaves the change in the local checkout, ready for the next successful push.
+- **Layout flexibility**: If your repo stores skills under a subdirectory (e.g. `skills/`), set `path` to that subdirectory. Leave it empty when `SKILL.md` files sit at the repo root.
+
+### Example
+
+```yaml
+skills:
+  external_repo:
+    enabled: true
+    url: https://github.com/you/my-skills.git
+    branch: main
+    path: skills
+```
+
+Create or edit a skill through Hermes on the server — it is committed and pushed to the repo automatically. On the laptop, the next Hermes start pulls it in. Both machines converge on the same skills from the same repo, with no manual copying.
+
 ## Skill Bundles
 
 Skill bundles are tiny YAML files that group several skills under a single slash command. When you run `/<bundle-name>`, every skill listed in the bundle loads at once — useful when a particular task always benefits from the same set of skills together.

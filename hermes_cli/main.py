@@ -2885,6 +2885,13 @@ def _sync_bundled_skills_quietly() -> None:
     except Exception:
         pass
 
+    try:
+        from tools.skills_repo_sync import sync_external_repo
+
+        sync_external_repo(quiet=True)
+    except Exception:
+        pass
+
 
 def _resolve_use_tui(args) -> bool:
     """Decide whether to launch the TUI for a chat/bare invocation.

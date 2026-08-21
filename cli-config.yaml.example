@@ -949,6 +949,18 @@ skills:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
 
+  # Git repository skills — keep the agent's skills in ONE repo across
+  # MULTIPLE HERMES INSTALLS (server, laptop, desktop app).  When enabled,
+  # the repo is the live home of agent skills: Hermes pulls it at startup
+  # and pushes every agent-created/modified skill back (debounced, best
+  # effort) into a checkout under ~/.hermes/skills/.repo-sync/.  Sync
+  # failures are silent and never block the agent.
+  # external_repo:
+  #   enabled: true
+  #   url: https://github.com/you/my-skills.git
+  #   branch: main        # optional; empty = remote default branch
+  #   path: ""            # optional; subdir of the repo holding SKILL.md files
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================

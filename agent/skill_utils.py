@@ -30,6 +30,7 @@ EXCLUDED_SKILL_DIRS = frozenset(
         ".git",
         ".github",
         ".hub",
+        ".repo-sync",
         ".archive",
         ".venv",
         "venv",
@@ -558,15 +559,10 @@ def get_external_skills_dirs() -> List[Path]:
         return []
 
     raw_dirs = skills_cfg.get("external_dirs")
-    if not raw_dirs:
-        result: List[Path] = []
-        if cache_key is not None:
-            _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
-        return result
     if isinstance(raw_dirs, str):
         raw_dirs = [raw_dirs]
     if not isinstance(raw_dirs, list):
-        return []
+        raw_dirs = []
 
     from hermes_constants import get_hermes_home
 
@@ -596,6 +592,32 @@ def get_external_skills_dirs() -> List[Path]:
             result.append(p)
         else:
             logger.debug("External skills dir does not exist, skipping: %s", p)
+
+    # Add the configured external_repo checkout, if one is present on disk.
+    # The clone/pull itself happens at startup (tools.skills_repo_sync);
+    # this function is read-only so the hot scanner path never touches the
+    # network.  A repo enabled but not yet cloned simply contributes nothing.
+    # Uses the already-parsed skills_cfg so the hot path stays a single
+    # config read.
+    repo_cfg = skills_cfg.get("external_repo")
+    if isinstance(repo_cfg, dict) and repo_cfg.get("enabled"):
+        url = str(repo_cfg.get("url", "")).strip()
+        subdir = str(repo_cfg.get("path", "")).strip()
+        if url:
+            repo_skills_dir = None
+            try:
+                from tools.skills_repo_sync import get_repo_skills_dir
+
+                repo_skills_dir = get_repo_skills_dir(url, subdir)
+            except Exception:
+                logger.debug(
+                    "Could not resolve external_repo skills dir", exc_info=True
+                )
+            if repo_skills_dir is not None:
+                rp = repo_skills_dir.resolve()
+                if rp != local_skills and rp not in seen and rp.is_dir():
+                    seen.add(rp)
+                    result.append(rp)
 
     if cache_key is not None:
         _EXTERNAL_DIRS_CACHE[cache_key] = list(result)

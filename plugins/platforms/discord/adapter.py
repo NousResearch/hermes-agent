@@ -2419,17 +2419,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 return
             self._record_command_sync_attempt(app_id, fingerprint)
 
-            http = getattr(self._client, "http", None)
-            has_ratelimit_timeout = http is not None and hasattr(http, "max_ratelimit_timeout")
-            previous_ratelimit_timeout = getattr(http, "max_ratelimit_timeout", None) if has_ratelimit_timeout else None
-            if has_ratelimit_timeout:
-                http.max_ratelimit_timeout = _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS
-
             try:
-                # Discord's per-app command-management bucket is small, and
-                # discord.py can otherwise sit inside one long retry sleep
-                # before surfacing the 429. Keep the whole sync bounded and
-                # persist Discord's retry-after when it refuses the batch.
+                # Bound the whole sync without mutating the shared Discord HTTP
+                # client's rate-limit policy. Discord buckets snapshot that
+                # value when they are created, so a temporary global override
+                # can permanently leak into unrelated concurrent routes.
                 summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=600)
             except Exception as e:
                 if not self._is_discord_rate_limit(e):
@@ -2446,9 +2440,6 @@ class DiscordAdapter(BasePlatformAdapter):
                     retry_after,
                 )
                 return
-            finally:
-                if has_ratelimit_timeout:
-                    http.max_ratelimit_timeout = previous_ratelimit_timeout
 
             self._record_command_sync_success(app_id, fingerprint, summary)
             logger.info(

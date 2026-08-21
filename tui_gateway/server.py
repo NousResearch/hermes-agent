@@ -188,6 +188,13 @@ except (ValueError, TypeError):
     _ws_orphan_reap_grace = 20.0
 _WS_ORPHAN_REAP_GRACE_S = max(0.0, _ws_orphan_reap_grace)
 _WS_ORPHAN_INTERRUPT_REAP_POLL_S = 1.0
+# Total budget for the interrupt-then-reap poll chain. If an interrupted turn
+# never settles (agent thread hung in a syscall, supervisor lost), each 1s poll
+# would otherwise reschedule forever — trading the old leak-one-worker bug for
+# leak-one-session-plus-timer-chain (review finding, PR #90373). After this
+# many polls we log loudly and force-reap, mirroring the pre-existing
+# stuck-`running` safety net's role of breaking the deadlock.
+_WS_ORPHAN_INTERRUPT_REAP_MAX_POLLS = 60
 _TURN_SETTLE_BEFORE_CLOSE_SECONDS = 5.0
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
@@ -1234,10 +1241,26 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
                 # Timer (#85578): after the reconnect grace the turn is
                 # interrupted once, then the reap keeps polling until the
                 # normal turn-finalization path settles.
-                if not current.get("_client_gone_interrupt_requested"):
-                    current["_client_gone_interrupt_requested"] = True
-                    interrupt_session = current
-                reschedule_delay = _WS_ORPHAN_INTERRUPT_REAP_POLL_S
+                polls = int(current.get("_client_gone_interrupt_polls") or 0) + 1
+                current["_client_gone_interrupt_polls"] = polls
+                if polls > _WS_ORPHAN_INTERRUPT_REAP_MAX_POLLS:
+                    # The interrupted turn never settled inside the budget —
+                    # force-reap rather than parking the session + a timer
+                    # chain forever. Loud by design: this only fires when a
+                    # turn is genuinely stuck past interrupt.
+                    logger.error(
+                        "client_gone sid=%s: turn did not settle after %d "
+                        "interrupt polls (%.0fs) — force-reaping detached "
+                        "session",
+                        sid, polls - 1,
+                        (polls - 1) * _WS_ORPHAN_INTERRUPT_REAP_POLL_S,
+                    )
+                    session = _pop_session_by_id(sid)
+                else:
+                    if not current.get("_client_gone_interrupt_requested"):
+                        current["_client_gone_interrupt_requested"] = True
+                        interrupt_session = current
+                    reschedule_delay = _WS_ORPHAN_INTERRUPT_REAP_POLL_S
             else:
                 session = _pop_session_by_id(sid)
 

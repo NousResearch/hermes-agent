@@ -898,6 +898,31 @@ def _get_worktree_isolation() -> bool:
     return bool(cfg.get("worktree_isolation", False))
 
 
+def _get_load_soul_identity() -> bool:
+    """Read delegation.load_soul_identity (bool, default False).
+
+    When True, delegated subagents load the parent's SOUL.md identity on top
+    of the ephemeral "focused subagent" prompt, so they inherit the operator's
+    operating loop, host routing, and conventions. Opt-in because loading SOUL
+    adds fixed prompt tokens to every child and changes subagent behavior;
+    default False keeps the existing ephemeral-prompt-only behavior.
+
+    ``DELEGATE_WITH_SOUL`` env var is honored as a fallback so operators can
+    flip the flag without editing config.yaml (config.yaml wins when both are
+    set).
+    """
+    cfg = _load_config()
+    val = cfg.get("load_soul_identity")
+    if val is not None:
+        return bool(val)
+    return os.getenv("DELEGATE_WITH_SOUL", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 _LEGACY_MAX_ASYNC_WARNED = False
 
 
@@ -1954,6 +1979,7 @@ def _build_child_agent(
                 log_prefix=f"[subagent-{task_index}]",
                 platform="subagent",
                 skip_context_files=True,
+                load_soul_identity=_get_load_soul_identity(),
                 skip_memory=True,
                 clarify_callback=None,
                 thinking_callback=child_thinking_cb,

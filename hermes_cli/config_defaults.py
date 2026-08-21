@@ -1961,6 +1961,12 @@ DEFAULT_CONFIG = {
         # Flip to true only if you trust delegated work to run dangerous cmds
         # without human review (cron pipelines, batch automation, etc.).
         "subagent_auto_approve": False,
+        # Opt-in: when True, delegated subagents load the parent's SOUL.md
+        # identity on top of the ephemeral "focused subagent" prompt (inherit
+        # operating loop, host routing, conventions). DELEGATE_WITH_SOUL env
+        # var is honored as a fallback. Default False (subagents stay
+        # ephemeral-prompt-only).
+        "load_soul_identity": False,
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

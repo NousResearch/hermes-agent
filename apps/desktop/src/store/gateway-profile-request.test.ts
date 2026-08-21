@@ -374,6 +374,7 @@ describe('requestGatewayForAgent', () => {
     const primary = makePrimary()
 
     setPrimaryGateway(primary as never, 'default')
+    await ensureGatewayForProfile('default')
     ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
       getConnection: vi.fn(),
       getConnectionFor: vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile })),

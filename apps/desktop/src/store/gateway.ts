@@ -1285,22 +1285,19 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
   g.keptProfiles = new Set([...keep].map(normKey))
 
   for (const [key, entry] of [...g.secondaries]) {
-    if (
-      key === g.activeKey ||
-      secondaryIsKept(entry) ||
-      // Mid-dial activation target: the profile being switched TO is not yet
-      // active and has no live work, so without this lease any recompute
-      // during its cold spawn disposed the entry and the click died silently
-      // (#89622). Number guard: dev-HMR entries predate the field. Bounded:
-      // an orphaned lease expires on its own.
-      (Number.isFinite(entry.activationLeaseUntil) && entry.activationLeaseUntil > now)
-    ) {
+    if (key === g.activeKey || secondaryIsKept(entry)) {
       entry.prunePending = false
 
       continue
     }
 
-    if (entry.commandLeases > 0 || entry.activeRequests > 0) {
+    // Mid-dial activation targets are not active yet, but the pruner must both
+    // preserve their transport and remember its decision. If this activation
+    // loses ownership while dialing, the final lease release consumes the
+    // deferred prune; if it wins, the active-key guard cancels it safely.
+    const activationLeased = Number.isFinite(entry.activationLeaseUntil) && entry.activationLeaseUntil > now
+
+    if (activationLeased || entry.commandLeases > 0 || entry.activeRequests > 0) {
       entry.prunePending = true
 
       continue

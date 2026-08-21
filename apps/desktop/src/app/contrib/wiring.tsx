@@ -302,7 +302,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       return requestForSessionProfile<T>(owner, ambientRequestGateway, method, params ?? {}, timeoutMs, signal)
     },
-    [ambientRequestGateway]
+    [ambientRequestGateway, selectedStoredSessionIdRef]
   )
 
   const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =

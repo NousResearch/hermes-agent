@@ -88,16 +88,6 @@ vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
 
 const RUNTIME_SESSION_ID = 'rt-new-001'
 
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void
-
-  const promise = new Promise<T>(done => {
-    resolve = done
-  })
-
-  return { promise, resolve }
-}
-
 function gatewayWithRequest(
   request: (method: string, params?: Record<string, unknown>) => Promise<unknown>
 ): HermesGateway {
@@ -1476,6 +1466,7 @@ function RouteResumeProbe({
     resumeSession,
     routedSessionId,
     runtimeIdByStoredSessionIdRef,
+    sessionResumeRequest: null,
     selectedStoredSessionId: selectedStoredSessionIdRef.current,
     selectedStoredSessionIdRef,
     startFreshSessionDraft: vi.fn()
@@ -1905,7 +1896,7 @@ describe('branchStoredSession desktop source tagging', () => {
     const result = branchCurrentSession!(undefined, 'tile-runtime')
 
     expect(bindGatewayRequest).toHaveBeenCalledWith(sourceGatewayRef.current, 'work')
-    await waitFor(() => expect(getSession).toHaveBeenCalledWith('tile-stored'))
+    await waitFor(() => expect(getSession).toHaveBeenCalledWith('tile-stored', 'work'))
     profileLookup.resolve(storedSession({ id: 'tile-stored', profile: 'work' }))
     await waitFor(() =>
       expect(leasedSourceRequest).toHaveBeenCalledWith('session.branch', {
@@ -2156,6 +2147,7 @@ describe('branchStoredSession desktop source tagging', () => {
 
     const requestGateway = vi.fn(async () => ({}) as never)
 
+    setSessions([storedSession({ id: 'stored-parent', message_count: 1 })])
     setMessages([{ id: 'q1', role: 'user', parts: [{ type: 'text', text: 'question' }] }])
     vi.mocked(getAllSessionMessages).mockImplementation(async () => {
       refs!.activeSessionIdRef.current = 'live-other'

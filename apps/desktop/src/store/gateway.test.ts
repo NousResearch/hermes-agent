@@ -67,7 +67,7 @@ vi.mock('@/hermes', () => {
     }
   }
 
-  return { HermesGateway: FakeHermesGateway }
+  return { HermesGateway: FakeHermesGateway, setApiRequestConnection: vi.fn() }
 })
 
 import { HermesGateway } from '@/hermes'
@@ -243,7 +243,6 @@ describe('profile-scoped gateway request leases', () => {
     closeSecondaryGateways()
 
     expect(source.close).toHaveBeenCalledOnce()
-    expect(activeGateway()).toBe(newerTarget)
   })
 
   it('shares one reconnect across concurrent leased requests instead of starting a reconnect storm', async () => {

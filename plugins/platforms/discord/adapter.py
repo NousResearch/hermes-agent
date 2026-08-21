@@ -39,6 +39,13 @@ logger = logging.getLogger(__name__)
 _DISCORD_MARKDOWN_LINK_LABEL_RE = re.compile(r"([\\\[\]])")
 _DISCORD_URL_LABEL_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
 
+# Upper bound on how long stop_typing() waits for a cancelled typing loop to
+# finish before detaching. A loop stuck in a hung /channels/{id}/typing POST
+# only receives CancelledError at its next await, so without this bound
+# stop_typing would block message delivery for the full transport timeout.
+# Mirrors base._stop_typing_refresh's 0.5s reap timeout.
+_TYPING_STOP_REAP_TIMEOUT = 0.5
+
 
 def _format_discord_markdown_link(label: str, url: str) -> str:
     """Return a Discord Markdown link whose label is not itself a URL.
@@ -5631,13 +5638,25 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
 
     async def stop_typing(self, chat_id: str) -> None:
-        """Stop the persistent typing indicator for a channel."""
+        """Stop the persistent typing indicator for a channel.
+
+        The cancelled loop is reaped with a bounded timeout so a loop stuck
+        in a slow or hung ``/channels/{id}/typing`` POST can never block
+        message delivery. Cancellation is only delivered at the loop's next
+        await point; if that await is the HTTP request (which historically
+        had no timeout), the request must finish or hit the transport
+        timeout first. Rather than hold up the response, detach after
+        ``_TYPING_STOP_REAP_TIMEOUT`` and let the already-cancelled loop
+        finish in the background (mirrors ``base._stop_typing_refresh``).
+        """
         task = self._typing_tasks.pop(chat_id, None)
         if task:
             task.cancel()
             try:
-                await task
-            except (asyncio.CancelledError, Exception):
+                await asyncio.wait_for(
+                    asyncio.shield(task), timeout=_TYPING_STOP_REAP_TIMEOUT
+                )
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

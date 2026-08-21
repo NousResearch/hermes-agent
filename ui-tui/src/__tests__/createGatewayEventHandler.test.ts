@@ -237,6 +237,19 @@ describe('createGatewayEventHandler', () => {
     expect(getUiState().status).toBe('⏸ goal paused')
   })
 
+  it.each([
+    ['⚠ Goal blocked: credentials required.', '⚠ goal blocked'],
+    ['■ Goal stopped: user override.', '■ goal stopped'],
+    ['✗ Goal unachievable: impossible as stated.', '✗ goal unachievable']
+  ])('keeps non-completion goal verdicts distinct in the status bar', (text, expected) => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { kind: 'goal', text }, type: 'status.update' } as any)
+
+    expect(getUiState().status).toBe(expected)
+  })
+
   it('surfaces self-improvement review summaries as a persistent system line', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)

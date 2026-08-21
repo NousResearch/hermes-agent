@@ -4,7 +4,7 @@ import { keyedTimeouts } from '@/lib/keyed-timeouts'
 
 import { $gateway } from './gateway'
 
-export type GoalStatus = 'active' | 'done' | 'paused' | 'waiting'
+export type GoalStatus = 'active' | 'blocked' | 'done' | 'paused' | 'stopped' | 'unachievable' | 'waiting'
 
 export interface SessionGoal {
   detail?: string
@@ -52,6 +52,34 @@ function goalTitleFromLine(line: string, pattern: RegExp): string {
   return (line.match(pattern)?.[1] ?? '').trim()
 }
 
+function goalTitleFromTerminalStatusLine(line: string, prefix: string, status: GoalStatus): string {
+  if (!line.startsWith(prefix)) {
+    return ''
+  }
+
+  const open = line.indexOf('(')
+
+  if (open < 0 || !line.slice(open + 1).startsWith(`${status},`)) {
+    return ''
+  }
+
+  let depth = 0
+
+  for (let i = open; i < line.length; i += 1) {
+    if (line[i] === '(') {
+      depth += 1
+    } else if (line[i] === ')') {
+      depth -= 1
+
+      if (depth === 0 && line[i + 1] === ':') {
+        return line.slice(i + 2).trim()
+      }
+    }
+  }
+
+  return ''
+}
+
 function nextGoalFromText(text: string, previous?: SessionGoal): SessionGoal | null | undefined {
   const body = clean(text)
   const line = firstLine(body)
@@ -83,10 +111,11 @@ function nextGoalFromText(text: string, previous?: SessionGoal): SessionGoal | n
     return { status: 'waiting', title: fromWaiting, updatedAt: now }
   }
 
-  const fromPaused = goalTitleFromLine(line, /^⏸ Goal(?:\s*\([^)]*\)| paused)?:\s*(.+)$/)
+  const persistedPaused = goalTitleFromTerminalStatusLine(line, '⏸ Goal (', 'paused')
+  const fromPaused = goalTitleFromLine(line, /^⏸ Goal paused:\s*(.+)$/)
 
-  if (fromPaused) {
-    return { status: 'paused', title: fromPaused, updatedAt: now }
+  if (persistedPaused || fromPaused) {
+    return { status: 'paused', title: persistedPaused || fromPaused, updatedAt: now }
   }
 
   const fromDone = goalTitleFromLine(line, /^✓ Goal done\s*\([^)]*\):\s*(.+)$/)
@@ -117,6 +146,50 @@ function nextGoalFromText(text: string, previous?: SessionGoal): SessionGoal | n
     return {
       detail: line.replace(/^⏸\s*/, ''),
       status: 'paused',
+      title: previous?.title || 'Standing goal',
+      updatedAt: now
+    }
+  }
+
+  const terminalStatuses = [
+    {
+      eventPattern: /^⚠ Goal blocked\b/i,
+      statusLinePrefix: '⚠ Goal (',
+      status: 'blocked' as const
+    },
+    {
+      eventPattern: /^■ Goal stopped\b/i,
+      statusLinePrefix: '■ Goal (',
+      status: 'stopped' as const
+    },
+    {
+      eventPattern: /^✗ Goal unachievable\b/i,
+      statusLinePrefix: '✗ Goal (',
+      status: 'unachievable' as const
+    }
+  ]
+
+  const persistedTerminal = terminalStatuses
+    .map(candidate => ({
+      ...candidate,
+      title: goalTitleFromTerminalStatusLine(line, candidate.statusLinePrefix, candidate.status)
+    }))
+    .find(candidate => candidate.title)
+
+  if (persistedTerminal) {
+    return {
+      status: persistedTerminal.status,
+      title: persistedTerminal.title,
+      updatedAt: now
+    }
+  }
+
+  const terminal = terminalStatuses.find(candidate => candidate.eventPattern.test(line))
+
+  if (terminal) {
+    return {
+      detail: line.replace(terminal.eventPattern, '').replace(/^:\s*/, ''),
+      status: terminal.status,
       title: previous?.title || 'Standing goal',
       updatedAt: now
     }

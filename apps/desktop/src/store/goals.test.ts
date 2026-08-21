@@ -50,6 +50,36 @@ describe('goal store', () => {
     expect($goalsBySession.get().s1).toBeUndefined()
   })
 
+  it.each([
+    ['⚠ Goal blocked: credentials are required.', 'blocked'],
+    ['■ Goal stopped: the user stopped the work.', 'stopped'],
+    ['✗ Goal unachievable: the requested outcome cannot be produced.', 'unachievable']
+  ] as const)('preserves non-completion terminal history from %s', (message, status) => {
+    applyGoalStatusText('s1', '⊙ Goal set: ship the feature')
+    applyGoalStatusText('s1', message)
+
+    expect($goalsBySession.get().s1).toMatchObject({
+      status,
+      title: 'ship the feature'
+    })
+  })
+
+  it.each([
+    ['⚠ Goal (blocked, 2/20 turns — credentials required (HTTP 401)): ship it', 'blocked'],
+    ['■ Goal (stopped, 2/20 turns — user stopped (override)): ship it', 'stopped'],
+    ['✗ Goal (unachievable, 2/20 turns — impossible as stated (offline)): ship it', 'unachievable']
+  ] as const)('hydrates persisted non-completion state from %s', (message, status) => {
+    applyGoalStatusText('s1', message)
+
+    expect($goalsBySession.get().s1).toMatchObject({ status, title: 'ship it' })
+  })
+
+  it('hydrates a paused status whose reason contains parentheses', () => {
+    applyGoalStatusText('s1', '⏸ Goal (paused, 3/20 turns — judge failed (HTTP 401)): ship it')
+
+    expect($goalsBySession.get().s1).toMatchObject({ status: 'paused', title: 'ship it' })
+  })
+
   it('clears on no-goal output', () => {
     applyGoalStatusText('s1', '⊙ Goal set (20-turn budget): ship another feature')
     applyGoalStatusText('s1', 'No active goal. Set one with /goal <text>.')

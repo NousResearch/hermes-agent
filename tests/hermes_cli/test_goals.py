@@ -60,6 +60,19 @@ class TestParseJudgeResponse:
         assert wait == {"pid": 4242}
         assert reason == "CI running"
 
+    @pytest.mark.parametrize("verdict", ["blocked", "stopped", "unachievable"])
+    def test_non_completion_terminal_verdicts_remain_distinct(self, verdict):
+        from hermes_cli.goals import _parse_judge_response
+
+        parsed, reason, parse_failed, wait = _parse_judge_response(
+            json.dumps({"verdict": verdict, "reason": "not completed"})
+        )
+
+        assert parsed == verdict
+        assert reason == "not completed"
+        assert parse_failed is False
+        assert wait is None
+
 
 
 
@@ -136,6 +149,77 @@ class TestGoalManager:
         assert prompt is not None
         assert "port goal command to hermes" in prompt
         assert prompt.strip()  # non-empty
+
+    @pytest.mark.parametrize(
+        ("verdict", "expected_status", "message_fragment"),
+        [
+            ("blocked", "blocked", "Goal blocked"),
+            ("stopped", "stopped", "Goal stopped"),
+            ("unachievable", "unachievable", "Goal unachievable"),
+        ],
+    )
+    def test_non_completion_verdicts_never_mark_goal_done(
+        self, hermes_home, verdict, expected_status, message_fragment
+    ):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id=f"truthful-{verdict}")
+        mgr.set("ship the feature")
+
+        with patch.object(
+            goals,
+            "judge_goal",
+            return_value=(verdict, "objective was not completed", False, None, False),
+        ):
+            decision = mgr.evaluate_after_turn("I stopped without completing it")
+
+        assert decision["status"] == expected_status
+        assert decision["verdict"] == verdict
+        assert decision["should_continue"] is False
+        assert message_fragment in decision["message"]
+        assert mgr.state is not None
+        assert mgr.state.status == expected_status
+        assert mgr.state.last_verdict == verdict
+        assert "achieved" not in decision["message"].lower()
+
+    def test_blocked_and_stopped_goals_are_resumable(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        for verdict in ("blocked", "stopped"):
+            mgr = GoalManager(session_id=f"resume-{verdict}")
+            mgr.set("ship it")
+            with patch.object(
+                goals,
+                "judge_goal",
+                return_value=(verdict, "not complete", False, None, False),
+            ):
+                mgr.evaluate_after_turn("Stopped before completion")
+
+            assert mgr.has_goal() is True
+            mgr.resume()
+            assert mgr.state is not None
+            assert mgr.state.status == "active"
+
+    @pytest.mark.parametrize(
+        "status", ["blocked", "stopped", "unachievable", "done"]
+    )
+    def test_terminal_statuses_roundtrip_without_migration_rewrite(self, status):
+        from hermes_cli.goals import GoalState
+
+        restored = GoalState.from_json(
+            json.dumps({
+                "goal": "historical goal",
+                "status": status,
+                "last_verdict": status,
+                "last_reason": "historical reason",
+            })
+        )
+
+        assert restored.status == status
+        assert restored.last_verdict == status
+        assert restored.last_reason == "historical reason"
 
 
 # ──────────────────────────────────────────────────────────────────────

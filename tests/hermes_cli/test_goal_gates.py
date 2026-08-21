@@ -158,17 +158,35 @@ def test_status_line_mentions_gates():
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_failing_gate_short_circuits_judge():
+def test_failing_gate_overrides_nonterminal_judge_verdict():
     mgr = _mgr_with_goal("gate-fail-sid")
     mgr.add_gate("exit 5")
-    with patch("hermes_cli.goals.judge_goal") as mock_judge, \
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("continue", "work remains", False, None, False),
+    ) as mock_judge, \
          patch("hermes_cli.goals.workspace_fingerprint", return_value=""):
         decision = mgr.evaluate_after_turn("I think it's done!")
-    mock_judge.assert_not_called()
+    mock_judge.assert_called_once()
     assert decision["verdict"] == "gate_failed"
     assert decision["should_continue"] is True
     assert "exit 5" in decision["continuation_prompt"]
     assert "quality gate" in decision["continuation_prompt"].lower()
+
+
+def test_terminal_non_completion_verdict_outranks_failing_gate():
+    mgr = _mgr_with_goal("gate-stopped-sid")
+    mgr.add_gate("exit 5")
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("stopped", "user explicitly stopped", False, None, False),
+    ), patch("hermes_cli.goals.run_gate") as mock_gate:
+        decision = mgr.evaluate_after_turn("Stopped without completing the goal")
+
+    mock_gate.assert_not_called()
+    assert decision["verdict"] == "stopped"
+    assert decision["status"] == "stopped"
+    assert decision["should_continue"] is False
 
 
 def test_passing_gates_fall_through_to_judge():
@@ -190,12 +208,15 @@ def test_gate_retry_exhaustion_pauses_goal():
     mgr = _mgr_with_goal("gate-exhaust-sid")
     mgr.add_gate("exit 1")
     mgr.state.gates[0].max_retries = 2
-    with patch("hermes_cli.goals.judge_goal") as mock_judge, \
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("continue", "gate still red", False, None, False),
+    ) as mock_judge, \
          patch("hermes_cli.goals.workspace_fingerprint", return_value=""):
         d1 = mgr.evaluate_after_turn("attempt one")
         d2 = mgr.evaluate_after_turn("attempt two")
         d3 = mgr.evaluate_after_turn("attempt three")
-    mock_judge.assert_not_called()
+    assert mock_judge.call_count == 3
     assert d1["should_continue"] is True
     assert d2["should_continue"] is True
     assert d3["status"] == "paused"
@@ -208,7 +229,10 @@ def test_unchanged_workspace_skips_rerun():
     mgr = _mgr_with_goal("gate-unchanged-sid")
     mgr.add_gate("exit 1")
     with patch("hermes_cli.goals.workspace_fingerprint", return_value="fp-1"), \
-         patch("hermes_cli.goals.judge_goal"):
+         patch(
+             "hermes_cli.goals.judge_goal",
+             return_value=("continue", "gate still red", False, None, False),
+         ):
         mgr.evaluate_after_turn("turn 1")
         # Second turn, same fingerprint — run_gate must NOT run again.
         with patch("hermes_cli.goals.run_gate") as mock_run:
@@ -221,7 +245,10 @@ def test_unchanged_workspace_skips_rerun():
 def test_changed_workspace_reruns_gate():
     mgr = _mgr_with_goal("gate-changed-sid")
     mgr.add_gate("exit 1")
-    with patch("hermes_cli.goals.judge_goal"):
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("continue", "gate still red", False, None, False),
+    ):
         with patch("hermes_cli.goals.workspace_fingerprint", return_value="fp-1"):
             mgr.evaluate_after_turn("turn 1")
         with patch("hermes_cli.goals.workspace_fingerprint", return_value="fp-2"), \
@@ -234,7 +261,10 @@ def test_gate_continuation_respects_turn_budget():
     mgr = GoalManager(session_id="gate-budget-sid", default_max_turns=1)
     mgr.set("budget goal")
     mgr.add_gate("exit 1")
-    with patch("hermes_cli.goals.judge_goal"), \
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("continue", "gate still red", False, None, False),
+    ), \
          patch("hermes_cli.goals.workspace_fingerprint", return_value=""):
         decision = mgr.evaluate_after_turn("only turn")
     assert decision["status"] == "paused"

@@ -128,6 +128,30 @@ def test_loop_stops_when_worker_already_completed(monkeypatch):
     assert turns == []  # no extra turns
 
 
+@pytest.mark.parametrize("verdict", ["blocked", "stopped", "unachievable"])
+def test_loop_preserves_non_completion_verdict_when_worker_did_not_finalize(
+    monkeypatch, verdict
+):
+    _patch_judge(monkeypatch, [verdict])
+    blocks = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="truthful",
+        goal_text="do the thing",
+        run_turn=lambda _p: pytest.fail("terminal verdict must not spend another turn"),
+        task_status_fn=lambda: "running",
+        block_fn=blocks.append,
+        first_response=f"work ended as {verdict} without completing",
+        max_turns=5,
+    )
+
+    assert res["outcome"] == "blocked_by_judge"
+    assert res["reason"] == f"{verdict}: scripted:{verdict}"
+    assert len(blocks) == 1
+    assert verdict in blocks[0]
+    assert "completed" not in blocks[0]
+
+
 
 
 

@@ -2020,8 +2020,11 @@ export interface Translations {
     agents: string
     background: (count: number) => string
     goalActive: string
+    goalBlocked: string
     goalDone: string
     goalPaused: string
+    goalStopped: string
+    goalUnachievable: string
     goalWaiting: string
     subagents: (count: number) => string
     todos: (done: number, total: number) => string

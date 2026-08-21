@@ -80,9 +80,9 @@ DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
 # Quality gates: deterministic shell commands that must pass before the goal
 # judge may declare the goal done. Defaults mirror the bounded-autonomy
 # pattern (per-gate retry limit + timeout, bounded output fed back to the
-# agent). A failed gate short-circuits the judge — its output IS the
-# continuation prompt, so the agent works on concrete evidence instead of a
-# vibe check.
+# agent). The judge first classifies lifecycle truth (including explicit stop,
+# block, and wait); then a failed gate overrides non-terminal completion and
+# its output becomes the continuation prompt.
 DEFAULT_GATE_TIMEOUT_SECONDS = 300
 DEFAULT_GATE_MAX_RETRIES = 3
 # Bounded tail of a failed gate's combined stdout/stderr fed back to the agent.
@@ -153,12 +153,19 @@ JUDGE_SYSTEM_PROMPT = (
     "You are a strict judge evaluating whether an autonomous agent has "
     "achieved a user's stated goal. You receive the goal text, the agent's "
     "most recent response, and — when present — a list of background "
-    "processes the agent has running. Decide one of three verdicts.\n\n"
+    "processes the agent has running. Decide one of six verdicts.\n\n"
     "DONE — the goal is fully satisfied:\n"
-    "- The response explicitly confirms the goal was completed, OR\n"
-    "- The response clearly shows the final deliverable was produced, OR\n"
-    "- The response explains the goal is unachievable / blocked / needs "
-    "user input (treat this as DONE with reason describing the block).\n\n"
+    "- The response explicitly confirms the goal was completed, AND\n"
+    "- The response clearly shows the final deliverable or verification "
+    "evidence.\n"
+    "Never use DONE for a stop, pause, block, unmet dependency, request for "
+    "user input, or an unachievable objective. Those are distinct outcomes "
+    "below even though the loop must stop.\n\n"
+    "BLOCKED — the goal is not complete and cannot progress without user "
+    "input or a recoverable external dependency.\n\n"
+    "STOPPED — the goal is not complete because the user explicitly stopped "
+    "or overrode the work.\n\n"
+    "UNACHIEVABLE — the goal is not complete and cannot be achieved as stated.\n\n"
     "WAIT — the goal is NOT done, but the next step is to wait for async "
     "work to finish rather than act again. Choose this ONLY when the agent's "
     "progress is genuinely gated on something running on its own:\n"
@@ -180,6 +187,9 @@ JUDGE_SYSTEM_PROMPT = (
     "take right now. This is the default when in doubt.\n\n"
     "Reply ONLY with a single JSON object on one line. Shapes:\n"
     '{"verdict": "done", "reason": "<one sentence>"}\n'
+    '{"verdict": "blocked", "reason": "<one sentence>"}\n'
+    '{"verdict": "stopped", "reason": "<one sentence>"}\n'
+    '{"verdict": "unachievable", "reason": "<one sentence>"}\n'
     '{"verdict": "continue", "reason": "<one sentence>"}\n'
     '{"verdict": "wait", "wait_on_session": "<id>", "reason": "<one sentence>"}\n'
     '{"verdict": "wait", "wait_on_pid": <int>, "reason": "<one sentence>"}\n'
@@ -203,7 +213,7 @@ JUDGE_USER_PROMPT_TEMPLATE = (
     "Agent's most recent response:\n{response}\n\n"
     "{background_block}"
     "Current time: {current_time}\n\n"
-    "Is the goal satisfied — done, continue, or wait?"
+    "Classify the goal as done, blocked, stopped, unachievable, continue, or wait."
 )
 
 # Used when the user has added /subgoal criteria. The judge must
@@ -219,7 +229,10 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "evidence in the agent's response that the criterion is "
     "satisfied. Do not accept generic phrases like 'all requirements "
     "met' or 'implying it was done' — require specific evidence (a "
-    "file contents excerpt, an output line, a command result). If "
+    "file contents excerpt, an output line, a command result). First preserve "
+    "terminal non-completion truth: explicit user stop/override is STOPPED; "
+    "need for user input or a recoverable dependency is BLOCKED; an impossible "
+    "objective is UNACHIEVABLE. If none of those applies and "
     "ANY criterion lacks specific evidence in the response, the goal "
     "is NOT done — return CONTINUE (or WAIT if blocked on a listed "
     "background process).\n\n"
@@ -247,11 +260,13 @@ JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
     "process to satisfy the Verification criterion (e.g. CI is the "
     "verification and it's still running), return WAIT on that process "
     "instead of re-poking — re-poking now would be pure busy-work.\n"
-    "- If the response explains the work is blocked / unachievable / needs "
-    "user input (e.g. the stated Stop condition was hit), treat it as DONE "
-    "with the reason describing the block.\n"
+    "- If the response explains the work is blocked or needs user input "
+    "(including the stated Stop condition), return BLOCKED.\n"
+    "- If the user explicitly stopped or overrode the work, return STOPPED.\n"
+    "- If the objective cannot be achieved as stated, return UNACHIEVABLE.\n"
     "- Otherwise the goal is NOT done — CONTINUE.\n\n"
-    "Is the goal satisfied per its completion contract — done, continue, or wait?"
+    "Classify the goal per its completion contract as done, blocked, stopped, "
+    "unachievable, continue, or wait."
 )
 
 
@@ -429,10 +444,11 @@ def parse_contract(text: str) -> Tuple[str, GoalContract]:
 class GoalGate:
     """A deterministic shell command that must pass before a goal can be done.
 
-    Gates run at turn boundary BEFORE the LLM judge. A failing gate
-    short-circuits judging entirely: its bounded output becomes the
-    continuation prompt, so the agent iterates against concrete evidence.
-    Only when every gate passes does the judge get to decide DONE.
+    At turn boundary the judge first classifies lifecycle truth so an explicit
+    stop, block, wait, or unachievable outcome cannot be erased by a red gate.
+    For non-terminal verdicts, a failing gate overrides completion: its bounded
+    output becomes the continuation prompt. DONE is accepted only after every
+    gate passes.
 
     ``attempts`` counts failed runs; when it exceeds ``max_retries`` the goal
     auto-pauses (mirrors the turn-budget pause) instead of spinning. A gate
@@ -548,12 +564,12 @@ class GoalState:
     """Serializable goal state stored per session."""
 
     goal: str
-    status: str = "active"          # active | paused | done | cleared
+    status: str = "active"          # active | paused | blocked | stopped | unachievable | done | cleared
     turns_used: int = 0
     max_turns: int = DEFAULT_MAX_TURNS
     created_at: float = 0.0
     last_turn_at: float = 0.0
-    last_verdict: Optional[str] = None        # "done" | "continue" | "skipped"
+    last_verdict: Optional[str] = None        # judge verdict; persisted verbatim for truthful history
     last_reason: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
     consecutive_parse_failures: int = 0       # judge-output parse failures in a row
@@ -1027,7 +1043,8 @@ def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, 
     """Parse the judge's reply. Fail-open on unusable output.
 
     Returns ``(verdict, reason, parse_failed, wait_directive)`` where:
-      - ``verdict`` is ``"done"``, ``"continue"``, or ``"wait"``.
+      - ``verdict`` is ``"done"``, ``"blocked"``, ``"stopped"``,
+        ``"unachievable"``, ``"continue"``, or ``"wait"``.
       - ``parse_failed`` is True when the judge returned output that couldn't
         be interpreted as the expected JSON verdict (empty body, prose,
         malformed JSON). Callers use it to auto-pause after N consecutive
@@ -1084,7 +1101,7 @@ def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, 
             done = bool(done_val)
         verdict = "done" if done else "continue"
 
-    if verdict not in {"done", "continue", "wait"}:
+    if verdict not in {"done", "blocked", "stopped", "unachievable", "continue", "wait"}:
         verdict = "continue"
 
     if verdict != "wait":
@@ -1178,7 +1195,8 @@ def judge_goal(
     """Ask the auxiliary model whether the goal is satisfied.
 
     Returns ``(verdict, reason, parse_failed, wait_directive, transport_failed)`` where verdict
-    is ``"done"``, ``"continue"``, ``"wait"``, or ``"skipped"`` (when the
+    is ``"done"``, ``"blocked"``, ``"stopped"``, ``"unachievable"``,
+    ``"continue"``, ``"wait"``, or ``"skipped"`` (when the
     judge couldn't be reached). ``wait_directive`` is set only for ``"wait"``
     (``{"pid": int}`` or ``{"seconds": int}``); ``None`` otherwise.
 
@@ -1438,7 +1456,9 @@ class GoalManager:
         return self._state is not None and self._state.status == "active"
 
     def has_goal(self) -> bool:
-        return self._state is not None and self._state.status in {"active", "paused"}
+        return self._state is not None and self._state.status in {
+            "active", "paused", "blocked", "stopped"
+        }
 
     def has_contract(self) -> bool:
         return self._state is not None and self._state.has_contract()
@@ -1467,6 +1487,15 @@ class GoalManager:
         if s.status == "paused":
             extra = f" — {s.paused_reason}" if s.paused_reason else ""
             return f"⏸ Goal (paused, {meta}{extra}): {s.goal}"
+        if s.status == "blocked":
+            extra = f" — {s.last_reason}" if s.last_reason else ""
+            return f"⚠ Goal (blocked, {meta}{extra}): {s.goal}"
+        if s.status == "stopped":
+            extra = f" — {s.last_reason}" if s.last_reason else ""
+            return f"■ Goal (stopped, {meta}{extra}): {s.goal}"
+        if s.status == "unachievable":
+            extra = f" — {s.last_reason}" if s.last_reason else ""
+            return f"✗ Goal (unachievable, {meta}{extra}): {s.goal}"
         if s.status == "done":
             return f"✓ Goal done ({meta}): {s.goal}"
         return f"Goal ({s.status}, {meta}): {s.goal}"
@@ -1882,7 +1911,8 @@ class GoalManager:
           - ``status``: current goal status after update
           - ``should_continue``: bool — caller should fire another turn
           - ``continuation_prompt``: str or None
-          - ``verdict``: "done" | "continue" | "wait" | "skipped" | "inactive"
+          - ``verdict``: "done" | "blocked" | "stopped" | "unachievable" |
+            "continue" | "wait" | "skipped" | "inactive"
           - ``reason``: str
           - ``message``: user-visible one-liner to print/send
         """
@@ -1921,30 +1951,6 @@ class GoalManager:
         # Count the turn that just finished.
         state.turns_used += 1
         state.last_turn_at = time.time()
-
-        # Quality gates run BEFORE the LLM judge: a failing gate is
-        # deterministic evidence the goal is not done, so the judge call is
-        # skipped entirely and the gate's output drives the next turn. Gate
-        # continuations respect the same turn budget as judge continuations.
-        gate_decision = self._check_gates()
-        if gate_decision is not None:
-            if gate_decision.get("should_continue") and state.turns_used >= state.max_turns:
-                state.status = "paused"
-                state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
-                save_goal(self.session_id, state)
-                return {
-                    "status": "paused",
-                    "should_continue": False,
-                    "continuation_prompt": None,
-                    "verdict": "gate_failed",
-                    "reason": gate_decision.get("reason", ""),
-                    "message": (
-                        f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used "
-                        f"(a quality gate is still failing). "
-                        "Use /goal resume to keep going, or /goal clear to stop."
-                    ),
-                }
-            return gate_decision
 
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal,
@@ -1998,6 +2004,54 @@ class GoalManager:
                 "reason": reason,
                 "message": f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}",
             }
+
+        if verdict in {"blocked", "stopped", "unachievable"}:
+            state.status = verdict
+            save_goal(self.session_id, state)
+            labels = {
+                "blocked": "⚠ Goal blocked",
+                "stopped": "■ Goal stopped",
+                "unachievable": "✗ Goal unachievable",
+            }
+            resume_hint = (
+                " Use /goal resume when the blocker is resolved."
+                if verdict == "blocked"
+                else " Use /goal resume to reauthorize work."
+                if verdict == "stopped"
+                else ""
+            )
+            return {
+                "status": verdict,
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": verdict,
+                "reason": reason,
+                "message": f"{labels[verdict]}: {reason.rstrip('.')}.{resume_hint}".rstrip(),
+            }
+
+        # The judge classifies lifecycle first so an explicit stop/block can
+        # never be erased by a red gate. For every non-terminal verdict, gates
+        # still run before DONE can be accepted; a failing gate remains
+        # deterministic evidence that completion has not been reached.
+        gate_decision = self._check_gates()
+        if gate_decision is not None:
+            if gate_decision.get("should_continue") and state.turns_used >= state.max_turns:
+                state.status = "paused"
+                state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
+                save_goal(self.session_id, state)
+                return {
+                    "status": "paused",
+                    "should_continue": False,
+                    "continuation_prompt": None,
+                    "verdict": "gate_failed",
+                    "reason": gate_decision.get("reason", ""),
+                    "message": (
+                        f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used "
+                        f"(a quality gate is still failing). "
+                        "Use /goal resume to keep going, or /goal clear to stop."
+                    ),
+                }
+            return gate_decision
 
         if verdict == "done":
             state.status = "done"
@@ -2202,7 +2256,7 @@ def run_kanban_goal_loop(
     Returns a decision dict: ``{"outcome", "turns_used", "reason"}`` where
     outcome is one of ``"completed_by_worker"``, ``"review_requested_by_worker"``,
     ``"changes_requested_by_reviewer"``, ``"blocked_budget"``,
-    ``"blocked_by_worker"``, or ``"stopped"``.
+    ``"blocked_by_worker"``, ``"blocked_by_judge"``, or ``"stopped"``.
     """
 
     def _log(msg: str) -> None:
@@ -2257,6 +2311,26 @@ def run_kanban_goal_loop(
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
+
+        if verdict in {"blocked", "stopped", "unachievable"}:
+            # The worker ended without a lifecycle tool call, but the judge
+            # found a terminal non-completion outcome. Preserve that exact
+            # history now instead of spending more turns and later lying that
+            # the generic budget was the blocker.
+            block_reason = (
+                f"Goal-mode worker ended as {verdict} without completing the task. "
+                f"Judge reason: {_truncate(reason, 300)}"
+            )
+            _log(f"kanban goal loop: task {task_id} {verdict}; blocking truthfully")
+            try:
+                block_fn(block_reason)
+            except Exception as exc:
+                _log(f"kanban goal loop: block_fn failed ({exc})")
+            return {
+                "outcome": "blocked_by_judge",
+                "turns_used": turns_used,
+                "reason": f"{verdict}: {reason}",
+            }
 
         if verdict == "done":
             if nudged_to_finalize:

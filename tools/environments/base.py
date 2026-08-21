@@ -159,6 +159,21 @@ class BaseEnvironment(ABC):
         self.cwd = cwd
         self.timeout = timeout
         self.env = env or {}
+        self._profile_env_boundary = None
+        _multiplex_active = False
+        if self._profile_scoped_passthrough:
+            try:
+                from agent.secret_scope import build_profile_env_boundary, is_multiplex_active
+
+                _multiplex_active = is_multiplex_active()
+                if _multiplex_active:
+                    self._profile_env_boundary = build_profile_env_boundary()
+            except Exception as exc:
+                if _multiplex_active:
+                    raise RuntimeError(
+                        "profile environment boundary could not be captured for "
+                        "the execution environment"
+                    ) from exc
 
         self._session_id = uuid.uuid4().hex[:12]
         temp_dir = self.get_temp_dir().rstrip("/") or "/"

@@ -1087,12 +1087,35 @@ try {
     Write-HandoffLog "hermes update exit code: $($res.Code)"
 
     if ($res.Code -ne 0 -and $res.Code -ne 2) {
+        # A GitHub rate-limit (HTTP 429) is the one failure where retrying is
+        # actively harmful: the secondary limit is driven by request frequency,
+        # so an immediate second fetch extends the cooldown instead of clearing
+        # it. This repo is a large monorepo, so a single fetch is an expensive
+        # request and back-to-back attempts trip the limit reliably. There is
+        # also nothing for a retry to fix -- the failure is server-side, not the
+        # stale-code-in-memory case the retry below exists for. Bail out and
+        # tell the truth so the next scheduled run picks it up after the window.
+        if ($res.Output -match "(?:HTTP|error:) 429|rate-limited|rate limited|secondary rate") {
+            $finalCode = 4
+            $finalMsg = "Update skipped: GitHub rate-limited the fetch (HTTP 429). This is server-side throttling, not a broken install, and retrying now would extend the cooldown. Nothing was changed; the existing build is untouched. Try again in 10-60 minutes."
+            Write-HandoffLog $finalMsg
+            exit $finalCode
+        }
+
         # One retry for the update-boundary class (fresh code on disk, stale
         # code in memory). Exit 2 ("close all Hermes windows") is not retryable.
         Write-HandoffLog "first attempt failed; retrying once (freshly pulled fix loads on the second run)"
         Publish-UiProgress "Retrying update"
         $res = Invoke-HermesStep $pythonExe $updateArgs "update"
         Write-HandoffLog "retry exit code: $($res.Code)"
+
+        # The retry can independently land in the rate limit.
+        if ($res.Code -ne 0 -and $res.Output -match "(?:HTTP|error:) 429|rate-limited|rate limited|secondary rate") {
+            $finalCode = 4
+            $finalMsg = "Update skipped: GitHub rate-limited the fetch (HTTP 429) on the retry. Nothing was changed; the existing build is untouched. Try again in 10-60 minutes."
+            Write-HandoffLog $finalMsg
+            exit $finalCode
+        }
     }
 
     # -- 4. Truthful completion: don't trust exit 0 -------------------------

@@ -510,6 +510,34 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+def test_respawn_guard_active_pr_blocks_same_assignee(kanban_home):
+    """A PR URL comment authored by the card's own assignee still blocks:
+    that role already opened a PR, so re-spawning risks a duplicate."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="pr-same-role", assignee="reviewer")
+        kb.add_comment(
+            conn, tid, "reviewer",
+            "Opened https://github.com/foo/bar/pull/123 for review.",
+        )
+        conn.commit()
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_respawn_guard_active_pr_allows_cross_role(kanban_home):
+    """A PR URL left by a *different* role (author != assignee) is a handoff
+    artifact — an implementer's PR on a card now assigned to a reviewer —
+    and must NOT block the successor role's respawn."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="pr-cross-role", assignee="reviewer")
+        # PR opened by the implementer ("coder"), not the current assignee.
+        kb.add_comment(
+            conn, tid, "coder",
+            "Opened https://github.com/foo/bar/pull/123 for review.",
+        )
+        conn.commit()
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
 
 
 

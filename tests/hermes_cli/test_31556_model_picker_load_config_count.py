@@ -128,7 +128,7 @@ def test_memoized_pool_probe_is_readonly(empty_picker_home, monkeypatch):
     """
     import time
 
-    from hermes_cli.model_switch import _credential_pool_is_usable
+    from hermes_cli.model_switch_providers import _credential_pool_is_usable
 
     provider = "probe-readonly-provider"
     dead = cp.PooledCredential(

@@ -130,14 +130,20 @@ describe('resolvePinnedSessions', () => {
     ]
     const index = buildSessionByAnyId(sessions, [], [])
 
-    expect(resolvePinnedSessions(['foreign', 'local'], index, sessions).map(s => s.id)).toEqual(['foreign', 'local'])
+    expect(resolvePinnedSessions(['foreign', 'local'], index, sessions, settled).map(s => s.id)).toEqual([
+      'foreign',
+      'local'
+    ])
 
     const clicked = [
       row('foreign', { last_active: 99, pinned: true, profile: 'k9' }),
       row('local', { last_active: 50, pinned: true, profile: 'default' })
     ]
 
-    expect(resolvePinnedSessions(['foreign', 'local'], index, clicked).map(s => s.id)).toEqual(['foreign', 'local'])
+    expect(resolvePinnedSessions(['foreign', 'local'], index, clicked, settled).map(s => s.id)).toEqual([
+      'foreign',
+      'local'
+    ])
   })
 
   it('ignores rows from a backend that predates the pinned flag', () => {

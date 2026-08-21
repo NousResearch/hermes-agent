@@ -132,6 +132,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("sakana/fugu-ultra",                      ""),
     # OpenRouter routers
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
+    ("openrouter/fusion",                      "multi-model deliberation panel + analyst; ~4-5x cost when invoked"),
+    ("openrouter/fusion-flash",                "fusion with latency-tuned general-fast preset"),
     # Free tier
     ("stealth/ox-alpha",                       "free"),  # "Ox Alpha" stealth reasoning model — 1M ctx
     ("openrouter/elephant-alpha",              "free"),
@@ -1578,13 +1580,21 @@ def _openrouter_model_supports_tools(item: Any) -> bool:
     so the picker doesn't silently empty for those users. Only hide models
     whose ``supported_parameters`` is an explicit list that omits ``tools``.
 
+    **Permissive when the list is empty.** OpenRouter's meta-routers (e.g.
+    ``openrouter/fusion``) publish ``supported_parameters: []`` because the
+    concrete model is resolved per-request, yet they fully support tool
+    calling (verified against the live endpoint). An empty list carries no
+    capability information, so treat it like a missing field rather than an
+    explicit "no tools" declaration.
+
     Ported from Kilo-Org/kilocode#9068.
     """
     if not isinstance(item, dict):
         return True
     params = item.get("supported_parameters")
-    if not isinstance(params, list):
-        # Field absent / malformed / None — be permissive.
+    if not isinstance(params, list) or not params:
+        # Field absent / malformed / None / empty — carries no capability
+        # information, so be permissive.
         return True
     return "tools" in params
 

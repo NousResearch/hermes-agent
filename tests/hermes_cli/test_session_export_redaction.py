@@ -83,6 +83,18 @@ class TestRedactSessionData:
         out = redact_session_data(session)
         assert _fake_api_key() not in out["summary"]
 
+    def test_credential_shaped_dict_key_redacted(self):
+        """Dict KEYS are strings too — a misbehaving emitter writing the
+        credential as a key must not pass through verbatim (review #90361)."""
+        from hermes_cli.session_export_md import redact_session_data
+
+        session = _session_fixture()
+        key = _fake_api_key()
+        session["tool_result"] = {key: "payload"}
+        out = redact_session_data(session)
+        assert key not in str(out["tool_result"]), out["tool_result"]
+        assert "payload" in str(out["tool_result"])
+
     def test_original_session_not_mutated(self):
         from hermes_cli.session_export_md import redact_session_data
 

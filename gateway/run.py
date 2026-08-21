@@ -1067,6 +1067,26 @@ def _resolve_gateway_display_bool(
     return bool(value)
 
 
+def _format_reasoning_recap(
+    reasoning: str,
+    user_config: dict,
+    platform_key: str,
+) -> str:
+    """Format a reasoning recap using the platform's display verbosity."""
+    from gateway.display_config import resolve_display_setting
+
+    stripped = reasoning.strip()
+    if resolve_display_setting(
+        user_config, platform_key, "reasoning_full", False
+    ):
+        return stripped
+
+    lines = stripped.splitlines()
+    if len(lines) <= 15:
+        return stripped
+    return "\n".join(lines[:15]) + f"\n_... ({len(lines) - 15} more lines)_"
+
+
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
     """Rewrite slash-command mentions to Telegram-valid command names.
 
@@ -20322,9 +20342,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Mattermost requires explicit per-platform opt-in because this is
             # scratch text, not ordinary final-answer content.
             try:
+                _display_user_config = _load_gateway_config()
+            except Exception:
+                _display_user_config = {}
+            _display_platform_key = _platform_config_key(source.platform)
+            try:
                 _show_reasoning_effective = _resolve_gateway_display_bool(
-                    _load_gateway_config(),
-                    _platform_config_key(source.platform),
+                    _display_user_config,
+                    _display_platform_key,
                     "show_reasoning",
                     default=bool(getattr(self, "_show_reasoning", False)),
                     platform=source.platform,
@@ -20340,21 +20365,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
                     from gateway.stream_consumer import escape_code_fences_for_display
-                    # Collapse long reasoning to keep messages readable
-                    lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
-                    else:
-                        display_reasoning = last_reasoning.strip()
+                    display_reasoning = _format_reasoning_recap(
+                        last_reasoning,
+                        _display_user_config,
+                        _display_platform_key,
+                    )
                     # Render style is per-platform: Discord defaults to "-# "
                     # subtext (native small grey metadata text); other
                     # platforms keep the fenced code block.
                     try:
                         from gateway.display_config import resolve_display_setting
                         _reasoning_style = resolve_display_setting(
-                            _load_gateway_config(),
-                            _platform_config_key(source.platform),
+                            _display_user_config,
+                            _display_platform_key,
                             "reasoning_style",
                             "code",
                         )

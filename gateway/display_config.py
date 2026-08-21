@@ -34,6 +34,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
     "show_reasoning": False,
+    "reasoning_full": False,
     # How a reasoning/thinking summary is rendered when show_reasoning is on.
     #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
     #   "blockquote"-> each line prefixed with "> "
@@ -268,6 +269,7 @@ def _normalise(setting: str, value: Any) -> Any:
         return val if val in {"off", "new", "all", "verbose", "log"} else "all"
     if setting in {
         "show_reasoning",
+        "reasoning_full",
         "streaming",
         "interim_assistant_messages",
         "long_running_notifications",

@@ -3590,6 +3590,19 @@ class GatewaySlashCommandsMixin:
             )
             return t("gateway.reasoning.display_set_off", platform=platform_key)
 
+        # Reasoning recap verbosity (per-platform). This is independent of
+        # model reasoning effort and takes effect on the next displayed recap.
+        if value in {"full", "all"}:
+            self._save_gateway_config_key(
+                f"display.platforms.{platform_key}.reasoning_full", True
+            )
+            return t("gateway.reasoning.recap_set_full", platform=platform_key)
+        if value in {"clamp", "collapse", "short"}:
+            self._save_gateway_config_key(
+                f"display.platforms.{platform_key}.reasoning_full", False
+            )
+            return t("gateway.reasoning.recap_set_clamp", platform=platform_key)
+
         if value == "reset":
             if persist_global:
                 return t("gateway.reasoning.reset_global_unsupported")
@@ -3640,6 +3653,8 @@ class GatewaySlashCommandsMixin:
                 {"value": "reset", "label": t("gateway.reasoning.choice_reset"), "is_current": False},
                 {"value": "show", "label": t("gateway.reasoning.choice_show"), "is_current": False},
                 {"value": "hide", "label": t("gateway.reasoning.choice_hide"), "is_current": False},
+                {"value": "full", "label": t("gateway.reasoning.choice_full"), "is_current": False},
+                {"value": "clamp", "label": t("gateway.reasoning.choice_clamp"), "is_current": False},
             ]
         )
         return choices
@@ -3692,6 +3707,8 @@ class GatewaySlashCommandsMixin:
             /reasoning reset                 Clear this session's reasoning override
             /reasoning show|on               Show model reasoning in responses
             /reasoning hide|off              Hide model reasoning from responses
+            /reasoning full|all              Show the full reasoning recap
+            /reasoning clamp|collapse|short  Clamp long reasoning recaps
         """
         from gateway.run import _platform_config_key
 

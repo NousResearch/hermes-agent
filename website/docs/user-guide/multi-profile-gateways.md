@@ -272,6 +272,14 @@ gateway:
       platform: telegram
       chat_id: "-1001234567890"
       profile: tg-profile
+
+    # Route with a behavior hint — the hint is injected into the
+    # message text as [route: <hint>] for AGENTS.md conditionals.
+    - name: calendar-group
+      platform: whatsapp
+      chat_id: "120363xxx@g.us"
+      profile: my-profile
+      hint: calendar
 ```
 
 Routes are matched most-specific-first (`thread_id` > `chat_id` > `guild_id`),
@@ -287,6 +295,27 @@ target profile is not installed or is outside `multiplex_profile_allowlist`,
 the gateway rejects that ingress and logs the route and target. It does not run
 the default profile. Traffic that matches no route keeps the historical
 default-profile behavior.
+
+### Per-route context hints
+
+When multiple chats or topics route to the **same** profile, an optional
+`hint` field tags each route with a lightweight behavior selector. The hint
+is injected as `[route: <hint>]` at the top of the user message text, so the
+profile's `AGENTS.md` can apply conditional instructions per route without
+creating a separate profile per topic:
+
+```markdown
+## Route Context
+### [route: calendar]
+Use the calendar skill for lookups in this route.
+
+### [route: travel]
+Prioritize flight-search skill for flight options.
+```
+
+Hint values must be alphanumeric with hyphens/underscores, max 64 chars.
+**Route hints are not a security boundary** — never use them for access
+control. Permissions stay at the profile level.
 
 ## Start, stop, or restart all gateways at once
 

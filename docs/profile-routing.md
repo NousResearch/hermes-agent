@@ -65,6 +65,7 @@ profile_routes:
 | `chat_id` | no | Channel/group/DM id. |
 | `thread_id` | no | Thread id within a channel. |
 | `enabled` | no | Default `true`; set `false` to disable a route without removing it. |
+| `hint` | no | Optional behavior/skill-selection tag injected into the user message text as `[route: <hint>]`. See [Per-route context hints](#per-route-context-hints) below. |
 
 ## Matching rules
 
@@ -115,3 +116,65 @@ activates the per-profile runtime scope (per-profile `HERMES_HOME`, secret scope
 profile-namespaced session keys); routing is the decision layer that picks *which*
 profile a given guild/channel/thread lands in. With multiplexing off, `profile_routes`
 is ignored entirely — behavior is byte-identical to a single-profile gateway.
+
+## Per-route context hints
+
+When multiple chats or topics are routed to the **same** profile, all of them
+receive the same system-prompt context. An optional `hint` field lets you tag
+each route with a lightweight behavior selector that the profile's `AGENTS.md`
+can match on, without creating a separate profile per topic.
+
+```yaml
+profile_routes:
+  - name: calendar-group
+    platform: whatsapp
+    chat_id: "120363xxx@g.us"
+    profile: my-profile
+    hint: calendar
+
+  - name: travel-topic
+    platform: telegram
+    chat_id: "-1001234567890"
+    thread_id: "42"
+    profile: my-profile
+    hint: travel
+```
+
+When a route with a `hint` matches, the hint is injected at the top of the
+user message text:
+
+```
+[route: calendar]
+
+[User] what's on the calendar tomorrow?
+```
+
+The profile's `AGENTS.md` can then apply conditional behavior:
+
+```markdown
+## Route Context
+Messages may arrive tagged with `[route: <hint>]`. Apply route-specific behavior:
+
+### [route: calendar]
+Use the calendar skill for lookups in this route.
+
+### [route: travel]
+Prioritize flight-search skill for flight options.
+```
+
+### Hint validation
+
+Hint values are validated at config parse time:
+- Must be a string
+- Max 64 characters
+- Only alphanumeric characters, hyphens, and underscores (`[a-zA-Z0-9_-]`)
+- Invalid hints cause the route to be skipped (with a warning log)
+
+### Security note
+
+**Route hints are not a security boundary.** The `[route: <hint>]` tag is
+prepended to the user message text, which end users could theoretically forge
+by typing it in chat. The gateway strips user-typed `[route: ...]` patterns
+before injecting the system tag, but this is defense-in-depth, not a guarantee.
+**Never use route hints for access control or authorization decisions** —
+permissions stay at the profile level (tool access, memory scope, credentials).

@@ -185,6 +185,11 @@ class SessionSource:
     # Transport-local fail-closed signal for an explicit profile route whose
     # target is not served. Excluded from repr/equality and wire serialization.
     profile_route_rejected: bool = field(default=False, repr=False, compare=False)
+    # Transport-local per-route behavior hint (from ``ProfileRoute.hint``).
+    # Injected into the user message text as ``[route: <hint>]`` by
+    # ``_prepare_inbound_message_text``. NOT a security boundary — behavior
+    # and skill selection only. Excluded from repr/equality and wire serialization.
+    profile_route_hint: Optional[str] = field(default=None, repr=False, compare=False)
 
     # Discord auto-thread metadata.  Newly auto-created Discord threads start
     # with a fast placeholder title from the raw message, then the gateway can

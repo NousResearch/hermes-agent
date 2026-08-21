@@ -2309,6 +2309,10 @@ def _platform_has_bot_credential(platform: "Platform", platform_config: "Platfor
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
 _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
 
+# Strip user-typed ``[route: ...]`` tags from inbound message text before
+# injecting the system route hint. Defense-in-depth, not a security boundary.
+_USER_ROUTE_TAG_RE = re.compile(r'^\s*\[route:[^\]]*\]\s*\n?')
+
 # This env var is internal bridge plumbing, not a user-facing configuration
 # source. Initialize it from the canonical config default after dotenv loading
 # so an ambient process/.env value can never control lease safety on its own.
@@ -18152,6 +18156,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if getattr(event, "channel_context", None):
             message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
 
+        # Inject per-route behavior hint as ``[route: <hint>]`` at the top of
+        # the message text. Strip any user-typed ``[route: ...]`` patterns
+        # first to prevent end users from forging route hints to trigger
+        # AGENTS.md conditional behavior intended for a different route context.
+        # NOT a security boundary — behavior/skill selection only.
+        _route_hint = getattr(source, "profile_route_hint", None)
+        if _route_hint:
+            message_text = _USER_ROUTE_TAG_RE.sub('', message_text)
+            message_text = f"[route: {_route_hint}]\n{message_text}"
+
         # Declare at outer scope so the audio-file-paths handling block below
         # remains safe when ``event.media_urls`` is empty (no inner block runs).
         audio_file_paths: list[str] = []
@@ -27978,6 +27992,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     matched.profile,
                 )
                 raise ProfileRouteRejected(matched.name)
+            # Store the per-route behavior hint on the source for
+            # ``_prepare_inbound_message_text`` to inject as ``[route: <hint>]``.
+            # NOT a security boundary — behavior/skill selection only.
+            if matched.hint:
+                source.profile_route_hint = matched.hint
             return matched.profile
         logger.debug(
             "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s",

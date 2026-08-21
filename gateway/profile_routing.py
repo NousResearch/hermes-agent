@@ -39,6 +39,7 @@ Configuration (config.yaml):
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -62,6 +63,10 @@ class ProfileRoute:
     chat_id: Optional[str] = None
     thread_id: Optional[str] = None
     enabled: bool = True
+    # Optional behavior/skill-selection hint injected into the user message
+    # text as ``[route: <hint>]`` when this route matches. NOT a security
+    # boundary — permissions stay at the profile level. See ``_prepare_inbound_message_text``.
+    hint: Optional[str] = None
 
     @property
     def specificity(self) -> int:
@@ -138,6 +143,21 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
         except (ValueError, ImportError):
             logger.warning("Skipping profile route %s: invalid profile name %r", name, profile)
             continue
+        # Optional behavior hint — injected into message text as [route: <hint>].
+        # Validate to prevent tag-format breakage from newlines, closing
+        # brackets, or excessive length. NOT a security boundary.
+        hint = entry.get("hint")
+        if hint is not None:
+            if not isinstance(hint, str):
+                logger.warning("Skipping profile route %s: hint must be a string, got %r", name, type(hint).__name__)
+                continue
+            hint = hint.strip()
+            if len(hint) > 64:
+                logger.warning("Skipping profile route %s: hint too long (max 64 chars)", name)
+                continue
+            if not re.match(r'^[a-zA-Z0-9_-]+$', hint):
+                logger.warning("Skipping profile route %s: hint %r contains invalid characters (allowed: alphanumeric, hyphen, underscore)", name, hint)
+                continue
         routes.append(
             ProfileRoute(
                 name=name,
@@ -147,6 +167,7 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
                 chat_id=entry.get("chat_id"),
                 thread_id=entry.get("thread_id"),
                 enabled=entry.get("enabled", True),
+                hint=hint,
             )
         )
     # Sort: most specific first so the first match wins.

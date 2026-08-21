@@ -6523,10 +6523,22 @@ def resolve_provider_client(
             custom_base = _to_openai_base_url(explicit_base_url).strip()
             if api_mode == "anthropic_messages":
                 wrap_base = (explicit_base_url or "").strip().rstrip("/")
+            # Key precedence for custom endpoints (#91308): explicit api_key
+            # → host-matched main key → OPENAI_API_KEY gated on OpenAI's own
+            # hosts → no-key-required. Gate env keys on authoritative hosts —
+            # sending OPENAI_API_KEY to an arbitrary custom endpoint (vLLM,
+            # Fireworks, a mistyped host) leaks credentials, and checking the
+            # env var before the host-matched configured key shadows a valid
+            # provider key with a wrong one (mirror of the #28660 main-agent
+            # gate in hermes_cli/runtime_provider.py).
+            _is_openai_host = (
+                base_url_host_matches(custom_base, "openai.com")
+                or base_url_host_matches(custom_base, "openai.azure.com")
+            )
             custom_key = (
                 (explicit_api_key or "").strip()
-                or _scoped_key_env("OPENAI_API_KEY")
                 or _read_main_api_key_if_same_host(custom_base)
+                or (_scoped_key_env("OPENAI_API_KEY") if _is_openai_host else "")
                 or "no-key-required"  # local servers don't need auth
             )
             if not custom_base:

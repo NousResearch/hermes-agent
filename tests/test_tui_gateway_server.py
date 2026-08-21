@@ -14208,6 +14208,11 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
         "name": "Test Provider",
         "models": ["test-model"],
         "total_models": 1,
+        # A real build_models_payload(picker_hints=True) call always sets
+        # this via _apply_picker_hints; the mock below bypasses that, so it
+        # must supply the field itself (RAH-04: model.save_key no longer
+        # force-overwrites whatever the real inventory computed).
+        "authenticated": True,
     }
     server._sessions["save-key-session"] = _session(agent=agent)
     monkeypatch.setattr(
@@ -14254,6 +14259,55 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
         picker_hints=True,
         max_models=50,
     )
+
+
+def test_model_save_key_does_not_force_authenticated_when_inventory_says_false(
+    monkeypatch,
+):
+    """RAH-04: a saved key that the rebuilt inventory still treats as an
+    unauthenticated skeleton row (e.g. the model-list probe failed) must be
+    reported that way, not silently upgraded to authenticated=True."""
+    env_var = "TEST_PROVIDER_API_KEY"
+    agent = object()
+    provider = {
+        "slug": "test-provider",
+        "name": "Test Provider",
+        "models": [],
+        "total_models": 0,
+        "authenticated": False,
+    }
+    server._sessions["save-key-session-2"] = _session(agent=agent)
+    monkeypatch.setattr(
+        "hermes_cli.auth.PROVIDER_REGISTRY",
+        {
+            "test-provider": types.SimpleNamespace(
+                name="Test Provider",
+                auth_type="api_key",
+                api_key_env_vars=(env_var,),
+            )
+        },
+    )
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    monkeypatch.setattr(
+        "hermes_cli.credential_lifecycle.save_provider_env_credential", Mock()
+    )
+    monkeypatch.setattr(server, "_model_picker_context", Mock(return_value=object()))
+    monkeypatch.setattr(
+        "hermes_cli.inventory.build_models_payload",
+        Mock(return_value={"providers": [provider]}),
+    )
+
+    resp = server._methods["model.save_key"](
+        104,
+        {
+            "slug": "test-provider",
+            "api_key": "some-key",
+            "session_id": "save-key-session-2",
+        },
+    )
+
+    assert "result" in resp, resp
+    assert resp["result"]["provider"]["authenticated"] is False
 
 
 # ---------------------------------------------------------------------------

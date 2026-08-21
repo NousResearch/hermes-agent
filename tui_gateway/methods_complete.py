@@ -552,7 +552,12 @@ def _(rid, params: dict) -> dict:
             (p for p in payload["providers"] if p["slug"] == slug), None
         )
         if provider_data is None:
-            # Key was saved but provider didn't appear — still return success.
+            # Key was saved but provider didn't appear in the rebuilt
+            # inventory — still return success. picker_hints sets
+            # `authenticated` from the row state for every row that DID
+            # come back from build_models_payload; this synthetic fallback
+            # is the only case that never goes through that path, so it's
+            # the only case that needs the field set explicitly here.
             provider_data = {
                 "slug": slug,
                 "name": pconfig.name,
@@ -561,9 +566,6 @@ def _(rid, params: dict) -> dict:
                 "total_models": 0,
                 "authenticated": True,
             }
-        # picker_hints sets `authenticated` from the row state, but the
-        # synthetic fallback above doesn't go through that path.
-        provider_data["authenticated"] = True
         return _ok(rid, {"provider": provider_data})
     except Exception as e:
         return _err(rid, 5034, str(e))

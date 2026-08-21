@@ -8729,6 +8729,11 @@ def _session_pending_kind(sid: str) -> str:
 def _session_live_status(sid: str, session: dict) -> str:
     if _session_pending_kind(sid):
         return "waiting"
+    session_key = str(session.get("session_key") or "")
+    if session_key:
+        from tools.approval import has_blocking_approval
+        if has_blocking_approval(session_key):
+            return "waiting"
     ready = session.get("agent_ready")
     # Unset + build never started = a lazy watch session sitting idle, not a
     # session stuck mid-construction.

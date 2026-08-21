@@ -16832,6 +16832,90 @@ def test_session_not_evictable_violating_each_exemption(monkeypatch):
     assert server._session_is_evictable("s", _idle_evictable_session(now), now) is False
 
 
+def test_session_live_status_waiting_on_blocking_approval(monkeypatch):
+    """A session blocked on a dangerous-command approval must report
+    `waiting`, not `working` — the sidebar `needs-input` dot depends on
+    this status, and clarify/sudo already report `waiting` via
+    `_session_pending_kind`, but approvals live in a separate registry
+    (`tools/approval.py`) that this status previously never consulted."""
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
+    from tools import approval
+
+    monkeypatch.setattr(approval, "_gateway_queues", {"sess-key-1": ["entry"]})
+    session = {"running": True, "session_key": "sess-key-1"}
+    assert server._session_live_status("s", session) == "waiting"
+
+
+def test_session_live_status_working_without_pending_approval(monkeypatch):
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
+    from tools import approval
+
+    monkeypatch.setattr(approval, "_gateway_queues", {})
+    session = {"running": True, "session_key": "sess-key-1"}
+    assert server._session_live_status("s", session) == "working"
+
+
+def test_session_live_status_waiting_on_real_gateway_approval_binding(monkeypatch):
+    """Integration check for the key agreement the mocked tests above don't
+    exercise: queue an approval through the actual gateway approval path
+    (``check_all_command_guards`` binding ``session_key`` via the
+    ``HERMES_SESSION_KEY``/contextvar route, not a hand-set dict key) and
+    confirm the matching live session reports `waiting`."""
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
+    from tools import approval
+
+    session_key = "real-binding-session"
+    approval._gateway_queues.clear()
+    approval._gateway_notify_cbs.clear()
+    approval._session_approved.clear()
+    approval._permanent_approved.clear()
+    approval._pending.clear()
+    saved_env = {
+        k: os.environ.get(k)
+        for k in ("HERMES_GATEWAY_SESSION", "HERMES_CRON_SESSION",
+                  "HERMES_YOLO_MODE", "HERMES_SESSION_KEY", "HERMES_INTERACTIVE")
+    }
+    os.environ.pop("HERMES_YOLO_MODE", None)
+    os.environ.pop("HERMES_INTERACTIVE", None)
+    os.environ.pop("HERMES_CRON_SESSION", None)
+    os.environ["HERMES_GATEWAY_SESSION"] = "1"
+    os.environ["HERMES_SESSION_KEY"] = session_key
+    monkeypatch.setattr(
+        approval, "_get_approval_config",
+        lambda: {"mode": "manual", "timeout": 60},
+    )
+    approval.register_gateway_notify(session_key, lambda data: None)
+    try:
+        result_holder = {}
+
+        def _check():
+            result_holder["r"] = approval.check_all_command_guards("rm -rf .git", "local")
+
+        t = threading.Thread(target=_check)
+        t.start()
+        try:
+            for _ in range(200):
+                if approval._gateway_queues.get(session_key):
+                    break
+                time.sleep(0.005)
+            else:
+                raise AssertionError("approval queue entry never appeared")
+
+            session = {"running": True, "session_key": session_key}
+            assert server._session_live_status("s", session) == "waiting"
+        finally:
+            approval.resolve_gateway_approval(session_key, "deny")
+            t.join(timeout=5)
+    finally:
+        approval._gateway_queues.clear()
+        approval._gateway_notify_cbs.clear()
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def test_reap_idle_sessions_closes_only_evictable(monkeypatch):
     closed = []
     monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")

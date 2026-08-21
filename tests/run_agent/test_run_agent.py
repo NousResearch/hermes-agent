@@ -3977,23 +3977,41 @@ class TestRunConversation:
         resp2 = _mock_response(content="All done", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [resp1, resp2]
 
+        history = [
+            {"role": "user", "content": "old question 1"},
+            {"role": "assistant", "content": "old answer 1"},
+            {"role": "user", "content": "old question 2"},
+            {"role": "assistant", "content": "old answer 2"},
+        ]
+
         with (
             patch("run_agent.handle_function_call", return_value="result"),
             patch.object(
-                agent.context_compressor, "should_compress", return_value=True
+                agent.context_compressor,
+                "should_compress",
+                side_effect=lambda *_: agent._compress_context.call_count == 0,
             ),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            # _compress_context should return (messages, system_prompt)
+            # Compaction rebuilt the list and shifted the current user row from
+            # index 4 to index 2. Every current-turn consumer must use the new
+            # boundary on the next loop iteration.
             mock_compress.return_value = (
-                [{"role": "user", "content": "search something"}],
+                [
+                    {"role": "user", "content": "old question 2"},
+                    {"role": "assistant", "content": "old answer 2"},
+                    {"role": "user", "content": "search something"},
+                ],
                 "compressed system prompt",
             )
-            result = agent.run_conversation("search something")
+            result = agent.run_conversation(
+                "search something", conversation_history=history
+            )
         mock_compress.assert_called_once()
+        assert agent._persist_user_message_idx == 2
         assert result["final_response"] == "All done"
         assert result["completed"] is True
 

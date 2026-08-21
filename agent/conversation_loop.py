@@ -107,6 +107,67 @@ logger = logging.getLogger(__name__)
 _INTERRUPT_SCAFFOLD_MARKER = "[This response was interrupted by a user correction.]"
 
 
+def _deliver_pending_steer_before_api(
+    agent: Any,
+    messages: List[Dict[str, Any]],
+    current_turn_user_idx: int,
+) -> bool:
+    """Deliver a pending steer only through a tool result from this turn."""
+    steer_text = agent._drain_pending_steer()
+    if not steer_text:
+        return False
+
+    if (
+        isinstance(current_turn_user_idx, int)
+        and 0 <= current_turn_user_idx < len(messages)
+    ):
+        search_floor = current_turn_user_idx
+    else:
+        # Without a valid turn boundary, no historical message is safe to edit.
+        search_floor = len(messages) - 1
+
+    for idx in range(len(messages) - 1, search_floor, -1):
+        message = messages[idx]
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+
+        from agent.prompt_builder import format_steer_marker
+
+        marker = format_steer_marker(steer_text)
+        existing = message.get("content", "")
+        if isinstance(existing, str):
+            message["content"] = existing + marker
+        else:
+            try:
+                blocks = list(existing) if existing else []
+                blocks.append({"type": "text", "text": marker})
+                message["content"] = blocks
+            except Exception:
+                continue
+
+        logger.info(
+            "Delivered /steer to agent before API call (%d chars, tool index %d): %s",
+            len(steer_text),
+            idx,
+            steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
+        )
+        return True
+
+    # No current-turn tool exists yet. Preserve this steer for the next tool
+    # boundary instead of mutating a historical result that the model must ignore.
+    lock = getattr(agent, "_pending_steer_lock", None)
+    if lock is not None:
+        with lock:
+            pending = getattr(agent, "_pending_steer", None)
+            agent._pending_steer = (
+                steer_text + "\n" + pending if pending else steer_text
+            )
+    else:
+        pending = getattr(agent, "_pending_steer", None)
+        agent._pending_steer = steer_text + "\n" + pending if pending else steer_text
+    return False
+
+
 # One-time wrap-up notice appended when a wall-clock run budget crosses its
 # 80% threshold (agent.run_budget_seconds / --run-budget). Mirrors the Codex
 # CLI budget wrap-up template: stop new work, deliver from current state.
@@ -2055,49 +2116,13 @@ def run_conversation(
         # steers sent during an API call only land after the NEXT tool batch,
         # which may never come if the model returns a final response.
         #
-        # We scan backwards for the last tool-role message in the messages
-        # list.  If found, the steer is appended there.  If not (first
-        # iteration, no tools yet), the steer stays pending for the next
-        # tool batch — injecting into a user message would break role
-        # alternation, and there's no tool output to piggyback on.
-        _pre_api_steer = agent._drain_pending_steer()
-        if _pre_api_steer:
-            _injected = False
-            for _si in range(len(messages) - 1, -1, -1):
-                _sm = messages[_si]
-                if isinstance(_sm, dict) and _sm.get("role") == "tool":
-                    from agent.prompt_builder import format_steer_marker
-                    marker = format_steer_marker(_pre_api_steer)
-                    existing = _sm.get("content", "")
-                    if isinstance(existing, str):
-                        _sm["content"] = existing + marker
-                    else:
-                        # Multimodal content blocks — append text block
-                        try:
-                            blocks = list(existing) if existing else []
-                            blocks.append({"type": "text", "text": marker})
-                            _sm["content"] = blocks
-                        except Exception:
-                            pass
-                    _injected = True
-                    logger.debug(
-                        "Pre-API-call steer drain: injected into tool msg at index %d",
-                        _si,
-                    )
-                    break
-            if not _injected:
-                # No tool message to inject into — put it back so
-                # the post-tool-execution drain picks it up later.
-                _lock = getattr(agent, "_pending_steer_lock", None)
-                if _lock is not None:
-                    with _lock:
-                        if agent._pending_steer:
-                            agent._pending_steer = agent._pending_steer + "\n" + _pre_api_steer
-                        else:
-                            agent._pending_steer = _pre_api_steer
-                else:
-                    existing = getattr(agent, "_pending_steer", None)
-                    agent._pending_steer = (existing + "\n" + _pre_api_steer) if existing else _pre_api_steer
+        # Only current-turn tool results are eligible. Compression may leave
+        # historical tool rows before the re-anchored current user message.
+        _deliver_pending_steer_before_api(
+            agent,
+            messages,
+            current_turn_user_idx,
+        )
 
         # ── Wall-clock run-budget wrap-up notice ───────────────────────
         # One-shot: when a run budget (agent.run_budget_seconds /
@@ -2738,6 +2763,13 @@ def run_conversation(
                         final_response = _HANDOFF_SKIP_FINAL_RESPONSE
                     _turn_exit_reason = "compaction_handoff_not_actionable"
                     break
+                # Pre-API compaction rebuilt ``messages`` with fresh entries.
+                # Re-anchor before the next loop so steer delivery and every
+                # current-turn consumer use the surviving/restored user row.
+                current_turn_user_idx = reanchor_current_turn_user_idx(
+                    messages, user_message
+                )
+                agent._persist_user_message_idx = current_turn_user_idx
                 continue
         elif (
             agent.compression_enabled

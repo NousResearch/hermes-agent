@@ -2577,13 +2577,23 @@ def build_context_files_prompt(
         )
         project_context = ""
     else:
-        # Priority-based project context: first match wins
-        project_context = (
-            _load_hermes_md(cwd_path, context_length)
-            or _load_agents_md(cwd_path, context_length)
-            or _load_claude_md(cwd_path, context_length)
-            or _load_cursorrules(cwd_path, context_length)
-        )
+        # Priority-based project context: first match wins. Remote backends may
+        # expose a logical cwd that this local process cannot traverse; project
+        # context is optional, so skip it without suppressing SOUL loading.
+        try:
+            project_context = (
+                _load_hermes_md(cwd_path, context_length)
+                or _load_agents_md(cwd_path, context_length)
+                or _load_claude_md(cwd_path, context_length)
+                or _load_cursorrules(cwd_path, context_length)
+            )
+        except OSError as exc:
+            logger.debug(
+                "skipping project-context discovery for inaccessible cwd %s: %s",
+                cwd_path,
+                exc,
+            )
+            project_context = ""
     if project_context:
         sections.append(project_context)
 

@@ -43,8 +43,21 @@ class TestResolveContextCwd:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert resolve_context_cwd() == tmp_path
 
+    def test_preserves_opaque_terminal_cwd_when_local_validation_is_denied(
+        self, monkeypatch
+    ):
+        remote_cwd = Path("/home/red-worker/workspace")
+        monkeypatch.setenv("TERMINAL_CWD", str(remote_cwd))
+        original_is_dir = Path.is_dir
 
+        def deny_remote_cwd(path):
+            if path == remote_cwd:
+                raise PermissionError(13, "Permission denied", str(path))
+            return original_is_dir(path)
 
+        monkeypatch.setattr(Path, "is_dir", deny_remote_cwd)
+
+        assert resolve_context_cwd() == remote_cwd
 
     def test_expands_leading_tilde(self, monkeypatch):
         monkeypatch.setenv("TERMINAL_CWD", "~")
@@ -67,6 +80,24 @@ class TestSessionCwdOverride:
         finally:
             rt._SESSION_CWD.reset(token)
 
+    def test_preserves_opaque_session_cwd_when_local_validation_is_denied(
+        self, monkeypatch, tmp_path
+    ):
+        remote_cwd = Path("/home/red-worker/workspace")
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        original_is_dir = Path.is_dir
+
+        def deny_remote_cwd(path):
+            if path == remote_cwd:
+                raise PermissionError(13, "Permission denied", str(path))
+            return original_is_dir(path)
+
+        monkeypatch.setattr(Path, "is_dir", deny_remote_cwd)
+        token = set_session_cwd(str(remote_cwd))
+        try:
+            assert resolve_context_cwd() == remote_cwd
+        finally:
+            rt._SESSION_CWD.reset(token)
 
     def test_clear_session_cwd_restores_terminal_cwd(self, monkeypatch, tmp_path):
         other = tmp_path / "other"

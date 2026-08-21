@@ -4481,11 +4481,16 @@ class TurnRunner:
             _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
             # Single-line, capped preview for non-verbose modes.
             _pl = get_tool_preview_max_len()
-            _cap = _pl if _pl > 0 else 40
+            # 0 = no limit (per config docs); only fall back to 40 when
+            # unset. Local patch 2026-08-20 (upstream treated 0 as falsy).
+            _cap = 40 if _pl is None else _pl
             _lines = _cmd_full.splitlines()
             _cmd_short = _lines[0] if _lines else _cmd_full
             _multiline = len(_lines) > 1
-            if len(_cmd_short) > _cap:
+            # _cap == 0 means unlimited — skip truncation entirely
+            # (guard added in local patch 2026-08-20: `len > 0` is always
+            # true, so an unguarded branch would cut len-3 chars off).
+            if _cap > 0 and len(_cmd_short) > _cap:
                 _cmd_short = _cmd_short[:_cap - 3] + "..."
             elif _multiline:
                 _cmd_short = _cmd_short + " ..."
@@ -4532,7 +4537,8 @@ class TurnRunner:
                 verb_drops_preview,
             )
             _pl = get_tool_preview_max_len()
-            _cap = _pl if _pl > 0 else 40
+            # 0 = no limit; fall back only when unset. Local patch 2026-08-20.
+            _cap = 40 if _pl is None else _pl
             _prepared_preview = prepare_tool_preview(
                 tool_name,
                 args,

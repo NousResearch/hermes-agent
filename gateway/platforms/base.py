@@ -3385,7 +3385,13 @@ class BasePlatformAdapter(ABC):
         if preview:
             from agent.display import prepare_tool_preview
 
-            cap = preview_max_len if preview_max_len > 0 else 40
+            # cap semantics: 0 means "no limit" (config_defaults + tips both
+            # document 0 = show full paths/commands); only fall back to 40 when
+            # the value is missing entirely (None).  Local patch 2026-08-20.
+            if preview_max_len is None:
+                cap = 40
+            else:
+                cap = preview_max_len
             prepared = prepare_tool_preview(
                 event.tool_name,
                 event.args,

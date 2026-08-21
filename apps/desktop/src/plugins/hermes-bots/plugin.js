@@ -4404,6 +4404,10 @@ async function openRosterBot(bot) {
   const generation = ++botOpenGeneration
   const key = botRosterKey(bot)
   const meta = botRosterMeta(bot, $botMeta.get())
+  // Keep the currently visible group as a fallback until this explicit action
+  // has actually fronted a new owner; a failed home open must not steal the
+  // center from a group the user was reading.
+  const previousGroup = $groupChatWorkspace.get()
 
   haptic('tap')
   saveSelectedRosterBot(bot)
@@ -4415,10 +4419,18 @@ async function openRosterBot(bot) {
     $groupChatWorkspace.set(null)
 
     if (botsHomeEnabled()) {
-      // This explicit gesture may front the owner home without activating its
-      // source. The underlying chat remains an untouched sibling surface.
-      openBotsHomeWorkspace(true)
+      // Explicitly front the selected owner but keep the existing group tab
+      // intact. If the workspace door refuses, restore the group selection so
+      // a failed roster action cannot leave the center ownerless.
+      if (!openBotsHomeWorkspace(true) && previousGroup) {
+        $groupChatWorkspace.set(previousGroup)
+      }
     } else {
+      // Old shells have no home surface; keep the existing visible group as
+      // owner and offer only guidance, never renderer-owned remote delivery.
+      if (previousGroup) {
+        $groupChatWorkspace.set(previousGroup)
+      }
       host.notify?.({
         kind: 'info',
         title: displayName(bot, meta),
@@ -4444,6 +4456,9 @@ async function openRosterBot(bot) {
   } catch (error) {
     if (generation === botOpenGeneration) {
       $openBotChat.set(null)
+      if (previousGroup && !$groupChatWorkspace.get()) {
+        $groupChatWorkspace.set(previousGroup)
+      }
       syncBotsHomeWorkspace()
       host.notifyError?.(error, `Could not reach ${bot.connectionLabel || 'the gateway'}`)
     }
@@ -4473,6 +4488,9 @@ async function openRosterBot(bot) {
   } catch (error) {
     if (generation === botOpenGeneration) {
       $openBotChat.set(null)
+      if (previousGroup && !$groupChatWorkspace.get()) {
+        $groupChatWorkspace.set(previousGroup)
+      }
       syncBotsHomeWorkspace()
       host.notifyError?.(error, `Could not open ${displayName(bot, meta)}'s chat — try again`)
     }
@@ -11381,7 +11399,7 @@ function botsHomeMayOpen(explicit) {
 
 function openBotsHomeWorkspace(explicit = false) {
   if (!botsHomeEnabled() || !botsHomeMayOpen(explicit)) {
-    return
+    return false
   }
 
   // Already open and fronted: nothing to do. Already open but backgrounded
@@ -11392,7 +11410,7 @@ function openBotsHomeWorkspace(explicit = false) {
   // and each of those either legitimately claims the center or cleared it.
   if (botsHomeClose) {
     if (botsHomeVisible()) {
-      return
+      return true
     }
 
     closeBotsHomeWorkspace()
@@ -11412,8 +11430,11 @@ function openBotsHomeWorkspace(explicit = false) {
         }
       }
     })
+
+    return typeof botsHomeClose === 'function'
   } catch {
     botsHomeClose = null
+    return false
   }
 }
 
@@ -11436,7 +11457,7 @@ function syncBotsHomeWorkspace() {
  *  or another session took over). Without this the home could never come
  *  back: $openBotChat would claim ownership for a chat nobody is reading.
  *
- *  The legacy newChat fallback has no stored id to compare — a draft with no
+ *  The legacy newChat fallback has no registry id to compare — a draft with no
  *  focused session is still that bot's draft, so it only yields once some
  *  session actually takes focus. */
 function releaseStaleOpenBotChat(focusedStoredId) {
@@ -11488,6 +11509,10 @@ function GroupChatMainView({ group }) {
  *  write itself repaints nothing, the duplicate stuck until an unrelated
  *  re-render. */
 function openGroupChat(group) {
+  // A room selection supersedes any bot-open transition still hydrating.
+  // The in-flight host navigation may complete underneath this workspace,
+  // but it may not later close or visually steal the room the user chose.
+  botOpenGeneration += 1
   $groupNeedsYou.set({ ...$groupNeedsYou.get(), [group]: false })
 
   if (typeof host.openWorkspace === 'function') {

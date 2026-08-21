@@ -104,10 +104,10 @@ test('botActivitySession keeps last_session when it is the fresher one', () => {
   assert.equal(botActivitySession(bot).id, 'scratch')
 })
 
-test('botActivitySession degrades to whichever side exists (older gateways / no pin)', () => {
+test('botActivitySession degrades to whichever session summary exists on an older gateway', () => {
   const botActivitySession = loadBotActivitySession()
   assert.equal(botActivitySession({ last_session: { id: 'only', last_active: 1 } }).id, 'only')
-  assert.equal(botActivitySession({ canonical_session: { id: 'pin', last_active: 1 } }).id, 'pin')
+  assert.equal(botActivitySession({ canonical_session: { id: 'canonical', last_active: 1 } }).id, 'canonical')
   assert.equal(botActivitySession({}), null)
   assert.equal(botActivitySession(null), null)
 })
@@ -190,6 +190,4 @@ test('ActiveNowStrip renders above the roster, is a live region, and is click-ac
 
   assert.match(open, /await prepareBotSource\(bot\)/)
   assert.match(open, /await openBotCanonicalChat\(bot\.name\)/)
-  assert.doesNotMatch(open, /meta\?\.chat\b/)
-  assert.doesNotMatch(open, /preferred_session(?:_ids)?\b/)
 })

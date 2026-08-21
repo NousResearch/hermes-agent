@@ -121,6 +121,8 @@ globalThis.__home = {
   botChatOwnsWorkspace,
   sessionOwnsWorkspace,
   openRosterBot,
+  openGroupChat,
+  closeGroupChatMainTab,
   prepareBotSource,
   $botMeta,
   $botsPaneVisible,
@@ -419,6 +421,48 @@ test('opening a remote bot selects it and routes nothing', async () => {
   assertNothingRouted(t, 'clicking a remote row')
 })
 
+test('a remote owner fronts the Bots home without closing the group tab', async () => {
+  const t = load()
+  t.setPluginCtx({ storage: { set: () => undefined } })
+  t.$botsPaneVisible.set(true)
+  t.openGroupChat('Launch room')
+  const groupEntry = t.opened.find(entry => entry.id === 'hermes-bots:group:launch-room')
+
+  const result = await t.openRosterBot({
+    connectionId: 'work-vps',
+    connectionLabel: 'Work',
+    name: 'researcher',
+    remoteSource: true
+  })
+
+  assert.equal(result, false)
+  assert.equal(t.botsHomeVisible(), true)
+  assert.equal(t.$groupChatWorkspace.get(), null)
+  assert.equal(groupEntry.disposed, false, 'explicit selection must not close an unrelated group tab')
+})
+
+test('a remote owner preserves a group when the Bots home cannot open', async () => {
+  const t = load()
+  t.setPluginCtx({ storage: { set: () => undefined } })
+  t.$botsPaneVisible.set(true)
+  t.openGroupChat('Launch room')
+  const groupEntry = t.opened.find(entry => entry.id === 'hermes-bots:group:launch-room')
+  t.host.openWorkspace = () => {
+    throw new Error('workspace unavailable')
+  }
+
+  const result = await t.openRosterBot({
+    connectionId: 'work-vps',
+    connectionLabel: 'Work',
+    name: 'researcher',
+    remoteSource: true
+  })
+
+  assert.equal(result, false)
+  assert.equal(t.$groupChatWorkspace.get(), 'Launch room')
+  assert.equal(groupEntry.disposed, false)
+})
+
 test('a failed local open leaves no phantom owner in the center', async () => {
   const t = load()
   t.setPluginCtx({ storage: { set: () => undefined } })
@@ -436,6 +480,94 @@ test('a failed local open leaves no phantom owner in the center', async () => {
   assert.equal(t.$openBotChat.get(), null, 'a failed open must release the center back to the home')
   assert.equal(t.notifications.at(-1).kind, 'error', 'and the failure is surfaced, not swallowed')
   assertNothingRouted(t, 'a refused local open')
+})
+
+test('a bot chat opens from its canonical name-registry row without closing the prior group tab', async () => {
+  const t = load()
+  t.setPluginCtx({ storage: { set: () => undefined } })
+  t.$botsPaneVisible.set(true)
+  t.host.openSession = async () => undefined
+  t.host.request = async method => {
+    if (method === 'session.list') {
+      return { sessions: [{ id: 'bot-chat', title: 'Bot Chat', message_count: 4 }] }
+    }
+
+    return {}
+  }
+
+  t.openGroupChat('Launch room')
+  const groupEntry = t.opened.find(entry => entry.id === 'hermes-bots:group:launch-room')
+  assert.ok(groupEntry)
+  assert.equal(t.$groupChatWorkspace.get(), 'Launch room')
+
+  const result = await t.openRosterBot({ connectionId: 'local', name: 'writer' })
+
+  assert.equal(result, true)
+  assert.equal(t.$groupChatWorkspace.get(), null)
+  assert.equal(groupEntry.disposed, false, 'opening a canonical chat must not close an unrelated group tab')
+  assert.equal(t.$openBotChat.get()?.key, 'local::writer')
+  assert.equal(t.$openBotChat.get()?.openedRegistryId, 'bot-chat')
+})
+
+test('a failed canonical-chat open preserves the visible group owner', async () => {
+  const t = load()
+  t.setPluginCtx({ storage: { set: () => undefined } })
+  t.$botsPaneVisible.set(true)
+  t.host.openSession = async () => {
+    throw new Error('gateway unavailable')
+  }
+  t.host.request = async method => {
+    if (method === 'session.list') {
+      return { sessions: [{ id: 'bot-chat', title: 'Bot Chat', message_count: 4 }] }
+    }
+
+    return {}
+  }
+
+  t.openGroupChat('Launch room')
+  const groupEntry = t.opened.find(entry => entry.id === 'hermes-bots:group:launch-room')
+  const result = await t.openRosterBot({ connectionId: 'local', name: 'writer' })
+
+  assert.equal(result, false)
+  assert.equal(t.$groupChatWorkspace.get(), 'Launch room')
+  assert.equal(groupEntry.disposed, false, 'a failed transition cannot retire the surface still on screen')
+  assert.equal(t.$openBotChat.get(), null)
+  assert.equal(t.notifications.at(-1).kind, 'error')
+})
+
+test('choosing a group prevents a stale canonical-chat open from closing it later', async () => {
+  const t = load()
+  t.setPluginCtx({ storage: { set: () => undefined } })
+  t.$botsPaneVisible.set(true)
+
+  let finishOpen
+  let markOpenStarted
+  const openStarted = new Promise(resolve => {
+    markOpenStarted = resolve
+  })
+  t.host.openSession = () =>
+    new Promise(resolve => {
+      finishOpen = resolve
+      markOpenStarted()
+    })
+  t.host.request = async method => {
+    if (method === 'session.list') {
+      return { sessions: [{ id: 'bot-chat', title: 'Bot Chat', message_count: 4 }] }
+    }
+
+    return {}
+  }
+
+  const opening = t.openRosterBot({ connectionId: 'local', name: 'writer' })
+  await openStarted
+  t.openGroupChat('Launch room')
+  const groupEntry = t.opened.find(entry => entry.id === 'hermes-bots:group:launch-room')
+
+  finishOpen()
+  assert.equal(await opening, false)
+  assert.equal(t.$groupChatWorkspace.get(), 'Launch room')
+  assert.equal(groupEntry.disposed, false)
+  assert.equal(t.$openBotChat.get(), null)
 })
 
 // ── who owns the main workspace ─────────────────────────────────────────────
@@ -681,7 +813,8 @@ test('older shells without the main-area door simply have no home', async () => 
   await t.openRosterBot({ connectionId: 'work-vps', connectionLabel: 'Work', name: 'researcher', remoteSource: true })
 
   assert.equal(t.notifications.length, 1)
-  assert.match(t.notifications[0].message, /Gateway stays on this device/)
+  // Guidance is presentation only; remote mention delivery remains backend-owned.
+  assert.match(t.notifications[0].message, /message @researcher from a Bot Chat/)
   assertNothingRouted(t, 'remote row on an older shell')
 })
 

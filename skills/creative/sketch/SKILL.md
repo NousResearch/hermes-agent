@@ -174,6 +174,8 @@ If the user has an existing theme (colors, fonts, tokens), put shared tokens in 
 
 Don't over-tokenize a throwaway sketch — three colors and one font is usually enough.
 
+When the user picks a winner, encode the chosen direction into `DESIGN.md` in the project root via the `design-md` skill before it becomes a real build. The sketch becomes the spec.
+
 ## Interactivity bar
 
 A sketch is interactive enough when the user can:

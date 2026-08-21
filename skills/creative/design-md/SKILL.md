@@ -1,7 +1,7 @@
 ---
 name: design-md
-description: Author/validate/export Google's DESIGN.md token spec files.
-version: 1.1.0
+description: "Use when the user designs or builds an app, website, or UI. DESIGN.md is the mandatory first step: author, lint, then build from tokens."
+version: 2.0.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,7 +11,7 @@ metadata:
     related_skills: [popular-web-designs, claude-design, excalidraw, architecture-diagram]
 ---
 
-# DESIGN.md Skill
+# DESIGN.md — Mandatory Design Workflow
 
 DESIGN.md is Google's open spec (Apache-2.0, `google-labs-code/design.md`) for
 describing a visual identity to coding agents. One file combines:
@@ -19,22 +19,41 @@ describing a visual identity to coding agents. One file combines:
 - **YAML front matter** — machine-readable design tokens (normative values)
 - **Markdown body** — human-readable rationale, organized into canonical sections
 
-Tokens give exact values. Prose tells agents *why* those values exist and how to
-apply them. The CLI (`npx @google/design.md`) lints structure + WCAG contrast,
-diffs versions for regressions, and exports to Tailwind or W3C DTCG JSON.
+This skill is the **mandatory entry point for every design or UI build** —
+app, website, page, landing, dashboard, or component. It is NOT optional and
+not just for "formal spec" requests. Pair it with an AGENTS.md or SOUL.md rule
+to make it sticky in every session; this skill is how to execute it.
 
-## When to use this skill
+## The rule (always)
 
-- User asks for a DESIGN.md file, design tokens, or a design system spec
-- User wants consistent UI/brand across multiple projects or tools
-- User pastes an existing DESIGN.md and asks to lint, diff, export, or extend it
-- User asks to port a style guide into a format agents can consume
-- User wants contrast / WCAG accessibility validation on their color palette
+1. **Author `DESIGN.md` in the project root before writing any UI.** If a
+   DESIGN.md already exists — read it first and build from its tokens.
+2. **Extract real tokens.** If the project/brand/client already has a site,
+   style, or materials, pull the actual palette, type, and radii from the code
+   or brand kit. Never invent a palette when the real one exists.
+   (For an existing project, extract straight from its own stylesheet — e.g.
+   `src/app/globals.css`.)
+3. **Lint it** with the CLI (below). Fix broken refs and WCAG failures before
+   building.
+4. **Build every screen strictly from the DESIGN.md tokens.** Colors, type,
+   radii, spacing all resolve to the spec. Extend the spec before violating it.
+5. **One DESIGN.md per project/brand identity.** Client work gets its own file
+   per client. For direction sketches (see `sketch` skill), the winning variant
+   gets encoded into DESIGN.md before it becomes a real build.
+6. For a specific brand/design-system look, `popular-web-designs` supplies the
+   vocabulary (sourced from VoltAgent/awesome-design-md) — encode the chosen
+   system into DESIGN.md, then build. Want a DESIGN.md that already exists for a
+   known brand? The awesome collection has 73 ready-made files:
+   https://github.com/VoltAgent/awesome-design-md (each brand also at
+   `getdesign.md/<brand>/design-md`). Missing one? Request it at
+   https://getdesign.md/request.
 
-For purely visual inspiration or layout examples, use `popular-web-designs`
-instead. For *process and taste* when designing a one-off HTML artifact
-from scratch (prototype, deck, landing page, component lab), use
-`claude-design`. This skill is for the *formal spec file* itself.
+## When this skill is NOT the design workflow
+
+Only `sketch` (throwaway comparison mockups, nothing built for real) and pure
+motion/illustration work skip the DESIGN.md-first step — and even sketches
+become DESIGN.md before a real build. `claude-design` and HTML artifact work
+follow this skill, not around it.
 
 ## File anatomy
 
@@ -129,9 +148,9 @@ if the value type is valid. Unknown component properties produce a warning.
 
 ## Workflow: authoring a new DESIGN.md
 
-1. **Ask the user** (or infer) the brand tone, accent color, and typography
-   direction. If they provided a site, image, or vibe, translate it to the
-   token shape above.
+1. **Extract real tokens** if the brand/site/project already has them (CSS,
+   brand kit, client materials). Otherwise ask the user (or infer) brand tone,
+   accent color, and typography direction.
 2. **Write `DESIGN.md`** in their project root using `write_file`. Always
    include `name:` and `colors:`; other sections optional but encouraged.
 3. **Use token references** (`{colors.primary}`) in the `components:` section
@@ -174,7 +193,7 @@ On Windows, the `design.md` bin name can collide with the `.md` file
 association (silent no-op or the file opens in an editor). Use the dot-free
 alias: `npx -y -p @google/design.md designmd lint DESIGN.md`.
 
-### Lint rule reference (the 9 rules, as of CLI 0.3.0)
+### Lint rule reference (as of CLI 0.4.0 — verify with `spec --rules-only`)
 
 - `broken-ref` (error) — `{colors.missing}` points at a non-existent token
 - `contrast-ratio` (warning) — component `textColor` vs `backgroundColor`
@@ -202,13 +221,13 @@ summary — WCAG findings are the most load-bearing reason to use the CLI.
 - **Section order matters even though the linter only warns.** If the user
   gives you prose in a random order, reorder it to match the canonical list
   before saving — spec-compliant consumers expect it.
-- **Typography sub-property typos are silently dropped.** As of CLI 0.3.0 a
-  typo like `fontwight:` produces no finding and the value vanishes from
-  exports — double-check sub-property names against the schema
-  (`fontFamily`, `fontSize`, `fontWeight`, `lineHeight`, `letterSpacing`,
-  `fontFeature`, `fontVariation`).
-- **`version: alpha` is the current spec version** (as of Jul 2026, CLI
-  0.3.0). The spec is marked alpha — watch for breaking changes.
+- **Typography sub-property typos are silently dropped.** A typo like
+  `fontwight:` produces no finding and the value vanishes from exports —
+  double-check sub-property names against the schema (`fontFamily`,
+  `fontSize`, `fontWeight`, `lineHeight`, `letterSpacing`, `fontFeature`,
+  `fontVariation`).
+- **`version: alpha` is the current spec version.** The spec is marked alpha —
+  watch for breaking changes.
 - **Token references resolve by dotted path.** `{colors.primary}` works;
   `{primary}` does not.
 
@@ -216,5 +235,6 @@ summary — WCAG findings are the most load-bearing reason to use the CLI.
 
 - Repo: https://github.com/google-labs-code/design.md (Apache-2.0)
 - CLI: `@google/design.md` on npm
+- Curated ready-made files (73 brands): https://github.com/VoltAgent/awesome-design-md
 - License of generated DESIGN.md files: whatever the user's project uses;
   the spec itself is Apache-2.0.

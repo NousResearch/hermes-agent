@@ -31,15 +31,19 @@ system, shadows, responsive behavior, and practical agent prompts with exact CSS
   Pair it with this skill when the user wants a thoughtfully-designed page styled
   after a known brand: `claude-design` drives the workflow, this skill supplies
   the visual vocabulary.
-- **`design-md`** — use when the deliverable is a formal DESIGN.md token spec
-  file, not a rendered artifact.
+- **`design-md`** — **mandatory first step for every UI build**: encode the
+  chosen design system into a `DESIGN.md` in the project root, lint it, then
+  build from its tokens. It is not optional — it is the contract every
+  artifact is built from.
 
 ## How to Use
 
 1. Pick a design from the catalog below
 2. Load it: `skill_view(name="popular-web-designs", file_path="templates/<site>.md")`
-3. Use the design tokens and component specs when generating HTML
-4. Pair with the `generative-widgets` skill to serve the result via cloudflared tunnel
+3. Author `DESIGN.md` in the project root from the chosen system's tokens
+   (design-md skill), then lint it
+4. Use the design tokens and component specs when generating HTML
+5. Pair with the `generative-widgets` skill to serve the result via cloudflared tunnel
 
 Each template includes a **Hermes Implementation Notes** block at the top with:
 - CDN font substitute and Google Fonts `<link>` tag (ready to paste)

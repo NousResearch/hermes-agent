@@ -13,8 +13,10 @@ from hermes_cli.foreign_sessions import (
     import_foreign_session,
     list_claude_sessions,
     list_codex_sessions,
+    list_kimi_sessions,
     parse_claude_session,
     parse_codex_session,
+    parse_kimi_session,
 )
 
 
@@ -93,6 +95,91 @@ def _write_codex_fixture(tmp_path, extra_lines=None):
         lines = extra_lines + lines
     f.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return f
+
+
+def _write_kimi_fixture(tmp_path, extra_lines=None):
+    """A Kimi Code session dir: state.json + agents/main/wire.jsonl.
+
+    Mirrors the real on-disk layout (~/.kimi-code/sessions/<wd>/<session>/)
+    and the real wire record types observed in protocol 1.5: turn.prompt
+    duplicates every typed user message into context.append_message, and
+    assistant output streams as loop events (content.part / tool.call).
+    """
+    session_dir = (
+        tmp_path / ".kimi-code" / "sessions" / "wd_user_abc123" / "session_kimi-0001"
+    )
+    wire_dir = session_dir / "agents" / "main"
+    wire_dir.mkdir(parents=True)
+    (session_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "id": "session_kimi-0001",
+                "cwd": "/home/user/kproj",
+                "title": "Fix the importer",
+                "updatedAt": 1786707200000,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def append_user(text, kind="user"):
+        return {
+            "type": "context.append_message",
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": text}],
+                "origin": {"kind": kind},
+                "id": "msg_" + kind,
+            },
+        }
+
+    def loop_event(event):
+        return {"type": "context.append_loop_event", "event": event}
+
+    entries = [
+        {"type": "metadata", "protocol_version": "1.5", "created_at": 1786707196309},
+        # turn.prompt duplicates the typed message — must NOT double-import
+        {
+            "type": "turn.prompt",
+            "input": [{"type": "text", "text": "Summarize the repo please."}],
+            "origin": {"kind": "user"},
+        },
+        append_user("Summarize the repo please."),
+        # injected context / async-task notices are not typed input
+        append_user("<system-reminder>injected wrapper", kind="injection"),
+        append_user("async delegation finished", kind="task"),
+        loop_event({"type": "step.begin", "turnId": "0", "step": 1}),
+        loop_event(
+            {"type": "content.part", "part": {"type": "think", "think": "secret reasoning"}}
+        ),
+        loop_event(
+            {"type": "content.part", "part": {"type": "text", "text": "Reading the files."}}
+        ),
+        loop_event(
+            {
+                "type": "tool.call",
+                "name": "Bash",
+                "args": {"command": "ls"},
+                "toolCallId": "tool_1",
+            }
+        ),
+        loop_event(
+            {"type": "tool.result", "toolCallId": "tool_1", "result": {"output": "ok"}}
+        ),
+        loop_event(
+            {
+                "type": "content.part",
+                "part": {"type": "text", "text": "Done — the summary is above."},
+            }
+        ),
+        append_user("Thanks!"),
+    ]
+    lines = [json.dumps(entry) for entry in entries]
+    if extra_lines:
+        lines = extra_lines + lines
+    wire = wire_dir / "wire.jsonl"
+    wire.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return wire
 
 
 @pytest.fixture
@@ -180,6 +267,10 @@ def test_list_sessions(tmp_path):
     both = gather_foreign_sessions(
         claude_root=tmp_path / ".claude" / "projects",
         codex_root=tmp_path / ".codex" / "sessions",
+        # Pin the kimi root to a nonexistent dir too — otherwise the gather
+        # scans the real ~/.kimi-code/sessions and the count depends on the
+        # machine running the test.
+        kimi_root=tmp_path / ".kimi-code" / "sessions",
     )
     assert len(both) == 2
     assert both[0].mtime >= both[1].mtime  # newest first
@@ -259,3 +350,81 @@ def test_leading_assistant_gets_single_stub(tmp_path):
     _assert_alternating(parsed["turns"])
     assert len(parsed["turns"]) == 2
     assert parsed["turns"][0]["role"] == "user"
+
+
+# ── Kimi Code ────────────────────────────────────────────────────────────
+
+
+def test_parse_kimi_session(tmp_path):
+    f = _write_kimi_fixture(tmp_path)
+    parsed = parse_kimi_session(f)
+    turns = parsed["turns"]
+    _assert_alternating(turns)
+    # user: "Summarize..." / assistant: text+tool+text merged / user: "Thanks!"
+    assert len(turns) == 3
+    assert parsed["cwd"] == "/home/user/kproj"
+    assert parsed["title_guess"] == "Fix the importer"
+    assert parsed["session_id"] == "session_kimi-0001"
+
+    all_text = "\n".join(t["content"] for t in turns)
+    # the typed message appears exactly once (turn.prompt duplicate ignored)
+    assert all_text.count("Summarize the repo please.") == 1
+    # injection/task-origin user rows are not typed input
+    assert "system-reminder" not in all_text
+    assert "async delegation" not in all_text
+    # thinking stays out; the tool call is a bracketed assistant summary
+    assert "secret reasoning" not in all_text
+    assert "[ran tool: Bash]" in all_text
+    assert all(set(t) == {"role", "content"} for t in turns)
+
+
+def test_parse_kimi_session_skips_malformed_lines(tmp_path):
+    f = _write_kimi_fixture(
+        tmp_path, extra_lines=["not json {{{", json.dumps({"type": "context.append_message"})]
+    )
+    parsed = parse_kimi_session(f)
+    assert len(parsed["turns"]) == 3
+
+
+def test_parse_kimi_session_without_state_json(tmp_path):
+    f = _write_kimi_fixture(tmp_path)
+    (tmp_path / ".kimi-code" / "sessions" / "wd_user_abc123" / "session_kimi-0001" / "state.json").unlink()
+    parsed = parse_kimi_session(f)
+    # falls back to the session dir name and the first typed line
+    assert parsed["session_id"] == "session_kimi-0001"
+    assert parsed["cwd"] is None
+    assert parsed["title_guess"].startswith("Summarize the repo")
+
+
+def test_list_kimi_sessions(tmp_path):
+    _write_kimi_fixture(tmp_path)
+    kimi = list_kimi_sessions(tmp_path / ".kimi-code" / "sessions")
+    assert len(kimi) == 1
+    assert kimi[0].source == "kimi"
+    assert kimi[0].turn_count == 3
+    assert kimi[0].mtime == 1786707200000 / 1000.0
+    assert list_kimi_sessions(tmp_path / "nope") == []
+
+    both = gather_foreign_sessions(
+        source="kimi", kimi_root=tmp_path / ".kimi-code" / "sessions"
+    )
+    assert len(both) == 1 and both[0].source == "kimi"
+
+
+def test_import_kimi_session(tmp_path, session_db):
+    f = _write_kimi_fixture(tmp_path)
+    session_id = import_foreign_session("@kimi", f, db=session_db)
+    row = session_db.get_session(session_id)
+    assert row is not None
+    assert row["source"] == "kimi-code"
+    assert row["cwd"] == "/home/user/kproj"
+    assert row["message_count"] == 3
+    title = session_db.get_session_title(session_id)
+    assert title.startswith("Imported from Kimi Code: ")
+    assert "Summarize the repo" in title
+    messages = session_db.get_messages(session_id)
+    _assert_alternating(messages)
+    origin = json.loads(row["origin_json"])
+    assert origin["imported_from"]["tool"] == "kimi-code"
+    assert origin["imported_from"]["foreign_session_id"] == "session_kimi-0001"
+    assert session_db.resolve_session_id(session_id) == session_id

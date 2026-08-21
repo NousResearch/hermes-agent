@@ -1,8 +1,8 @@
-"""Import sessions from foreign coding agents (Claude Code, Codex CLI).
+"""Import sessions from foreign coding agents (Claude Code, Codex CLI, Kimi Code).
 
-``hermes sessions import`` (and ``--resume @claude`` / ``--resume @codex``)
-let a user pull a conversation they started in another agent CLI into
-Hermes and continue it here.
+``hermes sessions import`` (and ``--resume @claude`` / ``--resume @codex`` /
+``--resume @kimi``) let a user pull a conversation they started in another
+agent CLI into Hermes and continue it here.
 
 Sources (read-only — foreign files are never modified):
 
@@ -21,6 +21,16 @@ Sources (read-only — foreign files are never modified):
   "output_text", "text": ...}]}`` plus ``custom_tool_call`` /
   ``function_call`` payloads for tool activity.  (Schema verified against
   real rollout files, Codex CLI 0.147.)
+
+* **Kimi Code** stores one directory per session under
+  ``~/.kimi-code/sessions/<wd>/<session>/`` with a ``state.json`` (cwd,
+  title, updatedAt) and ``agents/main/wire.jsonl``.  Wire records:
+  ``context.append_message`` carries typed user messages (``origin.kind``
+  ``user``; ``injection``/``task`` rows are not typed input), and assistant
+  output streams as ``context.append_loop_event`` records — ``content.part``
+  (``part.type`` ``text`` or ``think``) and ``tool.call`` / ``tool.result``.
+  ``turn.prompt`` duplicates every typed user message and is ignored.
+  (Schema verified against real wire files, protocol 1.5.)
 
 Conversion contract — imported history must satisfy the provider
 role-alternation invariant Hermes enforces everywhere else:
@@ -58,7 +68,7 @@ _TITLE_MAX = 60
 class ForeignSession:
     """A discoverable session in another tool's on-disk store."""
 
-    source: str  # "claude" | "codex"
+    source: str  # "claude" | "codex" | "kimi"
     path: Path
     mtime: float
     cwd: Optional[str] = None
@@ -68,7 +78,7 @@ class ForeignSession:
 
     @property
     def label(self) -> str:
-        name = {"claude": "Claude Code", "codex": "Codex CLI"}.get(
+        name = {"claude": "Claude Code", "codex": "Codex CLI", "kimi": "Kimi Code"}.get(
             self.source, self.source
         )
         title = (self.title_guess or "").strip() or self.path.stem
@@ -311,10 +321,117 @@ def _first_user_line(turns: List[Tuple[str, str]]) -> Optional[str]:
     return None
 
 
+# ── Kimi Code ────────────────────────────────────────────────────────────
+
+
+def _kimi_session_dir(wire_path: Path) -> Path:
+    # wire.jsonl lives at <session>/agents/main/wire.jsonl
+    return wire_path.parent.parent.parent
+
+
+def _kimi_state(session_dir: Path) -> Dict[str, Any]:
+    try:
+        state = json.loads((session_dir / "state.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def parse_kimi_session(path: Path) -> Dict[str, Any]:
+    """Parse one Kimi Code wire.jsonl into normalized turns + meta."""
+    path = Path(path)
+    turns: List[Tuple[str, str]] = []
+    for obj in _read_json_lines(path):
+        otype = obj.get("type")
+        if otype == "context.append_message":
+            message = obj.get("message")
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            origin = message.get("origin")
+            kind = origin.get("kind") if isinstance(origin, dict) else None
+            # "injection" rows are context wrappers and "task" rows are async
+            # delegation notices — neither is typed input. turn.prompt records
+            # duplicate every typed user message and are ignored entirely.
+            if kind in ("injection", "task"):
+                continue
+            text = _flatten_blocks(message.get("content"), source="kimi")
+            if not text or _is_wrapper_text(text):
+                continue
+            turns.append(("user", text))
+        elif otype == "context.append_loop_event":
+            event = obj.get("event")
+            if not isinstance(event, dict):
+                continue
+            etype = event.get("type")
+            if etype == "content.part":
+                part = event.get("part")
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text = part.get("text")
+                    if isinstance(text, str) and text.strip():
+                        turns.append(("assistant", text))
+                # "think" parts are chain-of-thought — never imported.
+            elif etype == "tool.call":
+                name = event.get("name") or "tool"
+                # Attach as assistant activity; merged into neighbors later.
+                turns.append(("assistant", f"[ran tool: {name}]"))
+            # tool.result / step.* records carry no conversational text.
+
+    state = _kimi_state(_kimi_session_dir(path))
+    cwd = state.get("cwd")
+    title = state.get("title")
+    sid = state.get("id")
+    title_text = title.strip() if isinstance(title, str) else ""
+    return {
+        "turns": _merge_turns(turns),
+        "cwd": cwd if isinstance(cwd, str) else None,
+        "title_guess": title_text or _first_user_line(turns),
+        "session_id": sid if isinstance(sid, str) else _kimi_session_dir(path).name,
+    }
+
+
+def list_kimi_sessions(root: Optional[Path] = None) -> List[ForeignSession]:
+    """Discover Kimi Code sessions under ``~/.kimi-code/sessions``."""
+    root = Path(root) if root else Path.home() / ".kimi-code" / "sessions"
+    results: List[ForeignSession] = []
+    if not root.is_dir():
+        return results
+    for wire in sorted(root.glob("*/*/agents/main/wire.jsonl")):
+        parsed = parse_kimi_session(wire)
+        if not parsed["turns"]:
+            continue
+        updated = _kimi_state(_kimi_session_dir(wire)).get("updatedAt")
+        try:
+            mtime = (
+                float(updated) / 1000.0
+                if isinstance(updated, (int, float))
+                else wire.stat().st_mtime
+            )
+        except OSError:
+            continue
+        results.append(
+            ForeignSession(
+                source="kimi",
+                path=wire,
+                mtime=mtime,
+                cwd=parsed["cwd"],
+                title_guess=parsed["title_guess"],
+                turn_count=len(parsed["turns"]),
+                session_id=parsed["session_id"],
+            )
+        )
+    results.sort(key=lambda s: s.mtime, reverse=True)
+    return results
+
+
 # ── Import ───────────────────────────────────────────────────────────────
 
-_SOURCE_LABELS = {"claude": "Claude Code", "codex": "Codex CLI"}
-_SOURCE_DB_NAMES = {"claude": "claude-code", "codex": "codex-cli"}
+_SOURCE_LABELS = {"claude": "Claude Code", "codex": "Codex CLI", "kimi": "Kimi Code"}
+_SOURCE_DB_NAMES = {"claude": "claude-code", "codex": "codex-cli", "kimi": "kimi-code"}
+_SOURCE_PARSERS = {
+    "claude": parse_claude_session,
+    "codex": parse_codex_session,
+    "kimi": parse_kimi_session,
+}
 
 
 def import_foreign_session(source: str, path, db=None) -> str:
@@ -331,11 +448,7 @@ def import_foreign_session(source: str, path, db=None) -> str:
     if not path.is_file():
         raise ValueError(f"Session file not found: {path}")
 
-    parsed = (
-        parse_claude_session(path)
-        if source == "claude"
-        else parse_codex_session(path)
-    )
+    parsed = _SOURCE_PARSERS[source](path)
     turns = parsed["turns"]
     if not turns:
         raise ValueError(
@@ -395,6 +508,7 @@ def gather_foreign_sessions(
     *,
     claude_root: Optional[Path] = None,
     codex_root: Optional[Path] = None,
+    kimi_root: Optional[Path] = None,
     limit: int = 25,
 ) -> List[ForeignSession]:
     """List foreign sessions across sources, newest first."""
@@ -403,6 +517,8 @@ def gather_foreign_sessions(
         sessions.extend(list_claude_sessions(claude_root))
     if source in (None, "codex"):
         sessions.extend(list_codex_sessions(codex_root))
+    if source in (None, "kimi"):
+        sessions.extend(list_kimi_sessions(kimi_root))
     sessions.sort(key=lambda s: s.mtime, reverse=True)
     return sessions[:limit] if limit else sessions
 
@@ -416,7 +532,7 @@ def pick_foreign_session(
 
     sessions = gather_foreign_sessions(source, limit=limit)
     if not sessions:
-        where = _SOURCE_LABELS.get(source or "", "Claude Code or Codex CLI")
+        where = _SOURCE_LABELS.get(source or "", "Claude Code, Codex CLI, or Kimi Code")
         print(f"No {where} sessions found on this machine.")
         return None
     print("Foreign sessions (newest first):")
@@ -429,7 +545,7 @@ def pick_foreign_session(
     if not sys.stdin.isatty():
         print(
             "Non-interactive terminal — pass the file path directly:\n"
-            "  hermes sessions import --from claude|codex <path>"
+            "  hermes sessions import --from claude|codex|kimi <path>"
         )
         return None
     try:
@@ -468,8 +584,10 @@ def run_sessions_import(args, db=None) -> Optional[str]:
                 source = "claude"
             if "/.codex/" in p or Path(p).name.startswith("rollout-"):
                 source = "codex"
+            if "/.kimi-code/" in p or Path(p).name == "wire.jsonl":
+                source = "kimi"
         if not source:
-            print("Cannot infer source from path; pass --from claude|codex.")
+            print("Cannot infer source from path; pass --from claude|codex|kimi.")
             return None
         chosen_path = Path(path)
     else:

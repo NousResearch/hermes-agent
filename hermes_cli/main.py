@@ -2981,12 +2981,14 @@ def cmd_chat(args):
     # Resolve --continue into --resume with the latest session or by name
     _resolve_continue_arg(args, use_tui=use_tui)
 
-    # --resume @claude / --resume @codex: import a foreign session (Claude
-    # Code / Codex CLI) and resume the newly created Hermes session.
+    # --resume @claude / --resume @codex / --resume @kimi: import a foreign
+    # session (Claude Code / Codex CLI / Kimi Code) and resume the newly
+    # created Hermes session.
     _resume_foreign = getattr(args, "resume", None)
     if isinstance(_resume_foreign, str) and _resume_foreign.strip().lower() in (
         "@claude",
         "@codex",
+        "@kimi",
     ):
         from hermes_cli.foreign_sessions import (
             import_foreign_session,
@@ -13773,19 +13775,20 @@ def main():
 
     sessions_import = sessions_subparsers.add_parser(
         "import",
-        help="Import a Claude Code or Codex CLI session into Hermes",
+        help="Import a Claude Code, Codex CLI, or Kimi Code session into Hermes",
         description=(
-            "Pull a conversation started in Claude Code (~/.claude/projects) "
-            "or Codex CLI (~/.codex/sessions) into the Hermes session store "
-            "so it can be resumed with 'hermes --resume <id>'. The foreign "
-            "files are only read, never modified."
+            "Pull a conversation started in Claude Code (~/.claude/projects), "
+            "Codex CLI (~/.codex/sessions), or Kimi Code (~/.kimi-code/sessions) "
+            "into the Hermes session store so it can be resumed with "
+            "'hermes --resume <id>'. The foreign files are only read, never "
+            "modified."
         ),
     )
     sessions_import.add_argument(
         "--from",
         dest="from_source",
-        choices=["claude", "codex"],
-        help="Which tool to import from (default: pick across both)",
+        choices=["claude", "codex", "kimi"],
+        help="Which tool to import from (default: pick across all three)",
     )
     sessions_import.add_argument(
         "path",

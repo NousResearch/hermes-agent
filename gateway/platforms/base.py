@@ -570,7 +570,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Set, Tuple, Union
 from enum import Enum
 
 from pathlib import Path as _Path
@@ -3054,6 +3054,12 @@ class BasePlatformAdapter(ABC):
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
+        # Session keys whose guard is installed but whose owner task was
+        # popped without a replacement taking over. Without this marker an
+        # orphaned guard is indistinguishable from a directly-installed test
+        # guard, and it would keep every later turn on that key stuck in the
+        # busy branch. See _note_orphaned_session_guard.
+        self._orphaned_session_guards: Set[str] = set()
         # Legacy busy_text_mode env var; when unset the runner syncs the
         # resolved value (driven by busy_input_mode) onto the adapter after
         # construction (gateway/run.py). Default to "interrupt" so a stray
@@ -5830,12 +5836,54 @@ class BasePlatformAdapter(ABC):
         install guards directly) — don't treat that as stale.  The on-entry
         self-heal only needs to handle the production split-brain case where
         an owner task was recorded, then exited without clearing its guard.
+
+        Orphaned guards (installed by ``handle_message`` but with their owner
+        task already popped) are handled separately via
+        ``_orphaned_session_guards`` — see ``_note_orphaned_session_guard``.
         """
         task = self._session_tasks.get(session_key)
         if task is None:
-            return False
+            return session_key in getattr(self, "_orphaned_session_guards", ())
         done = getattr(task, "done", None)
         return bool(done and done())
+
+    def _note_orphaned_session_guard(self, session_key: str) -> None:
+        """Mark a session guard as orphaned: installed, but with no owner task.
+
+        ``_cancel_session_processing`` pops ``_session_tasks[key]``
+        unconditionally, and with ``release_guard=False`` (the reset-like
+        command path) it deliberately leaves ``_active_sessions[key]``
+        installed so the command can finish atomically. Ownership is expected
+        to pass to a replacement task. When that replacement never spawns, the
+        guard survives with no owner and nothing left to release it.
+
+        ``_session_task_is_stale`` cannot infer this from a missing
+        ``_session_tasks`` entry alone: tests (and non-``handle_message``
+        paths) legitimately install guards with no owner task, and treating
+        those as stale breaks the documented "don't treat that as stale"
+        contract. So we record the orphan explicitly at the only place that
+        actually creates one.
+
+        Without this, the Level-1 guard in ``handle_message`` — which keys
+        purely off ``session_key in self._active_sessions`` — routes every
+        later message on that key to the busy handler with
+        ``running_agent = None``. Under ``busy_input_mode: interrupt`` that
+        emits a "⚡ Interrupting current task" ack for a brand-new turn, with
+        no status detail because no agent is running.
+
+        Complements the #48300 release-then-conditional-delete ordering, which
+        keeps a *done* task's entry alive so its guard is still recognizable as
+        stale. This closes the remaining hole where the entry is already gone.
+        """
+        if not hasattr(self, "_orphaned_session_guards"):
+            self._orphaned_session_guards = set()
+        self._orphaned_session_guards.add(session_key)
+
+    def _clear_orphaned_session_guard(self, session_key: str) -> None:
+        """Drop the orphan marker once the session has a real owner again."""
+        marks = getattr(self, "_orphaned_session_guards", None)
+        if marks:
+            marks.discard(session_key)
 
     def _heal_stale_session_lock(self, session_key: str) -> bool:
         """Clear a stale session lock if the owner task is already gone.
@@ -5861,6 +5909,7 @@ class BasePlatformAdapter(ABC):
         self._active_sessions.pop(session_key, None)
         self._pending_messages.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
+        self._clear_orphaned_session_guard(session_key)
         self._discard_text_debounce(session_key)
         return True
 
@@ -5883,6 +5932,9 @@ class BasePlatformAdapter(ABC):
 
         task = asyncio.create_task(self._process_message_background(event, session_key))
         self._session_tasks[session_key] = task
+        # A real owner now holds this session; any earlier orphan marker is
+        # obsolete and must not make the healer free a live guard.
+        self._clear_orphaned_session_guard(session_key)
         try:
             self._background_tasks.add(task)
         except TypeError:
@@ -5946,6 +5998,15 @@ class BasePlatformAdapter(ABC):
             self._discard_text_debounce(session_key)
         if release_guard:
             self._release_session_guard(session_key)
+        elif session_key in self._active_sessions:
+            # Guard intentionally kept installed (reset-like command path) but
+            # its owner task was just popped above. Ownership is supposed to
+            # pass to a replacement task; if that never happens nothing can
+            # ever release this guard and the session is wedged in the busy
+            # branch. Mark it so the on-entry self-heal can recognize the
+            # orphan. _start_session_processing clears the mark when a real
+            # owner takes over.
+            self._note_orphaned_session_guard(session_key)
 
     async def _drain_pending_after_session_command(
         self,
@@ -6855,6 +6916,7 @@ class BasePlatformAdapter(ABC):
                 # Hand ownership of the session to the drain task so
                 # stale-lock detection keeps working while it runs.
                 self._session_tasks[session_key] = drain_task
+                self._clear_orphaned_session_guard(session_key)
                 try:
                     self._background_tasks.add(drain_task)
                     drain_task.add_done_callback(self._background_tasks.discard)
@@ -6988,6 +7050,7 @@ class BasePlatformAdapter(ABC):
                     # Hand ownership of the session to the drain task so stale-lock
                     # detection keeps working while it runs.
                     self._session_tasks[session_key] = drain_task
+                    self._clear_orphaned_session_guard(session_key)
                     try:
                         self._background_tasks.add(drain_task)
                         drain_task.add_done_callback(self._background_tasks.discard)
@@ -7086,6 +7149,7 @@ class BasePlatformAdapter(ABC):
         self._background_tasks.clear()
         self._expected_cancelled_tasks.clear()
         self._session_tasks.clear()
+        self._orphaned_session_guards.clear()
         # Flush pending messages to disk before clearing (#72680).
         try:
             from gateway.shutdown_flush import flush_pending_to_file

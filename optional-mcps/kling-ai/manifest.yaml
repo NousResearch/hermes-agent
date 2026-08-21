@@ -1,0 +1,31 @@
+manifest_version: 1
+name: Plugin-Hermes-kling-ai
+description: Create and monitor Kling AI image and video generations.
+source: https://kling.ai/
+
+transport:
+  type: http
+  url: "https://kling.ai/mcp"
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - kling
+    - kling ai
+    - klingai
+    - 可灵
+    - 可灵ai
+  hosts:
+    - klingai.com
+    - kling.ai
+
+post_install: |
+  Complete browser OAuth when Hermes connects for the first time.
+  Install the companion Skill with:
+    hermes skills install official/creative/kling-ai
+
+  The catalog schema does not currently carry Kling's optional integration
+  header or serial-call hint. The standalone Kling Hermes package documents
+  those additional settings when integration telemetry is required.

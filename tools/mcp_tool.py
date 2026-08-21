@@ -5827,7 +5827,25 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    call_kwargs: Dict[str, Any] = {"arguments": args}
+                    session_user_id = ""
+                    try:
+                        from gateway.session_context import get_session_env
+                        session_user_id = get_session_env("HERMES_SESSION_USER_ID", "")
+                    except Exception:
+                        pass
+                    if session_user_id:
+                        meta_key = getattr(server, "session_user_id_meta_key", None) or "nousresearch.hermes/user_id"
+                        meta_dict = {meta_key: session_user_id}
+                        try:
+                            sig = inspect.signature(server.session.call_tool)
+                            if "meta" in sig.parameters:
+                                call_kwargs["meta"] = meta_dict
+                            elif "_meta" in sig.parameters:
+                                call_kwargs["_meta"] = meta_dict
+                        except (ValueError, TypeError):
+                            pass
+                    result = await server.session.call_tool(tool_name, **call_kwargs)
                 finally:
                     server._pending_call_context = None
             # The RPC round-trip completed — the session is demonstrably

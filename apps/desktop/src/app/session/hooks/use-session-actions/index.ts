@@ -1325,9 +1325,12 @@ export function useSessionActions({
         // backend's own inflight projection is already inside
         // `preferredWithRuntimeChanges`, so this merge only adds the locally
         // recorded structure that the backend's text-only snapshot cannot carry.
-        const inFlightRecovery = recoverInFlightTurnJournal(storedSessionId, preferredWithRuntimeChanges, {
-          keepPending: resumedRunning
-        })
+        const inFlightRecovery = recoverInFlightTurnJournal(
+          storedSessionId,
+          normalizeProfileKey(sessionProfile),
+          preferredWithRuntimeChanges,
+          { keepPending: resumedRunning }
+        )
 
         recoveredInFlightTail = inFlightRecovery.applied
 
@@ -1447,6 +1450,7 @@ export function useSessionActions({
           // only carrier of a crashed turn's progress on this path.
           const fallbackRecovery = recoverInFlightTurnJournal(
             storedSessionId,
+            normalizeProfileKey(sessionProfile),
             reconcileAuthoritativeMessages(fallback.messages, previousMessages)
           )
 

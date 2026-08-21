@@ -1,4 +1,5 @@
 import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/chat-messages'
+import { normalizeProfileKey } from '@/store/profile'
 
 /**
  * Crash-survivable in-flight turn journal.
@@ -17,13 +18,14 @@ import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/c
  */
 
 const LEGACY_STORAGE_KEY = 'hermes.desktop.inflightTurnJournal.v1'
-const STORAGE_PREFIX = 'hermes.desktop.inflightTurnJournal.v2:'
-const LEGACY_MIGRATION_KEY = 'hermes.desktop.inflightTurnJournal.v2.migrated'
+const LEGACY_STORAGE_PREFIX = 'hermes.desktop.inflightTurnJournal.v2:'
+const STORAGE_PREFIX = 'hermes.desktop.inflightTurnJournal.v3:'
+const LEGACY_MIGRATION_KEY = 'hermes.desktop.inflightTurnJournal.v3.migrated'
 const DISCARDED_SNAPSHOT_RAW = '0'
 const STORE_VERSION = 1
 const MAX_SESSION_STORE_CHARS = 4 * 1024 * 1024
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
-// Keep the worst-case v2 namespace below a conservative localStorage budget
+// Keep the worst-case v3 namespace below a conservative localStorage budget
 // while retaining the 24 newest session slots for ordinary small snapshots.
 const MAX_ENTRY_CHARS = 160 * 1024
 const MAX_ENTRIES = Math.min(24, Math.floor(MAX_SESSION_STORE_CHARS / MAX_ENTRY_CHARS))
@@ -40,12 +42,13 @@ const MAX_USER_ATTACHMENT_REF_CHARS = 64 * 1024
 const PERSIST_THROTTLE_MS = 400
 
 // A renderer can accumulate one entry per session over its lifetime. Sweep the
-// bounded v2 namespace once on first journal access; never scan it on the
+// bounded v3 namespace once on first journal access; never scan it on the
 // 400ms streaming write path.
 let sessionStoreSwept = false
 
 export interface InFlightTurnSnapshot {
   messages: ChatMessage[]
+  profile: string
   streamId: null | string
   turnStartedAt: null | number
   updatedAt: number
@@ -55,6 +58,7 @@ export interface JournalableSessionState {
   awaitingResponse: boolean
   busy: boolean
   messages: ChatMessage[]
+  profile: null | string
   storedSessionId: null | string
   streamId: null | string
   turnStartedAt: null | number
@@ -83,11 +87,23 @@ function storage(): Storage | null {
   }
 }
 
-function sessionStorageKey(storedSessionId: string): null | string {
-  try {
-    const encoded = encodeURIComponent(storedSessionId)
+interface JournalOwner {
+  key: string
+  profile: string
+}
 
-    return encoded.length > 0 && encoded.length <= MAX_SESSION_KEY_CHARS ? `${STORAGE_PREFIX}${encoded}` : null
+function journalOwner(storedSessionId: string, profile: null | string | undefined): JournalOwner | null {
+  if (profile === null || profile === undefined) {
+    return null
+  }
+
+  try {
+    const normalizedProfile = normalizeProfileKey(profile)
+    const encoded = `${encodeURIComponent(normalizedProfile)}:${encodeURIComponent(storedSessionId)}`
+
+    return storedSessionId && encoded.length <= MAX_SESSION_KEY_CHARS
+      ? { key: `${STORAGE_PREFIX}${encoded}`, profile: normalizedProfile }
+      : null
   } catch {
     return null
   }
@@ -158,6 +174,8 @@ function isSnapshot(value: unknown): value is InFlightTurnSnapshot {
           (Array.isArray(message.attachmentRefs) && message.attachmentRefs.every(ref => typeof ref === 'string'))) &&
         (message.rowId === undefined || (typeof message.rowId === 'number' && Number.isFinite(message.rowId)))
     ) &&
+    typeof snapshot.profile === 'string' &&
+    snapshot.profile === normalizeProfileKey(snapshot.profile) &&
     (snapshot.streamId === null || typeof snapshot.streamId === 'string') &&
     (snapshot.turnStartedAt === null || typeof snapshot.turnStartedAt === 'number') &&
     typeof snapshot.updatedAt === 'number' &&
@@ -165,7 +183,7 @@ function isSnapshot(value: unknown): value is InFlightTurnSnapshot {
   )
 }
 
-function parseSnapshot(raw: string): InFlightTurnSnapshot | null {
+function parseSnapshot(raw: string, expectedProfile?: string): InFlightTurnSnapshot | null {
   if (raw.length > MAX_ENTRY_CHARS) {
     return null
   }
@@ -173,7 +191,7 @@ function parseSnapshot(raw: string): InFlightTurnSnapshot | null {
   try {
     const parsed = JSON.parse(raw)
 
-    return isSnapshot(parsed) ? parsed : null
+    return isSnapshot(parsed) && (expectedProfile === undefined || parsed.profile === expectedProfile) ? parsed : null
   } catch {
     return null
   }
@@ -381,108 +399,135 @@ function migrateLegacyStore(store: Storage): void {
     return
   }
 
-  const raw = readRaw(store, LEGACY_STORAGE_KEY)
-
-  if (raw === null) {
-    return
-  }
-
-  // Claim the migration before touching the aggregate. If storage is failing,
-  // skip legacy recovery rather than retrying an expensive parse on every read.
+  // Claim the migration before touching legacy state. If storage is failing,
+  // skip recovery rather than retrying expensive parsing on every read.
   if (!writeRaw(store, LEGACY_MIGRATION_KEY, '1')) {
     return
   }
 
-  // Release the multi-megabyte aggregate before allocating per-session v2
-  // entries. The captured string remains available for this one migration.
-  removeRaw(store, LEGACY_STORAGE_KEY)
-
-  if (!raw) {
-    return
-  }
-
-  if (raw.length > MAX_LEGACY_STORE_CHARS) {
-    return
-  }
+  const candidates: Array<[string, InFlightTurnSnapshot]> = []
+  const legacySessionKeys: string[] = []
 
   try {
-    const parsed = JSON.parse(raw) as Partial<JournalStore>
+    for (let index = 0; index < store.length; index += 1) {
+      const key = store.key(index)
 
-    if (
-      parsed.version !== STORE_VERSION ||
-      !parsed.entries ||
-      typeof parsed.entries !== 'object' ||
-      Array.isArray(parsed.entries)
-    ) {
-      return
+      if (key?.startsWith(LEGACY_STORAGE_PREFIX)) {
+        legacySessionKeys.push(key)
+      }
+    }
+  } catch {
+    // Enumeration failed: the aggregate path below can still be discarded.
+  }
+
+  for (const key of legacySessionKeys) {
+    const raw = readRaw(store, key)
+    removeRaw(store, key)
+
+    if (!raw || raw === DISCARDED_SNAPSHOT_RAW) {
+      continue
     }
 
-    const existingV2Keys = new Set<string>()
+    try {
+      const storedSessionId = decodeURIComponent(key.slice(LEGACY_STORAGE_PREFIX.length))
+      const snapshot = parseSnapshot(raw)
 
+      // Bare-id v2 keys are ambiguous across profiles. Only an embedded,
+      // canonical profile proves their owner strongly enough to migrate.
+      if (storedSessionId && snapshot && !isExpired(snapshot)) {
+        candidates.push([storedSessionId, snapshot])
+      }
+    } catch {
+      // Malformed legacy keys/snapshots fail closed and stay discarded.
+    }
+  }
+
+  const aggregateRaw = readRaw(store, LEGACY_STORAGE_KEY)
+  removeRaw(store, LEGACY_STORAGE_KEY)
+
+  if (aggregateRaw && aggregateRaw.length <= MAX_LEGACY_STORE_CHARS) {
+    try {
+      const parsed = JSON.parse(aggregateRaw) as Partial<JournalStore>
+
+      if (
+        parsed.version === STORE_VERSION &&
+        parsed.entries &&
+        typeof parsed.entries === 'object' &&
+        !Array.isArray(parsed.entries)
+      ) {
+        for (const [storedSessionId, candidate] of Object.entries(parsed.entries)) {
+          // The v1 aggregate was keyed by bare stored id too. As above, accept
+          // only records carrying their own canonical profile provenance.
+          if (isSnapshot(candidate) && !isExpired(candidate)) {
+            candidates.push([storedSessionId, candidate])
+          }
+        }
+      }
+    } catch {
+      // Malformed aggregate data is discarded.
+    }
+  }
+
+  const existingKeys = new Set<string>()
+
+  try {
     for (let index = 0; index < store.length; index += 1) {
       const key = store.key(index)
 
       if (key?.startsWith(STORAGE_PREFIX)) {
-        existingV2Keys.add(key)
-      }
-    }
-
-    const entries = Object.entries(parsed.entries)
-      .filter((entry): entry is [string, InFlightTurnSnapshot] => isSnapshot(entry[1]) && !isExpired(entry[1]))
-      .sort((a, b) => b[1].updatedAt - a[1].updatedAt)
-      .slice(0, Math.max(0, MAX_ENTRIES - existingV2Keys.size))
-
-    for (const [storedSessionId, snapshot] of entries) {
-      const key = sessionStorageKey(storedSessionId)
-      const messages = boundedMessages(snapshot.messages)
-      const value = messages ? serializeSnapshot({ ...snapshot, messages }) : null
-
-      // A v2 snapshot may have been written before the one-shot migration ran.
-      // Never replace newer per-session state with its stale v1 predecessor.
-      if (key && value && readRaw(store, key) === null) {
-        if (writeRaw(store, key, value)) {
-          existingV2Keys.add(key)
-        }
+        existingKeys.add(key)
       }
     }
   } catch {
-    // Malformed legacy data is discarded below.
+    return
+  }
+
+  for (const [storedSessionId, snapshot] of candidates
+    .sort((left, right) => right[1].updatedAt - left[1].updatedAt)
+    .slice(0, Math.max(0, MAX_ENTRIES - existingKeys.size))) {
+    const owner = journalOwner(storedSessionId, snapshot.profile)
+    const messages = boundedMessages(snapshot.messages)
+    const value = messages ? serializeSnapshot({ ...snapshot, messages }) : null
+
+    if (owner && value && readRaw(store, owner.key) === null && writeRaw(store, owner.key, value)) {
+      existingKeys.add(owner.key)
+    }
   }
 }
 
 function discardSnapshot(store: Storage, key: string): void {
-  // Migrate first so an existing v2 key suppresses its stale v1 predecessor,
-  // then remove the current session. This keeps every discard path from
-  // resurrecting legacy state on a later read.
+  // Migrate first, then remove the current profile-qualified session. This
+  // keeps every discard path from resurrecting owner-proven legacy state on a
+  // later read while ambiguous bare-id state remains discarded.
   migrateLegacyStore(store)
   removeRaw(store, key)
 }
 
-function readSnapshot(storedSessionId: string): InFlightTurnSnapshot | null {
+function readSnapshot(storedSessionId: string, profile: null | string): InFlightTurnSnapshot | null {
   const store = storage()
-  const key = sessionStorageKey(storedSessionId)
+  const owner = journalOwner(storedSessionId, profile)
 
-  if (!store || !key) {
+  if (!store || !owner) {
     return null
   }
 
   sweepSessionStore(store)
 
-  let raw = readRaw(store, key)
+  let raw = readRaw(store, owner.key)
 
   if (!raw) {
     migrateLegacyStore(store)
-    raw = readRaw(store, key)
+    raw = readRaw(store, owner.key)
   }
 
   if (!raw) {
     return null
   }
 
-  const snapshot = parseSnapshot(raw)
+  const snapshot = parseSnapshot(raw, owner.profile)
 
   if (!snapshot || isExpired(snapshot)) {
-    discardSnapshot(store, key)
+    discardSnapshot(store, owner.key)
 
     return null
   }
@@ -490,17 +535,17 @@ function readSnapshot(storedSessionId: string): InFlightTurnSnapshot | null {
   return snapshot
 }
 
-function removeSnapshot(storedSessionId: string): void {
+function removeSnapshot(storedSessionId: string, profile: null | string): void {
   const store = storage()
-  const key = sessionStorageKey(storedSessionId)
+  const owner = journalOwner(storedSessionId, profile)
 
-  if (store && key) {
+  if (store && owner) {
     sweepSessionStore(store)
 
     // Settling a session before the one-shot migration must clear its legacy
     // entry too; otherwise a later read can migrate and resurrect stale state.
     // This aggregate parse is terminal-transition work, never a stream write.
-    discardSnapshot(store, key)
+    discardSnapshot(store, owner.key)
   }
 }
 
@@ -849,7 +894,7 @@ export function resetInFlightTurnJournalStateForTests(): void {
   sessionStoreSwept = false
 }
 
-function writeSnapshot(storedSessionId: string, state: JournalableSessionState): void {
+function writeSnapshot(owner: JournalOwner, state: JournalableSessionState): void {
   const tail = recoverableTail(state.messages, state.streamId)
 
   if (tail.length === 0) {
@@ -857,9 +902,8 @@ function writeSnapshot(storedSessionId: string, state: JournalableSessionState):
   }
 
   const store = storage()
-  const key = sessionStorageKey(storedSessionId)
 
-  if (!store || !key) {
+  if (!store) {
     return
   }
 
@@ -869,15 +913,15 @@ function writeSnapshot(storedSessionId: string, state: JournalableSessionState):
 
   if (!messages) {
     // Keep the timer write path free of aggregate migration. This tiny invalid
-    // v2 value suppresses the stale v1 predecessor until read/settle performs
-    // the one-shot migration and removes it.
-    tombstoneUnlessRecoverable(store, key)
+    // v3 value suppresses stale owner-scoped state until read/settle removes it.
+    tombstoneUnlessRecoverable(store, owner.key)
 
     return
   }
 
   const raw = serializeSnapshot({
     messages,
+    profile: owner.profile,
     streamId: state.streamId,
     turnStartedAt: state.turnStartedAt,
     updatedAt: Date.now()
@@ -885,17 +929,15 @@ function writeSnapshot(storedSessionId: string, state: JournalableSessionState):
 
   if (!raw) {
     // Preserve an older bounded snapshot if the newest assistant row alone is
-    // too large. A tombstone is only needed when there is no recoverable v2
-    // value, so stale v1 state cannot be resurrected on a later read.
-    tombstoneUnlessRecoverable(store, key)
+    // too large. A tombstone is only needed when there is no recoverable value.
+    tombstoneUnlessRecoverable(store, owner.key)
 
     return
   }
 
-  if (!writeRaw(store, key, raw)) {
-    // A quota failure must not leave an older, misleading snapshot behind, or
-    // let the stale v1 predecessor be resurrected on a later read.
-    tombstoneUnlessRecoverable(store, key)
+  if (!writeRaw(store, owner.key, raw)) {
+    // A quota failure must not leave an older, misleading snapshot behind.
+    tombstoneUnlessRecoverable(store, owner.key)
   }
 }
 
@@ -924,49 +966,60 @@ export function persistInFlightTurnState(state: JournalableSessionState): void {
     return
   }
 
+  const owner = journalOwner(storedSessionId, state.profile)
+
+  // Unknown provenance must never fall back to the mutable active profile.
+  if (!owner) {
+    return
+  }
+
   if (!state.busy && !state.awaitingResponse && !state.streamId) {
-    clearInFlightTurnJournal(storedSessionId)
+    clearInFlightTurnJournal(storedSessionId, owner.profile)
 
     return
   }
 
-  persistLatest.set(storedSessionId, state)
+  persistLatest.set(owner.key, state)
 
-  if (persistTimers.has(storedSessionId)) {
+  if (persistTimers.has(owner.key)) {
     return
   }
 
   persistTimers.set(
-    storedSessionId,
+    owner.key,
     setTimeout(() => {
-      persistTimers.delete(storedSessionId)
-      const latest = persistLatest.get(storedSessionId)
+      persistTimers.delete(owner.key)
+      const latest = persistLatest.get(owner.key)
 
-      persistLatest.delete(storedSessionId)
+      persistLatest.delete(owner.key)
 
       if (latest) {
-        writeSnapshot(storedSessionId, latest)
+        writeSnapshot(owner, latest)
       }
     }, PERSIST_THROTTLE_MS)
   )
 }
 
-export function readInFlightTurnJournal(storedSessionId: null | string): InFlightTurnSnapshot | null {
+export function readInFlightTurnJournal(
+  storedSessionId: null | string,
+  profile: null | string
+): InFlightTurnSnapshot | null {
   if (!storedSessionId) {
     return null
   }
 
-  return readSnapshot(storedSessionId)
+  return readSnapshot(storedSessionId, profile)
 }
 
 /** Fold a journaled in-flight tail back onto a restored transcript. A no-op
  *  returns `baseMessages` by reference so callers keep their fast-path ref. */
 export function recoverInFlightTurnJournal(
   storedSessionId: null | string,
+  profile: null | string,
   baseMessages: ChatMessage[],
   options: { keepPending?: boolean } = {}
 ): InFlightRecoveryResult {
-  const snapshot = readInFlightTurnJournal(storedSessionId)
+  const snapshot = readInFlightTurnJournal(storedSessionId, profile)
 
   if (!snapshot) {
     return {
@@ -981,7 +1034,7 @@ export function recoverInFlightTurnJournal(
   const recovered = mergeInFlightMessages(baseMessages, snapshot.messages, options)
 
   if (recovered.caughtUp) {
-    clearInFlightTurnJournal(storedSessionId)
+    clearInFlightTurnJournal(storedSessionId, profile)
   }
 
   return {
@@ -995,19 +1048,25 @@ export function recoverInFlightTurnJournal(
   }
 }
 
-export function clearInFlightTurnJournal(storedSessionId: null | string): void {
+export function clearInFlightTurnJournal(storedSessionId: null | string, profile: null | string): void {
   if (!storedSessionId) {
     return
   }
 
-  const timer = persistTimers.get(storedSessionId)
+  const owner = journalOwner(storedSessionId, profile)
+
+  if (!owner) {
+    return
+  }
+
+  const timer = persistTimers.get(owner.key)
 
   if (timer) {
     clearTimeout(timer)
-    persistTimers.delete(storedSessionId)
+    persistTimers.delete(owner.key)
   }
 
-  persistLatest.delete(storedSessionId)
+  persistLatest.delete(owner.key)
 
-  removeSnapshot(storedSessionId)
+  removeSnapshot(storedSessionId, owner.profile)
 }

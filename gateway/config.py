@@ -2793,8 +2793,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 logger.warning(
                     "Relay connector is configured via GATEWAY_RELAY_URL; "
                     "disabling directly-connected platform '%s' even though "
-                    "it is explicitly enabled in config.yaml. All messaging "
-                    "goes through the connector on this deployment.",
+                    "it is explicitly enabled in this profile's configuration. "
+                    "All messaging goes through the connector on this "
+                    "deployment. Set GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true "
+                    "to keep direct platforms alongside the relay.",
                     platform.value,
                 )
             else:

@@ -279,6 +279,26 @@ class TestCopilotNormalization:
         # Zen serves the standard Muse Spark variant on /v1/responses too.
         assert opencode_model_api_mode("opencode-zen", "muse-spark-1.2") == "codex_responses"
         assert opencode_model_api_mode("opencode-zen", "opencode-zen/muse-spark-1.2") == "codex_responses"
+        # Grok models route via /v1/responses on both Zen and Go
+        # (Zen/Go endpoint tables).
+        assert opencode_model_api_mode("opencode-go", "grok-4.5") == "codex_responses"
+        assert opencode_model_api_mode("opencode-go", "opencode-go/grok-4.5") == "codex_responses"
+        assert opencode_model_api_mode("opencode-zen", "grok-4.6") == "codex_responses"
+        assert opencode_model_api_mode("opencode-zen", "grok-4.5") == "codex_responses"
+        assert opencode_model_api_mode("opencode-zen", "grok-build-0.1") == "codex_responses"
+        # Ox Alpha (x-preview-f-free) on Zen is OpenAI-compatible
+        # chat/completions per the Zen endpoint table.
+        assert opencode_model_api_mode("opencode-zen", "x-preview-f-free") == "chat_completions"
+        assert opencode_model_api_mode("opencode-zen", "opencode-zen/x-preview-f-free") == "chat_completions"
+        # Other free-tier Zen models are chat/completions too.
+        assert opencode_model_api_mode("opencode-zen", "hy3-free") == "chat_completions"
+        assert opencode_model_api_mode("opencode-zen", "nemotron-3.5-lightning-free") == "chat_completions"
+        # Hy3 on Go is chat/completions (Go endpoint table).
+        assert opencode_model_api_mode("opencode-go", "hy3") == "chat_completions"
+        # New Go models keep their family routing: GLM chat/completions,
+        # Qwen anthropic_messages.
+        assert opencode_model_api_mode("opencode-go", "glm-5.3") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "qwen3.8-max") == "anthropic_messages"
 
 
 class TestNormalizeOpencodeBaseUrl:

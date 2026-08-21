@@ -36,6 +36,16 @@ logger = logging.getLogger(__name__)
 # instantly bypass all approval checks — a prompt-injection escalation path.
 _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 
+# Last observed effective approval mode per config path (issue #84547).
+# Keyed by config path so isolated temp-home environments don't collide.
+# Explicit changes are audited on the write path (set_config_value / TUI
+# config.set); this observer catches SILENT transitions — config.yaml edited
+# by hand, or a re-serialization that drops the approvals.mode key — so a
+# deliberately restrictive mode can never drift to a more permissive one
+# without a WARNING and an audit-log line.
+_LAST_OBSERVED_APPROVAL_MODE: dict = {}
+_approval_mode_observer_lock = threading.Lock()
+
 # Per-thread/per-task gateway session identity.
 # Gateway runs agent turns concurrently in executor threads, so reading a
 # process-global env var for session identity is racy. Keep env fallback for
@@ -2549,6 +2559,11 @@ def _reset_denials(session_key: str) -> None:
     """Clear the session's consecutive-denial tally (an approval happened)."""
     with _lock:
         _denial_tally.pop(session_key, None)
+        # An approval is fresh human consent: clear every denied-intent
+        # record for the session (all turn buckets) so the same operation
+        # can be proposed again through the normal approval flow (#84552).
+        for key in [k for k in _denied_intents if k[0] == session_key]:
+            _denied_intents.pop(key, None)
 
 
 def _denial_breaker_addendum(session_key: str) -> str:
@@ -2576,6 +2591,93 @@ def _denial_breaker_addendum(session_key: str) -> str:
         "operation. Report the blocked operation to the user and either "
         "ask them to run it manually or use /approve."
     )
+
+
+# =========================================================================
+# Denied-intent enforcement (issue #84552)
+# =========================================================================
+# A denial is a runtime constraint, not just a message: when a command (or
+# execute_code script) is definitively denied — by the user, by a timeout
+# fail-closed, or by the smart-approval guardian — its fingerprint is
+# recorded per (session, turn). Any later attempt to run the SAME command
+# within that scope is rejected before any other check, so the denial
+# cannot be bypassed by retrying or re-wrapping it: the tool never
+# executes and no re-prompt is emitted. A human approval resets the
+# records (fresh consent re-opens the normal approval flow); a new turn id
+# scopes the denial to that turn. When no turn id is bound the scope is
+# the whole session — strictly fail-closed.
+_denied_intents: dict[tuple[str, str], set[str]] = {}
+# Same eviction discipline as _denial_tally: bounded, oldest-first.
+_DENIED_INTENTS_MAX_SESSIONS = 256
+
+
+def _command_fingerprint(command: str) -> str:
+    """Stable 'same command' fingerprint for denied-intent matching.
+
+    Collapses runs of any whitespace (including newlines in multi-line
+    payloads) to single spaces, so cosmetic re-wrapping does not evade a
+    recorded denial. Token content and order are preserved; returns '' for
+    empty input so callers can skip recording.
+    """
+    if not command:
+        return ""
+    return " ".join(command.split())
+
+
+def _denied_intent_key(session_key: str) -> tuple[str, str]:
+    """(session, turn) scope for denied-intent records.
+
+    Turn-scoped when a turn id is bound (fail-closed per turn); otherwise
+    session-scoped, which is strictly stronger.
+    """
+    return (session_key, _approval_turn_id.get())
+
+
+def _record_denied_intent(command: str) -> None:
+    """Record a definitively denied command for the current (session, turn)."""
+    fingerprint = _command_fingerprint(command)
+    if not fingerprint:
+        return
+    key = _denied_intent_key(get_current_session_key())
+    with _lock:
+        bucket = _denied_intents.setdefault(key, set())
+        bucket.add(fingerprint)
+        while len(_denied_intents) > _DENIED_INTENTS_MAX_SESSIONS:
+            _denied_intents.pop(next(iter(_denied_intents)))
+
+
+def _check_denied_intent(command: str) -> bool:
+    """True when *command* matches a previously denied intent in scope.
+
+    Matching is on the normalized fingerprint (the same command, including
+    whitespace variants). Semantic equivalence of different command strings
+    is intentionally out of scope here; the consecutive-denial circuit
+    breaker text covers repeated variants.
+    """
+    fingerprint = _command_fingerprint(command)
+    if not fingerprint:
+        return False
+    key = _denied_intent_key(get_current_session_key())
+    with _lock:
+        bucket = _denied_intents.get(key)
+        return bucket is not None and fingerprint in bucket
+
+
+def _denied_intent_block_result() -> dict:
+    """Runtime block for a previously denied intent (no re-prompt)."""
+    return {
+        "approved": False,
+        "denied_intent": True,
+        "outcome": "denied",
+        "user_consent": False,
+        "message": (
+            "BLOCKED: this command was already denied earlier in this "
+            "session and that denial is enforced at the runtime level. It "
+            "cannot be retried, rephrased, or re-wrapped. Stop the current "
+            "workflow and wait for the user to explicitly approve this "
+            "operation before proposing it again."
+        ),
+    }
 
 # =========================================================================
 # Blocking gateway approval (mirrors CLI's synchronous input() flow)
@@ -3186,8 +3288,11 @@ def _get_approval_config() -> dict:
 
 def _get_approval_mode() -> str:
     """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
-    mode = _get_approval_config().get("mode", "manual")
-    return _normalize_approval_mode(mode)
+    appr_cfg = _get_approval_config()
+    mode = appr_cfg.get("mode", "manual")
+    normalized = _normalize_approval_mode(mode)
+    return normalized
+
 
 
 def is_approval_bypass_active_for_session(session_key: str) -> bool:
@@ -4353,6 +4458,13 @@ def check_all_command_guards(command: str, env_type: str,
     such a session is no longer isolated, so it goes through the normal flow
     instead of the container fast-path.
     """
+    # Denied-intent enforcement (issue #84552): a command denied earlier in
+    # this (session, turn) is rejected here, before any other check or
+    # bypass (containers, yolo, mode=off), so the denial is a runtime
+    # constraint the agent cannot bypass by retrying or re-wrapping it.
+    if _check_denied_intent(command):
+        return _denied_intent_block_result()
+
     # Skip isolated container backends for both checks. Docker stops skipping
     # once host paths are bind-mounted into the sandbox.
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
@@ -4650,6 +4762,7 @@ def check_all_command_guards(command: str, env_type: str,
                     "description": combined_desc_for_llm}
         elif verdict == "deny" and not (is_cli or is_gateway or is_ask):
             _record_denial(session_key)
+            _record_denied_intent(command)
             breaker_addendum = _denial_breaker_addendum(session_key)
             return {
                 "approved": False,
@@ -4791,6 +4904,7 @@ def check_all_command_guards(command: str, env_type: str,
                 session_key, notify_cb, approval_data, surface="gateway"
             )
             if decision.get("notify_failed"):
+                _record_denied_intent(command)
                 return {
                     "approved": False,
                     "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
@@ -4822,6 +4936,7 @@ def check_all_command_guards(command: str, env_type: str,
                 if outcome == "denied" and deny_reason:
                     reason_addendum = f' Reason given by the user: "{deny_reason}".'
                 breaker_addendum = _denial_breaker_addendum(session_key)
+                _record_denied_intent(command)
                 return {
                     "approved": False,
                     "message": (
@@ -4929,6 +5044,7 @@ def check_all_command_guards(command: str, env_type: str,
 
     if choice == "timeout":
         breaker_addendum = _denial_breaker_addendum(session_key)
+        _record_denied_intent(command)
         return {
             "approved": False,
             "message": (
@@ -4948,6 +5064,7 @@ def check_all_command_guards(command: str, env_type: str,
 
     if choice == "deny":
         breaker_addendum = _denial_breaker_addendum(session_key)
+        _record_denied_intent(command)
         return {
             "approved": False,
             "message": (
@@ -5008,6 +5125,12 @@ def check_execute_code_guard(code: str, env_type: str,
         "mutate files without passing through terminal command approval; "
         "approval is one-shot for this run."
     )
+
+    # Denied-intent enforcement (issue #84552): a script denied earlier in
+    # this (session, turn) is rejected here, before any other check or
+    # bypass, so the denial is a runtime constraint, not just advisory text.
+    if _check_denied_intent(f"code:{code}"):
+        return _denied_intent_block_result()
 
     # Isolated backends already sandbox the child — matches the container skip
     # in check_all_command_guards / check_dangerous_command. Docker stops
@@ -5119,6 +5242,7 @@ def check_execute_code_guard(code: str, env_type: str,
                     "smart_approved": True, "description": description}
         if verdict == "deny" and not (is_gateway or is_ask):
             _record_denial(session_key)
+            _record_denied_intent(f"code:{code}")
             breaker_addendum = _denial_breaker_addendum(session_key)
             return {
                 "approved": False,
@@ -5341,6 +5465,7 @@ def check_execute_code_guard(code: str, env_type: str,
         session_key, notify_cb, approval_data, surface="gateway"
     )
     if decision.get("notify_failed"):
+        _record_denied_intent(f"code:{code}")
         return {
             "approved": False,
             "message": ("BLOCKED: Failed to send execute_code approval request "
@@ -5362,6 +5487,7 @@ def check_execute_code_guard(code: str, env_type: str,
         if resolved and choice == "deny" and deny_reason:
             reason_addendum = f' Reason given by the user: "{deny_reason}".'
         breaker_addendum = _denial_breaker_addendum(session_key)
+        _record_denied_intent(f"code:{code}")
         return {
             "approved": False,
             "message": (

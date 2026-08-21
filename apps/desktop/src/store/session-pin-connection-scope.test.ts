@@ -2,7 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import type { HermesConnection } from '@/global'
 import { connectionScopeSuffix } from '@/lib/connection-scoped'
-import { readKey } from '@/lib/storage'
+import { readKey, storedStringArray, writeKey } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
 const patch = vi.fn<(id: string, pinned: boolean, profile?: null | string) => Promise<{ ok: boolean }>>(() =>
@@ -106,5 +106,58 @@ describe('desktop pin list is connection-scoped, not profile-scoped', () => {
     expect($pinnedSessionIds.get()).not.toContain('s1')
     expect(patch).not.toHaveBeenCalledWith('s1', true, expect.anything())
     expect(patch).not.toHaveBeenCalledWith('s1', true, 'k9')
+  })
+})
+
+describe('upgrade from per-profile pin keys is server-authoritative', () => {
+  const gateway = 'https://gw.example:8443'
+  const gatewayKey = () => `${PIN_KEY}${connectionScopeSuffix(remote('default', gateway), false)}`
+  const legacyKey = (profile: string) => `${PIN_KEY}${connectionScopeSuffix(remote(profile, gateway))}`
+
+  const seedStalePerProfilePins = () => {
+    // First launch after the gateway-wide key: old profile fragments still
+    // sit in localStorage, the new key is absent, and the in-memory set is
+    // empty. Those fragments caused #90021 — they must not be unioned in.
+    window.localStorage.clear()
+    writeKey(legacyKey('default'), JSON.stringify(['s1']))
+    writeKey(legacyKey('k9'), JSON.stringify(['s1']))
+    setConnection(remote('default', gateway))
+    $sessions.set([])
+    resetSessionPinMirror()
+    patch.mockClear()
+  }
+
+  it('does not resurrect a stale per-profile pin when the server says unpinned', async () => {
+    seedStalePerProfilePins()
+    expect(readKey(gatewayKey())).toBeNull()
+
+    $sessions.set([row('s1', { pinned: false, profile: 'k9' })])
+    await flush()
+
+    setConnection(remote('k9', gateway))
+    await flush()
+    setConnection(remote('default', gateway))
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('s1')
+    expect(storedStringArray(gatewayKey())).not.toContain('s1')
+    expect(patch).not.toHaveBeenCalledWith('s1', true, expect.anything())
+    expect(patch).not.toHaveBeenCalledWith('s1', true, 'k9')
+    expect(readKey(legacyKey('default'))).toBe(JSON.stringify(['s1']))
+    expect(readKey(legacyKey('k9'))).toBe(JSON.stringify(['s1']))
+  })
+
+  it('repopulates the gateway-wide cache from a durable server pin without echoing PATCH', async () => {
+    seedStalePerProfilePins()
+    expect(readKey(gatewayKey())).toBeNull()
+
+    $sessions.set([row('s1', { pinned: true, profile: 'k9' })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toContain('s1')
+    expect(storedStringArray(gatewayKey())).toContain('s1')
+    expect(patch).not.toHaveBeenCalledWith('s1', true, expect.anything())
+    expect(readKey(legacyKey('default'))).toBe(JSON.stringify(['s1']))
+    expect(readKey(legacyKey('k9'))).toBe(JSON.stringify(['s1']))
   })
 })

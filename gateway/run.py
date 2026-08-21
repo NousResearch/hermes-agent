@@ -29995,6 +29995,7 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
     PASTE_SWEEP_EVERY = 60   # ticks — once per hour
     CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
     AUTO_ARCHIVE_EVERY = 60  # ticks — poll hourly (state_meta gate owns the real cadence)
+    AUTO_BACKUP_EVERY = 60   # ticks — poll hourly (inner gate handles the real cadence)
     MEMORY_TRIM_EVERY = 1    # shared helper cooldown bounds actual allocator work
     MISFIRE_SWEEP_EVERY = 5  # ticks — every 5 minutes (grace window gates real work)
 
@@ -30145,6 +30146,20 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
                     type(exc).__name__,
                     exc,
                 )
+
+        # Scheduled auto-backup (#12238) — piggy-back on the cron ticker so
+        # long-running gateways get periodic snapshots without a user-created
+        # cron job. maybe_create_auto_backup() is internally gated by the
+        # backup config block (off by default; cadence from backup.schedule),
+        # so AUTO_BACKUP_EVERY is just the poll rate.
+        if tick_count % AUTO_BACKUP_EVERY == 0:
+            try:
+                from hermes_cli.backup import maybe_create_auto_backup
+                created = maybe_create_auto_backup()
+                if created:
+                    logger.info("Auto-backup created: %s", created)
+            except Exception as e:
+                logger.debug("Auto-backup tick error: %s", e)
 
         stop_event.wait(timeout=interval)
     logger.info("Gateway housekeeping stopped")

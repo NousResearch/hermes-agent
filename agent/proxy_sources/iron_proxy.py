@@ -999,16 +999,20 @@ def _default_http_listen(tunnel_port: int) -> List[str]:
     daemon process, so this returns a one-element list and the choice of
     host matters:
 
-    * **Linux:** bind the docker bridge gateway (``172.17.0.1`` by
+    * **Linux:** bind the container bridge gateway (``172.17.0.1`` by
       default).  Sandboxes reach the proxy via
       ``host.docker.internal:host-gateway``, which Docker resolves to
       exactly this bridge gateway IP on Linux — a loopback-only bind is
       unreachable from inside containers there.  The bridge IP is still
       host-local (it's an address on the host's ``docker0`` interface),
-      so host-side tooling and the status probe can reach it too.  When
-      no docker bridge is detected (docker not installed / not started),
-      fall back to loopback — there are no sandboxes to serve in that
-      state, and the operator gets a warning.
+      so host-side tooling and the status probe can reach it too.
+      ``podman0`` / ``cni-podman0`` are probed after ``docker0`` so
+      podman hosts without Docker installed work.  When no bridge is
+      detected at all — notably rootless podman with the **pasta** or
+      **slirp4netns** backend, which creates none — fall back to
+      loopback and warn; the operator should set ``proxy.bind_host``,
+      because loopback is not reachable from those sandboxes and the
+      container will fail closed.
     * **macOS / Windows Docker Desktop:** ``host.docker.internal``
       resolves via VPNkit to the host, so a loopback bind is reachable
       from containers and is the least-exposed choice.
@@ -1022,67 +1026,76 @@ def _default_http_listen(tunnel_port: int) -> List[str]:
     """
 
     if platform.system() == "Linux":
+        configured = _configured_bind_host()
+        if configured:
+            return [f"{configured}:{tunnel_port}"]
         bridge_ip = _detect_docker_bridge_ip()
         if bridge_ip and bridge_ip != "127.0.0.1":
             return [f"{bridge_ip}:{tunnel_port}"]
         logger.warning(
-            "No docker bridge (docker0) detected — binding iron-proxy to "
-            "loopback only.  Docker sandboxes will NOT be able to reach "
-            "the proxy until it is restarted with docker running."
+            "No container bridge (docker0 / podman0 / cni-podman0) detected "
+            "— binding iron-proxy to loopback only.  Sandboxes will NOT be "
+            "able to reach the proxy.  On rootless podman with the pasta or "
+            "slirp4netns network backend no bridge exists at all: set "
+            "proxy.bind_host to an address the sandbox can reach (and pass a "
+            "matching --add-host to the container) or the sandbox will fail "
+            "closed."
         )
     return [f"127.0.0.1:{tunnel_port}"]
 
 
-def _detect_docker_bridge_ip() -> Optional[str]:
-    """Return the docker0 bridge IPv4, if present, else None.
+def _configured_bind_host() -> Optional[str]:
+    """Return a validated ``proxy.bind_host`` override, or None.
 
-    Best-effort: we try ``ip -4 addr show docker0`` first.  Anything that
-    fails, doesn't parse as a strict IPv4, or parses as an address we
-    must NOT bind to (unspecified, loopback, multicast, reserved, public)
-    returns None — callers handle that as "no bridge bind".
-
-    SECURITY: a hostile ``ip`` shim earlier on the operator's PATH used
-    to be able to inject ``0.0.0.0`` here and re-open INADDR_ANY binding
-    that the rest of the bind-policy work explicitly closed.  We
-    validate via :mod:`ipaddress` and reject anything that isn't
-    plausibly a docker bridge IP (private + non-special).
+    Operators on container runtimes we can't auto-detect (rootless podman
+    with pasta, custom bridge names, remote daemons) need a way to pin the
+    sandbox-facing bind address.  The same bind policy applies as for
+    auto-detection: private, non-special addresses only, never
+    ``0.0.0.0`` — an INADDR_ANY bind would expose the proxy, and with a
+    leaked sandbox token the operator's API quota, to the local network.
     """
 
-    candidate: Optional[str] = None
     try:
-        res = subprocess.run(  # noqa: S603 — ip is a system binary
-            ["ip", "-4", "-o", "addr", "show", "docker0"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2,
+        from hermes_cli.config import load_config
+    except ImportError:
+        return None
+
+    try:
+        cfg = load_config()
+    except Exception:  # noqa: BLE001 — a broken config must not wedge startup
+        return None
+
+    raw = ((cfg.get("proxy") or {}).get("bind_host") or "").strip()
+    if not raw:
+        return None
+
+    validated = _validate_bind_ip(raw)
+    if validated is None:
+        logger.warning(
+            "Ignoring proxy.bind_host=%r — not a bindable private IPv4 "
+            "address.  Falling back to auto-detection.", raw,
         )
-        if res.returncode == 0:
-            for line in res.stdout.splitlines():
-                parts = line.split()
-                # Expected: "<n>: docker0  inet 172.17.0.1/16 ..."
-                for i, tok in enumerate(parts):
-                    if tok == "inet" and i + 1 < len(parts):
-                        candidate = parts[i + 1].split("/")[0]
-                        break
-                if candidate is not None:
-                    break
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    return validated
 
-    if not candidate:
-        return None
 
-    # Stdlib validation: rejects garbage strings AND special-purpose
-    # addresses that must not be used as a bind target.
+def _validate_bind_ip(candidate: str) -> Optional[str]:
+    """Return ``candidate`` if it is a safe bind target, else None.
+
+    Rejects, via :mod:`ipaddress` rather than string matching:
+
+    * ``0.0.0.0`` / INADDR_ANY  (``is_unspecified``)
+    * ``127.0.0.0/8``           (``is_loopback`` — callers handle loopback
+      explicitly; it is never a *bridge* address)
+    * ``224.0.0.0/4``           (``is_multicast``)
+    * ``240.0.0.0/4``           (``is_reserved``)
+    * ``169.254.0.0/16``        (``is_link_local`` — IMDS range)
+    * global / public IPs       (``is_global``)
+    """
+
     try:
         addr = ipaddress.IPv4Address(candidate)
     except (ipaddress.AddressValueError, ValueError):
         return None
-    # Reject:
-    # - 0.0.0.0 / INADDR_ANY  (is_unspecified)
-    # - 127.0.0.0/8           (is_loopback — already in deny list)
-    # - 224.0.0.0/4           (is_multicast)
-    # - 240.0.0.0/4           (is_reserved)
-    # - 169.254.0.0/16        (is_link_local — IMDS range, never docker0)
-    # - global / public IPs   (is_global — docker0 must be RFC1918)
     if (
         addr.is_unspecified
         or addr.is_loopback
@@ -1091,13 +1104,71 @@ def _detect_docker_bridge_ip() -> Optional[str]:
         or addr.is_link_local
         or addr.is_global
     ):
-        logger.warning(
-            "Refusing suspicious docker bridge IP %s reported by `ip`; "
-            "skipping bridge bind.", candidate,
-        )
         return None
-
     return str(addr)
+
+
+# Bridge interfaces to probe, in priority order.  ``docker0`` first for
+# backwards compatibility, then the bridges podman creates under its
+# various network backends (netavark names it ``podman0``; the older CNI
+# plugin used ``cni-podman0``).
+_BRIDGE_INTERFACES: Tuple[str, ...] = ("docker0", "podman0", "cni-podman0")
+
+
+def _detect_docker_bridge_ip() -> Optional[str]:
+    """Return a container-bridge gateway IPv4, if present, else None.
+
+    Probes each interface in :data:`_BRIDGE_INTERFACES` in order and
+    returns the first bindable address.  Anything that fails, doesn't
+    parse as a strict IPv4, or parses as an address we must NOT bind to
+    (unspecified, loopback, multicast, reserved, link-local, public) is
+    skipped — callers handle an all-None result as "no bridge bind".
+
+    SECURITY: a hostile ``ip`` shim earlier on the operator's PATH used
+    to be able to inject ``0.0.0.0`` here and re-open INADDR_ANY binding
+    that the rest of the bind-policy work explicitly closed.  We
+    validate via :func:`_validate_bind_ip` and reject anything that
+    isn't plausibly a bridge IP (private + non-special).
+    """
+
+    for iface in _BRIDGE_INTERFACES:
+        candidate: Optional[str] = None
+        try:
+            res = subprocess.run(  # noqa: S603 — ip is a system binary
+                ["ip", "-4", "-o", "addr", "show", iface],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+
+        if res.returncode != 0:
+            continue
+
+        for line in res.stdout.splitlines():
+            parts = line.split()
+            # Expected: "<n>: docker0  inet 172.17.0.1/16 ..."
+            for i, tok in enumerate(parts):
+                if tok == "inet" and i + 1 < len(parts):
+                    candidate = parts[i + 1].split("/")[0]
+                    break
+            if candidate is not None:
+                break
+
+        if not candidate:
+            continue
+
+        validated = _validate_bind_ip(candidate)
+        if validated is not None:
+            if iface != "docker0":
+                logger.debug("Using %s bridge gateway %s for proxy bind", iface, validated)
+            return validated
+
+        logger.warning(
+            "Refusing suspicious bridge IP %s reported by `ip` for %s; "
+            "skipping.", candidate, iface,
+        )
+
+    return None
 
 
 def build_proxy_config(

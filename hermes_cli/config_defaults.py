@@ -3561,6 +3561,24 @@ DEFAULT_CONFIG = {
         # cover OpenRouter, OpenAI, Anthropic, Google, xAI, Mistral, Groq,
         # Together, DeepSeek, Nous).  Wildcards (`*.foo.com`) are supported.
         "extra_allowed_hosts": [],
+        # Sandbox-facing bind address override (Linux only).  Empty = probe
+        # docker0 / podman0 / cni-podman0 and bind the first bridge gateway
+        # found, else loopback.
+        #
+        # Set this when auto-detection can't find a reachable address:
+        # rootless podman with the pasta or slirp4netns backend creates NO
+        # host bridge, so there is nothing to detect and a loopback bind is
+        # unreachable from inside the container.  Point it at an address the
+        # sandbox can route to and add a matching
+        # `--add-host host.docker.internal:<ip>` to
+        # `terminal.docker_extra_args`.
+        #
+        # Must be a private, non-special IPv4 (RFC1918 or CGNAT).
+        # `0.0.0.0`, loopback, link-local, multicast, reserved and public
+        # addresses are rejected — an INADDR_ANY bind would expose the proxy
+        # (and, with a leaked sandbox token, the operator's API quota) to the
+        # local network.
+        "bind_host": "",
     },
 
     # Hermes Desktop (Electron app) launch options. These only affect

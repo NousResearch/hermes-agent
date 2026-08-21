@@ -315,10 +315,13 @@ const GROUP_CHAT_SYNC_MESSAGES = 16
 const GROUP_CHAT_SYNC_TEXT_CHARS = 1200
 const GROUP_CHAT_SYNC_IMAGE_CHARS = 24000
 let groupChatSyncTimer = null
-let groupChatSyncRetryTimer = null
-let groupChatSyncPending = null
-let groupChatSyncInFlight = false
-let groupChatSyncRetryCount = 0
+// Fan-out scheduler state, keyed by gateway connectionId ('' = active/local).
+// Every connected gateway carries the full projection so a room survives any
+// single gateway being removed and surfaces on every remote backend.
+const groupChatSyncPendingByConnection = new Map()
+const groupChatSyncInFlightConnections = new Set()
+const groupChatSyncRetryTimers = new Map()
+const groupChatSyncRetryCounts = new Map()
 let groupChatSyncDisposed = false
 
 /** Conservative byte count for the gateway's ensure_ascii JSON encoding.
@@ -344,6 +347,49 @@ function groupChatGatewayJsonSize(value) {
   return bytes
 }
 
+/** Durable room identity for the sync projection. Rooms minted on current
+ *  builds carry an immutable roomId; the projection keys rooms by
+ *  `id:<roomId>` so rename is a display-name edit, not a distributed
+ *  delete+create, and disband tombstones follow the room itself. Legacy
+ *  rooms (no roomId) fall back to `name:<name>` keys with the older
+ *  revision-gated tombstone semantics. */
+function groupChatRoomKey(name, room) {
+  return typeof room?.roomId === 'string' && room.roomId
+    ? `id:${room.roomId}`
+    : `name:${String(name)}`
+}
+
+/** Lift any historical projection shape (v1 wall-clock, v2 name-keyed) to
+ *  the v3 room-key shape so one merge path serves mixed-version fleets. */
+function normalizeGroupChatSyncSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return { version: 3, rooms: {}, deleted: {} }
+  }
+  if (Number(snapshot.version || 0) >= 3) {
+    return {
+      version: 3,
+      updatedAt: Number(snapshot.updatedAt || 0),
+      rooms: snapshot.rooms && typeof snapshot.rooms === 'object' ? snapshot.rooms : {},
+      deleted: snapshot.deleted && typeof snapshot.deleted === 'object' ? snapshot.deleted : {}
+    }
+  }
+  const rooms = {}
+  for (const [name, room] of Object.entries(snapshot.rooms || {})) {
+    if (!room || !Array.isArray(room.log)) {
+      continue
+    }
+    rooms[`name:${name}`] = { ...room, name }
+  }
+  const deleted = {}
+  for (const [name, at] of Object.entries(snapshot.deleted || {})) {
+    // v1 tombstones carried wall-clock ms, not gateway revisions — they must
+    // not outrank real revisions (same rule groupChatSyncDeletedRevision
+    // applied before v3).
+    deleted[`name:${name}`] = Number(snapshot.version || 0) >= 2 ? Math.max(0, Number(at || 0)) : 0
+  }
+  return { version: 3, updatedAt: Number(snapshot.updatedAt || 0), rooms, deleted }
+}
+
 /** Compact, display-oriented copy of Desktop's room log for gateway clients.
  *  The live orchestration state stays in plugin storage; this bounded mirror
  *  rides the default profile's ui_meta so mobile can show the same messages.
@@ -365,7 +411,7 @@ function groupChatSyncSnapshot(all = $groupChats.get(), deleted = {}) {
       .slice(0, 64)
   )
   const envelope = {
-    version: 2,
+    version: 3,
     updatedAt: Date.now(),
     rooms,
     ...(Object.keys(boundedDeleted).length ? { deleted: boundedDeleted } : {})
@@ -384,6 +430,8 @@ function groupChatSyncSnapshot(all = $groupChats.get(), deleted = {}) {
       ...(entry?.thread ? { thread: String(entry.thread).slice(0, 128) } : {})
     }))
     const compact = {
+      name: String(name).slice(0, 64),
+      ...(typeof room?.roomId === 'string' && room.roomId ? { roomId: String(room.roomId).slice(0, 128) } : {}),
       log,
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
       members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
@@ -399,7 +447,8 @@ function groupChatSyncSnapshot(all = $groupChats.get(), deleted = {}) {
         : {})
     }
 
-    rooms[name] = compact
+    const key = groupChatRoomKey(name, room)
+    rooms[key] = compact
     while (compact.log.length > 1 && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
       compact.log.shift()
     }
@@ -407,7 +456,7 @@ function groupChatSyncSnapshot(all = $groupChats.get(), deleted = {}) {
       delete compact.image
     }
     if (groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
-      delete rooms[name]
+      delete rooms[key]
     }
   }
 
@@ -450,35 +499,69 @@ function groupChatSyncDeletedRevision(source, value) {
 }
 
 /** Merge two bounded projections without treating an absent room/message as
- *  deletion. Gateway revisions order room identity/membership/picture and
- *  tombstones; stable message ids make concurrent log union idempotent. */
+ *  deletion. Rooms are identified by durable room keys (id:<roomId> when the
+ *  room carries one), so a rename is a same-key field update — never a
+ *  distributed delete+create — and a disband tombstone follows the room
+ *  itself. Gateway revisions order identity/membership/picture and
+ *  tombstones; stable message ids make concurrent log union idempotent.
+ *  `changedRooms`/`deletedRooms` accept display names or room keys. */
 function mergeGroupChatSyncSnapshots(
   remote,
   local,
   { changedRooms = [], deletedRooms = [], writeRevision = 0 } = {}
 ) {
-  const rooms = {}
-  const deleted = {}
-  const changed = new Set(changedRooms)
-
-  for (const source of [remote, local]) {
-    for (const [name, at] of Object.entries(source?.deleted || {})) {
-      deleted[name] = Math.max(Number(deleted[name] || 0), groupChatSyncDeletedRevision(source, at))
+  const remoteNorm = normalizeGroupChatSyncSnapshot(remote)
+  const localNorm = normalizeGroupChatSyncSnapshot(local)
+  const keysFor = (label, norm) => {
+    const keys = new Set()
+    for (const [key, room] of Object.entries(norm.rooms || {})) {
+      if (key === label || String(room?.name || '') === label || key === `name:${label}`) {
+        keys.add(key)
+      }
+    }
+    if (String(label).startsWith('id:') || String(label).startsWith('name:')) {
+      keys.add(label)
+    } else if (!keys.size) {
+      keys.add(`name:${label}`)
+    }
+    return keys
+  }
+  const changed = new Set()
+  for (const label of changedRooms) {
+    for (const key of keysFor(label, localNorm)) {
+      changed.add(key)
     }
   }
-  for (const name of deletedRooms) {
-    deleted[name] = Math.max(Number(deleted[name] || 0), Number(writeRevision || 0))
+  const deleted = {}
+  for (const source of [remoteNorm, localNorm]) {
+    for (const [key, at] of Object.entries(source.deleted || {})) {
+      deleted[key] = Math.max(Number(deleted[key] || 0), Math.max(0, Number(at || 0)))
+    }
+  }
+  for (const label of deletedRooms) {
+    for (const key of new Set([...keysFor(label, remoteNorm), ...keysFor(label, localNorm)])) {
+      // Rename passes changedRooms:[newName] + deletedRooms:[oldName]. For an
+      // id-keyed room both labels resolve to the SAME durable key (the remote
+      // copy still carries the old display name), and id tombstones are
+      // final — so tombstoning here would kill the room being renamed. A key
+      // that is being written this cycle is a rename target, not a disband.
+      if (changed.has(key)) {
+        continue
+      }
+      deleted[key] = Math.max(Number(deleted[key] || 0), Number(writeRevision || 0))
+    }
   }
 
-  const roomNames = new Set([...Object.keys(remote?.rooms || {}), ...Object.keys(local?.rooms || {})])
-  for (const name of roomNames) {
-    const remoteRoom = remote?.rooms?.[name]
-    const localRoom = local?.rooms?.[name]
+  const rooms = {}
+  const roomKeys = new Set([...Object.keys(remoteNorm.rooms || {}), ...Object.keys(localNorm.rooms || {})])
+  for (const key of roomKeys) {
+    const remoteRoom = remoteNorm.rooms?.[key]
+    const localRoom = localNorm.rooms?.[key]
     if ((!remoteRoom || !Array.isArray(remoteRoom.log)) && (!localRoom || !Array.isArray(localRoom.log))) {
       continue
     }
     const remoteRevision = Math.max(0, Number(remoteRoom?.revision || 0))
-    const localRevision = changed.has(name)
+    const localRevision = changed.has(key)
       ? Math.max(0, Number(writeRevision || 0))
       : Math.max(0, Number(localRoom?.revision || 0))
     const entries = new Map()
@@ -486,15 +569,21 @@ function mergeGroupChatSyncSnapshots(
       entries.set(groupChatSyncEntryKey(entry), entry)
     }
 
+    // Identity fields (display name, membership, picture) follow the higher
+    // revision; a tie unions members and prefers the local writer's fields.
+    let identity
     let members
     let image
     if (localRevision > remoteRevision) {
+      identity = localRoom
       members = [...(localRoom?.members || [])]
       image = localRoom?.image
     } else if (remoteRevision > localRevision) {
+      identity = remoteRoom
       members = [...(remoteRoom?.members || [])]
       image = remoteRoom?.image
     } else {
+      identity = localRoom || remoteRoom
       const byId = new Map()
       for (const member of [...(remoteRoom?.members || []), ...(localRoom?.members || [])]) {
         byId.set(groupChatSyncMemberKey(member), member)
@@ -502,7 +591,11 @@ function mergeGroupChatSyncSnapshots(
       members = [...byId.values()]
       image = Object.prototype.hasOwnProperty.call(localRoom || {}, 'image') ? localRoom.image : remoteRoom?.image
     }
-    rooms[name] = {
+    rooms[key] = {
+      ...(identity?.name ? { name: identity.name } : {}),
+      ...(identity?.roomId || (key.startsWith('id:') ? key.slice(3) : '')
+        ? { roomId: identity?.roomId || key.slice(3) }
+        : {}),
       log: [...entries.values()].sort((left, right) => {
         const byTime = Number(left?.at || 0) - Number(right?.at || 0)
         return byTime || groupChatSyncEntryKey(left).localeCompare(groupChatSyncEntryKey(right))
@@ -513,15 +606,54 @@ function mergeGroupChatSyncSnapshots(
     }
   }
 
-  for (const [name, deletedRevision] of Object.entries(deleted)) {
-    if (Number(deletedRevision || 0) >= Number(rooms[name]?.revision || 0)) {
-      delete rooms[name]
+  for (const [key, deletedRevision] of Object.entries(deleted)) {
+    if (key.startsWith('id:')) {
+      // Tombstones for id-keyed rooms are FINAL: the roomId is minted once
+      // and never reused (same-name recreation mints a fresh id), so a
+      // resurrect-by-revision race is structurally impossible. Keep the
+      // tombstone even when a lagging gateway's copy carries a higher
+      // revision — that copy is the resurrection this exists to prevent.
+      delete rooms[key]
+    } else if (Number(deletedRevision || 0) >= Number(rooms[key]?.revision || 0)) {
+      delete rooms[key]
     } else {
-      delete deleted[name]
+      delete deleted[key]
     }
   }
 
-  return groupChatSyncSnapshot(rooms, deleted)
+  return groupChatSyncEnvelope(rooms, deleted)
+}
+
+/** Assemble + size-bound a v3 envelope from already-compacted rooms. */
+function groupChatSyncEnvelope(rooms, deleted = {}) {
+  const boundedDeleted = Object.fromEntries(
+    Object.entries(deleted)
+      .sort(([, left], [, right]) => Number(right || 0) - Number(left || 0))
+      .slice(0, 64)
+  )
+  const envelope = {
+    version: 3,
+    updatedAt: Date.now(),
+    rooms,
+    ...(Object.keys(boundedDeleted).length ? { deleted: boundedDeleted } : {})
+  }
+  const ranked = Object.entries(rooms).sort(([, left], [, right]) => {
+    const leftAt = Number(left?.log?.[left.log.length - 1]?.at || 0)
+    const rightAt = Number(right?.log?.[right.log.length - 1]?.at || 0)
+    return leftAt - rightAt
+  })
+  for (const [key, room] of ranked) {
+    while ((room.log?.length || 0) > 1 && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
+      room.log.shift()
+    }
+    if (room.image && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
+      delete room.image
+    }
+    if (groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
+      delete rooms[key]
+    }
+  }
+  return envelope
 }
 
 /** Merge the gateway's bounded display projection into Desktop's richer room
@@ -533,19 +665,44 @@ function mergeRemoteGroupChatSnapshotIntoRooms(
   current = $groupChats.get(),
   { preserveRooms = [], deletedRooms = [] } = {}
 ) {
+  const remoteNorm = normalizeGroupChatSyncSnapshot(remote)
   const rooms = { ...(current || {}) }
   const preserved = new Set(preserveRooms)
   const locallyDeleted = new Set(deletedRooms)
 
-  for (const [name, projected] of Object.entries(remote?.rooms || {})) {
+  // Local rooms indexed by durable identity so an id-keyed projection room
+  // finds its local twin even when the display name changed remotely.
+  const localByRoomId = new Map()
+  for (const [name, room] of Object.entries(rooms)) {
+    if (typeof room?.roomId === 'string' && room.roomId) {
+      localByRoomId.set(room.roomId, name)
+    }
+  }
+
+  for (const [key, projected] of Object.entries(remoteNorm.rooms || {})) {
     if (!projected || !Array.isArray(projected.log)) {
       continue
     }
-    if (locallyDeleted.has(name)) {
-      delete rooms[name]
+    const projectedRoomId = projected.roomId || (key.startsWith('id:') ? key.slice(3) : null)
+    const localName = projectedRoomId && localByRoomId.has(projectedRoomId)
+      ? localByRoomId.get(projectedRoomId)
+      : (projected.name && rooms[projected.name] ? projected.name : null)
+    const displayName = String(projected.name || localName || (key.startsWith('name:') ? key.slice(5) : key))
+    if (locallyDeleted.has(displayName) || (localName && locallyDeleted.has(localName))) {
+      // Mid-rename guard: the remote copy may still be under the OLD display
+      // name while the local record was already re-keyed (same roomId, new
+      // name). That old name sits in deletedRooms, but the local record is
+      // the rename in flight — deleting it here would kill the renamed room.
+      if (localName && localName !== displayName && !locallyDeleted.has(localName)) {
+        continue
+      }
+      delete rooms[displayName]
+      if (localName) {
+        delete rooms[localName]
+      }
       continue
     }
-    const existing = rooms[name] || {}
+    const existing = (localName ? rooms[localName] : rooms[displayName]) || {}
     const remoteRevision = Math.max(0, Number(projected.revision || 0))
     const localRevision = Math.max(0, Number(existing.syncRevision || 0))
     const entries = new Map(
@@ -556,16 +713,17 @@ function mergeRemoteGroupChatSnapshotIntoRooms(
     )
 
     for (const entry of projected.log) {
-      const key = groupChatSyncEntryKey(entry)
+      const entryKey = groupChatSyncEntryKey(entry)
       // The projection is COMPACT (truncated text, no images). When the same
       // entry exists locally, the local rich copy is authoritative — merging
       // the compact twin over it would strip attachments and retrigger
       // watermark deltas for members that already saw it (phantom rounds).
-      if (!entries.has(key)) {
-        entries.set(key, entry)
+      if (!entries.has(entryKey)) {
+        entries.set(entryKey, entry)
       }
     }
-    if (!preserved.has(name)) {
+    const isPreserved = preserved.has(displayName) || (localName && preserved.has(localName))
+    if (!isPreserved) {
       if (remoteRevision > localRevision) {
         members.clear()
       }
@@ -582,31 +740,50 @@ function mergeRemoteGroupChatSnapshotIntoRooms(
     )
     const bounded = trimGroupChatLog(log, existing.watermarks || {})
 
-    rooms[name] = {
+    // A remote rename with a higher revision moves the local record to the
+    // new display name; local views keyed by the old name follow on the
+    // next repaint (roster derives from $groupChats keys).
+    const targetName = !isPreserved && remoteRevision > localRevision ? displayName : (localName || displayName)
+    if (localName && targetName !== localName) {
+      delete rooms[localName]
+    }
+
+    rooms[targetName] = {
       ...existing,
       log: bounded.log,
       watermarks: bounded.watermarks,
       sessions: existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {},
       stranded: existing.stranded && typeof existing.stranded === 'object' ? existing.stranded : {},
       members: [...members.values()],
-      image: preserved.has(name)
+      ...(projectedRoomId || existing.roomId ? { roomId: existing.roomId || projectedRoomId } : {}),
+      image: isPreserved
         ? existing.image || null
         : remoteRevision >= localRevision && Object.prototype.hasOwnProperty.call(projected, 'image')
           ? projected.image || null
           : existing.image || null,
-      syncRevision: preserved.has(name) ? localRevision : Math.max(remoteRevision, localRevision),
+      syncRevision: isPreserved ? localRevision : Math.max(remoteRevision, localRevision),
       epoch: Number(existing.epoch || 0),
       running: Boolean(existing.running)
     }
   }
 
-  for (const [name, deletedAt] of Object.entries(remote?.deleted || {})) {
-    if (preserved.has(name)) {
+  for (const [key, deletedAt] of Object.entries(remoteNorm.deleted || {})) {
+    const deletedRoomId = key.startsWith('id:') ? key.slice(3) : null
+    const targetName = deletedRoomId && localByRoomId.has(deletedRoomId)
+      ? localByRoomId.get(deletedRoomId)
+      : key.startsWith('name:') ? key.slice(5) : null
+    if (!targetName || preserved.has(targetName)) {
       continue
     }
-    const deletedRevision = groupChatSyncDeletedRevision(remote, deletedAt)
-    if (deletedRevision >= Number(rooms[name]?.syncRevision || 0)) {
-      delete rooms[name]
+    if (deletedRoomId) {
+      // Id tombstones are final — the id is never reused, so there is no
+      // legitimate higher-revision recreation to protect.
+      delete rooms[targetName]
+    } else {
+      const deletedRevision = Math.max(0, Number(deletedAt || 0))
+      if (deletedRevision >= Number(rooms[targetName]?.syncRevision || 0)) {
+        delete rooms[targetName]
+      }
     }
   }
   for (const name of locallyDeleted) {
@@ -692,17 +869,19 @@ async function pullGroupChatServerState(connectionId = groupChatSyncConnectionId
   if (!remote) {
     return false
   }
+  const pending = groupChatSyncPendingByConnection.get(String(connectionId || ''))
   const merged = mergeRemoteGroupChatSnapshotIntoRooms(remote, $groupChats.get(), {
-    preserveRooms: groupChatSyncPending?.changedRooms || [],
-    deletedRooms: groupChatSyncPending?.deletedRooms || []
+    preserveRooms: pending?.changedRooms || [],
+    deletedRooms: pending?.deletedRooms || []
   })
   $groupChats.set(merged)
   await persistGroupChatRooms(merged)
   return true
 }
 
-function groupChatSyncBackoff() {
-  return Math.min(30000, 1000 * 2 ** Math.min(groupChatSyncRetryCount, 5))
+function groupChatSyncBackoff(connectionId) {
+  const count = Number(groupChatSyncRetryCounts.get(connectionId) || 0)
+  return Math.min(30000, 1000 * 2 ** Math.min(count, 5))
 }
 
 function mergeGroupChatSyncJobs(existing, incoming) {
@@ -724,13 +903,47 @@ function groupChatSyncPayloadEqual(left, right) {
   )
 }
 
-async function flushGroupChatServerSync() {
-  if (groupChatSyncDisposed || groupChatSyncInFlight || !groupChatSyncPending) {
+/** Every default-profile gateway route this Desktop can currently reach.
+ *  The projection fans out to ALL of them, so any single gateway can die or
+ *  be removed without losing the shared room state, and gateway-only
+ *  clients (Hermes Go, headless backends) see rooms regardless of which
+ *  gateway a Desktop was foregrounding when the room was used. */
+async function groupChatSyncTargetConnections() {
+  const targets = new Set()
+  const active = groupChatSyncConnectionId()
+  targets.add(String(active || ''))
+  if (typeof host.profileRoutes === 'function' && typeof host.requestProfile === 'function') {
+    try {
+      const routes = await host.profileRoutes()
+      for (const route of Array.isArray(routes) ? routes : []) {
+        const profile = String(route?.targetProfile || route?.profile || '')
+        const connectionId = String(route?.connectionId || '')
+        if (profile === 'default' && connectionId) {
+          targets.add(connectionId)
+        }
+      }
+    } catch {
+      // Route inventory unavailable — the active gateway alone still syncs.
+    }
+  }
+  return [...targets]
+}
+
+async function flushGroupChatServerSync(connectionId) {
+  if (connectionId === undefined) {
+    // Drain every connection with pending work.
+    for (const pendingId of [...groupChatSyncPendingByConnection.keys()]) {
+      void flushGroupChatServerSync(pendingId)
+    }
     return
   }
-  const job = groupChatSyncPending
-  groupChatSyncPending = null
-  groupChatSyncInFlight = true
+  const id = String(connectionId || '')
+  if (groupChatSyncDisposed || groupChatSyncInFlightConnections.has(id) || !groupChatSyncPendingByConnection.has(id)) {
+    return
+  }
+  const job = groupChatSyncPendingByConnection.get(id)
+  groupChatSyncPendingByConnection.delete(id)
+  groupChatSyncInFlightConnections.add(id)
 
   try {
     const remoteState = await groupChatRemoteSnapshot(job)
@@ -747,14 +960,15 @@ async function flushGroupChatServerSync() {
     // merely because a view reopened.
     if (!(job.changedRooms || []).length && !(job.deletedRooms || []).length && groupChatSyncPayloadEqual(snapshot, remoteState.snapshot)) {
       if (remoteState.snapshot) {
+        const pending = groupChatSyncPendingByConnection.get(id)
         const mergedRooms = mergeRemoteGroupChatSnapshotIntoRooms(remoteState.snapshot, $groupChats.get(), {
-          preserveRooms: groupChatSyncPending?.changedRooms || [],
-          deletedRooms: groupChatSyncPending?.deletedRooms || []
+          preserveRooms: pending?.changedRooms || [],
+          deletedRooms: pending?.deletedRooms || []
         })
         $groupChats.set(mergedRooms)
         await persistGroupChatRooms(mergedRooms)
       }
-      groupChatSyncRetryCount = 0
+      groupChatSyncRetryCounts.delete(id)
       return
     }
 
@@ -782,48 +996,61 @@ async function flushGroupChatServerSync() {
       throw new Error('Group chat ui_meta revision missing after read-back')
     }
     if (confirmedState.snapshot) {
+      const pending = groupChatSyncPendingByConnection.get(id)
       const mergedRooms = mergeRemoteGroupChatSnapshotIntoRooms(confirmedState.snapshot, $groupChats.get(), {
-        preserveRooms: groupChatSyncPending?.changedRooms || [],
-        deletedRooms: groupChatSyncPending?.deletedRooms || []
+        preserveRooms: pending?.changedRooms || [],
+        deletedRooms: pending?.deletedRooms || []
       })
       $groupChats.set(mergedRooms)
       await persistGroupChatRooms(mergedRooms)
     }
-    groupChatSyncRetryCount = 0
+    groupChatSyncRetryCounts.delete(id)
   } catch {
     if (!groupChatSyncDisposed) {
-      groupChatSyncPending = mergeGroupChatSyncJobs(groupChatSyncPending, job)
-      groupChatSyncRetryCount += 1
-      if (typeof setTimeout === 'function' && groupChatSyncRetryTimer === null) {
-        groupChatSyncRetryTimer = setTimeout(() => {
-          groupChatSyncRetryTimer = null
-          void flushGroupChatServerSync()
-        }, groupChatSyncBackoff())
+      const retries = Number(groupChatSyncRetryCounts.get(id) || 0) + 1
+      // A gateway that was REMOVED (not just flaky) has no route anymore and
+      // would otherwise retry forever. Give up after the backoff ladder tops
+      // out; local storage remains authoritative and a future reconnect of
+      // that gateway re-seeds it via the gateway-transition pull/publish.
+      if (retries > 8) {
+        groupChatSyncRetryCounts.delete(id)
+        return
+      }
+      groupChatSyncPendingByConnection.set(id, mergeGroupChatSyncJobs(groupChatSyncPendingByConnection.get(id), job))
+      groupChatSyncRetryCounts.set(id, retries)
+      if (typeof setTimeout === 'function' && !groupChatSyncRetryTimers.has(id)) {
+        groupChatSyncRetryTimers.set(id, setTimeout(() => {
+          groupChatSyncRetryTimers.delete(id)
+          void flushGroupChatServerSync(id)
+        }, groupChatSyncBackoff(id)))
       }
     }
   } finally {
-    groupChatSyncInFlight = false
-    if (groupChatSyncPending && groupChatSyncRetryTimer === null && !groupChatSyncDisposed) {
-      void flushGroupChatServerSync()
+    groupChatSyncInFlightConnections.delete(id)
+    if (groupChatSyncPendingByConnection.has(id) && !groupChatSyncRetryTimers.has(id) && !groupChatSyncDisposed) {
+      void flushGroupChatServerSync(id)
     }
   }
 }
 
 function stopGroupChatServerSync() {
   groupChatSyncDisposed = true
-  groupChatSyncPending = null
+  groupChatSyncPendingByConnection.clear()
   if (groupChatSyncTimer !== null) {
     clearTimeout(groupChatSyncTimer)
     groupChatSyncTimer = null
   }
-  if (groupChatSyncRetryTimer !== null) {
-    clearTimeout(groupChatSyncRetryTimer)
-    groupChatSyncRetryTimer = null
+  for (const timer of groupChatSyncRetryTimers.values()) {
+    clearTimeout(timer)
   }
+  groupChatSyncRetryTimers.clear()
+  groupChatSyncRetryCounts.clear()
 }
 
-/** Debounced, pull-merge-write server mirror. Local storage keeps the complete
- *  orchestration log; ui_meta is a bounded cross-client projection. */
+/** Debounced, pull-merge-write server mirror, fanned out to every reachable
+ *  default-profile gateway. Local storage keeps the complete orchestration
+ *  log; ui_meta is a bounded cross-client projection per gateway, each with
+ *  its own CAS revision stream. */
 function scheduleGroupChatServerSync(
   all = $groupChats.get(),
   { allowEmpty = false, changedRooms = [], deletedRooms = [] } = {}
@@ -844,19 +1071,37 @@ function scheduleGroupChatServerSync(
   if (groupChatSyncTimer !== null) {
     clearTimeout(groupChatSyncTimer)
   }
-  if (groupChatSyncRetryTimer !== null) {
-    clearTimeout(groupChatSyncRetryTimer)
-    groupChatSyncRetryTimer = null
+  // Queue on the ACTIVE gateway synchronously (tests and older hosts have no
+  // async route inventory), then widen to every reachable gateway before the
+  // debounce fires.
+  const activeId = String(groupChatSyncConnectionId() || '')
+  const queueFor = connectionId => {
+    const id = String(connectionId || '')
+    const retryTimer = groupChatSyncRetryTimers.get(id)
+    if (retryTimer !== undefined) {
+      clearTimeout(retryTimer)
+      groupChatSyncRetryTimers.delete(id)
+    }
+    groupChatSyncPendingByConnection.set(id, mergeGroupChatSyncJobs(groupChatSyncPendingByConnection.get(id), {
+      connectionId: id,
+      allowEmpty,
+      changedRooms,
+      deletedRooms
+    }))
   }
-  groupChatSyncPending = mergeGroupChatSyncJobs(groupChatSyncPending, {
-    connectionId: groupChatSyncConnectionId(),
-    allowEmpty,
-    changedRooms,
-    deletedRooms
-  })
+  queueFor(activeId)
   groupChatSyncTimer = setTimeout(() => {
     groupChatSyncTimer = null
-    void flushGroupChatServerSync()
+    void groupChatSyncTargetConnections()
+      .then(targets => {
+        for (const target of targets) {
+          if (String(target || '') !== activeId) {
+            queueFor(target)
+          }
+        }
+      })
+      .catch(() => undefined)
+      .then(() => flushGroupChatServerSync())
   }, 350)
 }
 

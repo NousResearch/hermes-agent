@@ -73,6 +73,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import os
 import re
 import random
@@ -9386,6 +9387,81 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def _parse_finite_int_timestamp(value: Any) -> Optional[int]:
+    """Return a finite integral timestamp, or ``None`` for malformed input.
+
+    SQLite's dynamic typing means callers can encounter text, floats, NaN,
+    or infinity in columns that are declared ``INTEGER``. Respawn decisions
+    must fail closed rather than letting malformed values raise or sort ahead
+    of a valid handoff.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        numeric = float(value)
+        if not math.isfinite(numeric) or not numeric.is_integer():
+            return None
+        return int(numeric)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _review_rework_follows_pr_handoff(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    assignee: Optional[str],
+    pr_handoff_at: int,
+    now: int,
+) -> bool:
+    """Return whether the latest valid review rework follows the PR handoff.
+
+    This is deliberately narrow: only a durable ``changes_requested`` or
+    ``review_reopened`` event for the current implementer, landing in a
+    dispatchable phase, can reset the ready-lane active-PR guard. Timestamp
+    ties are not treated as ordering because comments and events have
+    independent whole-second clocks; malformed or future provenance fails
+    closed as well.
+    """
+    row = conn.execute(
+        "SELECT kind, created_at, payload FROM task_events "
+        "WHERE task_id = ? AND kind IN ('changes_requested', 'review_reopened') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+
+    event_at = _parse_finite_int_timestamp(row["created_at"])
+    if event_at is None or event_at > now:
+        return False
+
+    try:
+        payload = json.loads(row["payload"]) if row["payload"] else {}
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+
+    implementer = payload.get("implementer")
+    status = payload.get("status")
+    if (
+        not isinstance(implementer, str)
+        or not implementer.strip()
+        or not isinstance(assignee, str)
+        or implementer.strip() != assignee.strip()
+        or status not in {"ready", "todo"}
+    ):
+        return False
+
+    # Strict ordering is intentional. Equal timestamps provide no evidence
+    # that the rework followed the PR comment, so the duplicate-work guard
+    # remains active.
+    return event_at > pr_handoff_at
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -9437,7 +9513,12 @@ def check_respawn_guard(
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
         ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        opened a PR; re-spawning risks a duplicate PR on the same task. The
+        ready-lane guard is bypassed only when the latest valid
+        ``changes_requested``/``review_reopened`` event names the current
+        implementer, lands in ``ready``/``todo``, and is strictly newer than
+        the latest PR handoff comment. Missing, malformed, or same-second
+        provenance remains guarded.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -9445,7 +9526,7 @@ def check_respawn_guard(
     genuinely dead (no live PID on this host).
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, assignee FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -9460,14 +9541,15 @@ def check_respawn_guard(
     #    the regex would otherwise match → defer forever (no failure counter
     #    increment on this path means the breaker can never free it).
     #
-    #    We look at the LATEST run only (ORDER BY ended_at DESC LIMIT 1): if a
-    #    newer crash/completion superseded the rate-limit run, this guard
-    #    no longer applies and the normal paths take over.
+    #    We look at the LATEST run only (ORDER BY id DESC LIMIT 1): if a newer
+    #    crash/completion superseded the rate-limit run, this guard no longer
+    #    applies and the normal paths take over. Ordering by the row id avoids
+    #    SQLite's dynamic-type ordering for malformed ended_at values.
     rl_cooldown = _resolve_rate_limit_cooldown_seconds()
     latest_run = conn.execute(
         "SELECT outcome, ended_at FROM task_runs "
-        "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        "WHERE task_id = ? "
+        "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
     if (
@@ -9479,8 +9561,12 @@ def check_respawn_guard(
             # blocker_auth regex so the stamped rate-limit text doesn't
             # re-trap the task.
             return None
-        ended_at = latest_run["ended_at"]
-        if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
+        ended_at = _parse_finite_int_timestamp(latest_run["ended_at"])
+        if (
+            ended_at is None
+            or ended_at > now
+            or (now - ended_at) < rl_cooldown
+        ):
             return "rate_limit_cooldown"
         # Cooldown elapsed — allow the respawn. Return early so the
         # blocker_auth check below doesn't catch the rate-limit text we
@@ -9507,32 +9593,72 @@ def check_respawn_guard(
     #    deferring. Without this, a manual done→ready just sits there,
     #    silently held by the guard, until the window elapses.
     cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW
-    recent_completed = conn.execute(
+    completed_rows = conn.execute(
         "SELECT ended_at FROM task_runs "
-        "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ? "
-        "ORDER BY ended_at DESC LIMIT 1",
-        (task_id, cutoff),
-    ).fetchone()
-    if recent_completed:
-        completed_at = int(recent_completed["ended_at"] or 0)
-        requeued_after = conn.execute(
-            "SELECT 1 FROM task_events "
-            "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
-            "LIMIT 1",
-            (task_id, completed_at),
-        ).fetchone()
+        "WHERE task_id = ? AND outcome = 'completed' ORDER BY id DESC",
+        (task_id,),
+    ).fetchall()
+    recent_completed_at: Optional[int] = None
+    for completed_row in completed_rows:
+        completed_at = _parse_finite_int_timestamp(completed_row["ended_at"])
+        if completed_at is None or completed_at > now:
+            # A malformed/future completion is safer to treat as guarded than
+            # to risk a duplicate run after an untrusted timestamp.
+            return "recent_success"
+        if completed_at >= cutoff:
+            if recent_completed_at is None or completed_at > recent_completed_at:
+                recent_completed_at = completed_at
+    if recent_completed_at is not None:
+        requeued_after = False
+        for event_row in conn.execute(
+            "SELECT created_at FROM task_events "
+            "WHERE task_id = ? "
+            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed')",
+            (task_id,),
+        ).fetchall():
+            event_at = _parse_finite_int_timestamp(event_row["created_at"])
+            if (
+                event_at is not None
+                and event_at <= now
+                and event_at >= recent_completed_at
+            ):
+                requeued_after = True
+                break
         if not requeued_after:
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    A same-card review rework is the one narrow ready-lane exception:
+    #    require valid implementer/status provenance and strict timestamp
+    #    ordering so a fresh task with an existing PR remains guarded.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    latest_pr_handoff_at: Optional[int] = None
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
+        "SELECT body, created_at FROM task_comments "
+        "WHERE task_id = ? ORDER BY id ASC",
+        (task_id,),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+        if not c["body"] or not _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            continue
+        comment_at = _parse_finite_int_timestamp(c["created_at"])
+        # A matching comment with malformed/future provenance is safer to
+        # treat as active than to risk a duplicate PR.
+        if comment_at is None or comment_at > now:
             return "active_pr"
+        if comment_at >= pr_cutoff:
+            if latest_pr_handoff_at is None or comment_at > latest_pr_handoff_at:
+                latest_pr_handoff_at = comment_at
+
+    if latest_pr_handoff_at is not None:
+        if _review_rework_follows_pr_handoff(
+            conn,
+            task_id,
+            assignee=row["assignee"],
+            pr_handoff_at=latest_pr_handoff_at,
+            now=now,
+        ):
+            return None
+        return "active_pr"
 
     return None
 

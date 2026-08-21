@@ -706,6 +706,27 @@ def _context_var_value(ref: str) -> Optional[str]:
 # Security helpers
 # ---------------------------------------------------------------------------
 
+def _normalize_stdio_env_value(key: str, value: Any) -> str:
+    """Normalize one user-provided stdio environment value.
+
+    YAML numeric scalars are safe to stringify because process environments
+    are string-only. Booleans, nulls, and containers are rejected instead of
+    silently converting them to Python spellings such as ``"True"`` or
+    ``"None"``, which can change a server's configuration meaning.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f"MCP stdio env variable '{key}' must be a string or numeric scalar"
+        )
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(
+            f"MCP stdio env variable '{key}' must be a finite numeric scalar"
+        )
+    return str(value)
+
+
 def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Build a filtered environment dict for stdio subprocesses.
 
@@ -719,7 +740,9 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     credentials to MCP server subprocesses.  Secret-source-injected vars are
     an exception: users configured that backend specifically so Hermes and
     its subprocesses can consume those credentials without duplicating them
-    in every MCP server's ``env:`` block.
+    in every MCP server's ``env:`` block. User-provided numeric scalars are
+    normalized to strings because OS process environments and the MCP SDK
+    require strings; ambiguous YAML values are rejected.
     """
     try:
         from hermes_cli.env_loader import get_secret_source
@@ -735,7 +758,9 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
         ):
             env[key] = value
     if user_env:
-        env.update(user_env)
+        env.update(
+            {key: _normalize_stdio_env_value(key, value) for key, value in user_env.items()}
+        )
     return env
 
 

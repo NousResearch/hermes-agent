@@ -3649,7 +3649,7 @@ class APIServerAdapter(BasePlatformAdapter):
         frame: dict,
         *,
         owner: Any = None,
-    ) -> None:
+    ) -> Optional[dict]:
         """Apply one controller→broker frame with exact-scope checks."""
         method = frame.get("method")
         params = frame.get("params")

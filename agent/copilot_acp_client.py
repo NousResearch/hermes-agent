@@ -59,6 +59,43 @@ def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
     return any(marker in lower for marker in _DEPRECATION_MARKERS)
 
 
+# Terminal session/update states: once the server emits one of these for a
+# prompt turn, the turn is complete and the accumulated text/thought parts
+# are the full outcome — even if the id-matched JSON-RPC result never
+# arrives (opencode ACP v1.18+ can wedge the event subscription and hang
+# session/prompt; #90952). Matched case-insensitively against the
+# ``sessionUpdate`` field value.
+_TERMINAL_SESSION_UPDATE_STATES = {
+    "turn_complete",
+    "turn_finished",
+    "complete",
+    "finished",
+    "done",
+}
+
+
+def _is_terminal_session_update(msg: dict[str, Any]) -> bool:
+    """True when ``msg`` is a session/update carrying a TERMINAL turn state.
+
+    A terminal state means the turn's content is final: the caller should
+    stop waiting for an id-matched result and use the accumulated parts.
+    Non-terminal states (agent_message_chunk, agent_thought_chunk,
+    heartbeat, ...) return False.
+    """
+    if not isinstance(msg, dict):
+        return False
+    if str(msg.get("method") or "") != "session/update":
+        return False
+    params = msg.get("params") or {}
+    if not isinstance(params, dict):
+        return False
+    update = params.get("update") or {}
+    if not isinstance(update, dict):
+        return False
+    kind = str(update.get("sessionUpdate") or "").strip()
+    return kind.casefold() in _TERMINAL_SESSION_UPDATE_STATES
+
+
 def _resolve_command() -> str:
     return (
         os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
@@ -662,6 +699,26 @@ class CopilotACPClient:
                     text_parts=text_parts,
                     reasoning_parts=reasoning_parts,
                 ):
+                    # A server-initiated event (e.g. session/update) was
+                    # consumed. For session/prompt specifically, the protocol
+                    # also delivers a terminal session/update
+                    # (sessionUpdate == "turn_complete" / finished state)
+                    # BEFORE the id-matched JSON-RPC result in some transports
+                    # (opencode ACP v1.18+ when the event subscription wedges
+                    # — #90952). If we have accumulated text and the turn is
+                    # terminally complete, do not keep waiting for the
+                    # id-matched result that may never arrive: return the
+                    # accumulated parts as the prompt outcome.
+                    if (
+                        method == "session/prompt"
+                        and text_parts
+                        and _is_terminal_session_update(msg)
+                    ):
+                        return {
+                            "sessionId": params.get("sessionId", ""),
+                            "content": [],
+                            "completed": True,
+                        }
                     continue
 
                 if msg.get("id") != request_id:

@@ -317,3 +317,92 @@ def test_probe_skipped_for_custom_args_without_acp():
     with _patch("agent.copilot_acp_client.subprocess.run") as run_mock:
         assert _acp_supported("mycli", ["--custom-transport"]) is True
     run_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# #90952: terminal session/update must complete session/prompt without waiting
+# for the id-matched JSON-RPC result (opencode ACP v1.18+ can wedge the event
+# subscription and never deliver the prompt result in gateway async runs).
+# ---------------------------------------------------------------------------
+
+class _WedgePopen:
+    """Fake Popen: emits initialize/session/new results and a prompt turn that
+    ENDS with a terminal session/update (turn_complete) but NEVER sends the
+    id-matched session/prompt result — reproducing the #90952 hang."""
+
+    def __init__(self, cmd, **kwargs):
+        self.stdin = _FakeStdin()
+        lines = [
+            {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1}},
+            {"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "sess-1"}},
+            {"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": "sess-1",
+                "update": {"sessionUpdate": "agent_message_chunk",
+                           "content": {"type": "text", "text": "Hello from the worker"}},
+            }},
+            {"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": "sess-1",
+                "update": {"sessionUpdate": "turn_complete", "content": {}},
+            }},
+            # NOTE: no id=3 session/prompt result — the wedged transport.
+        ]
+        self._lines = lines
+        self.stdout = iter([json.dumps(l) + "\n" for l in lines])
+        self.stderr = iter([])
+        self.returncode = None
+        self.pid = 4242
+
+    def poll(self):
+        return None  # never exits
+
+    def kill(self):
+        self.returncode = -9
+
+
+class _FakeStdin:
+    def __init__(self):
+        self.buf = []
+
+    def write(self, s):
+        self.buf.append(s)
+
+    def flush(self):
+        pass
+
+
+def test_run_prompt_completes_on_terminal_session_update_without_result(tmp_path):
+    """#90952 regression: when the ACP server delivers text chunks + a
+    terminal turn_complete session/update but NEVER sends the id-matched
+    session/prompt JSON-RPC result, _run_prompt must still complete with the
+    accumulated text instead of hanging until the timeout."""
+    client = _make_home_client(tmp_path)
+    with _patch("agent.copilot_acp_client.subprocess.run",
+                side_effect=FileNotFoundError) as _probe:
+        with _patch("agent.copilot_acp_client.subprocess.Popen",
+                    side_effect=_WedgePopen) as _popen:
+            text, reasoning = client._run_prompt("do the thing", timeout_seconds=5)
+    assert "Hello from the worker" in text, (
+        "accumulated agent_message_chunk text must be returned"
+    )
+    assert reasoning == ""
+
+
+def test_run_prompt_still_waits_for_result_when_no_terminal_update(tmp_path):
+    """Control: without a terminal session/update, _run_prompt must still wait
+    for the id-matched result (the fallback must not fire on plain chunks)."""
+    client = _make_home_client(tmp_path)
+
+    class _NoTerminalPopen(_WedgePopen):
+        def __init__(self, cmd, **kwargs):
+            super().__init__(cmd, **kwargs)
+            # Drop the turn_complete line; keep only the chunk.
+            self._lines = [l for l in self._lines
+                           if "turn_complete" not in json.dumps(l)]
+            self.stdout = iter([json.dumps(l) + "\n" for l in self._lines])
+
+    with _patch("agent.copilot_acp_client.subprocess.run",
+                side_effect=FileNotFoundError) as _probe:
+        with _patch("agent.copilot_acp_client.subprocess.Popen",
+                    side_effect=_NoTerminalPopen) as _popen:
+            with pytest.raises(TimeoutError, match="session/prompt"):
+                client._run_prompt("do the thing", timeout_seconds=1)

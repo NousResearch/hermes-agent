@@ -72,3 +72,37 @@ def test_no_servers_anywhere_keeps_gate_closed(managed, monkeypatch):
 
     monkeypatch.setattr(config_mod, "read_raw_config", lambda: {"display": {}})
     assert _has_configured_mcp_servers() is False
+
+
+def test_gate_and_connect_share_the_deep_merge_contract(managed, monkeypatch):
+    """Pin the merge contract the gate relies on (review on #91073):
+    ``apply_managed_overlay`` deep-merges ``mcp_servers`` per server name,
+    so a config carrying servers in BOTH scopes resolves to the UNION —
+    exactly what the connect path (which runs the same overlay before
+    building its server set) sees. If the overlay ever flipped to a
+    shallow replace, the managed server below would vanish and this test
+    fails, turning the shared-helper assumption into an enforced
+    invariant instead of a trust."""
+    _write_managed(
+        managed,
+        """
+        mcp_servers:
+          managed-fs:
+            command: fs-server
+            args: ["--stdio"]
+        """,
+    )
+    import hermes_cli.config as config_mod
+    from hermes_cli import managed_scope
+
+    monkeypatch.setattr(
+        config_mod,
+        "read_raw_config",
+        lambda: {"mcp_servers": {"user-server": {"command": "x"}}},
+    )
+    assert _has_configured_mcp_servers() is True
+
+    merged = managed_scope.apply_managed_overlay(
+        {"mcp_servers": {"user-server": {"command": "x"}}}
+    )
+    assert set(merged["mcp_servers"]) == {"user-server", "managed-fs"}

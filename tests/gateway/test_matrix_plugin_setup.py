@@ -10,7 +10,8 @@ clear-on-blank behavior added in the follow-up to PR #58421.
 import hermes_cli.config as config_mod
 import hermes_cli.cli_output as cli_output_mod
 import tools.lazy_deps as lazy_deps_mod
-from plugins.platforms.matrix.adapter import interactive_setup
+from gateway.config import Platform
+from plugins.platforms.matrix.adapter import MatrixAdapter, interactive_setup
 
 
 def _patch_setup_io(monkeypatch, prompts, yes_no_responses, saved, removed, existing):
@@ -79,5 +80,29 @@ class TestMatrixHomeChannelClear:
         interactive_setup()
         assert "MATRIX_HOME_ROOM" in removed
         assert "MATRIX_HOME_ROOM" not in saved
+
+
+def test_matrix_peer_yaml_reaches_runtime_adapter(monkeypatch, tmp_path):
+    """Documented top-level matrix YAML must seed adapter runtime extras."""
+    (tmp_path / "config.yaml").write_text(
+        "matrix:\n"
+        "  peer_agent_ids:\n"
+        "    - '@ran:example.org'\n"
+        "    - '@yomi:example.org'\n"
+        "  peer_reply_budget_per_human_message: 2\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("gateway.config.get_hermes_home", lambda: tmp_path)
+
+    from gateway.config import load_gateway_config
+
+    config = load_gateway_config()
+    adapter = MatrixAdapter(config.platforms[Platform.MATRIX])
+
+    assert adapter._peer_agent_ids == {
+        "@ran:example.org",
+        "@yomi:example.org",
+    }
+    assert adapter._peer_reply_budget_per_human_message == 2
 
 

@@ -15,7 +15,7 @@ from gateway.config import PlatformConfig
 # needing real mautrix APIs mock them individually.
 
 
-def _make_adapter(tmp_path=None):
+def _make_adapter(tmp_path=None, extra=None):
     """Create a MatrixAdapter with mocked config."""
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
@@ -25,6 +25,7 @@ def _make_adapter(tmp_path=None):
         extra={
             "homeserver": "https://matrix.example.org",
             "user_id": "@hermes:example.org",
+            **(extra or {}),
         },
     )
     adapter = MatrixAdapter(config)
@@ -108,6 +109,189 @@ class TestIsBotMentioned:
             "please reply",  # no @hermes anywhere in body
             mention_user_ids=["@hermes:example.org"],
         )
+
+
+class TestPeerAgentBudgetConfig:
+    def test_defaults_are_inert(self):
+        adapter = _make_adapter()
+
+        assert adapter._peer_agent_ids == set()
+        assert adapter._peer_reply_budget_per_human_message == 0
+        assert adapter._peer_reply_budget_remaining == {}
+
+    def test_parses_peer_ids_from_list(self):
+        adapter = _make_adapter(
+            extra={
+                "peer_agent_ids": ["@ran:example.org", " @yomi:example.org "],
+                "peer_reply_budget_per_human_message": 2,
+            }
+        )
+
+        assert adapter._peer_agent_ids == {
+            "@ran:example.org",
+            "@yomi:example.org",
+        }
+        assert adapter._peer_reply_budget_per_human_message == 2
+
+    def test_parses_peer_ids_from_comma_string(self):
+        adapter = _make_adapter(
+            extra={
+                "peer_agent_ids": "@ran:example.org, @yomi:example.org",
+                "peer_reply_budget_per_human_message": "3",
+            }
+        )
+
+        assert adapter._peer_agent_ids == {
+            "@ran:example.org",
+            "@yomi:example.org",
+        }
+        assert adapter._peer_reply_budget_per_human_message == 3
+
+    @pytest.mark.parametrize("value", [-1, "invalid", None])
+    def test_invalid_budget_fails_closed(self, value):
+        adapter = _make_adapter(
+            extra={
+                "peer_agent_ids": ["@yomi:example.org"],
+                "peer_reply_budget_per_human_message": value,
+            }
+        )
+
+        assert adapter._peer_reply_budget_per_human_message == 0
+
+
+class TestPeerAgentBudgetGating:
+    @staticmethod
+    def _adapter(monkeypatch, *, require_mention=False):
+        monkeypatch.setenv(
+            "MATRIX_ALLOWED_USERS",
+            "@alice:example.org,@hermes:example.org,@yomi:example.org",
+        )
+        monkeypatch.setenv(
+            "MATRIX_REQUIRE_MENTION", str(require_mention).lower()
+        )
+        monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+        return _make_adapter(
+            extra={
+                "peer_agent_ids": ["@yomi:example.org"],
+                "peer_reply_budget_per_human_message": 2,
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_authorized_human_untagged_message_resets_budget(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+
+        await adapter._on_room_message(
+            _make_event("hello everyone", sender="@alice:example.org")
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        assert adapter._peer_reply_budget_remaining["!room1:example.org"] == 2
+
+    @pytest.mark.asyncio
+    async def test_rejected_untagged_human_does_not_reset_budget(self, monkeypatch):
+        adapter = self._adapter(monkeypatch, require_mention=True)
+        adapter._peer_reply_budget_remaining["!room1:example.org"] = 0
+
+        await adapter._on_room_message(
+            _make_event("hello everyone", sender="@alice:example.org")
+        )
+
+        adapter.handle_message.assert_not_awaited()
+        assert adapter._peer_reply_budget_remaining["!room1:example.org"] == 0
+
+    @pytest.mark.asyncio
+    async def test_unknown_sender_does_not_reset_budget(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+        adapter._peer_reply_budget_remaining["!room1:example.org"] = 0
+
+        await adapter._on_room_message(
+            _make_event("hello everyone", sender="@mallory:example.org")
+        )
+
+        assert adapter._peer_reply_budget_remaining["!room1:example.org"] == 0
+
+    @pytest.mark.asyncio
+    async def test_untagged_peer_is_dropped_without_consuming_budget(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+        adapter._peer_reply_budget_remaining["!room1:example.org"] = 2
+
+        await adapter._on_room_message(
+            _make_event("hello sister", sender="@yomi:example.org")
+        )
+
+        adapter.handle_message.assert_not_awaited()
+        assert adapter._peer_reply_budget_remaining["!room1:example.org"] == 2
+
+    @pytest.mark.asyncio
+    async def test_tagged_peer_is_dropped_before_human_opens_round(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+
+        await adapter._on_room_message(
+            _make_event(
+                "@hermes:example.org hello sister",
+                sender="@yomi:example.org",
+            )
+        )
+
+        adapter.handle_message.assert_not_awaited()
+        assert adapter._peer_reply_budget_remaining.get("!room1:example.org", 0) == 0
+
+    @pytest.mark.asyncio
+    async def test_two_tagged_peer_calls_are_allowed_then_third_is_dropped(
+        self, monkeypatch
+    ):
+        adapter = self._adapter(monkeypatch)
+        await adapter._on_room_message(
+            _make_event("hello everyone", sender="@alice:example.org", event_id="$human")
+        )
+        adapter.handle_message.reset_mock()
+
+        for index in range(3):
+            await adapter._on_room_message(
+                _make_event(
+                    "@hermes:example.org continue",
+                    sender="@yomi:example.org",
+                    event_id=f"$peer{index}",
+                )
+            )
+
+        assert adapter.handle_message.await_count == 2
+        assert adapter._peer_reply_budget_remaining["!room1:example.org"] == 0
+        first_message = adapter.handle_message.await_args_list[0].args[0]
+        assert first_message.text == "continue"
+
+    @pytest.mark.asyncio
+    async def test_next_authorized_human_message_reopens_round(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+        adapter._peer_reply_budget_remaining["!room1:example.org"] = 0
+
+        await adapter._on_room_message(
+            _make_event("new subject", sender="@alice:example.org", event_id="$human2")
+        )
+        adapter.handle_message.reset_mock()
+        await adapter._on_room_message(
+            _make_event(
+                "@hermes:example.org your turn",
+                sender="@yomi:example.org",
+                event_id="$peer-next",
+            )
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        assert adapter._peer_reply_budget_remaining["!room1:example.org"] == 1
+
+    @pytest.mark.asyncio
+    async def test_peer_command_still_requires_mention_and_budget(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+        adapter._peer_reply_budget_remaining["!room1:example.org"] = 2
+
+        await adapter._on_room_message(
+            _make_event("/status", sender="@yomi:example.org")
+        )
+
+        adapter.handle_message.assert_not_awaited()
+        assert adapter._peer_reply_budget_remaining["!room1:example.org"] == 2
 
 
 class TestStripMention:

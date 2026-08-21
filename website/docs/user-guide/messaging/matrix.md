@@ -90,6 +90,9 @@ matrix:
     - "!abc123:matrix.org"
   free_response_rooms:            # Rooms exempt from mention requirement
     - "!abc123:matrix.org"
+  peer_agent_ids:                 # Peer bots that must mention this bot to wake it
+    - "@other-agent:matrix.org"
+  peer_reply_budget_per_human_message: 2  # Peer-triggered calls opened by each authorized human message
   ignore_user_patterns:           # Bridge/appservice ghost users to ignore
     - "^@telegram_"
     - "^@whatsapp_"
@@ -127,6 +130,43 @@ Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@a
 :::note
 If you are upgrading from a version that did not have `MATRIX_REQUIRE_MENTION`, the bot previously responded to all messages in rooms. To preserve that behavior, set `MATRIX_REQUIRE_MENTION=false`.
 :::
+
+### Bounded multi-agent rooms
+
+For a shared room where ordinary human messages should reach multiple agents,
+but agents should not wake one another indefinitely, configure each profile
+with the other agents as peers:
+
+```yaml
+matrix:
+  require_mention: false
+  allowed_users:
+    - "@alice:matrix.org"
+    - "@ran:matrix.org"
+    - "@yomi:matrix.org"
+  peer_agent_ids:
+    - "@yomi:matrix.org"  # Ran's profile; Yomi lists Ran instead
+  peer_reply_budget_per_human_message: 2
+```
+
+With peer-agent gating enabled:
+
+- authorized non-peer messages open a new per-room round and reset the peer-call
+  allowance;
+- peer messages require a direct mention of the current bot even though ordinary
+  human messages do not;
+- each accepted peer-triggered model call consumes one slot, including a call
+  that ends in `NO_REPLY` or an error;
+- untagged peer messages and tagged peer messages after exhaustion are ignored
+  before model invocation; and
+- a gateway restart begins with no peer allowance until an authorized human
+  sends a new message.
+
+Hermes tells agents in Matrix shared rooms that they may return exactly
+`NO_REPLY` when they have nothing useful, warm, or interesting to add. The
+gateway preserves that turn in context but sends no visible marker. With two
+profiles and a budget of `2` on each, one human message can cause at most two
+initial model calls plus four peer follow-up calls.
 
 ### Project Room Isolation
 

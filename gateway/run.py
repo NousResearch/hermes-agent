@@ -2071,6 +2071,72 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
             os.environ["HERMES_SEARCH_SLOW_MS"] = str(sessions_cfg["search_slow_ms"])
 
 
+def _bridge_auxiliary_env_from_config(home: "Path", discover: bool = False) -> None:
+    """Bridge ``auxiliary.<task>.*`` config into ``AUXILIARY_<TASK>_*`` env vars.
+
+    Each task has provider/model/base_url/api_key; non-default values are
+    exported so subprocesses (local/container tool environments) and other
+    entry points pick them up via ``os.getenv``. The legacy hard-coded list
+    (vision/web_extract/approval) is extended with plugin-registered tasks so
+    they benefit from the same config→env bridging without core knowing about
+    each one.
+
+    The import-time call passes ``discover=False``: merely importing
+    ``gateway.run`` must never trigger global plugin discovery, because a user
+    plugin whose ``register()`` imports ``GatewayRunner`` would fail with a
+    circular import while the module is only partially initialized, and the
+    manager would stay marked as discovered — permanently disabling the plugin
+    for the process lifetime without a visible gateway warning (#77200). The
+    gateway-startup call passes ``discover=True``, after explicit discovery
+    has run, so plugin-registered auxiliary tasks still get their env
+    bridging.
+    """
+    config_path = home / "config.yaml"
+    if not config_path.exists():
+        return
+    try:
+        from hermes_cli.config import _expand_env_vars, read_user_config_raw
+        cfg = read_user_config_raw(config_path)
+        cfg = _expand_env_vars(cfg)
+        if not isinstance(cfg, dict):
+            cfg = {}
+    except Exception:
+        return
+    _auxiliary_cfg = cfg.get("auxiliary", {})
+    if not _auxiliary_cfg or not isinstance(_auxiliary_cfg, dict):
+        return
+    # Built-in tasks that previously had explicit env-var bridging. Kept here
+    # as the canonical bridged set; plugin tasks are added below via the
+    # plugin auxiliary registry.
+    _aux_bridged_keys = {"vision", "web_extract", "approval"}
+    try:
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        for _entry in get_plugin_auxiliary_tasks(discover=discover):
+            _aux_bridged_keys.add(_entry["key"])
+    except Exception:
+        # Plugin discovery failure must not break gateway startup;
+        # built-in bridging stays intact.
+        pass
+
+    for _task_key in _aux_bridged_keys:
+        _task_cfg = _auxiliary_cfg.get(_task_key, {})
+        if not isinstance(_task_cfg, dict):
+            continue
+        _prov = str(_task_cfg.get("provider", "")).strip()
+        _model = str(_task_cfg.get("model", "")).strip()
+        _base_url = str(_task_cfg.get("base_url", "")).strip()
+        _api_key = str(_task_cfg.get("api_key", "")).strip()
+        _upper = _task_key.upper()
+        if _prov and _prov != "auto":
+            os.environ[f"AUXILIARY_{_upper}_PROVIDER"] = _prov
+        if _model:
+            os.environ[f"AUXILIARY_{_upper}_MODEL"] = _model
+        if _base_url:
+            os.environ[f"AUXILIARY_{_upper}_BASE_URL"] = _base_url
+        if _api_key:
+            os.environ[f"AUXILIARY_{_upper}_API_KEY"] = _api_key
+
+
 def _current_max_iterations() -> int:
     """Return the current per-turn iteration budget after runtime env refresh.
 
@@ -2323,44 +2389,14 @@ if _config_path.exists():
         # Compression config is read directly from config.yaml by run_agent.py
         # and auxiliary_client.py — no env var bridging needed.
         # Auxiliary model/direct-endpoint overrides (vision, web_extract,
-        # approval, plus any plugin-registered auxiliary tasks).
-        # Each task has provider/model/base_url/api_key; bridge non-default
-        # values to env vars named AUXILIARY_<KEY_UPPER>_*. The legacy
-        # hard-coded list (vision/web_extract/approval) is replaced by a
-        # dynamic loop so plugin-registered tasks benefit from the same
-        # config→env bridging without core knowing about each one.
-        _auxiliary_cfg = _cfg.get("auxiliary", {})
-        if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
-            # Built-in tasks that previously had explicit env-var bridging.
-            # Kept here as the canonical bridged set; plugin tasks are added
-            # below via the plugin auxiliary registry.
-            _aux_bridged_keys = {"vision", "web_extract", "approval"}
-            try:
-                from hermes_cli.plugins import get_plugin_auxiliary_tasks
-                for _entry in get_plugin_auxiliary_tasks():
-                    _aux_bridged_keys.add(_entry["key"])
-            except Exception:
-                # Plugin discovery failure must not break gateway startup;
-                # built-in bridging stays intact.
-                pass
-
-            for _task_key in _aux_bridged_keys:
-                _task_cfg = _auxiliary_cfg.get(_task_key, {})
-                if not isinstance(_task_cfg, dict):
-                    continue
-                _prov = str(_task_cfg.get("provider", "")).strip()
-                _model = str(_task_cfg.get("model", "")).strip()
-                _base_url = str(_task_cfg.get("base_url", "")).strip()
-                _api_key = str(_task_cfg.get("api_key", "")).strip()
-                _upper = _task_key.upper()
-                if _prov and _prov != "auto":
-                    os.environ[f"AUXILIARY_{_upper}_PROVIDER"] = _prov
-                if _model:
-                    os.environ[f"AUXILIARY_{_upper}_MODEL"] = _model
-                if _base_url:
-                    os.environ[f"AUXILIARY_{_upper}_BASE_URL"] = _base_url
-                if _api_key:
-                    os.environ[f"AUXILIARY_{_upper}_API_KEY"] = _api_key
+        # approval, plus any plugin-registered auxiliary tasks).  See
+        # _bridge_auxiliary_env_from_config(): the import-time call must not
+        # trigger global plugin discovery while gateway.run is only partially
+        # initialized — a user plugin importing GatewayRunner would fail and
+        # stay disabled for the process lifetime (#77200).  Plugin-registered
+        # tasks are bridged again at gateway startup, after explicit
+        # discovery has run.
+        _bridge_auxiliary_env_from_config(_hermes_home)
         # config.yaml is the documented, authoritative source for these
         # settings — it unconditionally wins over .env values. Previously
         # the guards below read `if X not in os.environ` and let stale
@@ -12565,6 +12601,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.warning(
                 "plugin discovery failed at gateway startup", exc_info=True,
+            )
+
+        # Plugin-registered auxiliary tasks only exist once discovery has
+        # run. Re-bridge their auxiliary.<key>.* config into
+        # AUXILIARY_<KEY>_* env vars now that plugins are loaded: the
+        # import-time bridge must skip plugin discovery (see
+        # _bridge_auxiliary_env_from_config), so without this re-run a
+        # plugin task's provider/model would never reach subprocess
+        # environments (#77200).
+        try:
+            _bridge_auxiliary_env_from_config(_hermes_home, discover=True)
+        except Exception:
+            logger.debug(
+                "auxiliary env re-bridge failed after plugin discovery",
+                exc_info=True,
             )
 
         # Register the generic relay adapter when a connector relay URL is

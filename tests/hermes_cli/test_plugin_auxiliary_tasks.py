@@ -89,6 +89,43 @@ def test_register_auxiliary_task_basic():
 # ── Module-level helper ──────────────────────────────────────────────────────
 
 
+def test_get_plugin_auxiliary_tasks_can_skip_discovery(monkeypatch, patched_manager):
+    """discover=False must read the registry without triggering plugin discovery.
+
+    Import-time callers (e.g. ``gateway.run`` module init) must never execute
+    arbitrary user-plugin code — a plugin whose ``register()`` imports a
+    partially-initialized module would fail and stay disabled for the process
+    lifetime (#77200).
+    """
+    import hermes_cli.plugins as plugins_mod
+
+    calls = {"discovery": 0}
+
+    def _spy_discovery() -> plugins_mod.PluginManager:
+        calls["discovery"] += 1
+        return patched_manager
+
+    monkeypatch.setattr(plugins_mod, "_ensure_plugins_discovered", _spy_discovery)
+
+    ctx = PluginContext(PluginManifest(name="hindsight"), patched_manager)
+    ctx.register_auxiliary_task(
+        key="memory_retain_filter",
+        display_name="Memory retain filter",
+        description="hindsight pre-retain dedup/extract",
+    )
+
+    # discover=False → registry read, discovery NOT triggered.
+    tasks = get_plugin_auxiliary_tasks(discover=False)
+    keys = [t["key"] for t in tasks]
+    assert "memory_retain_filter" in keys
+    assert calls["discovery"] == 0, "discover=False must not trigger discovery"
+
+    # discover=True (default) still routes through discovery.
+    tasks_default = get_plugin_auxiliary_tasks()
+    assert [t["key"] for t in tasks_default] == keys
+    assert calls["discovery"] == 1
+
+
 
 
 # ── _all_aux_tasks merges built-in + plugin ──────────────────────────────────

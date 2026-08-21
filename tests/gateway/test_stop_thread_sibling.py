@@ -99,6 +99,37 @@ async def test_stop_does_not_interrupt_sibling_when_unauthorized(monkeypatch):
     assert "no active" in str(getattr(result, "text", result)).lower()
 
 
+@pytest.mark.asyncio
+async def test_stop_idle_session_interrupts_detached_delegation(monkeypatch):
+    runner = object.__new__(GatewayRunner)
+    key = _per_user_key("userA")
+    runner._running_agents = {}
+    runner.session_store = _FakeStore(key)
+    runner._is_user_authorized = lambda source: True
+
+    interrupted = []
+
+    def _interrupt_for_session(**kwargs):
+        interrupted.append(kwargs)
+        return 1
+
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", _interrupt_for_session
+    )
+
+    event = MessageEvent(
+        text="/stop", message_type=MessageType.TEXT, source=_thread_source("userA")
+    )
+    result = await runner._handle_stop_command(event)
+
+    assert interrupted == [{
+        "session_key": key,
+        "parent_session_id": "",
+        "reason": "stop_command_idle",
+    }]
+    assert "stopped" in str(getattr(result, "text", result)).lower()
+
+
 # ---------------------------------------------------------------------------
 # /stop with no active agent still clears a stuck platform status (#32295)
 # ---------------------------------------------------------------------------

@@ -1096,7 +1096,7 @@ def _try_dispatch_background_run(
 
         max_async = _get_max_async_children()
     except Exception:
-        max_async = 3
+        max_async = 10
 
     started_at = time.time()
     deliver = job.get("deliver", "local")
@@ -1147,20 +1147,26 @@ def _try_dispatch_background_run(
         max_async_children=max_async,
     )
 
-    if dispatch.get("status") == "dispatched":
-        return {
+    dispatch_status = dispatch.get("status")
+    if dispatch_status in {"dispatched", "queued"}:
+        payload = {
             "claimed": True,
             "dispatched": True,
+            "status": dispatch_status,
             "delegation_id": dispatch.get("delegation_id"),
         }
+        if dispatch_status == "queued":
+            payload["queue_reason"] = dispatch.get("queue_reason", "capacity")
+        return payload
 
-    # Pool at capacity (or submit failure): the claim is already taken and
-    # must not be stranded — run inline exactly as the legacy path did.
+    # Rejected submission: the claim is already taken and must not be stranded.
+    # Only this terminal rejection falls back inline; an accepted queued runner
+    # owns the claim and will execute it exactly once after admission.
     logger.info(
-        "cronjob run: background pool unavailable (%s); running job '%s' inline.",
+        "cronjob run: background dispatch rejected (%s); running job '%s' inline.",
         dispatch.get("error", "rejected"), job_name,
     )
-    result = _run_claimed_job(job, extra_prompt=extra_prompt)
+    result = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
     result["dispatched"] = False
     return result
 

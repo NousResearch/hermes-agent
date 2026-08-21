@@ -15,6 +15,7 @@ dispatch code reads it — the fake child build below reproduces that clobber.
 """
 
 import json
+import threading
 import time
 from unittest.mock import MagicMock
 
@@ -146,9 +147,31 @@ def test_apiserver_session_with_id_dispatches_background(monkeypatch):
 
 
 def test_apiserver_session_without_id_stays_synchronous(monkeypatch):
-    """No session id to wake → keep the sync fallback (a detached result
-    would never re-enter any conversation)."""
+    """No session id to wake → keep the sync fallback and parent ownership."""
     dt = _patch_delegate(monkeypatch)
+    parent = _fake_parent()
+    child = MagicMock()
+    child._delegate_role = "leaf"
+    child._subagent_id = "sync-child"
+
+    def build_parent_owned_child(**kwargs):
+        kwargs["parent_agent"]._active_children.append(child)
+        return child
+
+    def assert_parent_owned_while_running(*_args, **_kwargs):
+        assert child in parent._active_children
+        return {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "done synchronously",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+            "model": "m",
+            "exit_reason": "completed",
+        }
+
+    monkeypatch.setattr(dt, "_build_child_agent", build_parent_owned_child)
+    monkeypatch.setattr(dt, "_run_single_child", assert_parent_owned_while_running)
     set_session_vars(
         platform="api_server",
         chat_id="",
@@ -159,9 +182,226 @@ def test_apiserver_session_without_id_stays_synchronous(monkeypatch):
 
     out = dt.delegate_task(
         goal="one-shot", context="ctx",
-        background=True, parent_agent=_fake_parent(),
+        background=True, parent_agent=parent,
     )
     parsed = json.loads(out)
     assert parsed.get("status") != "dispatched", parsed
     assert "SYNCHRONOUSLY" in parsed.get("note", "")
     assert process_registry.completion_queue.empty()
+
+
+def test_capacity_queue_never_falls_back_to_synchronous_execution(monkeypatch):
+    dt = _patch_delegate(monkeypatch)
+    set_session_vars(
+        platform="api_server",
+        chat_id="raw-sid-queued",
+        session_key="raw-sid-queued",
+        session_id="raw-sid-queued",
+        async_delivery=False,
+    )
+
+    monkeypatch.setattr(
+        "tools.async_delegation.dispatch_async_delegation_batch",
+        lambda **_kwargs: {
+            "status": "queued",
+            "delegation_id": "deleg_queued1",
+            "queue_reason": "capacity",
+        },
+    )
+    monkeypatch.setattr(
+        dt,
+        "_run_single_child",
+        lambda *_args, **_kwargs: pytest.fail("queued work ran synchronously"),
+    )
+
+    parsed = json.loads(dt.delegate_task(
+        goal="queue me", context="ctx", background=True,
+        parent_agent=_fake_parent(),
+    ))
+
+    assert parsed["status"] == "queued"
+    assert parsed["mode"] == "background"
+    assert parsed["delegation_id"] == "deleg_queued1"
+    assert parsed["queue_reason"] == "capacity"
+    assert "queued" in parsed["note"].lower()
+    assert "subagent_ids" not in parsed
+    assert "action='list'" in parsed["control_hint"]
+
+
+def test_capacity_queue_defers_child_construction_until_admitted(monkeypatch):
+    dt = _patch_delegate(monkeypatch)
+    set_session_vars(
+        platform="api_server",
+        chat_id="raw-sid-lazy",
+        session_key="raw-sid-lazy",
+        session_id="raw-sid-lazy",
+        async_delivery=False,
+    )
+    build_calls = []
+
+    def build_child(**kwargs):
+        build_calls.append(kwargs)
+        return MagicMock()
+
+    monkeypatch.setattr(dt, "_build_child_agent", build_child)
+    monkeypatch.setattr(
+        "tools.async_delegation.dispatch_async_delegation_batch",
+        lambda **_kwargs: {
+            "status": "queued",
+            "delegation_id": "deleg_lazy1",
+            "queue_reason": "capacity",
+        },
+    )
+
+    parsed = json.loads(dt.delegate_task(
+        goal="build me later", context="ctx", background=True,
+        parent_agent=_fake_parent(),
+    ))
+
+    assert parsed["status"] == "queued"
+    assert build_calls == []
+
+
+def test_resource_queue_builds_child_only_after_promotion(monkeypatch):
+    from tools import async_delegation as ad
+
+    ad._reset_for_tests()
+    dt = _patch_delegate(monkeypatch)
+    set_session_vars(
+        platform="api_server",
+        chat_id="raw-sid-promote",
+        session_key="raw-sid-promote",
+        session_id="raw-sid-promote",
+        async_delivery=False,
+    )
+    available = {"bytes": 0}
+    build_calls = []
+    built_children = []
+    original_build = dt._build_child_agent
+
+    def counted_build(**kwargs):
+        build_calls.append(kwargs)
+        child = original_build(**kwargs)
+        built_children.append(child)
+        return child
+
+    monkeypatch.setattr(dt, "_build_child_agent", counted_build)
+    monkeypatch.setattr(ad, "_ADMISSION_RECHECK_SECONDS", 0.02)
+    monkeypatch.setattr(
+        ad, "_effective_available_memory_bytes", lambda: available["bytes"]
+    )
+    monkeypatch.setattr(dt, "_get_max_async_children", lambda: 1)
+    monkeypatch.setattr(dt, "_get_min_available_memory_bytes", lambda: 100)
+    monkeypatch.setattr(dt, "_get_resume_available_memory_bytes", lambda: 200)
+
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+    parsed = json.loads(dt.delegate_task(
+        goal="promote later", context="ctx", background=True,
+        output_schema=schema,
+        parent_agent=_fake_parent(),
+    ))
+    assert parsed["status"] == "queued"
+    assert build_calls == []
+
+    available["bytes"] = 150
+    time.sleep(0.1)
+    assert build_calls == []
+    available["bytes"] = 250
+    event = _drain_one()
+    assert event is not None
+    assert event["status"] == "completed"
+    assert len(build_calls) == 1
+    assert "OUTPUT CONTRACT" in build_calls[0]["context"]
+    assert built_children[0]._delegate_output_schema == schema
+    ad._reset_for_tests()
+
+
+def test_cancel_during_lazy_child_build_is_nonblocking_and_cleans_up(monkeypatch):
+    from tools import async_delegation as ad
+
+    ad._reset_for_tests()
+    dt = _patch_delegate(monkeypatch)
+    set_session_vars(
+        platform="api_server",
+        chat_id="raw-sid-cancel-build",
+        session_key="raw-sid-cancel-build",
+        session_id="raw-sid-cancel-build",
+        async_delivery=False,
+    )
+    build_started = threading.Event()
+    release_build = threading.Event()
+    child = MagicMock()
+    child.run.return_value = "must not run"
+
+    def blocking_build(**_kwargs):
+        build_started.set()
+        assert release_build.wait(timeout=2)
+        return child
+
+    monkeypatch.setattr(dt, "_build_child_agent", blocking_build)
+    monkeypatch.setattr(dt, "_get_max_async_children", lambda: 1)
+    parent = _fake_parent()
+    parsed = json.loads(dt.delegate_task(
+        goal="cancel during build", context=None, background=True,
+        parent_agent=parent,
+    ))
+    assert parsed["status"] == "dispatched"
+    assert build_started.wait(timeout=1)
+
+    started = time.monotonic()
+    assert ad.interrupt_for_session(
+        "raw-sid-cancel-build", parent_session_id=parent.session_id,
+        reason="test cancellation",
+    ) == 1
+    assert time.monotonic() - started < 0.5
+    release_build.set()
+
+    event = _drain_one()
+    assert event is not None
+    assert event["status"] == "interrupted"
+    child.run.assert_not_called()
+    child.close.assert_called_once()
+    ad._reset_for_tests()
+
+
+def test_queue_configuration_is_forwarded_to_async_admission(monkeypatch):
+    dt = _patch_delegate(monkeypatch)
+    set_session_vars(
+        platform="api_server",
+        chat_id="raw-sid-config",
+        session_key="raw-sid-config",
+        session_id="raw-sid-config",
+        async_delivery=False,
+    )
+    captured = {}
+
+    def fake_dispatch(**kwargs):
+        captured.update(kwargs)
+        return {"status": "dispatched", "delegation_id": "deleg_config1"}
+
+    monkeypatch.setattr(
+        "tools.async_delegation.dispatch_async_delegation_batch", fake_dispatch
+    )
+    monkeypatch.setattr(dt, "_get_max_queued_delegations", lambda: 5)
+    monkeypatch.setattr(dt, "_get_min_available_memory_bytes", lambda: 4096)
+    monkeypatch.setattr(dt, "_get_resume_available_memory_bytes", lambda: 8192)
+    monkeypatch.setattr(dt, "_get_max_memory_psi_avg10", lambda: 12.0)
+    monkeypatch.setattr(dt, "_get_resume_memory_psi_avg10", lambda: 5.0)
+    monkeypatch.setattr(dt, "_get_queue_timeout_seconds", lambda: 123.0)
+
+    parsed = json.loads(dt.delegate_task(
+        goal="configured", context="ctx", background=True,
+        parent_agent=_fake_parent(),
+    ))
+
+    assert parsed["status"] == "dispatched"
+    assert captured["max_queued_delegations"] == 5
+    assert captured["min_available_memory_bytes"] == 4096
+    assert captured["resume_available_memory_bytes"] == 8192
+    assert captured["max_memory_psi_avg10"] == 12.0
+    assert captured["resume_memory_psi_avg10"] == 5.0
+    assert captured["queue_timeout_seconds"] == 123.0

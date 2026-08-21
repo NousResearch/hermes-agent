@@ -1213,8 +1213,8 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
         except Exception:
             pass
         try:
-            from tools.async_delegation import interrupt_all as _interrupt_async_delegations
-            _interrupt_async_delegations(reason="CLI shutdown")
+            from tools.async_delegation import begin_shutdown as _shutdown_async_delegations
+            _shutdown_async_delegations(reason="CLI shutdown")
         except Exception:
             pass
         try:

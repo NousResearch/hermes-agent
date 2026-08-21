@@ -79,6 +79,29 @@ def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
     assert set(opened) == set(closed)
 
 
+def test_recovery_reports_abandoned_queue_as_never_started(monkeypatch, tmp_path):
+    import time
+    import gateway.status as gateway_status
+
+    _point_ledger(monkeypatch, tmp_path)
+    ad._persist_dispatch({
+        "delegation_id": "deleg_abandoned_queue",
+        "session_key": "session-a",
+        "status": "queued",
+        "dispatched_at": time.time(),
+        "goal": "never started",
+        "is_batch": False,
+    })
+    monkeypatch.setattr(gateway_status, "_pid_exists", lambda _pid: False)
+
+    assert ad.recover_abandoned_delegations() == 1
+    durable = ad.get_durable_delegation("deleg_abandoned_queue")
+    assert durable is not None
+    assert durable["state"] == "interrupted"
+    assert durable["result"]["status"] == "interrupted"
+    assert "before start" in durable["result"]["error"]
+
+
 def test_schema_init_failure_still_closes_connection(monkeypatch, tmp_path):
     """A PRAGMA/DDL failure after connect() must still close the connection."""
     _point_ledger(monkeypatch, tmp_path)

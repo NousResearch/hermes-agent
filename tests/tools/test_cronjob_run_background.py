@@ -10,7 +10,7 @@ conversation as a type='async_delegation' completion event.
 Sync fallbacks preserved:
   - no routable session (direct Python callers, `hermes cron run`)
   - async delivery unsupported (one-shot runners, cron child sessions)
-  - dispatch pool at capacity (claim already taken — must not strand it)
+  - dispatch rejection/submission failure (claim already taken — run inline once)
 """
 import json
 import threading
@@ -180,7 +180,7 @@ class TestSyncFallbacks:
                 res = _try_dispatch_background_run(_job('job-bg-06'))
         assert res is None
 
-    def test_pool_at_capacity_runs_inline(self):
+    def test_rejected_dispatch_runs_inline(self):
         """A rejected dispatch must not strand the already-taken claim."""
         with _bound_session_key():
             with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
@@ -193,6 +193,31 @@ class TestSyncFallbacks:
         assert res["dispatched"] is False
         assert res["success"] is True
         m_run.assert_called_once()   # ran inline on this thread
+
+    def test_queued_dispatch_is_accepted_without_inline_duplicate(self):
+        """A queued runner owns the claim and must be allowed to execute once."""
+        claimed = {**_job("job-bg-queued"), "fire_claim": {"by": "bg-owner"}}
+        with _bound_session_key():
+            with patch(
+                "tools.cronjob_tools.claim_job_for_fire", return_value=claimed
+            ), patch(
+                "tools.async_delegation.dispatch_async_delegation",
+                return_value={
+                    "status": "queued",
+                    "delegation_id": "deleg_cron_queued",
+                    "queue_reason": "capacity",
+                },
+            ), patch("cron.scheduler.run_one_job") as m_run:
+                res = _try_dispatch_background_run(_job("job-bg-queued"))
+
+        assert res == {
+            "claimed": True,
+            "dispatched": True,
+            "status": "queued",
+            "delegation_id": "deleg_cron_queued",
+            "queue_reason": "capacity",
+        }
+        m_run.assert_not_called()
 
 
 class TestInFlightDedupe:

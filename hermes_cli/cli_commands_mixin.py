@@ -529,10 +529,14 @@ class CLICommandsMixin:
             delegations = []
         running_d = [
             d for d in delegations
-            if d.get("status") in ("running", "stalling")
+            if d.get("status") in ("running", "stalling", "finalizing")
         ]
+        queued_d = [d for d in delegations if d.get("status") == "queued"]
         if delegations:
-            _cprint(f"  Background delegations: {len(running_d)} running")
+            _cprint(
+                "  Background delegations: "
+                f"{len(running_d)} running, {len(queued_d)} queued"
+            )
             for d in delegations:
                 goal = (d.get("goal") or "")[:60]
                 status = d.get("status", "?")
@@ -540,8 +544,10 @@ class CLICommandsMixin:
                     f"    {d.get('delegation_id', '?')} · "
                     f"{status} · {goal}"
                 )
-                # Live-status detail for in-flight delegations (#51690).
-                if status == "stalling":
+                # Live-status detail for queued/in-flight delegations (#51690).
+                if status == "queued":
+                    line += f" · {d.get('queue_reason', 'capacity')}"
+                elif status == "stalling":
                     quiet = d.get("stalled_after_quiet_seconds")
                     if quiet is not None:
                         line += (

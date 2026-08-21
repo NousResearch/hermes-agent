@@ -905,11 +905,11 @@ def _get_max_async_children() -> int:
     """Concurrency cap for background (``background=true``) delegations.
 
     DEPRECATED KNOB: ``delegation.max_async_children`` has been unified into
-    ``delegation.max_concurrent_children`` — one cap governs both a single
-    synchronous batch's parallelism and how many background delegation units
-    may run at once. When at capacity, a new async dispatch is REJECTED (not
-    queued) so a runaway model can't pile up unbounded background work; the
-    caller falls back to running the work synchronously.
+    ``delegation.max_concurrent_children`` — one cap governs both synchronous
+    batch parallelism and total running background child slots. Work that
+    cannot reserve its slots enters the bounded FIFO; only queue overflow or
+    submission failure is rejected. A rejected async dispatch does not create
+    unbounded background work.
 
     A leftover ``max_async_children`` in config.yaml is ignored (the config
     migration removes it, folding a raised value into
@@ -926,6 +926,95 @@ def _get_max_async_children() -> int:
             "delegations too. Remove the stale key from config.yaml."
         )
     return _get_max_concurrent_children()
+
+
+def _get_max_queued_delegations() -> int:
+    """Maximum bounded backlog of background delegation units."""
+    value = _load_config().get("max_queued_delegations", 8)
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        logger.warning(
+            "delegation.max_queued_delegations=%r is invalid; using default 8",
+            value,
+        )
+        return 8
+
+
+def _get_min_available_memory_bytes() -> int:
+    """Configured memory headroom required before queued work may start."""
+    value = _load_config().get("min_available_memory_mb", 0)
+    try:
+        return max(0, int(float(value) * 1024 * 1024))
+    except (TypeError, ValueError):
+        logger.warning(
+            "delegation.min_available_memory_mb=%r is invalid; disabling the floor",
+            value,
+        )
+        return 0
+
+
+def _get_resume_available_memory_bytes() -> int:
+    """Higher memory headroom required after admission has been blocked."""
+    cfg = _load_config()
+    minimum = cfg.get("min_available_memory_mb", 0)
+    value = cfg.get("resume_available_memory_mb", minimum)
+    try:
+        return max(
+            max(0, int(float(minimum) * 1024 * 1024)),
+            int(float(value) * 1024 * 1024),
+        )
+    except (TypeError, ValueError):
+        logger.warning(
+            "delegation.resume_available_memory_mb=%r is invalid; using the stop floor",
+            value,
+        )
+        return _get_min_available_memory_bytes()
+
+
+def _get_max_memory_psi_avg10() -> float:
+    """PSI some/avg10 ceiling for starting new background work; 0 disables."""
+    value = _load_config().get("max_memory_psi_avg10", 0)
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        logger.warning(
+            "delegation.max_memory_psi_avg10=%r is invalid; disabling PSI gating",
+            value,
+        )
+        return 0.0
+
+
+def _get_resume_memory_psi_avg10() -> float:
+    """Lower PSI ceiling required to resume after pressure blocked admission."""
+    cfg = _load_config()
+    maximum = cfg.get("max_memory_psi_avg10", 0)
+    value = cfg.get("resume_memory_psi_avg10", maximum)
+    try:
+        stop_ceiling = max(0.0, float(maximum))
+        resume_ceiling = float(value)
+        if resume_ceiling <= 0.0:
+            resume_ceiling = stop_ceiling
+        return max(0.0, min(stop_ceiling, resume_ceiling))
+    except (TypeError, ValueError):
+        logger.warning(
+            "delegation.resume_memory_psi_avg10=%r is invalid; using the stop ceiling",
+            value,
+        )
+        return _get_max_memory_psi_avg10()
+
+
+def _get_queue_timeout_seconds() -> float:
+    """Maximum time a background delegation may remain queued."""
+    value = _load_config().get("queue_timeout_seconds", 3600)
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        logger.warning(
+            "delegation.queue_timeout_seconds=%r is invalid; using 3600",
+            value,
+        )
+        return 3600.0
 
 
 def _get_child_timeout() -> Optional[float]:
@@ -1734,7 +1823,7 @@ def _build_child_agent(
     )
 
     # Each subagent gets its own iteration budget capped at max_iterations
-    # (configurable via delegation.max_iterations, default 50).  This means
+    # (configurable via delegation.max_iterations, default 250).  This means
     # total iterations across parent + subagents can exceed the parent's
     # max_iterations.  The user controls the per-subagent cap in config.yaml.
 
@@ -2908,6 +2997,14 @@ def _run_single_child(
                 ),
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
+                # A timed-out child thread can keep running after we abandon
+                # the wait. Carry its live future upward so the async manager
+                # retains the resource slot until the thread ACTUALLY exits
+                # instead of oversubscribing the process the moment the
+                # timeout result is finalized (see _register_lingering_resources).
+                "_lingering_futures": (
+                    [_child_future] if is_timeout and not _child_future.done() else []
+                ),
             }
             if _late_pending_steer:
                 _error_entry["missed_steer"] = _late_pending_steer
@@ -3819,75 +3916,145 @@ def delegate_task(
         _capture_gateway_steer_authority(_origin_ui_session_id)
     )
 
-    # Build all child agents on the main thread (thread-safe construction).
-    # _build_child_preserving_parent_tools saves/restores the parent's
-    # resolved tool names around each construction under a lock, so child
-    # toolset resolution never leaks into the parent (shared with the plugin
-    # subagent-lifecycle API).
-    children = []
-    for i, t in enumerate(task_list):
-        # Per-task role beats top-level; normalise again so unknown
-        # per-task values warn and degrade to leaf uniformly.
-        effective_role = _normalize_role(t.get("role") or top_role)
-        # T1-24: schema'd tasks get the contract appended to their context
-        # so the child knows the expected output shape before it starts.
-        _task_schema = task_schemas[i] if i < len(task_schemas) else None
-        _child_context = t.get("context")
-        if _task_schema is not None:
-            from tools.delegation_output_schema import append_output_contract
+    # Child construction is intentionally lazy. A capacity- or memory-queued
+    # delegation retains only lightweight task/routing state; model clients,
+    # tool registries, and child sessions are allocated only after admission.
+    children: List[tuple[int, Dict[str, Any], Any]] = []
+    _child_agents: List[Any] = []
+    _children_lock = threading.RLock()
+    _cancel_before_build = threading.Event()
 
-            _child_context = append_output_contract(_child_context, _task_schema)
+    def _detach_child_from_parent(child: Any) -> None:
+        if not hasattr(parent_agent, "_active_children"):
+            return
+        _ac_lock = getattr(parent_agent, "_active_children_lock", None)
         try:
-            child = _build_child_preserving_parent_tools(
-                task_index=i,
-                goal=t["goal"],
-                context=_child_context,
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
-                model=creds["model"],
-                max_iterations=effective_max_iter,
-                task_count=n_tasks,
-                parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_request_overrides=creds.get("request_overrides"),
-                override_max_tokens=creds.get("max_output_tokens"),
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
-                role=effective_role,
-            )
-        except ValueError as exc:
-            # Explicit-pin preflight failures (e.g. pinned delegation.command
-            # missing from PATH) refuse the spawn loudly (#80450).
-            return tool_error(str(exc))
-        # Attach the validated schema for the completion-side validation
-        # hook in _run_single_child. Absent (None) on schema-less tasks.
-        if _task_schema is not None:
-            try:
-                child._delegate_output_schema = _task_schema
-            except Exception:
-                logger.debug("Could not attach output schema to child %d", i)
-        # Tee the child's progress events into its live transcript log.
-        # wrap_progress_callback preserves the inner callback contract
-        # (including the _flush attribute) and never lets writer failures
-        # reach the agent loop. When no parent display exists the inner
-        # callback is None and the wrapper still records events.
-        _writer = live_writers[i] if i < len(live_writers) else None
-        if _writer is not None:
-            child.tool_progress_callback = wrap_progress_callback(
-                getattr(child, "tool_progress_callback", None), _writer
-            )
-            child._live_transcript_path = str(_writer.path)
-        # Delegation identity for the live registry + process-notification
-        # attribution (child-started background processes report under it).
-        if live_deleg_id:
-            setattr(child, "_delegation_id", live_deleg_id)
-        children.append((i, t, child))
+            if _ac_lock:
+                with _ac_lock:
+                    parent_agent._active_children.remove(child)
+            else:
+                parent_agent._active_children.remove(child)
+        except ValueError:
+            pass
 
-    def _execute_and_aggregate(*, honor_parent_interrupt: bool = True) -> dict:
+    def _interrupt_built_children(reason: str) -> None:
+        _cancel_before_build.set()
+        # Child construction holds this lock. Cancellation must never wait for
+        # potentially slow provider/tool initialization; the builder observes
+        # the event and cleans up any partially built children itself.
+        if not _children_lock.acquire(blocking=False):
+            return
+        try:
+            snapshot = list(_child_agents)
+        finally:
+            _children_lock.release()
+        for child in snapshot:
+            try:
+                interrupted = request_hard_interrupt(child, reason)
+                if not interrupted and hasattr(child, "_interrupt_requested"):
+                    child._interrupt_requested = True
+            except Exception:
+                pass
+
+    def _discard_unstarted_children_locked(reason: str) -> None:
+        """Interrupt and close children that were built but never entered a runner."""
+        for child in list(_child_agents):
+            try:
+                if hasattr(child, "interrupt"):
+                    child.interrupt(reason)
+                elif hasattr(child, "_interrupt_requested"):
+                    child._interrupt_requested = True
+            except Exception:
+                pass
+            try:
+                close_fn = getattr(child, "close", None)
+                if callable(close_fn):
+                    close_fn()
+            except Exception:
+                logger.debug("Failed to close unstarted delegation child", exc_info=True)
+        children.clear()
+        _child_agents.clear()
+
+    def _build_children_if_needed(*, detach_from_parent: bool = False) -> bool:
+        with _children_lock:
+            if children:
+                return True
+            if _cancel_before_build.is_set():
+                return False
+            try:
+                for i, t in enumerate(task_list):
+                    if _cancel_before_build.is_set():
+                        break
+                    # Per-task role beats top-level; normalise again so unknown
+                    # values warn and degrade to leaf uniformly.
+                    effective_role = _normalize_role(t.get("role") or top_role)
+                    # Schema'd tasks get the contract appended to their context
+                    # before the lazily admitted child is constructed.
+                    _task_schema = task_schemas[i] if i < len(task_schemas) else None
+                    _child_context = t.get("context")
+                    if _task_schema is not None:
+                        from tools.delegation_output_schema import append_output_contract
+
+                        _child_context = append_output_contract(
+                            _child_context, _task_schema
+                        )
+                    child: Any = _build_child_preserving_parent_tools(
+                        task_index=i,
+                        goal=t["goal"],
+                        context=_child_context,
+                        # Subagents inherit the parent's toolsets; the model
+                        # cannot choose or narrow them.
+                        toolsets=None,
+                        model=creds["model"],
+                        max_iterations=effective_max_iter,
+                        task_count=n_tasks,
+                        parent_agent=parent_agent,
+                        override_provider=creds["provider"],
+                        override_base_url=creds["base_url"],
+                        override_api_key=creds["api_key"],
+                        override_api_mode=creds["api_mode"],
+                        override_request_overrides=creds.get("request_overrides"),
+                        override_max_tokens=creds.get("max_output_tokens"),
+                        override_acp_command=creds.get("command"),
+                        override_acp_args=creds.get("args"),
+                        role=effective_role,
+                    )
+                    if _task_schema is not None:
+                        try:
+                            child._delegate_output_schema = _task_schema
+                        except Exception:
+                            logger.debug("Could not attach output schema to child %d", i)
+                    children.append((i, t, child))
+                    _child_agents.append(child)
+                    if detach_from_parent:
+                        _detach_child_from_parent(child)
+                    _writer = live_writers[i] if i < len(live_writers) else None
+                    if _writer is not None:
+                        child.tool_progress_callback = wrap_progress_callback(
+                            getattr(child, "tool_progress_callback", None), _writer
+                        )
+                        child._live_transcript_path = str(_writer.path)
+                    if live_deleg_id:
+                        setattr(child, "_delegation_id", live_deleg_id)
+            except Exception:
+                _cancel_before_build.set()
+                _discard_unstarted_children_locked(
+                    "Delegation child construction failed"
+                )
+                raise
+
+            if _cancel_before_build.is_set():
+                _discard_unstarted_children_locked(
+                    "Async delegation cancelled during startup"
+                )
+                return False
+            return len(children) == n_tasks
+
+    def _execute_and_aggregate(
+        *,
+        honor_parent_interrupt: bool = True,
+        detach_from_parent: bool = False,
+    ) -> dict:
         """Run all built children (1 or N), join on them, aggregate results,
         fire subagent_stop hooks + cost rollup, and return the combined result
         dict. Used by BOTH the synchronous path and the background runner. In
@@ -3897,6 +4064,8 @@ def delegate_task(
         results block. That is the contract: fan-out runs in the background,
         waits on each other, and returns together.
         """
+        if not _build_children_if_needed(detach_from_parent=detach_from_parent):
+            raise InterruptedError("Async delegation cancelled before child startup")
         if n_tasks == 1:
             # Single task -- run directly (no thread pool overhead)
             _i, _t, child = children[0]
@@ -4075,6 +4244,18 @@ def delegate_task(
         }
         if live_paths:
             combined["live_transcripts"] = list(live_paths)
+        # Aggregate any still-running timed-out child futures upward so the
+        # async manager can retain their resource slots (see
+        # _register_lingering_resources in tools/async_delegation.py). The
+        # per-child entries must NOT carry the futures themselves: the result
+        # dicts reach the completion event and are JSON-serialized.
+        lingering: List[Any] = []
+        for entry in results:
+            futures = entry.pop("_lingering_futures", None)
+            if isinstance(futures, list):
+                lingering.extend(f for f in futures if f is not None)
+        if lingering:
+            combined["_lingering_futures"] = lingering
         return combined
 
     # ----- Background dispatch: run the WHOLE batch as one async unit -----
@@ -4130,6 +4311,10 @@ def delegate_task(
             )
             _sync_result = _execute_and_aggregate()
             if isinstance(_sync_result, dict):
+                # Daemon threads keep running after a timeout even in the sync
+                # path, but there is no async registry here to hold their slots
+                # — the key is a Future and must never reach json.dumps.
+                _sync_result.pop("_lingering_futures", None)
                 _sync_result["note"] = (
                     "background=true is not available in this session — it cannot "
                     "receive a detached subagent result after the turn ends (a "
@@ -4177,36 +4362,17 @@ def delegate_task(
             if _agent_session_id:
                 _session_key = _agent_session_id
         _parent_session_id = getattr(parent_agent, "session_id", None)
-        _child_agents = [c for (_, _, c) in children]
-
-        # Detach every child from the parent's interrupt-propagation list — the
-        # batch's lifecycle is owned by the async registry now, not the parent
-        # turn. _build_child_agent attached them (correct for sync runs).
-        if hasattr(parent_agent, "_active_children"):
-            _ac_lock = getattr(parent_agent, "_active_children_lock", None)
-            for _c in _child_agents:
-                try:
-                    if _ac_lock:
-                        with _ac_lock:
-                            parent_agent._active_children.remove(_c)
-                    else:
-                        parent_agent._active_children.remove(_c)
-                except ValueError:
-                    pass
 
         def _batch_runner():
             # This batch is detached from the foreground turn. Its lifecycle is
             # owned by the async registry and cancelled only via _batch_interrupt.
-            return _execute_and_aggregate(honor_parent_interrupt=False)
+            return _execute_and_aggregate(
+                honor_parent_interrupt=False,
+                detach_from_parent=True,
+            )
 
         def _batch_interrupt():
-            for _c in _child_agents:
-                try:
-                    interrupted = request_hard_interrupt(_c, "Async delegation cancelled")
-                    if not interrupted and hasattr(_c, "_interrupt_requested"):
-                        _c._interrupt_requested = True
-                except Exception:
-                    pass
+            _interrupt_built_children("Async delegation cancelled")
 
         def _batch_progress():
             # Progress token for the async registry's stale monitor: the
@@ -4256,46 +4422,57 @@ def delegate_task(
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
             max_async_children=_get_max_async_children(),
+            max_queued_delegations=_get_max_queued_delegations(),
+            min_available_memory_bytes=_get_min_available_memory_bytes(),
+            resume_available_memory_bytes=_get_resume_available_memory_bytes(),
+            max_memory_psi_avg10=_get_max_memory_psi_avg10(),
+            resume_memory_psi_avg10=_get_resume_memory_psi_avg10(),
+            queue_timeout_seconds=_get_queue_timeout_seconds(),
             # Reuse the live-transcript directory's id (when created) so the
             # returned delegation_id matches cache/delegation/live/<id>/.
             delegation_id=live_deleg_id,
             progress_fn=_batch_progress,
         )
 
-        if dispatch.get("status") == "dispatched":
+        dispatch_status = dispatch.get("status")
+        if dispatch_status in {"dispatched", "queued"}:
             n = len(_goals)
-            note = (
-                "Subagent is running in the background. You and the user can "
-                "keep working; its full result re-enters the conversation as a "
-                "new message when it finishes. Do not wait or poll — just "
-                "continue."
-                if n == 1 else
-                f"{n} subagents are running in parallel in the background. You "
-                f"and the user can keep working; they wait on each other and "
-                f"their consolidated results re-enter the conversation as a "
-                f"single message once ALL of them finish. Do not wait or poll "
-                f"— just continue."
-            )
+            if dispatch_status == "queued":
+                reason = dispatch.get("queue_reason", "capacity")
+                note = (
+                    f"The delegation is queued because {reason} limits do not "
+                    "currently allow it to start. It will run automatically when "
+                    "resources are available, and its result will re-enter the "
+                    "conversation as a new message. Do not poll or re-dispatch it."
+                )
+            else:
+                note = (
+                    "Subagent is running in the background. You and the user can "
+                    "keep working; its full result re-enters the conversation as a "
+                    "new message when it finishes. Do not wait or poll — just "
+                    "continue."
+                    if n == 1 else
+                    f"{n} subagents are running in parallel in the background. You "
+                    f"and the user can keep working; they wait on each other and "
+                    f"their consolidated results re-enter the conversation as a "
+                    f"single message once ALL of them finish. Do not wait or poll "
+                    f"— just continue."
+                )
             payload = {
-                "status": "dispatched",
+                "status": dispatch_status,
                 "mode": "background",
                 "count": n,
                 "delegation_id": dispatch["delegation_id"],
                 "goals": _goals,
                 "note": note,
             }
-            _sids = [
-                getattr(_c, "_subagent_id", None) for _c in _child_agents
-            ]
-            if any(isinstance(s, str) and s for s in _sids):
-                payload["subagent_ids"] = _sids
-                payload["control_hint"] = (
-                    "While a child runs you can orchestrate it live with this "
-                    "same tool: delegate_task(action='list') to see live "
-                    "children, action='steer' with subagent_id + message to "
-                    "redirect one, action='stop' with subagent_id to end one "
-                    "early."
-                )
+            payload["control_hint"] = (
+                "Use delegate_task(action='list') after children start to see their "
+                "subagent_ids; then use action='steer' or action='stop' with a "
+                "subagent_id for live control."
+            )
+            if dispatch_status == "queued":
+                payload["queue_reason"] = dispatch.get("queue_reason", "capacity")
             if live_paths:
                 payload["live_transcripts"] = list(live_paths)
                 payload["live_transcripts_hint"] = (
@@ -4306,24 +4483,13 @@ def delegate_task(
                 )
             return json.dumps(payload, ensure_ascii=False)
 
-        # Pool at capacity / schedule failure — children are still attached
-        # (we detach above only on the parent list, but the async unit was
-        # never accepted, so re-attaching isn't needed: we just run inline).
-        logger.info(
-            "delegate_task: async pool at capacity (%s); running the whole "
-            "batch synchronously instead.",
+        logger.warning(
+            "delegate_task: async dispatch rejected without synchronous fallback: %s",
             dispatch.get("error", "rejected"),
         )
-        _cap_result = _execute_and_aggregate()
-        if isinstance(_cap_result, dict):
-            _cap_result["note"] = (
-                "The background delegation pool was at capacity "
-                "(delegation.max_concurrent_children), so the subagent(s) ran "
-                "SYNCHRONOUSLY and the result is included above. Raise "
-                "delegation.max_concurrent_children in config.yaml to allow "
-                "more concurrent background delegations."
-            )
-        return json.dumps(_cap_result, ensure_ascii=False)
+        return tool_error(
+            dispatch.get("error", "Async delegation could not be scheduled.")
+        )
 
     # ----- Synchronous path -----
     return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
@@ -4793,7 +4959,7 @@ DELEGATE_TASK_SCHEMA = {
                     "required": ["goal"],
                 },
                 # No maxItems — the runtime limit is configurable via
-                # delegation.max_concurrent_children (default 3) and
+                # delegation.max_concurrent_children (default 10) and
                 # enforced with a clear error in delegate_task().
                 "description": "(rebuilt at get_definitions() time)",
             },

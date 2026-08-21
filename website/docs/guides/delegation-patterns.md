@@ -200,14 +200,21 @@ Subagents inherit the parent's enabled toolsets. `delegate_task` does not accept
 
 ## Constraints
 
-- **Default 3 parallel tasks**: batches default to 3 concurrent subagents (configurable via `delegation.max_concurrent_children` in config.yaml, no hard ceiling, only a floor of 1)
+- **Default 10 child slots**: all running background singles and batch children share `delegation.max_concurrent_children` (floor 1, no hard ceiling). Work that cannot reserve its slots enters a bounded FIFO.
+- **Bounded admission**: `max_queued_delegations` limits FIFO length, `queue_timeout_seconds` bounds its wait, and optional `min_available_memory_mb` holds work until host/cgroup headroom recovers. Queue overflow is rejected without synchronous fallback.
 - **Nested delegation is opt-in**: leaf subagents (default) cannot call `delegate_task`, `clarify`, `memory`, or `execute_code`. Orchestrator subagents (`role="orchestrator"`) retain `delegate_task` for further delegation, but only when `delegation.max_spawn_depth` is raised above the default of 1 (floor 1, no ceiling); the other three remain blocked. Disable globally via `delegation.orchestrator_enabled: false`.
 
 ### Tuning Concurrency and Depth
 
 | Config | Default | Range | Effect |
 |--------|---------|-------|--------|
-| `max_concurrent_children` | 3 | >=1 | Parallel batch size per `delegate_task` call |
+| `max_concurrent_children` | 10 | >=1 | Total running child slots across background singles and batches |
+| `max_queued_delegations` | 8 | >=0 | Maximum pending background calls; 0 disables waiting |
+| `queue_timeout_seconds` | 3600 | >=0 | Maximum FIFO wait; 0 disables expiry |
+| `min_available_memory_mb` | 0 | >=0 | Host/cgroup headroom stop floor; 0 disables the memory gate |
+| `resume_available_memory_mb` | 0 | >= stop floor | Higher recovery floor after a block; 0 follows stop floor |
+| `max_memory_psi_avg10` | 0 | >=0 | Linux PSI some/avg10 stop ceiling; 0 disables PSI gating |
+| `resume_memory_psi_avg10` | 0 | 0..stop ceiling | Lower recovery ceiling; 0 follows stop ceiling |
 | `max_spawn_depth` | 1 | >=1 | How many delegation levels can spawn further |
 
 Example: running 30 parallel workers with nested subagents:
@@ -220,7 +227,7 @@ delegation:
 
 - **Separate terminals** — each subagent gets its own terminal session with separate working directory and state
 - **No conversation history** — subagents see only the `goal` and `context` the parent agent passes when calling `delegate_task`
-- **Default 50 iterations** — set `max_iterations` lower for simple tasks to save cost
+- **Default 250 iterations** — set `max_iterations` lower for simple tasks to save cost
 - **Not durable** — top-level delegation runs in the background and posts its result back later, but it remains tied to the owning session and Hermes process. Session closure, `/stop`, `/new`, or a process restart can cancel or strand in-progress work. Use `cronjob` or `terminal(background=True, notify_on_complete=True)` for work that must survive those boundaries.
 
 ---

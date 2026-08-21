@@ -14579,8 +14579,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _e:
                     logger.debug("mark_running_jobs_interrupted (%s) error: %s", phase, _e)
                 try:
-                    from tools.async_delegation import interrupt_all as _interrupt_async
-                    _async_n = _interrupt_async(reason=f"gateway shutdown ({phase})")
+                    from tools.async_delegation import begin_shutdown as _shutdown_async
+                    _async_n = _shutdown_async(reason=f"gateway shutdown ({phase})")
                     if _async_n:
                         logger.info(
                             "Shutdown (%s): interrupted %d background delegation(s)",
@@ -26676,6 +26676,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 name=f"gateway-turn-reaper-{_process_task_id[:12]}",
                 daemon=True,
             ).start()
+        try:
+            from tools.async_delegation import interrupt_for_session
+
+            interrupt_for_session(
+                session_key=session_key,
+                parent_session_id=str(
+                    getattr(running_agent, "session_id", "") or ""
+                ),
+                reason=invalidation_reason,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to interrupt background delegations for %s",
+                session_key,
+                exc_info=True,
+            )
         adapter = self._adapter_for_source(source)
         interrupt_session_activity = getattr(
             type(adapter), "interrupt_session_activity", None

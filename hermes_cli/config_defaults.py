@@ -1932,11 +1932,21 @@ DEFAULT_CONFIG = {
                                      # (floor 30s) to enforce a hard cap.
         "reasoning_effort": "",  # subagent effort: "ultra", "max", "xhigh", "high",
                                  # "medium", "low", "minimal", "none" (empty = inherit)
-        "max_concurrent_children": 10,  # unified concurrency cap: max parallel children per batch
-                                       # AND max concurrent background (background=true)
-                                       # delegation units. New async dispatches beyond the cap
-                                       # fall back to synchronous execution. Floor of 1, no ceiling.
-                                       # (Replaces the deprecated max_async_children.)
+        "max_concurrent_children": 10,  # total child-agent slots shared by running
+                                        # background singles and batches. New async
+                                        # work queues when all required slots are busy.
+                                        # Floor of 1, no ceiling.
+                                        # (Replaces the deprecated max_async_children.)
+        "max_queued_delegations": 8,   # bounded FIFO backlog of background calls;
+                                       # 0 rejects work that cannot start immediately
+        "queue_timeout_seconds": 3600, # max FIFO wait; 0 disables queue expiry
+        "min_available_memory_mb": 0,  # optional admission floor based on host and
+                                       # cgroup memory headroom; 0 disables it
+        "resume_available_memory_mb": 0,  # higher recovery floor after a memory block;
+                                          # 0 follows min_available_memory_mb
+        "max_memory_psi_avg10": 0,  # Linux PSI some/avg10 stop ceiling; 0 disables
+        "resume_memory_psi_avg10": 0,  # lower PSI recovery ceiling after a block;
+                                        # 0 follows max_memory_psi_avg10
         # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
         # and _get_orchestrator_enabled).  Floored at 1, no upper ceiling —
         # raise deliberately, each level multiplies API cost.

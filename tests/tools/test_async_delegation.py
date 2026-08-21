@@ -12,6 +12,8 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import Future
+from types import SimpleNamespace
 
 import pytest
 
@@ -69,6 +71,11 @@ def test_active_for_session_counts_every_live_delegation_state():
     with ad._records_lock:
         ad._records.update(
             {
+                "queued": {
+                    "delegation_id": "queued",
+                    "status": "queued",
+                    "origin_ui_session_id": "desktop-sid",
+                },
                 "running": {
                     "status": "running",
                     "origin_ui_session_id": "desktop-sid",
@@ -92,9 +99,12 @@ def test_active_for_session_counts_every_live_delegation_state():
             }
         )
 
-    assert ad.active_for_session("desktop-sid") == 3
+    assert ad.active_for_session("desktop-sid") == 4
     assert ad.active_for_session("other-sid") == 1
     assert ad.active_for_session("") == 0
+    assert ad.has_live_for_session(origin_ui_session_id="desktop-sid") is True
+    with ad._records_lock:
+        ad._records.pop("queued", None)
 
 
 def test_dispatch_returns_immediately_without_blocking():
@@ -202,27 +212,1047 @@ def test_rich_reinjection_block_is_self_contained():
         assert needle in text, f"missing {needle!r}"
 
 
-def test_dispatch_rejected_at_capacity():
-    ev = threading.Event()
+def test_dispatch_queues_at_capacity_and_starts_after_slot_frees():
+    first_gate = threading.Event()
+    second_started = threading.Event()
+
+    def first_runner():
+        first_gate.wait(timeout=60)
+        return {"status": "completed", "summary": "first"}
+
+    def second_runner():
+        second_started.set()
+        return {"status": "completed", "summary": "second"}
+
+    first = ad.dispatch_async_delegation(
+        goal="first", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=first_runner, max_async_children=1,
+    )
+    assert first["status"] == "dispatched"
+
+    second = ad.dispatch_async_delegation(
+        goal="second", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=second_runner, max_async_children=1,
+    )
+    assert second["status"] == "queued"
+    assert second["delegation_id"].startswith("deleg_")
+    assert second_started.wait(timeout=0.1) is False
+
+    first_gate.set()
+    assert _drain_for(first["delegation_id"]) is not None
+    assert second_started.wait(timeout=2)
+    assert _drain_for(second["delegation_id"]) is not None
+
+
+def test_batch_queues_until_all_child_slots_are_available():
+    first_gate = threading.Event()
+    batch_started = threading.Event()
+
+    def first_runner():
+        first_gate.wait(timeout=60)
+        return {"status": "completed", "summary": "first"}
+
+    def batch_runner():
+        batch_started.set()
+        return {
+            "results": [
+                {"status": "completed", "summary": "a"},
+                {"status": "completed", "summary": "b"},
+            ]
+        }
+
+    first = ad.dispatch_async_delegation(
+        goal="first", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=first_runner, max_async_children=2,
+    )
+    assert first["status"] == "dispatched"
+
+    batch = ad.dispatch_async_delegation_batch(
+        goals=["a", "b"], context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=batch_runner, max_async_children=2,
+    )
+    assert batch["status"] == "queued"
+    assert batch_started.wait(timeout=0.1) is False
+    assert ad.active_task_count() == 1
+
+    first_gate.set()
+    assert _drain_for(first["delegation_id"]) is not None
+    assert batch_started.wait(timeout=2)
+    assert _drain_for(batch["delegation_id"]) is not None
+
+
+def test_pending_queue_is_bounded_and_overflow_never_runs():
+    first_gate = threading.Event()
+    overflow_started = threading.Event()
 
     def blocker():
-        ev.wait(timeout=60)
-        return {"status": "completed", "summary": "x"}
+        first_gate.wait(timeout=60)
+        return {"status": "completed", "summary": "done"}
 
-    for i in range(2):
-        r = ad.dispatch_async_delegation(
-            goal=f"task{i}", context=None, toolsets=None, role="leaf",
-            model="m", session_key="", runner=blocker, max_async_children=2,
-        )
-        assert r["status"] == "dispatched"
-
-    r3 = ad.dispatch_async_delegation(
-        goal="task3", context=None, toolsets=None, role="leaf", model="m",
-        session_key="", runner=blocker, max_async_children=2,
+    first = ad.dispatch_async_delegation(
+        goal="first", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=blocker, max_async_children=1,
+        max_queued_delegations=1,
     )
-    assert r3["status"] == "rejected"
-    assert "capacity reached" in r3["error"]
-    ev.set()
+    queued = ad.dispatch_async_delegation(
+        goal="queued", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=blocker, max_async_children=1,
+        max_queued_delegations=1,
+    )
+    overflow = ad.dispatch_async_delegation(
+        goal="overflow", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: overflow_started.set() or {},
+        max_async_children=1, max_queued_delegations=1,
+    )
+
+    assert first["status"] == "dispatched"
+    assert queued["status"] == "queued"
+    assert overflow["status"] == "rejected"
+    assert "queue" in overflow["error"].lower()
+    assert overflow_started.wait(timeout=0.1) is False
+
+    first_gate.set()
+    assert _drain_for(first["delegation_id"]) is not None
+    assert _drain_for(queued["delegation_id"]) is not None
+
+
+def test_queue_is_fifo_when_head_batch_needs_more_slots():
+    first_gate = threading.Event()
+    order = []
+
+    def active_runner():
+        first_gate.wait(timeout=60)
+        return {"status": "completed", "summary": "active"}
+
+    first = ad.dispatch_async_delegation(
+        goal="active", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=active_runner,
+        max_async_children=3,
+    )
+    batch = ad.dispatch_async_delegation_batch(
+        goals=["a", "b", "c"], context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: order.append("batch") or {"results": []},
+        max_async_children=3,
+    )
+    later = ad.dispatch_async_delegation(
+        goal="later", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: order.append("later") or {
+            "status": "completed", "summary": "later"
+        },
+        max_async_children=3,
+    )
+
+    assert first["status"] == "dispatched"
+    assert batch["status"] == "queued"
+    assert later["status"] == "queued"
+    assert order == []
+
+    first_gate.set()
+    assert _drain_for(first["delegation_id"]) is not None
+    assert _drain_for(batch["delegation_id"]) is not None
+    assert _drain_for(later["delegation_id"]) is not None
+    assert order == ["batch", "later"]
+
+
+def test_dispatch_waits_for_memory_floor_before_starting(monkeypatch):
+    available = {"bytes": 100}
+    started = threading.Event()
+    monkeypatch.setattr(ad, "_ADMISSION_RECHECK_SECONDS", 0.02)
+    monkeypatch.setattr(
+        ad, "_effective_available_memory_bytes", lambda: available["bytes"]
+    )
+
+    result = ad.dispatch_async_delegation(
+        goal="memory gated", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: started.set() or {
+            "status": "completed", "summary": "done"
+        },
+        max_async_children=1,
+        min_available_memory_bytes=200,
+    )
+
+    assert result["status"] == "queued"
+    assert result["queue_reason"] == "resources"
+    assert started.wait(timeout=0.1) is False
+
+    available["bytes"] = 300
+    assert started.wait(timeout=1)
+    assert _drain_for(result["delegation_id"]) is not None
+
+
+def test_effective_memory_uses_tightest_cgroup_limit(monkeypatch, tmp_path):
+    import psutil
+
+    cgroup = tmp_path / "delegation.slice"
+    cgroup.mkdir()
+    (cgroup / "memory.current").write_text("100\n", encoding="utf-8")
+    (cgroup / "memory.high").write_text("700\n", encoding="utf-8")
+    (cgroup / "memory.max").write_text("900\n", encoding="utf-8")
+    monkeypatch.setattr(
+        psutil, "virtual_memory", lambda: SimpleNamespace(available=1000)
+    )
+    monkeypatch.setattr(ad, "_current_cgroup_v2_path", lambda: str(cgroup))
+
+    assert ad._effective_available_memory_bytes() == 600
+
+
+def test_memory_probe_failure_fails_closed_when_floor_configured(monkeypatch):
+    monkeypatch.setattr(ad, "_effective_available_memory_bytes", lambda: None)
+    record = {
+        "min_available_memory_bytes": 100,
+        "resume_available_memory_bytes": 100,
+        "max_memory_psi_avg10": 0.0,
+        "resume_memory_psi_avg10": 0.0,
+        "_resource_blocked": False,
+    }
+    assert ad._resources_available(record) is False
+    assert record["_resource_blocked"] is True
+
+
+def test_memory_probe_failure_without_floor_allows_admission(monkeypatch):
+    monkeypatch.setattr(ad, "_effective_available_memory_bytes", lambda: None)
+    record = {
+        "min_available_memory_bytes": 0,
+        "resume_available_memory_bytes": 0,
+        "max_memory_psi_avg10": 0.0,
+        "resume_memory_psi_avg10": 0.0,
+        "_resource_blocked": False,
+    }
+    assert ad._resources_available(record) is True
+
+
+def test_psi_unavailable_falls_back_to_memory_gate(monkeypatch):
+    monkeypatch.setattr(ad, "_effective_available_memory_bytes", lambda: 500)
+    monkeypatch.setattr(ad, "_memory_psi_avg10", lambda: None)
+    record = {
+        "min_available_memory_bytes": 100,
+        "resume_available_memory_bytes": 100,
+        "max_memory_psi_avg10": 50.0,
+        "resume_memory_psi_avg10": 50.0,
+        "_resource_blocked": False,
+    }
+    # PSI unavailable is NOT a block; memory gate decides.
+    assert ad._resources_available(record) is True
+
+
+def test_psi_over_ceiling_blocks_until_recovery(monkeypatch):
+    monkeypatch.setattr(ad, "_effective_available_memory_bytes", lambda: 500)
+    pressure = {"avg10": 70.0}
+    monkeypatch.setattr(ad, "_memory_psi_avg10", lambda: pressure["avg10"])
+    record = {
+        "min_available_memory_bytes": 0,
+        "resume_available_memory_bytes": 0,
+        "max_memory_psi_avg10": 50.0,
+        "resume_memory_psi_avg10": 10.0,
+        "_resource_blocked": False,
+    }
+    assert ad._resources_available(record) is False
+    # Still over the stop ceiling.
+    pressure["avg10"] = 60.0
+    assert ad._resources_available(record) is False
+    # Dropped below the resume ceiling -> admitted again.
+    pressure["avg10"] = 5.0
+    assert ad._resources_available(record) is True
+
+
+def test_non_posix_returns_host_availability_only(monkeypatch):
+    monkeypatch.setattr(os, "name", "nt")
+    # On non-POSIX the cgroup probe is skipped entirely.
+    monkeypatch.setattr(ad, "_current_cgroup_v2_path", lambda: None)
+    import psutil
+
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: SimpleNamespace(available=1234))
+    assert ad._effective_available_memory_bytes() == 1234
+    assert ad._memory_psi_avg10() is None
+    monkeypatch.setattr(os, "name", "posix")
+
+
+def test_missing_cgroup_falls_back_to_host_availability(monkeypatch):
+    monkeypatch.setattr(ad, "_current_cgroup_v2_path", lambda: None)
+    import psutil
+
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: SimpleNamespace(available=777))
+    assert ad._effective_available_memory_bytes() == 777
+
+
+def test_memory_hysteresis_requires_resume_floor(monkeypatch):
+    available = {"bytes": 50}
+    started = threading.Event()
+    monkeypatch.setattr(ad, "_ADMISSION_RECHECK_SECONDS", 0.02)
+    monkeypatch.setattr(
+        ad, "_effective_available_memory_bytes", lambda: available["bytes"]
+    )
+
+    result = ad.dispatch_async_delegation(
+        goal="memory hysteresis", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: started.set() or {},
+        max_async_children=1,
+        min_available_memory_bytes=100,
+        resume_available_memory_bytes=200,
+    )
+    assert result["status"] == "queued"
+
+    available["bytes"] = 150
+    assert started.wait(timeout=0.1) is False
+    available["bytes"] = 200
+    assert started.wait(timeout=1)
+    assert _drain_for(result["delegation_id"]) is not None
+
+
+def test_memory_psi_gate_uses_lower_resume_threshold(monkeypatch):
+    pressure = {"avg10": 20.0}
+    started = threading.Event()
+    monkeypatch.setattr(ad, "_ADMISSION_RECHECK_SECONDS", 0.02)
+    monkeypatch.setattr(ad, "_effective_available_memory_bytes", lambda: 10_000)
+    monkeypatch.setattr(ad, "_memory_psi_avg10", lambda: pressure["avg10"])
+
+    result = ad.dispatch_async_delegation(
+        goal="psi gated", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: started.set() or {},
+        max_async_children=1,
+        max_memory_psi_avg10=10.0,
+        resume_memory_psi_avg10=5.0,
+    )
+    assert result["status"] == "queued"
+
+    pressure["avg10"] = 8.0
+    assert started.wait(timeout=0.1) is False
+    pressure["avg10"] = 4.0
+    assert started.wait(timeout=1)
+    assert _drain_for(result["delegation_id"]) is not None
+
+
+def test_batch_larger_than_slot_limit_is_rejected_without_runner():
+    started = threading.Event()
+    result = ad.dispatch_async_delegation_batch(
+        goals=["a", "b"], context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: started.set() or {"results": []},
+        max_async_children=1,
+    )
+    assert result["status"] == "rejected"
+    assert "requires 2 child slots" in result["error"]
+    assert started.is_set() is False
+
+
+def test_dispatch_persistence_failure_releases_reservation(monkeypatch):
+    started = threading.Event()
+
+    def fail_persistence(_record):
+        raise OSError("state db unavailable")
+
+    monkeypatch.setattr(ad, "_persist_dispatch", fail_persistence)
+    result = ad.dispatch_async_delegation(
+        goal="must persist", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: started.set() or {},
+        max_async_children=1,
+    )
+
+    assert result["status"] == "rejected"
+    assert "persist" in result["error"].lower()
+    assert ad.active_count() == 0
+    assert ad.list_async_delegations() == []
+    assert started.is_set() is False
+
+
+def test_concurrent_queue_overflow_never_exceeds_bound():
+    active_started = threading.Event()
+    release_active = threading.Event()
+
+    first = ad.dispatch_async_delegation(
+        goal="active", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", max_async_children=1, max_queued_delegations=3,
+        runner=lambda: (
+            active_started.set(), release_active.wait(timeout=2),
+            {"status": "completed", "summary": "active"},
+        )[-1],
+    )
+    assert first["status"] == "dispatched"
+    assert active_started.wait(timeout=1)
+
+    barrier = threading.Barrier(11)
+    results = []
+    result_lock = threading.Lock()
+
+    def submit(index):
+        barrier.wait()
+        outcome = ad.dispatch_async_delegation(
+            goal=f"queued-{index}", context=None, toolsets=None, role="leaf", model="m",
+            session_key="", max_async_children=1, max_queued_delegations=3,
+            runner=lambda: {"status": "completed", "summary": str(index)},
+        )
+        with result_lock:
+            results.append(outcome)
+
+    threads = [threading.Thread(target=submit, args=(i,)) for i in range(10)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert sum(result["status"] == "queued" for result in results) == 3
+    assert sum(result["status"] == "rejected" for result in results) == 7
+    assert sum(
+        record["status"] == "queued" for record in ad.list_async_delegations()
+    ) == 3
+
+    release_active.set()
+    completion_ids = {first["delegation_id"]}
+    completion_ids.update(
+        result["delegation_id"] for result in results if result["status"] == "queued"
+    )
+    seen = set()
+    deadline = time.monotonic() + 3
+    while completion_ids - seen and time.monotonic() < deadline:
+        try:
+            event = process_registry.completion_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        seen.add(event.get("delegation_id"))
+    assert completion_ids <= seen
+
+
+def test_interrupt_all_cancels_queued_work_without_starting_it(monkeypatch):
+    started = threading.Event()
+    monkeypatch.setattr(ad, "_ADMISSION_RECHECK_SECONDS", 0.02)
+    monkeypatch.setattr(ad, "_effective_available_memory_bytes", lambda: 0)
+
+    result = ad.dispatch_async_delegation(
+        goal="queued cancel", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: started.set() or {},
+        max_async_children=1, min_available_memory_bytes=1,
+    )
+    assert result["status"] == "queued"
+
+    assert ad.interrupt_all(reason="test shutdown") == 1
+    event = _drain_for(result["delegation_id"])
+    assert event is not None
+    assert event["status"] == "interrupted"
+    assert started.wait(timeout=0.1) is False
+
+    monkeypatch.setattr(ad, "_effective_available_memory_bytes", lambda: 100)
+    time.sleep(0.1)
+    assert started.is_set() is False
+
+
+def test_queued_work_times_out_without_starting(monkeypatch):
+    started = threading.Event()
+    monkeypatch.setattr(ad, "_ADMISSION_RECHECK_SECONDS", 0.01)
+    monkeypatch.setattr(ad, "_effective_available_memory_bytes", lambda: 0)
+
+    result = ad.dispatch_async_delegation(
+        goal="queued timeout", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: started.set() or {},
+        max_async_children=1, min_available_memory_bytes=1,
+        queue_timeout_seconds=0.05,
+    )
+    assert result["status"] == "queued"
+
+    event = _drain_for(result["delegation_id"], timeout=2)
+    assert event is not None
+    assert event["status"] == "timeout"
+    assert "queue" in event["error"].lower()
+    assert started.is_set() is False
+
+
+def test_capacity_queued_timeout_fires_while_worker_slot_is_busy():
+    gate = threading.Event()
+    queued_started = threading.Event()
+
+    def busy_runner():
+        gate.wait(timeout=60)
+        return {"status": "completed", "summary": "busy"}
+
+    first = ad.dispatch_async_delegation(
+        goal="busy", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=busy_runner,
+        max_async_children=1,
+    )
+    queued = ad.dispatch_async_delegation(
+        goal="capacity timeout", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: queued_started.set() or {},
+        max_async_children=1, queue_timeout_seconds=0.05,
+    )
+    assert first["status"] == "dispatched"
+    assert queued["status"] == "queued"
+
+    event = _drain_for(queued["delegation_id"], timeout=1)
+    assert event is not None
+    assert event["status"] == "timeout"
+    assert queued_started.is_set() is False
+
+    gate.set()
+    assert _drain_for(first["delegation_id"]) is not None
+
+
+def test_lingering_timed_out_child_retains_slot_until_future_exits():
+    lingering = Future()
+    next_started = threading.Event()
+
+    timed_out = ad.dispatch_async_delegation(
+        goal="timed out but alive", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", max_async_children=1,
+        runner=lambda: {
+            "status": "error",
+            "summary": None,
+            "error": "timed out",
+            "_lingering_futures": [lingering],
+        },
+    )
+    assert timed_out["status"] == "dispatched"
+    event = _drain_for(timed_out["delegation_id"])
+    assert event is not None
+    assert event["status"] == "error"
+
+    queued = ad.dispatch_async_delegation(
+        goal="must wait for actual exit", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", max_async_children=1,
+        runner=lambda: next_started.set() or {"status": "completed"},
+    )
+    assert queued["status"] == "queued"
+    assert next_started.wait(timeout=0.1) is False
+
+    lingering.set_result(None)
+    assert next_started.wait(timeout=1)
+    assert _drain_for(queued["delegation_id"]) is not None
+
+
+def test_batch_lingering_futures_retain_slots_until_they_exit():
+    lingering_a = Future()
+    next_started = threading.Event()
+
+    timed_out_batch = ad.dispatch_async_delegation_batch(
+        goals=["a", "b"], context=None, toolsets=None, role="leaf", model="m",
+        session_key="", max_async_children=2,
+        runner=lambda: {
+            "status": "completed",
+            "results": [
+                {"task_index": 0, "status": "timeout", "summary": None},
+                {"task_index": 1, "status": "completed", "summary": "ok"},
+            ],
+            "_lingering_futures": [lingering_a],
+        },
+    )
+    assert timed_out_batch["status"] == "dispatched"
+    event = _drain_for(timed_out_batch["delegation_id"])
+    assert event is not None
+    assert event["status"] == "completed"
+
+    queued = ad.dispatch_async_delegation_batch(
+        goals=["c", "d"], context=None, toolsets=None, role="leaf", model="m",
+        session_key="", max_async_children=2,
+        runner=lambda: next_started.set() or {"status": "completed", "results": []},
+    )
+    assert queued["status"] == "queued"
+    assert next_started.wait(timeout=0.1) is False
+
+    lingering_a.set_result(None)
+    assert next_started.wait(timeout=1)
+    assert _drain_for(queued["delegation_id"]) is not None
+
+
+def test_reset_for_tests_clears_lingering_slots():
+    lingering = Future()
+    result = ad.dispatch_async_delegation(
+        goal="reset clears slots", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", max_async_children=1,
+        runner=lambda: {
+            "status": "error", "summary": None, "error": "timed out",
+            "_lingering_futures": [lingering],
+        },
+    )
+    assert result["status"] == "dispatched"
+    assert _drain_for(result["delegation_id"]) is not None
+    assert sum(ad._lingering_resource_slots.values()) >= 1
+
+    ad._reset_for_tests()
+    assert ad._lingering_resource_slots == {}
+
+
+def test_stale_generation_worker_cannot_push_completion_after_reset():
+    from tools.process_registry import process_registry
+
+    ad._reset_for_tests()
+    stale = {
+        "delegation_id": "deleg_stale_generation",
+        "session_key": "session-stale",
+        "status": "finalizing",
+        "dispatched_at": time.time(),
+        "completed_at": time.time(),
+        "goal": "stale generation",
+        # Captured before the reset that bumped the generation.
+        "_generation": ad._manager_generation - 1,
+    }
+    with ad._records_lock:
+        ad._records[stale["delegation_id"]] = stale
+
+    ad._push_completion_event(
+        stale, {"status": "completed", "summary": "must not leak"}, "completed"
+    )
+
+    assert process_registry.completion_queue.empty()
+    assert ad.get_durable_delegation("deleg_stale_generation") is None
+    ad._reset_for_tests()
+
+
+def test_late_worker_after_reset_does_not_leak_completion():
+    from tools.process_registry import process_registry
+
+    ad._reset_for_tests()
+    started = threading.Event()
+    release = threading.Event()
+
+    result = ad.dispatch_async_delegation(
+        goal="late worker", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", max_async_children=1,
+        runner=lambda: (
+            started.set(), release.wait(timeout=5),
+            {"status": "completed", "summary": "late"},
+        )[-1],
+    )
+    assert result["status"] == "dispatched"
+    assert started.wait(timeout=1)
+
+    ad._reset_for_tests()
+    release.set()
+    time.sleep(0.3)
+
+    assert process_registry.completion_queue.empty()
+    assert ad.list_async_delegations() == []
+
+
+def test_queued_interruption_falls_back_to_interrupt_fn_after_promotion():
+    """C1: interrupt racing promotion must not terminalize a promoted record."""
+    ad._reset_for_tests()
+    interrupt_calls = []
+
+    def interrupt_fn():
+        interrupt_calls.append(True)
+
+    record = {
+        "delegation_id": "deleg_promote_race",
+        "session_key": "session-c1",
+        "status": "queued",
+        "dispatched_at": time.time(),
+        "completed_at": None,
+        "goal": "promotion race",
+        "is_batch": False,
+        "interrupt_fn": interrupt_fn,
+        "progress_fn": None,
+        "required_slots": 1,
+        "max_async_children": 1,
+        "min_available_memory_bytes": 0,
+        "resume_available_memory_bytes": 0,
+        "max_memory_psi_avg10": 0.0,
+        "resume_memory_psi_avg10": 0.0,
+        "queue_timeout_seconds": 0.0,
+        "_queued_monotonic": time.monotonic(),
+        "_progress_token": None,
+        "_progress_ts": time.time(),
+        "_interrupted_at": None,
+        "_generation": ad._manager_generation,
+    }
+    with ad._records_lock:
+        ad._records[record["delegation_id"]] = record
+
+    # Admission thread wins the race: record is promoted to running before
+    # the interrupt path claims it.
+    with ad._records_lock:
+        ad._records[record["delegation_id"]]["status"] = "running"
+
+    result = ad._finalize_queued_interruption(record["delegation_id"], "race test")
+    assert result is True
+    assert interrupt_calls == [True]
+    # Record must NOT be terminalized by the queued path.
+    assert ad._records[record["delegation_id"]]["status"] == "running"
+    from tools.process_registry import process_registry
+
+    assert process_registry.completion_queue.empty()
+    ad._reset_for_tests()
+
+
+def test_queued_interruption_after_promotion_delivers_one_interrupted(monkeypatch):
+    """End-to-end C1: interrupt during admission -> exactly one interrupted event."""
+    from tools.process_registry import process_registry
+
+    ad._reset_for_tests()
+    monkeypatch.setattr(ad, "_ADMISSION_RECHECK_SECONDS", 0.02)
+    monkeypatch.setattr(ad, "_effective_available_memory_bytes", lambda: 0)
+    started = threading.Event()
+    gate = threading.Event()
+
+    def runner():
+        started.set()
+        gate.wait(timeout=2)
+        return {"status": "completed", "summary": "should not complete"}
+
+    # Capacity-freeze the slot so the second dispatch queues.
+    blocker = ad.dispatch_async_delegation(
+        goal="blocker", context=None, toolsets=None, role="leaf", model="m",
+        session_key="c1-e2e", runner=lambda: (
+            gate.wait(timeout=2), {"status": "completed"},
+        )[-1],
+        max_async_children=1, min_available_memory_bytes=0,
+    )
+    assert blocker["status"] == "dispatched"
+    # Queue a second one behind it, then interrupt the session immediately.
+    queued = ad.dispatch_async_delegation(
+        goal="raced", context=None, toolsets=None, role="leaf", model="m",
+        session_key="c1-e2e", runner=runner,
+        max_async_children=1, min_available_memory_bytes=0,
+    )
+    assert queued["status"] == "queued"
+    assert ad.interrupt_for_session(session_key="c1-e2e", reason="race") >= 1
+
+    gate.set()  # let the blocker finish so the queue drains
+    deadline = time.monotonic() + 3
+    events = []
+    while time.monotonic() < deadline:
+        if not process_registry.completion_queue.empty():
+            events.append(process_registry.completion_queue.get_nowait())
+        time.sleep(0.02)
+    ids = [e.get("delegation_id") for e in events]
+    # Both delegations must resolve exactly once; the raced one must be
+    # interrupted (via interrupt_fn fallback), never completed.
+    assert blocker["delegation_id"] in ids
+    raced_events = [e for e in events if e.get("delegation_id") == queued["delegation_id"]]
+    assert len(raced_events) == 1
+    assert raced_events[0]["status"] == "interrupted"
+    ad._reset_for_tests()
+
+
+def test_persist_state_failure_during_admission_still_submits_worker(monkeypatch):
+    """M2: a _persist_state failure must not kill the admission thread."""
+    from tools.process_registry import process_registry
+
+    ad._reset_for_tests()
+    monkeypatch.setattr(ad, "_ADMISSION_RECHECK_SECONDS", 0.02)
+    available = {"bytes": 0}
+    monkeypatch.setattr(ad, "_effective_available_memory_bytes", lambda: available["bytes"])
+    real_persist = ad._persist_state
+    fail_next = {"fail": True}
+
+    def flaky_persist(delegation_id, state):
+        if fail_next["fail"] and state == "running":
+            fail_next["fail"] = False
+            raise OSError("simulated disk full")
+        return real_persist(delegation_id, state)
+
+    monkeypatch.setattr(ad, "_persist_state", flaky_persist)
+    started = threading.Event()
+
+    result = ad.dispatch_async_delegation(
+        goal="persist-fail", context=None, toolsets=None, role="leaf", model="m",
+        session_key="m2", runner=lambda: started.set() or {"status": "completed"},
+        max_async_children=1, min_available_memory_bytes=1,
+    )
+    assert result["status"] == "queued"
+    available["bytes"] = 100  # memory recovers -> admission proceeds
+    event = _drain_for(result["delegation_id"])
+    assert event is not None
+    assert event["status"] == "completed"
+    assert started.is_set()
+    ad._reset_for_tests()
+
+
+def test_stale_monitor_restarts_when_queued_record_admitted(monkeypatch):
+    """M1: admission must re-ensure the stale monitor if it exited."""
+    ad._reset_for_tests()
+    calls = {"ensure": 0}
+    real_ensure = ad._ensure_stale_monitor
+
+    def counting_ensure():
+        calls["ensure"] += 1
+        return real_ensure()
+
+    monkeypatch.setattr(ad, "_ensure_stale_monitor", counting_ensure)
+    monkeypatch.setattr(ad, "_ADMISSION_RECHECK_SECONDS", 0.02)
+    available = {"bytes": 0}
+    monkeypatch.setattr(ad, "_effective_available_memory_bytes", lambda: available["bytes"])
+    before = calls["ensure"]
+
+    result = ad.dispatch_async_delegation(
+        goal="m1", context=None, toolsets=None, role="leaf", model="m",
+        session_key="m1", runner=lambda: {"status": "completed"},
+        max_async_children=1, min_available_memory_bytes=1,
+    )
+    assert result["status"] == "queued"
+    available["bytes"] = 100  # memory recovers -> admission proceeds
+    event = _drain_for(result["delegation_id"])
+    assert event is not None
+    # Admission path must have re-ensured the monitor even though dispatch
+    # was blocked (no progress_fn -> monitor exited during queued period).
+    assert calls["ensure"] > before
+    ad._reset_for_tests()
+
+
+def test_queued_persist_failure_releases_slot_and_does_not_abort_sweep(monkeypatch):
+    """MAJOR: a persist failure in queued finalization must not strand it."""
+    from tools.process_registry import process_registry
+
+    ad._reset_for_tests()
+    monkeypatch.setattr(ad, "_ADMISSION_RECHECK_SECONDS", 0.02)
+    monkeypatch.setattr(ad, "_effective_available_memory_bytes", lambda: 0)
+    real_push = ad._push_completion_event
+    fail_next = {"fail": True}
+
+    def flaky_push(record, result, status):
+        if fail_next["fail"]:
+            fail_next["fail"] = False
+            raise OSError("simulated DB full")
+        return real_push(record, result, status)
+
+    monkeypatch.setattr(ad, "_push_completion_event", flaky_push)
+
+    # Two memory-gated queued records in different sessions. Strict FIFO
+    # means the second queues behind the first; both are never-started.
+    first = ad.dispatch_async_delegation(
+        goal="maj-first", context=None, toolsets=None, role="leaf", model="m",
+        session_key="maj1", runner=lambda: {"status": "completed"},
+        max_async_children=1, min_available_memory_bytes=1,
+    )
+    assert first["status"] == "queued"
+    second = ad.dispatch_async_delegation(
+        goal="maj-second", context=None, toolsets=None, role="leaf", model="m",
+        session_key="maj2", runner=lambda: {"status": "completed"},
+        max_async_children=1, min_available_memory_bytes=1,
+    )
+    assert second["status"] == "queued"
+
+    # interrupt_all must NOT abort mid-sweep when the first record's
+    # completion persist raises: both records get a terminal state, and no
+    # exception escapes the sweep.
+    count = ad.interrupt_all(reason="maj test")
+    assert count == 2
+    with ad._records_lock:
+        assert ad._records[first["delegation_id"]]["status"] == "interrupted"
+        assert ad._records[second["delegation_id"]]["status"] == "interrupted"
+    # Exactly one event delivered (the failing record's push was skipped;
+    # the second record's succeeded).
+    delivered = []
+    while not process_registry.completion_queue.empty():
+        delivered.append(process_registry.completion_queue.get_nowait())
+    assert len(delivered) == 1
+    assert delivered[0]["delegation_id"] == second["delegation_id"]
+    # The slot is released: a fresh dispatch with memory available starts.
+    available = {"bytes": 100}
+    monkeypatch.setattr(ad, "_effective_available_memory_bytes", lambda: available["bytes"])
+    fresh = ad.dispatch_async_delegation(
+        goal="maj-fresh", context=None, toolsets=None, role="leaf", model="m",
+        session_key="maj3", runner=lambda: {"status": "completed"},
+        max_async_children=1, min_available_memory_bytes=1,
+    )
+    assert fresh["status"] == "dispatched"
+    ad._reset_for_tests()
+
+
+def test_queued_interruption_skips_terminal_record(monkeypatch):
+    """MINOR: fallback must not over-report interrupted for completed work."""
+    ad._reset_for_tests()
+    interrupt_calls = []
+
+    def interrupt_fn():
+        interrupt_calls.append(True)
+
+    record = {
+        "delegation_id": "deleg_terminal_skip",
+        "session_key": "session-minor1",
+        "status": "completed",  # worker already won the race and finished
+        "dispatched_at": time.time(),
+        "completed_at": time.time(),
+        "goal": "terminal skip",
+        "is_batch": False,
+        "interrupt_fn": interrupt_fn,
+        "progress_fn": None,
+        "required_slots": 1,
+        "max_async_children": 1,
+        "min_available_memory_bytes": 0,
+        "resume_available_memory_bytes": 0,
+        "max_memory_psi_avg10": 0.0,
+        "resume_memory_psi_avg10": 0.0,
+        "queue_timeout_seconds": 0.0,
+        "_queued_monotonic": time.monotonic(),
+        "_progress_token": None,
+        "_progress_ts": time.time(),
+        "_interrupted_at": None,
+        "_generation": ad._manager_generation,
+    }
+    with ad._records_lock:
+        ad._records[record["delegation_id"]] = record
+
+    result = ad._finalize_queued_interruption(record["delegation_id"], "skip test")
+    assert result is False
+    assert interrupt_calls == []
+    ad._reset_for_tests()
+
+
+def test_stalled_finalize_persist_failure_still_releases_slot(monkeypatch):
+    """Cycle-3 MAJOR: _finalize_stalled must not strand on persist failure."""
+    from tools.process_registry import process_registry
+
+    ad._reset_for_tests()
+    real_push = ad._push_completion_event
+
+    def flaky_push(record, result, status):
+        raise OSError("simulated DB full")
+
+    monkeypatch.setattr(ad, "_push_completion_event", flaky_push)
+    record = {
+        "delegation_id": "deleg_stalled_persist",
+        "session_key": "c3-major",
+        "status": "stalling",
+        "dispatched_at": time.time() - 60,
+        "completed_at": None,
+        "goal": "stalled persist",
+        "is_batch": False,
+        "interrupt_fn": None,
+        "progress_fn": None,
+        "required_slots": 1,
+        "max_async_children": 1,
+        "min_available_memory_bytes": 0,
+        "resume_available_memory_bytes": 0,
+        "max_memory_psi_avg10": 0.0,
+        "resume_memory_psi_avg10": 0.0,
+        "queue_timeout_seconds": 0.0,
+        "_queued_monotonic": time.monotonic(),
+        "_progress_token": None,
+        "_progress_ts": time.time(),
+        "_interrupted_at": time.time(),
+        "_stall_quiet_seconds": 5.0,
+        "_stall_threshold_seconds": 5.0,
+        "_stall_in_tool": False,
+        "_generation": ad._manager_generation,
+    }
+    with ad._records_lock:
+        ad._records[record["delegation_id"]] = record
+
+    ad._finalize_stalled(record["delegation_id"])
+    # Record must be terminalized (slot released) despite the persist failure.
+    with ad._records_lock:
+        assert ad._records[record["delegation_id"]]["status"] == "stalled"
+    assert process_registry.completion_queue.empty()
+    ad._reset_for_tests()
+
+
+def test_psi_resume_zero_follows_stop_ceiling():
+    """Cycle-3 MINOR: resume PSI 0 must mean 'follow stop ceiling'."""
+    ad._reset_for_tests()
+    record = {
+        "delegation_id": "deleg_psi_normalize",
+        "session_key": "c3-minor2",
+        "status": "queued",
+        "max_memory_psi_avg10": 50.0,
+        "resume_memory_psi_avg10": 0.0,  # direct caller passes 0 explicitly
+        "min_available_memory_bytes": 0,
+        "resume_available_memory_bytes": 0,
+    }
+    # Not blocked: stop ceiling (50) applies.
+    assert ad._resources_available(record) is True
+    # Blocked once: resume ceiling must follow stop ceiling (50), not clamp to 0.
+    record["_resource_blocked"] = True
+    assert ad._resources_available(record) is True
+    ad._reset_for_tests()
+
+
+def test_prune_durable_records_preserves_live_queued_rows(monkeypatch, tmp_path):
+    """M3: durable pruning must never delete a live queued row."""
+    import gateway.status as gateway_status
+
+    ad._db_path = lambda: tmp_path / "state.db"
+    monkeypatch.setattr(gateway_status, "_pid_exists", lambda _pid: False)
+    now = time.time()
+    # A live queued row with a frozen updated_at (oldest pending row).
+    ad._persist_dispatch({
+        "delegation_id": "deleg_live_queued",
+        "session_key": "m3",
+        "status": "queued",
+        "dispatched_at": now - 1000,
+        "goal": "live queued",
+        "is_batch": False,
+    })
+    # A terminal delivered row (candidate for pruning).
+    ad._persist_dispatch({
+        "delegation_id": "deleg_terminal_1",
+        "session_key": "m3",
+        "status": "completed",
+        "dispatched_at": now - 1000,
+        "goal": "terminal",
+        "is_batch": False,
+    })
+    ad._persist_completion(
+        {"delegation_id": "deleg_terminal_1", "session_key": "m3",
+         "status": "completed", "dispatched_at": now - 1000,
+         "completed_at": now - 500},
+        {"status": "completed"},
+    )
+    ad.mark_completion_delivered("deleg_terminal_1")
+    with ad._DB_LOCK, ad._transaction() as conn:
+        conn.execute(
+            "UPDATE async_delegations SET updated_at=? WHERE delegation_id='deleg_terminal_1'",
+            (now - 500,),
+        )
+
+    ad._prune_durable_records()
+
+    durable = ad.get_durable_delegation("deleg_live_queued")
+    assert durable is not None
+    assert durable["state"] == "queued"
+
+
+def test_interrupt_for_session_cancels_only_matching_queued_work(monkeypatch):
+    monkeypatch.setattr(ad, "_ADMISSION_RECHECK_SECONDS", 0.02)
+    monkeypatch.setattr(ad, "_effective_available_memory_bytes", lambda: 0)
+
+    target = ad.dispatch_async_delegation(
+        goal="target", context=None, toolsets=None, role="leaf", model="m",
+        session_key="session-a", runner=lambda: {}, max_async_children=1,
+        min_available_memory_bytes=1,
+    )
+    other = ad.dispatch_async_delegation(
+        goal="other", context=None, toolsets=None, role="leaf", model="m",
+        session_key="session-b", runner=lambda: {}, max_async_children=1,
+        min_available_memory_bytes=1,
+    )
+
+    assert ad.interrupt_for_session(session_key="session-a") == 1
+    event = _drain_for(target["delegation_id"])
+    assert event is not None
+    assert event["status"] == "interrupted"
+    other_items = [
+        item for item in ad.list_async_delegations()
+        if item["delegation_id"] == other["delegation_id"]
+    ]
+    assert other_items[0]["status"] == "queued"
+
+    assert ad.interrupt_all(reason="test cleanup") == 1
+    assert _drain_for(other["delegation_id"]) is not None
+
+
+def test_begin_shutdown_cancels_queue_and_rejects_new_work(monkeypatch):
+    monkeypatch.setattr(ad, "_ADMISSION_RECHECK_SECONDS", 0.02)
+    monkeypatch.setattr(ad, "_effective_available_memory_bytes", lambda: 0)
+    started = threading.Event()
+
+    queued = ad.dispatch_async_delegation(
+        goal="queued at shutdown", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: started.set() or {},
+        max_async_children=1, min_available_memory_bytes=1,
+    )
+    assert queued["status"] == "queued"
+
+    assert ad.begin_shutdown(reason="test shutdown") == 1
+    event = _drain_for(queued["delegation_id"])
+    assert event is not None
+    assert event["status"] == "interrupted"
+
+    rejected = ad.dispatch_async_delegation(
+        goal="too late", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: started.set() or {},
+        max_async_children=1,
+    )
+    assert rejected["status"] == "rejected"
+    assert "shutting down" in rejected["error"].lower()
+    assert started.is_set() is False
 
 
 def test_interrupt_all_signals_running_children():
@@ -686,8 +1716,7 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
 
 
 def test_concurrent_dispatch_respects_capacity():
-    """Two threads racing dispatch with cap=1 must yield exactly one accept
-    (capacity check and record insert are atomic under the records lock)."""
+    """Two racing dispatches with cap=1 produce one runner and one queued job."""
     gate = threading.Event()
 
     def blocker():
@@ -713,8 +1742,16 @@ def test_concurrent_dispatch_respects_capacity():
     for t in threads:
         t.join(timeout=10)
     statuses = sorted(r["status"] for r in results)
-    assert statuses == ["dispatched", "rejected"]
+    assert statuses == ["dispatched", "queued"]
     gate.set()
+    expected_ids = {result["delegation_id"] for result in results}
+    seen_ids = set()
+    deadline = time.monotonic() + 5
+    while seen_ids != expected_ids and time.monotonic() < deadline:
+        event = _drain_one(timeout=0.2)
+        if event and event.get("delegation_id") in expected_ids:
+            seen_ids.add(event["delegation_id"])
+    assert seen_ids == expected_ids
 
 
 # ---------------------------------------------------------------------------

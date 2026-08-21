@@ -84,3 +84,30 @@ async def test_agents_command_marks_stalling_delegation(monkeypatch):
     assert "no progress" in out
 
 
+@pytest.mark.asyncio
+async def test_agents_command_surfaces_queued_delegation_reason():
+    gate = threading.Event()
+    running = ad.dispatch_async_delegation(
+        goal="slot holder", context=None, toolsets=None, role="leaf",
+        model="m", session_key="agent:main:test:dm:1", max_async_children=1,
+        runner=lambda: {} if gate.wait(timeout=10) else {},
+    )
+    queued = ad.dispatch_async_delegation(
+        goal="waiting child", context=None, toolsets=None, role="leaf",
+        model="m", session_key="agent:main:test:dm:1", max_async_children=1,
+        max_queued_delegations=1,
+        runner=lambda: {},
+    )
+    assert running["status"] == "dispatched"
+    assert queued["status"] == "queued"
+
+    try:
+        out = await _make_runner()._handle_agents_command(_Event())  # type: ignore[arg-type]
+    finally:
+        gate.set()
+
+    assert queued["delegation_id"] in out
+    assert "queued" in out
+    assert "capacity" in out
+
+

@@ -1365,7 +1365,7 @@ class GatewaySlashCommandsMixin:
             from tools.async_delegation import list_async_delegations
             delegations = [
                 d for d in list_async_delegations()
-                if d.get("status") in ("running", "stalling", "finalizing")
+                if d.get("status") in ("queued", "running", "stalling", "finalizing")
             ]
         except Exception:
             delegations = []
@@ -1385,7 +1385,9 @@ class GatewaySlashCommandsMixin:
                     goal = goal[:67] + "..."
                 status = d.get("status", "?")
                 row = f"- `{d.get('delegation_id', '?')}` · {status}"
-                if status == "stalling":
+                if status == "queued":
+                    row += f" · {d.get('queue_reason', 'capacity')}"
+                elif status == "stalling":
                     quiet = d.get("stalled_after_quiet_seconds")
                     if quiet is not None:
                         row += f" · no progress {quiet:.0f}s"
@@ -1459,6 +1461,26 @@ class GatewaySlashCommandsMixin:
                 interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason="stop_command_handler",
             )
+            return EphemeralReply(t("gateway.stop.stopped"))
+
+        # Detached delegations outlive the foreground turn, so an otherwise
+        # idle session can still own queued/running work. /stop must cancel it.
+        try:
+            from tools.async_delegation import interrupt_for_session
+
+            _async_stopped = interrupt_for_session(
+                session_key=session_key,
+                parent_session_id=str(getattr(session_entry, "session_id", "") or ""),
+                reason="stop_command_idle",
+            )
+        except Exception:
+            logger.debug(
+                "Failed to interrupt idle-session delegations for %s",
+                session_key,
+                exc_info=True,
+            )
+            _async_stopped = 0
+        if _async_stopped:
             return EphemeralReply(t("gateway.stop.stopped"))
 
         # No run under the caller's own session key.  In a per-user thread

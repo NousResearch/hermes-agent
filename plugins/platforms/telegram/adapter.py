@@ -746,9 +746,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Rich draft previews use a separate opt-in. Telegram macOS / Desktop
         # can leave Bot API 10.1 rich draft frames visually overlaid until the
         # chat is redrawn, while final rich messages remain useful.
-        # When rich_messages is on but rich_drafts is off, supports_draft_streaming
-        # declines drafts so transport=auto uses edit-in-place + rich finalize
-        # instead of MDV2 drafts that jump to sendRichMessage at the end.
+        # When rich_messages is on but rich_drafts is off, keep native DM draft
+        # *transport* and only skip rich draft *rendering*. The persistent
+        # reply still lands through sendRichMessage so tables are not flattened
+        # by the MarkdownV2 formatter.
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
         # Latched off after a capability failure on sendRichMessage /
         # sendRichMessageDraft (e.g. older python-telegram-bot without the
@@ -1610,6 +1611,31 @@ class TelegramAdapter(BasePlatformAdapter):
             }
         return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
 
+    def _thread_kwargs_for_draft(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Routing kwargs for ``sendMessageDraft`` / ``sendRichMessageDraft``.
+
+        Reuse :meth:`_thread_kwargs_for_send` so private DM topics get an
+        integer ``message_thread_id`` (or ``direct_messages_topic_id``) instead
+        of the raw string ``thread_id`` the draft path used to forward.
+        Telegram rejects that string on topics, which disabled draft streaming
+        for the rest of the turn and fell through to the table-to-bullets
+        formatter.
+        """
+        thread_id = self._metadata_thread_id(metadata)
+        reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+        kwargs = self._thread_kwargs_for_send(
+            chat_id,
+            thread_id,
+            metadata,
+            reply_to_message_id=reply_to_id,
+            reply_to_mode=getattr(self, "_reply_to_mode", None),
+        )
+        return {k: v for k, v in kwargs.items() if v is not None}
+
     @classmethod
     def _message_thread_id_for_send(cls, thread_id: Optional[str]) -> Optional[int]:
         if not thread_id or str(thread_id) == cls._GENERAL_TOPIC_THREAD_ID:
@@ -2068,15 +2094,23 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> bool:
         """Whether to replace a streamed preview with a fresh rich final.
 
-        Disabled for Telegram. The fresh-final path briefly shows two copies of
-        the final answer, then deletes the streaming preview after the rich send
-        succeeds — it looks like duplicate delivery at the end of every streamed
-        turn (the reason #46206 reverted it).  Rich finalize is instead handled
-        by editing the existing preview in place via Bot API 10.1's
-        ``editMessageText`` ``rich_message`` parameter (see
-        :meth:`_try_edit_rich`), so no fresh re-send / delete is needed.
+        Root DMs keep this off (#46206 / #47048): successful draft streaming
+        has no preview ``message_id``, so the hook is not consulted, and
+        in-place ``editMessageText.rich_message`` would duplicate a live draft
+        turn.  Private DM *topics* often reject ``sendMessageDraft``; the
+        consumer then degrades to edit-in-place. Telegram rejects a rich edit
+        of that plain MarkdownV2 preview, and the fallback formatter
+        permanently turns pipe tables into bullet lists.  Fresh
+        ``sendRichMessage`` plus deleting the preview is the remaining way to
+        keep native tables on that degraded path.
         """
-        return False
+        metadata = metadata or {}
+        if not (
+            metadata.get("telegram_dm_topic_reply_fallback")
+            or metadata.get("direct_messages_topic_id")
+        ):
+            return False
+        return self._rich_eligible(content)
 
     def streaming_overflow_limit(self) -> Optional[int]:
         """Allow the stream consumer to accumulate up to the rich-message cap
@@ -2423,9 +2457,7 @@ class TelegramAdapter(BasePlatformAdapter):
             "draft_id": int(draft_id),
             "rich_message": self._rich_message_payload(content),
         }
-        thread_id = self._metadata_thread_id(metadata)
-        if thread_id is not None:
-            payload["message_thread_id"] = int(thread_id)
+        payload.update(self._thread_kwargs_for_draft(chat_id, metadata))
         try:
             ok = await self._bot.do_api_request("sendRichMessageDraft", api_kwargs=payload)
             return bool(ok)
@@ -6033,8 +6065,6 @@ class TelegramAdapter(BasePlatformAdapter):
         text = content if len(content) <= self.MAX_MESSAGE_LENGTH else \
             self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)[0]
 
-        thread_id = self._metadata_thread_id(metadata)
-
         # Apply the same MarkdownV2 conversion the regular ``send`` path uses
         # so the animated draft preview renders with identical formatting to
         # the final message.  Without this, the draft streams as raw text and
@@ -6056,6 +6086,7 @@ class TelegramAdapter(BasePlatformAdapter):
             and self._needs_rich_rendering(text)
         )
         draft_modes = (False,) if plain_rich_preview else (True, False)
+        draft_thread_kwargs = self._thread_kwargs_for_draft(chat_id, metadata)
         for use_markdown in draft_modes:
             kwargs: Dict[str, Any] = {
                 "chat_id": normalize_telegram_chat_id(chat_id),
@@ -6064,8 +6095,7 @@ class TelegramAdapter(BasePlatformAdapter):
             }
             if use_markdown:
                 kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
-            if thread_id is not None:
-                kwargs["message_thread_id"] = thread_id
+            kwargs.update(draft_thread_kwargs)
 
             try:
                 ok = await self._bot.send_message_draft(**kwargs)

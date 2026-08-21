@@ -404,8 +404,10 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     ``_get_platform_tools`` MCP semantics:
 
       * ``no_mcp`` sentinel present  -> no MCP servers (sentinel stripped)
-      * one or more MCP server names already listed -> treat as an allowlist,
-        add nothing further (the user named exactly the servers they want)
+      * one or more MCP server names already listed (bare enabled server name
+        or canonical ``mcp-*`` toolset name, even if currently disabled) ->
+        treat as an allowlist, add nothing further (the user named exactly the
+        servers they want)
       * otherwise -> union in every globally-enabled MCP server
     """
     result = [t for t in per_job if t != "no_mcp"]
@@ -416,7 +418,8 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     # computation with the gateway/CLI platform resolver.
     from hermes_cli.tools_config import enabled_mcp_server_names
     enabled_mcp = enabled_mcp_server_names(cfg)
-    if set(result) & enabled_mcp:
+    requested_mcp = {name for name in result if name in enabled_mcp or name.startswith("mcp-")}
+    if requested_mcp:
         return result
     for name in sorted(enabled_mcp):
         if name not in result:

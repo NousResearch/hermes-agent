@@ -670,6 +670,11 @@ DANGEROUS_PATTERNS = [
     # one command segment (no `;`/`|`/`&`/newline) so an unrelated later command isn't contaminated.
     (r'\bgit\s+branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
     (r'\bgit\s+branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
+    # `git restore <pathspec>` and `git checkout -- <pathspec>` overwrite the working tree like `reset --hard`; the reflog
+    # holds commits, not unstaged edits. restore is safe only with `--staged` alone (index only); checkout discards only
+    # with a pathspec (`--`, a bare `.`) or `-f`/`--force`, so `git checkout <branch>` / `-b` stay ungated.
+    (r'\bgit\s+restore\b(?:(?![^\n;|&`]*--staged)|(?=[^\n;|&`]*--worktree))', "git restore (discards uncommitted working-tree changes)"),
+    (r'\bgit\s+checkout\b(?:[^\n;|&`]*?\s--\s|[^\n;|&`]*?\s--force\b|[^\n;|&`]*?\s-f\b|\s+\.(?:\s|$))', "git checkout with pathspec or --force (discards uncommitted working-tree changes)"),
     # chmod +x then immediate run: the script content may hold dangerous commands individual patterns miss.
     (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
     # Sudo stdin/askpass/shell/list-privs flags. The agent has no TTY, so sudo invocations that succeed

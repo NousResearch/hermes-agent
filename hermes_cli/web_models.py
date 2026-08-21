@@ -189,7 +189,10 @@ class MoaPresetPayload(_MoaReferenceControls):
     # single-model agent behavior.
     reference_temperature: Optional[float] = None
     aggregator_temperature: Optional[float] = None
-    max_tokens: int = 4096
+    # None = uncapped (parameter omitted → the model's real maximum), same
+    # contract as moa_config._normalize_preset; a 4096 default here would
+    # re-inject the removed cap on every dashboard save (#89227).
+    max_tokens: Optional[int] = None
     # Newer per-preset knobs (see moa_config._normalize_preset). Optional so
     # older clients that never send them keep working; declared so clients
     # that round-trip the GET payload don't silently erase hand-set values.
@@ -208,7 +211,10 @@ class MoaConfigPayload(_MoaReferenceControls):
     aggregator: MoaModelSlot = MoaModelSlot()
     reference_temperature: Optional[float] = None
     aggregator_temperature: Optional[float] = None
-    max_tokens: int = 4096
+    # None = uncapped (parameter omitted → the model's real maximum), same
+    # contract as moa_config._normalize_preset; a 4096 default here would
+    # re-inject the removed cap on every dashboard save (#89227).
+    max_tokens: Optional[int] = None
     reference_max_tokens: Optional[int] = None
     fanout: Optional[str] = None
     enabled: bool = True

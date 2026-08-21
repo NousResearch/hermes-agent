@@ -48,6 +48,34 @@ def test_normalize_moa_config_uses_default_named_preset():
     assert cfg["aggregator"] == DEFAULT_MOA_AGGREGATOR
 
 
+def test_preset_max_tokens_missing_or_null_means_uncapped():
+    """A preset's max_tokens must be able to express "no cap" (#89227).
+
+    The runtime loop treats None as omitted → the model's real maximum
+    (the old hardcoded 4096 aggregator cap was deliberately removed there),
+    so normalization coercing missing/null to 4096 silently reintroduced
+    the truncation for every normalized/flattened consumer."""
+    cfg = normalize_moa_config({
+        "presets": {
+            "missing": {},
+            "nulled": {"max_tokens": None},
+            "capped": {"max_tokens": 6000},
+        }
+    })
+    presets = cfg["presets"]
+    assert presets["missing"]["max_tokens"] is None
+    assert presets["nulled"]["max_tokens"] is None
+    assert presets["capped"]["max_tokens"] == 6000
+
+
+def test_default_preset_max_tokens_is_uncapped():
+    """A bare config's default preset is uncapped too: the flattened view
+    feeds dashboards, and 4096 there misreported what the loop sends."""
+    cfg = normalize_moa_config({})
+    assert cfg["presets"][DEFAULT_MOA_PRESET_NAME]["max_tokens"] is None
+    assert cfg["max_tokens"] is None
+
+
 
 
 

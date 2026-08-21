@@ -146,14 +146,33 @@ def _write_to_spillover(content: str, filename: str):
     """Write content host-side to $HERMES_HOME/cache/spillover.
 
     Returns the absolute path string on success, None on failure.
+
+    The write is verified with an immediate size round trip before the
+    caller tells the model "Full output saved": a partially-flushed file
+    (disk quota, ENOSPC races, overlayfs hiccups) must fail closed to the
+    bounded inline-truncation fallback rather than replace the tool result
+    with a reference to an archive that silently lost data.
     """
+    data = content.encode("utf-8", errors="replace")
     try:
         spill_dir = get_spillover_dir()
         spill_dir.mkdir(parents=True, exist_ok=True)
         path = spill_dir / filename
-        path.write_text(content, encoding="utf-8", errors="replace")
+        path.write_bytes(data)
+        persisted_size = os.stat(path).st_size
     except OSError as exc:
         logger.warning("Spillover write failed for %s: %s", filename, exc)
+        return None
+    if persisted_size != len(data):
+        logger.warning(
+            "Spillover write for %s is not lossless (%d bytes on disk, "
+            "expected %d) — discarding archive",
+            filename, persisted_size, len(data),
+        )
+        try:
+            path.unlink()
+        except OSError:
+            pass
         return None
     _prune_spillover_once()
     return str(path)
@@ -258,11 +277,51 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     == "pipe"``); remote backends with ``_stdin_mode == "heredoc"`` keep their
     existing API-body sized limit, which is orders of magnitude larger than
     the exec-arg ceiling.
+
+    The write is round-trip verified with ``wc -c`` before the caller tells
+    the model "Full output saved": a zero exit from ``cat`` does not prove
+    the bytes landed (quota/ENOSPC races, API-body truncation on payload
+    backends), and a reference to a silently-lossy archive is worse than the
+    bounded inline truncation the caller falls back to. Heredoc-mode
+    backends (``_stdin_mode == "heredoc"``) append one trailing newline to
+    the body by construction (``wrap_modal_stdin_heredoc``), so exactly one
+    extra byte is accepted as lossless there.
     """
     storage_dir = os.path.dirname(remote_path)
     cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
     result = env.execute(cmd, timeout=30, stdin_data=content)
-    return result.get("returncode", 1) == 0
+    if result.get("returncode", 1) != 0:
+        return False
+
+    expected = len(content.encode("utf-8", errors="replace"))
+    try:
+        probe = env.execute(f"wc -c < {shlex.quote(remote_path)}", timeout=15)
+    except Exception as exc:
+        logger.debug("Sandbox size probe failed for %s: %s", remote_path, exc)
+        # The write itself reported success; treat an unprobeable backend
+        # (no wc, exec error) as best-effort success rather than discarding
+        # a likely-good archive.
+        return True
+    if probe.get("returncode", 1) != 0:
+        return True
+    raw = str(probe.get("output", "") or "").strip().split()
+    if not raw or not raw[-1].isdigit():
+        return True
+    persisted_size = int(raw[-1])
+    if persisted_size == expected:
+        return True
+    if persisted_size == expected + 1 and getattr(env, "_stdin_mode", None) == "heredoc":
+        return True
+    logger.warning(
+        "Sandbox spill for %s is not lossless (%d bytes in sandbox, expected %d) "
+        "— discarding archive",
+        remote_path, persisted_size, expected,
+    )
+    try:
+        env.execute(f"rm -f {shlex.quote(remote_path)}", timeout=15)
+    except Exception:
+        pass
+    return False
 
 
 def _build_persisted_message(

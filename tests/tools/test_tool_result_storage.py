@@ -65,14 +65,15 @@ class TestWriteToSandbox:
         env.execute.return_value = {"output": "", "returncode": 0}
         result = _write_to_sandbox("hello world", "/tmp/hermes-results/abc.txt", env)
         assert result is True
-        env.execute.assert_called_once()
-        cmd = env.execute.call_args[0][0]
+        # First call is the write; a second call round-trip-verifies the
+        # persisted size (unparseable probe output = best-effort success).
+        cmd = env.execute.call_args_list[0][0][0]
         assert "mkdir -p" in cmd
         # Content travels through stdin, NOT inside the command string —
         # otherwise large content would hit Linux's 128 KB MAX_ARG_STRLEN
         # ceiling on `bash -c <cmd>` (#22906).
         assert "hello world" not in cmd
-        assert env.execute.call_args[1]["stdin_data"] == "hello world"
+        assert env.execute.call_args_list[0][1]["stdin_data"] == "hello world"
 
 
     def test_large_content_via_stdin(self):
@@ -82,9 +83,9 @@ class TestWriteToSandbox:
         env.execute.return_value = {"output": "", "returncode": 0}
         big = "x" * 200_000
         _write_to_sandbox(big, "/tmp/hermes-results/big.txt", env)
-        cmd = env.execute.call_args[0][0]
+        cmd = env.execute.call_args_list[0][0][0]
         assert len(cmd) < 1_000  # cmd is just `mkdir -p X && cat > Y`
-        assert env.execute.call_args[1]["stdin_data"] == big
+        assert env.execute.call_args_list[0][1]["stdin_data"] == big
 
 
     def test_path_with_spaces_is_quoted(self):
@@ -92,7 +93,7 @@ class TestWriteToSandbox:
         env.execute.return_value = {"output": "", "returncode": 0}
         remote_path = "/tmp/hermes results/abc file.txt"
         _write_to_sandbox("content", remote_path, env)
-        cmd = env.execute.call_args[0][0]
+        cmd = env.execute.call_args_list[0][0][0]
         assert "'/tmp/hermes results'" in cmd
         assert "'/tmp/hermes results/abc file.txt'" in cmd
 
@@ -102,7 +103,7 @@ class TestWriteToSandbox:
         env.execute.return_value = {"output": "", "returncode": 0}
         malicious_path = "/tmp/hermes-results/$(whoami).txt"
         _write_to_sandbox("content", malicious_path, env)
-        cmd = env.execute.call_args[0][0]
+        cmd = env.execute.call_args_list[0][0][0]
         # The $() must not appear unquoted — shlex.quote wraps it
         assert "'/tmp/hermes-results/$(whoami).txt'" in cmd
 
@@ -111,9 +112,72 @@ class TestWriteToSandbox:
         env.execute.return_value = {"output": "", "returncode": 0}
         malicious_path = "/tmp/x; rm -rf /; echo .txt"
         _write_to_sandbox("content", malicious_path, env)
-        cmd = env.execute.call_args[0][0]
+        cmd = env.execute.call_args_list[0][0][0]
         # The semicolons must be inside quotes, not acting as command separators
         assert "'/tmp/x; rm -rf /; echo .txt'" in cmd
+
+    def test_size_mismatch_fails_closed_and_removes_archive(self):
+        """A sandbox archive that lost bytes must be discarded, not referenced.
+
+        Port of lobehub/lobehub#18258: verify the persisted archive before
+        telling the model the full result is available; fail closed to the
+        bounded inline truncation when persistence is not lossless.
+        """
+        env = MagicMock()
+        env._stdin_mode = "pipe"
+        content = "x" * 1000
+        env.execute.side_effect = [
+            {"output": "", "returncode": 0},        # write
+            {"output": "512\n", "returncode": 0},   # wc -c: short!
+            {"output": "", "returncode": 0},        # rm -f cleanup
+        ]
+        assert _write_to_sandbox(content, "/tmp/hermes-results/short.txt", env) is False
+        rm_cmd = env.execute.call_args_list[2][0][0]
+        assert rm_cmd.startswith("rm -f ")
+        assert "/tmp/hermes-results/short.txt" in rm_cmd
+
+    def test_exact_size_match_succeeds(self):
+        env = MagicMock()
+        env._stdin_mode = "pipe"
+        content = "abcé"  # multi-byte: expected size is the UTF-8 byte count
+        expected = len(content.encode("utf-8"))
+        env.execute.side_effect = [
+            {"output": "", "returncode": 0},
+            {"output": f"{expected}\n", "returncode": 0},
+        ]
+        assert _write_to_sandbox(content, "/tmp/hermes-results/ok.txt", env) is True
+
+    def test_heredoc_backend_tolerates_single_trailing_newline(self):
+        """Heredoc-mode backends append one newline by construction."""
+        env = MagicMock()
+        env._stdin_mode = "heredoc"
+        content = "y" * 100
+        env.execute.side_effect = [
+            {"output": "", "returncode": 0},
+            {"output": "101\n", "returncode": 0},
+        ]
+        assert _write_to_sandbox(content, "/tmp/hermes-results/hd.txt", env) is True
+
+    def test_pipe_backend_rejects_extra_byte(self):
+        """The +1 tolerance is heredoc-only; pipe backends must be exact."""
+        env = MagicMock()
+        env._stdin_mode = "pipe"
+        content = "y" * 100
+        env.execute.side_effect = [
+            {"output": "", "returncode": 0},
+            {"output": "101\n", "returncode": 0},
+            {"output": "", "returncode": 0},  # rm -f
+        ]
+        assert _write_to_sandbox(content, "/tmp/hermes-results/hd2.txt", env) is False
+
+    def test_unprobeable_backend_is_best_effort_success(self):
+        """No wc / probe crash must not discard a likely-good archive."""
+        env = MagicMock()
+        env.execute.side_effect = [
+            {"output": "", "returncode": 0},
+            RuntimeError("exec transport gone"),
+        ]
+        assert _write_to_sandbox("data", "/tmp/hermes-results/np.txt", env) is True
 
 
 class TestResolveStorageDir:
@@ -201,10 +265,12 @@ class TestMaybePersistToolResult:
         """Content is persisted verbatim — no JSON extraction."""
         import json
         env = MagicMock()
-        # Readability probe fails -> falls back to the in-sandbox write.
+        # Readability probe fails -> falls back to the in-sandbox write,
+        # whose size probe returns unparseable output (best-effort success).
         env.execute.side_effect = [
             {"output": "", "returncode": 1},
             {"output": "", "returncode": 0},
+            {"output": "", "returncode": 1},  # wc -c size probe: no answer
         ]
         env.get_temp_dir.return_value = ""
         raw = "line1\nline2\n" * 5_000
@@ -219,7 +285,7 @@ class TestMaybePersistToolResult:
         assert PERSISTED_OUTPUT_TAG in result
         # Content is delivered through stdin (no longer embedded in the
         # command string — see test_large_content_via_stdin for why).
-        assert env.execute.call_args[1]["stdin_data"] == content
+        assert env.execute.call_args_list[1][1]["stdin_data"] == content
 
 
     def test_tool_use_id_cannot_escape_storage_dir(self):
@@ -228,6 +294,7 @@ class TestMaybePersistToolResult:
         env.execute.side_effect = [
             {"output": "", "returncode": 1},
             {"output": "", "returncode": 0},
+            {"output": "", "returncode": 1},  # wc -c size probe: no answer
         ]
         env.get_temp_dir.return_value = ""
         content = "x" * 60_000
@@ -238,7 +305,7 @@ class TestMaybePersistToolResult:
             env=env,
             threshold=30_000,
         )
-        cmd = env.execute.call_args[0][0]
+        cmd = env.execute.call_args_list[1][0][0]
         target = cmd.split("cat > ", 1)[1].split(" <<", 1)[0]
 
         assert "Full output saved to: /tmp/hermes-results/outside_whoami_x_" in result
@@ -406,6 +473,7 @@ class TestSpillover:
         env.execute.side_effect = [
             {"output": "", "returncode": 1},  # probe: not readable
             {"output": "", "returncode": 0},  # cat > sandbox path
+            {"output": "60000\n", "returncode": 0},  # wc -c verification
         ]
         env.get_temp_dir.return_value = "/tmp"
         content = "z" * 60_000
@@ -418,7 +486,7 @@ class TestSpillover:
         )
         assert PERSISTED_OUTPUT_TAG in result
         assert "/tmp/hermes-results/tc_remote_2.txt" in result
-        assert env.execute.call_count == 2
+        assert env.execute.call_count == 3
         # Host canonical copy exists regardless.
         assert (get_spillover_dir() / "tc_remote_2.txt").exists()
 
@@ -499,3 +567,48 @@ class TestRecoveryHint:
         assert msg.startswith(PERSISTED_OUTPUT_TAG)
         assert msg.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
         assert "read_file" in msg
+
+
+# ── host-side spillover round-trip verification ───────────────────────
+# Port of lobehub/lobehub#18258: verify the persisted archive before
+# telling the model the full result is available; fail closed otherwise.
+
+class TestSpilloverWriteVerification:
+    def test_lossless_write_returns_path(self):
+        from tools.tool_result_storage import _write_to_spillover
+
+        path = _write_to_spillover("hello spill", "tc_verify_ok.txt")
+        assert path is not None
+        with open(path, encoding="utf-8") as fh:
+            assert fh.read() == "hello spill"
+
+    def test_short_write_is_discarded(self):
+        """A partially-flushed archive must not be referenced to the model."""
+        from unittest.mock import patch as _patch
+
+        from tools.tool_result_storage import _write_to_spillover
+
+        real_stat = __import__("os").stat
+
+        class _ShortStat:
+            st_size = 3  # pretend only 3 bytes landed
+
+        def fake_stat(p, *a, **kw):
+            if str(p).endswith("tc_verify_short.txt"):
+                return _ShortStat()
+            return real_stat(p, *a, **kw)
+
+        with _patch("tools.tool_result_storage.os.stat", side_effect=fake_stat):
+            path = _write_to_spillover("this is much longer than 3 bytes", "tc_verify_short.txt")
+        assert path is None
+        assert not (get_spillover_dir() / "tc_verify_short.txt").exists()
+
+    def test_multibyte_content_verified_by_byte_count(self):
+        """Verification compares UTF-8 bytes, not characters."""
+        from tools.tool_result_storage import _write_to_spillover
+
+        content = "héllo wörld ✓" * 10
+        path = _write_to_spillover(content, "tc_verify_mb.txt")
+        assert path is not None
+        with open(path, encoding="utf-8") as fh:
+            assert fh.read() == content

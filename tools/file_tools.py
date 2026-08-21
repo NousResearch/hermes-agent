@@ -10,6 +10,7 @@ import posixpath
 import sys
 import threading
 from pathlib import Path, PurePosixPath
+from typing import Optional, Tuple
 
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import (
@@ -2230,6 +2231,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     Pass ``True`` after explicit user direction — same shape as ``force``
     on the terminal tool.
     """
+    # STRICT-READONLY Kanban worker gate (fail-closed). Must run FIRST
+    # so an escape attempt never reaches the broader sensitive / cross-
+    # profile checks. Outside strict mode the gate is a no-op.
+    strict_err = _strict_readonly_gate(path, task_id)
+    if strict_err:
+        return strict_err
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
@@ -2321,6 +2328,26 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     targets under another profile's skills/plugins/cron/memories
     directory. Same shape as ``write_file``'s flag.
     """
+    # STRICT-READONLY Kanban worker gate (fail-closed). Runs FIRST
+    # against every path the patch will touch (the explicit ``path``
+    # argument AND every path embedded in a V4A patch body) so an
+    # escape attempt never reaches the broader sensitive / cross-
+    # profile checks. Outside strict mode the gate is a no-op.
+    _strict_paths: list[str] = []
+    if path:
+        _strict_paths.append(path)
+    if mode == "patch" and patch:
+        import re as _strict_re
+        for _m in _strict_re.finditer(
+            r'^\*\*\*\s*(?:Update|Add|Delete|Move|File)\s*:\s*(.+)$',
+            patch,
+            _strict_re.MULTILINE,
+        ):
+            _strict_paths.append(_m.group(1).strip())
+    for _strict_p in _strict_paths:
+        _strict_err = _strict_readonly_gate(_strict_p, task_id)
+        if _strict_err:
+            return _strict_err
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
     # Paths whose CONTENT will be text-written (Update/Add + explicit path).
@@ -2636,6 +2663,285 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         return tool_error(str(e))
 
 
+
+
+# ---------------------------------------------------------------------------
+# Strict-readonly Kanban worker gate
+# ---------------------------------------------------------------------------
+# When a Kanban worker is dispatched with ``HERMES_KANBAN_STRICT_READONLY=1``
+# in its environment, ``write_file_tool`` and ``patch_tool`` must refuse any
+# mutation whose target resolves outside the worker's current task workspace
+# (``HERMES_KANBAN_WORKSPACE``). The gate is fail-closed: missing / invalid /
+# mismatched workspace ⇒ BLOCK with a structured ``tool_error`` JSON. The
+# trusted Kanban artifact promotion path (``kanban_db.store_attachment_bytes``
+# and friends) is not a model-tool surface and therefore unaffected.
+_STRICT_READONLY_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
+
+
+def _is_strict_readonly_active(task_id: str) -> bool:
+    """True iff the current process is a STRICT-READONLY Kanban worker.
+
+    Reads ``HERMES_KANBAN_STRICT_READONLY`` from the process environment.
+    The flag is set only by ``hermes_cli.kanban_db._default_spawn`` when
+    the dispatched task explicitly opted in via ``strict_readonly=True``;
+    ordinary writable Kanban workers and any non-Kanban CLI leave the
+    variable unset.
+    """
+    return os.environ.get("HERMES_KANBAN_STRICT_READONLY", "").strip() == "1"
+
+
+def _verify_strict_readonly_task_workspace_binding(
+    env_task: str, env_workspace: str
+) -> Optional[str]:
+    """Return a ``tool_error`` JSON iff the dispatcher-pinned workspace
+    does NOT match the canonical workspace of the persisted task.
+
+    Implements the S14 contract for ``tools.file_tools._strict_readonly_gate``:
+
+      1. ``env_task`` must name a task row that exists in the authoritative
+         Kanban DB on this board.
+      2. The canonical workspace of that task (computed by
+         :func:`hermes_cli.kanban_db.expected_workspace_for_task`, a pure
+         read-only resolver) must canonicalise equal to ``env_workspace``.
+
+    Any failure — missing DB env vars, DB connect failure, missing task,
+    bad kind, absent workspace_path for ``dir:``, no ``default_workdir``
+    for a fresh ``worktree``, schema drift, exception — is fail-closed:
+    the gate does NOT fall through to env-only containment. The original
+    Canary #2 lesson is preserved: the tool ``task_id`` argument is the
+    Hermes session_id and is NOT consulted here.
+
+    Returns ``None`` iff the binding matches.
+    """
+    db_pin = os.environ.get("HERMES_KANBAN_DB", "").strip()
+    board_pin = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+
+    if not db_pin or not board_pin:
+        return tool_error(
+            "STRICT_READONLY: cannot verify task/workspace binding — "
+            "dispatcher-controlled board/DB identity missing "
+            f"(HERMES_KANBAN_DB={db_pin!r}, HERMES_KANBAN_BOARD={board_pin!r}). "
+            "Writes are denied — strict mode fails closed."
+        )
+
+    # Lazy import: ``hermes_cli.kanban_db`` is a heavy module that itself
+    # touches ``hermes_state`` at import time. Importing it from the
+    # common-path file-tool module would couple them and balloon import
+    # cost; the gate already runs only under strict mode, so the
+    # import cost only ever lands when this branch fires.
+    try:
+        from hermes_cli import kanban_db as _kb
+        from hermes_cli.kanban_db import KanbanWorkspaceLookupError
+    except Exception as exc:
+        return tool_error(
+            "STRICT_READONLY: cannot verify task/workspace binding — "
+            f"kanban_db import failed ({type(exc).__name__}: {exc}). "
+            "Writes are denied — strict mode fails closed."
+        )
+
+    try:
+        conn = _kb.connect()
+    except Exception as exc:
+        return tool_error(
+            "STRICT_READONLY: cannot verify task/workspace binding — "
+            f"kanban DB connect failed ({type(exc).__name__}: {exc}). "
+            "Writes are denied — strict mode fails closed."
+        )
+    try:
+        try:
+            expected = _kb.expected_workspace_for_task(conn, env_task, board=board_pin)
+        except KanbanWorkspaceLookupError as exc:
+            return tool_error(
+                "STRICT_READONLY: task/workspace binding lookup failed — "
+                f"{exc}. Writes are denied."
+            )
+        except Exception as exc:
+            return tool_error(
+                "STRICT_READONLY: task/workspace binding lookup failed — "
+                f"({type(exc).__name__}: {exc}). Writes are denied."
+            )
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    try:
+        env_resolved = Path(env_workspace).resolve(strict=False)
+        expected_resolved = expected.resolve(strict=False)
+    except (OSError, ValueError) as exc:
+        return tool_error(
+            "STRICT_READONLY: task/workspace binding path canonicalisation "
+            f"failed ({type(exc).__name__}: {exc}). Writes are denied."
+        )
+
+    if env_resolved != expected_resolved:
+        return tool_error(
+            "STRICT_READONLY: task/workspace binding mismatch — "
+            f"task {env_task!r} canonical workspace is "
+            f"{str(expected_resolved)!r} but dispatcher pinned "
+            f"HERMES_KANBAN_WORKSPACE={env_workspace!r}. "
+            "Writes are denied."
+        )
+
+    return None
+
+
+def _resolve_strict_readonly_pinned_workspace() -> Tuple[Optional[Path], Optional[str]]:
+    """Return ``(canonical_workspace, error_json)`` for the dispatcher-pinned workspace.
+
+    The dispatcher (``hermes_cli.kanban_db._default_spawn``) sets
+    ``HERMES_KANBAN_WORKSPACE`` to the path it resolved for the dispatched
+    task; this is the dispatcher-controlled anchor the gate contains
+    against. Two failure modes are distinguished by return value:
+
+    * ``(Path, None)`` — workspace pinned, canonicalised via
+      ``Path.resolve(strict=False)`` so symlinks at the workspace
+      root are walked exactly once.
+    * ``(None, <tool_error JSON>)`` — workspace missing, sentinel,
+      non-absolute, or non-existent; the caller propagates the JSON.
+
+    The CLI's tool ``task_id`` argument is the **Hermes session_id**
+    (e.g. ``20260819_203942_1782cf``) — NOT the Kanban task id — so it
+    is deliberately NOT compared against ``HERMES_KANBAN_TASK`` here.
+    Authority lives in the workspace, not in model-supplied identity.
+    """
+    raw_workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "")
+    if not raw_workspace or raw_workspace.strip().lower() in _STRICT_READONLY_SENTINELS:
+        return None, tool_error(
+            "STRICT_READONLY: HERMES_KANBAN_WORKSPACE is missing or a sentinel "
+            f"value (got {raw_workspace!r}). Writes are denied — strict mode "
+            "fails closed."
+        )
+    if not os.path.isabs(raw_workspace):
+        return None, tool_error(
+            "STRICT_READONLY: HERMES_KANBAN_WORKSPACE is not an absolute path "
+            f"(got {raw_workspace!r}). Writes are denied — strict mode fails "
+            "closed."
+        )
+    if not os.path.isdir(raw_workspace):
+        return None, tool_error(
+            "STRICT_READONLY: HERMES_KANBAN_WORKSPACE does not identify an "
+            f"existing directory (got {raw_workspace!r}). Writes are denied — "
+            "strict mode fails closed."
+        )
+    return Path(raw_workspace).resolve(strict=False), None
+
+
+def _strict_readonly_gate(
+    path: str,
+    task_id: str,
+) -> Optional[str]:
+    """Return a ``tool_error`` JSON string iff the gate denies a write.
+
+    Returns ``None`` when the write is allowed (or when strict mode is
+    inactive, in which case the gate is a no-op). Activation requires
+    ``HERMES_KANBAN_STRICT_READONLY=1``. Authorization requires ALL of:
+
+      1. ``HERMES_KANBAN_TASK`` is non-empty (the dispatcher pins the
+         task identity; an empty env var means strict mode was set
+         without dispatcher authority and is refused up-front).
+      2. ``HERMES_KANBAN_WORKSPACE`` is set, absolute, not a sentinel
+         (``.``, ``cwd``, ``auto``, …), identifies an existing
+         directory, and is canonicalised via ``Path.resolve(strict=False)``.
+      3. The target's canonicalised path is contained within the
+         canonicalised workspace (symlink chain walked, ``..``
+         traversal blocked).
+
+    The tool ``task_id`` argument is the Hermes session_id propagated
+    by ``cli.py`` via ``AIAgent.run_conversation(task_id=...)``
+    (``task_id=self.session_id``); it is NOT the Kanban ``t_<id>`` and
+    is therefore NOT compared against ``HERMES_KANBAN_TASK``. Canary
+    #2 (strict worker t_9ff5c2bf, session 20260819_203942_1782cf)
+    proved the previous string-equality gate rejected every legitimate
+    in-workspace write because the two identities never match in
+    production. Identity is anchored on the dispatcher-pinned
+    workspace, not on a model-supplied task-id string.
+
+    Any failure ⇒ ``tool_error(...)`` JSON. No soft fallback, no return
+    ``None`` indicating "allowed with warning", no falling back to the
+    process cwd or HOME.
+    """
+    if not _is_strict_readonly_active(task_id):
+        return None
+
+    # Strict mode is only meaningful when a dispatcher identity is
+    # present in the environment. The flag without ``HERMES_KANBAN_TASK``
+    # means strict mode was set outside the dispatcher contract (or
+    # the dispatcher was configured inconsistently); refuse every
+    # write rather than fall through to containment-less "strict".
+    env_task = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    raw_workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "")
+    if not env_task or not raw_workspace:
+        return tool_error(
+            "STRICT_READONLY: missing dispatcher identity "
+            f"(HERMES_KANBAN_TASK={env_task!r}, "
+            f"HERMES_KANBAN_WORKSPACE={raw_workspace!r}). "
+            "Writes are denied — strict mode fails closed."
+        )
+
+    workspace, ws_err = _resolve_strict_readonly_pinned_workspace()
+    if ws_err is not None:
+        return ws_err
+    assert workspace is not None  # invariant: ws_err is None ⇒ workspace is set
+
+    # S14 task/workspace binding check. The authorization anchor now
+    # expands from "the dispatcher pinned this workspace" to "the
+    # dispatcher pinned a workspace that matches the canonical workspace
+    # of the persisted task identified by HERMES_KANBAN_TASK in the
+    # authoritative Kanban DB". Failures anywhere in this check deny
+    # the write before target containment is even consulted — defense
+    # in depth against inconsistent dispatcher state, env inheritance,
+    # and any future code path that exports ``HERMES_KANBAN_WORKSPACE``
+    # without going through ``_default_spawn``.
+    binding_err = _verify_strict_readonly_task_workspace_binding(
+        env_task, str(workspace)
+    )
+    if binding_err is not None:
+        return binding_err
+
+    # Resolve the target. Use the existing helper to preserve current
+    # path semantics for relative paths (against the task cwd) before
+    # applying the strict workspace containment check.
+    try:
+        resolved = _resolve_path_for_task(path, task_id)
+    except Exception as exc:
+        return tool_error(
+            "STRICT_READONLY: target path could not be resolved "
+            f"({type(exc).__name__}: {exc}). Writes are denied."
+        )
+
+    target = Path(resolved).resolve(strict=False)
+
+    # The workspace root itself is not a writable file target.
+    if target == workspace:
+        return tool_error(
+            "STRICT_READONLY: target equals the workspace root "
+            f"({str(workspace)!r}); only files INSIDE the workspace are "
+            "writable."
+        )
+
+    # Containment under the canonicalised workspace. ``is_relative_to``
+    # already follows lexical containment, but we additionally walk the
+    # symlink chain via ``Path.resolve(strict=False)`` above to defeat
+    # symlinks whose chain escapes the workspace.
+    try:
+        is_inside = target.is_relative_to(workspace)
+    except ValueError:
+        is_inside = False
+    except OSError as exc:
+        return tool_error(
+            "STRICT_READONLY: target path traversal check failed "
+            f"({type(exc).__name__}: {exc}). Writes are denied."
+        )
+    if not is_inside:
+        return tool_error(
+            "STRICT_READONLY: target escapes the workspace boundary "
+            f"(workspace={str(workspace)!r}, target={str(target)!r}). "
+            "Writes are denied."
+        )
+
+    return None
 
 
 # ---------------------------------------------------------------------------

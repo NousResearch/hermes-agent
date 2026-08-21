@@ -1128,6 +1128,15 @@ class Task:
     # Goal-loop turn budget for ``goal_mode`` workers. ``None`` falls
     # through to the goals engine default (``goals.DEFAULT_MAX_TURNS``).
     goal_max_turns: Optional[int] = None
+    # When True, the dispatched worker is a STRICT-READONLY Kanban worker:
+    # it sees ``HERMES_KANBAN_STRICT_READONLY=1`` in its env, the worker CLI
+    # is launched with ``--disabled-toolsets terminal,code_execution``, and
+    # the file-write gate (``tools.file_tools``) confines
+    # ``write_file_tool`` / ``patch_tool`` to the worker's current task
+    # workspace. ``False`` (default) = ordinary writable Kanban worker.
+    # Set explicitly by the caller; never inferred from ``created_by``
+    # (provenance is NOT capability).
+    strict_readonly: bool = False
     # Originating chat/agent session id, when the task was created from
     # within an agent loop that propagated ``HERMES_SESSION_ID``. NULL for
     # tasks created from the CLI, the dashboard, or any path that doesn't
@@ -1223,6 +1232,9 @@ class Task:
             ),
             goal_max_turns=(
                 row["goal_max_turns"] if "goal_max_turns" in keys and row["goal_max_turns"] else None
+            ),
+            strict_readonly=(
+                bool(row["strict_readonly"]) if "strict_readonly" in keys and row["strict_readonly"] else False
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
@@ -1404,6 +1416,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Goal-loop turn budget for ``goal_mode`` workers. NULL = use the
     -- goals-engine default.
     goal_max_turns       INTEGER,
+    -- Strict-readonly capability flag. When 1, the dispatched worker is a
+    -- STRICT-READONLY Kanban worker: ``HERMES_KANBAN_STRICT_READONLY=1``
+    -- is exported, the worker CLI is launched with
+    -- ``--disabled-toolsets terminal,code_execution``, and the file-write
+    -- gate confines ``write_file`` / ``patch`` to the current task
+    -- workspace. 0 (default) = ordinary writable Kanban worker. Set
+    -- explicitly by the caller; never inferred from ``created_by``
+    -- (provenance is NOT capability).
+    strict_readonly      INTEGER NOT NULL DEFAULT 0,
     -- Originating chat/agent session id when the task was created from
     -- inside an agent loop that propagated ``HERMES_SESSION_ID``. NULL
     -- for tasks created from the CLI, dashboard, or any path that doesn't
@@ -2654,6 +2675,21 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "goal_max_turns", "goal_max_turns INTEGER"
         )
 
+    if "strict_readonly" not in cols:
+        # STRICT-READONLY Kanban worker capability. 0 (default) = ordinary
+        # writable Kanban worker (preserves existing-row behaviour). 1 =
+        # the dispatcher pins ``HERMES_KANBAN_STRICT_READONLY=1`` on the
+        # worker, the worker CLI receives
+        # ``--disabled-toolsets terminal,code_execution``, and
+        # ``tools.file_tools`` confines ``write_file`` / ``patch`` to the
+        # current task workspace. Never inferred from ``created_by``.
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "strict_readonly",
+            "strict_readonly INTEGER NOT NULL DEFAULT 0",
+        )
+
     if "session_id" not in cols:
         # Originating agent/chat session id, populated when the task is
         # created from within an agent loop that propagated
@@ -3178,6 +3214,7 @@ def create_task(
     reasoning_effort: Optional[str] = None,
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
+    strict_readonly: bool = False,
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
@@ -3216,6 +3253,16 @@ def create_task(
     (``minimal``…``ultra``, or ``none`` to disable thinking), passed as
     ``--reasoning <level>``. It is independent of ``model_override``: a task
     can run the profile's own model at a different depth.
+
+    ``strict_readonly`` (default ``False``) opts the dispatched worker into
+    the STRICT-READONLY Kanban worker posture: the dispatcher exports
+    ``HERMES_KANBAN_STRICT_READONLY=1`` and passes
+    ``--disabled-toolsets terminal,code_execution`` to the worker CLI;
+    the file-write gate (``tools.file_tools``) confines ``write_file`` and
+    ``patch`` to the worker's current task workspace. ``False`` (default)
+    = ordinary writable Kanban worker; never inferred from ``created_by``.
+    The capability is explicit — autonomous and operator-created tasks
+    both default to writable unless they opt in.
 
     ``project_source_task_id`` is an internal cross-profile fallback for a
     worker-created child. When the active profile cannot resolve ``project_id``
@@ -3497,8 +3544,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, strict_readonly, session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3523,6 +3570,7 @@ def create_task(
                         reasoning_effort,
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
+                        1 if strict_readonly else 0,
                         session_id,
                     ),
                 )
@@ -7901,6 +7949,167 @@ def set_workspace_path(
         )
 
 
+# ---------------------------------------------------------------------------
+# STRICT-READONLY S14 binding resolver (read-only, pure)
+# ---------------------------------------------------------------------------
+#
+# ``expected_workspace_for_task`` computes the canonical workspace that
+# the dispatcher SHOULD hand a worker for ``task_id`` without performing
+# any state mutation. It is the authoritative counterpart of
+# ``resolve_workspace`` for the strict-readonly file-write gate: the
+# gate cross-checks that the dispatcher-pinned ``HERMES_KANBAN_WORKSPACE``
+# equals the value returned here for ``HERMES_KANBAN_TASK`` before
+# allowing any write.
+#
+# INVARIANTS (the gate relies on every one of these):
+#
+# * PURE: no filesystem creation, no git worktree materialization, no
+#   DB update, no task lifecycle mutation. Only ``get_task`` reads and
+#   ``Path(...)`` arithmetic run.
+# * FAIL-LOUD: every failure mode raises a typed
+#   :class:`KanbanWorkspaceLookupError` so the gate can translate it
+#   into a structured ``tool_error``. Callers must NOT swallow the
+#   exception to fall back to env-only containment; that would be the
+#   very fail-open the gate exists to prevent.
+# * CONSISTENT-WITH-DISPATCHER: the algorithms mirror the relevant
+#   branches of ``resolve_workspace`` and ``_resolve_worktree_workspace``
+#   so a worker whose task row matches the dispatcher's pinned env gets
+#   exactly the same canonical path back; a worker whose task row does
+#   NOT match gets a different path and is denied at the binding check.
+#
+# The worktree branch is intentionally conservative: when
+# ``task.workspace_path`` is None (the common case) and the board has
+# no ``default_workdir``, we fail closed rather than guess — guessing
+# from ``Path.cwd()`` is exactly what the production dispatcher refuses
+# to do for confused-deputy reasons, so the gate cannot do it either.
+
+WORKSPACE_KIND_SCRATCH = "scratch"
+WORKSPACE_KIND_DIR = "dir"
+WORKSPACE_KIND_WORKTREE = "worktree"
+_VALID_STRICT_WORKSPACE_KINDS = frozenset(
+    {WORKSPACE_KIND_SCRATCH, WORKSPACE_KIND_DIR, WORKSPACE_KIND_WORKTREE}
+)
+
+
+class KanbanWorkspaceLookupError(Exception):
+    """Raised when :func:`expected_workspace_for_task` cannot compute a
+    canonical workspace for a Kanban task.
+
+    The strict-readonly file-write gate treats every instance as
+    fail-closed: any failure here means the dispatcher pin and the
+    authoritative persisted state disagree (or the task / board /
+    workspace mode itself is unknown), so the gate denies the write
+    without consulting target containment.
+    """
+
+
+def expected_workspace_for_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    board: Optional[str] = None,
+) -> Path:
+    """Return the canonical workspace path the dispatcher SHOULD hand a
+    worker for ``task_id``.
+
+    Pure read-only resolver; see the section comment above for the
+    contract the gate relies on. The returned path is ``expanduser()``-ed
+    but NOT resolved through symlinks (so the gate's canonicalisation
+    step sees the same shape on both sides).
+    """
+    if not task_id or not isinstance(task_id, str):
+        raise KanbanWorkspaceLookupError(
+            f"expected_workspace_for_task: invalid task_id {task_id!r}"
+        )
+    task = get_task(conn, task_id)
+    if task is None:
+        raise KanbanWorkspaceLookupError(
+            f"expected_workspace_for_task: task {task_id!r} not found in "
+            f"board {board!r} DB"
+        )
+    kind = (task.workspace_kind or WORKSPACE_KIND_SCRATCH).strip().lower()
+    if kind not in _VALID_STRICT_WORKSPACE_KINDS:
+        raise KanbanWorkspaceLookupError(
+            f"expected_workspace_for_task: task {task_id!r} has unknown "
+            f"workspace_kind {kind!r}"
+        )
+
+    if kind == WORKSPACE_KIND_SCRATCH:
+        if task.workspace_path:
+            stored = Path(task.workspace_path).expanduser()
+            if not stored.is_absolute():
+                raise KanbanWorkspaceLookupError(
+                    f"expected_workspace_for_task: task {task_id!r} scratch "
+                    f"workspace_path {stored!r} is not absolute"
+                )
+            return stored
+        root = workspaces_root(board=board)
+        return root / task_id
+
+    if kind == WORKSPACE_KIND_DIR:
+        if not task.workspace_path:
+            raise KanbanWorkspaceLookupError(
+                f"expected_workspace_for_task: task {task_id!r} has "
+                f"workspace_kind=dir but no workspace_path persisted"
+            )
+        stored = Path(task.workspace_path).expanduser()
+        if not stored.is_absolute():
+            raise KanbanWorkspaceLookupError(
+                f"expected_workspace_for_task: task {task_id!r} dir "
+                f"workspace_path {stored!r} is not absolute"
+            )
+        return stored
+
+    # ``worktree`` — match ``_resolve_worktree_workspace`` semantics for
+    # the path-only determination, but never create the worktree.
+    if task.workspace_path:
+        stored = Path(task.workspace_path).expanduser()
+        if not stored.is_absolute():
+            raise KanbanWorkspaceLookupError(
+                f"expected_workspace_for_task: task {task_id!r} worktree "
+                f"workspace_path {stored!r} is not absolute"
+            )
+        # The dispatcher's persisted-path branch returns the stored path
+        # verbatim when it is or points inside an existing / new git
+        # repo, possibly rewritten to ``<repo>/.worktrees/<task_id>``.
+        # We approximate that without I/O: when the persisted path is
+        # a git toplevel itself, the canonical worktree path lives at
+        # ``<repo>/.worktrees/<task_id>``; otherwise we trust the
+        # stored path (the dispatcher would materialise the worktree
+        # there, so the gate must accept the same target).
+        from_top = _git_toplevel(stored)
+        if from_top is not None and stored.resolve(strict=False) == from_top.resolve(strict=False):
+            return (from_top / ".worktrees" / task_id).resolve(strict=False)
+        return stored.resolve(strict=False)
+
+    # Persisted path absent: anchor on the board's ``default_workdir``.
+    # The strict gate must NOT guess from ``Path.cwd()`` — that's the
+    # confused-deputy risk the production dispatcher rejects.
+    slug = board if board else get_current_board()
+    meta = read_board_metadata(slug)
+    default_workdir = (meta.get("default_workdir") or "").strip()
+    if not default_workdir:
+        raise KanbanWorkspaceLookupError(
+            f"expected_workspace_for_task: task {task_id!r} has no "
+            f"workspace_path and board {slug!r} has no default_workdir; "
+            f"strict-readonly gate cannot derive a canonical path"
+        )
+    anchor = Path(default_workdir).expanduser()
+    if not anchor.is_absolute():
+        raise KanbanWorkspaceLookupError(
+            f"expected_workspace_for_task: board {slug!r} default_workdir "
+            f"{default_workdir!r} is not absolute"
+        )
+    git_root = _git_toplevel(anchor)
+    if git_root is None:
+        raise KanbanWorkspaceLookupError(
+            f"expected_workspace_for_task: board {slug!r} default_workdir "
+            f"{default_workdir!r} is not inside a git repository; "
+            f"cannot derive canonical worktree path for task {task_id!r}"
+        )
+    return (git_root / ".worktrees" / task_id).resolve(strict=False)
+
+
 def set_branch_name(
     conn: sqlite3.Connection, task_id: str, branch_name: str
 ) -> None:
@@ -10798,6 +11007,15 @@ def _default_spawn(
         env["HERMES_KANBAN_GOAL_MODE"] = "1"
         if task.goal_max_turns is not None:
             env["HERMES_KANBAN_GOAL_MAX_TURNS"] = str(int(task.goal_max_turns))
+    # STRICT-READONLY worker capability. When the task opts in via
+    # ``strict_readonly=True``, the dispatcher exports
+    # ``HERMES_KANBAN_STRICT_READONLY=1`` so the worker's file-write gate
+    # (``tools.file_tools``) and any other capability consumer can
+    # observe the posture. Ordinary writable Kanban workers MUST NOT
+    # receive this env — the capability is explicit per task, never
+    # inferred from ``created_by`` (provenance is NOT capability).
+    if task.strict_readonly:
+        env["HERMES_KANBAN_STRICT_READONLY"] = "1"
     terminal_timeout = _worker_terminal_timeout_env(
         task.max_runtime_seconds,
         env.get("TERMINAL_TIMEOUT"),
@@ -10871,6 +11089,26 @@ def _default_spawn(
     if task.reasoning_effort:
         cmd.extend(["--reasoning", task.reasoning_effort])
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
+    # STRICT-READONLY worker: subtract ``terminal`` and ``code_execution``
+    # from the worker's resolved CLI toolset surface before emitting
+    # ``--toolsets``. The production Hermes CLI accepts a comma-separated
+    # ``--toolsets`` allowlist (top-level and ``chat`` subparser both
+    # support it) but does NOT accept ``--disabled-toolsets`` — emitting
+    # an unsupported flag is a hard argparse failure that crashes the
+    # worker before session init. Filtering at the resolved-toolsets
+    # level stays inside the existing transport contract: every
+    # otherwise-authorized assignee toolset is preserved, ``terminal``
+    # and ``code_execution`` are removed, and ``model_tools`` still
+    # re-appends the ``kanban`` lifecycle toolset because
+    # ``HERMES_KANBAN_TASK`` is set in the spawned env (see
+    # ``model_tools._get_tool_definitions_uncached``). Ordinary
+    # non-strict workers do NOT see this filter — the capability is
+    # explicit per task, never inferred.
+    if task.strict_readonly and worker_toolsets:
+        worker_toolsets = [
+            ts for ts in worker_toolsets
+            if ts not in {"terminal", "code_execution"}
+        ]
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend([

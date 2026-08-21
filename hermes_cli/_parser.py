@@ -490,6 +490,19 @@ def build_top_level_parser():
     )
     _inherited_flag(
         chat_parser,
+        "--skip-background-review",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "Skip the end-of-turn automatic background memory/skill review fork "
+            "(~30K tokens / event). Useful for cron-style sessions, CI, or "
+            "strict-readonly worker contexts where the review fork has no "
+            "human-in-the-loop value. Implies skip_background_review=True on the "
+            "AIAgent constructor; the explicit /refine command still works."
+        ),
+    )
+    _inherited_flag(
+        chat_parser,
         "--ignore-user-config",
         action="store_true",
         default=argparse.SUPPRESS,

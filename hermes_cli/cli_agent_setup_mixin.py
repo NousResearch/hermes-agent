@@ -14,6 +14,7 @@ loaded) so this module never imports ``cli`` at import time -> no import cycle.
 
 from __future__ import annotations
 
+import os
 import sys
 
 from rich.markup import escape as _escape
@@ -23,6 +24,38 @@ from utils import base_url_host_matches
 
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
+
+    def _effective_skip_background_review(self) -> bool:
+        """Return the effective skip-background-review value for AIAgent construction.
+
+        Invariant: explicit ``--skip-background-review`` on the CLI wins;
+        the Kanban worker marker is the secondary signal. We never mutate
+        the environment and never persist this value to config — it is
+        computed at construction time and discarded when the worker exits.
+
+        The Kanban worker marker is the canonical current upstream signal
+        the dispatcher (``hermes_cli/kanban_db.py``) sets when spawning a
+        worker subprocess: ``HERMES_KANBAN_TASK`` to the task ID, plus the
+        secondary ``HERMES_SESSION_SOURCE = "kanban"`` tag. Either marker
+        being present on the worker subprocess means we are a worker, so
+        we suppress the post-turn review fork to avoid the worker
+        mutating the skill library mid-task.
+
+        Both env vars are read-only here — the dispatcher owns them and
+        this function only consults them.
+        """
+        explicit = bool(getattr(self, "skip_background_review", False))
+        if explicit:
+            return True
+        # Canonical worker markers (set by the dispatcher in kanban_db.py).
+        # HERMES_KANBAN_TASK is the most specific: it's only set when a
+        # Kanban task is dispatched. HERMES_SESSION_SOURCE == "kanban" is
+        # the secondary tag. We treat both as equivalent signals.
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            return True
+        if os.environ.get("HERMES_SESSION_SOURCE") == "kanban":
+            return True
+        return False
 
     def _ensure_runtime_credentials(self) -> bool:
         """
@@ -533,6 +566,13 @@ class CLIAgentSetupMixin:
                 pass_session_id=self.pass_session_id,
                 skip_context_files=self.ignore_rules,
                 skip_memory=self.ignore_rules,
+                # --skip-background-review: explicit CLI flag wins; the
+                # Kanban worker marker (HERMES_KANBAN_TASK /
+                # HERMES_SESSION_SOURCE=="kanban", set by the dispatcher in
+                # hermes_cli/kanban_db.py when spawning a worker) also
+                # activates the suppression. Read at AIAgent construction
+                # time; the environment is NOT mutated.
+                skip_background_review=self._effective_skip_background_review(),
                 tool_progress_callback=self._on_tool_progress,
                 tool_start_callback=self._on_tool_start if self._inline_diffs_enabled else None,
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,

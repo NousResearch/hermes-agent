@@ -4990,6 +4990,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         resume: str = None,
         checkpoints: bool = False,
         pass_session_id: bool = False,
+        skip_background_review: bool = False,
         ignore_rules: bool = False,
     ):
         """
@@ -5285,6 +5286,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.checkpoint_max_total_size_mb = cp_cfg.get("max_total_size_mb", 500)
         self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", 10)
         self.pass_session_id = pass_session_id
+        # --skip-background-review: per-invocation CLI flag forwarding onto
+        # AIAgent(skip_background_review=...) via cli_agent_setup_mixin._init_agent.
+        # The flag is invocation-local — never persisted to config or env. The
+        # explicit /refine command remains unaffected because it calls
+        # agent._spawn_background_review(automatic=False), which opts out of
+        # the central fail-safe guard.
+        self.skip_background_review = skip_background_review
         # --ignore-rules: honor either the constructor flag or the env var set
         # by `hermes chat --ignore-rules` in hermes_cli/main.py. When true we
         # pass skip_context_files=True and skip_memory=True to AIAgent so

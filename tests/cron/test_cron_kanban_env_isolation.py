@@ -438,6 +438,7 @@ def test_every_dispatcher_kanban_var_is_identity_gated():
         "HERMES_KANBAN_BRANCH",
         "HERMES_KANBAN_GOAL_MODE",
         "HERMES_KANBAN_GOAL_MAX_TURNS",
+        "HERMES_KANBAN_STRICT_READONLY",
     }
     uncovered = injected - set(KANBAN_ENV_KEYS) - behaviour_only
     assert not uncovered, (

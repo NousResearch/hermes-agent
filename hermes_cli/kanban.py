@@ -393,6 +393,19 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           metavar="N", dest="goal_max_turns",
                           help="Turn budget for --goal workers (default 20). "
                                "Ignored without --goal.")
+    p_create.add_argument("--strict-readonly", action="store_true",
+                          dest="strict_readonly", default=False,
+                          help=(
+                              "Dispatch the worker as a STRICT-READONLY "
+                              "Kanban worker: the worker is launched with "
+                              "HERMES_KANBAN_STRICT_READONLY=1 and "
+                              "--disabled-toolsets terminal,code_execution, "
+                              "and its write_file / patch tools are "
+                              "constrained to its current task workspace. "
+                              "Default is off — ordinary writable Kanban "
+                              "workers. Capability is explicit per task; "
+                              "never inferred from --created-by."
+                          ))
     p_create.add_argument("--initial-status",
                           choices=sorted(kb.VALID_INITIAL_STATUSES),
                           default="running",
@@ -1585,6 +1598,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             provider_override=getattr(args, "provider_override", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
+            strict_readonly=bool(getattr(args, "strict_readonly", False)),
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)

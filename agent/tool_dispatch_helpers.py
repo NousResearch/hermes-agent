@@ -586,9 +586,18 @@ def make_tool_result_message(
 # payload is data, not instructions — the architectural piece of the
 # promptware defense.  Skipped for short outputs (under 32 chars) where the
 # overhead of the wrapper outweighs any indirect-injection risk.
+#
+# ``terminal`` is included because command output (stdout/stderr) is
+# attacker-controllable: a file read via ``cat``, compiler output from a
+# vendored build script, or a git-cloned repo's Makefile can all embed
+# adversarial text.  The same indirect-injection risk that applies to web
+# pages applies to shell output that ultimately came from an untrusted source.
+# Short terminal output (< 32 chars) is excluded, as before, so "ok\n" and
+# similar confirmation strings pass through unwrapped.
 _UNTRUSTED_TOOL_NAMES = frozenset({
     "web_extract",
     "web_search",
+    "terminal",
 })
 
 _UNTRUSTED_TOOL_PREFIXES = (

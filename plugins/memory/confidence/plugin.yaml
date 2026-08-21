@@ -1,0 +1,6 @@
+name: confidence
+version: 0.1.0
+description: "Confidence memory — local SQLite memory with layer/confidence/source/TTL metadata and safe injection policy."
+hooks:
+  - prefetch
+  - on_session_end

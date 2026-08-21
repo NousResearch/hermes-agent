@@ -33,6 +33,30 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
         help="Provider to configure directly (e.g. honcho), skipping the picker",
     )
     memory_sub.add_parser("status", help="Show current memory provider config")
+    _review_parser = memory_sub.add_parser(
+        "review",
+        help="List confidence-memory items for review when the active provider supports it",
+    )
+    _review_parser.add_argument("--include-inactive", action="store_true")
+    _review_parser.add_argument("--limit", type=int, default=50)
+    _search_parser = memory_sub.add_parser(
+        "search",
+        help="Search confidence-memory items when the active provider supports it",
+    )
+    _search_parser.add_argument("query")
+    _search_parser.add_argument("--include-inactive", action="store_true")
+    _search_parser.add_argument("--limit", type=int, default=10)
+    _confirm_parser = memory_sub.add_parser(
+        "confirm",
+        help="Confirm a confidence-memory item by id",
+    )
+    _confirm_parser.add_argument("id")
+    _confirm_parser.add_argument("--source-excerpt", default="user confirmed via CLI")
+    _delete_parser = memory_sub.add_parser(
+        "delete",
+        help="Delete a confidence-memory item by id",
+    )
+    _delete_parser.add_argument("id")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
     _reset_parser = memory_sub.add_parser(
         "reset",

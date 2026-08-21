@@ -472,6 +472,81 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Provider action helpers
+# ---------------------------------------------------------------------------
+
+def _load_active_provider_for_command():
+    """Load and initialize the active external memory provider for CLI actions."""
+    from hermes_cli.config import load_config
+    from plugins.memory import load_memory_provider
+
+    config = load_config()
+    mem_config = config.get("memory", {}) if isinstance(config.get("memory"), dict) else {}
+    provider_name = mem_config.get("provider", "")
+    if not provider_name:
+        print("\n  No external memory provider is active. Run 'hermes memory setup confidence'.\n")
+        return None
+    provider = load_memory_provider(provider_name)
+    if not provider:
+        print(f"\n  Memory provider '{provider_name}' is not installed.\n")
+        return None
+    provider.initialize("cli-memory-command", hermes_home=str(get_hermes_home()), platform="cli")
+    return provider
+
+
+def _print_provider_json_result(result: str) -> None:
+    try:
+        import json
+        data = json.loads(result)
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+    except Exception:
+        print(result)
+
+
+def cmd_provider_action(args) -> None:
+    provider = _load_active_provider_for_command()
+    if not provider:
+        return
+    try:
+        sub = getattr(args, "memory_command", "")
+        if sub == "review":
+            payload = {
+                "action": "list",
+                "include_inactive": bool(getattr(args, "include_inactive", False)),
+                "limit": int(getattr(args, "limit", 50)),
+            }
+        elif sub == "search":
+            payload = {
+                "action": "search",
+                "query": getattr(args, "query", ""),
+                "include_inactive": bool(getattr(args, "include_inactive", False)),
+                "limit": int(getattr(args, "limit", 10)),
+            }
+        elif sub == "confirm":
+            payload = {
+                "action": "confirm",
+                "id": getattr(args, "id", ""),
+                "source_kind": "user_confirmed",
+                "source_excerpt": getattr(args, "source_excerpt", "user confirmed via CLI"),
+            }
+        elif sub == "delete":
+            payload = {"action": "delete", "id": getattr(args, "id", "")}
+        else:
+            print(f"\n  Unsupported memory provider action: {sub}\n")
+            return
+        if not hasattr(provider, "handle_tool_call"):
+            print(f"\n  Active provider '{provider.name}' does not support CLI memory actions.\n")
+            return
+        result = provider.handle_tool_call("confidence_memory", payload)
+        _print_provider_json_result(result)
+    finally:
+        try:
+            provider.shutdown()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Status
 # ---------------------------------------------------------------------------
 
@@ -581,5 +656,7 @@ def memory_command(args) -> None:
             cmd_setup(args)
     elif sub == "status":
         cmd_status(args)
+    elif sub in {"review", "search", "confirm", "delete"}:
+        cmd_provider_action(args)
     else:
         cmd_status(args)

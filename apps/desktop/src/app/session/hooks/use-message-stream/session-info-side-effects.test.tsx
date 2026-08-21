@@ -246,6 +246,10 @@ describe('session.info settles a turn that produced no assistant payload', () =>
 
   it('hydrates the foreground transcript once and coalesces the sidebar refresh', async () => {
     mountStream()
+    sessionStates!.set(ACTIVE_SID, {
+      ...createClientSessionState('shared-session'),
+      profile: 'meta'
+    })
 
     startTurn(ACTIVE_SID)
     vi.useFakeTimers()
@@ -260,11 +264,26 @@ describe('session.info settles a turn that produced no assistant payload', () =>
     })
 
     expect(hydrateFromStoredSession).toHaveBeenCalledTimes(1)
+    expect(hydrateFromStoredSession).toHaveBeenCalledWith(3, 'shared-session', ACTIVE_SID, 'meta')
     expect(refreshSessions).toHaveBeenCalledTimes(1)
   })
 })
 
 describe('message.complete sidebar refresh coalescing', () => {
+  it('carries the runtime profile into post-turn transcript hydration', () => {
+    mountStream()
+    sessionStates!.set(ACTIVE_SID, {
+      ...createClientSessionState('shared-session'),
+      adoptedRunningTurn: true,
+      busy: true,
+      profile: 'meta'
+    })
+
+    act(() => stream.handleEvent({ payload: { text: 'done' }, session_id: ACTIVE_SID, type: 'message.complete' }))
+
+    expect(hydrateFromStoredSession).toHaveBeenCalledWith(3, 'shared-session', ACTIVE_SID, 'meta')
+  })
+
   it('collapses near-simultaneous completions into one refresh', async () => {
     mountStream()
     vi.useFakeTimers()

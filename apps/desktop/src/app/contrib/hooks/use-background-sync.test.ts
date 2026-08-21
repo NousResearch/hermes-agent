@@ -41,9 +41,13 @@ function transcript(answer: string) {
   }
 }
 
-function makeRefresh(resolveSession: ActiveTranscriptRefreshDeps['resolveSession'] = () => ({ profile: 'default' })) {
+function makeRefresh(
+  resolveSession: ActiveTranscriptRefreshDeps['resolveSession'] = () => ({ profile: 'default' }),
+  selectedProfile = 'default'
+) {
   const activeSessionIdRef = { current: ACTIVE_RUNTIME_ID as string | null }
   const selectedStoredSessionIdRef = { current: ACTIVE_STORED_ID as string | null }
+  const selectedStoredSessionProfileRef = { current: selectedProfile as string | null }
   const busyRef = { current: false }
   const requestSequenceRef = { current: 0 }
   const signatureRef = { current: new Map<string, string>() }
@@ -64,11 +68,21 @@ function makeRefresh(resolveSession: ActiveTranscriptRefreshDeps['resolveSession
       requestSequenceRef,
       resolveSession,
       selectedStoredSessionIdRef,
+      selectedStoredSessionProfileRef,
       signatureRef,
       updateSessionState
     })
 
-  return { activeSessionIdRef, busyRef, refresh, selectedStoredSessionIdRef, state, states, updateSessionState }
+  return {
+    activeSessionIdRef,
+    busyRef,
+    refresh,
+    selectedStoredSessionIdRef,
+    selectedStoredSessionProfileRef,
+    state,
+    states,
+    updateSessionState
+  }
 }
 
 function useSyncHarness({
@@ -145,7 +159,7 @@ describe('active transcript refresh', () => {
     $activeSessionId.set(ACTIVE_RUNTIME_ID)
     $selectedStoredSessionId.set(ACTIVE_STORED_ID)
     setSessions([{ id: ACTIVE_STORED_ID, profile: 'desktop-profile', source: 'desktop' } as never])
-    const fixture = makeRefresh(resolveActiveTranscriptSession)
+    const fixture = makeRefresh(resolveActiveTranscriptSession, 'desktop-profile')
     vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('external answer') as never)
 
     renderSync(fixture.refresh)
@@ -240,7 +254,7 @@ describe('active transcript refresh', () => {
 describe('reconcileActiveTranscript', () => {
   it('resolves and hydrates a messaging session from the messaging sessions store', async () => {
     setMessagingSessions([{ id: ACTIVE_STORED_ID, profile: 'messaging-profile', source: 'telegram' } as never])
-    const fixture = makeRefresh(resolveActiveTranscriptSession)
+    const fixture = makeRefresh(resolveActiveTranscriptSession, 'messaging-profile')
     vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('telegram answer') as never)
 
     await fixture.refresh()
@@ -249,6 +263,20 @@ describe('reconcileActiveTranscript', () => {
     expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.parts[0]).toMatchObject({
       text: 'telegram answer'
     })
+  })
+
+  it('resolves duplicate ids through the selected profile owner', async () => {
+    setSessions([
+      { id: ACTIVE_STORED_ID, profile: 'default', source: 'desktop' } as never,
+      { id: ACTIVE_STORED_ID, profile: 'meta', source: 'desktop' } as never
+    ])
+    const fixture = makeRefresh(resolveActiveTranscriptSession, 'meta')
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('meta answer') as never)
+
+    await fixture.refresh()
+
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(ACTIVE_STORED_ID, 'meta')
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.parts[0]).toMatchObject({ text: 'meta answer' })
   })
 
   it('publishes changed authoritative messages once without duplicates', async () => {
@@ -308,6 +336,23 @@ describe('reconcileActiveTranscript', () => {
     fixture.selectedStoredSessionIdRef.current = 'stored-other'
     fixture.activeSessionIdRef.current = 'runtime-other'
     resolve?.(transcript('stale answer'))
+    await request
+
+    expect(fixture.updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('discards a same-id response when only the selected profile changes in flight', async () => {
+    const fixture = makeRefresh()
+    let resolve: ((value: unknown) => void) | undefined
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(
+      new Promise(currentResolve => {
+        resolve = currentResolve
+      }) as never
+    )
+
+    const request = fixture.refresh()
+    fixture.selectedStoredSessionProfileRef.current = 'meta'
+    resolve?.(transcript('stale default answer'))
     await request
 
     expect(fixture.updateSessionState).not.toHaveBeenCalled()

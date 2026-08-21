@@ -546,6 +546,29 @@ class SessionManager:
 
         model = row.get("model") or None
 
+        # Persistence stores the *resolved* billing class, which for every
+        # named ``providers:`` / ``custom_providers:`` entry is the bare
+        # string "custom" — not a routable identity. Passing it straight to
+        # resolve_runtime_provider() misses the entry, so the rebuilt agent
+        # gets no key and the client falls back to OPENROUTER_API_KEY against
+        # the stored custom base_url (401 on every resumed turn). Recover the
+        # ``custom:<name>`` identity from the durable facts that survived.
+        if str(requested_provider or "").strip().lower() == "custom":
+            try:
+                from hermes_cli.runtime_provider import canonical_custom_identity
+
+                requested_provider = (
+                    canonical_custom_identity(
+                        base_url=restored_base_url, model=model
+                    )
+                    or requested_provider
+                )
+            except Exception:
+                logger.debug(
+                    "ACP restore: could not recover custom provider identity",
+                    exc_info=True,
+                )
+
         # Load conversation history. repair_alternation: this restore feeds
         # LIVE REPLAY — the loaded list becomes the resumed agent's working
         # conversation. A durable ``user;user`` violation left in state.db would

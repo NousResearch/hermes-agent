@@ -281,6 +281,31 @@ class TestPersistence:
 
 
 
+    def test_restore_recovers_named_custom_provider_identity(self, manager):
+        """A session persisted as bare provider "custom" must be rebuilt
+        through its named entry (recovered from billing_base_url), not handed
+        to the resolver as the unroutable "custom" string."""
+        db = manager._get_db()
+        db.create_session(session_id="acp-custom-1", source="acp", model="my-model")
+        db.update_session_billing_route(
+            "acp-custom-1", provider="custom", base_url="http://proxy.local/v1"
+        )
+        seen = {}
+
+        def fake_make_agent(**kw):
+            seen.update(kw)
+            return _mock_agent()
+
+        with patch(
+            "hermes_cli.runtime_provider.canonical_custom_identity",
+            return_value="custom:myproxy",
+        ) as ident, patch.object(manager, "_make_agent", side_effect=fake_make_agent):
+            assert manager._restore("acp-custom-1") is not None
+
+        ident.assert_called_once_with(base_url="http://proxy.local/v1", model="my-model")
+        assert seen["requested_provider"] == "custom:myproxy"
+        assert seen["base_url"] == "http://proxy.local/v1"
+
     def test_only_restores_acp_sessions(self, manager):
         """get_session should not restore non-ACP sessions from DB."""
         db = manager._get_db()

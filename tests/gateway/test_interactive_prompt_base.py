@@ -62,6 +62,29 @@ class TestFormatExecApproval:
         assert "a &amp; b" in text
 
 
+class TestExecApprovalSessionNote:
+    """The session-scoped approval button needs a note explaining how long a
+    "session" lasts (#75639)."""
+
+    def test_session_note_appended_when_session_offered(self):
+        ad = _bare(_DefaultAdapter)
+        text = ad._format_exec_approval("rm -rf /", "scary", session_note=True)
+        assert "Session = until this conversation ends" in text
+        assert "(starting a new session clears it)" in text
+
+    def test_no_session_note_by_default(self):
+        ad = _bare(_DefaultAdapter)
+        text = ad._format_exec_approval("rm -rf /", "scary")
+        assert "until this conversation ends" not in text
+
+    def test_no_session_note_when_smart_denied(self):
+        # Smart DENY only offers once/deny — no session option, no note.
+        ad = _bare(_DefaultAdapter)
+        text = ad._format_exec_approval("rm -rf /", "scary", smart_denied=True, session_note=True)
+        assert "Smart DENY" in text
+        assert "until this conversation ends" not in text
+
+
 class TestFormatChoicePage:
     def test_single_page_no_page_info(self):
         opts, meta = BasePlatformAdapter._format_choice_page([1, 2, 3], 0, 10)

@@ -2752,6 +2752,7 @@ export const ja = defineLocale({
       command: 'コマンド',
       moreOptions: 'その他の承認オプション',
       allowSession: 'このセッションで許可',
+      sessionNote: 'この会話が終わるまで（新しいセッションで解除）',
       alwaysAllowMenu: '常に許可…',
       jumpToApproval: '承認が必要',
       reject: '拒否',

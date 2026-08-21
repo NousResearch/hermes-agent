@@ -215,7 +215,12 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="min-w-44">
                 {allowSession && (
-                  <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => void respond('session')}>
+                    <span className="flex flex-col">
+                      <span>{copy.allowSession}</span>
+                      <span className="text-[0.6875rem] font-normal text-(--ui-text-tertiary)">{copy.sessionNote}</span>
+                    </span>
+                  </DropdownMenuItem>
                 )}
                 {allowAlways && (
                   <DropdownMenuItem

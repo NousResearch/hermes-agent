@@ -714,9 +714,14 @@ def _format_exec_approval_fallback(
         heading = "⚠️ **Smart DENY — owner override for one operation:**"
 
     choices = [f"Reply `{command_prefix}approve` to execute this one operation"]
+    session_note = ""
     if not smart_denied and allow_session:
         choices.append(
             f"`{command_prefix}approve session` to approve this pattern for the session"
+        )
+        session_note = (
+            "\n\n*Session* = until this conversation ends "
+            "(starting a new session clears it)."
         )
         if allow_permanent:
             choices.append(f"`{command_prefix}approve always` to approve permanently")
@@ -724,6 +729,7 @@ def _format_exec_approval_fallback(
     return (
         f"{heading}\n```\n{cmd_preview}\n```\nReason: {description}\n\n"
         + ", ".join(choices[:-1]) + f", or {choices[-1]}."
+        + session_note
     )
 
 def _gateway_provider_error_reply(text: str) -> str:

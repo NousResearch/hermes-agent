@@ -7495,6 +7495,11 @@ class DiscordAdapter(BasePlatformAdapter):
             if mention_content:
                 prompt_prefix = f"{mention_content}\n{prompt_prefix}"
             prompt_tail = f"\n```\n**Reason:** {reason_display}"
+            if not smart_denied and allow_session:
+                prompt_tail += (
+                    "\n\n**Session** = until this conversation ends "
+                    "(starting a new session clears it)."
+                )
             truncated_suffix = "\n... [truncated]"
             command_budget = max(0, self.MAX_MESSAGE_LENGTH - len(prompt_prefix) - len(prompt_tail))
             content_cmd_display = str(command or "")

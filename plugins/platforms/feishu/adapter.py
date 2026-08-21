@@ -2097,7 +2097,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": self._format_exec_approval(command, description, smart_denied),
+                        "content": self._format_exec_approval(
+                            command, description, smart_denied,
+                            session_note=(not smart_denied and allow_session),
+                        ),
                     },
                     {
                         "tag": "action",

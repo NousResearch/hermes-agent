@@ -2676,7 +2676,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 reaction_legend_parts.append("♾️ = approve always")
         reaction_legend_parts.append("❎ = deny")
         text = (
-            f"{self._format_exec_approval(command, description)}\n\n"
+            f"{self._format_exec_approval(command, description, session_note=(not smart_denied and allow_session))}\n\n"
             f"{scope_choices}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
             "You can also click the reaction to approve:\n"
             + "\n".join(reaction_legend_parts)

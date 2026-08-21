@@ -134,5 +134,17 @@ class TestApprovalTextFallbackContract:
         assert "`/approve`" in text
         assert "approve session" not in text
         assert "approve always" not in text
+        assert "until this conversation ends" not in text
+
+    def test_session_note_present_when_session_offered(self):
+        from gateway.run import _format_exec_approval_fallback
+
+        text = _format_exec_approval_fallback(
+            "rm -rf /", "dangerous deletion", "/",
+            allow_permanent=False,
+        )
+        assert "approve session" in text
+        assert "until this conversation ends" in text
+        assert "starting a new session clears it" in text
 
 

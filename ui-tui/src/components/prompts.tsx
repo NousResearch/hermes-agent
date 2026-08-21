@@ -14,6 +14,7 @@ const APPROVAL_OPTS = ['once', 'session', 'always', 'deny'] as const
 const APPROVAL_OPTS_NO_ALWAYS = APPROVAL_OPTS.filter(o => o !== 'always')
 const APPROVAL_OPTS_SMART_DENY = ['once', 'deny'] as const
 const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
+const SESSION_NOTE = 'Session = until this conversation ends (a new session clears it)'
 const CMD_PREVIEW_LINES = 10
 
 type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
@@ -137,6 +138,10 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
           </Text>
         </Text>
       ))}
+
+      {opts.includes('session') ? (
+        <Text color={t.color.muted}>{SESSION_NOTE}</Text>
+      ) : null}
 
       <Text color={t.color.muted}>↑/↓ select · Enter confirm · 1-{opts.length} quick pick · Esc/Ctrl+C deny</Text>
     </Box>

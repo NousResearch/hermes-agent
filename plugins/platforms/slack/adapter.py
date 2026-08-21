@@ -6899,6 +6899,8 @@ class SlackAdapter(BasePlatformAdapter):
             header = ":warning: *Command Approval Required*\n"
             if smart_denied:
                 header += "*Smart DENY:* owner override applies to this one operation only.\n"
+            elif allow_session:
+                header += "*Session* = until this conversation ends (starting a new session clears it).\n"
             reason = f"Reason: {description[:500]}"
             budget = 3000 - len(header) - len(reason) - len("``````\n") - len("...")
             cmd_preview = command[:budget] + "..." if len(command) > budget else command

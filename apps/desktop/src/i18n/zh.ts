@@ -3265,6 +3265,7 @@ export const zh: Translations = {
       command: '命令',
       moreOptions: '更多审批选项',
       allowSession: '允许本会话',
+      sessionNote: '直到本次对话结束（新会话会清除）',
       alwaysAllowMenu: '始终允许…',
       jumpToApproval: '需要审批',
       reject: '拒绝',

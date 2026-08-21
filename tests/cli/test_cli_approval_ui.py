@@ -147,6 +147,50 @@ class TestCliApprovalUi:
 
 
 
+    def test_approval_panel_shows_session_duration_note(self):
+        """The session-scoped approval option explains how long a "session"
+        lasts so the user knows the scope of what they approve (#75639)."""
+        cli = _make_cli_stub()
+        cli._approval_state = {
+            "command": "rm -rf /tmp/example",
+            "description": "recursive delete",
+            "choices": ["once", "session", "always", "deny"],
+            "selected": 0,
+            "show_full": True,
+            "response_queue": queue.Queue(),
+        }
+
+        import shutil as _shutil
+
+        with patch("cli.shutil.get_terminal_size",
+                   return_value=_shutil.os.terminal_size((100, 40))):
+            fragments = cli._get_approval_display_fragments()
+
+        rendered = "".join(text for _style, text in fragments)
+        assert "Session = until this conversation ends" in rendered
+        assert "starting a new session clears it" in rendered
+
+    def test_approval_panel_smart_deny_hides_session_note(self):
+        """Smart DENY offers only once/deny — no session option, no note."""
+        cli = _make_cli_stub()
+        cli._approval_state = {
+            "command": "rm -rf /tmp/example",
+            "description": "recursive delete",
+            "choices": ["once", "deny"],
+            "selected": 0,
+            "show_full": True,
+            "response_queue": queue.Queue(),
+        }
+
+        import shutil as _shutil
+
+        with patch("cli.shutil.get_terminal_size",
+                   return_value=_shutil.os.terminal_size((100, 40))):
+            fragments = cli._get_approval_display_fragments()
+
+        rendered = "".join(text for _style, text in fragments)
+        assert "until this conversation ends" not in rendered
+
     def test_approval_display_truncates_giant_command_in_view_mode(self):
         """If the user hits /view on a massive command, choices still render.
 

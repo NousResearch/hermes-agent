@@ -15840,6 +15840,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
 
+        # When the session-scoped approval option is offered, explain how long
+        # a "session" lasts so the user knows the scope of what they approve
+        # (#75639).
+        if "session" in choices and description:
+            description = (
+                f"{description}\n\n"
+                "Session = until this conversation ends "
+                "(starting a new session clears it)."
+            )
+        elif "session" in choices:
+            description = (
+                "Session = until this conversation ends "
+                "(starting a new session clears it)."
+            )
+
         title = "⚠️  Dangerous Command"
         cmd_display = command
         choice_labels = {

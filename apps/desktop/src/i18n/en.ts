@@ -3102,6 +3102,7 @@ export const en: Translations = {
       command: 'Command',
       moreOptions: 'More approval options',
       allowSession: 'Allow this session',
+      sessionNote: 'Until this conversation ends (a new session clears it)',
       alwaysAllowMenu: 'Always allow…',
       jumpToApproval: 'Approval needed',
       reject: 'Reject',

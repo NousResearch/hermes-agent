@@ -4157,6 +4157,10 @@ class BasePlatformAdapter(ABC):
     _EA_SMART_DENY_LINE: str = (
         "\n\nSmart DENY: owner override applies to this one operation only."
     )
+    _EA_SESSION_NOTE: str = (
+        "\n\nSession = until this conversation ends "
+        "(starting a new session clears it)."
+    )
     _EA_CMD_BUDGET: int = 3000
 
     @staticmethod
@@ -4181,14 +4185,18 @@ class BasePlatformAdapter(ABC):
         command: str,
         description: str = "dangerous command",
         smart_denied: bool = False,
+        session_note: bool = False,
     ) -> str:
         """Shared formatting core for exec-approval prompt text.
 
         Assembles ``_EA_HEADER`` + fenced command preview (truncated to
         ``_EA_CMD_BUDGET``) + ``_EA_REASON_LABEL`` + description, plus
-        ``_EA_SMART_DENY_LINE`` when ``smart_denied``. Button construction
-        stays platform-local; adapters with additional trailing instructions
-        (e.g. reaction legends) append them to this core.
+        ``_EA_SMART_DENY_LINE`` when ``smart_denied`` and ``_EA_SESSION_NOTE``
+        when ``session_note`` (i.e. the platform is offering a
+        session-scoped approval button — the note tells the user how long a
+        "session" lasts). Button construction stays platform-local; adapters
+        with additional trailing instructions (e.g. reaction legends) append
+        them to this core.
         """
         cmd_preview = self._truncate_preview(str(command or ""), self._EA_CMD_BUDGET)
         text = (
@@ -4198,6 +4206,8 @@ class BasePlatformAdapter(ABC):
         )
         if smart_denied:
             text += self._EA_SMART_DENY_LINE
+        elif session_note:
+            text += self._EA_SESSION_NOTE
         return text
 
     @staticmethod

@@ -6171,7 +6171,10 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            text = self._format_exec_approval(command, description, smart_denied)
+            text = self._format_exec_approval(
+                command, description, smart_denied,
+                session_note=(not smart_denied and allow_session),
+            )
 
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)

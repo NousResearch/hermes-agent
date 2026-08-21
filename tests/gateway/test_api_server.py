@@ -691,6 +691,38 @@ class TestHealthEndpoint:
             assert isinstance(data["version"], str)
             assert data["version"] != ""
 
+    @pytest.mark.asyncio
+    async def test_health_requires_auth_when_key_set(self):
+        """GET /health must enforce API_SERVER_KEY like the other API routes
+        (#90315) — an unauthenticated 200 made clients treat the API as open
+        while chat was gated."""
+        app = _create_app(_make_adapter(api_key="secret-key"))
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/health")
+            assert resp.status == 401
+            data = await resp.json()
+            assert data["error"]["type"] == "gateway_auth_error"
+
+    @pytest.mark.asyncio
+    async def test_health_allows_valid_bearer(self):
+        app = _create_app(_make_adapter(api_key="secret-key"))
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/health", headers={"Authorization": "Bearer secret-key"}
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_health_without_key_stays_public(self):
+        """No-key deployments (tests / manual wiring) keep the open probe —
+        _check_auth's no-key branch is deliberately permissive."""
+        app = _create_app(_make_adapter(api_key=""))
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/health")
+            assert resp.status == 200
+
 
 # ---------------------------------------------------------------------------
 # /health/detailed endpoint

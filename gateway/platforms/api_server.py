@@ -3125,7 +3125,17 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
-        """GET /health — simple health check."""
+        """GET /health — simple health check.
+
+        Requires the same Bearer auth as the other API routes (and
+        /health/detailed): API_SERVER_KEY is documented as required for
+        every deployment, and an unauthenticated 200 made status checks
+        treat the API as open while chat was actually gated (#90315).
+        The no-key branch of _check_auth keeps loopback testing working.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
         return web.json_response(
             {"status": "ok", "platform": "hermes-agent", "version": _hermes_version()}
         )

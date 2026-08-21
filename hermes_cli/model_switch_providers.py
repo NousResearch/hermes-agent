@@ -608,7 +608,8 @@ def _discover_endpoint_models(
 
 
 def _collect_authed_provider_slugs(
-    models_dev_data: dict, curated: dict[str, list[str]], excluded: list[str]) -> list[str]:
+    models_dev_data: dict, curated: dict[str, list[str]], excluded: list[str],
+    *, _pool_cache: Optional[Dict[str, Any]] = None) -> list[str]:
     """Quick-scan which providers have credentials, without fetching model lists.
 
     Mirrors the credential checks of sections 1, 2 and 2b of :func:`list_authenticated_providers`
@@ -629,7 +630,7 @@ def _collect_authed_provider_slugs(
         seen.update(k.lower() for k in keys)
 
     for hermes_id, _mdev_id, _pconfig, env_vars in _iter_builtin_candidates(models_dev_data, excluded_set, seen):
-        if _any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id):
+        if _any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id, _pool_cache=_pool_cache):
             _emit(hermes_id, hermes_id)
 
     mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
@@ -639,7 +640,7 @@ def _collect_authed_provider_slugs(
             continue
         if (
             _overlay_has_env_creds(pid, hermes_slug, overlay, _scoped_key_env)
-            or _auth_store_has_provider(pid, hermes_slug) or _pool_usable(hermes_slug)):
+            or _auth_store_has_provider(pid, hermes_slug) or _pool_usable(hermes_slug, _pool_cache=_pool_cache)):
             _emit(hermes_slug, pid, hermes_slug)
 
     for cp in CANONICAL_PROVIDERS:
@@ -648,7 +649,7 @@ def _collect_authed_provider_slugs(
         cp_config = PROVIDER_REGISTRY.get(cp.slug)
         has_creds = bool(
             cp_config and cp_config.api_key_env_vars and _any_env(cp_config.api_key_env_vars, _scoped_key_env))
-        if has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug):
+        if has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug, _pool_cache=_pool_cache):
             _emit(cp.slug, cp.slug)
 
     # Nous excluded: its picker branch builds from the curated list and never reads the
@@ -1163,7 +1164,7 @@ def list_authenticated_providers(
     # Warm the disk cache in parallel before the serial section loops (otherwise 15-30s of live
     # round-trips on a cold cache). Skipped when refresh=True (serial path force-refreshes) and
     # for <=3 providers (serial is fast enough; avoids thread-pool overhead).
-    prefetch_slugs = [] if refresh else _collect_authed_provider_slugs(data, b.curated, excluded_providers or [])
+    prefetch_slugs = [] if refresh else _collect_authed_provider_slugs(data, b.curated, excluded_providers or [], _pool_cache=b.pool_cache)
     if len(prefetch_slugs) > 3:
         try:
             _prefetch_provider_models_parallel(prefetch_slugs)

@@ -62,6 +62,15 @@ PLUGIN_SCANNER_VERSION = "plugin-guard-v1"
 EXCLUDED_DIRS = {
     ".git", "__pycache__", "node_modules", ".venv", "venv",
     ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
+    # Test trees hold adversarial fixtures on purpose — strings like
+    # "ignore all prior instructions" in a test asserts the trust
+    # boundary HOLDS, it is not an attack payload. Any single critical
+    # makes the verdict `dangerous`, which --force explicitly cannot
+    # override, so scanning tests made security-conscious plugins
+    # unconditionally uninstallable and taught authors to obfuscate the
+    # very strings their tests need (#89610). Fixtures are never loaded
+    # into an agent's context at runtime the way README/plugin.yaml are.
+    "tests", "test", "testing", "spec", "specs", "fixtures",
 }
 
 # Code file extensions where "reads an env secret" / "HTTP call with a key

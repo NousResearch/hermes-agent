@@ -13,6 +13,7 @@ sync triggers, and retries the canonical write. Search degrades to ``LIKE``
 until a later open atomically rebuilds the index and restores the triggers.
 """
 
+import os
 import sqlite3
 from types import SimpleNamespace
 
@@ -122,10 +123,104 @@ class TestRuntimeFtsRebuild:
         monkeypatch.setattr(hermes_state, "psutil", FakePsutil)
         monkeypatch.setattr(hermes_state, "_IS_WINDOWS", False)
         monkeypatch.setattr(hermes_state.os, "getpid", lambda: 111)
+        # Force the macOS/psutil path even on Linux test runners
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
 
         assert db._foreign_state_db_holders() == [
             (222, f"{db_path}-wal (deleted)")
         ]
+
+    def test_foreign_holder_detection_proc_readlink_deleted_wal(
+        self, db, tmp_path, monkeypatch
+    ):
+        """Linux /proc/<pid>/fd readlinks preserve '(deleted)' suffix.
+
+        psutil.open_files() drops these entries (isfile_strict stats the
+        literal path and fails).  The /proc path catches the split-brain
+        holder that psutil silently misses.
+        """
+        db_path = tmp_path / "state.db"
+        db_path_wal = str(db_path) + "-wal"
+
+        # Build a fake /proc with two PIDs: self (111) and foreign (222).
+        proc_root = tmp_path / "proc"
+        for pid in (111, 222, 333):
+            fd_dir = proc_root / str(pid) / "fd"
+            fd_dir.mkdir(parents=True)
+        # PID 222 holds the deleted WAL sidecar
+        os.symlink(db_path_wal + " (deleted)", str(proc_root / "222" / "fd" / "3"))
+        # PID 111 (self) holds the db — should be excluded
+        os.symlink(str(db_path), str(proc_root / "111" / "fd" / "3"))
+        # PID 333 holds an unrelated file
+        other = tmp_path / "other.db"
+        other.touch()
+        os.symlink(str(other), str(proc_root / "333" / "fd" / "3"))
+
+        monkeypatch.setattr(hermes_state, "_IS_WINDOWS", False)
+        monkeypatch.setattr(hermes_state.os, "getpid", lambda: 111)
+        monkeypatch.setattr(hermes_state.sys, "platform", "linux")
+        real_listdir = os.listdir
+        def _listdir(path):
+            if isinstance(path, str):
+                path = path.replace("/proc", str(proc_root))
+            return real_listdir(path)
+        monkeypatch.setattr(hermes_state.os, "listdir", _listdir)
+        real_readlink = os.readlink
+        def _readlink(path):
+            path = path.replace("/proc", str(proc_root))
+            return real_readlink(path)
+        monkeypatch.setattr(hermes_state.os, "readlink", _readlink)
+
+        holders = db._foreign_state_db_holders()
+        assert holders == [(222, db_path_wal + " (deleted)")]
+
+    def test_foreign_holder_uninspectable_process_cmdline_fallback(
+        self, db, tmp_path, monkeypatch
+    ):
+        """A process whose fd table is unreadable (different user) is still
+        flagged when /proc/<pid>/cmdline identifies it as a Hermes process."""
+        db_path = tmp_path / "state.db"
+
+        proc_root = tmp_path / "proc"
+        for pid in (111, 222):
+            (proc_root / str(pid) / "fd").mkdir(parents=True)
+        # PID 222's fd dir is unreadable (PermissionError)
+        os.chmod(proc_root / "222" / "fd", 0o000)
+        # PID 222's cmdline is world-readable and looks like Hermes
+        cmdline_path = proc_root / "222" / "cmdline"
+        cmdline_path.write_bytes(b"python3\x00hermes_cli.main\x00chat\x00")
+
+        monkeypatch.setattr(hermes_state, "_IS_WINDOWS", False)
+        monkeypatch.setattr(hermes_state.os, "getpid", lambda: 111)
+        monkeypatch.setattr(hermes_state.sys, "platform", "linux")
+        real_listdir = os.listdir
+        def _listdir(path):
+            if isinstance(path, str):
+                path = path.replace("/proc", str(proc_root))
+            return real_listdir(path)
+        monkeypatch.setattr(hermes_state.os, "listdir", _listdir)
+        # _read_proc_cmdline opens /proc/<pid>/cmdline directly; redirect
+        # it to our fake proc tree.
+        def _fake_cmdline(pid):
+            fake_path = str(proc_root / str(pid) / "cmdline")
+            try:
+                with open(fake_path, "rb") as f:
+                    raw = f.read()
+                if not raw:
+                    return None
+                return raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+            except OSError:
+                return None
+        monkeypatch.setattr(hermes_state, "_read_proc_cmdline", _fake_cmdline)
+
+        holders = db._foreign_state_db_holders()
+        # Should include PID 222 with the cmdline info
+        assert len(holders) == 1
+        assert holders[0][0] == 222
+        assert "hermes_cli.main" in holders[0][1]
+
+        # Cleanup
+        os.chmod(proc_root / "222" / "fd", 0o755)
 
     def test_corruption_error_classification_covers_both_sqlite_messages(self):
         """SQLite's message for a corrupt FTS index varies by version: older

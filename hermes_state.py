@@ -3049,6 +3049,22 @@ def count_db_holders(db_path: Path) -> Optional[int]:
         return None
 
 
+def _read_proc_cmdline(pid: int) -> Optional[str]:
+    """Read /proc/<pid>/cmdline, world-readable even when fd table is not.
+
+    Returns the cmdline as a space-joined string, or None when unreadable
+    (process exited, or hidepid mount).
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            raw = f.read()
+        if not raw:
+            return None
+        return raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+    except OSError:
+        return None
+
+
 # Lifecycle statuses surfaced by session pickers. Classification looks ONLY at
 # a session's final message row — role, whether it carries tool_calls, and its
 # finish_reason — so it stays O(1) per session (see
@@ -4217,9 +4233,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Automatic FTS repair is structural maintenance, not an ordinary WAL
         write.  It must not run while another process remains attached: a
         sidecar reset under that holder can leave the two processes writing
-        through different WAL inodes.  ``psutil`` reads the kernel's open-file
-        table, including Linux ``(deleted)`` descriptors, so this also catches
-        a split brain already in progress.
+        through different WAL inodes.
 
         A scan failure is represented as an unknown holder.  Skipping optional
         automatic maintenance is safer than assuming quiescence; canonical
@@ -4245,20 +4259,71 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             _canonical(db_path + "-shm"),
         }
         holders: List[Tuple[int, str]] = []
+
+        # On Linux, read /proc/<pid>/fd symlinks directly.  psutil's
+        # open_files() filters through isfile_strict(), which stats the
+        # literal path — for an unlinked WAL sidecar the kernel returns
+        # "/path/state.db-wal (deleted)" and stat fails, so the entry is
+        # silently dropped and the split-brain holder is never seen.
+        # /proc readlinks preserve the "(deleted)" suffix so _canonical can
+        # strip it and match.
+        if sys.platform.startswith("linux"):
+            try:
+                own_pid = os.getpid()
+                for pid_str in os.listdir("/proc"):
+                    if not pid_str.isdigit():
+                        continue
+                    pid = int(pid_str)
+                    if pid == own_pid:
+                        continue
+                    fd_dir = f"/proc/{pid}/fd"
+                    try:
+                        fds = os.listdir(fd_dir)
+                    except OSError:
+                        # Cannot read this process's fd table (different
+                        # user, e.g. root gateway vs user desktop).
+                        # /proc/<pid>/cmdline is world-readable by default,
+                        # so check whether this is a Hermes process.
+                        cmdline = _read_proc_cmdline(pid)
+                        if cmdline is not None:
+                            holders.append((pid, f"uninspectable holder: {cmdline[:80]}"))
+                        continue
+                    for fd in fds:
+                        try:
+                            target = os.readlink(f"{fd_dir}/{fd}")
+                        except OSError:
+                            continue
+                        if _canonical(target) in watched:
+                            holders.append((pid, target))
+            except Exception as exc:
+                logger.warning(
+                    "Could not prove state.db has no foreign holders; "
+                    "deferring automatic FTS maintenance: %s",
+                    exc,
+                )
+                return holders or [(-1, f"open-file scan failed: {exc}")]
+            return holders
+
+        # macOS / BSD: use psutil.open_files().  macOS does not use the
+        # "(deleted)" suffix convention, so psutil's filtering is safe here.
         try:
             for process in psutil.process_iter(["pid", "open_files"]):
                 info = process.info
                 pid = int(info["pid"])
                 if pid == os.getpid():
                     continue
+                # psutil's as_dict() converts AccessDenied to None, which
+                # or-() turns into an empty iteration.  On macOS this is
+                # acceptable: the gateway/desktop topology from the issue is
+                # Linux-specific (systemd units running as root).
                 for opened in info.get("open_files") or ():
                     path = getattr(opened, "path", "")
                     if path and _canonical(path) in watched:
                         holders.append((pid, path))
         except Exception as exc:
             logger.warning(
-                "Could not prove state.db has no foreign holders; deferring "
-                "automatic FTS maintenance: %s",
+                "Could not prove state.db has no foreign holders; "
+                "deferring automatic FTS maintenance: %s",
                 exc,
             )
             return holders or [(-1, f"open-file scan failed: {exc}")]

@@ -1007,6 +1007,14 @@ class GatewayStreamConsumer:
                     )
 
                 current_update_visible = False
+                # Whether the got_done update below was delivered as a FRESH
+                # persistent send through the native-draft transport (drafts
+                # have no message id, so the finalize tick is a brand-new
+                # send that already carried finalize=True).  Distinguishes
+                # that case from an EDIT issued while draft streaming is
+                # active, which must keep the legacy explicit-finalize pass
+                # for REQUIRES_EDIT_FINALIZE adapters.
+                draft_final_fresh_send = False
                 # Hold back mid-stream edits while the buffer so far could
                 # still resolve to an intentional-silence marker.  Without
                 # this, a partial marker (e.g. "NO_REPLY" streamed as
@@ -1179,6 +1187,11 @@ class GatewayStreamConsumer:
                     # the next segment (tool progress, next chunk) creates a
                     # new message below it.  got_done has its own finalize
                     # path below so we don't finalize here for it.
+                    draft_final_fresh_send = (
+                        got_done
+                        and self._use_draft_streaming
+                        and self._message_id is None
+                    )
                     current_update_visible = await self._send_or_edit(
                         display_text,
                         finalize=(got_done or got_segment_break),
@@ -1212,7 +1225,7 @@ class GatewayStreamConsumer:
                             and (
                                 not self._adapter_requires_finalize
                                 or self._last_edit_overflowed
-                                or self._use_draft_streaming
+                                or draft_final_fresh_send
                             )
                         ):
                             # The update above already delivered the final

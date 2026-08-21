@@ -1583,10 +1583,11 @@ class APIServerAdapter(BasePlatformAdapter):
         # and command lifecycle shared with the dashboard Gateway transport. This adapter only maps HTTP registration and the
         # controller WebSocket onto the broker; it owns no broker state.
         self._browser_control_broker = get_browser_control_broker()
-        # One-shot artifact transport (Phase 8 Task 29). Lazy store + limiter
-        # are created on first authenticated artifact use; tests inject their
-        # own store/limiter via _inject_browser_control_artifacts().
-        self._browser_control_artifacts: Optional[ArtifactStore] = None
+        # One-shot artifact transport (Phase 8 Task 29). Lazy per-profile
+        # stores + limiter are created on first authenticated artifact use;
+        # tests inject their own store/limiter via
+        # _inject_browser_control_artifacts().
+        self._browser_control_artifacts: Dict[str, ArtifactStore] = {}
         self._browser_control_artifact_limiter: Optional[ArtifactRateLimiter] = None
 
     def active_agent_work_count(self) -> int:
@@ -3533,6 +3534,9 @@ class APIServerAdapter(BasePlatformAdapter):
             {
                 "protocol_version": _BROWSER_CONTROL_PROTOCOL_VERSION,
                 "ticket": ticket.value,
+                # Best-effort wall-clock projection for clients; the broker
+                # enforces expiry on its monotonic clock, so after an NTP
+                # step trust ticket_expires_in_seconds, not this absolute.
                 "ticket_expires_at": time.time() + ticket_ttl,
                 "ticket_expires_in_seconds": ticket_ttl,
                 "ws_path": "/v1/browser-control/ws",
@@ -3761,11 +3765,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
         The store root lives under the profile's data directory
         (``<HERMES_HOME>/plugin-data/.../artifacts``-style controlled root),
-        so artifacts never escape the profile boundary.  The root itself is
-        created on first use; TTL cleanup runs on every store/load/prune.
+        so artifacts never escape the profile boundary.  Stores are cached
+        BY RESOLVED PROFILE — on a multiplex listener, profile A touching
+        the artifact route first must never pin profile B to A's physical
+        root (same frozen-handle class as the per-profile session-storage
+        fix in #88734).  The root itself is created on first use; TTL
+        cleanup runs on every store/load/prune.
         """
-        if self._browser_control_artifacts is not None:
-            return self._browser_control_artifacts
+        profile_key = str(profile or "default")
+        store = self._browser_control_artifacts.get(profile_key)
+        if store is not None:
+            return store
         try:
             from hermes_cli.profiles import get_profile_dir
 
@@ -3788,12 +3798,14 @@ class APIServerAdapter(BasePlatformAdapter):
             allowed_mime_types=DEFAULT_ALLOWED_MIME_TYPES,
         )
         store.prune_expired()
-        self._browser_control_artifacts = store
+        self._browser_control_artifacts[profile_key] = store
         # Share the store with the broker so artifact actions dispatched to a
         # controller validate their artifact reference against the same
-        # controlled root ("approved artifact id only").
+        # profile's controlled root ("approved artifact id only").
         try:
-            self._browser_control_broker.attach_artifact_store(store)
+            self._browser_control_broker.attach_artifact_store(
+                store, profile_id=profile_key
+            )
         except Exception:
             logger.debug("could not attach artifact store to broker", exc_info=True)
         return store
@@ -3811,9 +3823,14 @@ class APIServerAdapter(BasePlatformAdapter):
         self,
         store: Optional[ArtifactStore],
         limiter: Optional[ArtifactRateLimiter] = None,
+        *,
+        profile: str = "default",
     ) -> None:
         """Inject a store/limiter (tests, diagnostics)."""
-        self._browser_control_artifacts = store
+        if store is None:
+            self._browser_control_artifacts.pop(profile, None)
+        else:
+            self._browser_control_artifacts[profile] = store
         if limiter is not None:
             self._browser_control_artifact_limiter = limiter
 

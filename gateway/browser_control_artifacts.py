@@ -157,23 +157,23 @@ class ArtifactReceipt:
 def artifact_scope_key(scope: Any) -> str:
     """Derive the stable scope key an artifact is bound to.
 
-    Only server-derived identity fields participate: principal (mandatory),
-    plus session and transport family when the caller resolved them
-    (mirroring the broker's exact-identity contract).  Capabilities and
-    optional ids are intentionally excluded so a reconnect that refreshes
-    the same controller keeps its artifacts.
-
-    The API-server artifact routes authenticate by API key and bind to the
-    derived principal; the broker additionally binds to the full
-    controller scope.  A principal-only key and a full controller key
-    never collide because the digest input differs.
+    Only server-derived identity fields participate: principal (mandatory)
+    plus transport family. ``session_id`` is deliberately EXCLUDED: the HTTP
+    artifact routes authenticate by API key and can never resolve a server
+    session, while broker dispatch always carries a session-bearing
+    ControllerScope — including the session would make the two halves of the
+    intended journey (HTTP upload → broker artifact dispatch) hash to
+    different keys and never compose. Artifacts are therefore
+    principal/transport-family owned; ids are unguessable server-minted
+    32-hex and downloads are one-shot, so cross-session reuse within one
+    authenticated principal is by design. Capabilities and optional ids are
+    likewise excluded so a reconnect that refreshes the same controller
+    keeps its artifacts.
     """
     principal = ""
-    session = ""
     family = ""
     try:
         principal = str(getattr(scope, "principal_id", "") or "")
-        session = str(getattr(scope, "session_id", "") or "")
         family = str(getattr(scope, "transport_family", "") or "")
     except Exception:
         pass
@@ -181,7 +181,7 @@ def artifact_scope_key(scope: Any) -> str:
         # Fail closed: an artifact can only be minted for an authenticated
         # principal.
         raise ArtifactError("artifact scope must carry a resolved principal")
-    material = f"{principal}\x00{session}\x00{family}".encode("utf-8")
+    material = f"{principal}\x00{family}".encode("utf-8")
     return hashlib.sha256(material).hexdigest()
 
 

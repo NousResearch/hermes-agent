@@ -341,17 +341,46 @@ class BrowserControlBroker:
         if developer_mode is None:
             developer_mode = browser_control_developer_mode()
         self._developer_mode = developer_mode is True
-        self._artifact_store: Any = None
+        # Artifact stores keyed by resolved profile id; ``None`` is the
+        # default/unscoped store (tests, single-profile hosts). A multiplex
+        # listener attaches one store per profile so profile A touching the
+        # artifact route first can never pin profile B to A's physical root.
+        self._artifact_stores: Dict[Optional[str], Any] = {}
 
-    def attach_artifact_store(self, store: Any) -> None:
-        """Attach the process artifact store for "approved artifact id only".
+    def attach_artifact_store(
+        self, store: Any, *, profile_id: Optional[str] = None
+    ) -> None:
+        """Attach an artifact store for "approved artifact id only".
 
         ``store`` must expose ``validate(artifact_id, *, scope) -> receipt``
         raising the artifacts module's :class:`ArtifactError` subclasses.
-        None clears the reference; dispatching an artifact action without a
-        store fails closed.
+        ``profile_id`` scopes the store to one profile on multiplex hosts;
+        ``None`` registers the default store. ``store=None`` clears that
+        slot; dispatching an artifact action without a resolvable store
+        fails closed.
         """
-        self._artifact_store = store
+        if store is None:
+            self._artifact_stores.pop(profile_id, None)
+            return
+        self._artifact_stores[profile_id] = store
+
+    def _artifact_store_for_scope(self, scope: "ControllerScope") -> Any:
+        """Select the artifact store for one controller scope.
+
+        Prefers the exact profile-scoped store, falling back to the default
+        (``None``) slot so single-profile hosts and existing tests keep the
+        historical one-store behaviour.
+        """
+        profile = getattr(scope, "profile_id", None) or None
+        store = self._artifact_stores.get(profile)
+        if store is not None:
+            return store
+        return self._artifact_stores.get(None)
+
+    @property
+    def _artifact_store(self) -> Any:
+        """Back-compat view of the default artifact store (tests)."""
+        return self._artifact_stores.get(None)
 
     @property
     def developer_mode(self) -> bool:
@@ -831,7 +860,8 @@ class BrowserControlBroker:
         traversal, expiry, checksum, or scope mismatch all surface as
         :class:`ControllerRejected` before any frame is emitted.
         """
-        if self._artifact_store is None:
+        store = self._artifact_store_for_scope(scope)
+        if store is None:
             raise ControllerRejected(
                 f"{action} requires an attached artifact store"
             )
@@ -839,7 +869,7 @@ class BrowserControlBroker:
         if not isinstance(artifact_id, str) or not artifact_id.strip():
             raise ControllerRejected(f"{action} requires a non-empty artifact_id")
         try:
-            self._artifact_store.validate(artifact_id.strip(), scope=scope)
+            store.validate(artifact_id.strip(), scope=scope)
         except ControllerRejected:
             raise
         except Exception as exc:

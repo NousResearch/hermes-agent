@@ -589,3 +589,74 @@ def test_route_table_advertises_artifact_routes():
     routes = {(method, path) for method, path, _handler in adapter._http_route_table()}
     assert ("POST", "/v1/artifacts/upload") in routes
     assert ("GET", "/v1/artifacts/download/{artifact_id}") in routes
+
+
+def test_http_uploaded_artifact_composes_with_broker_dispatch(tmp_path):
+    """The real journey: HTTP upload (no session) -> broker artifact dispatch.
+
+    Regression for the scope-key mismatch review blocker: the HTTP artifact
+    routes can never resolve a server session, so artifact ownership is
+    principal/transport-family scoped and a session-bearing ControllerScope
+    must validate the same artifact.
+    """
+    store = ArtifactStore(tmp_path / "root")
+    # Upload-side scope: what api_server's facade carries (empty session).
+    receipt = store.store(
+        TEXT_BYTES,
+        filename="note.txt",
+        content_type="text/plain",
+        scope=_Scope(session=""),
+    )
+
+    broker = BrowserControlBroker()
+    broker.attach_artifact_store(store)
+    scope = _broker_scope(
+        capabilities=frozenset({"browser_artifact_upload", "controller.noop"})
+    )
+
+    def send(frame):
+        broker.complete(
+            frame["params"]["command_id"], ok=True, result={"ok": True}
+        )
+
+    broker.attach(scope, send)
+    result = broker.dispatch(
+        scope,
+        action="browser_artifact_upload",
+        arguments={"artifact_id": receipt.artifact_id},
+    )
+    assert result == {"ok": True}
+
+    # Cross-principal / cross-family access still fails closed.
+    with pytest.raises(ArtifactScopeMismatch):
+        store.validate(receipt.artifact_id, scope=_Scope(principal="other"))
+    with pytest.raises(ArtifactScopeMismatch):
+        store.validate(receipt.artifact_id, scope=_Scope(session="", family="remote-api"))
+
+
+def test_multiplex_profiles_get_distinct_stores_regardless_of_touch_order(tmp_path, monkeypatch):
+    """Profile A touching the artifact route first must not pin profile B."""
+    import gateway.platforms.api_server as api_server_mod
+
+    adapter = _adapter()
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir",
+        lambda profile: str(tmp_path / f"home-{profile}"),
+    )
+
+    store_a = adapter._artifact_store_for("profile-a")
+    store_b = adapter._artifact_store_for("profile-b")
+    assert store_a is not store_b
+    assert str(store_a.root) != str(store_b.root)
+    assert "home-profile-a" in str(store_a.root)
+    assert "home-profile-b" in str(store_b.root)
+    # Repeat lookups return the same cached store per profile.
+    assert adapter._artifact_store_for("profile-a") is store_a
+    assert adapter._artifact_store_for("profile-b") is store_b
+
+    # The broker resolves each profile's own store from the controller scope.
+    broker = adapter._browser_control_broker
+    scope_a = _broker_scope(profile_id="profile-a")
+    scope_b = _broker_scope(profile_id="profile-b")
+    assert broker._artifact_store_for_scope(scope_a) is store_a
+    assert broker._artifact_store_for_scope(scope_b) is store_b

@@ -79,6 +79,51 @@ describe('reactive pane unhide', () => {
     return { tree, layout }
   }
 
+  it('treats a Files group with contributed panes as the right sidebar', async () => {
+    const tree = await import('@/components/pane-shell/tree/store')
+    const layout = await import('@/store/layout')
+    const model = await import('@/components/pane-shell/tree/model')
+    const { registry } = await import('@/contrib/registry')
+
+    // A user can stack arbitrary contributed panes into the Files zone. Bots
+    // currently contributes as left and Cronjobs as main, but neither is the
+    // main workspace anchor: the whole group still belongs to the Files/right
+    // sidebar toggle.
+    for (const [id, data] of [
+      ['sessions', { placement: 'left' }],
+      ['workspace', { placement: 'main', uncloseable: true }],
+      // Match controller.tsx: Files is the collapsible edge-sidebar anchor;
+      // plain placement alone must not give arbitrary right panes precedence.
+      ['files', { collapsible: true, placement: 'right', revealAliases: ['file-browser'] }],
+      ['contributed-left', { placement: 'left' }],
+      ['contributed-main', { placement: 'main' }]
+    ] as const) {
+      registry.register({ id, area: 'panes', title: id, data, render: () => null })
+    }
+
+    tree.declareDefaultTree(
+      model.split(
+        'row',
+        [
+          model.group(['sessions'], { id: 'grp-sessions' }),
+          model.group(['workspace'], { id: 'grp-main' }),
+          model.group(['files', 'contributed-left', 'contributed-main'], { id: 'grp-custom-sidebar' })
+        ],
+        [1, 3, 1]
+      )
+    )
+    tree.bindTreeSideVisibility('right', layout.$fileBrowserOpen, layout.setFileBrowserOpen)
+
+    // The keybind must not take its terminal fallback, and the renderer must
+    // classify the entire custom group as the Files/right side rather than
+    // only hiding Files through bindPaneVisibility.
+    expect(tree.layoutHasRootSide('right')).toBe(true)
+    expect(tree.treeSideOfPane('files')).toBe('right')
+
+    layout.setFileBrowserOpen(false)
+    expect(tree.$collapsedTreeSides.get().has('right')).toBe(true)
+  })
+
   it('reactive unhide does NOT expand a user-collapsed side', async () => {
     const { tree, layout } = await setupWithFiles()
 

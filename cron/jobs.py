@@ -712,7 +712,31 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     schedule = schedule.strip()
     original = schedule
     schedule_lower = schedule.lower()
-    
+
+    # Re-parse own display formats so round-tripping works:
+    #   "once at 2026-08-19 08:00" → one-shot at that time
+    #   "once in 30m" / "once in 2h" → one-shot from now
+    # Without this, editing a one-shot job through a UI that
+    # re-submits the displayed schedule raises ValueError (#89560).
+    once_at_match = re.match(r'^once at (\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?)$', schedule, re.IGNORECASE)
+    if once_at_match:
+        ts = once_at_match.group(1).replace(' ', 'T', 1)
+        return parse_schedule(ts)
+
+    once_in_match = re.match(r'^once in (.+)$', schedule, re.IGNORECASE)
+    if once_in_match:
+        duration_str = once_in_match.group(1).strip()
+        try:
+            minutes = parse_duration(duration_str)
+            run_at = _hermes_now() + timedelta(minutes=minutes)
+            return {
+                "kind": "once",
+                "run_at": run_at.isoformat(),
+                "display": f"once in {duration_str}"
+            }
+        except ValueError:
+            pass
+
     # "every X" pattern → recurring interval
     if schedule_lower.startswith("every "):
         duration_str = schedule[6:].strip()

@@ -3,6 +3,7 @@ import { atom, type WritableAtom } from 'nanostores'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useThemeEpoch } from '@/hooks/use-theme-epoch'
+import { createBudgetedLoop } from '@/lib/budgeted-loop'
 import { createDoubleTapDetector, isSmartZoomWheel } from '@/lib/trackpad-gestures'
 import type { StarmapGraph } from '@/types/hermes'
 
@@ -496,32 +497,14 @@ export function StarMap({
   }, [invalidate, themeEpoch])
 
   // Render loop. The core scramble animates continuously, so the loop runs while
-  // the window is focused — but each frame is cheap (live scramble + a blit of the
-  // cached static layer). The expensive scene only re-renders when invalidate()
-  // marks it dirty. Capped to ~30fps; interaction (force) bypasses the cap.
+  // the map is observable — but createBudgetedLoop caps it to ~30fps and, via the
+  // observability pause controller, suspends it the moment the window is hidden,
+  // minimized, or unfocused. Each frame is cheap (live scramble + a blit of the
+  // cached static layer); the expensive scene only re-renders when invalidate()
+  // marks it dirty.
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    let raf = 0
-    const ANIM_MS = 1000 / 30
-    let lastAnimTs = 0
-    let force = true
-
-    // The scramble keeps the loop perpetually "animating", so a fully-built,
-    // untouched map still repaints 30×/s for as long as the panel is open. That's
-    // wasted CPU/GPU (WindowServer compositing) when the window isn't even the one
-    // you're looking at. Freeze the loop while the window is hidden or unfocused;
-    // a frozen core next to other work is fine, and it resumes instantly on focus.
-    const isPaused = () =>
-      (typeof document !== 'undefined' && document.hidden) ||
-      (typeof document.hasFocus === 'function' && !document.hasFocus())
-
-    let paused = isPaused()
-
-    const schedule = () => {
-      if (!paused && !raf) {
-        raf = requestAnimationFrame(frame)
-      }
-    }
+    const loop = createBudgetedLoop(() => paint(), { fps: 30 })
 
     // The static scene (rings, bands, links, nodes, labels) is cached in an
     // offscreen layer and only re-rendered when something actually changes —
@@ -618,63 +601,14 @@ export function StarMap({
       }
     }
 
-    const frame = (ts: number) => {
-      raf = 0
-
-      // The scramble animates every frame; throttle to ANIM_MS unless an
-      // interaction (force) needs an immediate repaint.
-      if (!force && ts - lastAnimTs < ANIM_MS) {
-        schedule()
-
-        return
-      }
-
-      force = false
-      lastAnimTs = ts
-      paint()
-      schedule()
-    }
-
+    // External invalidation (hover/focus/scrub/resize/theme) marks the static
+    // scene dirty; the running budgeted loop picks it up on its next frame.
     invalidateRef.current = () => {
       dirtyRef.current = true
-      force = true
-      schedule()
     }
-
-    // Suspend the loop when the window drops out of view/focus; wake + force a
-    // fresh frame the moment it returns so the resume is seamless.
-    const onActivity = () => {
-      const next = isPaused()
-
-      if (next === paused) {
-        return
-      }
-
-      paused = next
-
-      if (paused) {
-        if (raf) {
-          cancelAnimationFrame(raf)
-          raf = 0
-        }
-      } else {
-        dirtyRef.current = true
-        force = true
-        schedule()
-      }
-    }
-
-    document.addEventListener('visibilitychange', onActivity)
-    window.addEventListener('blur', onActivity)
-    window.addEventListener('focus', onActivity)
-
-    schedule()
 
     return () => {
-      cancelAnimationFrame(raf)
-      document.removeEventListener('visibilitychange', onActivity)
-      window.removeEventListener('blur', onActivity)
-      window.removeEventListener('focus', onActivity)
+      loop.dispose()
 
       invalidateRef.current = () => {}
     }

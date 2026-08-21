@@ -1,7 +1,6 @@
 import { type AppendMessage, AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import type { ReadableAtom } from 'nanostores'
 import type * as React from 'react'
 import { memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
@@ -11,7 +10,6 @@ import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
-import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
@@ -76,6 +74,7 @@ import {
   transcriptBackfillAvailable
 } from './transcript-backfill'
 import { advanceTranscriptWindow, type TranscriptWindowState } from './transcript-window'
+import { useVisibleTranscriptSnapshot } from './visible-transcript'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   gateway: HermesGateway | null
@@ -192,30 +191,6 @@ interface ChatRuntimeBoundaryProps {
 const NO_MESSAGES: ChatMessage[] = []
 
 /**
- * The view's $messages, live only while this surface is the VISIBLE tab.
- *
- * Keep-alive keeps every ever-active tab MOUNTED (tree-group.tsx), so without
- * this gate a hidden tab re-renders its entire thread on every streaming
- * delta flush (~30×/s) — five busy tabs quintuple the per-token render cost
- * and the app crawls. Hidden tabs freeze their transcript instead (status
- * dots stay live through the separate status atoms) and catch up in one
- * commit on reveal — the subscribe fires immediately with the current value.
- */
-function useMessagesWhileVisible($messages: ReadableAtom<ChatMessage[]>): ChatMessage[] {
-  const visible = usePaneVisible()
-  const [messages, setMessages] = useState(() => $messages.get())
-
-  // nanostores types the listener value ReadonlyIfObject; the store publishes
-  // a fresh array per flush, so the cast is safe and avoids a per-token clone.
-  useEffect(
-    () => (visible ? $messages.subscribe(value => setMessages(value as ChatMessage[])) : undefined),
-    [$messages, visible]
-  )
-
-  return messages
-}
-
-/**
  * Owns the $messages subscription and the assistant-ui external-store runtime.
  *
  * Isolated from ChatView so the per-token delta flush (which replaces the
@@ -236,8 +211,8 @@ function ChatRuntimeBoundary({
 }: ChatRuntimeBoundaryProps) {
   const view = useSessionView()
   const runtimeId = useStore(view.$runtimeId)
-  const storeMessages = useMessagesWhileVisible(view.$messages)
-  const messages = suppressMessages ? NO_MESSAGES : storeMessages
+  const transcript = useVisibleTranscriptSnapshot(view)
+  const messages = suppressMessages ? NO_MESSAGES : transcript.messages
 
   const [windowPages, setWindowPages] = useState(1)
   const [windowSessionKey, setWindowSessionKey] = useState(runtimeId)
@@ -299,8 +274,15 @@ function ChatRuntimeBoundary({
   const olderAvailable = windowed || restBackfillAvailable
 
   const transcriptWindow = useMemo(() => ({ olderAvailable, expandWindow }), [expandWindow, olderAvailable])
+  // This identity travels through the runtime adapter rather than directly
+  // through Thread props. The adapter is adopted in an effect alongside the
+  // message repository, so outgoing rows retain their source identity during
+  // the intermediate navigation commit and destination rows receive the new
+  // identity even when both transcripts have identical message ids/roles.
+  const runtimeExtras = useMemo(() => ({ transcriptIdentity: transcript.identity }), [transcript.identity])
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
+    extras: runtimeExtras,
     messageRepository: runtimeMessageRepository,
     isRunning: busy,
     setMessages: onThreadMessagesChange,

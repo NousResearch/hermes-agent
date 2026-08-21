@@ -65,7 +65,7 @@ import { SessionDraftTitle } from './session-draft-title'
 import { startSessionDrag } from './session-drag'
 import { SessionStatusDot } from './session-status-dot'
 import { useSessionTileActions } from './session-tile-actions'
-import { type SessionView, SessionViewProvider } from './session-view'
+import { nextSessionTranscript, type SessionTranscript, type SessionView, SessionViewProvider } from './session-view'
 import { SessionContextMenu } from './sidebar/session-actions-menu'
 import { lastVisibleMessageIsUser } from './thread-loading'
 
@@ -86,6 +86,17 @@ function buildTileView(storedSessionId: string): SessionView {
   )
 
   const $messages = computed($state, state => state?.messages ?? NO_MESSAGES)
+  let transcriptSnapshot: SessionTranscript | null = null
+
+  const $transcript = computed([$runtimeId, $state], (runtimeId, state) => {
+    transcriptSnapshot = nextSessionTranscript(
+      transcriptSnapshot,
+      { cwd: state?.cwd ?? '', runtimeId },
+      state?.messages ?? NO_MESSAGES
+    )
+
+    return transcriptSnapshot
+  })
 
   return {
     kind: 'tile',
@@ -95,6 +106,7 @@ function buildTileView(storedSessionId: string): SessionView {
     $fast: computed($state, state => Boolean(state?.fast)),
     $lastVisibleIsUser: computed($messages, lastVisibleMessageIsUser),
     $messages,
+    $transcript,
     $messagesEmpty: computed($messages, messages => messages.length === 0),
     $model: computed($state, state => state?.model ?? ''),
     $provider: computed($state, state => state?.provider ?? ''),

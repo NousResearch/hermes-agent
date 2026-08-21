@@ -7,6 +7,7 @@ import { clearArtifactRegistry } from '@/store/artifacts'
 import { invalidateCronJobsRequests, setCronJobs } from '@/store/cron'
 import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
+import { clearAllPreviewArtifacts } from '@/store/preview-status'
 import { invalidateProfileListFetches } from '@/store/profile'
 import {
   $unreadFinishedSessionIds,
@@ -89,6 +90,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // Artifacts are keyed by sessions on the previous backend, so both the
   // registry and any rail tab pointing into it go with them.
   clearArtifactRegistry()
+  clearAllPreviewArtifacts()
 
   // Cached transcript tails belong to the PREVIOUS backend's sessions; a
   // different backend can recycle stored ids, and painting another machine's

@@ -2,6 +2,7 @@ import { computed, type ReadableAtom } from 'nanostores'
 import { createContext, useContext } from 'react'
 
 import type { ClientSessionState } from '@/app/types'
+import type { TranscriptIdentity } from '@/components/assistant-ui/thread/transcript-identity'
 import type { ChatMessage } from '@/lib/chat-messages'
 import {
   $activeSessionId,
@@ -40,11 +41,32 @@ import { lastVisibleMessageIsUser } from './thread-loading'
  * ChatView subscribes only to the coarse edges; `$messages` stays boundary-
  * only exactly like the primary view's perf contract.
  */
+export interface SessionTranscript {
+  identity: TranscriptIdentity
+  messages: ChatMessage[]
+}
+
+export function nextSessionTranscript(
+  previous: SessionTranscript | null,
+  identity: TranscriptIdentity,
+  messages: ChatMessage[]
+): SessionTranscript {
+  return previous &&
+    previous.identity.cwd === identity.cwd &&
+    previous.identity.runtimeId === identity.runtimeId &&
+    previous.messages === messages
+    ? previous
+    : { identity, messages }
+}
+
 export interface SessionView {
   kind: 'primary' | 'tile'
   $runtimeId: ReadableAtom<string | null>
   $storedId: ReadableAtom<string | null>
   $messages: ReadableAtom<ChatMessage[]>
+  /** Coherent transcript payload + owner. Production views provide this so a
+   *  session switch cannot expose destination identity with outgoing rows. */
+  $transcript?: ReadableAtom<SessionTranscript>
   $busy: ReadableAtom<boolean>
   $awaitingResponse: ReadableAtom<boolean>
   $messagesEmpty: ReadableAtom<boolean>
@@ -80,6 +102,27 @@ function primaryField<T>(select: (state: ClientSessionState) => T, $draft: Reada
 }
 
 const $primaryMessages = primaryField<ChatMessage[]>(state => state.messages, $messages)
+const NO_TRANSCRIPT_MESSAGES: ChatMessage[] = []
+let primaryTranscriptSnapshot: SessionTranscript | null = null
+
+const $primaryTranscript = computed(
+  [$activeSessionId, $sessionStates, $messages, $currentCwd],
+  (runtimeId, states, draftMessages, draftCwd): SessionTranscript => {
+    const state = runtimeId ? states[runtimeId] : undefined
+
+    const identity = { cwd: state?.cwd ?? draftCwd, runtimeId }
+
+    const messages =
+      // Draft atoms belong only to a true draft (no runtime id). If a runtime
+      // id arrives before its slice, empty is safer than pairing that identity
+      // with the previous session's mirrored transcript.
+      state?.messages ?? (runtimeId ? NO_TRANSCRIPT_MESSAGES : draftMessages)
+
+    primaryTranscriptSnapshot = nextSessionTranscript(primaryTranscriptSnapshot, identity, messages)
+
+    return primaryTranscriptSnapshot
+  }
+)
 
 /**
  * Turn-busy for the workspace pane. A selected stored session that has no
@@ -100,6 +143,7 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $fast: primaryField<boolean>(state => state.fast, $currentFastMode),
   $lastVisibleIsUser: computed($primaryMessages, lastVisibleMessageIsUser),
   $messages: $primaryMessages,
+  $transcript: $primaryTranscript,
   $messagesEmpty: computed($primaryMessages, messages => messages.length === 0),
   $model: primaryField<string>(state => state.model, $currentModel),
   $provider: primaryField<string>(state => state.provider, $currentProvider),

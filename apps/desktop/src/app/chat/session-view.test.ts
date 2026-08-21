@@ -2,7 +2,7 @@ import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $activeSessionId, $busy, $messages, $selectedStoredSessionId } from '@/store/session'
+import { $activeSessionId, $busy, $currentCwd, $messages, $selectedStoredSessionId } from '@/store/session'
 import { $sessionStates, dropSessionState, publishSessionState } from '@/store/session-states'
 
 import { PRIMARY_SESSION_VIEW } from './session-view'
@@ -34,6 +34,7 @@ describe('primary session view reads its own session slice', () => {
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
     $messages.set([])
+    $currentCwd.set('')
     $busy.set(false)
   })
 
@@ -47,6 +48,37 @@ describe('primary session view reads its own session slice', () => {
 
     expect(PRIMARY_SESSION_VIEW.$messages.get()).toEqual([message('runtime-foreground-msg', 'foreground turn')])
     expect(PRIMARY_SESSION_VIEW.$busy.get()).toBe(false)
+  })
+
+  it('publishes transcript identity and equal-signature messages as one session-owned snapshot', () => {
+    const sourceMessage = message('shared-msg', 'source turn')
+    const destinationMessage = message('shared-msg', 'destination turn')
+
+    publishSessionState('runtime-a', {
+      ...stateWith('runtime-a', 'source turn', false),
+      cwd: '/project-a',
+      messages: [sourceMessage]
+    })
+    publishSessionState('runtime-b', {
+      ...stateWith('runtime-b', 'destination turn', false),
+      cwd: '/project-b',
+      messages: [destinationMessage]
+    })
+    $activeSessionId.set('runtime-a')
+
+    const observed: ReturnType<NonNullable<typeof PRIMARY_SESSION_VIEW.$transcript>['get']>[] = []
+    const unsubscribe = PRIMARY_SESSION_VIEW.$transcript?.subscribe(snapshot => observed.push(snapshot))
+
+    $activeSessionId.set('runtime-b')
+
+    expect(PRIMARY_SESSION_VIEW.$transcript?.get()).toEqual({
+      identity: { cwd: '/project-b', runtimeId: 'runtime-b' },
+      messages: [destinationMessage]
+    })
+    expect(
+      observed.some(snapshot => snapshot.identity.runtimeId === 'runtime-b' && snapshot.messages[0] === sourceMessage)
+    ).toBe(false)
+    unsubscribe?.()
   })
 
   it('ignores a background session that keeps streaming after the user switches away', () => {
@@ -65,6 +97,29 @@ describe('primary session view reads its own session slice', () => {
     expect(PRIMARY_SESSION_VIEW.$busy.get()).toBe(false)
   })
 
+  it('preserves the transcript reference across unrelated session and mirror updates', () => {
+    const foreground = stateWith('runtime-foreground', 'foreground turn', false)
+
+    publishSessionState('runtime-foreground', foreground)
+    publishSessionState('runtime-background', stateWith('runtime-background', 'background turn', true))
+    $activeSessionId.set('runtime-foreground')
+
+    const before = PRIMARY_SESSION_VIEW.$transcript?.get()
+    let notifications = 0
+
+    const unsubscribe = PRIMARY_SESSION_VIEW.$transcript?.subscribe(() => {
+      notifications += 1
+    })
+
+    notifications = 0
+    publishSessionState('runtime-background', stateWith('runtime-background', 'background delta', true))
+    $messages.set(foreground.messages)
+
+    expect(PRIMARY_SESSION_VIEW.$transcript?.get()).toBe(before)
+    expect(notifications).toBe(0)
+    unsubscribe?.()
+  })
+
   it('falls back to the draft atoms while the chat has no runtime session yet', () => {
     $messages.set([message('draft-msg', 'unsent draft')])
     $busy.set(true)
@@ -73,6 +128,18 @@ describe('primary session view reads its own session slice', () => {
     expect(PRIMARY_SESSION_VIEW.$messages.get()).toEqual([message('draft-msg', 'unsent draft')])
     expect(PRIMARY_SESSION_VIEW.$busy.get()).toBe(true)
     expect(PRIMARY_SESSION_VIEW.$messagesEmpty.get()).toBe(false)
+  })
+
+  it('does not pair a runtime id with mirrored draft messages before its session slice arrives', () => {
+    const outgoing = message('shared-msg', 'outgoing turn')
+
+    $messages.set([outgoing])
+    $activeSessionId.set('runtime-destination')
+
+    expect(PRIMARY_SESSION_VIEW.$transcript?.get()).toEqual({
+      identity: { cwd: '', runtimeId: 'runtime-destination' },
+      messages: []
+    })
   })
 
   it('does not mark B busy when A is still running and B has no slice yet', () => {

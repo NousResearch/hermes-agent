@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $sessionsLimit, resetSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
+import { $previewStatusBySession, recordPreviewArtifact } from '@/store/preview-status'
 import {
   $cronSessions,
   $freshDraftReady,
@@ -45,6 +46,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setSessionsLoading(false)
     setFreshDraftReady(false)
     $sessionsLimit.set(SIDEBAR_SESSIONS_PAGE_SIZE * 3)
+    recordPreviewArtifact('s1', '/old/report.html', '/old')
   })
 
   afterEach(() => {
@@ -55,6 +57,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     $stalledSessionIds.set([])
     setSessionsLoading(true)
     $gatewaySwitching.set(false)
+    $previewStatusBySession.set({})
   })
 
   it('clears lists and arms loading so sidebar skeletons retrigger', () => {
@@ -77,5 +80,11 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     wipeSessionListsForGatewaySwitch()
 
     expect(invalidateProfileListFetches).toHaveBeenCalled()
+  })
+
+  it('clears preview labels owned by the previous gateway', () => {
+    wipeSessionListsForGatewaySwitch()
+
+    expect($previewStatusBySession.get()).toEqual({})
   })
 })

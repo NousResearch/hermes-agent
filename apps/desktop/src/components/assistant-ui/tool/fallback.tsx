@@ -19,6 +19,7 @@ import {
 import { useSessionView } from '@/app/chat/session-view'
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
+import { useTranscriptIdentity } from '@/components/assistant-ui/thread/transcript-identity'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { CompactMarkdown } from '@/components/chat/compact-markdown'
@@ -393,24 +394,20 @@ function ToolEntry({ part }: ToolEntryProps) {
   // detected target the old inline card did. Idempotent + dedup'd, so re-renders
   // don't churn.
   const previewTarget = view.previewTarget
-  // The session whose transcript this row is IN, which is not necessarily the
-  // primary one: a tool row inside a session tile must feed that tile's composer.
-  const { $cwd: $sessionCwd, $runtimeId: $sessionRuntimeId } = useSessionView()
+  // Concrete identity of the transcript this row belongs to. The thread owns
+  // this snapshot so an outgoing row cannot observe the destination session
+  // when its passive effect runs during navigation.
+  const { cwd: transcriptCwd, runtimeId: transcriptRuntimeId } = useTranscriptIdentity()
 
   useEffect(() => {
     if (isPending || !previewTarget || !isPreviewableTarget(previewTarget)) {
       return
     }
 
-    // Read (don't subscribe) session/cwd: this only fires when a previewable
-    // target appears, and subscribing re-rendered every tool row on any session
-    // or cwd change.
-    const sessionId = $sessionRuntimeId.get()
-
-    if (sessionId) {
-      recordPreviewArtifact(sessionId, previewTarget, $sessionCwd.get() || '')
+    if (transcriptRuntimeId) {
+      recordPreviewArtifact(transcriptRuntimeId, previewTarget, transcriptCwd)
     }
-  }, [$sessionCwd, $sessionRuntimeId, isPending, previewTarget])
+  }, [isPending, previewTarget, transcriptCwd, transcriptRuntimeId])
 
   const detailSections = useMemo(() => {
     if (!view.detail) {

@@ -17,6 +17,10 @@ import {
 } from 'react'
 import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
 
+import {
+  transcriptIdentityFromRuntimeExtras,
+  TranscriptIdentityProvider
+} from '@/components/assistant-ui/thread/transcript-identity'
 import { usePaneLifecycle } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
@@ -374,6 +378,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const structuralSignature = useAuiState(s =>
     s.thread.messages.map((message, index) => `${index}:${message.id}:${message.role}`).join('\n')
   )
+
+  // The runtime extras are adopted in the same adapter update as the message
+  // repository. That is the authoritative transcript boundary: unlike a
+  // structural message signature, it distinguishes branch-equivalent sessions
+  // while still leaving outgoing rows under their source identity during the
+  // intermediate navigation commit.
+  const transcriptIdentity = useAuiState(s => transcriptIdentityFromRuntimeExtras(s.thread.extras))
 
   const weightSignature = useAuiState(s =>
     s.thread.messages.map(message => messagePaintWeight(message.content)).join(',')
@@ -783,7 +794,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
                 {t.assistant.thread.showEarlier}
               </button>
             )}
-            {rows}
+            <TranscriptIdentityProvider value={transcriptIdentity}>{rows}</TranscriptIdentityProvider>
             {loadingIndicator}
             {clampToComposer && (
               <div

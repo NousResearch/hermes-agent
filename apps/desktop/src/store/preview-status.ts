@@ -77,3 +77,9 @@ export function dismissPreviewArtifact(sid: string, id: string) {
 export function clearPreviewArtifacts(sid: string) {
   writePreviews(sid, [])
 }
+
+export function clearAllPreviewArtifacts() {
+  if (Object.keys($previewStatusBySession.get()).length > 0) {
+    $previewStatusBySession.set({})
+  }
+}

@@ -5492,6 +5492,11 @@ def run_job(
     _cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
     _cron_session_token = None
     _non_dispatcher_token = None
+    # Whether this run took the failure path. The finally block closes the
+    # cron session via end_session(); it must stamp a FAILED run with
+    # end_reason="cron_failed" instead of "cron_complete" so the session
+    # stays distinguishable from a completed run (#88443).
+    _cron_run_failed = False
     try:
         if not _cwd_lock_acquired:
             # Fail closed (#79768): running without the lock would let a
@@ -6307,6 +6312,11 @@ def run_job(
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
+        # Stamp this run as failed so the finally block closes the cron
+        # session with end_reason="cron_failed" instead of "cron_complete"
+        # (#88443). A failed run must not be indistinguishable from a
+        # completed one.
+        _cron_run_failed = True
         # Best-effort audit write on failure path. _audit_fire_id
         # may be unset if the exception fired before submit() — guard
         # with a None check so the audit write itself never raises.
@@ -6436,8 +6446,14 @@ def run_job(
                     except (Exception, KeyboardInterrupt):
                         continue
             try:
+                # Stamp the run's real outcome, not a blanket "complete".
+                # A failed run gets end_reason="cron_failed" so it stays
+                # distinguishable from a completed one (#88443). The first
+                # end_session wins (SessionDB UPDATE only fires when
+                # ended_at IS NULL), so this must be the correct reason here.
                 _session_db.end_session(
-                    _final_cron_session_id, "cron_complete"
+                    _final_cron_session_id,
+                    "cron_failed" if _cron_run_failed else "cron_complete",
                 )
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to end session: %s", job_id, e)

@@ -21,8 +21,10 @@ setup`):
   user_id            — Canonical user identifier. When set, it is applied
                        uniformly across every gateway (CLI, Telegram, Slack,
                        Discord, …) so the same human gets one merged memory
-                       store. When unset, the gateway-native id (e.g. Telegram
-                       numeric id, Discord snowflake) is used instead.
+                       store. When unset, a gateway-native user id (e.g.
+                       Telegram numeric id, Discord snowflake) is used, with
+                       the stable gateway session key as a fallback for API
+                       clients that do not expose a separate user id.
   agent_id           — Agent identifier (default: hermes)
 
 The matching MEM0_MODE / MEM0_USER_ID / MEM0_AGENT_ID environment variables are
@@ -343,17 +345,23 @@ class Mem0MemoryProvider(MemoryProvider):
         #   1. Operator-configured MEM0_USER_ID (env or $HERMES_HOME/mem0.json) —
         #      the canonical principal, applied across every gateway so the same
         #      human gets one merged memory store.
-        #   2. Gateway-native id from kwargs (Telegram numeric id, Discord
-        #      snowflake, etc.) — preserves per-platform isolation when no
-        #      override is configured.
-        #   3. Hardcoded fallback _DEFAULT_USER_ID (CLI with no auth).
+        #   2. Gateway-native user id from kwargs (Telegram numeric id,
+        #      Discord snowflake, etc.).
+        #   3. Stable gateway session key for API and other clients that do
+        #      not expose a separate user id.
+        #   4. Hardcoded fallback _DEFAULT_USER_ID (CLI with no auth).
         # The literal _DEFAULT_USER_ID string is treated as unset so users who
         # ran the setup wizard with the suggested default still get gateway-
         # native ids instead of being silently bucketed together.
         configured = self._config.get("user_id")
         if configured == _DEFAULT_USER_ID:
             configured = None
-        self._user_id = configured or kwargs.get("user_id") or _DEFAULT_USER_ID
+        self._user_id = (
+            configured
+            or kwargs.get("user_id")
+            or kwargs.get("gateway_session_key")
+            or _DEFAULT_USER_ID
+        )
         self._agent_id = self._config.get("agent_id", "hermes")
         # Persisted rerank preference (setup wizard / mem0.json). Used as the
         # DEFAULT for mem0_search when the model doesn't pass ``rerank``

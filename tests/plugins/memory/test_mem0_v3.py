@@ -323,6 +323,40 @@ class TestMem0UserIdResolution:
         provider.initialize("test", user_id="123456789", platform="telegram")
         assert provider._user_id == "123456789"
 
+    def test_gateway_user_id_beats_gateway_session_key(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MEM0_USER_ID", raising=False)
+        provider = self._provider(monkeypatch, tmp_path)
+        provider.initialize(
+            "test",
+            user_id="123456789",
+            gateway_session_key="agent:main:telegram:dm:123456789",
+            platform="telegram",
+        )
+        assert provider._user_id == "123456789"
+
+    def test_api_clients_use_distinct_gateway_session_keys(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MEM0_USER_ID", raising=False)
+        first = self._provider(monkeypatch, tmp_path)
+        second = self._provider(monkeypatch, tmp_path)
+        first.initialize(
+            "test",
+            gateway_session_key="agent:main:webui:dm:user-7",
+            platform="api_server",
+        )
+        second.initialize(
+            "test",
+            gateway_session_key="agent:main:webui:dm:user-8",
+            platform="api_server",
+        )
+        assert first._user_id == "agent:main:webui:dm:user-7"
+        assert second._user_id == "agent:main:webui:dm:user-8"
+        assert first._user_id != second._user_id
+
+    def test_cli_without_runtime_identity_keeps_default(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MEM0_USER_ID", raising=False)
+        provider = self._provider(monkeypatch, tmp_path)
+        provider.initialize("test", platform="cli")
+        assert provider._user_id == "hermes-user"
 
     def test_legacy_placeholder_in_config_does_not_override_kwargs(self, monkeypatch, tmp_path):
         # Setup wizard historically wrote {"user_id": "hermes-user"} as the
@@ -407,5 +441,3 @@ class TestSelfHostedConfig:
     def test_load_config_reads_mem0_host_env(self, monkeypatch):
         monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
         assert mem0_plugin._load_config()["host"] == "http://localhost:8888"
-
-

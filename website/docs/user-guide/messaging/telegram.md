@@ -325,6 +325,20 @@ The proxy applies to both the main Telegram connection and the fallback IP trans
 
 If the fallback IP discovery path is unhealthy on your host, set `HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=true` to keep cold connect on the plain `api.telegram.org` path. You can also bound DNS-over-HTTPS fallback discovery with `HERMES_TELEGRAM_FALLBACK_DISCOVERY_TIMEOUT` in seconds; the default is `5`.
 
+## Custom API Endpoint (Reverse Proxy)
+
+If you front the Telegram Bot API with your own reverse proxy (to bypass an API block, add auth, or pin a local `telegram-bot-api` daemon), point Hermes at it with `base_url` and **also** set `base_file_url` to the proxy's *file* endpoint:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      base_url: "https://tg.example.com/bot"
+      base_file_url: "https://tg.example.com/file/bot"
+```
+
+The two endpoints are different: API methods live under `/bot<TOKEN>/<METHOD>`, file downloads under `/file/bot<TOKEN>/<path>`. If `base_file_url` is omitted — or copied from `base_url` — Hermes reuses the `/bot` URL for downloads, every media download (voice notes, audio, photos, documents) then fails with `telegram.error.InvalidToken: Not Found`, and the gateway logs `Failed to cache voice: Not Found`. Point `base_file_url` at the `/file/` endpoint; the gateway logs a startup warning when the resolved value looks wrong.
+
 ## Home Channel
 
 Use the `/sethome` command in any Telegram chat (DM or group) to designate it as the **home channel**. Scheduled tasks (cron jobs) deliver their results to this channel.

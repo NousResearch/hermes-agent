@@ -20,7 +20,7 @@ import threading
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -461,6 +461,48 @@ def check_telegram_requirements() -> bool:
     TypeHandler = _TH
     TELEGRAM_AVAILABLE = True
     return True
+
+
+def _resolve_telegram_file_url(extra: Mapping[str, Any]) -> tuple:
+    """Resolve the PTB ``base_file_url`` from platform ``extra`` config.
+
+    python-telegram-bot builds media download URLs as
+    ``<base_file_url><token>/<file_path>``. When a custom ``base_url`` is
+    configured (reverse proxy in front of api.telegram.org, local
+    telegram-bot-api server, ...) and ``base_file_url`` is not set, the
+    adapter falls back to ``base_url`` — which ends in ``/bot`` and is the
+    *API method* endpoint, not the *file* endpoint. Every media download
+    (voice note, audio, photo, document) then hits a bogus API method and
+    fails with HTTP 404, which PTB surfaces as
+    ``telegram.error.InvalidToken`` (the gateway logs
+    ``Failed to cache voice: Not Found``).
+
+    Returns ``(resolved_url, warning)`` where ``warning`` is a human-readable
+    hint (or ``None`` when the resolved URL looks correct).
+    """
+    custom_base_url = extra.get("base_url")
+    base_file_url = extra.get("base_file_url", custom_base_url)
+    if not custom_base_url:
+        # PTB defaults (https://api.telegram.org/bot + /file/bot) apply.
+        return base_file_url or "", None
+    if base_file_url == custom_base_url:
+        suggested = str(custom_base_url).removesuffix("/bot") + "/file/bot"
+        warning = (
+            "base_file_url resolves to base_url "
+            f"({base_file_url!r}); media downloads will fail with "
+            "'InvalidToken: Not Found' because file URLs are built as "
+            "<base_file_url><token>/<path>. Set telegram.extra.base_file_url "
+            f"to the file endpoint, e.g. {suggested!r}."
+        )
+        return base_file_url, warning
+    if "/file/" not in base_file_url:
+        warning = (
+            "base_file_url "
+            f"({base_file_url!r}) does not look like a file endpoint "
+            "(no '/file/' segment); media downloads may fail."
+        )
+        return base_file_url, warning
+    return base_file_url, None
 
 
 # Matches every character that MarkdownV2 requires to be backslash-escaped
@@ -4297,9 +4339,13 @@ class TelegramAdapter(BasePlatformAdapter):
             custom_base_url = self.config.extra.get("base_url")
             if custom_base_url:
                 builder = builder.base_url(custom_base_url)
-                builder = builder.base_file_url(
-                    self.config.extra.get("base_file_url", custom_base_url)
+                base_file_url, file_url_warning = _resolve_telegram_file_url(
+                    self.config.extra
                 )
+                if base_file_url:
+                    builder = builder.base_file_url(base_file_url)
+                if file_url_warning:
+                    logger.warning("[%s] %s", self.name, file_url_warning)
                 logger.info(
                     "[%s] Using custom Telegram base_url: %s",
                     self.name, custom_base_url,

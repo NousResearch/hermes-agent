@@ -713,6 +713,12 @@ hermes egress reload                   # hot-reload the ruleset in-place (no res
 hermes egress status                   # binary + config + pid + listening + mappings
 hermes egress status --show-tokens     # print proxy tokens in full (default: redacted)
 
+hermes egress health                   # one-shot liveness check
+                                       #   (exit 0 = up, 1 = port closed, 2 = stopped)
+hermes egress health --watch           # poll every second until healthy (or Ctrl-C)
+hermes egress health --timeout 30      # exit non-zero if not healthy within N seconds
+                                       #   (implies polling — usable without --watch)
+
 hermes egress disable                  # flip proxy.enabled = false (does not stop a running proxy)
 hermes egress config                   # print the path to proxy.yaml for inspection
 ```

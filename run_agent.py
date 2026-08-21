@@ -2704,6 +2704,21 @@ class AIAgent:
                 )
             current = current.__cause__ or current.__context__
 
+        # Empty / malformed provider response body: the OpenAI/Anthropic
+        # SDK raises json.JSONDecodeError when the upstream returns 200 with
+        # an empty (or non-JSON) body — commonly a dead upstream channel
+        # behind a proxy that swallows a 502/EOF into an empty stream.
+        # Surface a readable one-liner instead of the raw
+        # "Expecting value: line 1 column 1 (char 0)" so users can tell it's
+        # an upstream outage, not a local config bug.
+        if isinstance(error, json.JSONDecodeError):
+            status_code = getattr(error, "status_code", None)
+            prefix = f"HTTP {status_code}: " if status_code else ""
+            return (
+                f"{prefix}Provider returned an empty or malformed response "
+                "(upstream may be down or connection cut mid-stream)"
+            )
+
         if (
             isinstance(error, ValueError)
             and "expected ident at line" in raw.lower()

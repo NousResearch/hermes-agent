@@ -401,8 +401,8 @@ This uses your Nous Portal access token instead of needing a separate OpenAI key
 | Groups | Full support | DMs only (v1) |
 | 24h window | No restriction | Hard rule — templates required after |
 | Voice notes (out) | Native | Native with ffmpeg, MP3 fallback otherwise |
-| Read receipts | No | Yes (blue double-checkmarks) |
-| Typing indicator | No | Yes (auto-dismisses on response) |
+| Read receipts | Yes (disabled by default; `send_read_receipts: true` in config) | Yes (blue double-checkmarks) |
+| Typing indicator | Yes (`/typing` endpoint via bridge) | Yes (auto-dismisses on response) |
 | Interactive buttons | Text fallback only | Native (clarify, approval, slash-confirm) |
 | Production use | Risky (Meta can ban) | Designed for it |
 

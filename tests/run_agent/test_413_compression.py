@@ -178,13 +178,16 @@ class TestHTTP413Compression:
 
 
 
-    def test_413_strips_vision_payloads_when_compression_cannot_reduce_messages(self, agent):
-        """If compression leaves image payloads behind, strip them and retry.
+    def test_413_strips_vision_payloads_before_compressing(self, agent):
+        """A 413 evicts retained image payloads BEFORE spending a compression pass.
 
-        Browser vision tool results can contain base64 image parts. A 413 can
-        persist even after summarisation when the remaining recent tool result
-        still carries binary data; Hermes should evict the image payload and
-        keep the text/placeholder context instead of failing immediately.
+        Browser vision tool results carry base64 image parts, which are
+        typically the bulk of an oversized request body. Text summarisation
+        cannot shrink base64, so compressing first burns a slow LLM round-trip
+        that reliably reports "no reduction" and walks the session into a
+        413 -> compress -> 413 loop (#89286). Stripping is instant and targets
+        the actual bytes, so it runs first and compression is not called at all
+        when dropping the images is enough to recover.
         """
         err_413 = _make_413_error()
         ok_resp = _mock_response(content="Recovered after image eviction", finish_reason="stop")
@@ -232,12 +235,15 @@ class TestHTTP413Compression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            # Simulate the bad production case: compression ran, but the
-            # recent vision tool message survived so message count did not drop.
+            # Kept as a guard: if the ordering ever regresses, compression
+            # runs here and (as in production) fails to shrink the base64,
+            # which the assert_not_called below catches.
             mock_compress.side_effect = lambda msgs, *_a, **_k: (msgs, "compressed prompt")
             result = agent.run_conversation("continue", conversation_history=prefill)
 
-        mock_compress.assert_called_once()
+        # The image strip alone recovered the request — no slow summarisation
+        # round-trip, and no compression attempt consumed.
+        mock_compress.assert_not_called()
         assert result["completed"] is True
         assert result["final_response"] == "Recovered after image eviction"
         assert len(request_payloads) == 2
@@ -247,6 +253,102 @@ class TestHTTP413Compression:
         assert "data:image" not in str(retried_tool["content"])
         assert "Screenshot of the dashboard" in str(retried_tool["content"])
         assert not getattr(agent, "_no_list_tool_content_models", set())
+
+    def test_413_still_compresses_when_there_is_no_image_to_drop(self, agent):
+        """Text-only sessions must keep reaching compression (#89286).
+
+        Running the image strip first must not become a way to skip
+        compression: on a text-heavy 413 the strip finds nothing, reports
+        False, and the branch falls through to summarisation exactly as
+        before.
+        """
+        err_413 = _make_413_error()
+        ok_resp = _mock_response(content="Recovered after compression", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err_413, ok_resp]
+
+        prefill = [
+            {"role": "user", "content": "a very long text question"},
+            {"role": "assistant", "content": "a very long text answer"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "summary"}],
+                "compressed prompt",
+            )
+            result = agent.run_conversation("continue", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after compression"
+
+    def test_413_image_strip_does_not_consume_a_compression_attempt(self, agent):
+        """Dropping images must not burn one of max_compression_attempts.
+
+        The pre-#89286 order spent an attempt on every futile summarisation
+        pass, so a screenshot-heavy session could exhaust the budget and hard
+        fail with "max compression attempts reached" while the images — the
+        actual bytes — were still in the body. A budget of 0 stands in for
+        that already-exhausted state: dropping images is free, so recovery
+        must not depend on having an attempt left to spend.
+        """
+        agent.max_compression_attempts = 0
+        err_413 = _make_413_error()
+        ok_resp = _mock_response(content="Recovered on a budget of one", finish_reason="stop")
+        calls = []
+
+        def _side_effect(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise err_413
+            return ok_resp
+
+        agent.client.chat.completions.create.side_effect = _side_effect
+
+        prefill = [
+            {"role": "user", "content": "look at this"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_v",
+                        "type": "function",
+                        "function": {"name": "browser_vision", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_v",
+                "name": "browser_vision",
+                "content": [
+                    {"type": "text", "text": "page text"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64," + ("b" * 4000)},
+                    },
+                ],
+            },
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.side_effect = lambda msgs, *_a, **_k: (msgs, "compressed prompt")
+            result = agent.run_conversation("continue", conversation_history=prefill)
+
+        assert result["completed"] is True
+        assert result.get("compression_exhausted") is not True
+        assert result["final_response"] == "Recovered on a budget of one"
 
     def test_413_clears_conversation_history_on_persist(self, agent):
         """After 413-triggered compression, _persist_session must receive None history.

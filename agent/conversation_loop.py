@@ -5533,6 +5533,32 @@ def run_conversation(
                     )
 
                 if is_payload_too_large:
+                    # Drop retained vision payloads BEFORE spending a
+                    # compression attempt. A 413 is a byte-size verdict on
+                    # this request body, and on a screenshot-heavy session
+                    # base64 image parts are the bulk of those bytes — text
+                    # summarization cannot shrink them. Compressing first
+                    # burns ~50-70s of LLM round-trip per attempt, reports
+                    # "no reduction" because the images are untouched, and
+                    # walks the session into a 413 -> compress -> 413 loop
+                    # against a context window it is nowhere near (#89286).
+                    # Stripping is instant, local, and targets the actual
+                    # bytes, so it goes first; text compression still runs
+                    # on the next pass when there was no image left to drop.
+                    #
+                    # remember_model=False: 413 means this BODY was too
+                    # large, not that the provider rejects list-type tool
+                    # content in general (the #27344 recovery path).
+                    if agent._try_strip_image_parts_from_tool_messages(
+                        api_messages,
+                        remember_model=False,
+                    ):
+                        agent._buffer_status(
+                            "📐 Request payload too large (413) — dropped retained "
+                            "vision payloads and retrying before compressing..."
+                        )
+                        continue
+
                     compression_attempts += 1
                     if compression_attempts > max_compression_attempts:
                         # Terminal — surface the buffered retry trace.
@@ -5596,16 +5622,15 @@ def run_conversation(
                         _retry.restart_with_compressed_messages = True
                         break
                     else:
-                        if agent._try_strip_image_parts_from_tool_messages(
-                            api_messages,
-                            remember_model=False,
-                        ):
-                            agent._buffer_status(
-                                "📐 Compression could not reduce the request further — "
-                                "removed retained vision payloads and retrying..."
-                            )
-                            continue
-
+                        # No image-strip retry here any more: the strip now
+                        # runs at the top of this branch, so by the time
+                        # compression has failed to reduce, api_messages is
+                        # already image-free and a second call is a no-op.
+                        # (api_messages is built once, above the retry loop,
+                        # and _compress_context rewrites `messages` — not
+                        # api_messages — so the strip above persists across
+                        # this `continue`.)
+                        #
                         # Terminal — surface buffered context so the user
                         # sees what compression attempts were made.
                         agent._flush_status_buffer()

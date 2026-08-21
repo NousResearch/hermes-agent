@@ -328,13 +328,13 @@ def _sync_allowlist_remove(platform: str, user_id: str) -> None:
 
 
 def _load_json_file(path: Path) -> dict:
-    if path.exists():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except (json.JSONDecodeError, OSError):
+    try:
+        if not path.exists():
             return {}
-    return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
 def _merge_pairing_dir(active_dir: Path, alternate_dir: Path) -> None:
@@ -465,36 +465,36 @@ class PairingStore:
         return self._dir / "_rate_limits.json"
 
     def _load_json(self, path: Path) -> dict:
-        if path.exists():
+        try:
+            if not path.exists():
+                return {}
+            return json.loads(path.read_text(encoding="utf-8"))
+        except PermissionError as e:
+            # Surface this loudly: a 0600 file owned by a different user
+            # (classic Docker symptom: `docker exec` runs as root and writes
+            # the file, then the gateway process — running as `hermes` after
+            # gosu drop — can't read it) would otherwise be swallowed by
+            # the generic OSError branch below, silently leaving the user
+            # marked unauthorized. See issue #10270.
             try:
-                return json.loads(path.read_text(encoding="utf-8"))
-            except PermissionError as e:
-                # Surface this loudly: a 0600 file owned by a different user
-                # (classic Docker symptom: `docker exec` runs as root and writes
-                # the file, then the gateway process — running as `hermes` after
-                # gosu drop — can't read it) would otherwise be swallowed by
-                # the generic OSError branch below, silently leaving the user
-                # marked unauthorized. See issue #10270.
-                try:
-                    st = path.stat()
-                    owner_info = f"owner_uid={st.st_uid} mode={oct(st.st_mode)[-4:]}"
-                except OSError:
-                    owner_info = "<stat failed>"
-                # os.geteuid doesn't exist on Windows; the Docker scenario is
-                # POSIX-only, but the gateway (and this fallback) runs anywhere.
-                euid = os.geteuid() if hasattr(os, "geteuid") else "n/a"
-                logger.warning(
-                    "Pairing file %s exists but is not readable as uid=%s (%s; %s). "
-                    "If you ran `docker exec <container> hermes pairing approve ...` as root, "
-                    "re-run with `docker exec -u hermes <container> ...` and "
-                    "chown the existing file to the hermes user, or restart the "
-                    "container so the entrypoint can fix ownership.",
-                    path, euid, owner_info, e,
-                )
-                return {}
-            except (json.JSONDecodeError, OSError):
-                return {}
-        return {}
+                st = path.stat()
+                owner_info = f"owner_uid={st.st_uid} mode={oct(st.st_mode)[-4:]}"
+            except OSError:
+                owner_info = "<stat failed>"
+            # os.geteuid doesn't exist on Windows; the Docker scenario is
+            # POSIX-only, but the gateway (and this fallback) runs anywhere.
+            euid = os.geteuid() if hasattr(os, "geteuid") else "n/a"
+            logger.warning(
+                "Pairing file %s exists but is not readable as uid=%s (%s; %s). "
+                "If you ran `docker exec <container> hermes pairing approve ...` as root, "
+                "re-run with `docker exec -u hermes <container> ...` and "
+                "chown the existing file to the hermes user, or restart the "
+                "container so the entrypoint can fix ownership.",
+                path, euid, owner_info, e,
+            )
+            return {}
+        except (json.JSONDecodeError, OSError):
+            return {}
 
     def _save_json(self, path: Path, data: dict) -> None:
         _secure_write(path, json.dumps(data, indent=2, ensure_ascii=False))

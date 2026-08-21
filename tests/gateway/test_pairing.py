@@ -17,6 +17,7 @@ from gateway.pairing import (
     RATE_LIMIT_SECONDS,
     MAX_PENDING_PER_PLATFORM,
     MAX_FAILED_ATTEMPTS,
+    _load_json_file,
     _secure_write,
 )
 
@@ -25,6 +26,21 @@ def _make_store(tmp_path):
     """Create a PairingStore with PAIRING_DIR pointed to tmp_path."""
     with patch("gateway.pairing.PAIRING_DIR", tmp_path):
         return PairingStore()
+
+
+class TestPairingJsonReadFailures:
+    @pytest.mark.parametrize("loader_name", ["module", "store"])
+    def test_exists_io_error_is_treated_as_unavailable_pairing_data(self, tmp_path, loader_name):
+        path = tmp_path / "telegram-approved.json"
+        store = _make_store(tmp_path)
+
+        with patch.object(Path, "exists", side_effect=OSError(5, "Input/output error")):
+            if loader_name == "module":
+                result = _load_json_file(path)
+            else:
+                result = store._load_json(path)
+
+        assert result == {}
 
 
 class TestSplitPairingDirMigration:

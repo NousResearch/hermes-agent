@@ -15,6 +15,16 @@ import {
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import {
+  formatCheckpointList,
+  formatRollbackDiff,
+  formatRollbackRestore,
+  parseRollbackCommand,
+  type RollbackDiffResponse,
+  type RollbackListResponse,
+  type RollbackRestoreResponse,
+  trimLastExchange
+} from '@/lib/desktop-rollback'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { setComposerDraft } from '@/store/composer'
@@ -857,6 +867,77 @@ export function useSlashCommand(deps: SlashCommandDeps) {
                 ? `Session title set: ${finalTitle}${queued ? ' (queued while session initializes)' : ''}`
                 : 'Session title cleared.'
             )
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        },
+        // /rollback routes through the native rollback.list/diff/restore RPCs —
+        // the same path the TUI uses (ui-tui/src/app/slash/commands/ops.ts) —
+        // NOT the slash worker. The worker is a throwaway HermesCLI subprocess
+        // with no agent attached: on remote/Cloud gateways its CLI handler
+        // dead-ends with "No active agent session.", and even where it works it
+        // restores files while only undoing its OWN in-memory history copy, so
+        // the live gateway session (the agent's next-turn context) silently
+        // diverges from the restored files. rollback.restore mutates the live
+        // session["history"] and reports how many messages it dropped via
+        // history_removed; we mirror that drop in the visible transcript.
+        rollback: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
+          const plan = parseRollbackCommand(ctx.arg)
+
+          if (plan.kind === 'usage') {
+            renderSlashOutput(plan.message)
+
+            return
+          }
+
+          try {
+            if (plan.kind === 'list') {
+              const result = await requestGateway<RollbackListResponse>('rollback.list', { session_id: sessionId })
+
+              renderSlashOutput(formatCheckpointList(result))
+
+              return
+            }
+
+            if (plan.kind === 'diff') {
+              const result = await requestGateway<RollbackDiffResponse>('rollback.diff', {
+                hash: plan.hash,
+                session_id: sessionId
+              })
+
+              renderSlashOutput(formatRollbackDiff(result))
+
+              return
+            }
+
+            const result = await requestGateway<RollbackRestoreResponse>('rollback.restore', {
+              hash: plan.hash,
+              session_id: sessionId,
+              ...(plan.filePath ? { file_path: plan.filePath } : {})
+            })
+
+            // A full restore also dropped the last exchange from the live
+            // session history server-side (history_removed) — trim the visible
+            // transcript to match so the rolled-back exchange doesn't linger on
+            // screen. updateSessionState only publishes for the active runtime,
+            // so a late result after a session switch updates its own cache
+            // without clobbering the foreground transcript.
+            if (result?.success && !plan.filePath && (result.history_removed ?? 0) > 0) {
+              updateSessionState(
+                sessionId,
+                state => ({ ...state, messages: trimLastExchange(state.messages) }),
+                storedSessionId
+              )
+            }
+
+            renderSlashOutput(formatRollbackRestore(result, plan.filePath))
           } catch (err) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }

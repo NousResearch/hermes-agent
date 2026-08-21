@@ -335,6 +335,93 @@ describe('usePromptActions /title', () => {
   })
 })
 
+describe('usePromptActions /rollback', () => {
+  beforeEach(() => {
+    setSessions(() => [sessionInfo()])
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('lists checkpoints via the rollback.list RPC — never the slash worker', async () => {
+    const requestGateway = vi.fn(
+      async (method: string) => (method === 'rollback.list' ? { checkpoints: [], enabled: true } : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/rollback')
+
+    expect(requestGateway).toHaveBeenCalledWith('rollback.list', { session_id: RUNTIME_SESSION_ID })
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+    expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+  })
+
+  it('previews a checkpoint via the rollback.diff RPC', async () => {
+    const requestGateway = vi.fn(
+      async (method: string) => (method === 'rollback.diff' ? { diff: '- a\n+ b', stat: '1 file changed' } : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/rollback diff 2')
+
+    expect(requestGateway).toHaveBeenCalledWith('rollback.diff', { hash: '2', session_id: RUNTIME_SESSION_ID })
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+  })
+
+  it('restores via the rollback.restore RPC (live session history) — never slash.exec', async () => {
+    // This is the bug: slash.exec runs /rollback in a throwaway HermesCLI
+    // subprocess with no agent attached — on remote/Cloud gateways it dead-ends
+    // with "No active agent session.", and where it works it restores the file
+    // while only undoing ITS OWN history copy, so the live gateway session
+    // diverges from the restored files. rollback.restore mutates the real
+    // session["history"].
+    const requestGateway = vi.fn(
+      async (method: string) =>
+        (method === 'rollback.restore' ? { history_removed: 2, restored_to: 'abc123', success: true } : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/rollback 2')
+
+    expect(requestGateway).toHaveBeenCalledWith('rollback.restore', { hash: '2', session_id: RUNTIME_SESSION_ID })
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+  })
+
+  it('passes the file path through for a file-scoped restore', async () => {
+    const requestGateway = vi.fn(
+      async (method: string) =>
+        (method === 'rollback.restore' ? { reason: 'ok', restored_to: 'abc123', success: true } : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/rollback 2 src/foo.py')
+
+    expect(requestGateway).toHaveBeenCalledWith('rollback.restore', {
+      file_path: 'src/foo.py',
+      hash: '2',
+      session_id: RUNTIME_SESSION_ID
+    })
+  })
+})
+
 // Helper: extract rendered text parts from captured updateSessionState seeds.
 function renderedSeedTexts(seeds: Record<string, unknown>[]): string[] {
   return seeds.flatMap(state => {

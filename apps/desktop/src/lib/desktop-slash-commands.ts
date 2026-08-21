@@ -54,6 +54,7 @@ export type DesktopActionId =
   | 'new'
   | 'pet'
   | 'profile'
+  | 'rollback'
   | 'skin'
   | 'title'
   | 'wake'
@@ -299,7 +300,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     argumentMode: 'text'
   },
   { name: '/retry', description: 'Retry the last user message', surface: exec() },
-  { name: '/rollback', description: 'List or restore filesystem checkpoints', surface: exec() },
+  {
+    name: '/rollback',
+    description: 'List or restore filesystem checkpoints',
+    surface: action('rollback'),
+    argumentMode: 'text'
+  },
   {
     name: '/save',
     description: 'Save the current transcript to JSON',

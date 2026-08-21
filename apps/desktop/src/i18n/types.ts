@@ -415,6 +415,11 @@ export interface Translations {
       sessionDensityCompact: string
       sessionDensityComfortable: string
       sessionDensityDetailed: string
+      tabStripTitle: string
+      tabStripDesc: string
+      tabStripAuto: string
+      tabStripAlways: string
+      tabStripNever: string
       terminalFontTitle: string
       terminalFontDesc: string
       terminalFontPlaceholder: string
@@ -2554,8 +2559,8 @@ export interface Translations {
   }
 
   zones: {
-    showHeader: string
-    hideHeader: string
+    showTabStrip: string
+    hideTabStrip: string
     showStripTab: (title: string) => string
     hideStripTab: (title: string) => string
     lastTabKeptTitle: string

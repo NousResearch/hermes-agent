@@ -2345,8 +2345,8 @@ export const ar = defineLocale({
     }
   },
   zones: {
-    showHeader: 'إظهار الرأس',
-    hideHeader: 'إخفاء الرأس',
+    showTabStrip: 'إظهار علامات التبويب',
+    hideTabStrip: 'إخفاء علامات التبويب',
     showStripTab: title => `إظهار ${title}`,
     hideStripTab: title => `إخفاء ${title}`,
     lastTabKeptTitle: 'يبقى آخر تبويب',

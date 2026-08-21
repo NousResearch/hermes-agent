@@ -271,6 +271,7 @@ export const zh: Translations = {
       'view.toggleRightSidebar': '切换文件浏览器',
       'view.toggleReview': '切换审查面板',
       'view.toggleStatusbar': '切换状态栏',
+      'view.toggleTabStrip': '切换标签',
       'view.showFiles': '显示文件浏览器',
       'view.showBrowser': '打开浏览器',
       'view.showTerminal': '显示终端',
@@ -505,6 +506,11 @@ export const zh: Translations = {
       sessionDensityCompact: '紧凑',
       sessionDensityComfortable: '舒适',
       sessionDensityDetailed: '详细',
+      tabStripTitle: '标签栏',
+      tabStripDesc: '在分区上方显示标签。自动模式会在分区只有一个面板时隐藏标签。',
+      tabStripAuto: '自动',
+      tabStripAlways: '始终',
+      tabStripNever: '从不',
       terminalFontTitle: '终端字体',
       terminalFontDesc:
         '选择已安装的字体用于桌面端终端。Nerd Font 可正确显示 Powerlevel10k 和 Shell 图标；留空则使用内置的 JetBrains Mono。',
@@ -3147,8 +3153,8 @@ export const zh: Translations = {
   },
 
   zones: {
-    showHeader: '显示标题栏',
-    hideHeader: '隐藏标题栏',
+    showTabStrip: '显示标签',
+    hideTabStrip: '隐藏标签',
     showStripTab: title => `显示 ${title}`,
     hideStripTab: title => `隐藏 ${title}`,
     lastTabKeptTitle: '保留最后一个标签',

@@ -276,6 +276,7 @@ export const en: Translations = {
       'view.toggleRightSidebar': 'Toggle file browser',
       'view.toggleReview': 'Toggle review pane',
       'view.toggleStatusbar': 'Toggle status bar',
+      'view.toggleTabStrip': 'Toggle tabs',
       'view.showFiles': 'Show file browser',
       'view.showBrowser': 'Open browser',
       'view.toggleHud': 'Toggle HUD mode',
@@ -516,6 +517,11 @@ export const en: Translations = {
       sessionDensityCompact: 'Compact',
       sessionDensityComfortable: 'Comfortable',
       sessionDensityDetailed: 'Detailed',
+      tabStripTitle: 'Tab Strip',
+      tabStripDesc: 'Show tabs above a zone. Auto hides them when a zone holds a single pane.',
+      tabStripAuto: 'Auto',
+      tabStripAlways: 'Always',
+      tabStripNever: 'Never',
       terminalFontTitle: 'Terminal Font',
       terminalFontDesc:
         'Choose an installed font for Desktop terminals. Nerd Fonts render Powerlevel10k and shell icons; leave blank to use bundled JetBrains Mono.',
@@ -2980,8 +2986,8 @@ export const en: Translations = {
   },
 
   zones: {
-    showHeader: 'Show header',
-    hideHeader: 'Hide header',
+    showTabStrip: 'Show tabs',
+    hideTabStrip: 'Hide tabs',
     showStripTab: title => `Show ${title}`,
     hideStripTab: title => `Hide ${title}`,
     lastTabKeptTitle: 'Last tab stays',

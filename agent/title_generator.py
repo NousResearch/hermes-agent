@@ -348,8 +348,10 @@ def generate_title(
     """Generate a session title from the user's opening message.
 
     Runs on the ``title_generation`` auxiliary task, which resolves to a
-    small/fast model tier. Thinking is disabled and the response is constrained
-    to ``{"title": "..."}`` so there is no preamble or reasoning to strip.
+    small/fast model tier. Thinking is disabled where the provider supports
+    it and structured output is relaxed (retried without ``response_format``)
+    where the provider rejects it, so there is no preamble or reasoning to
+    strip.
 
     Titles come from the user's message alone — every surveyed implementation
     that titles well (Claude Code, OpenCode, Cursor, OpenClaw) does the same.
@@ -400,12 +402,24 @@ def generate_title(
     ]
 
     try:
+        # Reasoning models (MiniMax M2.x, DeepSeek-R1, OpenAI o-series, …)
+        # emit chain-of-thought tokens before the answer. A 64-token budget
+        # is exhausted inside <think> before the JSON title is ever produced,
+        # so the LLM upgrade silently fell back to the derived first-line
+        # title on every session (verified 2026-08: against M2.7, a 64-token
+        # cap never produced a single 'llm' title). 512 stays cheap while
+        # leaving room for reasoning + the ~20-token JSON answer.
+        #
+        # Structured output is an OpenAI-style extension; several providers
+        # (DeepSeek direct, Anthropic, Ollama, some OpenRouter backends)
+        # reject json_schema with 400/422. Retry without response_format —
+        # _extract_title_text already strips think blocks and markdown
+        # fences and parses loose JSON, so a plain-prompt answer is handled
+        # identically.
         response = call_llm(
             task="title_generation",
             messages=messages,
-            # A title is a handful of tokens. The old 500-token ceiling let a
-            # chatty model burn seconds generating prose we then threw away.
-            max_tokens=64,
+            max_tokens=512,
             temperature=0.3,
             timeout=timeout,
             main_runtime=main_runtime,
@@ -429,16 +443,31 @@ def generate_title(
             return None
         return title
     except Exception as e:
-        # Log at WARNING so this shows up in agent.log without debug mode.
-        # Full detail at debug level for operators who need the stack.
-        logger.warning("Title generation failed: %s", e)
-        logger.debug("Title generation traceback", exc_info=True)
-        if failure_callback is not None:
-            try:
-                failure_callback("title generation", e)
-            except Exception:
-                logger.debug("Title generation failure_callback raised", exc_info=True)
-        return None
+        # Structured-output rejection (or a transient failure) — retry once
+        # without response_format before giving up. _extract_title_text
+        # handles plain text output identically.
+        try:
+            response = call_llm(
+                task="title_generation",
+                messages=messages,
+                max_tokens=512,
+                temperature=0.3,
+                timeout=timeout,
+                main_runtime=main_runtime,
+            )
+            content = response.choices[0].message.content or ""
+            return _clean_title(_extract_title_text(content))
+        except Exception as e2:
+            # Log at WARNING so this shows up in agent.log without debug mode.
+            # Full detail at debug level for operators who need the stack.
+            logger.warning("Title generation failed: %s (retry: %s)", e, e2)
+            logger.debug("Title generation traceback", exc_info=True)
+            if failure_callback is not None:
+                try:
+                    failure_callback("title generation", e2)
+                except Exception:
+                    logger.debug("Title generation failure_callback raised", exc_info=True)
+            return None
 
 
 def _persist_session_title(session_db, session_id, title, *, source, dedupe=True):

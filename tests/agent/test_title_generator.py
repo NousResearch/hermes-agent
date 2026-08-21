@@ -129,6 +129,72 @@ class TestGenerateTitle:
 
 
 
+    def test_retries_without_response_format_on_rejection(self):
+        """Providers that reject json_schema (DeepSeek, Anthropic, Ollama,
+        some OpenRouter backends) must still produce a title via a plain
+        retry, instead of silently falling back to the derived title."""
+        calls = []
+
+        def _mock_call_llm(**kwargs):
+            calls.append(kwargs)
+            if kwargs.get("extra_body", {}).get("response_format"):
+                raise RuntimeError(
+                    "Error code: 400 - This response_format type is unavailable now"
+                )
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "Postgres connection pool exhaustion"}'
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=_mock_call_llm):
+            title = generate_title("fix the postgres pool exhaustion")
+
+        assert title == "Postgres connection pool exhaustion"
+        assert len(calls) == 2
+        # First attempt carries response_format; second does not.
+        assert calls[0]["extra_body"]["response_format"] is not None
+        assert "response_format" not in calls[1].get("extra_body", {})
+
+    def test_uses_larger_token_budget_for_reasoning_models(self):
+        """A 64-token cap is exhausted inside a <think> block before the JSON
+        title is emitted (verified against MiniMax M2.7); the budget must be
+        large enough to survive reasoning + the JSON answer."""
+        captured = {}
+
+        def _mock_call_llm(**kwargs):
+            captured.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = (
+                "<think>Let me summarize the user's intent concisely.</think>"
+                '{"title": "Debugging Python Import Errors"}'
+            )
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=_mock_call_llm):
+            title = generate_title("help me fix this import")
+
+        assert title == "Debugging Python Import Errors"
+        assert captured["max_tokens"] >= 256
+
+    def test_structured_output_still_works_first_attempt(self):
+        """OpenAI-style providers that accept json_schema must succeed on the
+        first call — no retry, no regression."""
+        calls = []
+
+        def _mock_call_llm(**kwargs):
+            calls.append(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "Fix login button on mobile"}'
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=_mock_call_llm):
+            title = generate_title("the login button on mobile does nothing")
+
+        assert title == "Fix login button on mobile"
+        assert len(calls) == 1
+
     def test_invokes_failure_callback_on_exception(self):
         """failure_callback must fire so the user sees a warning (issue #15775)."""
         captured = []

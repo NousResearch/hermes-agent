@@ -4,6 +4,57 @@ import json
 import pytest
 from unittest.mock import MagicMock
 
+
+class TestDiffAnsiGating:
+    """Diff rendering must not emit ANSI escapes into non-tty output, and
+    NO_COLOR must disable them even on a terminal (#88920) — Kanban workers
+    run with a plain file handle as stdout and 31% of worker log volume was
+    escape bytes."""
+
+    _DIFF = "--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-old line\n+new line\n"
+
+    def test_non_tty_stdout_has_no_escapes(self, monkeypatch):
+        import agent.display as display_mod
+
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        lines = display_mod._render_inline_unified_diff(self._DIFF)
+        joined = "\n".join(lines)
+        assert "\033[" not in joined
+
+    def test_no_color_env_disables_escapes(self, monkeypatch):
+        import agent.display as display_mod
+
+        monkeypatch.setenv("NO_COLOR", "1")
+        assert display_mod._diff_ansi_enabled() is False
+        joined = "\n".join(
+            display_mod._render_inline_unified_diff(self._DIFF)
+        )
+        assert "\033[" not in joined
+
+    def test_tty_keeps_escapes(self, monkeypatch):
+        import agent.display as display_mod
+
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setattr(
+            "sys.stdout", type("FakeTTY", (), {"isatty": lambda self: True})()
+        )
+        assert display_mod._diff_ansi_enabled() is True
+        joined = "\n".join(
+            display_mod._render_inline_unified_diff(self._DIFF)
+        )
+        assert "\033[" in joined
+
+    def test_plain_render_still_marks_diff_lines(self, monkeypatch):
+        """Gating must not lose the content: +/-/hunk lines still render."""
+        import agent.display as display_mod
+
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        lines = display_mod._render_inline_unified_diff(self._DIFF)
+        assert any("-old line" in l for l in lines)
+        assert any("+new line" in l for l in lines)
+        assert any("@@ -1 +1 @@" in l for l in lines)
+
+
 import agent.display as display_module
 from agent.display import (
     build_tool_preview,

@@ -91,11 +91,32 @@ def _diff_ansi() -> dict[str, str]:
 
 
 # Module-level helpers — each call resolves from the active skin lazily.
-def _diff_dim():   return _diff_ansi()["dim"]
-def _diff_file():  return _diff_ansi()["file"]
-def _diff_hunk():  return _diff_ansi()["hunk"]
-def _diff_minus(): return _diff_ansi()["minus"]
-def _diff_plus():  return _diff_ansi()["plus"]
+def _diff_ansi_enabled() -> bool:
+    """Whether diff rendering may emit ANSI: a real terminal and no NO_COLOR.
+
+    Rendered diffs end up wherever stdout points — Kanban dispatches workers
+    with a plain file handle as stdout, and escape bytes were 31% of worker
+    log volume (#88920). NO_COLOR is the standard opt-out
+    (https://no-color.org). Checked per call (never cached): unlike the skin
+    colors, tty-ness and NO_COLOR can change within a process lifetime.
+    """
+    import sys as _sys
+
+    if os.environ.get("NO_COLOR", ""):
+        return False
+    try:
+        out = _sys.stdout
+        return bool(out is not None and getattr(out, "isatty", lambda: False)())
+    except (ValueError, OSError):
+        return False
+
+
+def _diff_dim():   return _diff_ansi()["dim"] if _diff_ansi_enabled() else ""
+def _diff_file():  return _diff_ansi()["file"] if _diff_ansi_enabled() else ""
+def _diff_hunk():  return _diff_ansi()["hunk"] if _diff_ansi_enabled() else ""
+def _diff_minus(): return _diff_ansi()["minus"] if _diff_ansi_enabled() else ""
+def _diff_plus():  return _diff_ansi()["plus"] if _diff_ansi_enabled() else ""
+def _diff_reset(): return _ANSI_RESET if _diff_ansi_enabled() else ""
 _MAX_INLINE_DIFF_FILES = 6
 _MAX_INLINE_DIFF_LINES = 80
 
@@ -968,19 +989,19 @@ def _render_inline_unified_diff(diff: str) -> list[str]:
         if raw_line.startswith("+++ "):
             to_file = raw_line[4:].strip()
             if from_file or to_file:
-                rendered.append(f"{_diff_file()}{from_file or 'a/?'} → {to_file or 'b/?'}{_ANSI_RESET}")
+                rendered.append(f"{_diff_file()}{from_file or 'a/?'} → {to_file or 'b/?'}{_diff_reset()}")
             continue
         if raw_line.startswith("@@"):
-            rendered.append(f"{_diff_hunk()}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_diff_hunk()}{raw_line}{_diff_reset()}")
             continue
         if raw_line.startswith("-"):
-            rendered.append(f"{_diff_minus()}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_diff_minus()}{raw_line}{_diff_reset()}")
             continue
         if raw_line.startswith("+"):
-            rendered.append(f"{_diff_plus()}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_diff_plus()}{raw_line}{_diff_reset()}")
             continue
         if raw_line.startswith(" "):
-            rendered.append(f"{_diff_dim()}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_diff_dim()}{raw_line}{_diff_reset()}")
             continue
         if raw_line:
             rendered.append(raw_line)

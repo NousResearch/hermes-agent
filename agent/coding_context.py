@@ -61,6 +61,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli._subprocess_compat import bounded_git_probe
+from utils import find_git_root
 
 logger = logging.getLogger("hermes.coding_context")
 
@@ -388,11 +389,13 @@ def _resolve_cwd(cwd: Optional[str | Path]) -> Path:
 
 
 def _git_root(cwd: Path) -> Optional[Path]:
-    current = cwd.resolve()
-    for parent in [current, *current.parents]:
-        if (parent / ".git").exists():
-            return parent
-    return None
+    """Nearest ancestor that is a git repo root, or ``None``.
+
+    Thin alias over :func:`utils.find_git_root` — the shared chokepoint that
+    rejects ``.git`` debris and skips the world-writable temp root, for the
+    same reason :func:`_marker_root` below skips it for stray manifests.
+    """
+    return find_git_root(cwd)
 
 
 def _home() -> Optional[Path]:

@@ -66,6 +66,7 @@ def mock_pyright(monkeypatch, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").mkdir()
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     (repo / "pyproject.toml").write_text("")  # so pyright's root resolver finds it
     monkeypatch.chdir(str(repo))
     gen = _install_mock_server(monkeypatch, "errors", "pyright")

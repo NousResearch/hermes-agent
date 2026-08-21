@@ -61,7 +61,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from typing import Dict, List, Optional, Set, Tuple
 
-from utils import env_int
+from utils import env_int, is_git_root
 
 logger = logging.getLogger(__name__)
 
@@ -1215,11 +1215,16 @@ class CheckpointManager:
         else:
             candidate = path.parent
 
-        markers = {".git", "pyproject.toml", "package.json", "Cargo.toml",
+        # ``.git`` is validated rather than merely stat'd: an empty directory
+        # named ``.git`` is debris, and accepting it here sends every checkpoint
+        # for the edited file to whatever ancestor happens to hold it — commonly
+        # a shared temp or scratch dir, i.e. not the user's project at all.
+        # The other markers are ordinary files, so existence is the right test.
+        markers = {"pyproject.toml", "package.json", "Cargo.toml",
                     "go.mod", "Makefile", "pom.xml", ".hg", "Gemfile"}
         check = candidate
         while check != check.parent:
-            if any((check / m).exists() for m in markers):
+            if is_git_root(check) or any((check / m).exists() for m in markers):
                 return str(check)
             check = check.parent
 

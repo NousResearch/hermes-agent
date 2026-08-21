@@ -422,6 +422,7 @@ class TestWorkingDirResolution:
         git_proj = tmp_path / "myproject"
         (git_proj / "src").mkdir(parents=True)
         (git_proj / ".git").mkdir()
+        (git_proj / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
         (git_proj / "src" / "main.py").write_text("x\n")
         assert m.get_working_dir_for_path(
             str(git_proj / "src" / "main.py")

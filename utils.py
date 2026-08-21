@@ -782,6 +782,82 @@ def fast_safe_load(stream: Any) -> Any:
     return yaml.load(stream, Loader=_get_fast_yaml_loader())
 
 
+# ─── Git Workspace Detection ─────────────────────────────────────────────────
+#
+# One chokepoint for "is this directory a git repo?" and "which ancestor is the
+# repo root?". Four call sites used to answer this independently with
+# ``(parent / ".git").exists()``, and every one of them could be fooled the same
+# way — so the answer lives here now and they all route through it.
+#
+# Two failure modes are closed:
+#
+#   1. ``.exists()`` accepts an *empty directory* named ``.git``. ``git`` itself
+#      does not — ``rev-parse`` exits 128 on such a tree. Scratch dirs collect
+#      exactly this debris.
+#   2. The shared temp root is world-writable, so any process can drop a ``.git``
+#      there and strand every path beneath it in a phantom repo.
+#
+# Real-world impact when this went wrong: the agent's system prompt claimed a
+# workspace rooted at ``/tmp``, the LSP gate spawned language servers for files
+# with no project, checkpoints were taken against the wrong directory, and
+# interactive sessions flipped into the coding posture anywhere under the temp
+# dir.
+
+
+def is_git_root(directory: Union[str, Path]) -> bool:
+    """Whether ``directory`` holds a real git repo marker — not just the name.
+
+    A real marker is a ``.git`` directory containing ``HEAD``, or a ``.git``
+    *file* holding ``gitdir: …`` (linked worktree or submodule). An empty
+    directory named ``.git`` is debris, not a repo.
+    """
+    dot_git = Path(directory) / ".git"
+    try:
+        if dot_git.is_file():
+            return True
+        return (dot_git / "HEAD").exists()
+    except OSError:
+        return False
+
+
+def find_git_root(start: Union[str, Path], *, resolve: bool = True) -> "Path | None":
+    """Nearest ancestor of ``start`` that is a git repo root, or ``None``.
+
+    Walks ``start`` and its parents. The shared temp root itself is skipped —
+    only that one directory, so a real checkout *under* it (CI scratch space,
+    ``git worktree add /tmp/...``, pytest ``tmp_path`` fixtures) still resolves
+    normally.
+
+    ``resolve`` controls symlink handling of the *returned* path. The default
+    resolves, matching what the workspace/posture callers have always done.
+    Pass ``resolve=False`` to walk the path as given and return the ancestor
+    unresolved — the LSP layer needs this because some language servers key
+    their workspace identity on the exact path the user opened, and folding a
+    symlink changes that identity. The temp-root comparison still uses resolved
+    forms either way, so the guard can't be sidestepped through a symlink.
+    """
+    try:
+        current = Path(start)
+        current = current.resolve() if resolve else current.absolute()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    try:
+        temp_root = Path(tempfile.gettempdir()).resolve()
+    except Exception:
+        temp_root = None
+    for parent in [current, *current.parents]:
+        try:
+            if temp_root is not None and parent.resolve() == temp_root:
+                continue
+            if is_git_root(parent):
+                return parent
+        except OSError:
+            # Permission error partway up — stop rather than crash a caller
+            # that may be on a lint or prompt-build path.
+            break
+    return None
+
+
 # ─── Environment Variable Helpers ─────────────────────────────────────────────
 
 

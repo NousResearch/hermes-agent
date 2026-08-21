@@ -41,7 +41,7 @@ from agent.skill_utils import (
     skill_matches_platform,
     skill_matches_platform_list,
 )
-from utils import atomic_json_write
+from utils import atomic_json_write, find_git_root
 
 logger = logging.getLogger(__name__)
 
@@ -86,16 +86,21 @@ def _scan_context_content(content: str, filename: str) -> str:
 
 
 def _find_git_root(start: Path) -> Optional[Path]:
-    """Walk *start* and its parents looking for a ``.git`` directory.
+    """Walk *start* and its parents looking for a git repo root.
 
-    Returns the directory containing ``.git``, or ``None`` if we hit the
-    filesystem root without finding one.
+    Returns the repo root, or ``None`` if we hit the filesystem root without
+    finding one. Delegates to :func:`utils.find_git_root`, which rejects an
+    empty ``.git`` directory and skips the shared temp root.
+
+    That matters twice over here. This bounds the ``.hermes.md`` search below —
+    and ``_find_hermes_md`` deliberately refuses to walk parents when there is
+    no git root, precisely so a file planted in ``/tmp`` or ``/home`` can't be
+    picked up. A stray ``.git`` in one of those directories used to make this
+    return a root, which re-enabled the very walk that guard exists to prevent.
+    It also feeds the system prompt's workspace snapshot, so a phantom root is
+    something the model is told and acts on.
     """
-    current = start.resolve()
-    for parent in [current, *current.parents]:
-        if (parent / ".git").exists():
-            return parent
-    return None
+    return find_git_root(start)
 
 
 _HERMES_MD_NAMES = (".hermes.md", "HERMES.md")

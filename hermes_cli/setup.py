@@ -65,7 +65,7 @@ def _supports_same_provider_pool_setup(provider: str) -> bool:
     pconfig = PROVIDER_REGISTRY.get(provider)
     if not pconfig:
         return False
-    return pconfig.auth_type in {"api_key", "oauth_device_code"}
+    return pconfig.auth_type in {"api_key", "oauth_pkce", "oauth_device_code"}
 
 
 # Default model lists per provider — used as fallback when the live

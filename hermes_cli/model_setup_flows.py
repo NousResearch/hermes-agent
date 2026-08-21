@@ -3113,6 +3113,87 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     else:
         print("No change.")
 
+
+def _model_flow_oauth_pkce_provider(config, provider_id, current_model="", args=None):
+    """Generic setup flow for declarative OAuth PKCE provider plugins."""
+    from types import SimpleNamespace
+
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.auth_commands import auth_add_command
+    from hermes_cli.config import load_config, save_config
+    from providers import get_provider_profile
+
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    profile = get_provider_profile(provider_id)
+    if profile is None or profile.oauth is None:
+        print(f"{pconfig.name} OAuth configuration is incomplete.")
+        return
+
+    pool = load_pool(provider_id)
+    entry = pool.select() if pool.has_credentials() else None
+    if entry is None:
+        auth_add_command(SimpleNamespace(
+            provider=provider_id,
+            auth_type="oauth",
+            label=None,
+            api_key=None,
+            portal_url=None,
+            inference_url=None,
+            client_id=None,
+            scope=None,
+            no_browser=bool(getattr(args, "no_browser", False)) if args else False,
+            timeout=getattr(args, "timeout", None) if args else None,
+            insecure=False,
+            ca_bundle=None,
+        ))
+        pool = load_pool(provider_id)
+        entry = pool.select()
+    if entry is None:
+        print(f"No usable {pconfig.name} OAuth credential was saved.")
+        return
+
+    model_list = profile.fetch_models(
+        api_key=entry.access_token,
+        base_url=pconfig.inference_base_url,
+    ) or list(profile.fallback_models)
+    if model_list:
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            confirm_provider=provider_id,
+            confirm_base_url=pconfig.inference_base_url,
+            confirm_api_key=entry.access_token,
+        )
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if not selected:
+        print("No change.")
+        return
+
+    _save_model_choice(selected)
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = pconfig.inference_base_url
+    model["api_mode"] = profile.api_mode
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
+    save_config(cfg)
+    deactivate_provider()
+    print(f"Default model set to: {selected} (via {pconfig.name})")
+
 def _model_flow_anthropic(config, current_model=""):
     """Flow for Anthropic provider — OAuth subscription, API key, or Claude Code creds."""
     from hermes_cli.main import _run_anthropic_oauth_flow

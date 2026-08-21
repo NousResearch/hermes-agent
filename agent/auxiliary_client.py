@@ -6776,6 +6776,48 @@ def resolve_provider_client(
             logger.debug("resolve_provider_client: unknown provider %r", provider)
         return None, None
 
+    if pconfig.auth_type == "oauth_pkce":
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            runtime = resolve_runtime_provider(
+                requested=provider,
+                target_model=model or "",
+            )
+        except Exception as exc:
+            logger.debug(
+                "resolve_provider_client: OAuth PKCE provider %s could not resolve: %s",
+                provider,
+                exc,
+            )
+            return None, None
+        oauth_key = str(runtime.get("api_key") or "").strip()
+        oauth_base = str(runtime.get("base_url") or pconfig.inference_base_url).strip().rstrip("/")
+        if not oauth_key or not oauth_base:
+            return None, None
+        runtime_mode = str(runtime.get("api_mode") or "chat_completions").strip()
+        final_model = _normalize_resolved_model(
+            model or _get_aux_model_for_provider(provider) or _read_main_model_for_aux(),
+            provider,
+        )
+        if not final_model:
+            return None, None
+        prior_api_mode = api_mode
+        api_mode = runtime_mode
+        try:
+            client = _create_openai_client(
+                api_key=oauth_key,
+                base_url=_to_openai_base_url(oauth_base),
+            )
+            client = _wrap_if_needed(client, final_model, oauth_base, oauth_key)
+        finally:
+            api_mode = prior_api_mode
+        return (
+            _to_async_client(client, final_model, is_vision=is_vision)
+            if async_mode
+            else (client, final_model)
+        )
+
     if pconfig.auth_type == "api_key":
         if provider == "anthropic":
             client, default_model = _try_anthropic(explicit_api_key=explicit_api_key)

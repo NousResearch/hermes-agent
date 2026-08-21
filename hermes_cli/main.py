@@ -812,6 +812,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_bedrock,
     _model_flow_vertex,
     _model_flow_api_key_provider,
+    _model_flow_oauth_pkce_provider,
     _model_flow_anthropic,
     _model_flow_moa,
     _model_flow_ai_gateway,
@@ -3572,6 +3573,21 @@ def _is_profile_api_key_provider(provider_id: str) -> bool:
         return False
 
 
+def _is_profile_oauth_pkce_provider(provider_id: str) -> bool:
+    """Return True for provider plugins using Hermes-managed PKCE OAuth."""
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider_id)
+        return bool(
+            profile
+            and profile.auth_type == "oauth_pkce"
+            and profile.oauth is not None
+        )
+    except Exception:
+        return False
+
+
 def select_provider_and_model(args=None):
     """Core provider selection + model picking logic.
 
@@ -3989,6 +4005,13 @@ def select_provider_and_model(args=None):
         _model_flow_vertex(config, current_model)
     elif selected_provider == "azure-foundry":
         _model_flow_azure_foundry(config, current_model)
+    elif _is_profile_oauth_pkce_provider(selected_provider):
+        _model_flow_oauth_pkce_provider(
+            config,
+            selected_provider,
+            current_model,
+            args=args,
+        )
     elif selected_provider in {
         "openai-api",
         "gemini",

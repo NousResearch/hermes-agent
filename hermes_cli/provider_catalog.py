@@ -44,6 +44,7 @@ from dataclasses import dataclass
 # hermes_cli.auth.PROVIDER_REGISTRY and providers.base.ProviderProfile.
 _ACCOUNTS_AUTH_TYPES: frozenset[str] = frozenset(
     {
+        "oauth_pkce",
         "oauth_device_code",
         "oauth_external",
         "oauth_minimax",

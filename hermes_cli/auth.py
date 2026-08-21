@@ -234,7 +234,7 @@ class ProviderConfig:
     """Describes a known inference provider."""
     id: str
     name: str
-    auth_type: str  # "oauth_device_code", "oauth_external", "oauth_minimax", or "api_key"
+    auth_type: str  # "oauth_pkce", "oauth_device_code", "oauth_external", "oauth_minimax", or "api_key"
     portal_base_url: str = ""
     inference_base_url: str = ""
     client_id: str = ""
@@ -553,15 +553,19 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
 }
 
-# Auto-extend PROVIDER_REGISTRY with any api-key provider registered in
-# providers/ that is not already declared above.  New providers only need a
-# plugins/model-providers/<name>/ plugin — no edits to this file required.
+# Auto-extend PROVIDER_REGISTRY with declarative provider plugins that do not
+# require provider-specific auth code. New API-key and standard OAuth PKCE
+# providers only need a plugins/model-providers/<name>/ plugin.
 try:
     from providers import list_providers as _list_providers_for_registry
     for _pp in _list_providers_for_registry():
         if _pp.name in PROVIDER_REGISTRY:
             continue
-        if _pp.auth_type != "api_key" or not _pp.env_vars:
+        if _pp.auth_type not in {"api_key", "oauth_pkce"}:
+            continue
+        if _pp.auth_type == "api_key" and not _pp.env_vars:
+            continue
+        if _pp.auth_type == "oauth_pkce" and _pp.oauth is None:
             continue
         # Skip providers that need custom token resolution or are special-cased
         # in resolve_provider() (copilot/kimi/zai have bespoke token refresh;
@@ -575,10 +579,13 @@ try:
         PROVIDER_REGISTRY[_pp.name] = ProviderConfig(
             id=_pp.name,
             name=_pp.display_name or _pp.name,
-            auth_type="api_key",
+            auth_type=_pp.auth_type,
             inference_base_url=_pp.base_url,
             api_key_env_vars=_api_key_vars or _pp.env_vars,
             base_url_env_var=_base_url_var or "",
+            client_id=_pp.oauth.client_id if _pp.oauth else "",
+            scope=_pp.oauth.scope if _pp.oauth else "",
+            extra={"oauth": _pp.oauth} if _pp.oauth else {},
         )
         # Also register aliases so resolve_provider() resolves them
         for _alias in _pp.aliases:
@@ -2986,6 +2993,253 @@ def _oauth_pkce_code_verifier(length: int = 64) -> str:
 def _oauth_pkce_code_challenge(code_verifier: str) -> str:
     digest = hashlib.sha256(code_verifier.encode("utf-8")).digest()
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _validate_provider_oauth_pkce(provider: str, oauth) -> None:
+    for field_name in ("authorization_url", "token_url"):
+        value = str(getattr(oauth, field_name, "") or "").strip()
+        if urlparse(value).scheme != "https":
+            raise AuthError(
+                f"{provider} OAuth {field_name} must use HTTPS.",
+                provider=provider,
+                code="oauth_endpoint_invalid",
+            )
+    if str(getattr(oauth, "redirect_host", "") or "") not in {"127.0.0.1", "localhost"}:
+        raise AuthError(
+            f"{provider} OAuth redirect_host must be 127.0.0.1 or localhost.",
+            provider=provider,
+            code="oauth_redirect_invalid",
+        )
+    redirect_port = int(getattr(oauth, "redirect_port", 0) or 0)
+    if redirect_port < 0 or redirect_port > 65535:
+        raise AuthError(
+            f"{provider} OAuth redirect_port must be between 0 and 65535.",
+            provider=provider,
+            code="oauth_redirect_invalid",
+        )
+    if not str(getattr(oauth, "client_id", "") or "").strip():
+        raise AuthError(
+            f"{provider} OAuth client_id is missing.",
+            provider=provider,
+            code="oauth_client_id_missing",
+        )
+
+
+def _provider_oauth_callback_handler(
+    provider: str,
+    expected_path: str,
+) -> tuple[type[BaseHTTPRequestHandler], Dict[str, Optional[str]]]:
+    result: Dict[str, Optional[str]] = {
+        "code": None,
+        "state": None,
+        "error": None,
+    }
+
+    class _ProviderOAuthCallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path != expected_path:
+                self.send_response(404)
+                self.end_headers()
+                return
+            params = parse_qs(parsed.query)
+            result["code"] = params.get("code", [None])[0]
+            result["state"] = params.get("state", [None])[0]
+            result["error"] = params.get("error", [None])[0]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            outcome = "failed" if result["error"] else "completed"
+            self.wfile.write(
+                f"<html><body><h1>{provider} authorization {outcome}.</h1>"
+                "You can close this tab.</body></html>".encode("utf-8")
+            )
+
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+            return
+
+    return _ProviderOAuthCallbackHandler, result
+
+
+def login_provider_oauth_pkce(
+    provider: str,
+    oauth,
+    *,
+    open_browser: bool = True,
+    timeout_seconds: float = 180.0,
+) -> Dict[str, Any]:
+    """Run a declarative provider plugin's browser PKCE flow."""
+    _validate_provider_oauth_pkce(provider, oauth)
+    path = str(getattr(oauth, "redirect_path", "/callback") or "/callback")
+    if not path.startswith("/"):
+        path = f"/{path}"
+    handler_cls, result = _provider_oauth_callback_handler(provider, path)
+
+    class _ReuseHTTPServer(HTTPServer):
+        allow_reuse_address = True
+
+    host = str(oauth.redirect_host)
+    port = int(oauth.redirect_port or 0)
+    try:
+        server = _ReuseHTTPServer((host, port), handler_cls)
+    except OSError as exc:
+        raise AuthError(
+            f"Could not bind {provider} OAuth callback server: {exc}",
+            provider=provider,
+            code="oauth_callback_bind_failed",
+        ) from exc
+
+    actual_port = int(server.server_address[1])
+    redirect_uri = f"http://{host}:{actual_port}{path}"
+    verifier = _oauth_pkce_code_verifier()
+    expected_state = uuid.uuid4().hex
+    authorize_params = dict(getattr(oauth, "authorization_params", {}) or {})
+    authorize_params.update({
+        "client_id": oauth.client_id,
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "state": expected_state,
+        "code_challenge": _oauth_pkce_code_challenge(verifier),
+        "code_challenge_method": "S256",
+    })
+    if oauth.scope:
+        authorize_params["scope"] = oauth.scope
+    authorize_url = f"{oauth.authorization_url}?{urlencode(authorize_params)}"
+    thread = threading.Thread(
+        target=server.serve_forever,
+        kwargs={"poll_interval": 0.1},
+        daemon=True,
+    )
+    thread.start()
+    try:
+        print(f"Open this URL to authenticate with {provider}:\n{authorize_url}")
+        if open_browser:
+            webbrowser.open(authorize_url)
+        deadline = time.monotonic() + max(5.0, timeout_seconds)
+        while time.monotonic() < deadline:
+            if result["code"] or result["error"]:
+                break
+            time.sleep(0.1)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+
+    if result["error"]:
+        raise AuthError(
+            f"{provider} OAuth authorization was denied.",
+            provider=provider,
+            code="oauth_authorization_denied",
+        )
+    if not result["code"]:
+        raise AuthError(
+            f"{provider} OAuth authorization timed out.",
+            provider=provider,
+            code="oauth_callback_timeout",
+        )
+    if result["state"] != expected_state:
+        raise AuthError(
+            f"{provider} OAuth state did not match.",
+            provider=provider,
+            code="oauth_state_mismatch",
+        )
+
+    token_data = dict(getattr(oauth, "token_params", {}) or {})
+    token_data.update({
+        "client_id": oauth.client_id,
+        "grant_type": "authorization_code",
+        "code": result["code"],
+        "redirect_uri": redirect_uri,
+        "code_verifier": verifier,
+    })
+    try:
+        response = httpx.post(
+            oauth.token_url,
+            data=token_data,
+            headers={"Accept": "application/json"},
+            timeout=min(max(5.0, timeout_seconds), 60.0),
+        )
+    except Exception as exc:
+        raise AuthError(
+            f"{provider} OAuth token exchange failed: {exc}",
+            provider=provider,
+            code="oauth_token_exchange_failed",
+        ) from exc
+    if response.status_code >= 400:
+        raise AuthError(
+            f"{provider} OAuth token exchange failed with HTTP {response.status_code}.",
+            provider=provider,
+            code="oauth_token_exchange_failed",
+        )
+    payload = response.json()
+    access_token = str(payload.get("access_token") or "").strip()
+    if not access_token:
+        raise AuthError(
+            f"{provider} OAuth response did not include an access_token.",
+            provider=provider,
+            code="oauth_token_exchange_invalid",
+        )
+    expires_in = _coerce_ttl_seconds(payload.get("expires_in", 0))
+    return {
+        "access_token": access_token,
+        "refresh_token": str(payload.get("refresh_token") or "").strip() or None,
+        "expires_at_ms": int(time.time() * 1000) + expires_in * 1000 if expires_in else None,
+        "scope": str(payload.get("scope") or oauth.scope).strip(),
+        "token_type": str(payload.get("token_type") or "Bearer").strip(),
+        "redirect_uri": redirect_uri,
+    }
+
+
+def refresh_provider_oauth_pkce(
+    provider: str,
+    oauth,
+    refresh_token: str,
+    *,
+    timeout_seconds: float = 20.0,
+) -> Dict[str, Any]:
+    """Refresh a declarative provider plugin's OAuth credential."""
+    _validate_provider_oauth_pkce(provider, oauth)
+    token_data = dict(getattr(oauth, "token_params", {}) or {})
+    token_data.update({
+        "client_id": oauth.client_id,
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+    })
+    if oauth.scope:
+        token_data["scope"] = oauth.scope
+    try:
+        response = httpx.post(
+            oauth.token_url,
+            data=token_data,
+            headers={"Accept": "application/json"},
+            timeout=max(5.0, timeout_seconds),
+        )
+    except Exception as exc:
+        raise AuthError(
+            f"{provider} OAuth refresh failed: {exc}",
+            provider=provider,
+            code="oauth_refresh_failed",
+        ) from exc
+    if response.status_code >= 400:
+        raise AuthError(
+            f"{provider} OAuth refresh failed with HTTP {response.status_code}.",
+            provider=provider,
+            code="oauth_refresh_failed",
+        )
+    payload = response.json()
+    access_token = str(payload.get("access_token") or "").strip()
+    if not access_token:
+        raise AuthError(
+            f"{provider} OAuth refresh response did not include an access_token.",
+            provider=provider,
+            code="oauth_refresh_invalid",
+        )
+    expires_in = _coerce_ttl_seconds(payload.get("expires_in", 0))
+    return {
+        "access_token": access_token,
+        "refresh_token": str(payload.get("refresh_token") or refresh_token).strip(),
+        "expires_at_ms": int(time.time() * 1000) + expires_in * 1000 if expires_in else None,
+    }
 
 
 def _spotify_build_authorize_url(
@@ -7174,6 +7428,28 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":
         return get_api_key_provider_status(target)
+    if pconfig and pconfig.auth_type == "oauth_pkce":
+        try:
+            from agent.credential_pool import load_pool
+
+            entry = load_pool(target).peek()
+        except Exception:
+            entry = None
+        access_token = str(getattr(entry, "access_token", "") or "")
+        expires_at_ms = getattr(entry, "expires_at_ms", None)
+        expired = False
+        if access_token and expires_at_ms is not None:
+            try:
+                expired = int(expires_at_ms) <= int(time.time() * 1000)
+            except (TypeError, ValueError):
+                expired = False
+        return {
+            "logged_in": bool(access_token) and not expired,
+            "needs_refresh": expired and bool(getattr(entry, "refresh_token", "")),
+            "expired": expired,
+            "expires_at_ms": expires_at_ms,
+            "provider": target,
+        }
     # AWS SDK providers (Bedrock) — check via boto3 credential chain
     if pconfig and pconfig.auth_type == "aws_sdk":
         try:

@@ -98,7 +98,8 @@ Full definition in `providers/base.py`. The most useful ones:
 | `env_vars` | `tuple[str, ...]` | API-key env vars in priority order; a final `*_BASE_URL` entry is used as the user base-URL override |
 | `base_url` | str | Default inference endpoint |
 | `models_url` | str | Explicit catalog URL (falls back to `{base_url}/models`) |
-| `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` |
+| `auth_type` | str | `api_key` \| `oauth_pkce` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` |
+| `oauth` | `OAuthPKCEConfig \| None` | Public-client endpoints and scopes for `oauth_pkce` plugins |
 | `fallback_models` | `tuple[str, ...]` | Curated list shown when live catalog fetch fails |
 | `default_headers` | `dict[str, str]` | Sent on every request (e.g. Copilot's `Editor-Version`) |
 | `fixed_temperature` | Any | `None` = use caller's value; `OMIT_TEMPERATURE` sentinel = don't send temperature at all (Kimi) |
@@ -194,13 +195,19 @@ Set `profile.api_mode` to match the default your provider ships — it acts as a
 | `auth_type` | Meaning | Who uses it |
 |---|---|---|
 | `api_key` | Single env var carries a static API key | Most providers |
+| `oauth_pkce` | Hermes runs browser PKCE login and refreshes pooled tokens | Out-of-tree OAuth providers |
 | `oauth_device_code` | Device-code OAuth flow | — |
 | `oauth_external` | User signs in elsewhere, tokens land in `auth.json` | Anthropic OAuth, MiniMax OAuth, Qwen Portal, Nous Portal |
 | `copilot` | GitHub Copilot token refresh cycle | `copilot` plugin only |
 | `aws_sdk` | AWS SDK credential chain (IAM role, profile, env) | `bedrock` plugin only |
 | `external_process` | Auth handled by a subprocess the agent spawns | `copilot-acp` plugin only |
 
-`auth_type` gates which codepaths treat your provider as a "simple api-key provider" — if it's not `api_key`, the PluginManager still records the manifest but Hermes' CLI-level automation (doctor checks, `--provider` flag, setup wizard delegation) may skip over it.
+`oauth_pkce` is the generic OAuth path for external provider plugins. Import
+`OAuthPKCEConfig` from `providers`, then declare a public `client_id`, HTTPS
+authorization/token endpoints, and scopes on the profile. Hermes wires the
+provider into `hermes auth add`, `hermes model`, credential refresh, runtime
+routing, and auxiliary model calls. Other non-API-key auth types remain
+provider-specific and may require core integration.
 
 ## Discovery timing
 

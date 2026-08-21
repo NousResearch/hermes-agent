@@ -61,6 +61,35 @@ Nothing else needs to change. `auth.py`, `config.py`, `models.py`,
 `doctor.py`, `model_metadata.py`, `runtime_provider.py`, and the
 chat_completions transport all auto-wire from the registry.
 
+## OAuth PKCE providers
+
+Out-of-tree providers that use the standard OAuth 2.0 Authorization Code flow
+with PKCE can declare their public-client configuration in the profile. Hermes
+opens the browser, receives the loopback callback, stores the credential in its
+credential pool, and refreshes expiring access tokens.
+
+```python
+from providers import OAuthPKCEConfig, ProviderProfile, register_provider
+
+register_provider(ProviderProfile(
+    name="your-oauth-provider",
+    display_name="Your OAuth Provider",
+    auth_type="oauth_pkce",
+    base_url="https://api.example.com/v1",
+    oauth=OAuthPKCEConfig(
+        client_id="your-public-client-id",
+        authorization_url="https://example.com/oauth/authorize",
+        token_url="https://example.com/oauth/token",
+        scope="inference:invoke offline_access",
+    ),
+))
+```
+
+The authorization and token endpoints must use HTTPS. The callback always
+binds to `127.0.0.1` or `localhost`; port `0` (the default) selects a free
+ephemeral port. Authenticate with `hermes auth add your-oauth-provider --type
+oauth`, or select the provider from `hermes model`.
+
 ## Non-trivial profiles
 
 Override the `ProviderProfile` hooks in a subclass for per-provider

@@ -21,6 +21,26 @@ logger = logging.getLogger(__name__)
 OMIT_TEMPERATURE = object()
 
 
+@dataclass(frozen=True)
+class OAuthPKCEConfig:
+    """Declarative OAuth 2.0 Authorization Code + PKCE configuration.
+
+    Provider plugins declare endpoints and public-client metadata here. Hermes
+    owns the browser flow, loopback callback, credential persistence, and token
+    refresh lifecycle.
+    """
+
+    client_id: str
+    authorization_url: str
+    token_url: str
+    scope: str = ""
+    redirect_host: str = "127.0.0.1"
+    redirect_port: int = 0
+    redirect_path: str = "/callback"
+    authorization_params: dict[str, str] = field(default_factory=dict)
+    token_params: dict[str, str] = field(default_factory=dict)
+
+
 def _profile_user_agent() -> str:
     """Return a ``hermes-cli/<version>`` UA string, with a stable fallback.
 
@@ -53,7 +73,8 @@ class ProviderProfile:
     env_vars: tuple = ()
     base_url: str = ""
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
-    auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
+    auth_type: str = "api_key"   # api_key|oauth_pkce|oauth_device_code|oauth_external|copilot|aws_sdk
+    oauth: OAuthPKCEConfig | None = None
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
 
     # ── Vision support ────────────────────────────────────────

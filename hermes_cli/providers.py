@@ -37,7 +37,7 @@ class HermesOverlay:
 
     transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses
     is_aggregator: bool = False
-    auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
+    auth_type: str = "api_key"            # api_key | oauth_pkce | oauth_device_code | oauth_external | external_process
     extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
     base_url_override: str = ""           # override if models.dev URL is wrong/missing
     base_url_env_var: str = ""            # env var for user-custom base URL

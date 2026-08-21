@@ -38,6 +38,13 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 _OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth"}
 
 
+def _provider_supports_oauth(provider: str) -> bool:
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    return provider in _OAUTH_CAPABLE_PROVIDERS or bool(
+        pconfig and pconfig.auth_type == "oauth_pkce" and pconfig.extra.get("oauth")
+    )
+
+
 def _get_custom_provider_names() -> list:
     """Return list of (display_name, pool_key, provider_key) tuples."""
     try:
@@ -174,7 +181,7 @@ def auth_add_command(args) -> None:
         if provider.startswith(CUSTOM_POOL_PREFIX):
             requested_type = AUTH_TYPE_API_KEY
         else:
-            requested_type = AUTH_TYPE_OAUTH if provider in _OAUTH_CAPABLE_PROVIDERS else AUTH_TYPE_API_KEY
+            requested_type = AUTH_TYPE_OAUTH if _provider_supports_oauth(provider) else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
 
@@ -432,6 +439,42 @@ def auth_add_command(args) -> None:
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    if pconfig and pconfig.auth_type == "oauth_pkce":
+        oauth = pconfig.extra.get("oauth")
+        if oauth is None:
+            raise SystemExit(f"{provider} OAuth configuration is incomplete.")
+        creds = auth_mod.login_provider_oauth_pkce(
+            provider,
+            oauth,
+            open_browser=not getattr(args, "no_browser", False),
+            timeout_seconds=getattr(args, "timeout", None) or 180.0,
+        )
+        label = (getattr(args, "label", None) or "").strip() or label_from_token(
+            creds["access_token"],
+            _oauth_default_label(provider, len(pool.entries()) + 1),
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:oauth_pkce",
+            access_token=creds["access_token"],
+            refresh_token=creds.get("refresh_token"),
+            expires_at_ms=creds.get("expires_at_ms"),
+            base_url=pconfig.inference_base_url,
+            extra={
+                "client_id": pconfig.client_id,
+                "scope": creds.get("scope") or pconfig.scope,
+                "token_type": creds.get("token_type"),
+            },
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
     raise SystemExit(f"`hermes auth add {provider}` is not implemented for auth type {requested_type} yet.")
 
 
@@ -513,6 +556,9 @@ def auth_status_command(args) -> None:
         raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
     status = auth_mod.get_auth_status(provider)
     if not status.get("logged_in"):
+        if status.get("needs_refresh"):
+            print(f"{provider}: access token expired (refresh needed)")
+            return
         reason = status.get("error")
         if reason:
             print(f"{provider}: logged out ({reason})")
@@ -676,7 +722,11 @@ def _interactive_add() -> None:
         raise SystemExit(f"Unknown provider: {provider}")
 
     # For OAuth-capable providers, ask which type
-    if provider in _OAUTH_CAPABLE_PROVIDERS:
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    if pconfig and pconfig.auth_type == "oauth_pkce":
+        print(f"\n{provider} uses OAuth browser login.")
+        auth_type = "oauth"
+    elif _provider_supports_oauth(provider):
         print(f"\n{provider} supports both API keys and OAuth login.")
         print("  1. API key (paste a key from the provider dashboard)")
         print("  2. OAuth login (authenticate via browser)")

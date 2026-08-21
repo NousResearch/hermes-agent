@@ -1089,6 +1089,41 @@ class CredentialPool:
             logger.debug("Failed to sync xAI OAuth entry from credential pool: %s", exc)
         return entry
 
+    def _sync_plugin_oauth_entry_from_pool_store(
+        self, entry: PooledCredential
+    ) -> PooledCredential:
+        """Adopt a plugin OAuth token pair rotated by another process."""
+        try:
+            persisted = next(
+                (
+                    payload
+                    for payload in read_credential_pool(self.provider)
+                    if isinstance(payload, dict) and payload.get("id") == entry.id
+                ),
+                None,
+            )
+            if not isinstance(persisted, dict):
+                return entry
+            stored = PooledCredential.from_dict(self.provider, persisted)
+            if (
+                stored.access_token != entry.access_token
+                or stored.refresh_token != entry.refresh_token
+            ):
+                logger.debug(
+                    "Pool entry %s: adopting %s OAuth tokens rotated by another process",
+                    entry.id,
+                    self.provider,
+                )
+                self._replace_entry(entry, stored)
+                return stored
+        except Exception as exc:
+            logger.debug(
+                "Failed to sync %s OAuth entry from credential pool: %s",
+                self.provider,
+                exc,
+            )
+        return entry
+
     def _sync_nous_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync a Nous pool entry from auth.json if tokens differ.
 
@@ -1319,11 +1354,23 @@ class CredentialPool:
         # resolve_codex_runtime_credentials()).  When a waiter finally acquires
         # the lock, the in-lock re-sync below picks up the rotated token the
         # winner persisted and skips the POST.
-        if self.provider in ("openai-codex", "xai-oauth"):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(self.provider)
+        is_plugin_oauth = bool(
+            profile
+            and profile.auth_type == "oauth_pkce"
+            and profile.oauth is not None
+        )
+        if self.provider in ("openai-codex", "xai-oauth") or is_plugin_oauth:
             sync_entry = (
                 self._sync_codex_entry_from_auth_store
                 if self.provider == "openai-codex"
-                else self._sync_xai_oauth_entry_from_pool_store
+                else (
+                    self._sync_xai_oauth_entry_from_pool_store
+                    if self.provider == "xai-oauth"
+                    else self._sync_plugin_oauth_entry_from_pool_store
+                )
             )
             with _auth_store_lock(
                 timeout_seconds=self._single_use_refresh_lock_timeout()
@@ -1354,9 +1401,13 @@ class CredentialPool:
         env_var = (
             "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS"
             if self.provider == "openai-codex"
-            else "HERMES_XAI_REFRESH_TIMEOUT_SECONDS"
+            else (
+                "HERMES_XAI_REFRESH_TIMEOUT_SECONDS"
+                if self.provider == "xai-oauth"
+                else ""
+            )
         )
-        refresh_timeout_seconds = auth_mod.env_float(env_var, 20)
+        refresh_timeout_seconds = auth_mod.env_float(env_var, 20) if env_var else 20
         return max(
             float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS),
             float(refresh_timeout_seconds) + 5.0,
@@ -1438,7 +1489,22 @@ class CredentialPool:
                 )
                 updated = self._sync_nous_entry_from_auth_store(entry)
             else:
-                return entry
+                from providers import get_provider_profile
+
+                profile = get_provider_profile(self.provider)
+                if profile is None or profile.auth_type != "oauth_pkce" or profile.oauth is None:
+                    return entry
+                refreshed = auth_mod.refresh_provider_oauth_pkce(
+                    self.provider,
+                    profile.oauth,
+                    entry.refresh_token,
+                )
+                updated = replace(
+                    entry,
+                    access_token=refreshed["access_token"],
+                    refresh_token=refreshed.get("refresh_token") or entry.refresh_token,
+                    expires_at_ms=refreshed.get("expires_at_ms"),
+                )
         except Exception as exc:
             logger.debug("Credential refresh failed for %s/%s: %s", self.provider, entry.id, exc)
             # For anthropic claude_code entries: the refresh token may have been
@@ -1781,6 +1847,13 @@ class CredentialPool:
             # runtime credentials are actually resolved, not merely when the pool
             # is enumerated for listing, migration, or selection.
             return False
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(self.provider)
+        if profile is not None and profile.auth_type == "oauth_pkce":
+            if entry.expires_at_ms is None:
+                return False
+            return int(entry.expires_at_ms) <= int(time.time() * 1000) + 120_000
         return False
 
     def select(self) -> Optional[PooledCredential]:

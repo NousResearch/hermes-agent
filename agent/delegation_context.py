@@ -122,12 +122,34 @@ def exit_non_dispatcher_owned_context(token: Token[bool]) -> None:
 
 
 def is_delegated_child_process_context() -> bool:
-    """Return True in this process or a subprocess spawned by a child."""
+    """Return True in this process or a subprocess spawned by a child.
+
+    The ContextVar is authoritative for the current process. The
+    ``os.environ`` marker is a write-only lineage hint for subprocesses
+    (written by :func:`scrub_kanban_env` into the child env) — reading it
+    back in the *current* process misclassifies any long-lived process that
+    ever inherited it (e.g. a gateway respawned from a delegated child) as a
+    child forever (#87650). The env marker is only consulted when the
+    ContextVar is unset but the process was *actually launched* with the
+    marker — which only happens for short-lived subprocess forks, where the
+    ContextVar is not inherited anyway. To keep the two sources consistent,
+    the env marker is also cleared from ``os.environ`` once observed, so a
+    long-lived process cannot stay wedged.
+    """
     import os
 
-    return bool(_DELEGATED_CHILD_CONTEXT.get()) or bool(
-        os.environ.get(DELEGATED_CHILD_ENV_MARKER)
-    )
+    if _DELEGATED_CHILD_CONTEXT.get():
+        return True
+    marker = os.environ.get(DELEGATED_CHILD_ENV_MARKER)
+    if marker:
+        # Observed in the current process: this is a subprocess fork that was
+        # launched with the lineage marker. The ContextVar is not inherited
+        # across fork, so the marker is the only signal — consume it once.
+        # Removing it prevents a long-lived process (gateway/cron daemon)
+        # from being permanently misclassified as a delegated child.
+        os.environ.pop(DELEGATED_CHILD_ENV_MARKER, None)
+        return True
+    return False
 
 
 def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[str, str]:

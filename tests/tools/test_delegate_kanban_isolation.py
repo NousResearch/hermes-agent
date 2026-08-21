@@ -296,3 +296,36 @@ def test_child_attempting_default_complete_does_not_finish_parent_or_delete_work
     assert task.status == "running"
     assert run.status == "running"
     assert workspace.is_dir()
+
+
+def test_long_lived_process_env_marker_is_consumed_not_persistent(monkeypatch):
+    """Regression #87650: the HERMES_DELEGATED_CHILD_CONTEXT env marker is
+    write-only lineage for subprocess forks — it must NOT permanently
+    misclassify a long-lived process (gateway/cron daemon) that inherited it.
+
+    Before the fix, is_delegated_child_process_context() read os.environ
+    unconditionally, so any long-lived process that ever inherited the marker
+    (e.g. respawned from a delegated child) stayed delegated forever, causing
+    kanban_db/kanban to treat it as a child on every call. After the fix, the
+    ContextVar is authoritative; the env marker is consumed once (first
+    observation) and removed so it cannot wedge a long-running process.
+    """
+    from agent import delegation_context as dc
+
+    # Simulate a process launched WITH the marker (subprocess fork).
+    monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
+
+    # First observation: still reports True (fork lineage), but consumes it.
+    assert dc.is_delegated_child_process_context() is True
+    # Marker removed from os.environ — the process is no longer classified.
+    assert os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT") is None
+    # Subsequent calls report False (ContextVar unset, env marker gone).
+    assert dc.is_delegated_child_process_context() is False
+
+    # The ContextVar path is unaffected (in-process delegated child).
+    token = dc._DELEGATED_CHILD_CONTEXT.set(True)
+    try:
+        assert dc.is_delegated_child_process_context() is True
+    finally:
+        dc._DELEGATED_CHILD_CONTEXT.reset(token)
+    assert dc.is_delegated_child_process_context() is False

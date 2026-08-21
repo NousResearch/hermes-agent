@@ -780,6 +780,7 @@ class AssemblyResult:
     #   2 = bare bridge — catalog too large for any listing form
     tier: int = 0
     listing_form: str = "none"  # "full" | "names" | "none"
+    catalog: Tuple[CatalogEntry, ...] = ()
 
 
 def assemble_tool_defs(
@@ -822,6 +823,7 @@ def assemble_tool_defs(
             tier=0,
         )
 
+    catalog = tuple(build_catalog(deferrable))
     listing = None
     listing_form = "none"
     listing_budget = listing_token_budget(config, context_length)
@@ -852,6 +854,7 @@ def assemble_tool_defs(
         threshold_tokens=listing_budget,
         tier=tier,
         listing_form=listing_form,
+        catalog=catalog,
     )
 
 
@@ -897,7 +900,8 @@ def _available_source_summary(catalog: List[CatalogEntry]) -> List[Dict[str, Any
 def dispatch_tool_search(args: Dict[str, Any],
                          *,
                          current_tool_defs: List[Dict[str, Any]],
-                         config: Optional[ToolSearchConfig] = None) -> str:
+                         config: Optional[ToolSearchConfig] = None,
+                         catalog: Optional[Iterable[CatalogEntry]] = None) -> str:
     """Execute the ``tool_search`` bridge tool. Returns a JSON string."""
     if config is None:
         config = load_config()
@@ -911,16 +915,19 @@ def dispatch_tool_search(args: Dict[str, Any],
     else:
         limit = max(1, min(config.max_search_limit, _safe_int(raw_limit, config.search_default_limit)))
 
-    _, deferrable = classify_tools(current_tool_defs)
-    catalog = build_catalog(deferrable)
-    hits = search_catalog(catalog, query, limit=limit)
+    if catalog is None:
+        _, deferrable = classify_tools(current_tool_defs)
+        resolved_catalog = build_catalog(deferrable)
+    else:
+        resolved_catalog = list(catalog)
+    hits = search_catalog(resolved_catalog, query, limit=limit)
     result: Dict[str, Any] = {
         "query": query,
-        "total_available": len(catalog),
+        "total_available": len(resolved_catalog),
         "matches": [_format_search_hit(h) for h in hits],
     }
-    if not hits and catalog:
-        result["available_sources"] = _available_source_summary(catalog)
+    if not hits and resolved_catalog:
+        result["available_sources"] = _available_source_summary(resolved_catalog)
         result["hint"] = (
             "No lexical match was found, but the sources above are connected "
             "and their tools remain available. Retry tool_search with the "
@@ -932,11 +939,24 @@ def dispatch_tool_search(args: Dict[str, Any],
 
 def dispatch_tool_describe(args: Dict[str, Any],
                            *,
-                           current_tool_defs: List[Dict[str, Any]]) -> str:
+                           current_tool_defs: List[Dict[str, Any]],
+                           catalog: Optional[Iterable[CatalogEntry]] = None) -> str:
     """Execute the ``tool_describe`` bridge tool. Returns a JSON string."""
     name = str(args.get("name") or "").strip()
     if not name:
         return tool_error("name is required")
+    if catalog is not None:
+        for entry in catalog:
+            if entry.name == name:
+                fn = entry.schema.get("function") or {}
+                return json.dumps({
+                    "name": name,
+                    "description": fn.get("description", ""),
+                    "parameters": fn.get("parameters", {}),
+                }, ensure_ascii=False)
+        return tool_error(
+            f"'{name}' is not currently available. Re-run tool_search to refresh."
+        )
     if not is_deferrable_tool_name(name):
         return tool_error(
             f"'{name}' is not a deferrable tool. If you see it in the tools list "

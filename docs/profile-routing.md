@@ -92,6 +92,31 @@ When multiple routes match, the **most specific** one wins. Specificity is addit
 So a thread route (8) beats a channel route (4) beats a guild route (2) within the same server.
 If no route matches, the message uses the default/active profile.
 
+## Explaining a routing decision
+
+Use the read-only routing doctor when debugging a bot/group/user report:
+
+```bash
+hermes doctor --routing --routing-profile default --platform discord \
+  --guild-id 123 --chat-id 456 --thread-id 789 --user-id 321 --json
+```
+
+`--routing-profile` is deliberately separate from the global `--profile`
+selector, so this command cannot accidentally switch the Hermes home before
+the diagnostic runs. The command loads `config.yaml`, uses the same
+`parse_profile_routes` and `match_profile_route` resolver as the gateway, and
+does not construct or contact a gateway. It reports the normalized platform,
+deterministically redacted identifiers, selected profile, winning route,
+specificity precedence, and whether a fallback was used. User IDs are shown
+only as a redacted diagnostic dimension; they are not routing discriminators.
+
+JSON output is stable (`sort_keys`, compact separators) and includes an
+explicit `side_effects` object whose network, gateway, and writes values are
+always `false`. Malformed route configuration returns exit code 2 with
+`invalid_route_config`; two equally specific matching routes return exit code 2
+with `ambiguous_route` and the sorted route names. No message bodies,
+credentials, or identifier values are printed.
+
 ## How it works at runtime
 
 1. An inbound message arrives at a platform adapter.

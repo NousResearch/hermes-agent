@@ -9,6 +9,8 @@ import sys
 import subprocess
 import shutil
 import importlib.util
+import hashlib
+import json
 from pathlib import Path
 
 from hermes_cli.config import (
@@ -1031,8 +1033,88 @@ def managed_scope_check() -> None:
         check_info(f"managed dir set via HERMES_MANAGED_DIR={managed_dir}")
 
 
+def _routing_redact(value: object) -> str | None:
+    """Return a deterministic, non-reversible display value for an ID."""
+    if value is None or not str(value).strip():
+        return None
+    normalized = str(value).strip()
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+    return f"<redacted:{digest}>"
+
+
+def _run_routing_doctor(args) -> int:
+    """Explain one routing decision without constructing or contacting a gateway."""
+    from gateway.profile_routing import match_profile_route, parse_profile_routes
+    import yaml
+
+    dimensions = {
+        "platform": str(getattr(args, "routing_platform", "") or "").strip().lower(),
+        "guild_id": _routing_redact(getattr(args, "routing_guild_id", None)),
+        "chat_id": _routing_redact(getattr(args, "routing_chat_id", None)),
+        "thread_id": _routing_redact(getattr(args, "routing_thread_id", None)),
+        "user_id": _routing_redact(getattr(args, "routing_user_id", None)),
+    }
+    raw_config = HERMES_HOME / "config.yaml"
+    result = {
+        "schema": "hermes.routing-doctor.v1",
+        "dimensions": dimensions,
+        "selected_profile": None,
+        "match": {"route": None, "reason": "default", "precedence": "default profile"},
+        "side_effects": {"network": False, "gateway": False, "writes": False},
+    }
+    try:
+        with raw_config.open("r", encoding="utf-8") as handle:
+            config = yaml.safe_load(handle) or {}
+        if not isinstance(config, dict):
+            raise ValueError("config.yaml root must be a mapping")
+    except Exception:
+        result["error"] = {"code": "invalid_config", "message": "unable to read or parse config.yaml"}
+        result["selected_profile"] = getattr(args, "routing_profile", None) or "default"
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 2
+
+    nested = config.get("gateway") if isinstance(config.get("gateway"), dict) else {}
+    raw_routes = config.get("profile_routes", nested.get("profile_routes", []))
+    if raw_routes is not None and not isinstance(raw_routes, list):
+        result["error"] = {"code": "invalid_route_config", "message": "profile_routes must be a list"}
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 2
+    parse_errors: list[str] = []
+    routes = parse_profile_routes(raw_routes, errors=parse_errors)
+    if parse_errors:
+        result["error"] = {"code": "invalid_route_config", "messages": sorted(parse_errors)}
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 2
+
+    platform = dimensions["platform"]
+    guild_id = str(getattr(args, "routing_guild_id", None) or "").strip() or None
+    chat_id = str(getattr(args, "routing_chat_id", None) or "").strip() or None
+    thread_id = str(getattr(args, "routing_thread_id", None) or "").strip() or None
+    matching = [
+        route for route in routes
+        if route.matches(platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id)
+    ]
+    if matching:
+        best_specificity = matching[0].specificity
+        best = [route for route in matching if route.specificity == best_specificity]
+        if len(best) > 1:
+            result["error"] = {"code": "ambiguous_route", "routes": sorted(route.name for route in best)}
+            result["match"] = {"route": None, "reason": "ambiguous", "precedence": f"specificity {best_specificity}"}
+            print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+            return 2
+        selected = match_profile_route(routes, platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id)
+        result["selected_profile"] = selected.profile if selected else None
+        result["match"] = {"route": selected.name if selected else None, "reason": "specificity", "precedence": f"specificity {selected.specificity}" if selected else "default"}
+    else:
+        result["selected_profile"] = getattr(args, "routing_profile", None) or "default"
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
+    if getattr(args, "routing", False):
+        return _run_routing_doctor(args)
     should_fix = getattr(args, 'fix', False)
     ack_target = getattr(args, 'ack', None)
 

@@ -106,7 +106,11 @@ class ProfileRoute:
         return True
 
 
-def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRoute]:
+def parse_profile_routes(
+    raw: Optional[List[Dict[str, Any]]],
+    *,
+    errors: Optional[List[str]] = None,
+) -> List[ProfileRoute]:
     """Parse profile_routes from config.yaml into ProfileRoute objects.
 
     Returns routes sorted by specificity (most specific first).
@@ -116,11 +120,15 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
     routes: List[ProfileRoute] = []
     for entry in raw:
         if not isinstance(entry, dict):
+            if errors is not None:
+                errors.append("route entry must be a mapping")
             continue
         name = entry.get("name", "")
         platform = entry.get("platform", "")
         profile = entry.get("profile", "")
         if not platform or not profile:
+            if errors is not None:
+                errors.append(f"route {name!r} is missing platform or profile")
             logger.warning(
                 "Skipping profile route %s: missing platform or profile",
                 name,
@@ -136,6 +144,8 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
             profile = normalize_profile_name(profile)
             validate_profile_name(profile)
         except (ValueError, ImportError):
+            if errors is not None:
+                errors.append(f"route {name!r} has an invalid profile name")
             logger.warning("Skipping profile route %s: invalid profile name %r", name, profile)
             continue
         routes.append(

@@ -5623,7 +5623,9 @@ def cmd_doctor(args):
     """Check configuration and dependencies."""
     from hermes_cli.doctor import run_doctor
 
-    run_doctor(args)
+    result = run_doctor(args)
+    if isinstance(result, int):
+        sys.exit(result)
 
 
 def cmd_verify(args):

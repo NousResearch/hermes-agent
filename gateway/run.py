@@ -2803,15 +2803,15 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
 
 def _channel_override_lookup_keys(
     chat_id: str, *, thread_id: Optional[str] = None, parent_id: Optional[str] = None) -> list[str]:
-    """Ordered, de-duplicated ``channel_overrides`` lookup keys (matches ``resolve_channel_prompt``:
-    exact id first, then parent — Discord threads inherit parent overrides)."""
-    return list(dict.fromkeys(str(key) for key in (chat_id, thread_id, parent_id) if key))
+    """Topic composite first, then chat/channel, thread, and parent ids."""
+    composite = f"{chat_id}:{thread_id}" if chat_id and thread_id else None
+    return list(dict.fromkeys(str(key) for key in (composite, chat_id, thread_id, parent_id) if key))
 
 
 def _get_channel_override(
     config: GatewayConfig, platform: Platform, chat_id: str, *, thread_id: Optional[str] = None,
     parent_id: Optional[str] = None) -> Optional[ChannelOverride]:
-    """Per-channel override via chat_id, then thread_id, then parent_id; None if absent."""
+    """Per-channel override via topic composite, chat id, thread id, then parent id."""
     platforms = getattr(config, "platforms", None)
     if not platforms:
         return None

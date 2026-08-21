@@ -559,6 +559,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     # OpenCode Zen — "Ox Alpha" stealth model (x-preview-f-free). 1M context
     # per OpenCode's launch announcement (2026-08-20); free, ZDR.
     "x-preview-f": 1_048_576,
+    # OpenRouter — same "Ox Alpha" stealth model under its OpenRouter slug
+    # (stealth/ox-alpha). 1M context per OpenRouter live metadata (2026-08-20).
+    "ox-alpha": 1_048_576,
     # Nemotron — NVIDIA's open-weights series (128K context across all sizes)
     "nemotron": 131072,
     # Arcee

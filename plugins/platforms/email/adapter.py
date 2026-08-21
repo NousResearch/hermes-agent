@@ -556,7 +556,12 @@ class EmailAdapter(BasePlatformAdapter):
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
         self._smtp_host = (_get_secret("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
         self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
-        self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
+        self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 60)
+        # Exponential backoff after IMAP fetch failures (Gmail delays every
+        # IMAP op from datacenter IPs by 20-55s; a single poll cycle can take
+        # ~200s). Instead of dying fatally we back off and keep polling.
+        self._poll_backoff: float = 0.0
+        self._poll_backoff_max: float = 300.0
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
@@ -669,6 +674,45 @@ class EmailAdapter(BasePlatformAdapter):
             # Retry with IPv4 only.
             return _connect(ipv4_only=True)
 
+    def _imap_connect_test(self, is_reconnect: bool) -> None:
+        """Synchronous IMAP connect/login/scan test. Runs in an executor
+        thread (never in the event loop) because Gmail applies a security
+        delay of ~25-33s to logins from datacenter IPs. Raises on failure."""
+        imap = None
+        try:
+            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=300)
+            imap.login(self._address, self._password)
+            _send_imap_id(imap)
+            imap.select("INBOX")
+            snapshot = self._seen_uids_snapshot.get(self._address)
+            if is_reconnect and snapshot is not None:
+                # Reconnect within the same process: restore the previous
+                # adapter's seen-UID baseline instead of re-marking the whole
+                # mailbox. Mail that arrived during the outage stays UNSEEN
+                # relative to the baseline and is dispatched by the next poll
+                # instead of being silently skipped.
+                self._seen_uids = set(snapshot)
+                self._trim_seen_uids()
+                logger.info(
+                    "[Email] IMAP reconnect test passed. Restored %d seen UIDs; "
+                    "messages received during the outage will be processed.",
+                    len(self._seen_uids),
+                )
+            else:
+                # First connect (or no snapshot): mark all existing messages as
+                # seen so we only process new ones.
+                status, data = imap.uid("search", None, "ALL")
+                if status == "OK" and data and data[0]:
+                    for uid in data[0].split():
+                        self._seen_uids.add(uid)
+                # Keep only the most recent UIDs to prevent unbounded growth
+                self._trim_seen_uids()
+                logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+        finally:
+            if imap is not None:
+                _close_imap(imap)
+        self._seen_uids_snapshot[self._address] = set(self._seen_uids)
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
         # Validate up front so a missing host surfaces as an actionable config
@@ -702,47 +746,13 @@ class EmailAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Test IMAP connection. The handle is closed in ``finally`` —
-            # before this, a failure in login/select/search left the TCP
-            # socket open with no owner, leaking one fd per connect attempt.
-            # Under the gateway's reconnect watcher (fresh adapter instance
-            # per retry) against an unreachable/proxied host this grew
-            # monotonically until fd exhaustion on macOS's 256 soft limit
-            # (#79889).
-            imap = None
-            try:
-                imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-                imap.login(self._address, self._password)
-                _send_imap_id(imap)
-                imap.select("INBOX")
-                snapshot = self._seen_uids_snapshot.get(self._address)
-                if is_reconnect and snapshot is not None:
-                    # Reconnect within the same process: restore the previous
-                    # adapter's seen-UID baseline instead of re-marking the whole
-                    # mailbox. Mail that arrived during the outage stays UNSEEN
-                    # relative to the baseline and is dispatched by the next poll
-                    # instead of being silently skipped.
-                    self._seen_uids = set(snapshot)
-                    self._trim_seen_uids()
-                    logger.info(
-                        "[Email] IMAP reconnect test passed. Restored %d seen UIDs; "
-                        "messages received during the outage will be processed.",
-                        len(self._seen_uids),
-                    )
-                else:
-                    # First connect (or no snapshot): mark all existing messages as
-                    # seen so we only process new ones.
-                    status, data = imap.uid("search", None, "ALL")
-                    if status == "OK" and data and data[0]:
-                        for uid in data[0].split():
-                            self._seen_uids.add(uid)
-                    # Keep only the most recent UIDs to prevent unbounded growth
-                    self._trim_seen_uids()
-                    logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
-            finally:
-                if imap is not None:
-                    _close_imap(imap)
-            self._seen_uids_snapshot[self._address] = set(self._seen_uids)
+            # Test IMAP connection — run in executor thread so the slow
+            # Gmail login (security delay ~25-33s from datacenter IPs) can
+            # never block the gateway event loop (which historically stalled
+            # Telegram delivery on this host). The handle is closed in
+            # ``finally`` inside _imap_connect_test (#79889).
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._imap_connect_test, is_reconnect)
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
             # Always set an explicit fatal code (OOF-156): returning False
@@ -815,11 +825,14 @@ class EmailAdapter(BasePlatformAdapter):
         while self._running:
             try:
                 await self._check_inbox()
+                # Successful check (even with zero new mails) resets backoff
+                if not self._last_fetch_failed:
+                    self._poll_backoff = 0.0
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("[Email] Poll error: %s", e)
-            await asyncio.sleep(self._poll_interval)
+            await asyncio.sleep(self._poll_interval + self._poll_backoff)
 
     async def _check_inbox(self) -> None:
         """Check INBOX for unseen messages and dispatch them."""
@@ -834,26 +847,30 @@ class EmailAdapter(BasePlatformAdapter):
             await self._dispatch_message(msg_data)
         if self._last_fetch_failed:
             # The IMAP check itself failed (connect/login/select/search/fetch),
-            # not just an empty inbox. Surface it through the fatal-error hook
-            # so the gateway's existing reconnect/backoff/status machinery
-            # re-establishes the mailbox instead of silently treating every
-            # failed check as "nothing new" (#80016). The handler runs in a
-            # detached task (gateway/run.py), so awaiting it from our own poll
-            # task is safe even though teardown cancels this task.
+            # not just an empty inbox. Do NOT escalate through the fatal-error
+            # hook: a timeout here (Gmail applies 20-55s delays per IMAP op
+            # from datacenter IPs) would tear the adapter down and throw it
+            # into the gateway reconnect queue — which historically stalled
+            # Telegram delivery on this host. Instead: the poll loop's next
+            # iteration re-opens a fresh IMAP connection (each poll builds its
+            # own imaplib session), so we just back off exponentially and keep
+            # going. Telegram stays fully decoupled.
             self._last_fetch_failed = False
-            self._set_fatal_error(
-                "email_imap_fetch_failed",
-                self._last_fetch_error or "IMAP fetch failed",
-                retryable=True,
+            err = self._last_fetch_error or "IMAP fetch failed"
+            self._poll_backoff = min(
+                max(self._poll_backoff * 2, 30.0), self._poll_backoff_max
             )
-            await self._notify_fatal_error()
+            logger.warning(
+                "[Email] IMAP fetch failed (%s); backing off %.0fs before next poll",
+                err, self._poll_backoff,
+            )
 
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
         results = []
         imap: Optional[imaplib.IMAP4] = None
         try:
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=300)
             try:
                 imap.login(self._address, self._password)
                 _send_imap_id(imap)

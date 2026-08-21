@@ -786,6 +786,27 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["api_mode"])
         self.assertIsNone(creds["model"])
 
+    def test_request_model_lock_ignores_delegation_provider_config(self):
+        """A hosted run's immutable model transport must reach every child;
+        process-global delegation config cannot reroute a tenant subagent."""
+        parent = _make_mock_parent(depth=0)
+        parent._runtime_model_locked = True
+        parent._runtime_model_lock_source = "request_runtime"
+        cfg = {
+            "model": "other-model",
+            "provider": "other-provider",
+            "base_url": "https://other.example/v1",
+            "api_key": "other-secret",
+        }
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["model"], parent.model)
+        self.assertIsNone(creds["provider"])
+        self.assertIsNone(creds["base_url"])
+        self.assertIsNone(creds["api_key"])
+        self.assertIsNone(creds["api_mode"])
+
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
         parent = _make_mock_parent(depth=0)
         cfg = {
@@ -997,6 +1018,17 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         self.assertIn("nonexistent", result["error"])
 
 class TestChildCredentialPoolResolution(unittest.TestCase):
+    def test_model_locked_parent_never_loads_or_shares_a_pool(self):
+        parent = _make_mock_parent()
+        parent._runtime_model_locked = True
+        parent._credential_pool = MagicMock()
+
+        with patch("agent.credential_pool.load_pool") as load_pool:
+            result = _resolve_child_credential_pool("openrouter", parent)
+
+        self.assertIsNone(result)
+        load_pool.assert_not_called()
+
     def test_same_provider_shares_parent_pool(self):
         parent = _make_mock_parent()
         mock_pool = MagicMock()
@@ -1872,6 +1904,30 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
+
+    def test_child_inherits_request_model_lock_marker(self):
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = []
+        parent._runtime_model_locked = True
+        parent._runtime_model_lock_source = "request_runtime"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            child = MagicMock()
+            MockAgent.return_value = child
+            result = _build_child_agent(
+                task_index=0,
+                goal="test request runtime lock inheritance",
+                context=None,
+                toolsets=None,
+                model=parent.model,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertIs(result, child)
+        self.assertIs(child._runtime_model_locked, True)
+        self.assertEqual(child._runtime_model_lock_source, "request_runtime")
 
     def test_pinned_provider_disables_parent_fallback_chain(self):
         """An explicit delegation.provider pin must NOT inherit the parent

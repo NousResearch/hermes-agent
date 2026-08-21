@@ -891,6 +891,10 @@ group_sessions_per_user: true
 #       enabled: true
 #       extra:
 #         key: "your-api-server-secret"
+#         # Allow authenticated POST /v1/runs callers to supply one immutable
+#         # model endpoint/credential snapshot. Disabled by default because it
+#         # grants the API caller control over the upstream network destination.
+#         allow_request_model_runtime: false
 #         model_routes:
 #           # Xiaozhi clients send model="minimax-m2" → routed to MiniMax via OpenRouter
 #           minimax-m2:

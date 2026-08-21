@@ -247,6 +247,9 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
                 "base_url": getattr(agent, "base_url", None),
                 "api_key": getattr(agent, "api_key", None),
                 "api_mode": getattr(agent, "api_mode", None),
+                "model_locked": (
+                    getattr(agent, "_runtime_model_locked", False) is True
+                ),
             },
             title_callback=getattr(agent, "_on_session_title", None),
             runtime_validator=lambda: (
@@ -507,6 +510,9 @@ def build_turn_context(
             auth_mode=getattr(agent, "auth_mode", "") or "",
             session_id=getattr(agent, "session_id", "") or "",
             cache_scope=_cache_scope,
+            model_locked=(
+                getattr(agent, "_runtime_model_locked", False) is True
+            ),
         )
     except Exception:
         pass

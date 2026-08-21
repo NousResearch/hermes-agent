@@ -1345,6 +1345,41 @@ def _canonical_api_mode(api_mode: str) -> str:
     return _API_MODE_ALIASES.get(cleaned.lower(), cleaned)
 
 
+def _declared_models_to_mapping(value: Any) -> Dict[str, Any]:
+    """Coerce a custom-provider model declaration into ``{id: metadata}``.
+
+    Accepts the two shapes seen in real configs: a mapping (already
+    canonical) or a list of plain ids / ``{id: ...}`` rows written by hand
+    or by older Hermes versions. Anything else yields an empty mapping so
+    the caller leaves ``models`` unset rather than writing a bad shape.
+    """
+    if isinstance(value, dict) and value:
+        # Shallow-copy: the caller's `entry` may alias a cached config
+        # sub-dict, and the normalized entry escapes into long-lived runtime
+        # state (agent._custom_providers) — don't share the cached mapping.
+        return dict(value)
+
+    if not isinstance(value, list):
+        return {}
+
+    mapping: Dict[str, Any] = {}
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            mapping[item.strip()] = {}
+            continue
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("id")
+        if not isinstance(model_id, str) or not model_id.strip():
+            model_id = item.get("name")
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        mapping[model_id.strip()] = {
+            k: v for k, v in item.items() if k not in {"id", "name"}
+        }
+    return mapping
+
+
 def _normalize_custom_provider_entry(
     entry: Any,
     *,
@@ -1389,6 +1424,8 @@ def _normalize_custom_provider_entry(
         "key_cmd",
         "api_mode", "transport", "model", "default_model", "models",
         "models_discovered",
+        # Hand-written alias for ``models`` (gh-52266); merged in below.
+        "available_models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
@@ -1517,6 +1554,18 @@ def _normalize_custom_provider_entry(
             normalized_models[model_id.strip()] = model_meta
         if normalized_models:
             normalized["models"] = normalized_models
+
+    # ``models`` is the canonical declaration key, but hand-written configs
+    # also use ``available_models`` (gh-52266). That alias previously fell
+    # through to the unknown-key warning and was dropped, leaving the
+    # provider with (0) models: the picker showed nothing and every
+    # ``/model <id>`` for that provider failed to resolve. Merge it in,
+    # with ``models`` metadata winning for ids declared in both.
+    available = _declared_models_to_mapping(entry.get("available_models"))
+    if available:
+        merged_models = dict(available)
+        merged_models.update(normalized.get("models") or {})
+        normalized["models"] = merged_models
 
     if models_discovered:
         normalized["models_discovered"] = True

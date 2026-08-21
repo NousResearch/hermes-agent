@@ -422,7 +422,7 @@ def check_alias_collision(name: str) -> Optional[str]:
             if existing_path == str(expected):
                 try:
                     content = expected.read_text(encoding="utf-8")
-                    if "hermes -p" in content:
+                    if _WRAPPER_MARKER in content or "hermes -p" in content:
                         return None  # it's our wrapper, safe to overwrite
                 except Exception:
                     pass
@@ -439,6 +439,30 @@ def _is_wrapper_dir_in_path() -> bool:
     return wrapper_dir in os.environ.get("PATH", "").split(os.pathsep)
 
 
+# Stable marker embedded in every generated wrapper so recognition checks
+# (collision, list/show, removal) can identify our wrappers without relying
+# on the exact exe path format (#74074).
+_WRAPPER_MARKER = "# hermes-profile-wrapper"
+
+
+def _resolve_hermes_exe() -> str:
+    """Resolve the real hermes executable, bypassing .cmd shims on Windows.
+
+    On Windows, ``shutil.which("hermes")`` may return ``hermes.cmd`` (the
+    installer shim that injects ``-p default``) depending on PATHEXT order.
+    We explicitly prefer ``hermes.exe`` to guarantee the wrapper bypasses the
+    shim (#74074).
+    """
+    if sys.platform == "win32":
+        # Try hermes.exe first to skip the .cmd shim.
+        exe = shutil.which("hermes.exe")
+        if exe:
+            return exe
+        # Fallback: whatever which() finds (might be .cmd on unusual setups).
+        return shutil.which("hermes") or "hermes"
+    return shutil.which("hermes") or "hermes"
+
+
 def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[Path]:
     """Create a shell wrapper script at ~/.local/bin/<name>.
 
@@ -446,8 +470,12 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     activates is ``target`` if given, otherwise ``name`` — this lets a custom
     alias name point at a differently-named profile without a post-hoc rewrite.
 
-    On Windows, creates a ``.bat`` file instead of a POSIX shell script.
-    Returns the path to the created wrapper, or None if creation failed.
+    On Windows, creates both a ``.bat`` file (for cmd.exe / PowerShell) and an
+    extensionless bash script (for git-bash / MSYS2).  Wrappers are subcommand-
+    agnostic pass-throughs and embed a stable marker comment so recognition
+    checks can identify them regardless of the resolved exe path (#74074).
+
+    Returns the path to the primary created wrapper, or None if creation failed.
     """
     canon = normalize_profile_name(name)
     profile = normalize_profile_name(target) if target else canon
@@ -461,20 +489,43 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
         print(f"⚠ Could not create {wrapper_dir}: {e}")
         return None
 
+    # Resolve the real hermes executable so wrappers bypass any shim (e.g.
+    # hermes.cmd on Windows that injects ``-p default``) (#74074).
+    hermes_exe = _resolve_hermes_exe()
+
     is_windows = sys.platform == "win32"
     if is_windows:
+        # Primary: .bat for cmd.exe / PowerShell.
         wrapper_path = wrapper_dir / f"{canon}.bat"
         try:
-            wrapper_path.write_text(f"@echo off\r\nhermes -p {profile} %*\r\n", encoding="utf-8")
-            return wrapper_path
+            # The marker comment lets recognition checks (collision, list/show,
+            # removal) identify this as our wrapper regardless of the exe path.
+            wrapper_path.write_text(
+                f"{_WRAPPER_MARKER}\r\n@echo off\r\n\"{hermes_exe}\" -p {profile} %*\r\n",
+                encoding="utf-8",
+            )
         except OSError as e:
             print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
             return None
+        # Secondary: extensionless bash script for git-bash / MSYS2 (#74074).
+        bash_path = wrapper_dir / canon
+        try:
+            bash_path.write_text(
+                f"{_WRAPPER_MARKER}\n#!/bin/sh\nexec {shlex.quote(hermes_exe)} -p {profile} \"$@\"\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+        except OSError:
+            # Non-fatal: the .bat is the primary wrapper on Windows.
+            pass
+        return wrapper_path
     else:
         wrapper_path = wrapper_dir / canon
         try:
-            hermes_exe = shutil.which("hermes") or "hermes"
-            wrapper_path.write_text(f'#!/bin/sh\nexec {shlex.quote(hermes_exe)} -p {profile} "$@"\n', encoding="utf-8")
+            wrapper_path.write_text(
+                f"{_WRAPPER_MARKER}\n#!/bin/sh\nexec {shlex.quote(hermes_exe)} -p {profile} \"$@\"\n",
+                encoding="utf-8",
+            )
             wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
             return wrapper_path
         except OSError as e:
@@ -483,7 +534,11 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
 
 
 def remove_wrapper_script(name: str) -> bool:
-    """Remove the wrapper script for a profile. Returns True if removed."""
+    """Remove the wrapper script(s) for a profile. Returns True if any removed.
+
+    On Windows both the ``.bat`` and the extensionless bash script (created
+    for git-bash by #74074) are removed.
+    """
     wrapper_dir = _get_wrapper_dir()
     canon = normalize_profile_name(name)
     # A traversal-shaped name could point unlink() at a file outside the
@@ -494,22 +549,25 @@ def remove_wrapper_script(name: str) -> bool:
         return False
     is_windows = sys.platform == "win32"
 
-    # Check both the extensionless path (POSIX) and .bat (Windows)
+    # Check both the extensionless path (POSIX / git-bash) and .bat (Windows)
     candidates = [wrapper_dir / canon]
     if is_windows:
         candidates.insert(0, wrapper_dir / f"{canon}.bat")
 
+    removed = False
     for wrapper_path in candidates:
         if wrapper_path.exists():
             try:
-                # Verify it's our wrapper before removing
+                # Verify it's our wrapper via the stable marker before removing.
+                # Also accept legacy wrappers (pre-marker) that contain the
+                # bare "hermes -p" substring for backwards compatibility.
                 content = wrapper_path.read_text(encoding="utf-8")
-                if "hermes -p" in content:
+                if _WRAPPER_MARKER in content or "hermes -p" in content:
                     wrapper_path.unlink()
-                    return True
+                    removed = True
             except Exception:
                 pass
-    return False
+    return removed
 
 
 def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
@@ -603,15 +661,24 @@ def build_alias_map() -> dict[str, str]:
         except (OSError, UnicodeDecodeError):
             # UnicodeDecodeError = a binary on PATH (ffmpeg etc.) — not a wrapper.
             continue
+        # Identify our wrappers by the stable marker (new) or legacy prefix.
+        if _WRAPPER_MARKER not in content and prefix not in content:
+            continue
         idx = content.find(prefix)
         if idx == -1:
-            continue
-        rest = content[idx + len(prefix):]
-        # Profile id is the first whitespace-delimited token after the flag.
-        canon = rest.split(None, 1)[0].strip() if rest.strip() else ""
-        if not canon:
-            continue
-        canon = normalize_profile_name(canon)
+            # Marker present but no "hermes -p " (e.g. quoted exe path like
+            # "C:\…\hermes.exe" -p …). Extract profile from the -p flag.
+            m = re.search(r'-p\s+(\S+)', content)
+            if not m:
+                continue
+            canon = normalize_profile_name(m.group(1))
+        else:
+            rest = content[idx + len(prefix):]
+            # Profile id is the first whitespace-delimited token after the flag.
+            canon = rest.split(None, 1)[0].strip() if rest.strip() else ""
+            if not canon:
+                continue
+            canon = normalize_profile_name(canon)
         alias = entry.stem if is_windows else entry.name
         # Custom alias (name != profile) preferred; otherwise keep the
         # profile-named wrapper. Don't overwrite a custom alias already found.

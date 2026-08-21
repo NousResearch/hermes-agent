@@ -1,0 +1,46 @@
+name: Fast-track merge
+
+# Merges eligible tabjoy-fleet PRs (green CI + attached test evidence) without
+# a manual maintainer turn, per the merge SLA policy in
+# docs/merge-sla-policy.md. The decision logic lives in
+# scripts/ci/fast-track-merge.sh; this workflow only triggers it.
+#
+# Triggered by schedule (the sweep that catches PRs whose CI turned green
+# after the label was applied) and manually via workflow_dispatch. Runs with
+# the repository-scoped GITHUB_TOKEN, which has write access on the base repo
+# — the same trust model as the js-autofix apply-patch job. The script only
+# reads PR metadata and merges; it never checks out or executes PR-controlled
+# code, so pull_request_target-style untrusted content is not involved.
+#
+# SECURITY: this workflow holds pull-requests: write + contents: write and can
+# merge PRs. It must stay conservative: the script skips (never fails) on
+# every gate it cannot verify, and the size/security-path guards in the policy
+# keep anything risky on the human review path.
+
+on:
+  schedule:
+    # Every 30 minutes. The SLA target is < 24h, so 30m granularity is ample
+    # and keeps API cost low.
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write # for squash-merge of the PR head
+  pull-requests: write # for merge + evidence comment
+
+concurrency:
+  group: fast-track-merge
+  cancel-in-progress: false
+
+jobs:
+  fast-track:
+    if: github.repository == 'NousResearch/hermes-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Fast-track merge sweep
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/ci/fast-track-merge.sh --owner "${GITHUB_REPOSITORY_OWNER}" --repo "${GITHUB_REPOSITORY#*/}"

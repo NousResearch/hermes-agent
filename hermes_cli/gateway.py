@@ -1970,6 +1970,17 @@ def stop_profile_gateway() -> bool:
     except Exception:
         pass
 
+    # Snapshot descendants (e.g. MCP stdio watchdog + server pairs) BEFORE
+    # signalling the gateway: once it exits they are reparented and can no
+    # longer be discovered by a parent walk. Mirrors the reap done by the
+    # gateway/run.py `--replace` path — this manual stop/restart fallback
+    # was missing it, leaving orphaned MCP watchdogs behind (#87906).
+    try:
+        from gateway.status import _snapshot_gateway_children
+        _old_gateway_children = _snapshot_gateway_children(pid)
+    except Exception:
+        _old_gateway_children = []
+
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -1990,6 +2001,12 @@ def stop_profile_gateway() -> bool:
 
     if get_running_pid() is None:
         remove_pid_file()
+
+    try:
+        from gateway.status import reap_gateway_children
+        reap_gateway_children(_old_gateway_children, parent_pid=pid)
+    except Exception:
+        logger.debug("Child reap for stopped gateway PID %d failed", pid, exc_info=True)
 
     # Also reap any orphans from prior restarts whose PIDs were overwritten
     # in the pid file before they exited (#75936).  Exclude the PID we just

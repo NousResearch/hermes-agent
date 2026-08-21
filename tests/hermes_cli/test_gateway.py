@@ -560,6 +560,47 @@ class TestStopProfileGateway:
         assert len(reap_extra_excludes) == 1
         assert killed_pid in reap_extra_excludes[0]
 
+    def test_stop_profile_gateway_reaps_orphaned_children(self, monkeypatch):
+        """MCP watchdog/server children of the stopped gateway must be reaped.
+
+        Regression guard for #87906: without a pre-kill children snapshot,
+        `gateway restart`'s manual stop path had no way to find the old
+        gateway's descendants after it exited (they are reparented once the
+        parent is gone), so duplicate MCP watchdog processes kept running.
+        """
+        pid = 4242
+        fake_children = ["watchdog-proc", "mcp-server-proc"]
+        events = []
+
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: pid)
+        monkeypatch.setattr(gateway.os, "kill", lambda p, sig: events.append(("kill", p)))
+        monkeypatch.setattr("gateway.status._pid_exists", lambda p: False)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+        monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", lambda extra_exclude=None: False)
+        monkeypatch.setattr(
+            "gateway.status._snapshot_gateway_children",
+            lambda target_pid: events.append(("snapshot", target_pid)) or fake_children,
+        )
+
+        def fake_reap(children, *, parent_pid):
+            events.append(("reap", tuple(children), parent_pid))
+            return len(children)
+
+        monkeypatch.setattr("gateway.status.reap_gateway_children", fake_reap)
+
+        assert gateway.stop_profile_gateway() is True
+
+        # Children must be snapshotted BEFORE the kill signal — after the
+        # parent exits they are reparented and undiscoverable.
+        assert events[0] == ("snapshot", pid)
+        assert ("kill", pid) in events
+        assert ("reap", tuple(fake_children), pid) in events
+        snapshot_index = events.index(("snapshot", pid))
+        kill_index = events.index(("kill", pid))
+        reap_index = events.index(("reap", tuple(fake_children), pid))
+        assert snapshot_index < kill_index < reap_index
+
 
 class TestReapUnsupervisedGatewayOrphansMacOS:
     """Tests that the orphan reaper excludes launchd-managed PIDs on macOS.

@@ -25,6 +25,7 @@ from acp.schema import (
     AvailableCommandsUpdate,
     BlobResourceContents,
     ClientCapabilities,
+    CloseSessionResponse,
     EmbeddedResourceContentBlock,
     ForkSessionResponse,
     ImageContentBlock,
@@ -46,6 +47,7 @@ from acp.schema import (
     SetSessionModeResponse,
     ResourceContentBlock,
     SessionCapabilities,
+    SessionCloseCapabilities,
     SessionForkCapabilities,
     SessionInfoUpdate,
     SessionListCapabilities,
@@ -1318,6 +1320,7 @@ class HermesACPAgent(acp.Agent):
                 load_session=True,
                 prompt_capabilities=PromptCapabilities(image=True),
                 session_capabilities=SessionCapabilities(
+                    close=SessionCloseCapabilities(),
                     fork=SessionForkCapabilities(),
                     list=SessionListCapabilities(),
                     resume=SessionResumeCapabilities(),
@@ -1778,6 +1781,49 @@ class HermesACPAgent(acp.Agent):
 
         next_cursor = sessions[-1].session_id if has_more and sessions else None
         return ListSessionsResponse(sessions=sessions, next_cursor=next_cursor)
+
+    async def close_session(
+        self, session_id: str, **kwargs: Any
+    ) -> Optional[CloseSessionResponse]:
+        """session/close (unstable): the host is done with this session.
+
+        Runs the same end-of-session memory path as CLI exit —
+        ``shutdown_memory_provider`` with the live transcript so memory
+        providers' ``on_session_end`` hooks commit the real conversation
+        (cli.py mirrors this for the #15165 empty-transcript bug) — then
+        drops the session. Without this handler the host's close was a
+        silent no-op, and providers relying on the end-of-session commit
+        (openviking, mem0, honcho, ...) silently lost it in ACP mode
+        (#87448).
+        """
+        state = self.session_manager.get_session(session_id)
+        if state is None:
+            # Idempotent close for an unknown / already-closed session.
+            return CloseSessionResponse()
+
+        def _shutdown_memory() -> None:
+            shutdown = getattr(state.agent, "shutdown_memory_provider", None)
+            if not callable(shutdown):
+                return
+            # Forward the transcript so on_session_end sees the real
+            # conversation, not an empty list.
+            session_msgs = getattr(state.agent, "_session_messages", None)
+            if isinstance(session_msgs, list):
+                shutdown(session_msgs)
+            else:
+                shutdown()
+
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(_executor, _shutdown_memory)
+        except Exception:
+            logger.warning(
+                "Memory shutdown failed while closing ACP session %s",
+                session_id,
+                exc_info=True,
+            )
+        self.session_manager.remove_session(session_id)
+        return CloseSessionResponse()
 
     # ---- Prompt (core) ------------------------------------------------------
 

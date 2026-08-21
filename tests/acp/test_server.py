@@ -16,6 +16,7 @@ from acp.schema import (
     AgentThoughtChunk,
     AuthenticateResponse,
     AvailableCommandsUpdate,
+    CloseSessionResponse,
     Implementation,
     InitializeResponse,
     LoadSessionResponse,
@@ -360,6 +361,80 @@ class TestListAndFork:
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# session/close
+# ---------------------------------------------------------------------------
+
+
+class TestCloseSession:
+    @pytest.mark.asyncio
+    async def test_close_session_commits_memory_and_removes_session(
+        self, agent, mock_manager
+    ):
+        """#87448: the host's session/close must run the CLI-exit memory path
+        (shutdown_memory_provider with the live transcript, so providers'
+        on_session_end hooks see the real conversation) and then drop the
+        session."""
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+
+        calls: list = []
+
+        def _shutdown(messages=None):
+            calls.append(messages)
+
+        state.agent.shutdown_memory_provider = _shutdown
+        state.agent._session_messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+
+        result = await agent.close_session(session_id=resp.session_id)
+
+        assert isinstance(result, CloseSessionResponse)
+        assert calls == [
+            [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+            ]
+        ]
+        assert mock_manager.get_session(resp.session_id) is None
+
+    @pytest.mark.asyncio
+    async def test_close_session_unknown_session_is_idempotent(self, agent):
+        result = await agent.close_session(session_id="nonexistent")
+
+        assert isinstance(result, CloseSessionResponse)
+
+    @pytest.mark.asyncio
+    async def test_router_dispatches_unstable_session_close(
+        self, agent, mock_manager
+    ):
+        """session/close is an unstable method — prove the dispatch wiring
+        (router built with use_unstable_protocol=True, as entry.py does)
+        reaches close_session, not just that the method exists."""
+        new_resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(new_resp.session_id)
+
+        calls: list = []
+        state.agent.shutdown_memory_provider = lambda messages=None: calls.append(
+            messages
+        )
+        state.agent._session_messages = [{"role": "user", "content": "hi"}]
+
+        router = build_agent_router(agent, use_unstable_protocol=True)
+        result = await router(
+            "session/close",
+            {"sessionId": new_resp.session_id},
+            False,
+        )
+
+        # normalize_result serializes the (all-default) CloseSessionResponse.
+        assert result == {}
+        assert calls == [[{"role": "user", "content": "hi"}]]
+        assert mock_manager.get_session(new_resp.session_id) is None
 
 
 # ---------------------------------------------------------------------------

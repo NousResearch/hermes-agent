@@ -47,6 +47,18 @@ class TestDeadCodeRemoval:
         assert "browser_close" not in names
 
 
+class TestBrowserNavigateSchemaToolReferences:
+    def test_static_description_is_toolset_neutral(self):
+        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
+
+        schema = next(item for item in BROWSER_TOOL_SCHEMAS if item["name"] == "browser_navigate")
+        description = schema["description"]
+
+        assert "web_search" not in description
+        assert "web_extract" not in description
+        assert "lightweight retrieval tool" in description
+
+
 # ---------------------------------------------------------------------------
 # Caching: _find_agent_browser
 # ---------------------------------------------------------------------------

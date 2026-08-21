@@ -981,6 +981,9 @@ class TestOpenAIModelExecutionGuidance:
         assert "correctness" in text
 
 
+    def test_guidance_does_not_mandate_specific_web_tool(self):
+        assert "→ use web_search" not in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "appropriate permitted retrieval/search tool" in OPENAI_MODEL_EXECUTION_GUIDANCE
 
     def test_guidance_is_string(self):
         assert isinstance(OPENAI_MODEL_EXECUTION_GUIDANCE, str)

@@ -1088,7 +1088,19 @@ async def _standalone_send(
             # 1. Upload media (if any) and collect file_ids.
             file_ids: List[str] = []
             for media in media_files:
-                file_path = media.get("path") if isinstance(media, dict) else media
+                # The shared media extraction path (send_message_tool) yields
+                # ``(file_path, is_voice)`` tuples — the shape every other
+                # standalone sender unpacks directly. Dict items (legacy
+                # ``{"path": ...}`` form) and bare path strings are also
+                # accepted. Without the tuple branch the whole item reached
+                # ``os.path.exists`` and raised TypeError, dropping the
+                # attachment (#90403).
+                if isinstance(media, dict):
+                    file_path = media.get("path")
+                elif isinstance(media, (tuple, list)) and media:
+                    file_path = media[0]
+                else:
+                    file_path = media
                 if not file_path or not os.path.exists(file_path):
                     continue
                 form = aiohttp.FormData()

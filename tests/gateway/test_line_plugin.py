@@ -243,6 +243,301 @@ class TestSendRouting:
         assert not _is_system_bypass("Hello world")
         assert not _is_system_bypass("")
 
+    @staticmethod
+    def _mention_metadata(*keys):
+        return {
+            "text_v2_substitutions": {
+                key: {
+                    "type": "mention",
+                    "mentionee": {"type": "user", "userId": "U" + "a" * 32},
+                }
+                for key in keys
+            }
+        }
+
+    @staticmethod
+    def _emoji_metadata(*keys):
+        return {
+            "text_v2_substitutions": {
+                key: {
+                    "type": "emoji",
+                    "productId": "5a8555cfe6256cc92ea23c2a",
+                    "emojiId": "002",
+                }
+                for key in keys
+            }
+        }
+
+    def test_send_pending_button_preserves_text_v2_for_postback(self, adapter):
+        rid = adapter._cache.register_pending("Cchat")
+        adapter._pending_buttons["Cchat"] = rid
+        metadata = self._mention_metadata("you")
+
+        result = asyncio.run(
+            adapter.send("Cchat", "hello {you}", metadata=metadata)
+        )
+        event = {
+            "replyToken": "fresh-token",
+            "source": {"type": "group", "groupId": "Cchat"},
+            "postback": {
+                "data": json.dumps({
+                    "action": "show_response",
+                    "request_id": rid,
+                })
+            },
+        }
+        asyncio.run(adapter._handle_postback_event(event))
+
+        assert result.success
+        assert adapter._client.reply.call_args.args[1] == [{
+            "type": "textV2",
+            "text": "hello {you}",
+            "substitution": metadata["text_v2_substitutions"],
+        }]
+        assert adapter._cache.get(rid).state is State.DELIVERED
+        assert "Cchat" not in adapter._pending_buttons
+
+    def test_postback_text_v2_reply_failure_falls_back_to_push(self, adapter):
+        rid = adapter._cache.register_pending("Cchat")
+        adapter._pending_buttons["Cchat"] = rid
+        metadata = self._mention_metadata("you")
+        asyncio.run(adapter.send("Cchat", "hello {you}", metadata=metadata))
+        adapter._client.reply.side_effect = RuntimeError("expired")
+        event = {
+            "replyToken": "expired-token",
+            "source": {"type": "group", "groupId": "Cchat"},
+            "postback": {"data": json.dumps({
+                "action": "show_response", "request_id": rid,
+            })},
+        }
+
+        asyncio.run(adapter._handle_postback_event(event))
+
+        assert adapter._client.push.call_args.args[1] == [{
+            "type": "textV2",
+            "text": "hello {you}",
+            "substitution": metadata["text_v2_substitutions"],
+        }]
+        assert adapter._cache.get(rid).state is State.DELIVERED
+        assert "Cchat" not in adapter._pending_buttons
+
+    def test_postback_text_v2_both_failures_keep_ready(self, adapter):
+        rid = adapter._cache.register_pending("Cchat")
+        adapter._pending_buttons["Cchat"] = rid
+        metadata = self._mention_metadata("you")
+        asyncio.run(adapter.send("Cchat", "hello {you}", metadata=metadata))
+        adapter._client.reply.side_effect = RuntimeError("expired")
+        adapter._client.push.side_effect = RuntimeError("network")
+        event = {
+            "replyToken": "expired-token",
+            "source": {"type": "group", "groupId": "Cchat"},
+            "postback": {"data": json.dumps({
+                "action": "show_response", "request_id": rid,
+            })},
+        }
+
+        asyncio.run(adapter._handle_postback_event(event))
+
+        assert adapter._cache.get(rid).state is State.READY
+        assert adapter._pending_buttons["Cchat"] == rid
+
+    def test_postback_rejects_request_id_from_different_chat(self, adapter):
+        rid = adapter._cache.register_pending("Csource")
+        adapter._pending_buttons["Csource"] = rid
+        metadata = self._mention_metadata("you")
+        asyncio.run(
+            adapter.send("Csource", "hello {you}", metadata=metadata)
+        )
+        event = {
+            "replyToken": "other-chat-token",
+            "source": {"type": "group", "groupId": "Cother"},
+            "postback": {
+                "data": json.dumps({
+                    "action": "show_response",
+                    "request_id": rid,
+                })
+            },
+        }
+
+        asyncio.run(adapter._handle_postback_event(event))
+
+        adapter._client.reply.assert_not_called()
+        adapter._client.push.assert_not_called()
+        assert adapter._cache.get(rid).state is State.READY
+        assert adapter._pending_buttons["Csource"] == rid
+
+    def test_send_builds_text_v2_for_push_and_reply_token(self, adapter):
+        import time as _time
+
+        metadata = self._mention_metadata("you")
+        expected = [{
+            "type": "textV2",
+            "text": "hello {you}",
+            "substitution": metadata["text_v2_substitutions"],
+        }]
+
+        push_result = asyncio.run(
+            adapter.send("Cchat", "hello {you}", metadata=metadata)
+        )
+
+        assert push_result.success
+        assert adapter._client.push.call_args.args[1] == expected
+
+        adapter._client.push.reset_mock()
+        adapter._reply_tokens["Cchat"] = ("reply-token", _time.time() + 30)
+        reply_result = asyncio.run(
+            adapter.send("Cchat", "hello {you}", metadata=metadata)
+        )
+
+        assert reply_result.success
+        assert adapter._client.reply.call_args.args[1] == expected
+        adapter._client.push.assert_not_called()
+
+    def test_text_v2_escapes_non_placeholder_braces(self, adapter):
+        metadata = self._mention_metadata("you")
+
+        result = asyncio.run(
+            adapter.send("Cchat", '{you} result: {"ok": true}', metadata=metadata)
+        )
+
+        assert result.success
+        assert adapter._client.push.call_args.args[1][0]["text"] == (
+            '{you} result: {{"ok": true}}'
+        )
+
+    def test_text_v2_escaping_respects_per_bubble_limit(self, adapter):
+        metadata = self._mention_metadata("you")
+
+        result = asyncio.run(
+            adapter.send("Cchat", "{you} " + "{" * 3000, metadata=metadata)
+        )
+
+        assert result.success
+        messages = adapter._client.push.call_args.args[1]
+        assert len(messages) >= 2
+        assert all(len(message["text"]) <= 5000 for message in messages)
+
+    def test_text_v2_placeholder_is_not_split_at_chunk_boundary(self, adapter):
+        metadata = self._mention_metadata("you")
+
+        result = asyncio.run(
+            adapter.send("Cchat", "x" * 4498 + "{you} hello", metadata=metadata)
+        )
+
+        assert result.success
+        messages = adapter._client.push.call_args.args[1]
+        assert any("{you}" in message["text"] for message in messages)
+        assert all(
+            "{y" not in message["text"] or "{you}" in message["text"]
+            for message in messages
+        )
+        assert all(
+            "ou}" not in message["text"] or "{you}" in message["text"]
+            for message in messages
+        )
+
+    def test_each_chunk_only_contains_its_own_substitutions(self, adapter):
+        metadata = self._mention_metadata("you")
+
+        result = asyncio.run(
+            adapter.send("Cchat", "x" * 4490 + "\n{you} hello", metadata=metadata)
+        )
+
+        assert result.success
+        messages = adapter._client.push.call_args.args[1]
+        assert messages[0] == {"type": "text", "text": "x" * 4490}
+        assert messages[1]["type"] == "textV2"
+        assert messages[1]["substitution"] == metadata["text_v2_substitutions"]
+
+    @pytest.mark.parametrize("metadata", [["bad"], "bad", 42])
+    def test_malformed_metadata_falls_back_to_plain_text(self, adapter, metadata):
+        result = asyncio.run(adapter.send("Cchat", "hello", metadata=metadata))
+
+        assert result.success
+        assert adapter._client.push.call_args.args[1] == [
+            {"type": "text", "text": "hello"}
+        ]
+
+    @pytest.mark.parametrize("rule", [
+        {},
+        {"type": "bogus"},
+        {"type": "mention", "mentionee": {"type": "user"}},
+        {"type": "mention", "mentionee": {"type": "bogus"}},
+        {"type": "emoji", "productId": "", "emojiId": "002"},
+        {"type": "emoji", "productId": "product", "emojiId": ""},
+    ])
+    def test_malformed_substitution_rule_falls_back_to_plain_text(
+        self, adapter, rule
+    ):
+        metadata = {"text_v2_substitutions": {"you": rule}}
+
+        result = asyncio.run(
+            adapter.send("Cchat", "hello {you}", metadata=metadata)
+        )
+
+        assert result.success
+        assert adapter._client.push.call_args.args[1] == [
+            {"type": "text", "text": "hello {you}"}
+        ]
+
+    def test_twenty_mention_occurrences_are_allowed(self, adapter):
+        metadata = self._mention_metadata("you")
+
+        result = asyncio.run(
+            adapter.send("Cchat", " ".join(["{you}"] * 20), metadata=metadata)
+        )
+
+        assert result.success
+        assert adapter._client.push.call_args.args[1][0]["type"] == "textV2"
+
+    def test_twenty_one_mention_occurrences_fall_back_to_plain_text(self, adapter):
+        metadata = self._mention_metadata("you")
+        content = " ".join(["{you}"] * 21)
+
+        result = asyncio.run(adapter.send("Cchat", content, metadata=metadata))
+
+        assert result.success
+        assert adapter._client.push.call_args.args[1] == [
+            {"type": "text", "text": content}
+        ]
+
+    def test_twenty_one_emoji_occurrences_fall_back_to_plain_text(self, adapter):
+        metadata = self._emoji_metadata("laugh")
+        content = " ".join(["{laugh}"] * 21)
+
+        result = asyncio.run(adapter.send("Cchat", content, metadata=metadata))
+
+        assert result.success
+        assert adapter._client.push.call_args.args[1] == [
+            {"type": "text", "text": content}
+        ]
+
+    def test_dm_mention_falls_back_to_plain_text(self, adapter):
+        metadata = self._mention_metadata("you")
+
+        result = asyncio.run(
+            adapter.send("Uchat", "hello {you}", metadata=metadata)
+        )
+
+        assert result.success
+        assert adapter._client.push.call_args.args[1] == [
+            {"type": "text", "text": "hello {you}"}
+        ]
+
+    def test_dm_emoji_substitution_remains_text_v2(self, adapter):
+        metadata = self._emoji_metadata("laugh")
+
+        result = asyncio.run(
+            adapter.send("Uchat", "hello {laugh}", metadata=metadata)
+        )
+
+        assert result.success
+        assert adapter._client.push.call_args.args[1] == [{
+            "type": "textV2",
+            "text": "hello {laugh}",
+            "substitution": metadata["text_v2_substitutions"],
+        }]
+
 
     def test_send_caps_messages_per_call_at_five(self, adapter):
         # Build a payload that would naturally split into more than 5 LINE

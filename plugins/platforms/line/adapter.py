@@ -77,7 +77,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Pattern, Set, Tuple
 from urllib.parse import quote as _urlquote
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -260,7 +260,26 @@ def strip_markdown_preserving_urls(text: str) -> str:
     return text
 
 
-def split_for_line(text: str, max_chars: int = LINE_SAFE_BUBBLE_CHARS) -> List[str]:
+def _safe_split_cut(
+    text: str,
+    cut: int,
+    protected_pattern: Optional[Pattern[str]],
+) -> int:
+    """Move a split point outside an atomic token matched by ``protected_pattern``."""
+    if protected_pattern is None:
+        return cut
+    for match in protected_pattern.finditer(text):
+        if match.start() < cut < match.end():
+            return match.start() if match.start() > 0 else match.end()
+    return cut
+
+
+def split_for_line(
+    text: str,
+    max_chars: int = LINE_SAFE_BUBBLE_CHARS,
+    *,
+    protected_pattern: Optional[Pattern[str]] = None,
+) -> List[str]:
     """Split ``text`` into LINE-sized bubbles, preferring paragraph/line breaks.
 
     Returns at most ``LINE_MAX_MESSAGES_PER_CALL`` chunks; longer text is
@@ -287,6 +306,7 @@ def split_for_line(text: str, max_chars: int = LINE_SAFE_BUBBLE_CHARS) -> List[s
             cut = remaining.rfind(" ", 0, max_chars)
         if cut <= 0:
             cut = max_chars
+        cut = _safe_split_cut(remaining, cut, protected_pattern)
         chunks.append(remaining[:cut].rstrip())
         remaining = remaining[cut:].lstrip()
 
@@ -295,7 +315,8 @@ def split_for_line(text: str, max_chars: int = LINE_SAFE_BUBBLE_CHARS) -> List[s
         if chunks:
             tail = chunks[-1]
             if len(tail) > max_chars - 1:
-                tail = tail[: max_chars - 1]
+                cut = _safe_split_cut(tail, max_chars - 1, protected_pattern)
+                tail = tail[:cut]
             chunks[-1] = tail.rstrip() + "…"
         else:
             chunks.append(remaining[: max_chars - 1] + "…")
@@ -345,6 +366,7 @@ class _CacheEntry:
     state: State
     payload: Any = None
     chat_id: str = ""
+    metadata: Optional[Dict[str, Any]] = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -374,12 +396,18 @@ class RequestCache:
     def get(self, request_id: str) -> Optional[_CacheEntry]:
         return self._entries.get(request_id)
 
-    def set_ready(self, request_id: str, payload: Any) -> None:
+    def set_ready(
+        self,
+        request_id: str,
+        payload: Any,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         entry = self._entries.get(request_id)
         if entry is None or entry.state is not State.PENDING:
             return
         entry.state = State.READY
         entry.payload = payload
+        entry.metadata = dict(metadata) if isinstance(metadata, dict) else None
         entry.updated_at = time.time()
 
     def set_error(self, request_id: str, message: str) -> None:
@@ -590,6 +618,132 @@ def _text_message(text: str) -> Dict[str, Any]:
     if len(text) > LINE_PER_BUBBLE_CHARS:
         text = text[: LINE_PER_BUBBLE_CHARS - 1] + "…"
     return {"type": "text", "text": text}
+
+
+_TEXT_V2_KEY_RE = re.compile(r"[0-9A-Za-z_]{1,20}\Z")
+_TEXT_V2_PLACEHOLDER_RE = re.compile(r"\{([0-9A-Za-z_]{1,20})\}")
+_TEXT_V2_ATOMIC_RE = re.compile(r"\{[0-9A-Za-z_]{1,20}\}|\{\{|\}\}")
+
+
+def _valid_text_v2_rule(rule: Dict[str, Any]) -> bool:
+    """Return whether *rule* has LINE's required mention/emoji fields."""
+    rule_type = rule.get("type")
+    if rule_type == "mention":
+        mentionee = rule.get("mentionee")
+        if not isinstance(mentionee, dict):
+            return False
+        mentionee_type = mentionee.get("type")
+        if mentionee_type == "all":
+            return True
+        return (
+            mentionee_type == "user"
+            and isinstance(mentionee.get("userId"), str)
+            and bool(mentionee["userId"])
+        )
+    if rule_type == "emoji":
+        return all(
+            isinstance(rule.get(field), str) and bool(rule[field])
+            for field in ("productId", "emojiId")
+        )
+    return False
+
+
+def _text_v2_substitutions(metadata: Any) -> Dict[str, Any]:
+    """Return a validated textV2 substitution map or an empty fallback."""
+    if not isinstance(metadata, dict):
+        return {}
+    raw = metadata.get("text_v2_substitutions")
+    if not isinstance(raw, dict) or not raw or len(raw) > 100:
+        return {}
+    if any(
+        not isinstance(key, str)
+        or not _TEXT_V2_KEY_RE.fullmatch(key)
+        or not isinstance(rule, dict)
+        or not _valid_text_v2_rule(rule)
+        for key, rule in raw.items()
+    ):
+        return {}
+    return raw
+
+
+def _escape_text_v2_text(text: str, substitutions: Dict[str, Any]) -> str:
+    """Escape literal braces while preserving configured ``{key}`` tokens."""
+    parts: List[str] = []
+    cursor = 0
+    for match in _TEXT_V2_PLACEHOLDER_RE.finditer(text):
+        literal = text[cursor:match.start()]
+        parts.append(literal.replace("{", "{{").replace("}", "}}"))
+        token = match.group(0)
+        if match.group(1) in substitutions:
+            parts.append(token)
+        else:
+            parts.append(token.replace("{", "{{").replace("}", "}}"))
+        cursor = match.end()
+    parts.append(text[cursor:].replace("{", "{{").replace("}", "}}"))
+    return "".join(parts)
+
+
+def _text_v2_message(
+    text: str, substitutions: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Build a LINE textV2 message with substitution rules.
+
+    ``substitutions`` is a dict of placeholder keys to mention/emoji rules,
+    e.g. ``{"you": {"type": "mention", "mentionee": {"type": "user",
+    "userId": "U..."}}}``.  LINE clients resolve mentions to the
+    display name automatically — no Profile API call is needed.
+    """
+    if len(text) > LINE_PER_BUBBLE_CHARS:
+        text = text[: LINE_PER_BUBBLE_CHARS - 1] + "…"
+    message: Dict[str, Any] = {"type": "textV2", "text": text}
+    if substitutions:
+        message["substitution"] = substitutions
+    return message
+
+
+def _build_text_messages(
+    content: str,
+    chat_id: str,
+    metadata: Any = None,
+) -> List[Dict[str, Any]]:
+    """Build safe LINE text/textV2 bubbles from raw outbound content."""
+    text = strip_markdown_preserving_urls(content)
+    substitutions = _text_v2_substitutions(metadata)
+    if (chat_id or "")[:1] not in {"C", "R"}:
+        substitutions = {
+            key: rule
+            for key, rule in substitutions.items()
+            if rule.get("type") != "mention"
+        }
+    if not substitutions:
+        return [
+            _text_message(chunk) for chunk in split_for_line(text)
+        ][:LINE_MAX_MESSAGES_PER_CALL]
+
+    escaped = _escape_text_v2_text(text, substitutions)
+    chunks = split_for_line(escaped, protected_pattern=_TEXT_V2_ATOMIC_RE)
+    messages: List[Dict[str, Any]] = []
+    for chunk in chunks[:LINE_MAX_MESSAGES_PER_CALL]:
+        occurrence_counts = {"mention": 0, "emoji": 0}
+        for match in _TEXT_V2_PLACEHOLDER_RE.finditer(chunk):
+            rule = substitutions.get(match.group(1))
+            if rule:
+                occurrence_counts[rule["type"]] += 1
+        if any(count > 20 for count in occurrence_counts.values()):
+            return [
+                _text_message(plain_chunk)
+                for plain_chunk in split_for_line(text)
+            ][:LINE_MAX_MESSAGES_PER_CALL]
+        used = {
+            key: rule
+            for key, rule in substitutions.items()
+            if f"{{{key}}}" in chunk
+        }
+        if used or "{{" in chunk or "}}" in chunk:
+            messages.append(_text_v2_message(chunk, used))
+        else:
+            messages.append(_text_message(chunk))
+    return messages
 
 
 def _image_message(original_url: str, preview_url: Optional[str] = None) -> Dict[str, Any]:
@@ -1090,11 +1244,15 @@ class LineAdapter(BasePlatformAdapter):
         entry = self._cache.get(request_id)
         if not self._client or not reply_token or not entry:
             return
+        if not hmac.compare_digest(str(entry.chat_id), chat_id):
+            logger.warning("LINE: rejected postback request_id from another chat")
+            return
 
         if entry.state is State.READY:
             payload = entry.payload or ""
-            chunks = split_for_line(strip_markdown_preserving_urls(str(payload)))
-            messages = [_text_message(c) for c in chunks][:LINE_MAX_MESSAGES_PER_CALL]
+            messages = _build_text_messages(
+                str(payload), chat_id, entry.metadata,
+            )
             try:
                 await self._client.reply(reply_token, messages)
                 self._cache.mark_delivered(request_id)
@@ -1183,16 +1341,20 @@ class LineAdapter(BasePlatformAdapter):
         # postback cache and route directly to LINE so they reach the user
         # as visible bubbles. Source: PR #18153.
         if _is_system_bypass(content):
-            return await self._send_text_chunks(chat_id, content, force_push=False)
+            return await self._send_text_chunks(
+                chat_id, content, force_push=False, metadata=metadata,
+            )
 
         # If the chat has a PENDING postback button outstanding, route the
         # response into the cache for the user to fetch via tap.
         pending_rid = self._pending_buttons.get(chat_id)
         if pending_rid:
-            self._cache.set_ready(pending_rid, content)
+            self._cache.set_ready(pending_rid, content, metadata=metadata)
             return SendResult(success=True, message_id=pending_rid)
 
-        return await self._send_text_chunks(chat_id, content, force_push=False)
+        return await self._send_text_chunks(
+            chat_id, content, force_push=False, metadata=metadata,
+        )
 
     async def _send_text_chunks(
         self,
@@ -1200,14 +1362,14 @@ class LineAdapter(BasePlatformAdapter):
         content: str,
         *,
         force_push: bool,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         if not self._client:
             return SendResult(success=False, error="LINE adapter not connected")
 
-        chunks = split_for_line(strip_markdown_preserving_urls(content))
-        if not chunks:
+        messages = _build_text_messages(content, chat_id, metadata)
+        if not messages:
             return SendResult(success=True, message_id=None)
-        messages = [_text_message(c) for c in chunks][:LINE_MAX_MESSAGES_PER_CALL]
 
         token, used_reply = self._consume_reply_token(chat_id)
         if used_reply and not force_push:

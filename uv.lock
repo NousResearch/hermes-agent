@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer = "2026-08-07T19:26:43.1027508Z"
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
@@ -1572,6 +1572,7 @@ name = "hermes-agent"
 version = "0.20.5"
 source = { editable = "." }
 dependencies = [
+    { name = "aiohttp" },
     { name = "certifi" },
     { name = "concurrent-log-handler", marker = "sys_platform == 'win32'" },
     { name = "croniter" },
@@ -1812,6 +1813,7 @@ youtube = [
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
     { name = "ai-edge-litert", marker = "sys_platform == 'darwin' and extra == 'wake'", specifier = "==2.1.6" },
+    { name = "aiohttp", specifier = "==3.14.3" },
     { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = "==3.14.3" },
     { name = "aiohttp", marker = "extra == 'matrix'", specifier = "==3.14.3" },
     { name = "aiohttp", marker = "extra == 'messaging'", specifier = "==3.14.3" },

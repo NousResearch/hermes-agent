@@ -3120,7 +3120,7 @@ def run_conversation(
                         defer_logical_completion=True,
                     )
 
-                from hermes_cli.middleware import run_llm_execution_middleware
+                from hermes_cli.middleware import LLMExecutionBlocked, run_llm_execution_middleware
 
                 _model_request_active = getattr(agent, "_model_request_active", None)
                 _redirect_lock = getattr(agent, "_pending_redirect_lock", None)
@@ -3148,6 +3148,55 @@ def run_conversation(
                         api_call_count=api_call_count,
                         middleware_trace=list(_llm_middleware_trace),
                     )
+                except LLMExecutionBlocked as _blocked:
+                    # A governance/safety middleware intentionally prevented this
+                    # call from reaching the provider — distinct from a provider
+                    # or transport failure. Mirrors the self-contained
+                    # interrupt-and-return shape used elsewhere in this loop
+                    # (e.g. the retry-backoff interrupt above) rather than the
+                    # flag-and-break shape, since there is no retry to resume.
+                    #
+                    # A middleware that calls next_call() before raising may
+                    # already have opened a deferred Relay logical call via
+                    # _perform_api_call's relay_llm.execute(...,
+                    # defer_logical_completion=True); complete_logical_call is a
+                    # no-op if none was opened, so it's safe to call
+                    # unconditionally rather than tracking whether next_call ran.
+                    # Also emit the same terminal api_request_error lifecycle
+                    # hook the other early-exit error paths in this function use
+                    # — pre_api_request already fired before middleware dispatch,
+                    # so without this, enabled observers see a start event with
+                    # no post/error counterpart.
+                    from agent import relay_llm
+                    relay_llm.complete_logical_call(api_request_id, outcome="failed")
+                    agent._invoke_api_request_error_hook(
+                        task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        api_call_count=api_call_count,
+                        api_start_time=api_start_time,
+                        api_kwargs=api_kwargs,
+                        error_type="LLMExecutionBlocked",
+                        error_message=_blocked.reason,
+                        retry_count=retry_count,
+                        max_retries=max_retries,
+                        retryable=False,
+                        reason=_blocked.reason,
+                    )
+                    _block_text = (
+                        f"This request was blocked before reaching the model: {_blocked.reason}"
+                    )
+                    close_interrupted_tool_sequence(messages, _block_text)
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": _block_text,
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "failed": True,
+                        "error": f"llm_execution_blocked: {_blocked.reason}",
+                        "llm_execution_blocked_metadata": _blocked.metadata,
+                    }
                 finally:
                     if _redirect_lock is not None:
                         with _redirect_lock:

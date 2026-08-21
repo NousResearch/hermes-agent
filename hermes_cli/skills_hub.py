@@ -91,6 +91,21 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
         c.print()
         return ""
 
+    # Hub commands search remote sources, not the local install. Saying only
+    # "not found in any source" about a skill that is sitting on disk reads as
+    # "this skill does not exist" — measured 2026-08-07 on `skills inspect
+    # transcribe-roles`, which `skills list` showed as installed and enabled.
+    local = _find_local_skill(name)
+    if local:
+        c.print(
+            f"[bold yellow]'{name}' is installed locally, but no hub source "
+            f"offers it.[/]\n"
+            f"  path: {local}\n"
+            f"  Hub commands look at remote sources only. For an installed "
+            f"skill read its SKILL.md directly, or use skill_view('{name}') "
+            f"from the agent.\n"
+        )
+        return ""
     c.print(f"[bold red]Error:[/] No skill named '{name}' found in any source.\n")
     return ""
 
@@ -845,6 +860,29 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         c.print("[dim]Use /reset to start a new session now, or --now to activate immediately (invalidates prompt cache).[/]\n")
 
 
+def _find_local_skill(identifier: str) -> Optional[str]:
+    """Path to an installed skill with this name, or None.
+
+    Accepts both a bare name and `category/name`, because that is how the same
+    skill is addressed in different places."""
+    try:
+        from tools.skills_tool import _find_all_skills, _skills_dir
+    except Exception:
+        return None
+    bare = identifier.split("/")[-1].split(":")[-1]
+    try:
+        root = _skills_dir()
+        for skill in _find_all_skills():
+            if skill.get("name") != bare:
+                continue
+            cat = skill.get("category")
+            path = (root / cat / bare) if cat else (root / bare)
+            return str(path)
+    except Exception:
+        return None
+    return None
+
+
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     """Preview a skill's SKILL.md content without installing."""
     from tools.skills_hub import GitHubAuth, create_source_router
@@ -861,6 +899,22 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
 
     if not meta:
+        # `inspect` searches the hub, not the local install — so "not found" is
+        # true and misleading at once when the skill is sitting on disk. Say
+        # which case it is. Measured 2026-08-07: `skills inspect transcribe-roles`
+        # answered "not found in any source" for a skill that `skills list`
+        # showed as installed, and the reader concluded it did not exist.
+        local = _find_local_skill(identifier)
+        if local:
+            c.print(
+                f"[bold yellow]'{identifier}' is installed locally, but the hub "
+                f"does not know it.[/]\n"
+                f"  path: {local}\n"
+                f"  This command previews skills from remote sources. For an "
+                f"installed skill read its SKILL.md directly, or use "
+                f"skill_view('{identifier}') from the agent.\n"
+            )
+            return
         c.print(f"[bold red]Error:[/] Could not find '{identifier}' in any source.\n")
         return
 

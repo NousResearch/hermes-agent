@@ -2702,6 +2702,16 @@ def _repair_node_deps_on_current_checkout(print_completion) -> None:
     # _update_node_dependencies call site; it staleness-checks internally,
     # so this is a no-op when nothing changed.
     _m()._build_web_ui(_m().PROJECT_ROOT / "web")
+    # Restore a wiped Desktop build (#83846): a prior run's ZIP fallback can
+    # delete apps/desktop/release/ and every later update lands here — the
+    # version check passes, so without this call the app is never rebuilt
+    # and the failure is self-concealing. Cheap for everyone else: the
+    # in-process stamp check short-circuits when the app exists and is
+    # current, and users who never built Desktop return immediately.
+    _rebuild_desktop_after_update(
+        _m().PROJECT_ROOT / "apps" / "desktop",
+        had_desktop_app_before_update=False,
+    )
     print_completion("✓ Already up to date!")
 
 
@@ -5034,6 +5044,21 @@ def _desktop_app_present(desktop_dir: Path) -> bool:
     )
 
 
+def _desktop_build_stamp_recorded() -> bool:
+    """True when a Desktop build was ever recorded for this HERMES_HOME.
+
+    The stamp lives OUTSIDE the checkout (``$HERMES_HOME/desktop-build-
+    stamp.json``), so it survives events that delete the built app itself —
+    most notably the ZIP fallback replacing ``apps/`` wholesale (#83846).
+    It is the only durable "this user had Desktop" signal once the release
+    tree is gone.
+    """
+    try:
+        return _m()._desktop_stamp_path().is_file()
+    except Exception:
+        return False
+
+
 def _rebuild_desktop_after_update(
     desktop_dir: Path, *, had_desktop_app_before_update: bool
 ) -> bool:
@@ -5047,8 +5072,16 @@ def _rebuild_desktop_after_update(
     """
     # The release tree is ignored by git and can disappear during an update.
     # Its pre-update presence is enough to restore it; do not make people who
-    # have never used Desktop pay for an Electron build.
-    has_desktop_app = had_desktop_app_before_update or _desktop_app_present(desktop_dir)
+    # have never used Desktop pay for an Electron build. The build stamp
+    # covers the third case (#83846): a PREVIOUS run wiped the app, so both
+    # in-run signals are False for every later update, and the user was
+    # stranded on "Already up to date!" with no app until a manual
+    # `hermes desktop --force-build`.
+    has_desktop_app = (
+        had_desktop_app_before_update
+        or _desktop_app_present(desktop_dir)
+        or _desktop_build_stamp_recorded()
+    )
     if not (
         (desktop_dir / "package.json").exists()
         and _m()._resolve_node_runtime_npm()

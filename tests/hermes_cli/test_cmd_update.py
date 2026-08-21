@@ -884,6 +884,76 @@ class TestNodeRuntimeNpmResolution:
             env=ANY,
         )
 
+    def test_desktop_wiped_in_prior_run_rebuilds_via_stamp(self, tmp_path):
+        """#83846: both in-run signals are False after a PRIOR run wiped the
+        app; the HERMES_HOME build stamp must still trigger the rebuild."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+        build_ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        stamp = tmp_path / "desktop-build-stamp.json"
+        stamp.write_text('{"contentHash": "abc", "sourceMode": false}\n')
+
+        with (
+            patch.object(hm, "_desktop_packaged_executable", return_value=None),
+            patch.object(hm, "_desktop_dist_exists", return_value=False),
+            patch.object(hm, "_desktop_stamp_path", return_value=stamp),
+            patch.object(hm, "_resolve_node_runtime_npm", return_value="npm.cmd"),
+            patch.object(hm, "_desktop_build_needed", return_value=True),
+            patch.object(
+                hm, "_run_logged_subprocess", return_value=build_ok
+            ) as desktop_build,
+        ):
+            update_cmd._rebuild_desktop_after_update(
+                desktop_dir,
+                had_desktop_app_before_update=False,
+            )
+
+        desktop_build.assert_called_once()
+
+    def test_no_stamp_no_app_skips_desktop_build(self, tmp_path):
+        """Users who never built Desktop must not pay for an Electron build."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+        missing_stamp = tmp_path / "desktop-build-stamp.json"  # never written
+
+        with (
+            patch.object(hm, "_desktop_packaged_executable", return_value=None),
+            patch.object(hm, "_desktop_dist_exists", return_value=False),
+            patch.object(hm, "_desktop_stamp_path", return_value=missing_stamp),
+            patch.object(hm, "_resolve_node_runtime_npm", return_value="npm.cmd"),
+            patch.object(hm, "_run_logged_subprocess") as desktop_build,
+        ):
+            update_cmd._rebuild_desktop_after_update(
+                desktop_dir,
+                had_desktop_app_before_update=False,
+            )
+
+        desktop_build.assert_not_called()
+
+    def test_already_up_to_date_path_restores_wiped_desktop(self, monkeypatch):
+        """#83846: the commit_count==0 short-circuit must also check Desktop —
+        every post-wipe update lands there and used to skip the rebuild."""
+        from hermes_cli import update_cmd
+
+        calls = []
+        monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
+        monkeypatch.setattr(
+            update_cmd,
+            "_rebuild_desktop_after_update",
+            lambda desktop_dir, *, had_desktop_app_before_update: calls.append(
+                (desktop_dir, had_desktop_app_before_update)
+            ),
+        )
+        update_cmd._repair_node_deps_on_current_checkout(lambda _msg: None)
+
+        assert len(calls) == 1
+        assert calls[0][0] == PROJECT_ROOT / "apps" / "desktop"
+        assert calls[0][1] is False
+
     def test_git_failure_zip_fallback_rebuilds_missing_desktop(self, tmp_path, monkeypatch):
         """The Windows ZIP fallback restores Desktop after replacing ``apps/``."""
         import zipfile

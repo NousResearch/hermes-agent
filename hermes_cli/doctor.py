@@ -4,12 +4,15 @@ Doctor command for hermes CLI.
 Diagnoses issues with Hermes Agent setup.
 """
 
+import io
 import os
 import sys
 import subprocess
 import shutil
 import importlib.util
 from pathlib import Path
+
+from dotenv import dotenv_values
 
 from hermes_cli.config import (
     detect_install_method,
@@ -261,9 +264,39 @@ def _termux_install_all_fallback_notes() -> list[str]:
     ]
 
 
+def _provider_env_config_source(content: str) -> str | None:
+    """Return where a usable provider credential came from, or None.
+
+    ``content`` is the raw text of ``~/.hermes/.env``.  Returns ``"env-file"``
+    when the file itself assigns a usable value to a known provider key,
+    ``"environment"`` when only the process environment carries one (a shell
+    export, or an external secret source such as Bitwarden), and ``None`` when
+    neither does.
+
+    The file is parsed instead of substring-searched.  ``.env.example`` ships
+    commented-out samples such as ``# OPENROUTER_API_KEY=``, so a raw ``in``
+    test reports a key on every fresh install that has none.  Parsing also
+    rejects empty values, placeholders, and unrelated keys that merely contain
+    a hint name (``STT_OPENAI_BASE_URL`` contains ``OPENAI_BASE_URL``).
+    """
+    # Imported lazily: every other hermes_cli.auth use in this module is
+    # function-local, and doctor runs on startup paths where auth is heavy.
+    from hermes_cli.auth import has_usable_secret
+
+    parsed = dotenv_values(stream=io.StringIO(content))
+    if any(has_usable_secret(parsed.get(key)) for key in _PROVIDER_ENV_HINTS):
+        return "env-file"
+    # A key supplied by a shell export or an external secret source is
+    # legitimate and never appears in .env — checking os.environ keeps this
+    # check from turning a false positive into a false negative.
+    if any(has_usable_secret(os.environ.get(key)) for key in _PROVIDER_ENV_HINTS):
+        return "environment"
+    return None
+
+
 def _has_provider_env_config(content: str) -> bool:
-    """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
-    return any(key in content for key in _PROVIDER_ENV_HINTS)
+    """Return True when a usable provider credential is configured."""
+    return _provider_env_config_source(content) is not None
 
 
 def _honcho_is_configured_for_doctor() -> bool:
@@ -1252,10 +1285,16 @@ def run_doctor(args):
             content = env_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             content = env_path.read_text(encoding="latin-1")
-        if _has_provider_env_config(content):
-            check_ok("API key or custom endpoint configured")
+        env_config_source = _provider_env_config_source(content)
+        if env_config_source == "env-file":
+            check_ok(f"API key configured in {_DHH}/.env")
+        elif env_config_source == "environment":
+            check_ok("API key found in environment", "(shell export or secret source)")
         else:
-            check_warn(f"No API key found in {_DHH}/.env")
+            check_warn(
+                f"No usable API key in {_DHH}/.env",
+                "(only commented-out or placeholder entries)",
+            )
             issues.append("Run 'hermes setup' to configure API keys")
     else:
         # Also check project root as fallback

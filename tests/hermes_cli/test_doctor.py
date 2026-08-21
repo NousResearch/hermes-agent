@@ -13,7 +13,7 @@ import pytest
 import hermes_cli.doctor as doctor
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
-from hermes_cli.doctor import _has_provider_env_config
+from hermes_cli.doctor import _has_provider_env_config, _provider_env_config_source
 
 
 class TestDoctorPlatformHints:
@@ -55,6 +55,12 @@ class TestDoctorPlatformHints:
 
 
 class TestProviderEnvDetection:
+    @pytest.fixture(autouse=True)
+    def _clear_provider_env(self, monkeypatch):
+        """Detection falls back to os.environ, so pin it for deterministic runs."""
+        for env_name in doctor._PROVIDER_ENV_HINTS:
+            monkeypatch.delenv(env_name, raising=False)
+
     def test_detects_openai_api_key(self):
         content = "OPENAI_BASE_URL=http://localhost:1234/v1\nOPENAI_API_KEY=***"
         assert _has_provider_env_config(content)
@@ -63,6 +69,40 @@ class TestProviderEnvDetection:
     def test_returns_false_when_no_provider_settings(self):
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)
+
+    def test_commented_out_key_is_not_configured(self):
+        """.env.example ships `# OPENROUTER_API_KEY=`, so every fresh install hit this."""
+        content = (
+            "# Get your key at: https://openrouter.ai/keys\n"
+            "# OPENROUTER_API_KEY=\n"
+            "# ANTHROPIC_API_KEY=sk-ant-...\n"
+        )
+        assert not _has_provider_env_config(content)
+
+    def test_empty_value_is_not_configured(self):
+        assert not _has_provider_env_config("OPENROUTER_API_KEY=\n")
+
+    def test_placeholder_value_is_not_configured(self):
+        assert not _has_provider_env_config("ANTHROPIC_API_KEY=your_api_key_here\n")
+
+    def test_unrelated_key_containing_a_hint_name_is_not_configured(self):
+        """STT_OPENAI_BASE_URL contains the hint OPENAI_BASE_URL but is unrelated."""
+        assert not _has_provider_env_config("STT_OPENAI_BASE_URL=https://api.example/v1\n")
+
+    def test_export_prefixed_assignment_is_configured(self):
+        assert _has_provider_env_config("export ANTHROPIC_TOKEN=sk-ant-abcdef123456\n")
+
+    def test_source_is_env_file_when_key_lives_in_the_file(self):
+        content = "ANTHROPIC_API_KEY=sk-ant-abcdef123456\n"
+        assert _provider_env_config_source(content) == "env-file"
+
+    def test_source_is_environment_for_shell_exported_key(self, monkeypatch):
+        """A shell export or secret source never appears in .env — do not report it missing."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-abcdef123456")
+        assert _provider_env_config_source("# ANTHROPIC_API_KEY=\n") == "environment"
+
+    def test_source_is_none_when_nothing_is_configured(self):
+        assert _provider_env_config_source("# ANTHROPIC_API_KEY=\n") is None
 
 
 class TestDoctorToolAvailabilitySummary:
@@ -886,7 +926,7 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
         doctor_mod.run_doctor(Namespace(fix=False))
     out = buf.getvalue()
 
-    assert "API key or custom endpoint configured" in out
+    assert "API key configured in" in out
     assert "Kimi / Moonshot (China)" in out
     assert "str expected, not NoneType" not in out
     assert any(url == "https://api.moonshot.cn/v1/models" for url, _, _ in calls)

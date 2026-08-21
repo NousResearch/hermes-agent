@@ -14,6 +14,9 @@ import pytest
 if "dotenv" not in sys.modules:
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    # doctor parses ~/.hermes/.env to tell a real key from a commented-out
+    # sample; this stub only has to mirror the API surface, not parse.
+    fake_dotenv.dotenv_values = lambda *args, **kwargs: {}
     sys.modules["dotenv"] = fake_dotenv
 
 from hermes_cli.auth import resolve_provider
@@ -198,7 +201,7 @@ class TestGmiDoctor:
             doctor_mod.run_doctor(Namespace(fix=False))
         out = buf.getvalue()
 
-        assert "API key or custom endpoint configured" in out
+        assert "API key found in environment" in out
         assert "GMI Cloud" in out
         assert any(url == "https://api.gmi-serving.com/v1/models" for url, _, _ in calls)
 

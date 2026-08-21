@@ -27,8 +27,9 @@ def validate_platform_toolsets(
        renamed entry. When ``hermes-<platform>`` would have been valid (the exact
        #38798 shape, where ``cli`` held ``hermes`` instead of ``hermes-cli``),
        the warning includes that as a suggestion.
-    2. The mapping is non-empty but resolves to *zero* valid toolsets, so the
-       agent would start with no tools at all.
+    2. A platform with entries that resolves to zero valid toolsets.  The check
+       is **per-platform** (#89050) so that an empty list on the active platform
+       is not masked by another platform carrying valid toolsets.
 
     ``is_valid_toolset`` is injected (normally :func:`toolsets.validate_toolset`)
     so this function performs no imports or I/O and is testable in isolation.
@@ -46,18 +47,20 @@ def validate_platform_toolsets(
     if not isinstance(platform_toolsets, dict) or not platform_toolsets:
         return warnings
 
-    valid_count = 0
+    all_valid = 0
     for platform, raw in platform_toolsets.items():
         names = raw if isinstance(raw, list) else [raw]
+        platform_valid = 0
         for name in names:
             if not isinstance(name, str) or not name:
                 continue
             if is_valid_toolset(name):
-                valid_count += 1
+                platform_valid += 1
+                all_valid += 1
                 continue
             suggestion = f"hermes-{platform}"
             hint = (
-                f" — did you mean '{suggestion}'?"
+                f" \u2014 did you mean '{suggestion}'?"
                 if is_valid_toolset(suggestion)
                 else ""
             )
@@ -66,9 +69,19 @@ def validate_platform_toolsets(
                 f"'{name}'{hint}"
             )
 
-    if valid_count == 0:
+        # Per-platform zero-tools check (#89050): an explicit but empty or
+        # entirely-invalid list on a single platform should warn even when
+        # other platforms carry valid toolsets.
+        if platform_valid == 0 and names:
+            warnings.append(
+                f"platform '{platform}' has no valid toolsets \u2014 the agent "
+                f"will have no tools for this platform. Run `hermes tools` to "
+                f"reconfigure."
+            )
+
+    if all_valid == 0:
         warnings.append(
-            "platform_toolsets resolves to zero valid toolsets — the agent will "
-            "have no tools. Run `hermes tools` to reconfigure."
+            "platform_toolsets resolves to zero valid toolsets \u2014 the agent "
+            "will have no tools. Run `hermes tools` to reconfigure."
         )
     return warnings

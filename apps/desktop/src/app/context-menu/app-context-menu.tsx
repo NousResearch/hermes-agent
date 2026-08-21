@@ -307,8 +307,13 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
     // SELECTION, so they need selected text — not just field content.
     // Inputs and textareas carry their selection on the element (Chrome
     // never reflects it into window.getSelection()); contenteditable uses
-    // the document selection the resolver captured. Paste needs a
-    // non-empty clipboard, select all needs the field to hold anything.
+    // the document selection the resolver captured. Select all needs the
+    // field to hold anything. Paste is intentionally NOT gated on a
+    // clipboard probe: its action is webContents.paste() in main — the
+    // same path Ctrl+V takes — which resolves the system clipboard itself,
+    // while the renderer-side readClipboard probe can report empty on
+    // Windows even when that path succeeds (#91553). Pasting with an
+    // empty clipboard is a harmless no-op, so the item fails open.
     const formField =
       target.editable instanceof HTMLInputElement || target.editable instanceof HTMLTextAreaElement
         ? target.editable
@@ -338,7 +343,6 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
         shortcut={EDIT_SHORTCUTS.copy}
       />,
       <Item
-        disabled={!open.clipboardHasText}
         key="edit-paste"
         label={copy.edit.paste}
         onSelect={() => editableCommand('paste')}

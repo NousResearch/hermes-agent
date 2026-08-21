@@ -59,6 +59,17 @@ _EXCLUDED_DIR_NAMES = frozenset({
     "vendor", "third_party",
 })
 
+# Cloud-sync filesystem boundaries are not safe to probe synchronously from the
+# live tool-completion path. A context file can exist in directory metadata but
+# block indefinitely in ``read_text()`` while FileProvider hydrates it. This is
+# intentionally relative to ``working_dir``: a user who opens a workspace
+# inside a synced root still gets its project hints, while a broad home-folder
+# workspace does not opportunistically traverse into cloud storage.
+_REMOTE_SYNC_DIR_NAMES = frozenset({
+    "Mobile Documents",
+    "com~apple~CloudDocs",
+})
+
 
 def _is_ancestor_or_same(a: Path, b: Path) -> bool:
     """Check if *a* is the same as or an ancestor of *b* (parent directory check)."""
@@ -171,7 +182,11 @@ class SubdirectoryHintTracker:
             p = Path(raw_path).expanduser()
             if not p.is_absolute():
                 p = self.working_dir / p
+            if self._crosses_remote_sync_boundary(p):
+                return
             p = p.resolve()
+            if self._crosses_remote_sync_boundary(p):
+                return
             # Use parent if it's a file path (has extension or doesn't exist as dir)
             if p.suffix or (p.exists() and p.is_file()):
                 p = p.parent
@@ -215,6 +230,8 @@ class SubdirectoryHintTracker:
         (e.g. ~/.codex/AGENTS.md, ~/.claude/CLAUDE.md), which causes
         cross-agent context contamination and instruction mixup.
         """
+        if self._crosses_remote_sync_boundary(path):
+            return False
         try:
             if not path.is_dir():
                 return False
@@ -237,6 +254,14 @@ class SubdirectoryHintTracker:
         if self._is_excluded(path):
             return False
         return True
+
+    def _crosses_remote_sync_boundary(self, path: Path) -> bool:
+        """Return True when *path* leaves this workspace through cloud storage."""
+        try:
+            rel_parts = path.relative_to(self.working_dir).parts
+        except ValueError:
+            rel_parts = path.parts
+        return any(part in _REMOTE_SYNC_DIR_NAMES for part in rel_parts)
 
     def _is_excluded(self, path: Path) -> bool:
         """True when the path sits inside a directory that holds copies, not context.

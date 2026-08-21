@@ -1,5 +1,7 @@
 """Tests for progressive subdirectory hint discovery."""
 
+import time
+
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -242,6 +244,66 @@ class TestContentDeduplication:
 
 class TestExcludedDirectories:
     """Backups, vendored deps, and caches hold copies — never context."""
+
+    def test_icloud_hint_file_cannot_block_tool_completion(self, tmp_path):
+        """Cloud-synced context discovery must stay off the live tool path."""
+        cloud_root = (
+            tmp_path
+            / "Library"
+            / "Mobile Documents"
+            / "com~apple~CloudDocs"
+        )
+        finances = cloud_root / "Finances"
+        receipts = finances / "2026" / "Receipts"
+        receipts.mkdir(parents=True)
+        hint_path = finances / "CLAUDE.md"
+        hint_path.write_text("Cloud-synced instructions")
+
+        original_read_text = Path.read_text
+        cloud_reads = []
+
+        def slow_cloud_read(path, *args, **kwargs):
+            if path == hint_path:
+                cloud_reads.append(path)
+                time.sleep(0.25)
+            return original_read_text(path, *args, **kwargs)
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        started = time.monotonic()
+        with patch.object(Path, "read_text", slow_cloud_read):
+            result = tracker.check_tool_call(
+                "search_files",
+                {"path": str(receipts)},
+            )
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.1, (
+            "subdirectory hint discovery blocked tool completion on an iCloud read"
+        )
+        assert cloud_reads == []
+        assert result is None
+
+    def test_workspace_opened_inside_icloud_still_loads_child_hints(self, tmp_path):
+        """An explicitly selected cloud workspace keeps normal hint behavior."""
+        project = (
+            tmp_path
+            / "Library"
+            / "Mobile Documents"
+            / "com~apple~CloudDocs"
+            / "project"
+        )
+        package = project / "package"
+        package.mkdir(parents=True)
+        (package / "AGENTS.md").write_text("Package instructions")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call(
+            "read_file",
+            {"path": str(package / "module.py")},
+        )
+
+        assert result is not None
+        assert "Package instructions" in result
 
     @pytest.mark.parametrize(
         "excluded",

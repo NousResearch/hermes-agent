@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -277,6 +278,37 @@ def _is_trivial_message(text: str) -> bool:
     return bool(_TRIVIAL_RE.match((text or "").strip()))
 
 
+def _is_supermemory_not_found_error(exc: Exception) -> bool:
+    """Return True only for confirmed Supermemory 404/not-found failures."""
+    try:
+        from supermemory import NotFoundError
+    except Exception:
+        NotFoundError = None  # type: ignore[assignment]
+
+    if NotFoundError is not None and isinstance(exc, NotFoundError):
+        return True
+
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    if status == 404:
+        return True
+
+    text = str(exc).lower()
+    return "404" in text and "not found" in text
+
+
+def _is_supermemory_processing_conflict(exc: Exception) -> bool:
+    """Return True when document deletion is blocked while indexing finishes."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    text = str(exc).lower()
+    return status == 409 and "processing" in text
+
+
 class _SupermemoryClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str,
                  search_mode: str = "hybrid", base_url: str = ""):
@@ -345,9 +377,36 @@ class _SupermemoryClient:
         response = self._client.search.memories(**kwargs)
         results = []
         for item in (getattr(response, "results", None) or []):
+            documents = getattr(item, "documents", None) or []
+            document_id = (
+                getattr(item, "document_id", None)
+                or getattr(item, "documentId", None)
+                or ""
+            )
+            if not document_id and documents:
+                document = documents[0]
+                if isinstance(document, dict):
+                    document_id = (
+                        document.get("id")
+                        or document.get("document_id")
+                        or document.get("documentId")
+                        or ""
+                    )
+                else:
+                    document_id = (
+                        getattr(document, "id", None)
+                        or getattr(document, "document_id", None)
+                        or getattr(document, "documentId", None)
+                        or ""
+                    )
             results.append({
                 "id": getattr(item, "id", ""),
-                "memory": getattr(item, "memory", "") or "",
+                "document_id": document_id,
+                "memory": (
+                    getattr(item, "memory", "")
+                    or getattr(item, "chunk", "")
+                    or ""
+                ),
                 "similarity": getattr(item, "similarity", None),
                 "updated_at": getattr(item, "updated_at", None) or getattr(item, "updatedAt", None),
                 "metadata": getattr(item, "metadata", None),
@@ -383,17 +442,45 @@ class _SupermemoryClient:
         tag = container_tag or self._container_tag
         self._client.memories.forget(container_tag=tag, id=memory_id)
 
+    def _delete_document(self, document_id: str) -> None:
+        """Delete a backing document, retrying while Supermemory indexes it."""
+        for attempt in range(5):
+            try:
+                self._client.documents.delete(document_id)
+                return
+            except Exception as exc:
+                if not _is_supermemory_processing_conflict(exc) or attempt == 4:
+                    raise
+                time.sleep(1.0)
+
     def forget_by_query(self, query: str, *, container_tag: Optional[str] = None) -> dict:
         results = self.search_memories(query, limit=5, container_tag=container_tag)
         if not results:
             return {"success": False, "message": "No matching memory found to forget."}
         target = results[0]
         memory_id = target.get("id", "")
-        if not memory_id:
-            return {"success": False, "message": "Best matching memory has no id."}
-        self.forget_memory(memory_id, container_tag=container_tag)
+        document_id = target.get("document_id", "")
+        forgotten_id = memory_id or document_id
+        if not forgotten_id:
+            return {"success": False, "message": "Best matching memory has no deletable id."}
+
+        if memory_id:
+            try:
+                self.forget_memory(memory_id, container_tag=container_tag)
+            except Exception as exc:
+                if (
+                    not document_id
+                    or document_id == memory_id
+                    or not _is_supermemory_not_found_error(exc)
+                ):
+                    raise
+                self._delete_document(document_id)
+                forgotten_id = document_id
+        else:
+            self._delete_document(document_id)
+
         preview = (target.get("memory") or "")[:100]
-        return {"success": True, "message": f'Forgot: "{preview}"', "id": memory_id}
+        return {"success": True, "message": f'Forgot: "{preview}"', "id": forgotten_id}
 
     def ingest_conversation(self, session_id: str, messages: list[dict], metadata: dict | None = None) -> None:
         payload: dict = {

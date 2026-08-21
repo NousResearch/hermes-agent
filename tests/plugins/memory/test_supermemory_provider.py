@@ -2,11 +2,13 @@ import json
 import os
 import stat
 import threading
+from types import SimpleNamespace
 
 import pytest
 
 from plugins.memory.supermemory import (
     SupermemoryMemoryProvider,
+    _SupermemoryClient,
     _clean_text_for_capture,
     _format_connection_summary,
     _format_prefetch_context,
@@ -225,6 +227,219 @@ def test_forget_tool_by_id(provider):
     result = json.loads(provider.handle_tool_call("supermemory_forget", {"id": "m1"}))
     assert result == {"forgotten": True, "id": "m1"}
     assert provider._client.forgotten_ids == ["m1"]
+
+
+class _FakeSupermemoryError(Exception):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class _FakeSearch:
+    def __init__(self, results):
+        self.results = results
+        self.calls = []
+
+    def memories(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(results=self.results)
+
+
+class _FakeMemories:
+    def __init__(self, error=None):
+        self.error = error
+        self.calls = []
+
+    def forget(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+
+
+class _FakeDocuments:
+    def __init__(self, errors=None):
+        self.errors = list(errors or [])
+        self.calls = []
+
+    def delete(self, document_id):
+        self.calls.append(document_id)
+        if self.errors:
+            error = self.errors.pop(0)
+            if error is not None:
+                raise error
+
+
+def _make_supermemory_client(search_results, *, memory_error=None, document_errors=None):
+    client = object.__new__(_SupermemoryClient)
+    client._container_tag = "test-container"
+    client._search_mode = "hybrid"
+    client._client = SimpleNamespace(
+        search=_FakeSearch(search_results),
+        memories=_FakeMemories(memory_error),
+        documents=_FakeDocuments(document_errors),
+    )
+    return client
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"id": "doc-1"},
+        {"document_id": "doc-1"},
+        {"documentId": "doc-1"},
+        SimpleNamespace(documentId="doc-1"),
+    ],
+)
+def test_search_memories_preserves_chunk_and_backing_document_id(document):
+    item = SimpleNamespace(
+        id="chunk-1",
+        memory="",
+        chunk="Smoke marker content",
+        documents=[document],
+        similarity=0.9,
+        metadata={"source": "smoke"},
+    )
+    client = _make_supermemory_client([item])
+
+    result = client.search_memories("smoke marker")
+
+    assert result == [
+        {
+            "id": "chunk-1",
+            "document_id": "doc-1",
+            "memory": "Smoke marker content",
+            "similarity": 0.9,
+            "updated_at": None,
+            "metadata": {"source": "smoke"},
+        }
+    ]
+
+
+def test_forget_by_query_falls_back_to_backing_document_on_404():
+    item = SimpleNamespace(
+        id="chunk-1",
+        memory="",
+        chunk="Smoke marker content",
+        documents=[SimpleNamespace(id="doc-1")],
+    )
+    client = _make_supermemory_client(
+        [item],
+        memory_error=_FakeSupermemoryError(404, "Memory not found"),
+    )
+
+    result = client.forget_by_query("smoke marker")
+
+    assert client._client.memories.calls == [
+        {"container_tag": "test-container", "id": "chunk-1"}
+    ]
+    assert client._client.documents.calls == ["doc-1"]
+    assert result["id"] == "doc-1"
+    assert result["message"] == 'Forgot: "Smoke marker content"'
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        _FakeSupermemoryError(401, "Authentication failed"),
+        _FakeSupermemoryError(403, "Forbidden"),
+        _FakeSupermemoryError(429, "Rate limited"),
+        _FakeSupermemoryError(500, "Server error"),
+        TimeoutError("Request timed out"),
+    ],
+    ids=["authentication", "forbidden", "rate-limit", "server", "timeout"],
+)
+def test_forget_by_query_does_not_fallback_on_non_404(error):
+    item = SimpleNamespace(
+        id="chunk-1",
+        memory="Smoke marker content",
+        documents=[SimpleNamespace(id="doc-1")],
+    )
+    client = _make_supermemory_client([item], memory_error=error)
+
+    with pytest.raises(type(error)) as exc_info:
+        client.forget_by_query("smoke marker")
+
+    assert exc_info.value is error
+    assert client._client.documents.calls == []
+
+
+def test_forget_by_query_keeps_successful_memory_delete():
+    item = SimpleNamespace(
+        id="memory-1",
+        memory="Smoke marker content",
+        documents=[SimpleNamespace(id="doc-1")],
+    )
+    client = _make_supermemory_client([item])
+
+    result = client.forget_by_query("smoke marker")
+
+    assert client._client.memories.calls == [
+        {"container_tag": "test-container", "id": "memory-1"}
+    ]
+    assert client._client.documents.calls == []
+    assert result["id"] == "memory-1"
+
+
+def test_forget_by_query_retries_document_delete_while_processing(monkeypatch):
+    item = SimpleNamespace(
+        id="chunk-1",
+        memory="Smoke marker content",
+        documents=[SimpleNamespace(id="doc-1")],
+    )
+    client = _make_supermemory_client(
+        [item],
+        memory_error=_FakeSupermemoryError(404, "Memory not found"),
+        document_errors=[
+            _FakeSupermemoryError(409, "Document is still processing"),
+            None,
+        ],
+    )
+    sleeps = []
+    monkeypatch.setattr("plugins.memory.supermemory.time.sleep", sleeps.append)
+
+    result = client.forget_by_query("smoke marker")
+
+    assert client._client.documents.calls == ["doc-1", "doc-1"]
+    assert sleeps == [1.0]
+    assert result["id"] == "doc-1"
+
+
+def test_forget_by_query_does_not_retry_unrelated_document_conflict(monkeypatch):
+    item = SimpleNamespace(
+        id="chunk-1",
+        memory="Smoke marker content",
+        documents=[SimpleNamespace(id="doc-1")],
+    )
+    error = _FakeSupermemoryError(409, "Document conflict")
+    client = _make_supermemory_client(
+        [item],
+        memory_error=_FakeSupermemoryError(404, "Memory not found"),
+        document_errors=[error],
+    )
+    sleeps = []
+    monkeypatch.setattr("plugins.memory.supermemory.time.sleep", sleeps.append)
+
+    with pytest.raises(_FakeSupermemoryError) as exc_info:
+        client.forget_by_query("smoke marker")
+
+    assert exc_info.value is error
+    assert client._client.documents.calls == ["doc-1"]
+    assert sleeps == []
+
+
+def test_forget_by_query_uses_document_when_search_id_is_missing():
+    item = SimpleNamespace(
+        id="",
+        memory="Smoke marker content",
+        documents=[SimpleNamespace(id="doc-1")],
+    )
+    client = _make_supermemory_client([item])
+
+    result = client.forget_by_query("smoke marker")
+
+    assert client._client.memories.calls == []
+    assert client._client.documents.calls == ["doc-1"]
+    assert result["id"] == "doc-1"
 
 
 def test_profile_tool_formats_sections(provider):

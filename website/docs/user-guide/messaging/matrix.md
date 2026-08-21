@@ -751,12 +751,13 @@ Add to `~/.hermes/.env`:
 
 ```bash
 API_SERVER_ENABLED=true
-API_SERVER_KEY=your-secret-key-here
+# Run `openssl rand -hex 32`, then paste its output after the equals sign.
+API_SERVER_KEY=
 API_SERVER_HOST=0.0.0.0
 ```
 
 - `API_SERVER_HOST=0.0.0.0` binds to all interfaces so the Docker container can reach it.
-- `API_SERVER_KEY` is required for non-loopback binding. Pick a strong random string.
+- `API_SERVER_KEY` is required for every deployment, including the default loopback bind. Generate a strong random value.
 - The API server runs on port 8642 by default (change with `API_SERVER_PORT` if needed).
 
 Start the gateway:

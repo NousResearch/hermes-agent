@@ -82,7 +82,7 @@ tool_loop_guardrails:
 ```
 :::
 
-Note: the API server is gated on `API_SERVER_ENABLED=true`. To expose it beyond `127.0.0.1` inside the container, also set `API_SERVER_HOST=0.0.0.0` and an `API_SERVER_KEY` (minimum 8 characters — generate one with `openssl rand -hex 32`). Example:
+Note: the API server is gated on `API_SERVER_ENABLED=true`. To expose it beyond `127.0.0.1` inside the container, also set `API_SERVER_HOST=0.0.0.0` and an `API_SERVER_KEY` (at least 16 characters and not a placeholder — generate one with `openssl rand -hex 32`). Example:
 
 ```sh
 docker run -d \

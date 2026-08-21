@@ -22,7 +22,8 @@ Add to `~/.hermes/.env`:
 
 ```bash
 API_SERVER_ENABLED=true
-API_SERVER_KEY=change-me-local-dev
+# Run `openssl rand -hex 32`, then paste its output after the equals sign.
+API_SERVER_KEY=
 # Optional: only if a browser must call Hermes directly
 # API_SERVER_CORS_ORIGINS=http://localhost:3000
 ```
@@ -634,13 +635,13 @@ hermes profile create bob
 cat >> ~/.hermes/profiles/alice/.env <<EOF
 API_SERVER_ENABLED=true
 API_SERVER_PORT=8643
-API_SERVER_KEY=alice-secret
+API_SERVER_KEY=$(openssl rand -hex 32)
 EOF
 
 cat >> ~/.hermes/profiles/bob/.env <<EOF
 API_SERVER_ENABLED=true
 API_SERVER_PORT=8644
-API_SERVER_KEY=bob-secret
+API_SERVER_KEY=$(openssl rand -hex 32)
 EOF
 
 # Start each profile's gateway

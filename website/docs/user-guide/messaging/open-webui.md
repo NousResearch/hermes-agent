@@ -34,7 +34,7 @@ Open WebUI talks to Hermes server-to-server, so you do not need `API_SERVER_CORS
 
 ```bash
 hermes config set API_SERVER_ENABLED true
-hermes config set API_SERVER_KEY your-secret-key
+hermes config set API_SERVER_KEY "$(openssl rand -hex 32)"
 ```
 
 `hermes config set` auto-routes the flag to `config.yaml` and the secret to `~/.hermes/.env`. If the gateway is already running, restart it so the change takes effect:
@@ -244,14 +244,14 @@ hermes profile create alice
 cat >> ~/.hermes/profiles/alice/.env <<EOF
 API_SERVER_ENABLED=true
 API_SERVER_PORT=8650
-API_SERVER_KEY=alice-secret
+API_SERVER_KEY=$(openssl rand -hex 32)
 EOF
 
 hermes profile create bob
 cat >> ~/.hermes/profiles/bob/.env <<EOF
 API_SERVER_ENABLED=true
 API_SERVER_PORT=8651
-API_SERVER_KEY=bob-secret
+API_SERVER_KEY=$(openssl rand -hex 32)
 EOF
 ```
 

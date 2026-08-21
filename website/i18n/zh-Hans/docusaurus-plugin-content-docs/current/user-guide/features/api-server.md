@@ -22,7 +22,8 @@ Hermes 本身需要配置好 provider（提供商）和工具后端，API 服务
 
 ```bash
 API_SERVER_ENABLED=true
-API_SERVER_KEY=change-me-local-dev
+# 运行 `openssl rand -hex 32`，然后将输出粘贴在等号后面。
+API_SERVER_KEY=
 # 可选：仅当浏览器需要直接调用 Hermes 时
 # API_SERVER_CORS_ORIGINS=http://localhost:3000
 ```
@@ -332,7 +333,7 @@ Authorization: Bearer ***
 通过 `API_SERVER_KEY` 环境变量配置密钥。如果需要浏览器直接调用 Hermes，还需将 `API_SERVER_CORS_ORIGINS` 设置为明确的允许列表。
 
 :::warning 安全
-API 服务器提供对 hermes-agent 工具集的完整访问权限，**包括终端命令**。当绑定到非回环地址（如 `0.0.0.0`）时，**必须**设置 `API_SERVER_KEY`。同时保持 `API_SERVER_CORS_ORIGINS` 范围尽量小，以控制浏览器访问。
+API 服务器提供对 hermes-agent 工具集的完整访问权限，**包括终端命令**。`API_SERVER_KEY` 对每种部署方式都为**必填项**，包括默认的 `127.0.0.1` 回环绑定。仅在明确允许浏览器调用时，才使用范围尽量小的 `API_SERVER_CORS_ORIGINS` 来控制浏览器访问。
 
 默认绑定地址（`127.0.0.1`）仅供本地使用。浏览器访问默认禁用；仅为明确的可信来源启用。
 :::
@@ -422,13 +423,13 @@ hermes profile create bob
 cat >> ~/.hermes/profiles/alice/.env <<EOF
 API_SERVER_ENABLED=true
 API_SERVER_PORT=8643
-API_SERVER_KEY=alice-secret
+API_SERVER_KEY=$(openssl rand -hex 32)
 EOF
 
 cat >> ~/.hermes/profiles/bob/.env <<EOF
 API_SERVER_ENABLED=true
 API_SERVER_PORT=8644
-API_SERVER_KEY=bob-secret
+API_SERVER_KEY=$(openssl rand -hex 32)
 EOF
 
 # 启动每个 profile 的 gateway

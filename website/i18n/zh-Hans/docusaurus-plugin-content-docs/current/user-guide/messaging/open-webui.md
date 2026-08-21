@@ -34,7 +34,7 @@ Open WebUI 与 Hermes 之间是服务器到服务器的通信，因此此集成�
 
 ```bash
 hermes config set API_SERVER_ENABLED true
-hermes config set API_SERVER_KEY your-secret-key
+hermes config set API_SERVER_KEY "$(openssl rand -hex 32)"
 ```
 
 `hermes config set` 会自动将标志路由到 `config.yaml`，将密钥路由到 `~/.hermes/.env`。如果 gateway 已在运行，请重启以使更改生效：
@@ -244,14 +244,14 @@ hermes profile create alice
 cat >> ~/.hermes/profiles/alice/.env <<EOF
 API_SERVER_ENABLED=true
 API_SERVER_PORT=8650
-API_SERVER_KEY=alice-secret
+API_SERVER_KEY=$(openssl rand -hex 32)
 EOF
 
 hermes profile create bob
 cat >> ~/.hermes/profiles/bob/.env <<EOF
 API_SERVER_ENABLED=true
 API_SERVER_PORT=8651
-API_SERVER_KEY=bob-secret
+API_SERVER_KEY=$(openssl rand -hex 32)
 EOF
 ```
 

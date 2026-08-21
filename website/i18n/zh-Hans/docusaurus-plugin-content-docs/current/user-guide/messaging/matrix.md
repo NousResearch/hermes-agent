@@ -537,12 +537,13 @@ Docker 容器仅处理 Matrix 协议和 E2EE。消息到达时，容器解密消
 
 ```bash
 API_SERVER_ENABLED=true
-API_SERVER_KEY=your-secret-key-here
+# 运行 `openssl rand -hex 32`，然后将输出粘贴在等号后面。
+API_SERVER_KEY=
 API_SERVER_HOST=0.0.0.0
 ```
 
 - `API_SERVER_HOST=0.0.0.0` 绑定到所有接口，使 Docker 容器可以访问。
-- `API_SERVER_KEY` 是非回环绑定的必填项。请选择一个强随机字符串。
+- `API_SERVER_KEY` 适用于每种部署方式（包括默认的回环绑定），均为必填项。请生成一个强随机值。
 - API 服务器默认运行在端口 8642（如需更改，使用 `API_SERVER_PORT`）。
 
 启动 gateway：

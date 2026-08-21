@@ -123,6 +123,23 @@ class TestEnvEnablement:
         seed = _env_enablement()
         assert seed["home_channel"]["chat_id"] == "123"
 
+    def test_includes_group_allowlist(self, monkeypatch):
+        monkeypatch.setenv("MAX_BOT_TOKEN", "tok")
+        monkeypatch.setenv("MAX_GROUP_ALLOWED_CHATS", "-1001,-1002")
+        seed = _env_enablement()
+        assert seed["group_allowed_chats"] == "-1001,-1002"
+
+    def test_includes_group_sessions_per_user(self, monkeypatch):
+        monkeypatch.setenv("MAX_BOT_TOKEN", "tok")
+        monkeypatch.setenv("MAX_GROUP_SESSIONS_PER_USER", "false")
+        seed = _env_enablement()
+        assert seed["group_sessions_per_user"] is False
+
+    def test_group_sessions_defaults_true(self, monkeypatch):
+        monkeypatch.setenv("MAX_BOT_TOKEN", "tok")
+        seed = _env_enablement()
+        assert "group_sessions_per_user" not in seed
+
 
 # ---------------------------------------------------------------------------
 # 5. _handle_update — message parsing
@@ -131,10 +148,20 @@ class TestEnvEnablement:
 
 class TestHandleUpdate:
 
-    def _make_adapter(self):
-        adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+    def _make_adapter(self, **extra):
+        cfg_extra = {"token": "t"}
+        cfg_extra.update(extra)
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra=cfg_extra))
         adapter.handle_message = AsyncMock()
         adapter._is_duplicate = MagicMock(return_value=False)
+        # HTTP client mock for moderation/slash paths
+        adapter._http_client = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {}
+        adapter._http_client.post = AsyncMock(return_value=resp)
+        adapter._http_client.delete = AsyncMock(return_value=resp)
+        adapter._http_client.get = AsyncMock(return_value=resp)
         return adapter
 
     def test_ignores_non_message_events(self):
@@ -174,6 +201,88 @@ class TestHandleUpdate:
         assert event.source.chat_id == "532485678"
         assert adapter._last_user_id == "139383659"
 
+    def test_parses_group_message_with_mention(self):
+        """Group message mentioning the bot by @username → handled."""
+        adapter = self._make_adapter(approved_chats="-100123")
+        adapter._username = "matreshka_bot"
+        adapter._name = "Матрёшка"
+        upd = {
+            "update_type": "message_created",
+            "message": {
+                "sender": {"user_id": 111, "name": "Вася", "is_bot": False},
+                "recipient": {"chat_id": -100123, "chat_type": "chat", "chat_name": "Пачка L2"},
+                "body": {"text": "@matreshka_bot сколько время?", "mid": "g1"},
+            },
+            "timestamp": 1786823555223,
+        }
+        _run(adapter._handle_update(upd))
+        adapter.handle_message.assert_called_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.source.chat_type == "group"
+        assert event.source.chat_id == "-100123"
+        assert event.source.chat_name == "Пачка L2"
+        assert event.source.user_name == "Вася"
+
+    def test_ignores_group_message_without_mention(self):
+        """Group message without mention → ignored (only by @)."""
+        adapter = self._make_adapter()
+        adapter._username = "matreshka_bot"
+        upd = {
+            "update_type": "message_created",
+            "message": {
+                "sender": {"user_id": 111, "name": "Вася", "is_bot": False},
+                "recipient": {"chat_id": -100123, "chat_type": "chat"},
+                "body": {"text": "классный бой был", "mid": "g2"},
+            },
+            "timestamp": 1786823555223,
+        }
+        _run(adapter._handle_update(upd))
+        adapter.handle_message.assert_not_called()
+
+    def test_group_message_addressed_by_name(self):
+        """Bot display name in text counts as addressing."""
+        adapter = self._make_adapter(approved_chats="-100123")
+        adapter._name = "Матрёшка"
+        upd = {
+            "update_type": "message_created",
+            "message": {
+                "sender": {"user_id": 111, "name": "Вася", "is_bot": False},
+                "recipient": {"chat_id": -100123, "chat_type": "chat"},
+                "body": {"text": "матрёшка, дай ссылку", "mid": "g3"},
+            },
+            "timestamp": 1786823555223,
+        }
+        _run(adapter._handle_update(upd))
+        adapter.handle_message.assert_called_once()
+
+    def test_generic_bot_word_ignored(self):
+        """Generic 'бот' word in group is NOT addressed — bot answers only by name."""
+        adapter = self._make_adapter()
+        upd = {
+            "update_type": "message_created",
+            "message": {
+                "sender": {"user_id": 111, "name": "Вася", "is_bot": False},
+                "recipient": {"chat_id": -100123, "chat_type": "chat"},
+                "body": {"text": "бот, а что за ивент сегодня?", "mid": "g4"},
+            },
+            "timestamp": 1786823555223,
+        }
+        _run(adapter._handle_update(upd))
+        adapter.handle_message.assert_not_called()
+
+    def test_bot_added_learns_group_chat(self):
+        """bot_added stores the group chat_id for later use."""
+        adapter = self._make_adapter()
+        upd = {
+            "update_type": "bot_added",
+            "chat": {"chat_id": -100456, "chat_type": "chat", "title": "Тестовая группа"},
+        }
+        _run(adapter._handle_update(upd))
+        adapter.handle_message.assert_not_called()
+        assert "-100456" in adapter._known_chats
+        assert adapter._known_chats["-100456"]["type"] == "group"
+        assert adapter._known_chats["-100456"]["name"] == "Тестовая группа"
+
     def test_skips_empty_text(self):
         adapter = self._make_adapter()
         upd = {
@@ -208,6 +317,388 @@ class TestDedup:
         adapter._seen_messages[old_id] = time.time() - DEDUP_WINDOW_SECONDS - 10
         assert adapter._is_duplicate(old_id) is False  # pruned (перезаписано)
         assert adapter._is_duplicate(old_id) is True   # теперь в окне
+
+
+# ---------------------------------------------------------------------------
+# 6b. _is_addressed_to_bot
+# ---------------------------------------------------------------------------
+
+
+class TestAddressedToBot:
+
+    def _adapter(self, name="Матрёшка", username="matreshka_bot"):
+        a = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        a._name = name
+        a._username = username
+        return a
+
+    def test_username_mention(self):
+        assert self._adapter()._is_addressed_to_bot("@matreshka_bot привет")
+        assert self._adapter()._is_addressed_to_bot("привет matreshka_bot")
+
+    def test_display_name(self):
+        assert self._adapter()._is_addressed_to_bot("Матрёшка, сколько время?")
+
+    def test_case_insensitive(self):
+        assert self._adapter()._is_addressed_to_bot("МАТРЁШКА, помоги")
+
+    def test_generic_word_not_matched(self):
+        # Generic words are NOT addressed — bot only answers by its real name
+        assert not self._adapter()._is_addressed_to_bot("бот, кинь ссылку")
+        assert not self._adapter()._is_addressed_to_bot("sir, advice?")
+
+    def test_aliases(self):
+        a = self._adapter()
+        a._aliases = ["каин", "кай"]
+        assert a._is_addressed_to_bot("Каин, сколько время?")
+        assert a._is_addressed_to_bot("кай, го")
+
+    def test_not_addressed(self):
+        assert not self._adapter()._is_addressed_to_bot("классный бой был")
+        assert not self._adapter()._is_addressed_to_bot("")
+
+    def test_no_identity_no_false_positive(self):
+        a = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        assert not a._is_addressed_to_bot("просто сообщение")
+
+
+# ---------------------------------------------------------------------------
+# 6c. _resolve_channel_prompt — group mini-prompt injection
+# ---------------------------------------------------------------------------
+
+
+class TestChannelPrompt:
+
+    def _make_adapter(self, **extra):
+        cfg_extra = {"token": "t"}
+        cfg_extra.update(extra)
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra=cfg_extra))
+        adapter.handle_message = AsyncMock()
+        adapter._is_duplicate = MagicMock(return_value=False)
+        adapter._http_client = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {}
+        adapter._http_client.post = AsyncMock(return_value=resp)
+        adapter._http_client.delete = AsyncMock(return_value=resp)
+        adapter._http_client.get = AsyncMock(return_value=resp)
+        return adapter
+
+    def _adapter(self):
+        a = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        a._name = "Каин"
+        a._username = "kain_bot"
+        a._description = "L2-помощник пати"
+        return a
+
+    def test_no_identity_returns_none(self):
+        a = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        assert a._resolve_channel_prompt("-1001") is None
+
+    def test_auto_prompt_from_identity(self):
+        p = self._adapter()._resolve_channel_prompt("-1001")
+        assert p is not None
+        assert "Каин" in p
+        assert "@kain_bot" in p
+        assert "L2-помощник пати" in p
+        assert "третьем лице" in p
+
+    def test_custom_channel_prompt_merged(self):
+        a = self._adapter()
+        a.config.extra["channel_prompts"] = {"-1001": "Отвечай только по делу."}
+        p = a._resolve_channel_prompt("-1001")
+        assert "Отвечай только по делу." in p
+        assert "Каин" in p
+
+    def test_custom_only_without_identity(self):
+        a = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        a.config.extra["channel_prompts"] = {"-1001": "Тест промпт"}
+        assert a._resolve_channel_prompt("-1001") == "Тест промпт"
+
+    def test_owner_parsed_from_env(self, monkeypatch):
+        monkeypatch.setenv("MAX_OWNER_USER_ID", "777")
+        a = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        assert a._owner_user_id == "777"
+
+    def test_owner_from_extra(self):
+        a = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t", "owner_user_id": "42"}))
+        assert a._owner_user_id == "42"
+
+    def test_group_approved_when_in_allowlist(self):
+        a = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t", "group_allowed_chats": "-100"}))
+
+        assert a._is_group_approved("-100")
+
+    def test_group_approved_when_in_approved_chats(self):
+        a = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t", "approved_chats": "-200"}))
+        assert a._is_group_approved("-200")
+
+    def test_group_not_approved_when_unknown(self):
+        a = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t", "owner_user_id": "1"}))
+        assert not a._is_group_approved("-999")
+
+    def test_group_approved_when_owner_is_group_admin(self):
+        a = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t", "owner_user_id": "1"}))
+        a._members["-300"] = {
+            "1": {"user_id": 1, "is_owner": True},
+            "2": {"user_id": 2, "is_admin": True},
+        }
+        assert a._is_group_approved("-300")
+
+    def test_bot_role_in_channel_prompt_admin(self):
+        a = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        a._name = "Каин"
+        a._username = "kain_bot"
+        a._id = "99"
+        a._members["-100"] = {"99": {"user_id": 99, "is_admin": True, "permissions": ["delete", "write"]}}
+        p = a._resolve_channel_prompt("-100")
+        assert "администратор" in p
+        assert "delete" in p
+
+    def test_bot_role_in_channel_prompt_member(self):
+        a = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        a._name = "Каин"
+        a._id = "99"
+        a._members["-100"] = {"99": {"user_id": 99, "is_admin": False, "is_owner": False}}
+        p = a._resolve_channel_prompt("-100")
+        assert "обычный участник" in p
+
+    def test_bot_added_notifies_owner_for_approval(self):
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t", "owner_user_id": "777"}))
+        adapter._http_client = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"members": []}
+        adapter._http_client.post = AsyncMock(return_value=resp)
+        adapter._http_client.get = AsyncMock(return_value=resp)
+        _run(adapter._handle_update({
+            "update_type": "bot_added",
+            "chat": {"chat_id": -100456, "chat_type": "chat", "title": "Тест группа"},
+        }))
+        # Уведомление ушло владельцу (user_id=777) — проверим последний POST
+        calls = adapter._http_client.post.call_args_list
+        dm_posts = [c for c in calls if c.kwargs.get("params", {}).get("user_id") == "777"]
+        assert dm_posts, "owner should be notified"
+        import json as _json
+        body = _json.loads(dm_posts[0].kwargs["content"].decode())
+        assert "добавили" in body.get("text", "")
+
+    def test_owner_approve_command(self):
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t", "owner_user_id": "777"}))
+        adapter.handle_message = AsyncMock()
+        adapter._is_duplicate = MagicMock(return_value=False)
+        adapter._http_client = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        adapter._http_client.post = AsyncMock(return_value=resp)
+        upd = {
+            "update_type": "message_created",
+            "message": {
+                "sender": {"user_id": 777, "name": "Артур", "is_bot": False},
+                "recipient": {"chat_id": 500, "chat_type": "dialog"},
+                "body": {"text": "/approve -100777", "mid": "a1"},
+            },
+            "timestamp": 1786823555223,
+        }
+        _run(adapter._handle_update(upd))
+        assert "-100777" in adapter._approved_chats
+
+    def test_owner_deny_command(self):
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t", "owner_user_id": "777"}))
+        adapter.handle_message = AsyncMock()
+        adapter._is_duplicate = MagicMock(return_value=False)
+        adapter._http_client = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        adapter._http_client.post = AsyncMock(return_value=resp)
+        adapter._approved_chats.add("-100777")
+        upd = {
+            "update_type": "message_created",
+            "message": {
+                "sender": {"user_id": 777, "name": "Артур", "is_bot": False},
+                "recipient": {"chat_id": 500, "chat_type": "dialog"},
+                "body": {"text": "/deny -100777", "mid": "a2"},
+            },
+            "timestamp": 1786823555223,
+        }
+        _run(adapter._handle_update(upd))
+        assert "-100777" not in adapter._approved_chats
+
+    def test_group_message_ignored_when_not_approved(self):
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t", "owner_user_id": "777"}))
+        adapter.handle_message = AsyncMock()
+        adapter._is_duplicate = MagicMock(return_value=False)
+        adapter._username = "kain_bot"
+        upd = {
+            "update_type": "message_created",
+            "message": {
+                "sender": {"user_id": 111, "name": "Вася", "is_bot": False},
+                "recipient": {"chat_id": -999, "chat_type": "chat"},
+                "body": {"text": "@kain_bot привет", "mid": "g6"},
+            },
+            "timestamp": 1786823555223,
+        }
+        _run(adapter._handle_update(upd))
+        adapter.handle_message.assert_not_called()
+
+    def test_moderation_rejected_for_member(self):
+        """Member (no admin) requests a ban → refused."""
+        adapter = self._make_adapter(approved_chats="-100123")
+        adapter._id = "99"
+        adapter._name = "Каин"
+        # Sender is a plain member
+        adapter._members["-100123"] = {
+            "99": {"user_id": 99, "is_admin": True, "is_owner": False},
+            "111": {"user_id": 111, "is_admin": False, "is_owner": False},
+            "222": {"user_id": 222, "first_name": "Вася"},
+        }
+        upd = {
+            "update_type": "message_created",
+            "message": {
+                "sender": {"user_id": 111, "name": "Петя", "is_bot": False},
+                "recipient": {"chat_id": -100123, "chat_type": "chat"},
+                "body": {"text": "каин, бан вася", "mid": "m1"},
+            },
+            "timestamp": 1786823555223,
+        }
+        _run(adapter._handle_update(upd))
+        # Reply sent to the group, agent not invoked
+        adapter.handle_message.assert_not_called()
+        posts = adapter._http_client.post.call_args_list
+        assert posts
+        import json as _json
+        body = _json.loads(posts[-1].kwargs["content"].decode())
+        assert "владелец или админы" in body["text"]
+
+    def test_moderation_non_command_passes_through(self):
+        """Normal group message (no уdalи/бан) → agent called."""
+        adapter = self._make_adapter(approved_chats="-100123")
+        adapter._username = "kain_bot"
+        adapter._name = "Каин"
+        adapter._members["-100123"] = {"111": {"user_id": 111, "is_admin": False}}
+        upd = {
+            "update_type": "message_created",
+            "message": {
+                "sender": {"user_id": 111, "name": "Вася", "is_bot": False},
+                "recipient": {"chat_id": -100123, "chat_type": "chat"},
+                "body": {"text": "@kain_bot сколько время?", "mid": "m2"},
+            },
+            "timestamp": 1786823555223,
+        }
+        _run(adapter._handle_update(upd))
+        adapter.handle_message.assert_called_once()
+
+    def test_group_member_slash_ignored(self):
+        """Group member sends /new → dropped, agent not invoked."""
+        adapter = self._make_adapter(approved_chats="-100123")
+        adapter._username = "kain_bot"
+        adapter._members["-100123"] = {"111": {"user_id": 111, "is_admin": False, "is_owner": False}}
+        upd = {
+            "update_type": "message_created",
+            "message": {
+                "sender": {"user_id": 111, "name": "Вася", "is_bot": False},
+                "recipient": {"chat_id": -100123, "chat_type": "chat"},
+                "body": {"text": "/new", "mid": "m3"},
+            },
+            "timestamp": 1786823555223,
+        }
+        _run(adapter._handle_update(upd))
+        adapter.handle_message.assert_not_called()
+
+    def test_group_admin_safe_slash_allowed(self):
+        """Group admin sends /new → passes to agent (safe command)."""
+        adapter = self._make_adapter(approved_chats="-100123")
+        adapter._username = "kain_bot"
+        adapter._name = "Каин"
+        adapter._members["-100123"] = {"111": {"user_id": 111, "is_admin": True, "is_owner": False}}
+        upd = {
+            "update_type": "message_created",
+            "message": {
+                "sender": {"user_id": 111, "name": "Админ", "is_bot": False},
+                "recipient": {"chat_id": -100123, "chat_type": "chat"},
+                "body": {"text": "каин /new", "mid": "m4"},
+            },
+            "timestamp": 1786823555223,
+        }
+        _run(adapter._handle_update(upd))
+        adapter.handle_message.assert_called_once()
+
+    def test_group_admin_unsafe_slash_ignored(self):
+        """Group admin sends /platform pause → dropped (not in safe set)."""
+        adapter = self._make_adapter(approved_chats="-100123")
+        adapter._username = "kain_bot"
+        adapter._members["-100123"] = {"111": {"user_id": 111, "is_admin": True, "is_owner": False}}
+        upd = {
+            "update_type": "message_created",
+            "message": {
+                "sender": {"user_id": 111, "name": "Админ", "is_bot": False},
+                "recipient": {"chat_id": -100123, "chat_type": "chat"},
+                "body": {"text": "/platform pause", "mid": "m5"},
+            },
+            "timestamp": 1786823555223,
+        }
+        _run(adapter._handle_update(upd))
+        adapter.handle_message.assert_not_called()
+
+    def test_moderation_with_address_in_front(self):
+        """'каин, бан вася' — moderation verb NOT at start → still works."""
+        adapter = self._make_adapter(approved_chats="-100123")
+        adapter._id = "99"
+        adapter._name = "Каин"
+        # Bot is admin; sender is group admin
+        adapter._members["-100123"] = {
+            "99": {"user_id": 99, "is_admin": True, "is_owner": False},
+            "111": {"user_id": 111, "is_admin": True, "is_owner": False},
+            "222": {"user_id": 222, "first_name": "Вася", "is_admin": False},
+        }
+        upd = {
+            "update_type": "message_created",
+            "message": {
+                "sender": {"user_id": 111, "name": "Админ", "is_bot": False},
+                "recipient": {"chat_id": -100123, "chat_type": "chat"},
+                "body": {"text": "каин, бан вася", "mid": "m6"},
+            },
+            "timestamp": 1786823555223,
+        }
+        _run(adapter._handle_update(upd))
+        # Agent not called; delete request went to MAX API
+        adapter.handle_message.assert_not_called()
+        delete_calls = [c for c in adapter._http_client.delete.call_args_list]
+        assert delete_calls, "ban should hit DELETE /chats/{id}/members/{uid}"
+        url = delete_calls[0].args[0]
+        assert "/members/222" in url
+
+    def test_moderation_word_not_false_positive(self):
+        """'del' in 'дельфин' / 'remove' in 'соревнование' must NOT trigger."""
+        adapter = self._make_adapter(approved_chats="-100123")
+        adapter._id = "99"
+        adapter._name = "Каин"
+        adapter._members["-100123"] = {"99": {"user_id": 99, "is_admin": True}, "111": {"user_id": 111, "is_admin": True}}
+        r = _run(adapter._handle_moderation_command("-100123", "каин, где дельфины?", "111"))
+        assert r is None
+        r2 = _run(adapter._handle_moderation_command("-100123", "соревнование завтра", "111"))
+        assert r2 is None
+
+    def test_group_event_carries_channel_prompt(self):
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t", "approved_chats": "-100123"}))
+        adapter.handle_message = AsyncMock()
+        adapter._is_duplicate = MagicMock(return_value=False)
+        adapter._name = "Каин"
+        adapter._username = "kain_bot"
+        upd = {
+            "update_type": "message_created",
+            "message": {
+                "sender": {"user_id": 111, "name": "Вася", "is_bot": False},
+                "recipient": {"chat_id": -100123, "chat_type": "chat"},
+                "body": {"text": "@kain_bot привет", "mid": "g5"},
+            },
+            "timestamp": 1786823555223,
+        }
+        _run(adapter._handle_update(upd))
+        adapter.handle_message.assert_called_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.channel_prompt is not None
+        assert "Каин" in event.channel_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +985,7 @@ class TestStandaloneSend:
 
     def test_standalone_send_no_token(self):
         cfg = PlatformConfig(enabled=True, extra={})
-        with patch("plugins.platforms.max.adapter.os.getenv", return_value=""):
+        with patch.object(_max, "_get_scoped_secret", return_value=""):
             result = _run(_standalone_send(cfg, "1", "hi"))
         assert "error" in result
 
@@ -516,3 +1007,5 @@ class TestRegister:
         assert kwargs["emoji"] == "🟠"
         assert kwargs["allowed_users_env"] == "MAX_ALLOWED_USERS"
         assert kwargs["max_message_length"] == MAX_MESSAGE_LENGTH
+        assert kwargs["setup_fn"] is not None
+        assert callable(kwargs["setup_fn"])

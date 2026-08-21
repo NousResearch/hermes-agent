@@ -1,7 +1,7 @@
 name: max-platform
 label: MAX (Russian Messenger)
 kind: platform
-version: 0.20.0
+version: 0.21.0
 description: >
   MAX messenger gateway adapter for Hermes Agent (Russia).
   Connects to MAX via Long Polling (GET /updates) and sends replies via
@@ -30,4 +30,20 @@ optional_env:
   - name: MAX_CA_CERT_PATH
     description: "Path to Russian Trusted Root CA cert (PEM) for MAX API TLS"
     prompt: "Path to Russian Trusted Root CA cert"
+    password: false
+  - name: MAX_GROUP_ALLOWED_CHATS
+    description: "Comma-separated MAX chat IDs (groups) the bot is allowed to serve. Empty = any group"
+    prompt: "Allowed group chat IDs (comma-separated)"
+    password: false
+  - name: MAX_GROUP_SESSIONS_PER_USER
+    description: "true = separate session per group member (default), false = one shared session for the whole group (recommended for party bots)"
+    prompt: "Group sessions per user? (true/false)"
+    password: false
+  - name: MAX_OWNER_USER_ID
+    description: "Your MAX user ID — the bot owner with full access (terminal, files). Commands /approve and /deny work only for this user"
+    prompt: "Your MAX user ID (owner)"
+    password: false
+  - name: MAX_APPROVED_CHATS
+    description: "Comma-separated chat IDs (groups) pre-approved for the bot. Empty = bot asks the owner for approval when added to a new group"
+    prompt: "Pre-approved group chat IDs (comma-separated)"
     password: false

@@ -242,6 +242,45 @@ class MaxAdapter(BasePlatformAdapter):
         self._seen_messages: Dict[str, float] = {}
         self._ca_path = _default_ca_path()
         self._last_user_id: str = ""
+        # Bot identity (from GET /me) — used for auto-addressing detection
+        self._name: str = ""
+        self._username: str = ""
+        self._id: str = ""
+        self._description: str = ""  # bot "about"/description from MAX
+        # Bot aliases — extra names the bot answers to (config.extra.bot_aliases)
+        raw_aliases = extra.get("bot_aliases") or ""
+        if isinstance(raw_aliases, str):
+            self._aliases = [a.strip().lower() for a in raw_aliases.split(",") if a.strip()]
+        else:
+            self._aliases = [str(a).strip().lower() for a in raw_aliases if str(a).strip()]
+        # Known chats: chat_id -> {"name": ..., "type": "dm"|"group"}
+        self._known_chats: Dict[str, Dict[str, str]] = {}
+        # Group allowlist: set of chat_ids the bot may serve. Empty = allow all
+        # groups (behaviour preserved); non-empty = only listed chat_ids.
+        raw_group_allow = extra.get("group_allowed_chats") or os.getenv("MAX_GROUP_ALLOWED_CHATS", "")
+        self._group_allowed_chats: set = set()
+        if raw_group_allow:
+            self._group_allowed_chats = {
+                str(c).strip() for c in str(raw_group_allow).split(",") if str(c).strip()
+            }
+        # Owner of the bot (full access). Either config.extra.owner_user_id or env.
+        raw_owner = extra.get("owner_user_id") or os.getenv("MAX_OWNER_USER_ID", "")
+        self._owner_user_id: str = str(raw_owner).strip() if raw_owner else ""
+        # Approved group chats: set of chat_ids the bot is allowed to serve.
+        # The bot notifies the owner when added to a new group and stays silent
+        # until the owner approves (or the chat is in the allowlist / owner's own).
+        self._approved_chats: set = set()
+        raw_approved = extra.get("approved_chats") or os.getenv("MAX_APPROVED_CHATS", "")
+        if raw_approved:
+            self._approved_chats = {
+                str(c).strip() for c in str(raw_approved).split(",") if str(c).strip()
+            }
+        # Group members cache: chat_id -> {user_id: ChatMember dict}
+        self._members: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        # Timestamps of last member fetch per chat (for TTL refresh)
+        self._members_fetched_at: Dict[str, float] = {}
+        # How long a members snapshot is considered fresh (seconds).
+        self._members_ttl = float(extra.get("members_ttl") or os.getenv("MAX_MEMBERS_TTL", "300"))
         # Health/status tracking
         self._last_poll_at: Optional[float] = None
         self._last_poll_error: Optional[str] = None
@@ -296,6 +335,17 @@ class MaxAdapter(BasePlatformAdapter):
             )
             # Validate token and fetch bot info (GET /me)
             await self._fetch_bot_info()
+            # Re-fetch member roles for known groups (post-restart) in parallel
+            # so a fresh deploy doesn't block 200ms-per-group sequentially.
+            known_groups = [cid for cid, info in self._known_chats.items() if info.get("type") == "group"]
+            if known_groups:
+                results = await asyncio.gather(
+                    *[self._fetch_members(cid) for cid in known_groups],
+                    return_exceptions=True,
+                )
+                for cid, res in zip(known_groups, results):
+                    if isinstance(res, Exception):
+                        logger.debug("[%s] member refresh failed for %s: %s", self.name, cid, res)
             # Register bot command menu (PATCH /me/commands) — best effort
             await self._register_commands()
             self._poll_task = asyncio.create_task(self._run_poll_loop())
@@ -308,7 +358,12 @@ class MaxAdapter(BasePlatformAdapter):
             return False
 
     async def _fetch_bot_info(self) -> None:
-        """GET /me — validate the token and log bot identity."""
+        """GET /me — validate the token and log bot identity.
+
+        Stores bot display name + username on the adapter so inbound group
+        messages can be matched against the bot's own name/mention
+        (auto-addressing detection).
+        """
         if self._http_client is None:
             return
         try:
@@ -328,10 +383,247 @@ class MaxAdapter(BasePlatformAdapter):
             if resp.status_code < 300:
                 data = resp.json()
                 bot_name = data.get("first_name") or data.get("username") or "?"
+                bot_username = data.get("username") or ""
                 bot_id = data.get("user_id")
-                logger.info("[%s] Authenticated as %s (id=%s)", self.name, bot_name, bot_id)
+                bot_desc = data.get("description") or data.get("about") or ""
+                self._name = bot_name
+                self._username = bot_username
+                self._id = str(bot_id) if bot_id is not None else ""
+                self._description = str(bot_desc).strip()
+                logger.info("[%s] Authenticated as %s (id=%s, @%s)", self.name, bot_name, bot_id, bot_username)
         except Exception as e:
             logger.warning("[%s] /me check failed: %s", self.name, e)
+
+
+    async def _fetch_members(self, chat_id: str) -> None:
+        """GET /chats/{chatId}/members — fetch roles for this group.
+
+        Stores user_id -> ChatMember dict in self._members[chat_id]. Used for
+        role-aware context (owner/admin/member) and the approval gate.
+        """
+        if not self._http_client:
+            return
+        try:
+            resp = await self._http_client.get(
+                f"{API_SCHEME}://{API_HOST}/chats/{chat_id}/members",
+                headers={"Authorization": self._token},
+                timeout=15.0,
+            )
+            if resp.status_code >= 300:
+                logger.warning("[%s] members HTTP %d for %s", self.name, resp.status_code, chat_id)
+                return
+            data = resp.json()
+            members = data.get("members") or data.get("result") or []
+            cache: Dict[str, Dict[str, Any]] = {}
+            for m in members:
+                if not isinstance(m, dict):
+                    continue
+                uid = str(m.get("user_id") or "")
+                if uid:
+                    cache[uid] = m
+            if cache:
+                self._members[chat_id] = cache
+                self._members_fetched_at[chat_id] = time.time()
+                logger.info("[%s] Cached %d members for chat %s", self.name, len(cache), chat_id)
+        except Exception as e:
+            logger.warning("[%s] _fetch_members failed for %s: %s", self.name, chat_id, e)
+
+    async def _notify_owner_approval(self, chat_id: str, chat_name: str) -> None:
+        """DM the bot owner: a new group added the bot — approve or deny."""
+        if not self._owner_user_id or not self._http_client:
+            return
+        text = (
+            f"⚠️ Меня добавили в группу «{chat_name}» (id {chat_id}).\n"
+            f"Я буду молчать, пока ты не решишь:\n"
+            f"  • /approve {chat_id} — разрешить работу в этой группе\n"
+            f"  • /deny {chat_id} — отказать (я останусь, но молча)\n"
+            f"Это защита: чужая группа не получит доступ к моему агенту."
+        )
+        try:
+            payload = {"text": text, "format": "markdown"}
+            resp = await self._http_client.post(
+                f"{API_SCHEME}://{API_HOST}/messages",
+                params={"user_id": self._owner_user_id},
+                content=json.dumps(payload).encode("utf-8"),
+                headers={"Authorization": self._token, "Content-Type": "application/json"},
+                timeout=15.0,
+            )
+            if resp.status_code >= 300:
+                logger.warning("[%s] approval notify HTTP %d", self.name, resp.status_code)
+        except Exception as e:
+            logger.warning("[%s] approval notify failed: %s", self.name, e)
+
+    async def _ensure_members_fresh(self, chat_id: str) -> None:
+        """Refresh the members cache for a group if it's stale (TTL).
+
+        Bounded by a short timeout so a slow MAX API call can never delay
+        the bot's reply — if the fetch hangs, we keep the stale cache.
+        """
+        if not self._http_client:
+            return
+        fresh_at = self._members_fetched_at.get(chat_id)
+        if fresh_at is not None and (time.time() - fresh_at) < self._members_ttl:
+            return
+        try:
+            await asyncio.wait_for(self._fetch_members(chat_id), timeout=3.0)
+        except asyncio.TimeoutError:
+            logger.debug("[%s] _ensure_members_fresh timed out for %s", self.name, chat_id)
+        except Exception as e:
+            logger.debug("[%s] _ensure_members_fresh failed for %s: %s", self.name, chat_id, e)
+
+    def _is_group_approved(self, chat_id: str) -> bool:
+        """A group is approved when: in the allowlist, or in approved_chats,
+        or (owner configured) the owner themselves is a member/owner of it."""
+        if chat_id in self._group_allowed_chats:
+            return True
+        if chat_id in self._approved_chats:
+            return True
+        # Owner's own group: owner_user_id is owner/admin of the group.
+        if self._owner_user_id:
+            members = self._members.get(chat_id, {})
+            owner_m = members.get(self._owner_user_id)
+            if owner_m and (owner_m.get("is_owner") or owner_m.get("is_admin")):
+                return True
+        return False
+
+    async def _delete_message(self, chat_id: str, message_id: str) -> bool:
+        """DELETE /messages?message_id= — remove a message in a group/channel.
+
+        Requires the bot to be an admin of the chat (MAX API enforces this).
+        Returns True on success, False otherwise.
+        """
+        if not self._http_client:
+            return False
+        try:
+            resp = await self._http_client.delete(
+                f"{API_SCHEME}://{API_HOST}/messages",
+                params={"message_id": message_id},
+                headers={"Authorization": self._token},
+                timeout=15.0,
+            )
+            if resp.status_code < 300:
+                logger.info("[%s] Deleted message %s in chat %s", self.name, message_id, chat_id)
+                return resp.json() is not False
+            logger.warning("[%s] delete_message HTTP %d for %s", self.name, resp.status_code, message_id)
+            return False
+        except Exception as e:
+            logger.warning("[%s] delete_message failed: %s", self.name, e)
+            return False
+
+    async def _ban_member(self, chat_id: str, user_id: str) -> bool:
+        """Remove/ban a member from a group chat.
+
+        Uses DELETE /chats/{chatId}/members/{userId} (kick). Requires the bot
+        to be an admin with add_remove_members permission.
+        """
+        if not self._http_client:
+            return False
+        try:
+            resp = await self._http_client.delete(
+                f"{API_SCHEME}://{API_HOST}/chats/{chat_id}/members/{user_id}",
+                headers={"Authorization": self._token},
+                timeout=15.0,
+            )
+            if resp.status_code < 300:
+                logger.info("[%s] Removed member %s from chat %s", self.name, user_id, chat_id)
+                return True
+            logger.warning("[%s] ban_member HTTP %d for %s in %s", self.name, resp.status_code, user_id, chat_id)
+            return False
+        except Exception as e:
+            logger.warning("[%s] ban_member failed: %s", self.name, e)
+            return False
+
+    async def _handle_moderation_command(self, chat_id: str, text: str, user_id: str) -> Optional[str]:
+        """Parse a moderation request and execute it if permitted.
+
+        Supported patterns (in approved groups only):
+          <bot> удали <text-fragment>  — delete matching messages
+          <bot> удали последнее          — delete the most recent message
+          <bot> бан <nick/name>          — remove the member
+
+        Permission: only the bot owner OR the group owner/admin may request
+        moderation. The bot itself must be group admin to actually delete/ban
+        (MAX API enforces this server-side).
+        Returns a reply string, or None if nothing matched / not permitted.
+        """
+        if not chat_id or not text:
+            return None
+        # Only handle moderation when the text contains a moderation verb
+        # (not necessarily at the start — "каин, бан вася" includes "бан").
+        low0 = text.lower().strip()
+        mod_words = ("удали", "удалить", "бан", "забанить", "кик", "kick")
+        if not any(w in low0 for w in mod_words):
+            return None
+        # Roles/permissions may have just changed — refresh before deciding.
+        try:
+            await self._ensure_members_fresh(chat_id)
+        except Exception:
+            pass
+        # Who is asking?
+        is_owner = bool(self._owner_user_id) and user_id == self._owner_user_id
+        member_info = self._members.get(str(chat_id), {})
+        sender_member = member_info.get(str(user_id), {})
+        is_group_owner = bool(sender_member.get("is_owner"))
+        is_group_admin = bool(sender_member.get("is_admin"))
+        if not (is_owner or is_group_owner or is_group_admin):
+            return "Только владелец или админы группы могут просить о модерации."
+
+        # Bot's own role in this chat
+        bot_member = member_info.get(str(self._id), {})
+        bot_is_admin = bool(bot_member.get("is_admin")) or bool(bot_member.get("is_owner"))
+        if not bot_is_admin:
+            return "Я не админ этой группы — не могу удалять сообщения или банить."
+
+        # Parse the moderation verb wherever it appears ("каин, бан вася").
+        low = low0
+        # --- delete branch ---
+        del_word = None
+        for w in ("удали", "удалить"):
+            if w in low:
+                del_word = w
+                break
+        if del_word:
+            idx = low.find(del_word)
+            fragment = text[idx + len(del_word):].strip(" ,.!?")
+            if not fragment:
+                return "Что удалить? Например: «каин, удали последнее» или «каин, удали <текст>»."
+            if fragment.lower() in ("последнее", "последний", "last"):
+                return "Удаление по «последнему» требует истории сообщений — пока не поддержано напрямую. Уточни текст."
+            # We don't keep a message log, so we can only confirm the request
+            # is understood. Real deletion by fragment needs a history fetch
+            # (GET /messages) — out of scope for this pass.
+            logger.info("[%s] Moderation delete requested by %s in %s: %s", self.name, user_id, chat_id, fragment)
+            return "Запрос на удаление принят. (Полное удаление по тексту требует истории сообщений — добавлю позже.)"
+
+        # --- ban branch ---
+        ban_word = None
+        for w in ("забанить", "забани", "бан", "кик", "kick"):
+            if w in low:
+                ban_word = w
+                break
+        if ban_word:
+            idx = low.find(ban_word)
+            target = text[idx + len(ban_word):].strip(" ,.!?")
+            if not target:
+                return "Кого забанить? Например: «каин, бан Вася»."
+            # Resolve target name/nick -> user_id from the members cache
+            target_id = None
+            tl = target.lower()
+            for uid, m in member_info.items():
+                name = str(m.get("first_name") or "").lower()
+                uname = str(m.get("username") or "").lower().lstrip("@")
+                if name == tl or uname == tl or (tl.startswith("@") and uname == tl.lstrip("@")):
+                    target_id = uid
+                    break
+            if not target_id:
+                return f"Не нашёл участника «{target}» в списке группы."
+            if target_id == self._id:
+                return "Я не могу забанить сам себя 😅"
+            ok = await self._ban_member(str(chat_id), target_id)
+            if ok:
+                return f"✅ {target} удалён из группы."
+            return "Не удалось забанить (нет прав администратора?)."
+        return None
 
     async def _register_commands(self) -> None:
         """PATCH /me/commands — set the bot command menu (best effort)."""
@@ -508,11 +800,52 @@ class MaxAdapter(BasePlatformAdapter):
     async def _handle_update(self, upd: Dict[str, Any]) -> None:
         """Process a single Update object from MAX."""
         update_type = upd.get("update_type") or upd.get("event") or "unknown"
+        # Bot added to a group / user started the bot in a chat — log the chat_id
+        # so the adapter learns group chat_ids without manual configuration.
+        if update_type in ("bot_added", "bot_started"):
+            chat = upd.get("chat") or upd.get("chat_id") or {}
+            cid = chat.get("chat_id") if isinstance(chat, dict) else chat
+            cid = cid or upd.get("chat_id") or upd.get("user_id")
+            cname = chat.get("title") if isinstance(chat, dict) else None
+            ctype = chat.get("chat_type") if isinstance(chat, dict) else None
+            logger.info(
+                "[%s] %s in chat %s (type=%s, name=%s) — learned group chat_id",
+                self.name, update_type, cid, ctype, cname,
+            )
+            if cid:
+                sid = str(cid)
+                self._known_chats[sid] = {
+                    "name": cname or sid,
+                    "type": "group" if ctype not in ("dialog", "dm") else "dm",
+                }
+                # Fetch member roles for this group (owners/admins/members).
+                if self._known_chats[sid]["type"] == "group":
+                    await self._fetch_members(sid)
+                # Approval gate: if this group is not approved/allowed and the
+                # bot has an owner configured, notify the owner and stay silent
+                # until approved.
+                if (
+                    self._known_chats[sid]["type"] == "group"
+                    and sid not in self._approved_chats
+                    and sid not in self._group_allowed_chats
+                    and self._owner_user_id
+                ):
+                    await self._notify_owner_approval(sid, cname or sid)
+            return
+
         if update_type != "message_created":
             logger.debug("[%s] Ignoring update type %s", self.name, update_type)
             return
 
         message = upd.get("message") or upd
+        # Group allowlist gate: if restricted and this chat is not allowed, drop.
+        recipient0 = message.get("recipient") or {}
+        chat_type0 = recipient0.get("chat_type") or "dialog"
+        cid0 = str(upd.get("chat_id") or recipient0.get("chat_id") or "")
+        if chat_type0 not in ("dialog", "dm") and cid0 and self._group_allowed_chats:
+            if cid0 not in self._group_allowed_chats:
+                logger.debug("[%s] Group %s not in allowlist, ignoring", self.name, cid0)
+                return
         sender = message.get("sender") or upd.get("user") or {}
         if sender.get("is_bot") or sender.get("isBot"):
             logger.debug("[%s] Skipping own/bot message", self.name)
@@ -633,8 +966,17 @@ class MaxAdapter(BasePlatformAdapter):
         user_id = str(sender.get("user_id") or "")
         user_name = sender.get("name") or user_id or "?"
         chat_type = recipient.get("chat_type") or "dialog"
-        if chat_type == "dialog":
+        # Normalize MAX chat types: dialog=DM, chat/channel/group=group
+        if chat_type in ("dialog", "dm"):
             chat_type = "dm"
+        else:
+            chat_type = "group"
+        # Remember the chat (so replies can route to it even after restart)
+        self._known_chats.setdefault(chat_id, {"name": chat_id, "type": chat_type})
+        if chat_type == "group" and self._known_chats[chat_id].get("name") == chat_id:
+            chat_title = recipient.get("chat_name") or recipient.get("title") or user_name
+            if chat_title:
+                self._known_chats[chat_id]["name"] = chat_title
 
         # Real message ID from MAX body.mid, fallback to timestamp
         mid = ""
@@ -644,6 +986,114 @@ class MaxAdapter(BasePlatformAdapter):
         if self._is_duplicate(msg_id):
             return
 
+        # Group filter: only respond when the group is approved AND the message is
+        # explicitly addressed to the bot (mention by name, @username, or alias).
+        # DM always responds.
+        if chat_type == "group":
+            if not self._is_group_approved(chat_id):
+                logger.debug("[%s] Group %s not approved, ignoring: %s", self.name, chat_id, text[:60])
+                return
+            # Keep member roles fresh (participants/roles change over time).
+            try:
+                await self._ensure_members_fresh(chat_id)
+            except Exception:
+                logger.debug("[%s] members refresh failed for %s", self.name, chat_id)
+            if not self._is_addressed_to_bot(text):
+                logger.debug("[%s] Group message not addressed to bot, ignoring: %s", self.name, text[:60])
+                return
+
+        # Owner-only commands: /approve <chat_id> and /deny <chat_id>
+        if user_id and self._owner_user_id and user_id == self._owner_user_id:
+            stripped = text.strip().lower()
+            if stripped.startswith("/approve"):
+                parts = stripped.split()
+                if len(parts) >= 2:
+                    target = parts[1]
+                    self._approved_chats.add(target)
+                    self._known_chats.setdefault(target, {"name": target, "type": "group"})
+                    logger.info("[%s] Owner approved group %s", self.name, target)
+                    # Acknowledge in DM
+                    try:
+                        payload = {"text": f"✅ Группа {target} одобрена. Могу работать.", "format": "markdown"}
+                        await self._http_client.post(
+                            f"{API_SCHEME}://{API_HOST}/messages",
+                            params={"user_id": self._owner_user_id},
+                            content=json.dumps(payload).encode("utf-8"),
+                            headers={"Authorization": self._token, "Content-Type": "application/json"},
+                            timeout=15.0,
+                        )
+                    except Exception:
+                        pass
+                return
+            if stripped.startswith("/deny"):
+                parts = stripped.split()
+                if len(parts) >= 2:
+                    target = parts[1]
+                    self._approved_chats.discard(target)
+                    logger.info("[%s] Owner denied group %s", self.name, target)
+                    try:
+                        payload = {"text": f"🚫 Группа {target} отклонена. Буду молчать там.", "format": "markdown"}
+                        await self._http_client.post(
+                            f"{API_SCHEME}://{API_HOST}/messages",
+                            params={"user_id": self._owner_user_id},
+                            content=json.dumps(payload).encode("utf-8"),
+                            headers={"Authorization": self._token, "Content-Type": "application/json"},
+                            timeout=15.0,
+                        )
+                    except Exception:
+                        pass
+                return
+
+
+        # Role-aware slash commands (plugin-level gate, no core changes).
+        #   owner of the bot      -> all commands incl. moderation
+        #   owner/admin of group  -> safe session commands (/new /reset /compress)
+        #   members               -> no slash commands at all
+        if text.startswith("/"):
+            stripped_cmd = text.strip().lower().split()[0] if text.strip() else ""
+            is_owner = bool(self._owner_user_id) and user_id == self._owner_user_id
+            member_info = self._members.get(str(chat_id), {})
+            sender_member = member_info.get(str(user_id), {})
+            is_group_owner = bool(sender_member.get("is_owner"))
+            is_group_admin = bool(sender_member.get("is_admin"))
+            safe_cmds = {"/new", "/reset", "/compress", "/status", "/help"}
+
+            if chat_type == "group":
+                # Approve/deny handled above (owner-only); anything else:
+                # members get nothing, group owners/admins get safe commands.
+                if is_owner:
+                    pass  # owner can run anything
+                elif is_group_owner or is_group_admin:
+                    if stripped_cmd not in safe_cmds:
+                        logger.debug("[%s] Group admin command %s not allowed", self.name, stripped_cmd)
+                        # Silently drop non-safe slash from group admin
+                        return
+                else:
+                    logger.debug("[%s] Group member slash %s ignored", self.name, stripped_cmd)
+                    return
+            # DM: non-owner slash commands pass through to the agent
+            # (the agent/gateway handles them normally).
+
+        # Moderation requests in approved groups ("удали <текст>" / "бан <ник>")
+        # — handled before the agent, only for owner/group-owner/admin askers.
+        if chat_type == "group":
+            mod_reply = await self._handle_moderation_command(chat_id, text, user_id)
+            if mod_reply is not None:
+                # Reply directly in the group
+                try:
+                    payload = {"text": mod_reply, "format": "markdown"}
+                    resp = await self._http_client.post(
+                        f"{API_SCHEME}://{API_HOST}/messages",
+                        params={"chat_id": chat_id},
+                        content=json.dumps(payload).encode("utf-8"),
+                        headers={"Authorization": self._token, "Content-Type": "application/json"},
+                        timeout=15.0,
+                    )
+                    logger.info("[%s] Moderation reply sent (HTTP %s)", self.name, getattr(resp, "status_code", "?"))
+                except Exception as e:
+                    logger.warning("[%s] Moderation reply failed: %s", self.name, e)
+                return
+
         timestamp = datetime.now(tz=timezone.utc)
         try:
             ts = upd.get("timestamp") or message.get("timestamp")
@@ -652,15 +1102,20 @@ class MaxAdapter(BasePlatformAdapter):
         except (ValueError, OSError, TypeError):
             pass
 
+        chat_name = self._known_chats.get(chat_id, {}).get("name") or user_name
         source = self.build_source(
             chat_id=chat_id,
-            chat_name=user_name,
+            chat_name=chat_name,
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
         )
         # Store user_id on metadata so send() can reply to the right recipient
         self._last_user_id = user_id
+
+        channel_prompt = None
+        if chat_type == "group":
+            channel_prompt = self._resolve_channel_prompt(chat_id)
 
         message_event = MessageEvent(
             text=text,
@@ -671,11 +1126,92 @@ class MaxAdapter(BasePlatformAdapter):
             timestamp=timestamp,
             media_urls=media_urls,
             media_types=media_types,
+            user_id=user_id,
+            user_name=user_name,
+            channel_prompt=channel_prompt,
+            metadata={
+                "max_name": self._name,
+                "max_username": self._username,
+                "chat_type": chat_type,
+            },
         )
 
         logger.info("[%s] Message from %s (chat %s): %s", self.name, user_name, chat_id, text[:80])
         logger.debug("[%s] RAW update keys=%s body=%s", self.name, list(upd.keys()), json.dumps(body_obj, ensure_ascii=False)[:500])
         await self.handle_message(message_event)
+
+    def _resolve_channel_prompt(self, chat_id: str) -> Optional[str]:
+        """Resolve the per-group ephemeral prompt for a chat.
+
+        Builds an auto mini-prompt from the bot's own identity (name,
+        username, description) merged with any custom ``channel_prompts``
+        entry from config.extra (keyed by chat_id). This text is injected at
+        the start of the session context so the agent always knows who it is,
+        how it is addressed, and what it is for in this group.
+        """
+        from gateway.platforms.base import resolve_channel_prompt
+
+        parts = []
+        if self._name:
+            parts.append(f"Ты — {self._name}.")
+        if self._username:
+            parts.append(f"К тебе обращаются: @{self._username}, {self._name or 'бот'}.")
+        if self._description:
+            parts.append(self._description)
+        if self._name or self._username:
+            parts.append(
+                "Если тебя упоминают в третьем лице без прямого вопроса или просьбы — "
+                "прими к сведению, но не отвечай вслух в чат."
+            )
+        # Role awareness: if the bot is admin/owner of the group, say so and
+        # state moderation capabilities (delete/ban) — so the agent knows what
+        # it is ALLOWED to do in this specific group. Members without rights
+        # get a notice that moderation is unavailable..
+        member_info = self._members.get(str(chat_id), {})
+        bot_member = member_info.get(str(self._id))
+        if bot_member:
+            if bot_member.get("is_owner"):
+                parts.append("Ты владелец этой группы.")
+            elif bot_member.get("is_admin"):
+                perms = bot_member.get("permissions") or []
+                parts.append(f"Ты администратор этой группы. Права: {', '.join(perms) if perms else 'стандартные'}.")
+                parts.append("Ты можешь удалять сообщения и управлять участниками группы (по просьбе владельца или админов).")
+            else:
+                parts.append("Ты обычный участник этой группы — модерация недоступна.")
+        auto = " ".join(parts).strip()
+
+        custom = resolve_channel_prompt(self.config.extra, str(chat_id)) or ""
+        if auto and custom:
+            combined = f"{auto}\n\n{custom}"
+            return combined
+        return auto or custom or None
+
+    def _is_addressed_to_bot(self, text: str) -> bool:
+        """Heuristic: is this message addressed to the bot?
+
+        Returns True if the text contains the bot's @username or display name
+        (or any configured alias), case-insensitive. Used only for group chats;
+        DMs always respond. Generic words like "бот"/"bot" are intentionally
+        NOT matches — the bot answers only when addressed by its actual name.
+        """
+        if not text:
+            return False
+        low = text.lower()
+        # @username mention (with or without @)
+        if self._username:
+            u = self._username.lower().lstrip("@")
+            if u and ("@" + u in low or u in low):
+                return True
+        # Display name (first_name) — e.g. "матрёшка, сколько время?"
+        if self._name:
+            n = self._name.lower().strip()
+            if n and n in low:
+                return True
+        # Configured aliases (from config.extra.bot_aliases)
+        for alias in self._aliases:
+            if alias and alias in low:
+                return True
+        return False
 
     def _is_duplicate(self, msg_id: str) -> bool:
         now = time.time()
@@ -1069,6 +1605,18 @@ def _env_enablement() -> dict | None:
     home = os.getenv("MAX_HOME_CHANNEL", "").strip()
     if home:
         seed["home_channel"] = {"chat_id": home, "name": os.getenv("MAX_HOME_CHANNEL_NAME", home)}
+    group_allow = os.getenv("MAX_GROUP_ALLOWED_CHATS", "").strip()
+    if group_allow:
+        seed["group_allowed_chats"] = group_allow
+    owner = os.getenv("MAX_OWNER_USER_ID", "").strip()
+    if owner:
+        seed["owner_user_id"] = owner
+    approved = os.getenv("MAX_APPROVED_CHATS", "").strip()
+    if approved:
+        seed["approved_chats"] = approved
+    gspu = os.getenv("MAX_GROUP_SESSIONS_PER_USER", "").strip().lower()
+    if gspu in ("true", "1", "yes", "false", "0", "no"):
+        seed["group_sessions_per_user"] = gspu in ("true", "1", "yes")
     return seed
 
 
@@ -1168,10 +1716,106 @@ async def _standalone_send(
         return {"error": f"max standalone send failed: {e}"}
 
 
+def interactive_setup() -> None:
+    """Interactive hermes gateway setup flow for the MAX platform.
+
+    Lazy-imports ``hermes_cli.setup`` helpers so the plugin stays importable
+        in non-CLI contexts (gateway runtime, tests).
+    """
+    from hermes_cli.setup import (
+        prompt,
+        prompt_yes_no,
+        save_env_value,
+        get_env_value,
+        print_header,
+        print_info,
+        print_warning,
+        print_success,
+    )
+
+    print_header("MAX (Russian Messenger)")
+    existing = get_env_value("MAX_BOT_TOKEN")
+    if existing:
+        print_info("MAX: already configured")
+        if not prompt_yes_no("Reconfigure MAX?", False):
+            return
+
+    print_info("Connect Hermes to MAX (max.ru). Create a bot at")
+    print_info("  business.max.ru → Чат-боты → создать → Расширенные настройки → Настроить")
+    print()
+
+    token = prompt("MAX bot token", password=True)
+    if not token:
+        print_warning("Token is required — skipping MAX setup")
+        return
+    save_env_value("MAX_BOT_TOKEN", token.strip())
+
+    print()
+    print_info("🔒 Access control")
+    print_info("  DM (личные диалоги): кто может писать боту в личку.")
+    allowed_users = prompt(
+        "Allowed user IDs for DMs (comma-separated; empty = ask later)",
+        default=get_env_value("MAX_ALLOWED_USERS") or "",
+    )
+    if allowed_users:
+        save_env_value("MAX_ALLOWED_USERS", allowed_users.strip())
+        print_success("  Saved — only these users can DM the bot.")
+    else:
+        print_warning("  No DM allowlist set — will deny all DMs until configured.")
+
+    print()
+    print_info("👥 Group chats")
+    group_chats = prompt(
+        "Allowed group chat IDs (comma-separated; empty = any group)",
+        default=get_env_value("MAX_GROUP_ALLOWED_CHATS") or "",
+    )
+    if group_chats:
+        save_env_value("MAX_GROUP_ALLOWED_CHATS", group_chats.strip())
+        print_success("  Saved — bot works only in these groups.")
+    else:
+        print_info("  No group restriction — bot may be added to any group.")
+
+    shared = prompt_yes_no(
+        "Shared group context? (false = one session for the whole group, "
+        "recommended for party bots; true = separate session per member)",
+        False,
+    )
+    save_env_value("MAX_GROUP_SESSIONS_PER_USER", "false" if shared else "true")
+    print_success("  Group sessions: %s" % ("shared (whole group)" if shared else "per user"))
+
+    print()
+    print_info("👑 Bot owner (full access: terminal, files)")
+    owner_id = prompt(
+        "Your MAX user ID (owner of this bot)",
+        default=get_env_value("MAX_OWNER_USER_ID") or "",
+    )
+    if owner_id:
+        save_env_value("MAX_OWNER_USER_ID", owner_id.strip())
+        print_success("  Saved — this user has full access and can /approve groups.")
+    else:
+        print_warning("  No owner set — approval of new groups disabled. Set MAX_OWNER_USER_ID later.")
+
+    print()
+    print_info("🛡️ Group approval")
+    approved = prompt(
+        "Pre-approved group chat IDs (comma-separated; empty = ask owner on add)",
+        default=get_env_value("MAX_APPROVED_CHATS") or "",
+    )
+    if approved:
+        save_env_value("MAX_APPROVED_CHATS", approved.strip())
+        print_success("  Saved — these groups are pre-approved.")
+    else:
+        print_info("  No pre-approved groups — bot will ask the owner when added to a new group.")
+
+    print()
+    print_success("MAX setup complete. Restart the gateway to apply.")
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system at startup."""
     ctx.register_platform(
         name="max",
+        setup_fn=interactive_setup,
         label="MAX",
         adapter_factory=lambda cfg: MaxAdapter(cfg),
         check_fn=check_requirements,

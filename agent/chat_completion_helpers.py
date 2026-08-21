@@ -34,6 +34,7 @@ from agent.error_classifier import (
     PROVIDER_STREAM_NON_JSON_ERROR_CODE,
 )
 from agent.errors import EmptyStreamError
+from agent.request_contract import validate_api_kwargs
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
@@ -49,6 +50,12 @@ from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 logger = logging.getLogger(__name__)
+
+# Sentinel: ``build_api_kwargs(..., tools=...)`` uses agent.tools by default.
+# Pass ``tools=None`` (or ``[]``) for an explicit toolless request — never
+# mutate kwargs after the builder returns.
+_TOOLS_UNSET: Any = object()
+
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 _PROVIDER_STREAM_ERROR_FINISH_REASONS = {"error", "error_finish"}
 _PROVIDER_STREAM_SSE_FIELDS = {"event", "data", "id", "retry"}
@@ -1131,6 +1138,11 @@ def direct_api_call(agent, api_kwargs: dict):
     outer retry loop reconnects with backoff / credential rotation /
     provider fallback.
     """
+    validate_api_kwargs(
+        api_kwargs,
+        api_mode=getattr(agent, "api_mode", None),
+        where="direct_api_call",
+    )
     _check_stale_giveup(agent)
     agent._touch_activity("waiting for non-streaming API response")
     # Request-lifecycle state, every transition under ``request_client_lock``
@@ -1346,6 +1358,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
     the main retry loop can try again with backoff / credential rotation /
     provider fallback.
     """
+    # Fail-fast on illegal tools/tool_choice shapes before any provider I/O.
+    validate_api_kwargs(
+        api_kwargs,
+        api_mode=getattr(agent, "api_mode", None),
+        where="interruptible_api_call",
+    )
     # Cron and other non-interactive, nested-pool contexts must not spawn the
     # interrupt worker — it wedges before the socket opens on the 2nd+ call
     # (#62151). Run inline instead. See should_use_direct_api_call.
@@ -1822,9 +1840,30 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
-def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
-    """Build the keyword arguments dict for the active API mode."""
-    if tools_for_api is None:
+def build_api_kwargs(
+    agent,
+    api_messages: list,
+    tools_for_api: list | None = None,
+    *,
+    tools: Any = _TOOLS_UNSET,
+) -> dict:
+    """Build the keyword arguments dict for the active API mode.
+
+    Args:
+        tools_for_api: positional override for the tools list; ``None``
+            (default) means use ``agent.tools``.
+        tools: keyword-only override that takes precedence over
+            ``tools_for_api`` when supplied.
+            * omitted (default) — fall back to ``tools_for_api`` / ``agent.tools``
+            * ``None`` or ``[]`` — explicit toolless request (summary path)
+            * non-empty list — use that list instead of ``agent.tools``
+
+    Never strip tools from the returned dict after the fact — that desyncs
+    ``tool_choice`` / ``parallel_tool_calls`` (Responses API 400).
+    """
+    if tools is not _TOOLS_UNSET:
+        tools_for_api = tools
+    elif tools_for_api is None:
         tools_for_api = agent.tools
 
     if agent.api_mode == "anthropic_messages":
@@ -2997,8 +3036,16 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             summary_extra_body["tags"] = _portal_tags()
 
         if agent.api_mode == "codex_responses":
-            codex_kwargs = agent._build_api_kwargs(api_messages)
-            codex_kwargs.pop("tools", None)
+            # Explicit toolless build — never pop tools from a tool-calling
+            # kwargs dict (that leaves tool_choice / parallel_tool_calls and
+            # 400s the Responses API). Complementary to #32777 / #61777 strip
+            # approach: build correctly instead of mutating after the fact.
+            codex_kwargs = agent._build_api_kwargs(api_messages, tools=None)
+            validate_api_kwargs(
+                codex_kwargs,
+                api_mode=agent.api_mode,
+                where="handle_max_iterations.codex_summary",
+            )
             summary_response = agent._run_codex_stream(codex_kwargs)
             _ct_sum = agent._get_transport()
             _cnr_sum = _ct_sum.normalize_response(summary_response)
@@ -3079,6 +3126,11 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     base_url=getattr(agent, "_anthropic_base_url", None),
                 )
                 _ant_kw = _merge_nous_portal_messages_extra_body(agent, _ant_kw)
+                validate_api_kwargs(
+                    _ant_kw,
+                    api_mode=agent.api_mode,
+                    where="handle_max_iterations.anthropic_summary",
+                )
                 summary_response = _managed_summary_call(
                     _ant_kw,
                     agent._anthropic_messages_create,
@@ -3087,6 +3139,11 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_summary_result.content or "").strip()
             else:
+                validate_api_kwargs(
+                    summary_kwargs,
+                    api_mode=agent.api_mode,
+                    where="handle_max_iterations.chat_summary",
+                )
                 summary_client = agent._ensure_primary_openai_client(
                     reason="iteration_limit_summary"
                 )
@@ -3112,8 +3169,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         else:
             # Retry summary generation
             if agent.api_mode == "codex_responses":
-                codex_kwargs = agent._build_api_kwargs(api_messages)
-                codex_kwargs.pop("tools", None)
+                codex_kwargs = agent._build_api_kwargs(api_messages, tools=None)
+                validate_api_kwargs(
+                    codex_kwargs,
+                    api_mode=agent.api_mode,
+                    where="handle_max_iterations.codex_summary_retry",
+                )
                 retry_response = agent._run_codex_stream(codex_kwargs)
                 _ct_retry = agent._get_transport()
                 _cnr_retry = _ct_retry.normalize_response(retry_response)
@@ -3131,6 +3192,11 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     base_url=getattr(agent, "_anthropic_base_url", None),
                 )
                 _ant_kw2 = _merge_nous_portal_messages_extra_body(agent, _ant_kw2)
+                validate_api_kwargs(
+                    _ant_kw2,
+                    api_mode=agent.api_mode,
+                    where="handle_max_iterations.anthropic_summary_retry",
+                )
                 retry_response = _managed_summary_call(
                     _ant_kw2,
                     agent._anthropic_messages_create,
@@ -3152,6 +3218,11 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
 
+                validate_api_kwargs(
+                    summary_kwargs,
+                    api_mode=agent.api_mode,
+                    where="handle_max_iterations.chat_summary_retry",
+                )
                 summary_client = agent._ensure_primary_openai_client(
                     reason="iteration_limit_summary_retry"
                 )
@@ -3288,6 +3359,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     Falls back to _interruptible_api_call on provider errors indicating
     streaming is not supported.
     """
+    validate_api_kwargs(
+        api_kwargs,
+        api_mode=getattr(agent, "api_mode", None),
+        where="interruptible_streaming_api_call",
+    )
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
 

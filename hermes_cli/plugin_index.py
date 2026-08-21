@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,8 +28,13 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 # Canonical index location. Override via config key ``plugins.index_url``.
+# The index is maintained in this repository — ``hermes_cli/data/plugin_index.json``
+# is the single source of truth: the raw GitHub URL below is the canonical fetch
+# endpoint and the bundled copy is the offline fallback, so the two stay in sync
+# by construction. Plugin authors submit entries via a PR to hermes-agent
+# (see website/docs/user-guide/features/plugins.md).
 DEFAULT_INDEX_URL = (
-    "https://raw.githubusercontent.com/NousResearch/hermes-plugin-index/main/index.json"
+    "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/hermes_cli/data/plugin_index.json"
 )
 
 # Cache the fetched index for 24 hours; a stale cache is still preferred over
@@ -200,6 +206,11 @@ def _fetch_remote() -> Optional[List[PluginIndexEntry]]:
         return entries
     except Exception as exc:
         logger.debug("plugin index: remote fetch failed (%s): %s", url, exc)
+        print(
+            f"Warning: could not reach the plugin index at {url} "
+            f"({exc.__class__.__name__}: {exc}); showing the cached or bundled index",
+            file=sys.stderr,
+        )
         return None
 
 

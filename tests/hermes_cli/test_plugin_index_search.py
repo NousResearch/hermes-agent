@@ -496,3 +496,65 @@ class TestCmdSearch:
             "capability": None,
             "refresh": False,
         }
+
+
+# ---------------------------------------------------------------------------
+# Index endpoint (issue #86154)
+# ---------------------------------------------------------------------------
+
+
+class TestIndexEndpoint:
+    def test_default_index_url_serves_repo_catalog(self):
+        """The canonical index URL must point at a live file in this repository.
+
+        Regression guard for #86154: the URL previously pointed at
+        NousResearch/hermes-plugin-index, which does not exist (404), so every
+        user silently searched the bundled seed forever.
+        """
+        assert plugin_index.DEFAULT_INDEX_URL == (
+            "https://raw.githubusercontent.com/NousResearch/hermes-agent/"
+            "main/hermes_cli/data/plugin_index.json"
+        )
+
+    def test_remote_fetch_failure_warns_on_stderr(self, monkeypatch, capsys):
+        """A failed remote fetch must be visible on stderr, not just debug logs.
+
+        Regression guard for #86154: the failure used to be swallowed at debug
+        level, so the permanent seed fallback was invisible.
+        """
+        import httpx
+
+        def boom(url, **kwargs):
+            raise httpx.ConnectError("connection refused")
+
+        monkeypatch.setattr(httpx, "get", boom)
+        assert plugin_index._fetch_remote() is None
+        err = capsys.readouterr().err
+        assert "Warning: could not reach the plugin index" in err
+        assert "connection refused" in err
+
+    def test_remote_fetch_http_404_warns_on_stderr(self, monkeypatch, capsys):
+        """The exact #86154 scenario (HTTP 404) also surfaces on stderr."""
+        import httpx
+
+        req = httpx.Request("GET", plugin_index.DEFAULT_INDEX_URL)
+
+        class NotFoundResponse:
+            text = ""
+
+            def raise_for_status(self):
+                raise httpx.HTTPStatusError(
+                    "Not Found", request=req, response=httpx.Response(404, request=req)
+                )
+
+        monkeypatch.setattr(httpx, "get", lambda *a, **k: NotFoundResponse())
+        assert plugin_index._fetch_remote() is None
+        assert "Warning: could not reach the plugin index" in capsys.readouterr().err
+
+    def test_bundled_seed_has_no_dead_media_studio_entry(self):
+        """The unclonable seed entry (NousResearch/hermes-media-studio, 404)
+        must not be part of the bundled seed."""
+        raw = json.loads(plugin_index.SEED_INDEX_PATH.read_text(encoding="utf-8"))
+        repos = [e["repo"] for e in raw["plugins"]]
+        assert "NousResearch/hermes-media-studio" not in repos
+        assert "NousResearch/hermes-telegram-business" in repos

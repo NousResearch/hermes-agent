@@ -398,11 +398,38 @@ def collapse_const_unions(schema: Any) -> Any:
     return out
 
 
+# Structural JSON-Schema keywords whose value must be an array or object —
+# never JSON ``null``. A ``null`` here (produced by a malformed MCP server, a
+# plugin, or a buggy dynamic schema override) is rejected outright by strict
+# OpenAI-compatible backends with ``Invalid schema for function 'X': null is
+# not of type "array"``, which is a non-retryable HTTP 400 that kills the whole
+# session (NousResearch/hermes-agent#59386). ``default`` / ``const`` are
+# intentionally excluded: JSON ``null`` is a legal value for those.
+_NULL_INVALID_SCHEMA_KEYS = frozenset({
+    "type",
+    "properties",
+    "required",
+    "enum",
+    "examples",
+    "items",
+    "additionalProperties",
+    "anyOf",
+    "oneOf",
+    "allOf",
+    "$defs",
+    "definitions",
+    "dependentRequired",
+})
+
+
 def _sanitize_node(node: Any, path: str) -> Any:
     """Recursively sanitize a JSON-Schema fragment.
 
     - Replaces bare-string schema values ("object", "string", ...) with
       ``{"type": <value>}`` so downstream consumers see a dict.
+    - Drops structural keywords (``required``, ``enum``, ``items``, ...) whose
+      value is JSON ``null`` — strict backends reject the whole request with
+      ``null is not of type "array"`` (see ``_NULL_INVALID_SCHEMA_KEYS``).
     - Injects ``properties: {}`` into object-typed nodes missing it.
     - Normalizes ``type: [X, "null"]`` arrays to single ``type: X`` (keeping
       ``nullable: true`` as a hint), and multi-type arrays like
@@ -447,6 +474,19 @@ def _sanitize_node(node: Any, path: str) -> Any:
 
     out: dict = {}
     for key, value in node.items():
+        # A structural keyword whose value is JSON ``null`` (from a malformed
+        # MCP server, plugin, or dynamic schema override) is what makes strict
+        # OpenAI-compatible backends reject the whole tool schema with
+        # ``Invalid schema for function 'X': null is not of type "array"``
+        # (NousResearch/hermes-agent#59386). Drop the keyword so the rest of the
+        # schema still reaches the model instead of failing the request.
+        if value is None and key in _NULL_INVALID_SCHEMA_KEYS:
+            logger.debug(
+                "schema_sanitizer[%s]: dropped null-valued %r keyword "
+                "(strict-backend compat)", path, key,
+            )
+            continue
+
         # JSON Schema ``type`` arrays (e.g. ``["number", "string"]``, common
         # in MCP tool schemas) are rejected by several tool-call backends:
         #   * llama.cpp's grammar generator only accepts a singular string type.
@@ -502,17 +542,25 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 _sanitize_node(item, f"{path}.{key}[{i}]")
                 for i, item in enumerate(value)
             ]
-        elif key in {"required", "enum", "examples", "dependentRequired"}:
+        elif (
+            key in {"required", "enum", "examples", "dependentRequired", "default", "const"}
+            or key.startswith("x-")
+        ):
             # Schema "sibling" keywords whose values are NOT schemas:
             #  - ``required``: list of property-name strings
             #  - ``enum``: list of literal values (any JSON type)
             #  - ``examples``: list of example values (any JSON type)
             #  - ``dependentRequired``: mapping of property names to lists of
             #    required property-name strings (JSON Schema 2020-12)
+            #  - ``default`` / ``const``: a single literal value (any JSON
+            #    type — including objects whose keys may collide with schema
+            #    keywords like ``type`` or ``enum``)
+            #  - ``x-*``: OpenAPI-style extension keywords (annotations)
             # Recursing into these with _sanitize_node() would mis-interpret
-            # literal strings like "path" as bare-string schemas and replace
-            # them with {"type": "object"} dicts. Pass through unchanged
-            # (remapping ``required`` entries through the property renames).
+            # literal strings like "path" as bare-string schemas, and the
+            # null-keyword drop would delete data keys like ``"type": null``
+            # inside literal objects. Pass through unchanged (remapping
+            # ``required`` entries through the property renames).
             if key == "required" and prop_renames and isinstance(value, list):
                 out[key] = [prop_renames.get(r, r) if isinstance(r, str) else r
                             for r in value]

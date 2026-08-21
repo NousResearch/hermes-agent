@@ -1621,7 +1621,7 @@ def _special_file_kind(path) -> str | None:
     return "a special (non-regular) file"
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default", deduplicate: bool = True) -> str:
     """Read a file with pagination and line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
@@ -1787,9 +1787,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             return cached_not_found
 
         # ── Dedup check ───────────────────────────────────────────────
-        # If we already read this exact (path, offset, limit) and the
-        # file hasn't been modified since, return a lightweight stub
-        # instead of re-sending the same content.  Saves context tokens.
+        # Native reads deduplicate unchanged content to save context tokens.
+        # RPC callers may disable this when they need a stable content-bearing
+        # return contract (for example, hermes_tools.read_file in execute_code).
         resolved_str = str(_resolved)
         dedup_key = (resolved_str, offset, limit)
         with _read_tracker_lock:
@@ -1805,8 +1805,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 task_data["dedup_hits"] = {}
             if "read_timestamps" not in task_data:
                 task_data["read_timestamps"] = {}
-            cached_mtime = task_data.get("dedup", {}).get(dedup_key)
-
+            cached_mtime = task_data.get("dedup", {}).get(dedup_key) if deduplicate else None
         if cached_mtime is not None:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
@@ -2754,7 +2753,7 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid, deduplicate=args.get("deduplicate", True))
 
 
 def _handle_write_file(args, **kw):

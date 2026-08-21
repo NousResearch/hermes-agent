@@ -342,9 +342,9 @@ _TOOL_STUBS = {
     ),
     "read_file": (
         "read_file",
-        "path: str, offset: int = 1, limit: int = 2000",
-        '"""Read a file (1-indexed lines). Returns dict with "content" and "total_lines"."""',
-        '{"path": path, "offset": offset, "limit": limit}',
+        "path: str, offset: int = 1, limit: int = 2000, deduplicate: bool = False",
+        '"""Read a file with a stable content-bearing result. Deduplication is disabled by default so prior native reads cannot change the return schema."""',
+        '{"path": path, "offset": offset, "limit": limit, "deduplicate": deduplicate}',
     ),
     "write_file": (
         "write_file",

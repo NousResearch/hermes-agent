@@ -31,6 +31,27 @@ class TestReadFileHandler:
         assert result["total_lines"] == 2
         mock_ops.read_file.assert_called_once_with("/tmp/test.txt", 1, 2000)
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_deduplicate_false_preserves_content_schema_after_prior_read(self, mock_get):
+        """execute_code reads must not receive a schema-changing dedup stub."""
+        from tools.file_tools import read_file_tool, _read_tracker
+
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "line1\nline2"
+        result_obj.to_dict.return_value = {"content": "line1\nline2", "total_lines": 2}
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+        task_id = "stable-schema-dedup-test"
+        _read_tracker.pop(task_id, None)
+
+        first = json.loads(read_file_tool("/tmp/test.txt", task_id=task_id))
+        second = json.loads(read_file_tool("/tmp/test.txt", task_id=task_id, deduplicate=False))
+
+        assert first["content"] == second["content"] == "line1\nline2"
+        assert mock_ops.read_file.call_count == 2
+        _read_tracker.pop(task_id, None)
+
 
     @patch("tools.file_tools._get_file_ops")
     def test_exception_returns_error_json(self, mock_get):

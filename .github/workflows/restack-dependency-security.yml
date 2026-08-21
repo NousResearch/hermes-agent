@@ -1,0 +1,113 @@
+name: Restack dependency-security remediation
+
+on:
+  push:
+    branches:
+      - restack/pr89479-current-main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dependency-security-restack-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  generate-and-verify:
+    if: ${{ github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[generated]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out exact restack branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+
+      - name: Use repository-authorized npm
+        run: npm install --global npm@11.17.0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Apply source-derived manifest and layout changes
+        run: python3 .github/scripts/restack_dependency_security.py apply
+
+      - name: Regenerate current-main npm lock graph
+        run: npm install --package-lock-only --ignore-scripts --include=optional
+
+      - name: Regenerate the exact h2 security lock edge
+        run: uv lock --upgrade-package 'h2==4.4.1'
+
+      - name: Verify graph semantics and current-main preservation
+        run: python3 .github/scripts/restack_dependency_security.py verify
+
+      - name: Verify focused regression and lock integrity
+        run: |
+          node --test apps/desktop/scripts/packaged-app-layout.test.mjs
+          uv lock --check
+          git diff --check
+
+      - name: Verify npm advisory closure
+        run: |
+          npm audit --workspaces=false --audit-level=high
+          npm audit --workspace web --audit-level=high
+          npm audit --workspace ui-tui --audit-level=high
+          npm audit --workspace apps/desktop --audit-level=high
+
+      - name: Publish exact generated object
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git config user.name 'Axl Ibiza, MBA'
+          git config user.email 'andrexibiza@gmail.com'
+
+          git rm -- .github/workflows/restack-dependency-security.yml .github/scripts/restack_dependency_security.py
+          git add -- \
+            .npmrc \
+            apps/desktop/package.json \
+            apps/desktop/scripts/packaged-app-layout.mjs \
+            apps/desktop/scripts/packaged-app-layout.test.mjs \
+            apps/desktop/scripts/test-desktop.mjs \
+            package.json \
+            package-lock.json \
+            uv.lock
+
+          git diff --cached --check
+
+          python3 - <<'PY'
+          import subprocess
+
+          expected = {
+              '.github/scripts/restack_dependency_security.py',
+              '.github/workflows/restack-dependency-security.yml',
+              '.npmrc',
+              'apps/desktop/package.json',
+              'apps/desktop/scripts/packaged-app-layout.mjs',
+              'apps/desktop/scripts/packaged-app-layout.test.mjs',
+              'apps/desktop/scripts/test-desktop.mjs',
+              'package-lock.json',
+              'package.json',
+              'uv.lock',
+          }
+          actual = set(subprocess.check_output(
+              ['git', 'diff', '--cached', '--name-only'], text=True
+          ).splitlines())
+          if actual != expected:
+              raise SystemExit(
+                  f'unexpected staged paths\nexpected={sorted(expected)}\nactual={sorted(actual)}'
+              )
+          PY
+
+          git commit -m 'fix(deps): restack advisory remediation on current main [generated]' \
+            -m 'Reapply schmitzi8’s Electron/extractor/Linux-layout repair from #89479, adopt orcaspainting-dev’s scoped Nano ID override from #90486, preserve current-main dependency movement, and regenerate the npm and Python lock graphs.' \
+            -m 'Co-authored-by: schmitzi8 <281458983+schmitzi8@users.noreply.github.com>' \
+            -m 'Co-authored-by: orcaspainting-dev <264355715+orcaspainting-dev@users.noreply.github.com>'
+
+          git push origin "HEAD:${BRANCH}"

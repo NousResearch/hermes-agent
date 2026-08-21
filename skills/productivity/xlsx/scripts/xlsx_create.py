@@ -31,6 +31,9 @@ Spec (JSON object):
           {"name": "Sales", "range": "A1:C4",
            "style": "TableStyleMedium9"}        # native Excel table
         ],
+        # NOTE: table header cells must be non-empty and unique, and a
+        # sheet "autofilter" overlapping a table range is dropped with a
+        # warning -- Excel repair-strips files that carry both.
         "protection": {"password": "your-password",   # NOT security --
                        "unlock": ["B2:B9"]}           # see SKILL.md Pitfalls
       }
@@ -72,7 +75,8 @@ from openpyxl.comments import Comment
 from openpyxl.formatting.rule import CellIsRule, ColorScaleRule
 from openpyxl.styles import (Alignment, Border, Font, PatternFill,
                              Protection, Side)
-from openpyxl.utils import column_index_from_string, range_boundaries
+from openpyxl.utils import (column_index_from_string, get_column_letter,
+                            range_boundaries)
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -155,6 +159,31 @@ def add_chart(ws, spec):
     ws.add_chart(chart, spec.get("anchor", "H2"))
 
 
+def ranges_intersect(a, b):
+    a_min_col, a_min_row, a_max_col, a_max_row = range_boundaries(a)
+    b_min_col, b_min_row, b_max_col, b_max_row = range_boundaries(b)
+    return (a_min_col <= b_max_col and b_min_col <= a_max_col
+            and a_min_row <= b_max_row and b_min_row <= a_max_row)
+
+
+def check_table_header(ws, name, ref):
+    """Excel repair-strips tables whose header cells are empty/duplicated."""
+    min_col, min_row, max_col, _ = range_boundaries(ref)
+    seen = set()
+    for col in range(min_col, max_col + 1):
+        coord = f"{get_column_letter(col)}{min_row}"
+        value = ws[coord].value
+        if value is None or str(value).strip() == "":
+            raise ValueError(
+                f"table {name!r}: header cell {coord} is empty -- every "
+                "table column needs a non-empty, unique header")
+        if str(value) in seen:
+            raise ValueError(
+                f"table {name!r}: duplicate header {str(value)!r} at {coord}"
+                " -- table column headers must be unique")
+        seen.add(str(value))
+
+
 def add_conditional(ws, spec):
     rng = spec["range"]
     kind = spec.get("type", "cell_is")
@@ -169,7 +198,7 @@ def add_conditional(ws, spec):
     ws.conditional_formatting.add(rng, rule)
 
 
-def build_sheet(ws, spec):
+def build_sheet(ws, spec, warnings):
     for row in spec.get("rows", []):
         values, styled = [], []
         for item in row:
@@ -194,8 +223,18 @@ def build_sheet(ws, spec):
         ws.merge_cells(rng)
     if spec.get("freeze_panes"):
         ws.freeze_panes = spec["freeze_panes"]
-    if spec.get("autofilter"):
-        ws.auto_filter.ref = spec["autofilter"]
+    autofilter = spec.get("autofilter")
+    if autofilter:
+        overlapping = [t["name"] for t in spec.get("tables", [])
+                       if ranges_intersect(autofilter, t["range"])]
+        if overlapping:
+            warnings.append(
+                f"sheet {ws.title!r}: dropped autofilter {autofilter} -- it "
+                f"overlaps table(s) {', '.join(overlapping)}, and Excel "
+                "repair-strips files that carry both (tables have their own "
+                "filter UI)")
+        else:
+            ws.auto_filter.ref = autofilter
     for cf in spec.get("conditional_formats", []):
         add_conditional(ws, cf)
     for ch in spec.get("charts", []):
@@ -207,6 +246,7 @@ def build_sheet(ws, spec):
         dv.add(dv_spec["range"])
         ws.add_data_validation(dv)
     for t_spec in spec.get("tables", []):
+        check_table_header(ws, t_spec["name"], t_spec["range"])
         table = Table(displayName=t_spec["name"], ref=t_spec["range"])
         table.tableStyleInfo = TableStyleInfo(
             name=t_spec.get("style", "TableStyleMedium9"),
@@ -238,16 +278,19 @@ def main(argv=None):
 
     wb = Workbook()
     wb.remove(wb.active)
+    warnings = []
     for sheet_spec in spec.get("sheets", []):
         ws = wb.create_sheet(sheet_spec.get("name", "Sheet1"))
-        build_sheet(ws, sheet_spec)
+        build_sheet(ws, sheet_spec, warnings)
     for name, ref in spec.get("defined_names", {}).items():
         wb.defined_names[name] = DefinedName(name, attr_text=ref)
     if spec.get("full_calc_on_load"):
         wb.calculation.fullCalcOnLoad = True
     wb.save(args.output)
-    print(json.dumps({"ok": True, "output": args.output,
-                      "sheets": wb.sheetnames}, ensure_ascii=False))
+    summary = {"ok": True, "output": args.output, "sheets": wb.sheetnames}
+    if warnings:
+        summary["warnings"] = warnings
+    print(json.dumps(summary, ensure_ascii=False))
     return 0
 
 

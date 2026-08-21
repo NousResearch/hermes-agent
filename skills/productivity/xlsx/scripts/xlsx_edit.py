@@ -11,9 +11,15 @@ Operations (repeatable where noted, applied in the order listed below):
   --set CELL=VALUE              repeatable; type-inferred (int, float, bool,
                                 ISO date, else string). '=...' sets a formula.
   --append ROWJSON              repeatable; JSON array appended as a row
-  --add-table NAME:RANGE[:STYLE]  create a native Excel table (ListObject)
+  --add-table NAME:RANGE[:STYLE]  create a native Excel table (ListObject).
+                                Header cells must be non-empty and unique;
+                                a sheet autofilter overlapping the range is
+                                dropped with a warning (Excel repair-strips
+                                files that carry both)
   --table-append NAME=ROWJSON   append a row inside a table, auto-extending
-                                the table's range (repeatable)
+                                the table's range (repeatable); drops a
+                                sheet autofilter the extended range would
+                                overlap, with a warning
   --list-tables                 print tables on the target sheet and exit
   --define-name NAME=REF        workbook-scope defined name, e.g.
                                 "Rates='Data'!$B$2:$B$9" (repeatable)
@@ -80,19 +86,56 @@ def parse_idx(arg):
     return int(arg), 1
 
 
-def add_table(ws, spec):
+def ranges_intersect(a, b):
+    a_min_col, a_min_row, a_max_col, a_max_row = range_boundaries(a)
+    b_min_col, b_min_row, b_max_col, b_max_row = range_boundaries(b)
+    return (a_min_col <= b_max_col and b_min_col <= a_max_col
+            and a_min_row <= b_max_row and b_min_row <= a_max_row)
+
+
+def check_table_header(ws, name, ref):
+    """Excel repair-strips tables whose header cells are empty/duplicated."""
+    min_col, min_row, max_col, _ = range_boundaries(ref)
+    seen = set()
+    for col in range(min_col, max_col + 1):
+        coord = f"{get_column_letter(col)}{min_row}"
+        value = ws[coord].value
+        if value is None or str(value).strip() == "":
+            raise ValueError(
+                f"table {name!r}: header cell {coord} is empty -- every "
+                "table column needs a non-empty, unique header")
+        if str(value) in seen:
+            raise ValueError(
+                f"table {name!r}: duplicate header {str(value)!r} at {coord}"
+                " -- table column headers must be unique")
+        seen.add(str(value))
+
+
+def drop_overlapping_autofilter(ws, name, rng, warnings):
+    if ws.auto_filter.ref and ranges_intersect(ws.auto_filter.ref, rng):
+        warnings.append(
+            f"sheet {ws.title!r}: dropped autofilter {ws.auto_filter.ref} "
+            f"-- it overlaps table {name!r} at {rng}, and Excel "
+            "repair-strips files that carry both (tables have their own "
+            "filter UI)")
+        ws.auto_filter.ref = None
+
+
+def add_table(ws, spec, warnings):
     parts = spec.split(":")
     if len(parts) < 3:
         raise ValueError("--add-table needs NAME:RANGE like Sales:A1:C9")
     name = parts[0]
     rng = ":".join(parts[1:3])
     style = parts[3] if len(parts) > 3 else "TableStyleMedium9"
+    check_table_header(ws, name, rng)
+    drop_overlapping_autofilter(ws, name, rng, warnings)
     table = Table(displayName=name, ref=rng)
     table.tableStyleInfo = TableStyleInfo(name=style, showRowStripes=True)
     ws.add_table(table)
 
 
-def table_append(ws, name, row_values):
+def table_append(ws, name, row_values, warnings):
     table = ws.tables[name]
     min_col, min_row, max_col, max_row = range_boundaries(table.ref)
     new_row = max_row + 1
@@ -100,6 +143,7 @@ def table_append(ws, name, row_values):
         ws.cell(row=new_row, column=min_col + offset, value=value)
     table.ref = (f"{get_column_letter(min_col)}{min_row}:"
                  f"{get_column_letter(max_col)}{new_row}")
+    drop_overlapping_autofilter(ws, name, table.ref, warnings)
 
 
 def main(argv=None):
@@ -151,6 +195,7 @@ def main(argv=None):
 
     wb = load_workbook(args.file)
     changes = []
+    warnings = []
 
     for pair in args.rename_sheet:
         old, new = pair.split(":", 1)
@@ -200,11 +245,11 @@ def main(argv=None):
         changes.append(f"append row {ws.max_row}")
 
     for spec in args.add_table:
-        add_table(ws, spec)
+        add_table(ws, spec, warnings)
         changes.append(f"add_table {spec.split(':')[0]}")
     for spec in args.table_append:
         name, row_json = spec.split("=", 1)
-        table_append(ws, name, json.loads(row_json))
+        table_append(ws, name, json.loads(row_json), warnings)
         changes.append(f"table_append {name} -> {ws.tables[name].ref}")
 
     for spec in args.define_name:
@@ -250,8 +295,11 @@ def main(argv=None):
 
     out = args.out or args.file
     wb.save(out)
-    print(json.dumps({"ok": True, "output": out, "sheet": ws.title,
-                      "changes": changes}, ensure_ascii=False))
+    summary = {"ok": True, "output": out, "sheet": ws.title,
+               "changes": changes}
+    if warnings:
+        summary["warnings"] = warnings
+    print(json.dumps(summary, ensure_ascii=False))
     return 0
 
 

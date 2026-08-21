@@ -134,3 +134,84 @@ def test_doctor_blocks_live_network(tmp_path: Path) -> None:
     report = doctor_plugin(plugin)
     assert report.ok is False
     assert "network access is disabled while Plugin Doctor runs" in report.format_text()
+
+
+def test_resolve_rejects_directory_without_manifest(tmp_path: Path) -> None:
+    """A non-plugin directory must not resolve — Doctor copies what it resolves."""
+    import pytest
+
+    from hermes_cli.plugin_dev import resolve_plugin_path
+
+    not_a_plugin = tmp_path / "home"
+    (not_a_plugin / "Documents").mkdir(parents=True)
+    (not_a_plugin / "Documents" / "notes.txt").write_text("x", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        resolve_plugin_path(not_a_plugin)
+
+    assert "holds no plugin manifest" in str(excinfo.value)
+
+
+def test_doctor_default_target_does_not_copy_cwd(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``hermes plugins doctor`` with no argument defaults to ``.``.
+
+    Before the manifest guard, that copied the whole working directory into
+    a temporary HERMES_HOME — running it from ``$HOME`` copied the home
+    directory, cloud-storage placeholders included.
+    """
+    import os
+    import shutil
+
+    from hermes_cli import plugin_dev
+
+    workdir = tmp_path / "workdir"
+    (workdir / "big").mkdir(parents=True)
+    (workdir / "big" / "payload.bin").write_text("x" * 1024, encoding="utf-8")
+    monkeypatch.chdir(workdir)
+
+    copied: list[tuple[str, str]] = []
+    real_copytree = shutil.copytree
+
+    def _tracking_copytree(src, dst, *args, **kwargs):
+        copied.append((os.fspath(src), os.fspath(dst)))
+        return real_copytree(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(plugin_dev.shutil, "copytree", _tracking_copytree)
+
+    report = plugin_dev.doctor_plugin()
+
+    assert report.ok is False
+    assert copied == []
+
+
+def test_resolve_accepts_category_layout(tmp_path: Path) -> None:
+    """A category directory holds no manifest itself but discovery finds one."""
+    from hermes_cli.plugin_dev import resolve_plugin_path
+
+    category = tmp_path / "image_gen"
+    plugin = category / "openai"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: openai\n", encoding="utf-8")
+
+    assert resolve_plugin_path(category) == category.resolve()
+
+
+def test_resolve_prefers_installed_id_over_unrelated_local_dir(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A same-named local directory must not shadow the installed plugin."""
+    from hermes_cli import plugin_dev
+
+    hermes_home = tmp_path / "hermes-home"
+    installed = hermes_home / "plugins" / "sample"
+    installed.mkdir(parents=True)
+    (installed / "plugin.yaml").write_text("name: sample\n", encoding="utf-8")
+
+    workdir = tmp_path / "workdir"
+    (workdir / "sample").mkdir(parents=True)
+    monkeypatch.chdir(workdir)
+    monkeypatch.setattr(plugin_dev, "get_hermes_home", lambda: hermes_home)
+
+    assert plugin_dev.resolve_plugin_path("sample") == installed.resolve()

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from agent.delegation_context import (
+    delegated_child_context,
+    non_dispatcher_owned_context,
+)
 from agent.kanban_stop import (
     build_kanban_stop_nudge,
     kanban_stop_nudge_enabled,
@@ -72,6 +76,33 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
     ]
     assert session_called_kanban_terminal(messages) is True
     assert build_kanban_stop_nudge(messages=messages) is None
+
+
+def test_delegated_child_disables_guard(clear_kanban_env):
+    """A delegate_task child must not fire the dispatcher-owned stop guard."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    with delegated_child_context(session_id="child-1"):
+        assert kanban_stop_nudge_enabled() is False
+        assert build_kanban_stop_nudge(messages=[]) is None
+
+
+def test_non_dispatcher_owned_disables_guard(clear_kanban_env):
+    """In-process cron (non-dispatcher-owned) must not fire the guard."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    with non_dispatcher_owned_context():
+        assert kanban_stop_nudge_enabled() is False
+        assert build_kanban_stop_nudge(messages=[]) is None
+
+
+def test_guard_restored_after_context_exit(clear_kanban_env):
+    """Leaving a child/non-dispatcher scope restores the guard for the worker."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    with delegated_child_context(session_id="child-1"):
+        assert kanban_stop_nudge_enabled() is False
+    assert kanban_stop_nudge_enabled() is True
+    with non_dispatcher_owned_context():
+        assert kanban_stop_nudge_enabled() is False
+    assert kanban_stop_nudge_enabled() is True
 
 
 

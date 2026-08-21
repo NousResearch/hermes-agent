@@ -225,8 +225,15 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
     except ImportError:
         return channels
 
+    from gateway.platforms.helpers import is_discord_channel_obfuscated
+
     for guild in client.guilds:
         for ch in guild.text_channels:
+            # Skip obfuscated placeholders (bot lacks VIEW_CHANNEL; Discord
+            # dispatches them with name "___hidden___" + CHANNEL_OBFUSCATED
+            # flag as of the Aug 2026 privacy change).
+            if is_discord_channel_obfuscated(ch):
+                continue
             channels.append({
                 "id": str(ch.id),
                 "name": ch.name,
@@ -236,6 +243,8 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
         # Forum channels (type 15) — creating a message auto-spawns a thread post.
         forums = getattr(guild, "forum_channels", None) or []
         for ch in forums:
+            if is_discord_channel_obfuscated(ch):
+                continue
             channels.append({
                 "id": str(ch.id),
                 "name": ch.name,

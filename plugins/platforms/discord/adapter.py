@@ -2715,8 +2715,18 @@ class DiscordAdapter(BasePlatformAdapter):
 
         candidate_channels = []
         if "*" in channel_ids:
+            from gateway.platforms.helpers import is_discord_channel_obfuscated
+
             for guild in getattr(self._client, "guilds", []) or []:
-                candidate_channels.extend(getattr(guild, "text_channels", []) or [])
+                # Skip obfuscated placeholders (bot lacks VIEW_CHANNEL;
+                # Discord dispatches them with name "___hidden___" +
+                # CHANNEL_OBFUSCATED flag as of the Aug 2026 privacy
+                # change). History reads on them always fail.
+                candidate_channels.extend(
+                    ch
+                    for ch in (getattr(guild, "text_channels", []) or [])
+                    if not is_discord_channel_obfuscated(ch)
+                )
         else:
             for channel_id in sorted(channel_ids):
                 channel = None

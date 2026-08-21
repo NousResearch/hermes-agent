@@ -40,8 +40,21 @@ const STATUS_LABEL: Record<string, string> = {
 
 const CTRL_OFFSET = 96
 
+const SOURCE_LABEL_WIDTH = 6
+// Rendered in an 8-wide Box below — the extra 2 chars are the same
+// inter-column gap the other fixed-width columns in this table use, not a
+// truncation mismatch.
+
 const shortModel = (model = '') => model.replace(/^.*\//, '') || 'model?'
 const ctrlChar = (letter: string) => String.fromCharCode(letter.charCodeAt(0) - CTRL_OFFSET)
+
+// Mirrors the CLI curses picker's `source[:6]` column (`_format_row` in
+// hermes_cli/main.py) so the two session pickers stay consistent.
+export const sessionSourceLabel = (source?: string) => {
+  const trimmed = (source ?? '').trim()
+
+  return trimmed ? trimmed.slice(0, SOURCE_LABEL_WIDTH) : '—'
+}
 
 export const fixedSessionColumnStyle = () => ({ flexShrink: 0 })
 
@@ -787,6 +800,12 @@ export function ActiveSessionSwitcher({
                 </Text>
               </Box>
 
+              <Box {...fixedSessionColumnStyle()} width={8}>
+                <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
+                  {sessionSourceLabel(h.source)}
+                </Text>
+              </Box>
+
               <Box flexGrow={1} flexShrink={1} minWidth={0}>
                 <Text
                   bold={selected}
@@ -848,6 +867,12 @@ export function ActiveSessionSwitcher({
             <Box {...fixedSessionColumnStyle()} width={18}>
               <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
                 {shortModel(s.model)}
+              </Text>
+            </Box>
+
+            <Box {...fixedSessionColumnStyle()} width={8}>
+              <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
+                {sessionSourceLabel(s.source)}
               </Text>
             </Box>
 

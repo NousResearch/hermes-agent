@@ -14455,6 +14455,7 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
         session_key="key-a",
         created_at=10.0,
         last_active=20.0,
+        source="telegram",
     )
     server._sessions["sid-b"] = _session(
         agent=types.SimpleNamespace(model="model-b"),
@@ -14463,6 +14464,7 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
         session_key="key-b",
         created_at=11.0,
         last_active=30.0,
+        source="cli",
     )
     try:
         resp = server.handle_request(
@@ -14488,6 +14490,7 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
         "model": "model-a",
         "preview": "find docs",
         "session_key": "key-a",
+        "source": "telegram",
         "started_at": 10.0,
         "status": "idle",
         "title": "Research",
@@ -14496,6 +14499,7 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
     assert rows["sid-b"]["status"] == "working"
     assert rows["sid-b"]["title"] == "Implement"
     assert rows["sid-b"]["preview"] == "writing code"
+    assert rows["sid-b"]["source"] == "cli"
 
 
 def test_session_active_list_excludes_finalized_sessions(monkeypatch):

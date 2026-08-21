@@ -24,7 +24,8 @@ import {
   resumableHistory,
   selectedSessionRowStyle,
   sessionRowKindAt,
-  sessionsCountLabel
+  sessionsCountLabel,
+  sessionSourceLabel
 } from '../components/activeSessionSwitcher.js'
 import { listRowStyle } from '../components/overlayPrimitives.js'
 import type { SessionActiveItem } from '../gatewayTypes.js'
@@ -213,5 +214,13 @@ describe('unified Sessions overlay helpers', () => {
     expect(relativeSessionAge(nowSec - 3 * 86400)).toBe('3d ago')
     expect(relativeSessionAge(undefined)).toBe('')
     expect(relativeSessionAge(0)).toBe('')
+  })
+
+  it('labels the session source column, truncated and defaulted like the CLI picker', () => {
+    expect(sessionSourceLabel('telegram')).toBe('telegr')
+    expect(sessionSourceLabel('cli')).toBe('cli')
+    expect(sessionSourceLabel('  wecom  ')).toBe('wecom')
+    expect(sessionSourceLabel('')).toBe('—')
+    expect(sessionSourceLabel(undefined)).toBe('—')
   })
 })

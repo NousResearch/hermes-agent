@@ -8781,6 +8781,7 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
         "model": str(getattr(agent, "model", "") or _resolve_model()),
         "preview": preview,
         "session_key": key,
+        "source": _session_source(session),
         "started_at": float(session.get("created_at") or now),
         "status": status,
         "title": _session_live_title(session, key),

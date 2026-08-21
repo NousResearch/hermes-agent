@@ -4638,10 +4638,8 @@ def _build_top_level_description() -> str:
     here, check it is not already stated in a parameter description.
     """
     return (
-        "Spawn subagents in isolated contexts; each gets its own conversation, "
-        "terminal session, and toolset, and only its final summary returns to "
-        "you. Provide 'goal' for a single task or 'tasks' for a parallel batch "
-        "(limits and nesting rules are in the parameter descriptions).\n\n"
+        "Spawn isolated Hermes subagents; only final summaries return. Use 'goal' "
+        "for one task or 'tasks' for a parallel batch.\n\n"
         "Runs in the background: dispatch returns immediately with live "
         "transcript paths, and the completed result (one consolidated message "
         "for a batch) re-enters the conversation on its own. Do NOT wait or "

@@ -19,11 +19,12 @@ class Parent:
 class FakePiClient:
     instances = []
 
-    def __init__(self, *, persistent_session=False, session_id=None, session_name=None, acp_cwd=None, **_kwargs):
+    def __init__(self, *, persistent_session=False, session_id=None, session_name=None, acp_cwd=None, question_answerer=None, **_kwargs):
         self.persistent_session = persistent_session
         self.session_id = session_id
         self.session_name = session_name
         self.cwd = acp_cwd
+        self.question_answerer = question_answerer
         self.is_closed = False
         self.messages = []
         self.steers = []
@@ -86,6 +87,7 @@ def clean_sessions(monkeypatch, tmp_path):
     FakePiClient.instances.clear()
     monkeypatch.setattr(ds, "PiRPCClient", FakePiClient)
     monkeypatch.setattr(ds, "resolve_agent_cwd", lambda: tmp_path)
+    monkeypatch.setattr(ds, "_session_store_root", lambda: tmp_path / "delegate-session-store")
     monkeypatch.setattr(ds, "pending_question_for_owner", lambda _client: None)
     yield
     with ds._SESSION_LOCK:
@@ -124,6 +126,65 @@ def test_start_creates_native_persistent_pi_session():
     assert client.persistent_session is True
     assert client.session_id == result["session_id"]
     assert client.cwd == result["cwd"]
+
+
+def test_start_installs_hermes_auto_question_answerer(monkeypatch):
+    parent = Parent()
+    seen = []
+
+    def fake_answerer(parent_arg, method, title, options):
+        seen.append((parent_arg, method, title, options))
+        return "Hermes chose this"
+
+    monkeypatch.setattr(ds, "_auto_answer_pi_question", fake_answerer)
+    result = payload(ds.delegate_session(action="start", parent_agent=parent))
+    client = FakePiClient.instances[-1]
+
+    assert result["success"] is True
+    assert callable(client.question_answerer)
+    assert client.question_answerer("input", "Which path?", ["A", "B"]) == "Hermes chose this"
+    assert seen == [(parent, "input", "Which path?", ["A", "B"])]
+
+
+def test_auto_answer_uses_supervising_context_and_main_runtime(monkeypatch):
+    parent = Parent()
+    parent._session_messages = [
+        {"role": "user", "content": "Use PostgreSQL for this project."},
+        {"role": "assistant", "content": "I will keep the existing database choice."},
+        {"role": "tool", "content": "Detected database port 5432."},
+    ]
+    parent._current_main_runtime = lambda: {
+        "provider": "test-provider",
+        "model": "test-model",
+        "base_url": "https://example.invalid/v1",
+        "api_key": "secret-not-logged",
+    }
+    captured = {}
+
+    def fake_oneshot(**kwargs):
+        captured.update(kwargs)
+        return "5432"
+
+    monkeypatch.setattr("agent.oneshot.run_oneshot", fake_oneshot)
+    answer = ds._auto_answer_pi_question(parent, "input", "Which DB port?", [])
+
+    assert answer == "5432"
+    assert "Use PostgreSQL for this project" in captured["user_input"]
+    assert "Detected database port 5432" in captured["user_input"]
+    assert "Never ask the user" in captured["instructions"]
+    assert captured["task"] == "delegate_session_question"
+    assert captured["main_runtime"]["model"] == "test-model"
+
+
+def test_auto_answer_normalizes_confirm_and_select(monkeypatch):
+    parent = Parent()
+    answers = iter(["Proceed, yes.", "use grpc"])
+    monkeypatch.setattr("agent.oneshot.run_oneshot", lambda **_kwargs: next(answers))
+
+    assert ds._auto_answer_pi_question(parent, "confirm", "Continue?", []) == "yes"
+    assert ds._auto_answer_pi_question(
+        parent, "select", "Transport?", ["Use REST", "Use gRPC"]
+    ) == "Use gRPC"
 
 
 def test_send_reuses_same_client_and_preserves_followup_history():
@@ -198,3 +259,68 @@ def test_stop_closes_client_but_native_id_can_be_resumed():
     assert resumed["pi_session_id"] == sid
     assert FakePiClient.instances[-1] is not first_client
     assert FakePiClient.instances[-1].session_id == sid
+
+
+def test_stop_then_resume_reopens_in_same_gateway_process():
+    parent = Parent()
+    started = payload(ds.delegate_session(action="start", parent_agent=parent))
+    sid = started["session_id"]
+    first_client = FakePiClient.instances[-1]
+
+    payload(ds.delegate_session(action="stop", session_id=sid, parent_agent=parent))
+    resumed = payload(ds.delegate_session(action="resume", session_id=sid, parent_agent=parent))
+
+    assert resumed["success"] is True
+    assert resumed["created"] is True
+    assert resumed["status"] == "idle"
+    assert FakePiClient.instances[-1] is not first_client
+    assert FakePiClient.instances[-1].is_closed is False
+
+
+def test_resume_after_registry_loss_uses_durable_original_workspace(monkeypatch, tmp_path):
+    parent = Parent()
+    original = tmp_path / "original"
+    elsewhere = tmp_path / "elsewhere"
+    original.mkdir()
+    elsewhere.mkdir()
+    monkeypatch.setattr(ds, "resolve_agent_cwd", lambda: original)
+
+    started = payload(ds.delegate_session(action="start", parent_agent=parent))
+    sid = started["session_id"]
+    assert FakePiClient.instances[-1].cwd == str(original.resolve())
+
+    with ds._SESSION_LOCK:
+        stale = ds._SESSIONS.pop(sid)
+    stale["client"].close()
+    monkeypatch.setattr(ds, "resolve_agent_cwd", lambda: elsewhere)
+
+    resumed = payload(ds.delegate_session(action="resume", session_id=sid, parent_agent=parent))
+    assert resumed["cwd"] == str(original.resolve())
+    assert FakePiClient.instances[-1].cwd == str(original.resolve())
+
+
+def test_list_includes_offline_durable_sessions_after_registry_loss():
+    parent = Parent()
+    started = payload(ds.delegate_session(action="start", parent_agent=parent))
+    sid = started["session_id"]
+    with ds._SESSION_LOCK:
+        stale = ds._SESSIONS.pop(sid)
+    stale["client"].close()
+
+    listed = payload(ds.delegate_session(action="list", parent_agent=parent))
+    row = next(row for row in listed["sessions"] if row["session_id"] == sid)
+    assert row["status"] == "offline"
+    assert row["cwd"] == started["cwd"]
+
+
+def test_durable_resume_metadata_enforces_conversation_owner():
+    owner = Parent("owner")
+    stranger = Parent("stranger")
+    started = payload(ds.delegate_session(action="start", parent_agent=owner))
+    sid = started["session_id"]
+    with ds._SESSION_LOCK:
+        stale = ds._SESSIONS.pop(sid)
+    stale["client"].close()
+
+    denied = ds.delegate_session(action="resume", session_id=sid, parent_agent=stranger)
+    assert "belongs to another conversation" in denied.lower()

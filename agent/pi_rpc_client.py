@@ -14,18 +14,14 @@ Contract parity with the pi-acp bridge is preserved:
   final message (parsed by ``parse_pi_result_footer``).
 
 Interactive questions:
-- An incoming ``extension_ui_request`` is registered in a module-level
-  registry (``pending_questions``) and surfaced as a ``[pi-question]``
-  marker in the reasoning stream plus the question text in the message
-  stream, so the live delegation transcript shows it.
-- The run then blocks (up to ``question_timeout_seconds``, default 600)
-  waiting for an answer. ``tools.delegate_tool.steer_subagent`` checks
-  the registry and routes a steer message to the oldest pending question
-  as free text (``{"text": ...}`` for input/editor, option matching for
-  select, yes/no parsing for confirm).
-- On timeout the old auto-answer policy applies (confirm=true,
-  select=first, input/editor=cancelled) so a delegation never hangs
-  forever.
+- Persistent ``delegate_session`` clients install a Hermes-side answer callback.
+  Pi questions are answered immediately by the supervising Hermes model using
+  its current conversation/project context; they are not forwarded to the user.
+- Legacy/non-session callers retain the module-level ``pending_questions``
+  registry and manual steer path for compatibility.
+- If Hermes cannot produce an automatic answer, a safe deterministic fallback
+  applies (confirm=true, select=first, input/editor=cancelled) so a delegation
+  never hangs forever.
 """
 
 from __future__ import annotations
@@ -38,7 +34,7 @@ import time
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 
 from agent.copilot_acp_client import (
     _completion_to_stream_chunks,
@@ -210,6 +206,7 @@ class PiRPCClient:
         persistent_session: bool = False,
         session_id: str | None = None,
         session_name: str | None = None,
+        question_answerer: Callable[[str, str, list[str]], str | None] | None = None,
         **_: Any,
     ) -> None:
         self.api_key = api_key or "pi-rpc"
@@ -219,6 +216,7 @@ class PiRPCClient:
         self._persistent_session = bool(persistent_session)
         self._session_id = (session_id or "").strip() or None
         self._session_name = (session_name or "").strip() or None
+        self._question_answerer = question_answerer
         self.chat = _PiChatNamespace(self)
         self.is_closed = False
         self._proc: subprocess.Popen[str] | None = None
@@ -237,6 +235,34 @@ class PiRPCClient:
 
     def close(self) -> None:
         self.is_closed = True
+
+        # Wake extension-question waiters owned by this client. Otherwise the
+        # question handler can linger until HERMES_PI_QUESTION_TIMEOUT even
+        # though the RPC process is already gone.
+        with _registry_lock:
+            own_questions = [
+                question for question in pending_questions.values()
+                if question.owner is self
+            ]
+            for question in own_questions:
+                pending_questions.pop(question.id, None)
+        for question in own_questions:
+            question.answer = {"cancelled": True}
+            question.answered.set()
+
+        # Likewise fail any synchronous RPC requests immediately on close
+        # rather than making callers wait for their command timeout.
+        with self._pending_lock:
+            pending = list(self._pending.values())
+            self._pending.clear()
+        for waiter, slot in pending:
+            slot[0] = {
+                "type": "response",
+                "success": False,
+                "error": "pi rpc client closed",
+            }
+            waiter.set()
+
         proc = self._proc
         self._proc = None
         if proc is None:
@@ -431,7 +457,19 @@ class PiRPCClient:
             return
 
         if msg_type == "extension_ui_request":
-            self._handle_ui_request(msg)
+            # Interactive dialogs can wait for user/Hermes input for minutes.
+            # Never block the sole stdout reader on that wait: Pi must remain
+            # responsive to get_state/get_messages/abort and other RPCs while a
+            # question is pending. Fire-and-forget UI notifications stay inline.
+            if str(msg.get("method") or "input") in {"input", "select", "confirm", "editor"}:
+                threading.Thread(
+                    target=self._handle_ui_request,
+                    args=(msg,),
+                    name=f"pi-ui-{msg.get('id', 'request')}",
+                    daemon=True,
+                ).start()
+            else:
+                self._handle_ui_request(msg)
             return
 
         if msg_type in ("tool_execution_start", "tool_execution_end"):
@@ -492,14 +530,48 @@ class PiRPCClient:
                 pass
             return
         question = PendingQuestion(method, title, options, owner=self)
-        with _registry_lock:
-            pending_questions[question.id] = question
-
         self._reasoning_parts.append(
             f"[pi-question] {method}: {title}"
             + (f" options={options}" if options else "")
             + "\n"
         )
+
+        # Persistent delegate_session clients install a Hermes-side answerer.
+        # Resolve those questions immediately with the supervising Hermes model
+        # instead of surfacing them to the human or waiting for steer().
+        if self._question_answerer is not None:
+            answer_text = ""
+            try:
+                answer_text = str(
+                    self._question_answerer(method, title, list(options)) or ""
+                ).strip()
+            except Exception as exc:
+                self._reasoning_parts.append(
+                    f"[pi-question:auto] Hermes answerer failed: {exc.__class__.__name__}\n"
+                )
+            if answer_text:
+                payload = question.answer_with(answer_text)
+                self._reasoning_parts.append(
+                    f"[pi-question:auto] Hermes answered {method} -> {payload}\n"
+                )
+            else:
+                payload = question.auto_answer()
+                question.answer = payload
+                question.answered.set()
+                self._reasoning_parts.append(
+                    f"[pi-question:auto] Hermes had no answer; safe fallback -> {payload}\n"
+                )
+            try:
+                self._send_pi(
+                    {"type": "extension_ui_response", "id": request_id, **payload}
+                )
+            except Exception:
+                pass
+            return
+
+        # Legacy/non-session callers keep the interactive steer path.
+        with _registry_lock:
+            pending_questions[question.id] = question
         self._text_parts.append(
             f"\n[Question from pi delegate — steer this delegation with your answer"
             f" (timeout {int(_DEFAULT_QUESTION_TIMEOUT)}s)]: {title}\n"

@@ -84,8 +84,8 @@ def clean_registry():
     pending_questions.clear()
 
 
-def make_client(fake_pi):
-    return PiRPCClient(acp_command=fake_pi, base_url="pi://rpc-test")
+def make_client(fake_pi, **kwargs):
+    return PiRPCClient(acp_command=fake_pi, base_url="pi://rpc-test", **kwargs)
 
 
 def create(client, content, timeout=120):
@@ -154,6 +154,51 @@ def test_answer_oldest_empty_registry(clean_registry):
     assert answer_oldest_pending_question("x") is False
 
 
+def test_extension_question_dispatch_does_not_block_rpc_reader(fake_pi):
+    client = make_client(fake_pi)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_handler(_msg):
+        entered.set()
+        release.wait(timeout=2)
+
+    client._handle_ui_request = blocking_handler
+    started = time.monotonic()
+    client._dispatch({"type": "extension_ui_request", "id": 7, "method": "input", "title": "q"})
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.2
+    assert entered.wait(timeout=1)
+    release.set()
+    client.close()
+
+
+def test_close_wakes_owned_pending_questions(fake_pi, clean_registry):
+    client = make_client(fake_pi)
+    q = PendingQuestion("input", "still there?", None, owner=client)
+    pending_questions[q.id] = q
+
+    client.close()
+
+    assert q.answered.wait(timeout=0.2)
+    assert q.answer == {"cancelled": True}
+    assert q.id not in pending_questions
+
+
+def test_close_fails_pending_rpc_waiters_immediately(fake_pi):
+    client = make_client(fake_pi)
+    waiter = threading.Event()
+    slot = [None]
+    with client._pending_lock:
+        client._pending[123] = [waiter, slot]
+
+    client.close()
+
+    assert waiter.is_set()
+    assert slot[0]["success"] is False
+    assert "closed" in slot[0]["error"]
+
+
 # ------------------------------------------------------- e2e over fake pi
 
 def test_round_trip_markers_question_footer(fake_pi, clean_registry):
@@ -180,6 +225,25 @@ def test_round_trip_markers_question_footer(fake_pi, clean_registry):
     assert "pi-delegation-result" in msg.content
     # tool markers ride the reasoning field for shared parsing
     assert "[pi-tool:ok] bash" in (msg.reasoning or "")
+    client.close()
+
+
+def test_persistent_question_answerer_resolves_without_user_steer(fake_pi, clean_registry):
+    calls = []
+
+    def answerer(method, title, options):
+        calls.append((method, title, options))
+        return "6543"
+
+    client = make_client(fake_pi, persistent_session=True, question_answerer=answerer)
+    completion = create(client, "go", timeout=180)
+    msg = completion.choices[0].message
+
+    assert "answered with: 6543" in msg.content
+    assert calls == [("input", "Which DB port?", [])]
+    assert pending_questions == {}
+    assert "Question from pi delegate" not in msg.content
+    assert "[pi-question:auto] Hermes answered" in (msg.reasoning or "")
     client.close()
 
 

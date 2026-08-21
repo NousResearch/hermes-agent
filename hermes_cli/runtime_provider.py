@@ -1093,6 +1093,58 @@ def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[
     return {"extra_body": dict(extra_body)}
 
 
+def _apply_opencode_family_routing(
+    result: Dict[str, Any],
+    *,
+    requested_provider: str,
+    base_url: str,
+    custom_provider: Dict[str, Any],
+    target_model: Optional[str] = None,
+) -> None:
+    """Re-derive api_mode / base_url for OpenCode-family custom providers.
+
+    Custom providers whose name extends opencode-go/zen, or whose base_url
+    is hosted on opencode.ai, serve models behind different API surfaces.
+    A static api_mode 503s for /v1/responses-only models like grok-4.5
+    (#85589). The credential-pool short-circuit must apply the same
+    derivation as the non-pool path — otherwise a key_env-backed custom
+    endpoint keeps chat_completions and never reaches /v1/responses.
+    """
+    if custom_provider.get("api_mode"):
+        return
+    from hermes_cli.models import opencode_provider_family
+
+    oc_family = opencode_provider_family(requested_provider)
+    if oc_family is None:
+        try:
+            from utils import base_url_hostname
+
+            if base_url_hostname(base_url).lower() == "opencode.ai":
+                oc_family = (
+                    "opencode-go" if "/zen/go" in base_url.lower() else "opencode-zen"
+                )
+        except Exception:
+            oc_family = None
+    if oc_family is None:
+        return
+    from hermes_cli.models import (
+        normalize_opencode_base_url,
+        opencode_model_api_mode,
+    )
+
+    effective_model = str(
+        target_model
+        or custom_provider.get("model")
+        or _get_model_config().get("default")
+        or ""
+    ).strip()
+    if effective_model:
+        result["api_mode"] = opencode_model_api_mode(oc_family, effective_model)
+    result["base_url"] = normalize_opencode_base_url(
+        oc_family, result["api_mode"], result.get("base_url") or base_url
+    )
+
+
 def _resolve_named_custom_runtime(
     *,
     requested_provider: str,
@@ -1183,6 +1235,13 @@ def _resolve_named_custom_runtime(
         # credentials. NEVER log the values.
         if custom_provider.get("extra_headers"):
             pool_result["extra_headers"] = dict(custom_provider["extra_headers"])
+        _apply_opencode_family_routing(
+            pool_result,
+            requested_provider=requested_provider,
+            base_url=base_url,
+            custom_provider=custom_provider,
+            target_model=target_model,
+        )
         return pool_result
 
     _cp_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
@@ -1240,42 +1299,13 @@ def _resolve_named_custom_runtime(
     if request_overrides:
         result["request_overrides"] = request_overrides
 
-    # Custom providers in the OpenCode family (name extends opencode-go/zen,
-    # or base_url hosted on opencode.ai) serve models behind different API
-    # surfaces per model — a static api_mode 503s for /v1/responses-only
-    # models like grok-4.5 (#85589). Re-derive api_mode from the effective
-    # model and normalize the /v1 suffix, exactly like the built-in
-    # opencode-zen/go paths do.
-    from hermes_cli.models import opencode_provider_family
-
-    _oc_family = opencode_provider_family(requested_provider)
-    if _oc_family is None:
-        try:
-            from utils import base_url_hostname
-
-            if base_url_hostname(base_url).lower() == "opencode.ai":
-                _oc_family = (
-                    "opencode-go" if "/zen/go" in base_url.lower() else "opencode-zen"
-                )
-        except Exception:
-            _oc_family = None
-    if _oc_family is not None and not custom_provider.get("api_mode"):
-        from hermes_cli.models import (
-            normalize_opencode_base_url,
-            opencode_model_api_mode,
-        )
-
-        _effective_model = str(
-            target_model
-            or custom_provider.get("model")
-            or _get_model_config().get("default")
-            or ""
-        ).strip()
-        if _effective_model:
-            result["api_mode"] = opencode_model_api_mode(_oc_family, _effective_model)
-        result["base_url"] = normalize_opencode_base_url(
-            _oc_family, result["api_mode"], result["base_url"]
-        )
+    _apply_opencode_family_routing(
+        result,
+        requested_provider=requested_provider,
+        base_url=base_url,
+        custom_provider=custom_provider,
+        target_model=target_model,
+    )
     return result
 
 

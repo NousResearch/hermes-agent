@@ -33,6 +33,75 @@ from typing import Optional
 _BUILD_SHA_FILE = Path(__file__).parent.parent / ".hermes_build_sha"
 
 
+_code_identity_cache: Optional[dict] = None
+
+
+def get_code_identity(refresh: bool = False) -> dict:
+    """Return the running checkout's code identity as a dict.
+
+    Shape: ``{"sha": full-or-short sha | None, "short_sha": str | None,
+    "version": pyproject version | None, "source": "git" | "build-file" |
+    "unknown"}``.
+
+    Resolution order mirrors the banner/dump callsites: live ``git
+    rev-parse`` for source installs, the baked ``.hermes_build_sha`` for
+    Docker images (no ``.git`` inside the published image), else unknown.
+
+    Cached per process — code identity cannot change while a process is
+    running (an updated checkout requires a restart to take effect, which
+    is exactly the property the fleet version verification relies on).
+    Never raises; every field degrades to ``None`` independently.
+    """
+    global _code_identity_cache
+    if _code_identity_cache is not None and not refresh:
+        return dict(_code_identity_cache)
+
+    sha: Optional[str] = None
+    source = "unknown"
+    project_root = Path(__file__).parent.parent
+    try:
+        import subprocess
+
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+        candidate = (proc.stdout or "").strip()
+        if proc.returncode == 0 and candidate:
+            sha = candidate
+            source = "git"
+    except Exception:
+        pass
+    if sha is None:
+        baked = get_build_sha(short=0)
+        if baked:
+            sha = baked
+            source = "build-file"
+
+    version: Optional[str] = None
+    try:
+        import tomllib
+
+        with open(project_root / "pyproject.toml", "rb") as fh:  # windows-footgun: ok — binary mode, tomllib requires bytes
+            raw_version = tomllib.load(fh).get("project", {}).get("version")
+        version = str(raw_version) if raw_version else None
+    except Exception:
+        version = None
+
+    _code_identity_cache = {
+        "sha": sha,
+        "short_sha": sha[:8] if sha else None,
+        "version": version,
+        "source": source,
+    }
+    return dict(_code_identity_cache)
+
+
 def get_build_sha(short: int = 8) -> Optional[str]:
     """Return the baked-in build SHA, truncated to ``short`` chars, or None.
 

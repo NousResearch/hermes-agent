@@ -15218,8 +15218,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # The service manager is the sole restart owner.  Exit 75
                 # paired with ``RestartForceExitStatus=75`` asks systemd to
                 # replace this process without a second helper racing the
-                # unit's stop/start job.  launchd likewise treats the planned
-                # non-zero exit as restartable.
+                # unit's stop/start job.  The generated launchd plist's
+                # unconditional ``KeepAlive`` likewise replaces the process
+                # after this planned exit.
                 self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 

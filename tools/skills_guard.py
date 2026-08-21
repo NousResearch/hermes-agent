@@ -591,7 +591,13 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
 
     try:
         content = file_path.read_text(encoding='utf-8')
-    except (UnicodeDecodeError, OSError):
+    except UnicodeDecodeError:
+        # Runtime readers (skills_tool, install) use errors="replace", so a
+        # single invalid byte must not skip the whole file — that would let a
+        # payload hide behind one undecodable character. OSError still means
+        # the file cannot be read at all.
+        content = file_path.read_text(encoding='utf-8', errors='replace')
+    except OSError:
         return []
 
     findings = []

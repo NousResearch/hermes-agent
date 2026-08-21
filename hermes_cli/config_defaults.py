@@ -1273,8 +1273,8 @@ DEFAULT_CONFIG = {
         # behavior of showing tool-call summaries inline.
         "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
-        # When busy_input_mode="steer", suppress only the visible
-        # "Steered into current run" confirmation bubble by setting this false.
+        # When busy_input_mode="steer", suppress only the visible steer
+        # confirmation bubble by setting this false.
         # The mid-turn steering itself still happens.
         "busy_steer_ack_enabled": True,
         # Classic CLI multiline fallbacks beyond Alt+Enter.

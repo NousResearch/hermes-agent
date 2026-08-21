@@ -10509,10 +10509,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
         if is_steer_mode:
-            message = (
-                f"⏩ Steered into current run{status_detail}. "
-                f"Your message arrives after the next tool call."
-            )
+            message = f"Still working on your last message{status_detail}—give me a sec."
         elif is_redirect_mode:
             message = (
                 f"↪ Redirected current run{status_detail}. "

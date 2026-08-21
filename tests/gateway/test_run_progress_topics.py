@@ -6,6 +6,7 @@ import sys
 import time
 import types
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -471,7 +472,7 @@ def _make_runner(adapter):
     runner._running_agents = {}
     runner._session_run_generation = {}
     runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
-    runner.hooks = SimpleNamespace(loaded_hooks=False)
+    runner.hooks = SimpleNamespace(loaded_hooks=False, emit=AsyncMock())
     runner.config = SimpleNamespace(
         thread_sessions_per_user=False,
         group_sessions_per_user=False,
@@ -1006,6 +1007,8 @@ async def _run_with_agent(
     adapter_cls=ProgressCaptureAdapter,
     user_id=None,
     scope_id=None,
+    event_message_id=None,
+    return_runner=False,
 ):
     if config_data:
         import yaml
@@ -1053,7 +1056,10 @@ async def _run_with_agent(
         source=source,
         session_id=session_id,
         session_key=session_key,
+        event_message_id=event_message_id,
     )
+    if return_runner:
+        return adapter, result, runner
     return adapter, result
 
 
@@ -1181,6 +1187,48 @@ async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, 
     assert result.get("already_sent") is not True
     assert adapter.edits == []
     assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_emits_hook_after_commentary_delivery(monkeypatch, tmp_path):
+    """Interim commentary that a platform actually delivers must be mirrored
+    onto the agent:commentary hook so logging/audit consumers see the same
+    text the user saw, instead of only learning about it via agent:end's
+    final-response-only payload.
+    """
+    adapter, result, runner = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-commentary-hook",
+        config_data={"display": {"interim_assistant_messages": True}},
+        platform=Platform.BLUEBUBBLES,
+        chat_id="iMessage;-;user@example.com",
+        chat_type="dm",
+        thread_id=None,
+        user_id="user-7",
+        event_message_id="inbound-user-message",
+        adapter_cls=NonEditingProgressCaptureAdapter,
+        return_runner=True,
+    )
+
+    assert result.get("already_sent") is not True
+    commentary_calls = [
+        call
+        for call in runner.hooks.emit.await_args_list
+        if call.args and call.args[0] == "agent:commentary"
+    ]
+    assert len(commentary_calls) == 1
+    assert commentary_calls[0].args[1] == {
+        "platform": "bluebubbles",
+        "user_id": "user-7",
+        "chat_id": "iMessage;-;user@example.com",
+        "thread_id": "",
+        "chat_type": "dm",
+        "session_id": "sess-commentary-hook",
+        "response": "I'll inspect the repo first.",
+        "event_message_id": "progress-1",
+    }
 
 
 class TransformedStreamAgent:

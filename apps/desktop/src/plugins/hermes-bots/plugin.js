@@ -4665,10 +4665,35 @@ function rosterGatewaySections(botRows, gatewayOptions, gatewayFilter = 'all') {
 }
 
 function gatewayKindIcon(kind) {
+  const icons = (typeof sdk === 'undefined' ? null : sdk.icons) || {}
+
+  if (kind === 'local') return icons.Monitor
+  if (kind === 'cloud') return icons.Cloud
+  if (kind === 'ssh') return icons.Terminal
+  return icons.Network
+}
+
+function gatewayKindCodicon(kind) {
   if (kind === 'local') return 'device-desktop'
   if (kind === 'cloud') return 'cloud'
   if (kind === 'ssh') return 'terminal'
   return 'remote-explorer'
+}
+
+/** Match the gateway switcher's Tabler glyphs while keeping older SDK shells
+ * usable until they expose the shared icon namespace. */
+function GatewayKindGlyph({ className, kind }) {
+  const Icon = gatewayKindIcon(kind)
+
+  return jsx('span', {
+    'aria-hidden': true,
+    className: cn('grid size-3.5 shrink-0 place-items-center', className),
+    'data-connection-kind': kind || 'remote',
+    'data-slot': 'connection-glyph',
+    children: Icon
+      ? jsx(Icon, { className: 'size-3' })
+      : jsx(Codicon, { name: gatewayKindCodicon(kind), className: 'text-[0.75rem]' })
+  })
 }
 
 function slugify(value) {
@@ -6425,32 +6450,16 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
     ),
     'aria-label': rowTooltip,
     children: [
-      jsxs('div', {
-        className: 'relative shrink-0',
-        children: [
-          jsx('div', {
-            className: cn(!sourceStatus.available && 'grayscale opacity-60'),
-            children: jsx(BotFace, {
-              shape,
-              color,
-              image: photo ? image : null,
-              size: 34,
-              name: bot.name,
-              mood: botMood
-            })
-          }),
-          !sourceStatus.available
-            ? jsx(Tip, {
-                label: `${gatewayLabel || 'Gateway'} · ${sourceStatus.label}`,
-                children: jsx('span', {
-                  className:
-                    'absolute -bottom-0.5 -right-0.5 flex size-4 items-center justify-center rounded-full bg-(--ui-bg-primary) text-[0.625rem] text-amber-600 ring-1 ring-(--ui-stroke-tertiary) dark:text-amber-300',
-                  'aria-label': `${gatewayLabel || 'Gateway'}: ${sourceStatus.label}`,
-                  children: jsx(Codicon, { name: 'debug-disconnect' })
-                })
-              })
-            : null
-        ]
+      jsx('div', {
+        className: cn('shrink-0', !sourceStatus.available && 'grayscale opacity-60'),
+        children: jsx(BotFace, {
+          shape,
+          color,
+          image: photo ? image : null,
+          size: 34,
+          name: bot.name,
+          mood: botMood
+        })
       }),
       jsxs('div', {
         className: 'min-w-0 flex-1',
@@ -11191,15 +11200,15 @@ function BotsHomeView() {
               className: 'flex max-w-[45%] items-center gap-1.5 text-xs text-(--ui-text-tertiary)',
               children: [
                 jsx('span', { className: 'sr-only', children: `${gateway}, ${status.label}` }),
-                jsx(Codicon, { name: gatewayKindIcon(gatewayKind), className: 'shrink-0' }),
+                jsx(GatewayKindGlyph, { kind: gatewayKind }),
                 jsx('span', { className: 'min-w-0 truncate', children: gateway }),
-                jsx(Codicon, {
-                  name: unavailable ? 'debug-disconnect' : 'pass-filled',
-                  className: cn(
-                    'shrink-0',
-                    unavailable ? 'text-amber-600 dark:text-amber-300' : 'text-emerald-600 dark:text-emerald-400'
-                  )
-                })
+                unavailable
+                  ? jsx(Codicon, {
+                      name: 'debug-disconnect',
+                      className: 'shrink-0 text-amber-600 dark:text-amber-300',
+                      'aria-hidden': true
+                    })
+                  : null
               ]
             })
           })
@@ -11607,7 +11616,7 @@ function GroupRow({ active, group, members, needsYou, onOpen, onDisband }) {
 
 /** Foldable roster heading. It organizes rows visually but never supplies or
  * reconstructs ownership; every action still receives the full bot row. */
-function RosterSectionHeader({ collapsed, count, icon, label, onToggle, status, tip }) {
+function RosterSectionHeader({ collapsed, count, gatewayKind, icon, label, onToggle, status, tip }) {
   const button = jsxs('button', {
     type: 'button',
     'aria-expanded': !collapsed,
@@ -11616,19 +11625,15 @@ function RosterSectionHeader({ collapsed, count, icon, label, onToggle, status, 
     onClick: onToggle,
     children: [
       jsx(Codicon, { name: collapsed ? 'chevron-right' : 'chevron-down', className: 'shrink-0' }),
-      jsx(Codicon, { name: icon, className: 'shrink-0' }),
+      gatewayKind
+        ? jsx(GatewayKindGlyph, { kind: gatewayKind })
+        : jsx(Codicon, { name: icon, className: 'shrink-0' }),
       jsxs('span', {
         className: 'flex min-w-0 items-center gap-1',
         children: [
           jsx('span', { className: 'min-w-0 truncate', children: label }),
           status && !status.available
-            ? jsxs('span', {
-                className: 'shrink-0 text-amber-600 dark:text-amber-300',
-                children: [
-                  jsx(Codicon, { name: 'debug-disconnect' }),
-                  jsx('span', { className: 'sr-only', children: status.label })
-                ]
-              })
+            ? jsx('span', { className: 'sr-only', children: status.label })
             : null
         ]
       }),
@@ -11636,7 +11641,14 @@ function RosterSectionHeader({ collapsed, count, icon, label, onToggle, status, 
       jsx('span', {
         className: 'shrink-0 font-normal tabular-nums text-(--ui-text-quaternary)',
         children: count
-      })
+      }),
+      status && !status.available
+        ? jsx(Codicon, {
+            name: 'debug-disconnect',
+            className: 'shrink-0 text-amber-600 dark:text-amber-300',
+            'aria-hidden': true
+          })
+        : null
     ]
   })
 
@@ -11651,7 +11663,7 @@ function GatewaySectionHeading({ collapsed, count, onToggle, option }) {
   return jsx(RosterSectionHeader, {
     collapsed,
     count,
-    icon: gatewayKindIcon(kind),
+    gatewayKind: kind,
     label,
     onToggle,
     status,
@@ -11986,7 +11998,7 @@ function BotsPane() {
             className:
               'flex min-w-0 items-center gap-1.5 px-2 py-1 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)',
             children: [
-              jsx(Codicon, { name: gatewayKindIcon(section.option?.kind), className: 'shrink-0' }),
+              jsx(GatewayKindGlyph, { kind: section.option?.kind }),
               jsx('span', {
                 className: 'min-w-0 flex-1 truncate',
                 children: section.option?.label || section.option?.connectionId || 'Current gateway'
@@ -12162,8 +12174,8 @@ function BotsPane() {
                                   {
                                     onSelect: () => setGatewayFilter(option.connectionId),
                                     children: [
-                                      jsx(Codicon, {
-                                        name: gatewayKindIcon(option.kind),
+                                      jsx(GatewayKindGlyph, {
+                                        kind: option.kind,
                                         className: cn(
                                           'mr-1.5',
                                           !status.available && 'text-amber-600 dark:text-amber-300'

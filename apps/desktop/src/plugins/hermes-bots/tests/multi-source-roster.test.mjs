@@ -4,6 +4,10 @@ import test from 'node:test'
 import vm from 'node:vm'
 
 const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
+const switcherSource = readFileSync(
+  new URL('../../../app/chat/sidebar/connection-switcher.tsx', import.meta.url),
+  'utf8'
+)
 
 function runtime() {
   const atom = value => ({ get: () => value, set: () => undefined })
@@ -636,18 +640,57 @@ test('gateway sections are progressive: flat for one or filtered, foldable for s
   assert.equal(sections(rows.slice(1), options, 'work').sectioned, false)
 })
 
-test('gateway section status stays beside its name while the count stays at the edge', () => {
+test('gateway section keeps its type glyph neutral and puts unavailable status at the far edge', () => {
   const start = source.indexOf('function RosterSectionHeader(')
   const end = source.indexOf('function GatewaySectionHeading(', start)
   const heading = source.slice(start, end)
   const label = heading.indexOf('children: label')
-  const status = heading.indexOf("name: 'debug-disconnect'")
   const spacer = heading.indexOf("'aria-hidden': true")
   const count = heading.indexOf('children: count')
+  const status = heading.indexOf("name: 'debug-disconnect'")
 
-  assert.ok(label >= 0 && status > label, 'the disconnected state follows the gateway name')
-  assert.ok(spacer > status && count > spacer, 'a flexible spacer keeps the count on the far edge')
+  assert.match(heading, /jsx\(GatewayKindGlyph, \{ kind: gatewayKind \}\)/)
+  assert.doesNotMatch(heading, /GatewayKindGlyph, \{[^}]*className/)
+  assert.ok(spacer > label && count > spacer, 'a flexible spacer keeps right-edge metadata aligned')
+  assert.ok(status > count, 'the unavailable badge follows the count at the far edge')
   assert.match(heading, /className: 'sr-only', children: status\.label/)
+})
+
+test('unavailable status appears in gateway and selected-bot headers, not every bot row', () => {
+  const rowStart = source.indexOf('function BotRow(')
+  const rowEnd = source.indexOf('\nfunction useModelOptions(', rowStart)
+  const row = source.slice(rowStart, rowEnd)
+  const homeStart = source.indexOf('function BotsHomeView(')
+  const homeEnd = source.indexOf('\nfunction closeBotsHomeWorkspace(', homeStart)
+  const home = source.slice(homeStart, homeEnd)
+
+  assert.doesNotMatch(row, /name: 'debug-disconnect'/)
+  assert.match(row, /!sourceStatus\.available && 'grayscale opacity-60'/)
+  assert.match(home, /unavailable\s+\? jsx\(Codicon, \{\s+name: 'debug-disconnect'/)
+  assert.match(home, /`\$\{gateway\} is unavailable\. Retry when it is back online\.`/)
+})
+
+test('gateway sections use the same type glyphs as the Sessions switcher', () => {
+  const iconStart = source.indexOf('function gatewayKindIcon(')
+  const glyphEnd = source.indexOf('\nfunction slugify(', iconStart)
+  const glyph = source.slice(iconStart, glyphEnd)
+
+  assert.match(glyph, /kind === 'local'\) return icons\.Monitor/)
+  assert.match(glyph, /kind === 'cloud'\) return icons\.Cloud/)
+  assert.match(glyph, /kind === 'ssh'\) return icons\.Terminal/)
+  assert.match(glyph, /return icons\.Network/)
+  assert.match(glyph, /function GatewayKindGlyph\(/)
+  assert.match(glyph, /grid size-3\.5 shrink-0 place-items-center/)
+  assert.match(glyph, /children: Icon\s+\? jsx\(Icon, \{ className: 'size-3' \}\)/)
+
+  for (const icon of ['Monitor', 'Cloud', 'Terminal', 'Network']) {
+    assert.match(switcherSource, new RegExp(`\\b${icon}\\b`), `${icon} must remain in the Sessions switcher`)
+    assert.match(glyph, new RegExp(`icons\\.${icon}\\b`), `${icon} must remain aligned in Bot Mode`)
+  }
+
+  const headingStart = source.indexOf('function GatewaySectionHeading(')
+  const headingEnd = source.indexOf('\nfunction BotsPane(', headingStart)
+  assert.match(source.slice(headingStart, headingEnd), /gatewayKind: kind/)
 })
 
 test('gateway and activity filters preserve exact source rows', () => {

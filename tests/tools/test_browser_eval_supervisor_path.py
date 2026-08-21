@@ -8,6 +8,7 @@ real browser, no real WebSocket.  Real-CDP coverage lives in
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -84,6 +85,84 @@ class TestBrowserEvalSupervisorPath:
         # result_type reflects the parsed Python type, not the raw JS type.
         assert out["result_type"] == "dict"
 
+    def test_js_exception_cannot_return_private_peer_data(self, monkeypatch):
+        """Peer validation runs before a browser-controlled eval error returns."""
+        import tools.browser_tool as bt
+
+        records = []
+        sup = MagicMock()
+        sup.start_network_response_window.return_value = ()
+
+        def _evaluate_runtime(_expression):
+            records.append(SimpleNamespace(
+                ts=1.0,
+                url="https://rebind.example/internal",
+                remote_ip="127.0.0.1",
+            ))
+            return {"ok": False, "error": "PRIVATE_RESPONSE_BODY"}
+
+        sup.evaluate_runtime.side_effect = _evaluate_runtime
+        sup.snapshot.side_effect = lambda: SimpleNamespace(
+            network_responses=tuple(records)
+        )
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setattr(bt, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt, "_is_local_sidecar_key", lambda _key: False)
+        monkeypatch.setattr(bt, "_allow_private_urls", lambda: False)
+        calls = []
+
+        def _fake_browser_command(task_id, command, args, **kwargs):
+            calls.append((task_id, command, list(args)))
+            return {"success": True}
+
+        monkeypatch.setattr(bt, "_run_browser_command", _fake_browser_command)
+
+        out = json.loads(bt._browser_eval("throw new Error('secret')"))
+
+        assert out["success"] is False
+        assert "browser connected to a private/internal address" in out["error"]
+        assert "PRIVATE_RESPONSE_BODY" not in json.dumps(out)
+        assert ("test-task", "open", ["about:blank"]) in calls
+
+    def test_subprocess_error_cannot_return_private_peer_data(self, monkeypatch):
+        """The subprocess fallback also validates peers before error output."""
+        import tools.browser_tool as bt
+
+        records = []
+        sup = MagicMock()
+        sup.start_network_response_window.return_value = ()
+        sup.evaluate_runtime.return_value = {
+            "ok": False,
+            "error": "supervisor loop is not running",
+        }
+        sup.snapshot.side_effect = lambda: SimpleNamespace(
+            network_responses=tuple(records)
+        )
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setattr(bt, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt, "_is_local_sidecar_key", lambda _key: False)
+        monkeypatch.setattr(bt, "_allow_private_urls", lambda: False)
+        calls = []
+
+        def _fake_browser_command(task_id, command, args, **kwargs):
+            calls.append((task_id, command, list(args)))
+            if command == "eval":
+                records.append(SimpleNamespace(
+                    ts=1.0,
+                    url="https://rebind.example/internal",
+                    remote_ip="127.0.0.1",
+                ))
+                return {"success": False, "error": "PRIVATE_RESPONSE_BODY"}
+            return {"success": True}
+
+        monkeypatch.setattr(bt, "_run_browser_command", _fake_browser_command)
+
+        out = json.loads(bt._browser_eval("throw new Error('secret')"))
+
+        assert out["success"] is False
+        assert "browser connected to a private/internal address" in out["error"]
+        assert "PRIVATE_RESPONSE_BODY" not in json.dumps(out)
+        assert ("test-task", "open", ["about:blank"]) in calls
 
     def test_subprocess_reference_chain_error_becomes_guidance(self, monkeypatch):
         """The CLI subprocess can't retry with returnByValue=False, so the

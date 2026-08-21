@@ -2672,6 +2672,24 @@ def _codex_access_token_is_expiring(access_token: Any, skew_seconds: int) -> boo
     return float(exp) <= (time.time() + max(0, int(skew_seconds)))
 
 
+def _codex_chatgpt_account_id(access_token: Any) -> Optional[str]:
+    """Return the ChatGPT workspace/account id from a Codex OAuth JWT, or None.
+
+    The ``chatgpt_account_id`` claim lives under the namespaced
+    ``https://api.openai.com/auth`` object (mirroring codex-rs ``auth.rs``).
+    Missing or malformed tokens return None so callers treat "no identity" as
+    compatibility-safe rather than a mismatch.
+    """
+    claims = _decode_jwt_claims(access_token)
+    auth_claim = claims.get("https://api.openai.com/auth")
+    if not isinstance(auth_claim, dict):
+        return None
+    acct_id = auth_claim.get("chatgpt_account_id")
+    if isinstance(acct_id, str) and acct_id.strip():
+        return acct_id.strip()
+    return None
+
+
 def _qwen_cli_auth_path() -> Path:
     return Path.home() / ".qwen" / "oauth_creds.json"
 
@@ -3690,6 +3708,32 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
 # where one app's refresh invalidates the other's session.
 # =============================================================================
 
+
+def _read_codex_access_token_observation(*, _lock: bool = True) -> Optional[str]:
+    """Return the raw stored Codex access token observed for recovery CAS.
+
+    Unlike :func:`_read_codex_tokens`, this helper intentionally does not
+    require a usable refresh token. Recovery callers need the exact access
+    token value from the snapshot that failed validation so a valid access
+    token paired with a missing refresh token is not mistaken for ``None``.
+    Non-string and absent values normalize to ``None``; string values are
+    returned byte-for-byte, including an empty string.
+    """
+    if _lock:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+    else:
+        auth_store = _load_auth_store()
+    state = _load_provider_state(auth_store, "openai-codex")
+    if not isinstance(state, dict):
+        return None
+    tokens = state.get("tokens")
+    if not isinstance(tokens, dict):
+        return None
+    access_token = tokens.get("access_token")
+    return access_token if isinstance(access_token, str) else None
+
+
 def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json).
     
@@ -3868,8 +3912,21 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         _save_auth_store(auth_store)
 
 
-def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
-    """Adopt a valid Codex CLI token pair into Hermes auth, if available."""
+def _recover_codex_tokens_from_cli(
+    reason: str,
+    *,
+    observed_access_token: Optional[str] = None,
+) -> Optional[Dict[str, str]]:
+    """Adopt a valid Codex CLI token pair into Hermes auth, if available.
+
+    ``observed_access_token`` is the exact raw access token (or ``None``) that
+    the caller observed under ``_auth_store_lock`` before deciding to invoke
+    recovery.  The recovery path reacquires the lock, re-reads the stored
+    token, and compares it **unconditionally** against this value — including
+    ``None == None`` on the missing-token path.  If a concurrent explicit
+    re-auth changed the stored credential between observation and this commit,
+    recovery is skipped and the current valid state is returned.
+    """
     imported = _import_codex_cli_tokens()
     # Require BOTH tokens before adopting: persisting a payload without a
     # usable refresh_token would only break the next refresh cycle.
@@ -3879,9 +3936,66 @@ def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
         and str(imported.get("refresh_token", "") or "").strip()
     ):
         return None
-    logger.info("Codex auth recovered from Codex CLI auth.json (%s).", reason)
-    _save_codex_tokens(imported)
-    return dict(imported)
+
+    # Locked CAS: reacquire the auth store lock, re-read current credentials,
+    # and only persist the imported token when the store is byte-for-byte
+    # unchanged since the caller's original observation.  This closes the
+    # TOCTOU window where a concurrent ``hermes auth`` re-authentication
+    # between the caller's read and this save would be silently overwritten.
+    with _auth_store_lock():
+        # Re-read the raw CAS value and the validated credential only after
+        # acquiring the lock. The raw helper preserves a valid access token
+        # even when _read_codex_tokens rejects a missing refresh token.
+        current_stored_at = _read_codex_access_token_observation(_lock=False)
+        try:
+            current_stored = _read_codex_tokens(_lock=False)
+        except AuthError:
+            current_stored = None
+
+        # Unconditional compare, including None.  When the caller observed
+        # None (missing-token path) and a concurrent re-auth has since
+        # populated the store, current_stored_at will be a non-None string
+        # and the comparison fails → recovery is skipped.
+        if observed_access_token != current_stored_at:
+            logger.info(
+                "Codex CLI recovery skipped: stored credential changed since "
+                "observation.  A concurrent explicit re-auth is preserved."
+            )
+            if (
+                current_stored
+                and isinstance(current_stored_at, str)
+                and current_stored_at.strip()
+            ):
+                tokens = dict(current_stored["tokens"])
+                return {
+                    "access_token": tokens.get("access_token", ""),
+                    "refresh_token": tokens.get("refresh_token", ""),
+                }
+            return None
+
+        # Fail closed on a KNOWN cross-workspace identity mismatch.  Automatic
+        # recovery must not silently replace a credential whose ChatGPT
+        # workspace differs from the token the Codex CLI/Desktop just
+        # refreshed into ~/.codex/auth.json (e.g. a user switched Desktop to
+        # a Team workspace while Hermes held a Personal/Pro credential).  When
+        # either side lacks a chatgpt_account_id claim we cannot establish a
+        # mismatch, so we preserve the existing recovery behaviour rather than
+        # blocking legitimate same-account imports.  See #73667.
+        current_account = _codex_chatgpt_account_id(current_stored_at)
+        imported_account = _codex_chatgpt_account_id(imported.get("access_token"))
+        if current_account and imported_account and current_account != imported_account:
+            logger.warning(
+                "Codex CLI recovery refused: the imported token targets a "
+                "different ChatGPT workspace than the stored credential (%s). "
+                "Re-authenticate the intended Hermes credential explicitly "
+                "with `hermes auth`.",
+                reason,
+            )
+            return None
+
+        logger.info("Codex auth recovered from Codex CLI auth.json (%s).", reason)
+        _save_codex_tokens(imported)
+        return dict(imported)
 
 
 def refresh_codex_oauth_pure(
@@ -4047,8 +4161,10 @@ def _refresh_codex_auth_tokens(
         # we never self-heal those and re-raise unchanged.
         if not getattr(exc, "relogin_required", False):
             raise
+        observed_at = str(tokens.get("access_token", "") or "").strip() or None
         imported = _recover_codex_tokens_from_cli(
-            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}"
+            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}",
+            observed_access_token=observed_at,
         )
         if not imported:
             raise
@@ -4114,8 +4230,14 @@ def resolve_codex_runtime_credentials(
     credential. See issue #32992.
     """
     read_error: Optional[AuthError] = None
+    observed_access_token: Optional[str] = None
     try:
-        data = _read_codex_tokens()
+        # Observation and validation belong to one locked snapshot. In
+        # particular, the missing-refresh-token path can still have a valid
+        # access token which recovery must carry into its later CAS.
+        with _auth_store_lock():
+            observed_access_token = _read_codex_access_token_observation(_lock=False)
+            data = _read_codex_tokens(_lock=False)
     except AuthError as exc:
         read_error = exc
         if getattr(exc, "relogin_required", False) and getattr(exc, "code", None) in {
@@ -4123,7 +4245,10 @@ def resolve_codex_runtime_credentials(
             "codex_auth_missing_refresh_token",
             "codex_auth_invalid_shape",
         }:
-            imported = _recover_codex_tokens_from_cli(str(getattr(exc, "code", None) or "auth_error"))
+            imported = _recover_codex_tokens_from_cli(
+                str(getattr(exc, "code", None) or "auth_error"),
+                observed_access_token=observed_access_token,
+            )
             if imported:
                 data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
             else:

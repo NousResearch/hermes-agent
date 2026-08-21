@@ -2725,6 +2725,49 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         assert "_reasoning_config" not in openai_wire_kwargs
 
 
+class TestDeepSeekJsonSchemaDowngrade:
+    """DeepSeek's API only supports response_format json_object.
+
+    Aux tasks that send json_schema (title generation) must be downgraded to
+    json_object for DeepSeek instead of 400ing with "This response_format
+    type is unavailable now".
+    """
+
+    @staticmethod
+    def _schema_extra_body():
+        return {"response_format": {"type": "json_schema", "json_schema": {"name": "t"}}}
+
+    def test_deepseek_provider_downgrades_to_json_object(self):
+        kwargs = _build_call_kwargs(
+            "deepseek",
+            "deepseek-v4-flash",
+            [{"role": "user", "content": "hi"}],
+            extra_body=self._schema_extra_body(),
+            base_url="https://api.deepseek.com/v1",
+        )
+        assert kwargs["extra_body"]["response_format"] == {"type": "json_object"}
+
+    def test_deepseek_base_url_downgrades_regardless_of_provider_name(self):
+        kwargs = _build_call_kwargs(
+            "custom",
+            "deepseek-v4-flash",
+            [{"role": "user", "content": "hi"}],
+            extra_body=self._schema_extra_body(),
+            base_url="https://api.deepseek.com/v1",
+        )
+        assert kwargs["extra_body"]["response_format"] == {"type": "json_object"}
+
+    def test_other_providers_keep_json_schema(self):
+        kwargs = _build_call_kwargs(
+            "openai",
+            "gpt-5",
+            [{"role": "user", "content": "hi"}],
+            extra_body=self._schema_extra_body(),
+            base_url="https://api.openai.com/v1",
+        )
+        assert kwargs["extra_body"]["response_format"]["type"] == "json_schema"
+
+
 class TestAuxiliaryProviderProfileReasoning:
     """Auxiliary calls must reuse provider-profile reasoning wire shapes."""
 

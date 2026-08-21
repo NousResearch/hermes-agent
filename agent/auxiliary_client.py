@@ -8758,6 +8758,19 @@ def _build_call_kwargs(
                 sticky_key = None
             if sticky_key:
                 merged_extra["session_id"] = sticky_key
+    # DeepSeek's OpenAI-compatible API only supports response_format
+    # {"type": "json_object"} — json_schema (used by aux tasks like title
+    # generation) is rejected with HTTP 400 "This response_format type is
+    # unavailable now". Downgrade so DeepSeek-based aux setups keep working
+    # without pinning a non-DeepSeek model for those tasks.
+    _rf = merged_extra.get("response_format") if isinstance(merged_extra, dict) else None
+    if isinstance(_rf, dict) and _rf.get("type") == "json_schema":
+        _provider_for_json = str(provider or "").strip().lower()
+        if (
+            _provider_for_json in {"deepseek", "deepseek-chat", "deepseek-reasoner"}
+            or base_url_host_matches(effective_base, "api.deepseek.com")
+        ):
+            merged_extra["response_format"] = {"type": "json_object"}
     if merged_extra:
         kwargs["extra_body"] = merged_extra
 

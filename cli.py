@@ -14966,15 +14966,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Check config for auto_tts (shape-safe — malformed ``voice:`` YAML
         # leaves ``voice_config`` as a non-dict, so guard before .get()).
-        try:
-            from hermes_cli.config import load_config
-            _raw_voice = load_config().get("voice")
-            voice_config = _raw_voice if isinstance(_raw_voice, dict) else {}
-            if voice_config.get("auto_tts", False):
-                with self._voice_lock:
-                    self._voice_tts = True
-        except Exception:
-            pass
+        self._apply_voice_auto_tts_default()
 
         # Voice mode instruction is injected as a user message prefix (not a
         # system prompt change) to avoid invalidating the prompt cache.  See
@@ -14999,6 +14991,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint(f"  {_DIM}{_stop_hint}{_RST}")
         _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
         _cprint(f"  {_DIM}/voice off  to disable voice mode{_RST}")
+
+    def _apply_voice_auto_tts_default(self) -> None:
+        """Enable voice TTS when configured without overriding explicit state."""
+        try:
+            from hermes_cli.config import load_config
+            from utils import is_truthy_value
+            _raw_voice = load_config().get("voice")
+            voice_config = _raw_voice if isinstance(_raw_voice, dict) else {}
+            if is_truthy_value(voice_config.get("auto_tts"), default=False):
+                with self._voice_lock:
+                    self._voice_tts = True
+        except Exception:
+            pass
 
     def _typed_voice_stop(self, user_input) -> bool:
         """Typed bare stop phrase during an active voice chat ends the chat.
@@ -15208,6 +15213,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # VAD auto-stop transcribes and queues the transcript for process_loop.
         with self._voice_lock:
             self._voice_mode = True
+        self._apply_voice_auto_tts_default()
         self._voice_continuous = False
         try:
             self._voice_start_recording()

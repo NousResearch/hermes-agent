@@ -137,6 +137,39 @@ class TestEnableVoiceModeReal:
         assert cli._voice_mode is True
 
 
+class TestWakeWordAutoTts:
+    """Wake-triggered voice turns honor the global auto-TTS setting."""
+
+    @pytest.mark.parametrize(
+        ("yaml_value", "expected"),
+        [("true", True), ("false", False), ('"false"', False)],
+    )
+    def test_auto_tts_is_applied_before_wake_recording(
+        self, monkeypatch, tmp_path, yaml_value, expected
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            f"voice:\n  auto_tts: {yaml_value}\n",
+            encoding="utf-8",
+        )
+        cli = _make_voice_cli(
+            _agent_running=False,
+            _wake_start_new_session=False,
+            _wake_word_active=True,
+            _wake_suspended=False,
+        )
+        cli._voice_start_recording = MagicMock()
+
+        monkeypatch.setattr("tools.wake_word.pause_listening", lambda owner: True)
+        monkeypatch.setattr("tools.wake_word.get_last_match", lambda: None)
+
+        with patch("cli._cprint"):
+            cli._on_wake_word()
+
+        assert cli._voice_tts is expected
+        cli._voice_start_recording.assert_called_once_with()
+
+
 class TestVoiceBeepConfigReal:
     """Tests the CLI voice beep toggle."""
 

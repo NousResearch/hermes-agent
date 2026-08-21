@@ -2654,6 +2654,15 @@ DEFAULT_CONFIG = {
         # decomposition is manual via `hermes kanban decompose <id>` or
         # the dashboard's Decompose button.
         "auto_decompose": True,
+        # Optional post-decomposition profile router. When enabled, each LLM-
+        # generated fan-out child is resolved before the atomic DB insert.
+        # The script path is relative to HERMES_HOME and must stay within it.
+        # Router failures preserve the decomposer's valid assignee.
+        "profile_router": {
+            "enabled": False,
+            "script": "scripts/profile_ops/route_profiles.py",
+            "timeout_seconds": 5,
+        },
         # Max triage tasks to decompose per dispatcher tick. Prevents a
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.

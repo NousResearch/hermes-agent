@@ -40,13 +40,28 @@ import json
 import logging
 import os
 import re
+import subprocess
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
+from hermes_constants import get_hermes_home
 from hermes_cli import kanban_db as kb
 from hermes_cli import profiles as profiles_mod
 
 logger = logging.getLogger(__name__)
+
+
+_AUTO_ROUTE_ASSIGNEES = {
+    "",
+    "auto",
+    "default",
+    "none",
+    "null",
+    "researcher",
+    "unassigned",
+}
 
 
 _SYSTEM_PROMPT = """You are the Kanban decomposer for the Hermes Agent board.
@@ -175,6 +190,134 @@ def _load_config() -> dict:
         return load_config() or {}
     except Exception:
         return {}
+
+
+def _route_child_assignee(
+    *,
+    cfg: dict,
+    title: str,
+    body: str,
+    llm_assignee: str,
+    valid_names: set[str],
+) -> tuple[str, Optional[dict]]:
+    """Apply the optional profile router after the LLM has shaped a child.
+
+    The router is deliberately a pre-persistence policy step, not a dispatcher
+    concern: a child gets one durable assignee before it enters the database.
+    Failures are fail-open so a missing or unhealthy local router never blocks
+    manual decomposition.
+    """
+    if llm_assignee.strip().lower() not in _AUTO_ROUTE_ASSIGNEES:
+        return llm_assignee, None
+
+    kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    router_cfg = kanban_cfg.get("profile_router", {})
+    if not isinstance(router_cfg, dict) or not router_cfg.get("enabled"):
+        return llm_assignee, None
+
+    script_value = router_cfg.get(
+        "script", "scripts/profile_ops/route_profiles.py",
+    )
+    if not isinstance(script_value, str) or not script_value.strip():
+        logger.warning("decompose: profile router enabled without a script path")
+        return llm_assignee, None
+
+    home = Path(get_hermes_home()).resolve()
+    # A named Profile has its own HERMES_HOME under ``profiles/<name>``;
+    # runtime scripts are installed once at the global Hermes home.
+    if home.parent.name.lower() == "profiles":
+        home = home.parent.parent
+    script = Path(script_value.strip())
+    if not script.is_absolute():
+        script = home / script
+    try:
+        script = script.resolve()
+        script.relative_to(home)
+    except (OSError, ValueError):
+        logger.warning(
+            "decompose: refusing profile router outside HERMES_HOME: %s",
+            script_value,
+        )
+        return llm_assignee, None
+    if not script.is_file() or script.suffix.lower() != ".py":
+        logger.warning("decompose: profile router script not found: %s", script)
+        return llm_assignee, None
+
+    try:
+        timeout = float(router_cfg.get("timeout_seconds", 5))
+    except (TypeError, ValueError):
+        timeout = 5.0
+    timeout = min(max(timeout, 0.1), 30.0)
+    task_text = title if not body else f"{title}\n\n{body}"
+    env = dict(os.environ)
+    env["PYTHONUTF8"] = "1"
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "resolve",
+                "--text",
+                task_text,
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("decompose: profile router failed: %s", exc)
+        return llm_assignee, None
+    if completed.returncode != 0:
+        logger.warning(
+            "decompose: profile router exited %d: %s",
+            completed.returncode,
+            _truncate(completed.stderr.strip(), 500),
+        )
+        return llm_assignee, None
+
+    result = _extract_json_blob(completed.stdout)
+    if result is None:
+        logger.warning("decompose: profile router returned malformed JSON")
+        return llm_assignee, None
+
+    target = result.get("target")
+    keywords = result.get("rule_keywords")
+    matched_keywords = [
+        item.strip() for item in (keywords if isinstance(keywords, list) else [])
+        if isinstance(item, str) and item.strip()
+    ][:20]
+    fallback = result.get("fallback")
+    fallback_names = [
+        item.strip() for item in (fallback if isinstance(fallback, list) else [])
+        if isinstance(item, str) and item.strip()
+    ][:20]
+    target_name = target.strip() if isinstance(target, str) else ""
+    resolved = llm_assignee
+    # A non-empty rule match is the router's confidence signal. A generic
+    # target/default without one must not erase a valid LLM specialist choice.
+    if matched_keywords:
+        candidates = list(dict.fromkeys([target_name, *fallback_names]))
+        resolved = next(
+            (candidate for candidate in candidates if candidate in valid_names),
+            llm_assignee,
+        )
+
+    evidence = {
+        "source": "profile_router",
+        "llm_assignee": llm_assignee,
+        "resolved_assignee": resolved,
+        "target": target_name or None,
+        "dispatch": result.get("dispatch") if isinstance(result.get("dispatch"), str) else None,
+        "fallback": fallback_names,
+        "rule_keywords": matched_keywords,
+        "complexity": result.get("complexity") if isinstance(result.get("complexity"), str) else None,
+    }
+    return resolved, evidence
 
 
 def _resolve_orchestrator_profile(cfg: dict) -> str:
@@ -407,6 +550,14 @@ def decompose_task(
             default_assignee=default_assignee,
             valid_names=valid_names,
         )
+        llm_chosen = chosen
+        chosen, routing = _route_child_assignee(
+            cfg=cfg,
+            title=title.strip()[:200],
+            body=body.strip(),
+            llm_assignee=llm_chosen,
+            valid_names=valid_names,
+        )
         if (
             isinstance(assignee, str)
             and assignee.strip()
@@ -422,12 +573,15 @@ def decompose_task(
             parents = []
         # Clean parent indices: drop non-int and out-of-range.
         clean_parents = [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx]
-        children.append({
+        child = {
             "title": title.strip()[:200],
             "body": body.strip(),
             "assignee": chosen,
             "parents": clean_parents,
-        })
+        }
+        if routing is not None:
+            child["routing"] = routing
+        children.append(child)
 
     try:
         with kb.connect_closing() as conn:

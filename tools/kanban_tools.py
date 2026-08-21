@@ -1358,6 +1358,13 @@ def _handle_create(args: dict, **kw) -> str:
             "assignee is required — name the profile that should execute this "
             "task (the dispatcher will only spawn tasks with an assignee)"
         )
+    routing = _route_assignee_through_profile_router(
+        assignee=str(assignee),
+        title=str(title),
+        body=args.get("body"),
+    )
+    if routing.get("assignee"):
+        assignee = routing["assignee"]
     body = args.get("body")
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
@@ -1462,6 +1469,13 @@ def _handle_create(args: dict, **kw) -> str:
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
             )
+            if routing.get("routing"):
+                kb._append_event(
+                    conn,
+                    new_tid,
+                    kind="routed",
+                    payload=routing["routing"],
+                )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
             return _ok(
@@ -1664,6 +1678,39 @@ def _handle_link(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_link failed")
         return tool_error(f"kanban_link: {e}")
+
+
+def _route_assignee_through_profile_router(
+    *, assignee: str, title: str, body: Optional[str],
+) -> dict:
+    """Resolve an orchestrator-supplied assignee via ``kanban.profile_router``.
+
+    Reuses the decomposer's pre-persistence policy so Manual and auxiliary
+    decomposition have identical placeholder, fallback, and evidence rules.
+    A dispatcher-spawned orchestrator is allowed to create routed children;
+    explicit specialist assignees are preserved by the shared helper.
+    """
+    try:
+        from hermes_cli.kanban_decompose import (
+            _build_roster,
+            _route_child_assignee,
+        )
+
+        cfg = load_config()
+        _, valid_names = _build_roster()
+        resolved, evidence = _route_child_assignee(
+            cfg=cfg,
+            title=title,
+            body=body or "",
+            llm_assignee=str(assignee or ""),
+            valid_names=valid_names,
+        )
+    except Exception as exc:
+        logger.warning("kanban_create: profile router failed open: %s", exc)
+        return {}
+    if evidence is None or not resolved or resolved == assignee:
+        return {}
+    return {"assignee": resolved, "routing": evidence}
 
 
 # ---------------------------------------------------------------------------

@@ -4621,7 +4621,26 @@ def _load_tool_progress_mode() -> str:
     return mode if mode in {"off", "new", "all", "verbose"} else "all"
 
 
-def _gui_surface_toolsets(platform: str) -> set[str]:
+def _project_toolset_disabled(cfg: dict | None = None) -> bool:
+    """True when agent.disabled_toolsets explicitly suppresses ``project``.
+
+    The desktop/TUI resolver folds client-surface toolsets (including
+    ``project``) back in after the generic disable filter in
+    ``_get_platform_tools`` — ``project`` lives off ``_HERMES_CORE_TOOLS``, so
+    the platform-recovery path cannot surface it. That re-add made
+    ``disabled_toolsets: [project]`` a no-op on desktop/TUI (#54433). Honor
+    the user's disable here too.
+    """
+    try:
+        cfg = cfg if cfg is not None else _load_cfg()
+        agent_cfg = (cfg.get("agent") or {}) if isinstance(cfg, dict) else {}
+        disabled = agent_cfg.get("disabled_toolsets") or []
+        return any(str(ts) == "project" for ts in disabled)
+    except Exception:
+        return False
+
+
+def _gui_surface_toolsets(platform: str, cfg: dict | None = None) -> set[str]:
     """Toolsets that exist because of the CLIENT on the other end, not the host.
 
     Both entries are deliberately off ``_HERMES_CORE_TOOLS`` — every other
@@ -4635,8 +4654,14 @@ def _gui_surface_toolsets(platform: str) -> set[str]:
     silently stripped every pane/browser tool from URL and cloud gateways while
     the same backend told the model it was "chatting inside the Hermes desktop
     app". See the surface-capability rule in AGENTS.md.
+
+    When ``agent.disabled_toolsets`` lists ``project``, omit it so the desktop
+    re-add cannot override the user's disable (#54433). ``desktop_ui`` is
+    unaffected.
     """
-    surfaces = {"project"}
+    surfaces: set[str] = set()
+    if not _project_toolset_disabled(cfg):
+        surfaces.add("project")
     if platform == "desktop":
         surfaces.add("desktop_ui")
     return surfaces
@@ -4785,7 +4810,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         # surface them. This resolver runs ONLY in the desktop/TUI gateway, so
         # folding them in here is the gate that exposes them on exactly the
         # surface that can answer them.
-        return sorted(enabled | _gui_surface_toolsets(session_platform))
+        return sorted(enabled | _gui_surface_toolsets(session_platform, cfg))
     except Exception:
         if fallback_notice is not None:
             print(

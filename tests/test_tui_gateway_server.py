@@ -2417,8 +2417,63 @@ def test_load_enabled_toolsets_folds_project_into_focus_posture(monkeypatch):
     import agent.coding_context as cc
 
     monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding", "figma"])
+    # Default: project not disabled
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
 
     assert server._load_enabled_toolsets("tui") == ["coding", "figma", "project"]
+
+
+def test_load_enabled_toolsets_honors_disabled_project_on_focus_path(monkeypatch):
+    """#54433: focus/coding posture must not re-add `project` when disabled."""
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding", "figma"])
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"agent": {"disabled_toolsets": ["project"]}},
+    )
+
+    result = server._load_enabled_toolsets("tui")
+    assert result == ["coding", "figma"]
+    assert "project" not in result
+
+
+def test_load_enabled_toolsets_honors_disabled_project_on_configured_fallback(
+    monkeypatch,
+):
+    """#54433: configured/fallback path must not re-add disabled `project`."""
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+    import hermes_cli.config as config_mod
+    import hermes_cli.tools_config as tools_config_mod
+
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: None)
+    cfg = {
+        "agent": {"disabled_toolsets": ["project"]},
+        "platform_toolsets": {"cli": ["memory", "web"]},
+    }
+    monkeypatch.setattr(config_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(
+        tools_config_mod,
+        "_get_platform_tools",
+        lambda *_args, **_kwargs: {"memory", "web"},
+    )
+
+    result = server._load_enabled_toolsets("tui")
+    assert result == ["memory", "web"]
+    assert "project" not in result
+
+
+def test_gui_surface_toolsets_keeps_desktop_ui_when_project_disabled():
+    """Disabling project must not strip desktop_ui from desktop sessions."""
+    assert server._gui_surface_toolsets(
+        "desktop", {"agent": {"disabled_toolsets": ["project"]}}
+    ) == {"desktop_ui"}
+    assert "project" in server._gui_surface_toolsets("desktop", {})
 
 
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):

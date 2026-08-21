@@ -11,8 +11,8 @@ Config via environment variables (profile-scoped via each profile's .env)
 or a linked OpenViking CLI config:
   OPENVIKING_ENDPOINT  — Server URL (default: http://127.0.0.1:1933)
   OPENVIKING_API_KEY   — API key (required for authenticated servers)
-  OPENVIKING_ACCOUNT   — Tenant account for local/trusted mode (default: default)
-  OPENVIKING_USER      — Tenant user for local/trusted mode (default: default)
+  OPENVIKING_ACCOUNT   — Tenant account for local/trusted mode (explicit; unset by default)
+  OPENVIKING_USER      — Tenant user for local/trusted mode (explicit; unset by default)
   OPENVIKING_AGENT     — Hermes peer ID in OpenViking (default: hermes)
 
 Capabilities:
@@ -292,11 +292,13 @@ class _VikingClient:
                  agent: Optional[str] = None):
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
-        # Account/user are local/trusted-mode tenant identity. API-key requests
-        # omit these headers by default; trusted-mode retry may send them only
-        # after OpenViking explicitly asks for asserted tenant identity.
-        self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "default")
-        self._user = user or os.environ.get("OPENVIKING_USER", "default")
+        # OpenViking 0.4 api_key mode derives tenant identity from the user/admin
+        # key and rejects ordinary clients that assert X-OpenViking-Account/User.
+        # Keep account/user empty by default so the trusted-identity retry path
+        # cannot send spurious "default"/"default" assertions; trusted/root
+        # deployments can still pass them explicitly or via environment.
+        self._account = account if account is not None else os.environ.get("OPENVIKING_ACCOUNT", "")
+        self._user = user if user is not None else os.environ.get("OPENVIKING_USER", "")
         self._agent = agent if agent is not None else os.environ.get("OPENVIKING_AGENT", _DEFAULT_AGENT)
         self._httpx = _get_httpx()
         if self._httpx is None:

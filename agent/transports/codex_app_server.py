@@ -17,6 +17,7 @@ runtime is not selected.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import subprocess
@@ -26,6 +27,8 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from tools.environments.local import hermes_subprocess_env
+
+logger = logging.getLogger(__name__)
 
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.
@@ -200,7 +203,15 @@ class CodexAppServerClient:
                 self._proc.kill()
                 self._proc.wait(timeout=1.0)
             except Exception:
-                pass
+                # The child survived SIGKILL/TerminateProcess within our
+                # wait budget. self._closed is already True, so nothing
+                # will ever retry the reap — surface it loudly since this
+                # is otherwise a silent, permanently orphaned process.
+                logger.warning(
+                    "codex app-server subprocess (pid=%s) did not exit "
+                    "after kill(); it may be orphaned",
+                    getattr(self._proc, "pid", "?"),
+                )
 
     def __enter__(self) -> "CodexAppServerClient":
         return self

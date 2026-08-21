@@ -95,6 +95,79 @@ class TestProfileMessageHandler:
         assert result == "ok"
         assert seen["profile"] == "coder"
 
+    @pytest.mark.asyncio
+    async def test_adapter_owned_profile_overrides_stale_source_profile(self):
+        """Per-agent bot DMs can share a user chat id across adapters.
+
+        The secondary adapter that receives the Telegram update owns the
+        credential/profile, so it must override stale route/session profile
+        data instead of preserving another bot's profile.
+        """
+        runner = GatewayRunner.__new__(GatewayRunner)
+        seen = {}
+
+        async def _fake_handle(event):
+            seen["profile"] = event.source.profile
+            return "ok"
+
+        runner._handle_message = _fake_handle
+        handler = runner._make_profile_message_handler("dev")
+
+        class _Src:
+            profile = "quill"
+
+        class _Evt:
+            source = _Src()
+
+        result = await handler(_Evt())
+        assert result == "ok"
+        assert seen["profile"] == "dev"
+
+
+class TestProfilePlatformEventHandler:
+    @pytest.mark.asyncio
+    async def test_stamps_profile_on_unstamped_source(self):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        seen = {}
+
+        async def _fake_handle(event, source):
+            seen["profile"] = source.profile
+            return "ok"
+
+        runner._handle_gateway_platform_event = _fake_handle
+        handler = runner._make_profile_platform_event_handler("coder")
+
+        class _Src:
+            profile = None
+
+        result = await handler({}, _Src())
+        assert result == "ok"
+        assert seen["profile"] == "coder"
+
+    @pytest.mark.asyncio
+    async def test_adapter_owned_profile_overrides_stale_source_profile(self):
+        """Per-agent bot DMs can share a user chat id across adapters.
+
+        The secondary adapter that receives the platform event owns the
+        credential/profile, so it must override stale route/session profile
+        data instead of preserving another bot's profile.
+        """
+        runner = GatewayRunner.__new__(GatewayRunner)
+        seen = {}
+
+        async def _fake_handle(event, source):
+            seen["profile"] = source.profile
+            return "ok"
+
+        runner._handle_gateway_platform_event = _fake_handle
+        handler = runner._make_profile_platform_event_handler("dev")
+
+        class _Src:
+            profile = "quill"
+
+        result = await handler({}, _Src())
+        assert result == "ok"
+        assert seen["profile"] == "dev"
 
 class TestProfileRuntimeStatus:
     def test_base_adapter_uses_namespaced_platform_key(self, monkeypatch):

@@ -15612,7 +15612,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         async def _handler(event):
             try:
-                if getattr(event, "source", None) is not None and not event.source.profile:
+                # The adapter that received the update is authoritative in
+                # multiplex mode.  Telegram DMs to different per-agent bots can
+                # share the same user chat_id (the user's private chat), so a
+                # stale/route-derived source.profile from a previous bot DM must
+                # not win over the credential-owning adapter's profile.
+                if getattr(event, "source", None) is not None:
                     event.source.profile = profile_name
             except Exception:
                 pass
@@ -15627,7 +15632,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Stamp an owning adapter's profile before resolving busy policy."""
         async def _handler(event, _session_key):
             try:
-                if getattr(event, "source", None) is not None and not event.source.profile:
+                if getattr(event, "source", None) is not None:
                     event.source.profile = profile_name
             except Exception:
                 pass
@@ -15678,8 +15683,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile_home = None
 
         async def _handler(event, source):
-            if getattr(source, "profile", None) is None:
-                source.profile = profile_name
+            # The secondary adapter that received this platform event owns the
+            # credential/profile. In multiplex mode a stale source.profile from a
+            # previous per-agent bot DM must not leak across bot boundaries;
+            # the owning adapter's profile is authoritative.
+            source.profile = profile_name
             if profile_home is not None:
                 with _profile_runtime_scope(profile_home):
                     return await self._handle_gateway_platform_event(event, source)

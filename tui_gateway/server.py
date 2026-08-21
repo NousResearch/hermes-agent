@@ -4043,6 +4043,33 @@ def _resolve_agent_platform(source: str | None) -> str:
     return _resolve_session_source(source)
 
 
+def _context_file_policy(cfg: dict, platform: str) -> tuple[bool, bool, bool]:
+    """Resolve context-file loading for a TUI/Desktop session.
+
+    ``HERMES_IGNORE_RULES`` is the explicit all-rules escape hatch: it omits
+    project context, SOUL, and memory.  The per-platform setting is narrower:
+    it skips only cwd context files while keeping the profile SOUL identity and
+    memory intact.  Match the messaging gateway's ``gateway.platforms`` shape
+    so Desktop does not inject the install tree's AGENTS.md into a profile that
+    opts out.
+    """
+    ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
+    if ignore_rules:
+        return True, False, True
+
+    gateway = cfg.get("gateway") if isinstance(cfg, dict) else {}
+    platforms = gateway.get("platforms") if isinstance(gateway, dict) else {}
+    if not isinstance(platforms, dict):
+        platforms = {}
+    platform_cfg = platforms.get(platform) or {}
+    skip_context_files = (
+        bool(platform_cfg.get("skip_context_files"))
+        if isinstance(platform_cfg, dict)
+        else False
+    )
+    return skip_context_files, skip_context_files, False
+
+
 def _config_model_target() -> tuple[str, str]:
     """(model, provider) currently selected by config.yaml — and ONLY config.
 
@@ -7059,6 +7086,10 @@ def _make_agent(
         pass
 
     cfg = _load_cfg()
+    platform = _resolve_agent_platform(platform_override)
+    skip_context_files, load_soul_identity, skip_memory = _context_file_policy(
+        cfg, platform
+    )
     from hermes_cli.config import resolve_ephemeral_system_prompt_from_config
 
     system_prompt = resolve_ephemeral_system_prompt_from_config(cfg)
@@ -7182,7 +7213,7 @@ def _make_agent(
             if service_tier_override is not None
             else _load_service_tier()
         ),
-        enabled_toolsets=_load_enabled_toolsets(_resolve_agent_platform(platform_override)),
+        enabled_toolsets=_load_enabled_toolsets(platform),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same
         # routing instead of letting OpenRouter pick providers at random.
@@ -7192,14 +7223,15 @@ def _make_agent(
         provider_sort=_pr.get("sort"),
         provider_require_parameters=_pr.get("require_parameters", False),
         provider_data_collection=_pr.get("data_collection"),
-        platform=_resolve_agent_platform(platform_override),
+        platform=platform,
         session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(),
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
-        skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
-        skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+        skip_context_files=skip_context_files,
+        load_soul_identity=load_soul_identity,
+        skip_memory=skip_memory,
         fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
     )

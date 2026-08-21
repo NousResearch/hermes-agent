@@ -64,6 +64,7 @@ interface Secondary {
   /** True when a foreground/prewarmed consumer owns this entry beyond one RPC. */
   retained: boolean
   prunePending: boolean
+  activationLeases: number
   // While true the entry auto-reconnects on drop; pruning flips it off so a
   // deliberate close doesn't trigger the backoff loop.
   wantOpen: boolean
@@ -171,6 +172,7 @@ g.activationGeneration ??= 0
 g.keptProfiles ??= new Set<string>()
 
 for (const entry of g.secondaries.values()) {
+  entry.activationLeases ??= 0
   entry.commandLeases ??= 0
   entry.openPromise ??= null
   entry.prunePending ??= false
@@ -379,6 +381,41 @@ type SecondaryLeaseKind = 'command' | 'request'
 
 function secondaryIsKept(entry: Secondary): boolean {
   return g.keptProfiles.has(entry.scope) || (!entry.connectionId && g.keptProfiles.has(entry.profile))
+}
+
+function claimSecondaryActivation(entry: Secondary): void {
+  entry.activationLeases += 1
+  entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
+}
+
+function releaseSecondaryActivation(entry: Secondary): void {
+  entry.activationLeases = Math.max(0, entry.activationLeases - 1)
+
+  if (entry.activationLeases > 0) {
+    return
+  }
+
+  entry.activationLeaseUntil = 0
+
+  if (!entry.prunePending) {
+    return
+  }
+
+  entry.prunePending = false
+
+  if (
+    !entry.wantOpen ||
+    g.secondaries.get(entry.scope) !== entry ||
+    entry.scope === g.activeKey ||
+    secondaryIsKept(entry) ||
+    entry.commandLeases > 0 ||
+    entry.activeRequests > 0
+  ) {
+    return
+  }
+
+  disposeSecondary(entry)
+  g.secondaries.delete(entry.scope)
 }
 
 function releaseSecondaryLease(entry: Secondary, kind: SecondaryLeaseKind): void {
@@ -591,6 +628,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     reconnecting: null,
     retained: false,
     prunePending: false,
+    activationLeases: 0,
     wantOpen: true,
     activationLeaseUntil: 0
   }
@@ -871,11 +909,10 @@ async function activateGatewayForAgent(
   // switch target is not yet active and has no live sessions, so a prune
   // recompute firing mid-spawn would otherwise dispose it and this
   // activation would fail (#89622).
-  entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
+  claimSecondaryActivation(entry)
   // Activation owns this exact scoped entry across descriptor/ticket lookup.
   // A concurrent live-session prune must not dispose it and let the eventual
   // completion activate a replacement or dangling scope.
-  entry.commandLeases += 1
 
   try {
     if (!isOpen(entry.gateway)) {
@@ -903,8 +940,7 @@ async function activateGatewayForAgent(
 
     return activated
   } finally {
-    entry.activationLeaseUntil = 0
-    releaseSecondaryLease(entry, 'command')
+    releaseSecondaryActivation(entry)
   }
 }
 
@@ -939,11 +975,10 @@ async function activateGatewayForProfile(profile: string, activation: GatewayAct
   entry.wantOpen = true
   // Lease the entry against the live-work pruner for the whole dial — the
   // profile-door twin of the agent path's lease above (#89622).
-  entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
+  claimSecondaryActivation(entry)
   // Activation is an authoritative claim, not speculative pre-warm. Claim the
   // shared entry before joining its openPromise so pruning cannot dispose it in
   // the await window and leave activeKey pointing at a removed transport.
-  entry.commandLeases += 1
 
   try {
     if (!isOpen(entry.gateway)) {
@@ -969,9 +1004,7 @@ async function activateGatewayForProfile(profile: string, activation: GatewayAct
 
     return activated
   } finally {
-    // The activation is settling either way — release both prune guards.
-    entry.activationLeaseUntil = 0
-    releaseSecondaryLease(entry, 'command')
+    releaseSecondaryActivation(entry)
   }
 }
 

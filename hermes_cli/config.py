@@ -2243,26 +2243,26 @@ def warn_deprecated_cwd_env_vars() -> None:
     lines: list[str] = []
     if messaging_cwd:
         lines.append(
-            f"  \033[33m⚠\033[0m MESSAGING_CWD={messaging_cwd} found in .env — "
-            f"this is deprecated."
+            f"  ⚠ MESSAGING_CWD={messaging_cwd} found in .env — this is deprecated."
         )
     if terminal_cwd_env:
         lines.append(
-            f"  \033[33m⚠\033[0m TERMINAL_CWD={terminal_cwd_env} found in .env — "
-            f"this is deprecated."
+            f"  ⚠ TERMINAL_CWD={terminal_cwd_env} found in .env — this is deprecated."
         )
     if lines:
         from hermes_constants import display_hermes_home
 
+        # This runs during gateway bootstrap, where stderr is commonly captured
+        # by systemd, a dashboard PTY bridge, or a terminal emulator.  Do not
+        # write raw ANSI here: a non-terminal renderer exposes it as ``?[33m``.
+        # Use real newlines too, so the migration is directly copyable YAML.
         hint_path = display_hermes_home()
-        lines.insert(0, "\033[33m⚠ Deprecated .env settings detected:\033[0m")
-        lines.append(
-            "  \033[2mMove to config.yaml instead:  "
-            "terminal:\\n    cwd: /your/project/path\033[0m"
-        )
-        lines.append(
-            f"  \033[2mThen remove the old entries from {hint_path}/.env\033[0m"
-        )
+        cwd_hint = terminal_cwd_env or messaging_cwd or "/your/project/path"
+        lines.insert(0, "⚠ Deprecated .env settings detected:")
+        lines.append("  Move to config.yaml instead:")
+        lines.append("    terminal:")
+        lines.append(f"      cwd: {cwd_hint}")
+        lines.append(f"  Then remove the old entries from {hint_path}/.env")
         sys.stderr.write("\n".join(lines) + "\n\n")
 
 

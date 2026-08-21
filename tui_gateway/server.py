@@ -2578,12 +2578,20 @@ def _normalize_completion_path(path_part: str) -> str:
 
 def _completion_cwd(params: dict | None = None) -> str:
     params = params or {}
+    session_profile_home = _profile_home(params.get("profile"))
     raw = (
         params.get("cwd")
         or _sessions.get(params.get("session_id") or "", {}).get("cwd")
         # A session bound to another profile resolves its workspace from THAT
         # profile's config before falling back to the launch profile's env var.
-        or _profile_configured_cwd(_profile_home(params.get("profile")))
+        or _profile_configured_cwd(session_profile_home)
+        # A non-launch profile with no explicit terminal.cwd (placeholder or
+        # unset) must fall back to ITS OWN home, never the launch profile's
+        # configured cwd or process env: pooled backends rebind across
+        # profiles, and both the launch config and TERMINAL_CWD belong to the
+        # launch context (issue #87584). _profile_home returns None for the
+        # launch profile itself, so single-profile resolution is unchanged.
+        or (str(session_profile_home) if session_profile_home is not None else None)
         # The launch profile's dashboard /chat attaches to the dashboard's
         # in-memory gateway, which does NOT inherit the PTY child's bridged
         # TERMINAL_CWD. Read the launch profile's config.yaml directly so a

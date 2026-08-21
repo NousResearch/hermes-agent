@@ -1992,10 +1992,65 @@ def test_interim_commentary_precedes_content_from_real_codex_normalization(monke
     }
 
 
+def test_interim_commentary_partial_stream_receives_full_text(monkeypatch):
+    """A stream truncated at the text→tool_calls boundary must not be marked
+    already_streamed (#88954).
+
+    On Telegram the streamed commentary is routinely cut mid-text when the
+    tool_calls finish arrives; the partial stream IS a prefix of the full
+    commentary. The old prefix-based verdict set already_streamed=True, the
+    gateway called on_segment_break() finalizing the truncated bubble, and
+    the tail ("...pick it u" vs "...pick it up") was permanently lost. Only
+    an exact match may skip the full-text resend."""
+    agent = _build_agent(monkeypatch)
+    observed = {}
+    agent.interim_assistant_callback = lambda text, *, already_streamed=False: observed.update(
+        {"text": text, "already_streamed": already_streamed}
+    )
+
+    agent._current_streamed_assistant_text = "checking the queue to pick it u"
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    normalized, finish_reason = _normalize_codex_response(
+        _codex_commentary_final_tool_response("checking the queue to pick it up")
+    )
+    assert finish_reason == "tool_calls"
+    agent._emit_interim_assistant_message(
+        agent._build_assistant_message(normalized, finish_reason)
+    )
+
+    # Prefix-only match: the gateway must receive the FULL text with
+    # already_streamed=False so on_commentary() re-delivers it.
+    assert observed == {
+        "text": "checking the queue to pick it up",
+        "already_streamed": False,
+    }
 
 
+def test_interim_commentary_exact_stream_still_marks_streamed(monkeypatch):
+    """The exact-equality fast path is preserved: a fully streamed commentary
+    keeps already_streamed=True so the gateway settles the bubble without a
+    duplicate resend."""
+    agent = _build_agent(monkeypatch)
+    observed = {}
+    agent.interim_assistant_callback = lambda text, *, already_streamed=False: observed.update(
+        {"text": text, "already_streamed": already_streamed}
+    )
 
+    agent._current_streamed_assistant_text = "checking the queue to pick it up"
+    from agent.codex_responses_adapter import _normalize_codex_response
 
+    normalized, finish_reason = _normalize_codex_response(
+        _codex_commentary_final_tool_response("checking the queue to pick it up")
+    )
+    agent._emit_interim_assistant_message(
+        agent._build_assistant_message(normalized, finish_reason)
+    )
+
+    assert observed == {
+        "text": "checking the queue to pick it up",
+        "already_streamed": True,
+    }
 
 
 

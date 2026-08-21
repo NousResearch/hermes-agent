@@ -305,6 +305,56 @@ class TestStreamingAccumulator:
         assert tc[0].function.name == "terminal"
         assert tc[0].function.arguments == '{"command": "ls"}'
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_call_extra_content_dict_passthrough(self, mock_close, mock_create):
+        """extra_content delivered as a plain dict (MiniMax M2.7 via NVIDIA
+        NIM's OpenAI-compatible endpoint puts it under ``model_extra`` rather
+        than a Pydantic-typed ``extra_content`` attribute) must pass through
+        the streaming tool-call accumulator without calling ``.model_dump()``
+        on it. Regression test for NousResearch/hermes-agent#19968 (fixed
+        upstream via the ``_call_chat_completions`` extraction to
+        ``chat_completion_helpers.py``, already merged here)."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0,
+                    tc_id="call_minimax",
+                    name="search",
+                    model_extra={
+                        "extra_content": {"minimax": {"trace_id": "mm-abc"}}
+                    },
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"q": "test"}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tc = response.choices[0].message.tool_calls
+        assert tc is not None
+        assert tc[0].extra_content == {"minimax": {"trace_id": "mm-abc"}}
+
 
 
 

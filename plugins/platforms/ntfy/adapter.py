@@ -502,7 +502,13 @@ def _env_enablement() -> dict | None:
     markdown = os.getenv("NTFY_MARKDOWN", "").strip().lower()
     if markdown:
         seed["markdown"] = markdown in ("1", "true", "yes")
-    home = os.getenv("NTFY_HOME_CHANNEL", "").strip() or topic
+    # Home-channel fallback order when NTFY_HOME_CHANNEL is unset: a split
+    # publish topic is the delivery surface (subscribers listen there), so
+    # bare `deliver: ntfy` cron jobs must land on it — falling back to the
+    # subscribe topic silently delivers to a topic nobody watches while the
+    # scheduler reports ok (#88893). Single-topic setups keep today's
+    # behaviour (publish_topic empty → topic).
+    home = os.getenv("NTFY_HOME_CHANNEL", "").strip() or publish_topic or topic
     if home:
         seed["home_channel"] = {
             "chat_id": home,

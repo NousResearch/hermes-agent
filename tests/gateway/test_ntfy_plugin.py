@@ -111,6 +111,49 @@ class TestNtfyAdapterInit:
 # ---------------------------------------------------------------------------
 
 
+class TestEnvEnablementHomeChannel:
+    """Bare ``deliver: ntfy`` resolves through the seeded home_channel.
+
+    With split subscribe/publish topics and NTFY_HOME_CHANNEL unset, the
+    fallback must be the PUBLISH topic (the delivery surface subscribers
+    watch) — falling back to the subscribe topic delivers to a topic nobody
+    watches while the scheduler reports ok (#88893).
+    """
+
+    def test_unset_home_falls_back_to_publish_topic(self, monkeypatch):
+        from plugins.platforms.ntfy.adapter import _env_enablement
+
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        monkeypatch.setenv("NTFY_PUBLISH_TOPIC", "hermes-out")
+        monkeypatch.delenv("NTFY_HOME_CHANNEL", raising=False)
+
+        seed = _env_enablement()
+
+        assert seed["home_channel"]["chat_id"] == "hermes-out"
+
+    def test_explicit_home_channel_wins(self, monkeypatch):
+        from plugins.platforms.ntfy.adapter import _env_enablement
+
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        monkeypatch.setenv("NTFY_PUBLISH_TOPIC", "hermes-out")
+        monkeypatch.setenv("NTFY_HOME_CHANNEL", "my-alerts")
+
+        seed = _env_enablement()
+
+        assert seed["home_channel"]["chat_id"] == "my-alerts"
+
+    def test_single_topic_setup_keeps_topic_fallback(self, monkeypatch):
+        from plugins.platforms.ntfy.adapter import _env_enablement
+
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-both")
+        monkeypatch.delenv("NTFY_PUBLISH_TOPIC", raising=False)
+        monkeypatch.delenv("NTFY_HOME_CHANNEL", raising=False)
+
+        seed = _env_enablement()
+
+        assert seed["home_channel"]["chat_id"] == "hermes-both"
+
+
 class TestAuthHeaders:
 
     def _make_adapter(self, token=""):

@@ -5916,14 +5916,16 @@ def _update_memory_provider_config(provider: ProviderConfigSchema, values: Dict[
     else:
         _write_provider_flat(provider, values)
 
-    config = load_config()
-    memory_config = config.get("memory")
-    if not isinstance(memory_config, dict):
-        memory_config = {}
-        config["memory"] = memory_config
-    if memory_config.get("provider") != provider.name:
-        memory_config["provider"] = provider.name
-        save_config(config)
+    # RMW span — see _CONFIG_MUTATION_LOCK.
+    with _CONFIG_MUTATION_LOCK:
+        config = load_config()
+        memory_config = config.get("memory")
+        if not isinstance(memory_config, dict):
+            memory_config = {}
+            config["memory"] = memory_config
+        if memory_config.get("provider") != provider.name:
+            memory_config["provider"] = provider.name
+            save_config(config)
 
 
 def _memory_provider_label(name: str) -> str:
@@ -6600,17 +6602,19 @@ def _save_memory_provider_native_config(name: str, provider: Any, values: Dict[s
             provider.save_config(values, str(get_hermes_home()))
             return
 
-    cfg = load_config()
-    memory_cfg = cfg.get("memory")
-    if not isinstance(memory_cfg, dict):
-        memory_cfg = {}
-        cfg["memory"] = memory_cfg
-    current = memory_cfg.get(name)
-    if not isinstance(current, dict):
-        current = {}
-    current.update(values)
-    memory_cfg[name] = current
-    save_config(cfg)
+    # RMW span — see _CONFIG_MUTATION_LOCK.
+    with _CONFIG_MUTATION_LOCK:
+        cfg = load_config()
+        memory_cfg = cfg.get("memory")
+        if not isinstance(memory_cfg, dict):
+            memory_cfg = {}
+            cfg["memory"] = memory_cfg
+        current = memory_cfg.get(name)
+        if not isinstance(current, dict):
+            current = {}
+        current.update(values)
+        memory_cfg[name] = current
+        save_config(cfg)
 
 
 def _memory_provider_is_configured(name: str, provider: Any) -> bool:
@@ -6820,13 +6824,15 @@ async def update_memory_provider_config(
                 raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
             _write_memory_provider_config_values(name, provider, values)
             _require_memory_provider_ready(name)
-            config = load_config()
-            memory_config = config.get("memory")
-            if not isinstance(memory_config, dict):
-                memory_config = {}
-                config["memory"] = memory_config
-            memory_config["provider"] = name
-            save_config(config)
+            # RMW span — see _CONFIG_MUTATION_LOCK.
+            with _CONFIG_MUTATION_LOCK:
+                config = load_config()
+                memory_config = config.get("memory")
+                if not isinstance(memory_config, dict):
+                    memory_config = {}
+                    config["memory"] = memory_config
+                memory_config["provider"] = name
+                save_config(config)
             _invalidate_plugins_hub_cache()
             return {"ok": True, "active": name}
 
@@ -7209,48 +7215,54 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
             }
 
         with _profile_scope(body.profile or profile):
-            cfg = load_config()
-            if body.presets:
-                raw = {
-                    "default_preset": body.default_preset,
-                    "active_preset": body.active_preset,
-                    "presets": {name: _preset_dict(preset) for name, preset in body.presets.items()},
-                }
-            else:
-                raw = _preset_dict(
-                    MoaPresetPayload(
-                        reference_models=body.reference_models,
-                        aggregator=body.aggregator,
-                        reference_temperature=body.reference_temperature,
-                        aggregator_temperature=body.aggregator_temperature,
-                        reference_timeout=body.reference_timeout,
-                        degraded_reference_policy=body.degraded_reference_policy,
-                        max_tokens=body.max_tokens,
-                        reference_max_tokens=body.reference_max_tokens,
-                        fanout=body.fanout,
-                        enabled=body.enabled,
+            # RMW span: load→mutate→save must hold _CONFIG_MUTATION_LOCK or a
+            # concurrent config writer (the desktop's debounced PUT /api/config
+            # autosave, another model.set) interleaves and one write silently
+            # drops the other's mutation. config.py's _CONFIG_LOCK covers each
+            # call, never the span.
+            with _CONFIG_MUTATION_LOCK:
+                cfg = load_config()
+                if body.presets:
+                    raw = {
+                        "default_preset": body.default_preset,
+                        "active_preset": body.active_preset,
+                        "presets": {name: _preset_dict(preset) for name, preset in body.presets.items()},
+                    }
+                else:
+                    raw = _preset_dict(
+                        MoaPresetPayload(
+                            reference_models=body.reference_models,
+                            aggregator=body.aggregator,
+                            reference_temperature=body.reference_temperature,
+                            aggregator_temperature=body.aggregator_temperature,
+                            reference_timeout=body.reference_timeout,
+                            degraded_reference_policy=body.degraded_reference_policy,
+                            max_tokens=body.max_tokens,
+                            reference_max_tokens=body.reference_max_tokens,
+                            fanout=body.fanout,
+                            enabled=body.enabled,
+                        )
                     )
-                )
 
-            # Reject-don't-repair: normalize_moa_config() silently swaps any
-            # preset containing incomplete slots for the hardcoded defaults —
-            # correct tolerance for hand-edited configs at READ time, silent
-            # data loss at WRITE time (#64156: desktop autosave of a
-            # half-filled slot replaced the user's whole preset). Refuse the
-            # save loudly so no client can corrupt config through this route.
-            problems = validate_moa_payload(raw)
-            if problems:
-                raise HTTPException(
-                    status_code=422,
-                    detail="Invalid MoA config: " + "; ".join(problems),
-                )
-            normalized = normalize_moa_config(raw)
-            # Merge instead of overwrite so that hand-edited keys not declared
-            # in MoaConfigPayload (e.g. save_traces, trace_dir) survive a GUI
-            # save.  See issue #58819.
-            cfg.setdefault("moa", {}).update(normalized)
-            save_config(cfg)
-            return {"ok": True, **normalized}
+                # Reject-don't-repair: normalize_moa_config() silently swaps any
+                # preset containing incomplete slots for the hardcoded defaults —
+                # correct tolerance for hand-edited configs at READ time, silent
+                # data loss at WRITE time (#64156: desktop autosave of a
+                # half-filled slot replaced the user's whole preset). Refuse the
+                # save loudly so no client can corrupt config through this route.
+                problems = validate_moa_payload(raw)
+                if problems:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Invalid MoA config: " + "; ".join(problems),
+                    )
+                normalized = normalize_moa_config(raw)
+                # Merge instead of overwrite so that hand-edited keys not declared
+                # in MoaConfigPayload (e.g. save_traces, trace_dir) survive a GUI
+                # save.  See issue #58819.
+                cfg.setdefault("moa", {}).update(normalized)
+                save_config(cfg)
+                return {"ok": True, **normalized}
     except HTTPException:
         raise
     except Exception:
@@ -7327,7 +7339,20 @@ def _apply_model_assignment_sync(
     Runs inside ``_profile_scope`` (in a worker thread) so every
     load_config/save_config lands in the requested profile.  Raises
     HTTPException for validation errors — the async wrapper re-raises them.
+
+    The whole load→mutate→save cycle holds ``_CONFIG_MUTATION_LOCK``: the
+    desktop fires this concurrently with its debounced PUT /api/config
+    autosave, and config.py's ``_CONFIG_LOCK`` only serializes individual
+    load/save calls — without the span lock, whichever save lands second
+    silently drops the other's mutation.
     """
+    with _CONFIG_MUTATION_LOCK:
+        return _apply_model_assignment_locked(scope, provider, model, task, base_url, api_key)
+
+
+def _apply_model_assignment_locked(
+    scope: str, provider: str, model: str, task: str, base_url: str, api_key: str = ""
+):
     cfg = load_config()
 
     if scope == "main":
@@ -8223,10 +8248,13 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = 
     """Create or update a v12+ ``providers`` custom endpoint entry."""
     try:
         with _config_profile_scope(profile):
-            cfg = load_config()
-            endpoint_id, _entry = _write_custom_endpoint(cfg, body)
-            save_config(cfg)
-            response = _custom_endpoint_response(cfg)
+            # RMW span — see _CONFIG_MUTATION_LOCK. Sync-def endpoints run in
+            # the threadpool, so concurrent config writers interleave without it.
+            with _CONFIG_MUTATION_LOCK:
+                cfg = load_config()
+                endpoint_id, _entry = _write_custom_endpoint(cfg, body)
+                save_config(cfg)
+                response = _custom_endpoint_response(cfg)
         response["ok"] = True
         response["id"] = endpoint_id
         return response
@@ -8242,27 +8270,29 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     """Set a configured custom endpoint as the default model provider."""
     try:
         with _config_profile_scope(profile):
-            cfg = load_config()
-            provider_key = _custom_endpoint_id(endpoint_id)
-            providers = cfg.get("providers")
-            entry = providers.get(provider_key) if isinstance(providers, dict) else None
-            if not isinstance(entry, dict):
-                raise HTTPException(status_code=404, detail="custom endpoint not found")
+            # RMW span — see _CONFIG_MUTATION_LOCK.
+            with _CONFIG_MUTATION_LOCK:
+                cfg = load_config()
+                provider_key = _custom_endpoint_id(endpoint_id)
+                providers = cfg.get("providers")
+                entry = providers.get(provider_key) if isinstance(providers, dict) else None
+                if not isinstance(entry, dict):
+                    raise HTTPException(status_code=404, detail="custom endpoint not found")
 
-            models = _models_from_custom_endpoint_entry(entry)
-            model = str(entry.get("model") or (models[0] if models else "")).strip()
-            base_url = str(entry.get("base_url") or "").strip()
-            if not model or not base_url:
-                raise HTTPException(status_code=400, detail="custom endpoint is incomplete")
+                models = _models_from_custom_endpoint_entry(entry)
+                model = str(entry.get("model") or (models[0] if models else "")).strip()
+                base_url = str(entry.get("base_url") or "").strip()
+                if not model or not base_url:
+                    raise HTTPException(status_code=400, detail="custom endpoint is incomplete")
 
-            model_cfg = _apply_main_model_assignment(cfg.get("model", {}), provider_key, model, base_url)
-            if entry.get("key_env"):
-                model_cfg["key_env"] = entry["key_env"]
-                model_cfg.pop("api_key", None)
-            elif entry.get("api_key"):
-                model_cfg["api_key"] = entry["api_key"]
-            cfg["model"] = model_cfg
-            save_config(cfg)
+                model_cfg = _apply_main_model_assignment(cfg.get("model", {}), provider_key, model, base_url)
+                if entry.get("key_env"):
+                    model_cfg["key_env"] = entry["key_env"]
+                    model_cfg.pop("api_key", None)
+                elif entry.get("api_key"):
+                    model_cfg["api_key"] = entry["api_key"]
+                cfg["model"] = model_cfg
+                save_config(cfg)
         return {"ok": True, "provider": provider_key, "model": model}
     except HTTPException:
         raise
@@ -8276,17 +8306,19 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     """Remove a configured custom endpoint from ``providers``."""
     try:
         with _config_profile_scope(profile):
-            cfg = load_config()
-            provider_key = _custom_endpoint_id(endpoint_id)
-            providers = cfg.get("providers")
-            if not isinstance(providers, dict) or provider_key not in providers:
-                raise HTTPException(status_code=404, detail="custom endpoint not found")
-            providers.pop(provider_key, None)
-            cfg["providers"] = providers
-            _detach_main_model_from_provider(cfg, provider_key)
-            remove_env_value(custom_endpoint_key_env(provider_key))
-            save_config(cfg)
-            response = _custom_endpoint_response(cfg)
+            # RMW span — see _CONFIG_MUTATION_LOCK.
+            with _CONFIG_MUTATION_LOCK:
+                cfg = load_config()
+                provider_key = _custom_endpoint_id(endpoint_id)
+                providers = cfg.get("providers")
+                if not isinstance(providers, dict) or provider_key not in providers:
+                    raise HTTPException(status_code=404, detail="custom endpoint not found")
+                providers.pop(provider_key, None)
+                cfg["providers"] = providers
+                _detach_main_model_from_provider(cfg, provider_key)
+                remove_env_value(custom_endpoint_key_env(provider_key))
+                save_config(cfg)
+                response = _custom_endpoint_response(cfg)
         response["ok"] = True
         return response
     except HTTPException:
@@ -14690,9 +14722,11 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
     token = set_hermes_home_override(str(profile_dir))
     try:
         provider, model = _normalize_main_model_assignment(provider, model)
-        cfg = load_config()
-        cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), provider, model)
-        save_config(cfg)
+        # RMW span — see _CONFIG_MUTATION_LOCK.
+        with _CONFIG_MUTATION_LOCK:
+            cfg = load_config()
+            cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), provider, model)
+            save_config(cfg)
     finally:
         reset_hermes_home_override(token)
 

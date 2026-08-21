@@ -132,6 +132,63 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
 
 
+def test_up_to_date_packaged_gui_launch_skips_npm_resolution(tmp_path, monkeypatch):
+    """An up-to-date packaged launch must not require Node/npm at all.
+
+    Regression: npm was resolved before the content-stamp check, so a current
+    packaged app refused to launch whenever npm was absent — e.g. a
+    desktop-launcher start outside a login shell, where fnm/nvm PATH
+    customizations never apply. Resolution returning None here doubles as a
+    trap: if the launch path resolved npm, cmd_gui would exit 1.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main._resolve_node_runtime_npm", return_value=None) as mock_resolve, \
+         patch("hermes_cli.main._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main._run_npm_install_deterministic") as mock_install, \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main._register_linux_desktop_entry"), \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    mock_resolve.assert_not_called()
+    mock_install.assert_not_called()
+    assert mock_run.call_count == 1
+    assert mock_run.call_args.args[0] == [str(packaged_exe)]
+    assert mock_run.call_args.kwargs["cwd"] == desktop_dir
+
+
+def test_source_launch_without_npm_fails_before_desktop_entry_write(tmp_path, monkeypatch):
+    """A doomed source-mode launch must exit before any side effects.
+
+    Lazy npm resolution moved the missing-npm exit later in cmd_gui; the
+    resolve is hoisted above _register_linux_desktop_entry() so a failed run
+    can't leave a freshly (re)written launcher entry behind, matching the old
+    eager check's exit-before-side-effects ordering.
+    """
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+
+    with patch("hermes_cli.main._resolve_node_runtime_npm", return_value=None), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main._register_linux_desktop_entry") as mock_register, \
+         patch("hermes_cli.main.subprocess.run") as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(source=True))
+
+    assert exc.value.code == 1
+    mock_register.assert_not_called()
+    mock_run.assert_not_called()
+
+
 def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatch):
     """Regression: npm's child scripts (electron-winstaller's select-7z-arch.js)
     shell out to bare ``node``. When Desktop is launched from the updater chain

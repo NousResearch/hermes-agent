@@ -4300,6 +4300,34 @@ def run_conversation(
                             f"({hit_pct:.0f}% hit, {written:,} written)"
                         )
                 
+                else:
+                    # Streaming response without a usage chunk — some
+                    # OpenAI-compatible proxies (e.g. FreeLLMAPI's OpenCode
+                    # route) never emit one even with include_usage set.
+                    # Token counters and cost estimation genuinely require
+                    # usage data, but api_call_count and billing_provider are
+                    # independent — record them so sessions aren't left with
+                    # NULL provider / zero call counts (issue #71578).
+                    agent.session_api_calls += 1
+                    if agent._session_db and agent.session_id:
+                        try:
+                            if not agent._session_db_created:
+                                agent._ensure_db_session()
+                            agent._session_db.queue_token_counts(
+                                agent.session_id,
+                                input_tokens=0,
+                                output_tokens=0,
+                                billing_provider=agent.provider,
+                                billing_base_url=agent.base_url,
+                                model=agent.model,
+                                api_call_count=1,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "Token persistence (no-usage fallback) failed "
+                                "(session=%s): %s", agent.session_id, e,
+                            )
+
                 _retry.has_retried_429 = False  # Reset on success
                 # Note: don't clear the retry buffer here — an "API call
                 # success" only means we got bytes back, not that we got

@@ -10130,6 +10130,38 @@ def cmd_update(args):
 
     try:
         _self()._cmd_update_impl(args, gateway_mode=gateway_mode)
+    except SystemExit as _update_exit:
+        # Receipt boundary (#91283 review): the impl has many early
+        # sys.exit paths (concurrent-instance preflight, venv-holder
+        # refusal, head-pinned no-op, fetch failure) that never reach an
+        # inner finalize. Persist any still-open receipt with the real
+        # exit code, then let the exit proceed unchanged. No-op when an
+        # inner path already finalized (exactly-once by construction).
+        try:
+            from hermes_cli.update_receipt import finalize_pending_update_receipt
+
+            _code = _update_exit.code if isinstance(_update_exit.code, int) else 1
+            finalize_pending_update_receipt(_code, f"sys.exit({_code})")
+        except Exception:
+            pass
+        raise
+    except BaseException as _update_exc:
+        try:
+            from hermes_cli.update_receipt import finalize_pending_update_receipt
+
+            finalize_pending_update_receipt(
+                1, f"{type(_update_exc).__name__}: {_update_exc}"
+            )
+        except Exception:
+            pass
+        raise
+    else:
+        try:
+            from hermes_cli.update_receipt import finalize_pending_update_receipt
+
+            finalize_pending_update_receipt(0, "completed at command boundary")
+        except Exception:
+            pass
     finally:
         _update_lock.release()
         _finalize_update_output(_update_io_state)

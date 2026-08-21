@@ -1,6 +1,8 @@
 import { normalize } from '@/lib/text'
 
-import type { Locale } from './types'
+import type { Locale as OriginalLocale } from './types'
+
+export type Locale = OriginalLocale | 'pl'
 
 export const DEFAULT_LOCALE: Locale = 'en'
 
@@ -34,13 +36,19 @@ export const LOCALE_OPTIONS = [
     name: 'العربية',
     englishName: 'Arabic',
     configValue: 'ar'
+  },
+  {
+    id: 'pl',
+    name: 'Polski',
+    englishName: 'Polish',
+    configValue: 'pl'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
 // `name` is the endonym (native name) shown in the picker so users recognize
 // their language regardless of the current UI language. No country flags:
 // languages are not countries. `englishName` is search-only (not shown) so an
-// English speaker can type "japanese"/"traditional" to filter the list.
+// English speaker can type "japanese\"/"traditional\" to filter the list.
 export const LOCALE_META: Record<Locale, { name: string; englishName: string }> = Object.fromEntries(
   LOCALE_OPTIONS.map(locale => [locale.id, { name: locale.name, englishName: locale.englishName }])
 ) as Record<Locale, { name: string; englishName: string }>
@@ -79,7 +87,12 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   'ar-eg': 'ar',
   ar_eg: 'ar',
   arabic: 'ar',
-  العربية: 'ar'
+  العربية: 'ar',
+  pl: 'pl',
+  'pl-pl': 'pl',
+  pl_pl: 'pl',
+  polish: 'pl',
+  polski: 'pl'
 }
 
 export function isLocale(value: unknown): value is Locale {

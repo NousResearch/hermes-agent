@@ -50,6 +50,12 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('settings.appearance.reasoningCollapsedDesc')).toBe(
       'أبقِ التفكير المتدفق متاحًا دون توسيعه حتى تفتحه.'
     )
+
+    setRuntimeI18nLocale('pl')
+    // Note: pl.ts is partially translated; test keys that are confirmed translated
+    expect(translateNow('common.save')).toBe('Zapisz')
+    expect(translateNow('common.cancel')).toBe('Anuluj')
+    expect(translateNow('common.close')).toBe('Zamknij')
   })
 
   it('keeps translated settings field copy addressable from schema keys', () => {

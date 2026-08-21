@@ -3202,6 +3202,32 @@ class ContextCompressor(ContextEngine):
         # succeeded.  Silent recovery would hide the broken config.
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
+        # The auxiliary identity actually used on the wire for the most
+        # recent summary call — resolved from auxiliary.compression config
+        # by _resolve_task_provider_model, distinct from the main-model
+        # identity on self.provider / self.summary_model / self.base_url.
+        # Read by the compression-abort diagnostic (#72636).
+        self._last_aux_call_provider: str = ""
+        self._last_aux_call_model: str = ""
+        self._last_aux_call_base_url: str = ""
+        # The CONFIG-layer auxiliary identity (provider/model/base_url as
+        # declared under auxiliary.compression), captured per attempt. Used
+        # only when no physical request was dispatched (e.g. an explicit
+        # provider whose API key is missing fails before the client is
+        # built) to distinguish "configured but pre-dispatch failure" from
+        # "auxiliary.compression not set at all" — the latter is the only
+        # case where the diagnostic may fall back to the main-model
+        # identity (#72636).
+        self._last_aux_config_provider: str = ""
+        self._last_aux_config_model: str = ""
+        self._last_aux_config_base_url: str = ""
+        # Per-attempt failure classification ("auth" | "network" | "other" |
+        # None). Unlike _last_summary_auth_failure / _last_summary_network_failure,
+        # which are intentionally sticky across compress() calls to preserve
+        # the cooldown guard (see compress()), this field is reset at the top
+        # of every _generate_summary attempt so the abort diagnostic reflects
+        # the CURRENT attempt's failure mode, not a stale prior one (#72636).
+        self._last_attempt_failure_class: Optional[str] = None
         self._last_compression_telemetry: Optional[Dict[str, Any]] = None
         self._active_compression_telemetry: Optional[Dict[str, Any]] = None
         self._compression_telemetry_seed: Optional[Dict[str, Any]] = None
@@ -4798,6 +4824,12 @@ FOCUS TOPIC: "{focus_topic}"
 This compaction should PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
 
         try:
+            # Per-attempt reset: this attempt's failure classification must
+            # reflect THIS attempt's outcome, not a sticky prior one (#72636).
+            # _last_summary_auth_failure / _last_summary_network_failure stay
+            # sticky for the cooldown guard (see compress()); this field is the
+            # authoritative "what went wrong this attempt" for the abort path.
+            self._last_attempt_failure_class = None
             call_kwargs = {
                 "task": "compression",
                 "main_runtime": {
@@ -4824,12 +4856,15 @@ This compaction should PRIORITISE preserving all information related to the focu
             _aux_provider = ""
             _aux_model = self.summary_model or ""
             _aux_context = None
+            _resolved_base = None
             try:
                 from agent.auxiliary_client import _resolve_task_provider_model
 
-                _resolved_provider, _resolved_model, _, _, _ = _resolve_task_provider_model(
-                    "compression",
-                    model=(self.summary_model or ""),
+                _resolved_provider, _resolved_model, _resolved_base, _, _ = (
+                    _resolve_task_provider_model(
+                        "compression",
+                        model=(self.summary_model or ""),
+                    )
                 )
                 _aux_provider = _resolved_provider or ""
                 _aux_model = _resolved_model or _aux_model or self.model or ""
@@ -4837,6 +4872,56 @@ This compaction should PRIORITISE preserving all information related to the focu
                     _aux_context = self.context_length
             except Exception:
                 pass
+            # Reset the wire-route snapshot at the start of each attempt; the
+            # authoritative version is written by call_llm's route_callback
+            # before each physical request (auto-detection, retries, fallback
+            # chains, client.base_url). _resolve_task_provider_model above
+            # returns a config-layer guess that call_llm may override, so we do
+            # NOT persist it as the wire identity (#72636).
+            self._last_aux_call_provider = ""
+            self._last_aux_call_model = ""
+            self._last_aux_call_base_url = ""
+            # Config-layer identity: what auxiliary.compression is DECLARED to
+            # use, captured before dispatch. Populated only when an explicit
+            # provider is configured — when the task is unset the resolution
+            # returns "auto" and the summary call inherits the main-model
+            # identity. Used when no physical request was dispatched (e.g. the
+            # explicit provider's API key is missing) so the abort diagnostic
+            # reports the configured auxiliary identity as a pre-dispatch
+            # failure instead of substituting the main endpoint (#72636).
+            self._last_aux_config_provider = ""
+            self._last_aux_config_model = ""
+            self._last_aux_config_base_url = ""
+            if _aux_provider not in ("", "auto", None):
+                _cfg_base = str(_resolved_base or "")
+                if _cfg_base:
+                    try:
+                        from agent.auxiliary_client import _extract_url_query_params
+                        _cfg_base, _ = _extract_url_query_params(_cfg_base)
+                    except Exception:
+                        _cfg_base = _cfg_base.split("?", 1)[0]
+                self._last_aux_config_provider = str(_aux_provider)
+                self._last_aux_config_model = str(_aux_model or "")
+                self._last_aux_config_base_url = _cfg_base
+
+            def _record_aux_route(provider, model, base_url):
+                # Invoked before every call_llm physical request; the final
+                # callback is therefore the route that terminated the call,
+                # after auto-detection / fallback. Strip any query string
+                # defensively — some proxies carry credentials as ?key=... and
+                # this value is surfaced in user-facing diagnostics on
+                # Telegram/Discord/Slack/CLI (#72636).
+                _safe_base = ""
+                if base_url:
+                    try:
+                        from agent.auxiliary_client import _extract_url_query_params
+                        _safe_base, _ = _extract_url_query_params(str(base_url))
+                    except Exception:
+                        _safe_base = str(base_url).split("?", 1)[0]
+                self._last_aux_call_provider = provider or ""
+                self._last_aux_call_model = model or ""
+                self._last_aux_call_base_url = _safe_base or ""
+
             # Compression is atomic: protect the in-flight summary call from a
             # mid-turn gateway interrupt. Without this, an incoming user message
             # aborts the summary and compression falls back to a degraded static
@@ -4845,7 +4930,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             _aux_call_start = time.monotonic()
             try:
                 with aux_interrupt_protection():
-                    response = call_llm(**call_kwargs)
+                    response = call_llm(route_callback=_record_aux_route, **call_kwargs)
             finally:
                 self._record_aux_compression_call(
                     prompt_messages=call_kwargs["messages"],
@@ -4987,6 +5072,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # Keep the established field name for caller compatibility;
                 # it now represents the broader terminal access/quota class.
                 self._last_summary_auth_failure = True
+                self._last_attempt_failure_class = "auth"
             if _is_json_decode and not _is_model_not_found and not _is_timeout:
                 logger.error(
                     "Context compression failed: auxiliary LLM returned a "
@@ -5081,6 +5167,13 @@ This compaction should PRIORITISE preserving all information related to the focu
             # the auth-failure carve-out; independent of abort_on_summary_failure.
             if _is_streaming_closed:
                 self._last_summary_network_failure = True
+                self._last_attempt_failure_class = "network"
+            elif self._last_attempt_failure_class is None:
+                # Any other transient failure (timeout, JSON decode, 5xx, ...)
+                # that reached this branch — not auth, not a network stream
+                # close. Classified so the abort diagnostic does not inherit a
+                # stale "auth" verdict from a prior attempt (#72636).
+                self._last_attempt_failure_class = "other"
             logger.warning(
                 "Failed to generate context summary: %s. "
                 "Further summary attempts paused for %d seconds.",

@@ -3297,6 +3297,9 @@ def _set_relay_auxiliary_route(
     provider: str | None,
     model: str | None,
     api_mode: str | None,
+    *,
+    route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> None:
     context = _RELAY_AUX_CALL_CONTEXT.get()
     if context is None:
@@ -3305,6 +3308,89 @@ def _set_relay_auxiliary_route(
     context["model"] = str(model or "unknown")
     context["response_model"] = None
     context["api_mode"] = str(api_mode or "chat_completions")
+    context["route_callback"] = route_callback
+    runtime = main_runtime or {}
+    runtime_base = str(runtime.get("base_url") or "")
+    try:
+        runtime_base, _ = _extract_url_query_params(runtime_base)
+    except Exception:
+        runtime_base = runtime_base.split("?", 1)[0]
+    # Stored query-stripped even though the only reader today compares
+    # hostnames — a future logger of this context must not be able to leak
+    # credentials some proxies carry as ?key=... (#72636).
+    context["main_runtime"] = {
+        "provider": str(runtime.get("provider") or ""),
+        "base_url": runtime_base,
+    }
+
+
+def _wire_provider_name(
+    provider: str | None,
+    base_url: str,
+    main_runtime: Optional[Dict[str, Any]],
+) -> str:
+    """Return the concrete provider label for one physical wire attempt."""
+    raw_provider = str(provider or "").strip()
+    wrapped = re.search(r"\(([^()]*)\)$", raw_provider)
+    if wrapped:
+        raw_provider = wrapped.group(1).strip()
+    normalized = _normalize_aux_provider(raw_provider)
+    if normalized not in {"", "auto"}:
+        return raw_provider or normalized
+
+    runtime = main_runtime or {}
+    runtime_provider = str(runtime.get("provider") or "").strip()
+    runtime_base = str(runtime.get("base_url") or "").strip()
+    if (
+        runtime_provider
+        and runtime_provider not in {"auto"}
+        and runtime_base
+        and base_url_hostname(runtime_base) == base_url_hostname(base_url)
+    ):
+        return runtime_provider
+
+    try:
+        from agent.model_metadata import _infer_provider_from_url
+
+        inferred = _infer_provider_from_url(base_url)
+        if inferred:
+            return inferred
+    except Exception:
+        pass
+
+    # An auto-selected HTTP client with an otherwise unknown endpoint is a
+    # custom route. Reporting "custom" is more actionable than preserving the
+    # config-layer "auto" label, which never went over the wire.
+    return "custom" if base_url else "auto"
+
+
+def _notify_relay_auxiliary_route(
+    client: Any,
+    kwargs: Dict[str, Any],
+    provider: str | None,
+) -> None:
+    """Publish the latest physical route without affecting request success."""
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if context is None:
+        return
+    route_callback = context.get("route_callback")
+    if not callable(route_callback):
+        return
+
+    base_url = str(getattr(client, "base_url", "") or "")
+    try:
+        clean_base, _ = _extract_url_query_params(base_url)
+        route_callback(
+            _wire_provider_name(
+                provider or context.get("provider"),
+                clean_base,
+                context.get("main_runtime"),
+            ),
+            str(kwargs.get("model") or context.get("model") or "") or None,
+            clean_base,
+        )
+    except Exception:
+        logger.debug("route_callback error in auxiliary wire attempt", exc_info=True)
 
 
 def _record_route_info(
@@ -3348,6 +3434,7 @@ def _relay_sync_completion(
     create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
     callback = create or (lambda request: client.chat.completions.create(**request))
+    _notify_relay_auxiliary_route(client, kwargs, provider)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Protected compression calls isolate only the provider callback and stream
     # aggregation.  The owning thread remains free to unwind its lease/DB
@@ -3399,6 +3486,7 @@ def _relay_sync_stream(
     provider: str | None = None,
     api_mode: str | None = None,
 ) -> Any:
+    _notify_relay_auxiliary_route(client, kwargs, provider)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return client.chat.completions.create(**kwargs)
@@ -5168,6 +5256,7 @@ def _call_fallback_candidate_sync(
     effective_timeout: float,
     effective_extra_body: dict,
     reasoning_config: Optional[dict],
+    terminal_auth_exc: Optional[list] = None,
 ) -> Optional[Any]:
     """Call one fallback candidate with stale-credential recovery.
 
@@ -5183,6 +5272,12 @@ def _call_fallback_candidate_sync(
     once with a rebuilt client; if the retry also auth-fails (non-refreshable
     expired token), mark the provider unhealthy and return ``None`` so the
     caller can continue to the next fallback layer. Non-auth errors raise.
+
+    When ``terminal_auth_exc`` is a list and the candidate is quarantined,
+    the terminal auth exception of THIS physical attempt is appended to it,
+    so a caller whose fallback chain exhausts can propagate the error that
+    belongs to the last physical wire attempt instead of the primary's
+    earlier ``first_err`` (#72636).
 
     ``effective_timeout`` is the task-level deadline; a configured-chain
     candidate with its own ``timeout`` entry gets that instead, so a
@@ -5222,6 +5317,7 @@ def _call_fallback_candidate_sync(
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
+        terminal_exc = fb_err
         fb_provider = _auth_refresh_provider_for_route(
             destination.provider, destination.base_url
         )
@@ -5265,6 +5361,7 @@ def _call_fallback_candidate_sync(
                         task,
                     )
                 except Exception as retry_err:
+                    terminal_exc = retry_err
                     if not _is_auth_error(retry_err):
                         raise
         # Refresh unavailable or the refreshed credential still 401s —
@@ -5277,6 +5374,8 @@ def _call_fallback_candidate_sync(
             "credential (%s) — skipping to next fallback",
             task or "call", fb_label, fb_err,
         )
+        if terminal_auth_exc is not None:
+            terminal_auth_exc.append(terminal_exc)
         return None
 
 
@@ -9250,6 +9349,7 @@ def call_llm(
     stream: bool = False,
     stream_options: dict = None,
     route_info: Optional[Dict[str, str]] = None,
+    route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
 ) -> Any:
     """Run an auxiliary LLM request, applying the configured task limit."""
     semaphore = _acquire_sync_aux_semaphore(task)
@@ -9275,6 +9375,7 @@ def call_llm(
             stream=stream,
             stream_options=stream_options,
             route_info=route_info,
+            route_callback=route_callback,
         )
         if stream and semaphore is not None:
             stream_semaphore = semaphore
@@ -9321,6 +9422,7 @@ def _call_llm_impl(
     stream: bool = False,
     stream_options: dict = None,
     route_info: Optional[Dict[str, str]] = None,
+    route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -9352,6 +9454,10 @@ def _call_llm_impl(
             output can stream to the user.
         stream_options: Passed through to the request when stream is True
             (e.g. {"include_usage": True}).
+        route_callback: Optional observer invoked immediately before every
+            physical sync wire attempt with the concrete provider, request
+            model, and query-stripped client endpoint. Later retries and
+            fallbacks replace the caller's previous route snapshot.
 
     Returns:
         Response object with .choices[0].message.content, OR — when stream=True —
@@ -9458,6 +9564,8 @@ def _call_llm_impl(
         request_provider,
         final_model,
         resolved_api_mode,
+        route_callback=route_callback,
+        main_runtime=main_runtime,
     )
     _record_route_info(
         route_info, _fallback_provider_from_label(request_provider), final_model
@@ -9607,6 +9715,13 @@ def _call_llm_impl(
             # Retries exhausted — fall through to first_err fallback handling.
             raise _last_transient
     except Exception as first_err:
+        # Terminal auth exception of the most recent quarantined fallback
+        # candidate, if any. When the fallback chain exhausts, the route
+        # snapshot on the caller's side already identifies the LAST physical
+        # fallback attempt; the error propagated must belong to that same
+        # attempt or downstream diagnostics pair one attempt's identity with
+        # a different attempt's failure class (#72636).
+        _quarantined_exc: Optional[BaseException] = None
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
             retry_kwargs.pop("temperature", None)
@@ -10017,13 +10132,17 @@ def _call_llm_impl(
                 _record_route_info(
                     route_info, _fallback_provider_from_label(fb_label), fb_model
                 )
+                _swallowed_auth: list = []
                 fb_resp = _call_fallback_candidate_sync(
                     fb_client, fb_model, fb_label,
                     task=task, messages=messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, effective_timeout=effective_timeout,
                     effective_extra_body=effective_extra_body,
-                    reasoning_config=reasoning_config)
+                    reasoning_config=reasoning_config,
+                    terminal_auth_exc=_swallowed_auth)
+                if _swallowed_auth:
+                    _quarantined_exc = _swallowed_auth[0]
                 if fb_resp is not None:
                     return fb_resp
                 # The candidate had a stale/unrefreshable credential and was
@@ -10035,13 +10154,17 @@ def _call_llm_impl(
                     _record_route_info(
                         route_info, _fallback_provider_from_label(fb_label), fb_model
                     )
+                    _swallowed_auth = []
                     fb_resp = _call_fallback_candidate_sync(
                         fb_client, fb_model, fb_label,
                         task=task, messages=messages,
                         temperature=temperature, max_tokens=max_tokens,
                         tools=tools, effective_timeout=effective_timeout,
                         effective_extra_body=effective_extra_body,
-                        reasoning_config=reasoning_config)
+                        reasoning_config=reasoning_config,
+                        terminal_auth_exc=_swallowed_auth)
+                    if _swallowed_auth:
+                        _quarantined_exc = _swallowed_auth[0]
                     if fb_resp is not None:
                         return fb_resp
             # All fallback layers exhausted — emit a single user-visible
@@ -10063,6 +10186,14 @@ def _call_llm_impl(
             except Exception:
                 logger.debug("Auxiliary: cache eviction after connection error failed",
                              exc_info=True)
+        if _quarantined_exc is not None:
+            # The last physical wire attempt was a fallback candidate whose
+            # credential was dead. The route snapshot already identifies that
+            # fallback, so propagate ITS terminal auth error (chained to the
+            # primary origin for context) instead of re-raising the primary's
+            # earlier error — otherwise the compression diagnostic pairs the
+            # fallback's endpoint with the primary's failure class (#72636).
+            raise _quarantined_exc from first_err
         raise
 
 

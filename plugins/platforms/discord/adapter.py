@@ -7277,11 +7277,19 @@ class DiscordAdapter(BasePlatformAdapter):
         name: str,
         *,
         only_if_current_name: Optional[str] = None,
+        prefer_connector_created: bool = False,
+        parent_chat_id: Optional[str] = None,
     ) -> bool:
         """Best-effort Discord thread rename.
 
         ``only_if_current_name`` prevents overwriting human-renamed or
         pre-existing threads.  This is intentionally a no-op on mismatch.
+
+        ``prefer_connector_created`` and ``parent_chat_id`` are accepted only
+        for signature parity with the relay sibling adapter — run.py calls
+        ``rename_thread`` with all three keyword args unconditionally, and the
+        native lane drives the direct Discord API (no connector egress guard),
+        so both are ignored here.
         """
         if not self._client or not DISCORD_AVAILABLE:
             return False

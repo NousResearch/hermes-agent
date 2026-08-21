@@ -1259,6 +1259,83 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             reply_to=reply_to,
         )
 
+    # ------------------------------------------------------------------ location
+    async def send_location(
+        self,
+        chat_id: str,
+        latitude: float,
+        longitude: float,
+        *,
+        name: Optional[str] = None,
+        address: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a native WhatsApp location pin via the Graph API.
+
+        Meta's Cloud API supports ``type: "location"`` with a ``location``
+        object carrying ``latitude``, ``longitude``, and optionally
+        ``name`` and ``address``. Unlike media, this is a single-step
+        send — no upload, no ``media_id``.
+
+        ``reply_to`` quotes the referenced inbound wamid. ``metadata``
+        is accepted for signature parity with the Baileys adapter but
+        has no Cloud API use.
+        """
+        if self._http_client is None:
+            return SendResult(success=False, error="Not connected")
+
+        url = self._graph_url("messages")
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
+
+        location_block: Dict[str, Any] = {
+            "latitude": float(latitude),
+            "longitude": float(longitude),
+        }
+        if name:
+            location_block["name"] = name
+        if address:
+            location_block["address"] = address
+
+        payload: Dict[str, Any] = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": chat_id,
+            "type": "location",
+            "location": location_block,
+        }
+        if reply_to:
+            payload["context"] = {"message_id": reply_to}
+
+        try:
+            resp = await self._http_client.post(url, headers=headers, json=payload)
+        except Exception as exc:
+            logger.exception("[whatsapp_cloud] location send failed")
+            return SendResult(success=False, error=str(exc))
+
+        if resp.status_code != 200:
+            try:
+                body = resp.json()
+            except Exception:
+                body = {"raw": resp.text[:500]}
+            error_msg = self._format_graph_error(body, resp.status_code)
+            logger.warning(
+                "[whatsapp_cloud] location send rejected (status=%d): %s",
+                resp.status_code, error_msg,
+            )
+            return SendResult(success=False, error=error_msg)
+
+        try:
+            data = resp.json()
+            ids = data.get("messages") or []
+            wamid = ids[0].get("id") if ids else None
+        except Exception:
+            wamid = None
+        return SendResult(success=True, message_id=wamid)
+
     # ------------------------------------------------------------------ opus conversion
     async def _convert_to_opus(self, mp3_path: str) -> Optional[str]:
         """Convert an MP3 to ``audio/ogg; codecs=opus`` for voice bubbles.
@@ -1936,6 +2013,25 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # don't carry a caption in Meta's spec, but be defensive.
             inner = raw_message.get(msg_type_str) or {}
             body = str(inner.get("caption") or "")
+        elif msg_type_str == "location":
+            # Inbound location pins. Meta's webhook delivers:
+            #   {type:"location", location:{latitude, longitude, name?, address?}}
+            # Surface the coordinates + optional label as text so the agent
+            # can reason about the location without a separate media download.
+            loc = raw_message.get("location") or {}
+            lat = loc.get("latitude")
+            lng = loc.get("longitude")
+            loc_name = str(loc.get("name") or "").strip()
+            loc_address = str(loc.get("address") or "").strip()
+            parts: list[str] = []
+            if loc_name:
+                parts.append(f"Name: {loc_name}")
+            if loc_address:
+                parts.append(f"Address: {loc_address}")
+            if lat is not None and lng is not None:
+                parts.append(f"Coordinates: {lat}, {lng}")
+                parts.append(f"https://maps.google.com/?q={lat},{lng}")
+            body = " | ".join(parts) if parts else "[Location]"
 
         message_type = {
             "text": MessageType.TEXT,
@@ -1947,7 +2043,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             "sticker": MessageType.PHOTO,
             "button": MessageType.TEXT,
             "interactive": MessageType.TEXT,
-            "location": MessageType.TEXT,
+            "location": MessageType.LOCATION,
             "contacts": MessageType.TEXT,
         }.get(msg_type_str, MessageType.TEXT)
 

@@ -4121,26 +4121,11 @@ def systemd_restart(system: bool = False):
             f"waiting up to {wait_budget:.0f}s for in-flight turns + drain..."
         )
         if _graceful_restart_via_sigusr1(pid, wait_budget):
-            # The gateway exits with code 75 for a planned service restart.
-            # RestartSec can otherwise delay the relaunch even though the
-            # operator asked for an immediate restart, so kick the unit once
-            # the old PID has exited and then wait for the replacement PID.
-            _run_systemctl(
-                ["reset-failed", svc],
-                system=system,
-                check=False,
-                timeout=30,
-            )
-            _run_systemctl(
-                ["restart", svc],
-                system=system,
-                check=False,
-                timeout=90,
-            )
-            if _wait_for_systemd_service_restart(system=system, previous_pid=pid):
-                return
-            if _systemd_service_is_start_limited(system=system):
-                return
+            # Exit 75 transfers restart ownership to systemd.  Observe that
+            # single replacement instead of issuing another restart that can
+            # stop the process systemd has already brought up.
+            _wait_for_systemd_service_restart(system=system, previous_pid=pid)
+            return
 
         print(
             f"⚠ Graceful restart did not complete within {int(wait_budget)}s; "

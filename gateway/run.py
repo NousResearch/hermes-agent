@@ -11592,101 +11592,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 start_new_session=True,
             )
 
-    def _launch_systemd_restart_shortcut(self) -> None:
-        """Best-effort helper to bypass systemd's automatic restart delay.
-
-        For planned in-chat restarts, the gateway exits cleanly so systemd does
-        not record a failure.  However, units with RestartSteps still count
-        automatic restarts and can delay repeated /restart tests.  A transient
-        user service survives our cgroup teardown and explicitly starts the
-        gateway as soon as this PID exits, while the unit keeps its normal
-        backoff for real crash loops.
-        """
-        if sys.platform != "linux" or not os.environ.get("INVOCATION_ID"):
-            return
-
-        try:
-            import shutil
-            import subprocess
-
-            systemd_run = shutil.which("systemd-run")
-            systemctl = shutil.which("systemctl")
-            if not systemd_run or not systemctl:
-                return
-
-            try:
-                from hermes_cli.gateway import get_service_name
-
-                service_name = get_service_name()
-            except Exception:
-                service_name = "hermes-gateway"
-
-            current_pid = os.getpid()
-
-            # Detect whether the gateway unit is registered as a system or
-            # user service.  Daemon-style deployments are typically system
-            # units (e.g. /etc/systemd/system/hermes-gateway.service), while
-            # `hermes setup` under a non-root account may register a user
-            # unit.  Hard-coding ``--user`` broke system-unit deployments:
-            # systemctl returned an empty MainPID, the PID-equality check
-            # below failed, and the planned-restart helper was never
-            # launched — leaving the gateway dead until a manual reboot.
-            def _query_pid(scope_flags):
-                try:
-                    out = subprocess.run(
-                        [systemctl, *scope_flags, "show", service_name,
-                         "--property=MainPID", "--value"],
-                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2,
-                    )
-                    return (out.stdout or "").strip()
-                except Exception:
-                    return ""
-
-            system_pid = _query_pid([])
-            user_pid = _query_pid(["--user"])
-            if str(current_pid) == system_pid:
-                scope_flags = []
-                systemctl_scope = "systemctl"
-            elif str(current_pid) == user_pid:
-                scope_flags = ["--user"]
-                systemctl_scope = "systemctl --user"
-            else:
-                # MainPID does not match in either scope — likely invoked
-                # outside of systemd or the unit was renamed.  Bail out
-                # rather than restart the wrong unit.
-                return
-
-            service_arg = shlex.quote(service_name)
-            shell_cmd = (
-                f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
-                f"{systemctl_scope} reset-failed {service_arg}; "
-                f"{systemctl_scope} restart {service_arg}"
-            )
-            unit_name = f"{service_name}-planned-restart-{current_pid}".replace(".", "-")
-            subprocess.Popen(
-                [
-                    systemd_run,
-                    *scope_flags,
-                    "--collect",
-                    "--unit",
-                    unit_name,
-                    "/bin/sh",
-                    "-lc",
-                    shell_cmd,
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            logger.info(
-                "Launched systemd planned-restart helper for %s (pid=%s, scope=%s)",
-                service_name,
-                current_pid,
-                "user" if scope_flags else "system",
-            )
-        except Exception as e:
-            logger.debug("Failed to launch systemd planned-restart helper: %s", e)
-
     def _wedged_agent_count(self) -> int:
         """Count running chat agents already past the inactivity timeout.
 
@@ -15310,25 +15215,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("Failed to write planned restart notification marker: %s", e)
 
             if self._restart_requested and self._restart_via_service:
-                self._launch_systemd_restart_shortcut()
-                # Always exit with TEMPFAIL (75) on service-managed
-                # restarts.  The shortcut helper above is best-effort and
-                # commonly fails on real deployments: non-root gateway
-                # units hit Polkit denials when invoking ``systemd-run
-                # --system``, headless boxes have no user bus for
-                # ``--user``, and operator-managed unit files may use
-                # ``Restart=on-failure`` rather than ``Restart=always``.
-                # Exit 75 paired with ``RestartForceExitStatus=75`` makes
-                # systemd treat the planned restart as a controlled
-                # failure and revive the unit via ``Restart=on-failure``,
-                # regardless of whether the helper survived.  Without
-                # this, a clean exit (0) on Linux left the gateway dead
-                # until someone rebooted the host.  Only the planned code
-                # (75) is whitelisted via ``RestartForceExitStatus``; a
-                # genuine crash exits non-zero-but-not-75, so real crash
-                # loops are still governed by the unit's normal
-                # ``Restart=``/``RestartSec`` (and any StartLimit the
-                # operator sets) rather than force-restarted here.
+                # The service manager is the sole restart owner.  Exit 75
+                # paired with ``RestartForceExitStatus=75`` asks systemd to
+                # replace this process without a second helper racing the
+                # unit's stop/start job.  launchd likewise treats the planned
+                # non-zero exit as restartable.
                 self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 

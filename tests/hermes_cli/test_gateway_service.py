@@ -734,16 +734,10 @@ class TestGatewaySystemServiceRouting:
             lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
         )
 
-        # Simulate systemctl reset-failed/restart followed by an active unit.
-        # A plain start does not break systemd's auto-restart timer once the
-        # old gateway has exited with the planned restart code.
+        # Once SIGUSR1 makes the gateway exit with the planned restart code,
+        # systemd is the only restart owner.  The CLI must only observe the
+        # replacement instead of issuing a second stop/start transition.
         def fake_subprocess_run(cmd, **kwargs):
-            if "reset-failed" in cmd:
-                calls.append(("reset-failed", cmd))
-                return SimpleNamespace(stdout="", returncode=0)
-            if "restart" in cmd:
-                calls.append(("restart", cmd))
-                return SimpleNamespace(stdout="", returncode=0)
             raise AssertionError(f"Unexpected systemctl call: {cmd}")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_subprocess_run)
@@ -756,8 +750,6 @@ class TestGatewaySystemServiceRouting:
         gateway_cli.systemd_restart()
 
         assert ("graceful", 654, 27.0) in calls
-        assert any(call[0] == "reset-failed" for call in calls)
-        assert any(call[0] == "restart" for call in calls)
         assert ("wait", False, 654) in calls
         out = capsys.readouterr().out.lower()
         assert "restarting gracefully" in out

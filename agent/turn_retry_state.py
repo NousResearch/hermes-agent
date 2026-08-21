@@ -86,6 +86,10 @@ class TurnRetryState:
     # loop must append a role-safe checkpoint + user message, rebuild the API
     # payload, and retry the same logical iteration.
     restart_with_redirected_messages: bool = False
+    # a truncation-refusal early return on a kanban worker
+    # appended the kanban stop nudge; the retry loop broke out and the outer
+    # loop must re-issue the API call against the nudged message list.
+    restart_with_kanban_stop_nudge: bool = False
 
     def __iter__(self):
         # Convenience for debugging / tests: iterate (name, value) pairs.

@@ -1121,6 +1121,52 @@ _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
 # prefix, so it can't be exact-matched — this stable prefix is what
 # _is_synthetic_compression_user_turn checks with str.startswith instead.
 _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call "
+def _maybe_nudge_kanban_stop(agent: Any, messages: List[Dict[str, Any]], reason: str) -> bool:
+    """Route truncation early-exits through the kanban stop nudge.
+
+    The truncated-call-refusal / output-length early returns in the
+    conversation loop exit before the finish_reason=stop kanban guard at the
+    end of the loop fires, so a Kanban worker session ends rc=0 without
+    ``kanban_complete`` / ``kanban_block`` and the dispatcher records
+    ``protocol_violation``.  Before letting such a return proceed, give the
+    worker up to two bounded nudges to finish with a terminal board tool
+    (same policy module and attempt counter as the stop-path guard).
+    Returns True when the caller should continue the loop instead of
+    returning; the synthetic user nudge is appended to ``messages`` in place.
+    """
+    try:
+        from agent.kanban_stop import build_kanban_stop_nudge
+
+        _attempts = getattr(agent, "_kanban_stop_nudges", 0)
+        _nudge = build_kanban_stop_nudge(messages=messages, attempts=_attempts)
+        if not _nudge:
+            return False
+    except Exception:
+        logger.debug("kanban truncation stop-nudge check failed", exc_info=True)
+        return False
+    agent._kanban_stop_nudges = _attempts + 1
+    # A trailing tool result must not be followed by a bare user turn on
+    # strict-alternation providers (#48879 class) - close it first.
+    close_interrupted_tool_sequence(messages, reason)
+    messages.append({
+        "role": "user",
+        "content": _nudge,
+        "_kanban_stop_synthetic": True,
+    })
+    agent._session_messages = messages
+    logger.info(
+        "kanban truncation stop-loop nudge issued (attempt %d) task=%s",
+        agent._kanban_stop_nudges,
+        os.environ.get("HERMES_KANBAN_TASK", ""),
+    )
+    try:
+        agent._emit_status(
+            "\u26a0\ufe0f  Truncation exit on a kanban worker without "
+            "kanban_complete/kanban_block - nudging to finish"
+        )
+    except Exception:
+        pass
+    return True
 
 
 def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List[str]] = None) -> str:
@@ -3910,6 +3956,14 @@ def run_conversation(
                                     "finish_reason": "length",
                                 })
                             agent._session_messages = messages
+                            # truncation exit on a kanban worker - nudge
+                            # before returning so the board gets a terminal call.
+                            if _maybe_nudge_kanban_stop(
+                                agent, messages,
+                                "Response remained truncated after 4 continuation attempts",
+                            ):
+                                _retry.restart_with_kanban_stop_nudge = True
+                                break
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
                             return {
@@ -3970,6 +4024,9 @@ def run_conversation(
                                     f"{agent.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
                                     force=True,
                                 )
+                            if _maybe_nudge_kanban_stop(agent, messages, "Truncated tool call refused"):
+                                _retry.restart_with_kanban_stop_nudge = True
+                                break
                             agent._cleanup_task_resources(effective_task_id)
                             _final_response = (
                                 "Stream repeatedly dropped mid tool-call (network); "
@@ -3996,6 +4053,12 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}   ⏪ Rolling back to last complete assistant turn")
                         rolled_back_messages = agent._get_messages_up_to_last_assistant(messages)
 
+                        if _maybe_nudge_kanban_stop(
+                            agent, messages,
+                            "Response truncated due to output length limit",
+                        ):
+                            _retry.restart_with_kanban_stop_nudge = True
+                            break
                         agent._cleanup_task_resources(effective_task_id)
                         agent._persist_session(messages, conversation_history)
 
@@ -4009,6 +4072,15 @@ def run_conversation(
                         }
                     else:
                         # First message was truncated - mark as failed
+                        # Consecutive user turns (task message + nudge)
+                        # are rejected by strict-alternation providers -
+                        # only nudge here on chat-completions-style modes.
+                        if agent.api_mode not in {"anthropic_messages", "bedrock_converse"} and _maybe_nudge_kanban_stop(
+                            agent, messages,
+                            "First response truncated due to output length limit",
+                        ):
+                            _retry.restart_with_kanban_stop_nudge = True
+                            break
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ First response truncated - cannot recover", force=True)
                         agent._persist_session(messages, conversation_history)
@@ -6620,6 +6692,14 @@ def run_conversation(
             agent._ephemeral_max_output_tokens = min(_boost, _boost_cap)
             continue
 
+        if _retry.restart_with_kanban_stop_nudge:
+            # a truncation early-return path took the
+            # kanban stop nudge - the synthetic user message is already
+            # appended to ``messages``; re-enter the outer loop for a
+            # fresh API call against the nudged history.
+            _retry.restart_with_kanban_stop_nudge = False
+            continue
+
         # Guard: if all retries exhausted without a successful response
         # (e.g. repeated context-length errors that exhausted retry_count),
         # the `response` variable is still None. Break out cleanly.
@@ -7061,6 +7141,8 @@ def run_conversation(
                             force=True,
                         )
                         agent._invalid_json_retries = 0
+                        if _maybe_nudge_kanban_stop(agent, messages, _final_response):
+                            continue
                         agent._cleanup_task_resources(effective_task_id)
                         _final_response = "Response truncated due to output length limit"
                         # Same tool-tail close as interrupt / invalid-tool

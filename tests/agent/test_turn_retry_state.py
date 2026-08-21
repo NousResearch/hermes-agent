@@ -35,6 +35,7 @@ EXPECTED_FIELDS = {
     "restart_with_length_continuation",
     "restart_with_rebuilt_messages",
     "restart_with_redirected_messages",
+    "restart_with_kanban_stop_nudge",
 }
 
 

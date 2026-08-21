@@ -5932,7 +5932,7 @@ def _compute_web_ui_content_hash(project_root: Path, web_dir: Path) -> str:
     for dirpath, dirnames, filenames in os.walk(web_dir, topdown=True):
         dirnames[:] = [
             d for d in dirnames
-            if not spec.match_file(str((Path(dirpath) / d).relative_to(project_root)))
+            if not spec.match_file(str((Path(dirpath) / d).relative_to(project_root)) + "/")
         ]
         for fn in sorted(filenames):
             fp = Path(dirpath) / fn
@@ -6546,7 +6546,7 @@ def _compute_desktop_content_hash(project_root: Path) -> str:
         # Prune ignored directories so we never descend into them
         dirnames[:] = [
             d for d in dirnames
-            if not spec.match_file(str((Path(dirpath) / d).relative_to(project_root)))
+            if not spec.match_file(str((Path(dirpath) / d).relative_to(project_root)) + "/")
         ]
 
         for fn in sorted(filenames):

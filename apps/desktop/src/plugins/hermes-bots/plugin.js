@@ -8687,15 +8687,15 @@ function RoutineRow({ job, profile }) {
         ]
       }),
       jsxs('div', {
-        className: 'flex items-center justify-between gap-2 pl-3.5',
+        className: 'flex flex-wrap items-center gap-x-2 gap-y-1 pl-3.5',
         children: [
           jsxs('span', {
             className:
-              'inline-flex items-center gap-1 rounded-full border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.65rem] text-(--ui-text-tertiary)',
+              'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.65rem] text-(--ui-text-tertiary)',
             children: [jsx(Codicon, { name: 'calendar', className: 'text-[0.7rem]' }), scheduleLabel(job.schedule)]
           }),
           jsx('span', {
-            className: 'truncate text-[0.65rem] text-(--ui-text-quaternary)',
+            className: 'ml-auto shrink-0 whitespace-nowrap text-[0.65rem] text-(--ui-text-quaternary)',
             children: active && job.next_run_at ? `next ${relativeTime(new Date(job.next_run_at).getTime())}` : 'paused'
           })
         ]

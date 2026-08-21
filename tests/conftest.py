@@ -370,6 +370,16 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "EMAIL_ALLOW_ALL_USERS",
     "SMS_ALLOW_ALL_USERS",
     "PHOTON_ALLOW_ALL_USERS",
+    # Email connection settings leak from ~/.hermes/.env on developer
+    # machines and change adapter behavior (SSL vs plaintext IMAP, host
+    # selection). Tests that need them set them explicitly via patch.dict.
+    "EMAIL_IMAP_SSL",
+    "EMAIL_SMTP_SSL",
+    "EMAIL_IMAP_HOST",
+    "EMAIL_IMAP_PORT",
+    "EMAIL_SMTP_HOST",
+    "EMAIL_SMTP_PORT",
+    "EMAIL_POLL_INTERVAL",
     # Gateway home channels are set by /sethome in real profiles. Tests that
     # exercise dashboard notification toggles must opt in explicitly or they
     # can accidentally subscribe against a developer's real home channel.

@@ -29,6 +29,14 @@ optional_env:
     description: "IMAP host for inbound polling (e.g. imap.gmail.com)"
     prompt: "IMAP host"
     password: false
+  - name: EMAIL_IMAP_SSL
+    description: "Use SSL/TLS for IMAP (default true). Set false for local relays like ProtonMail Bridge that serve plaintext IMAP on a non-SSL port (e.g. 1143)."
+    prompt: "IMAP SSL (true/false)"
+    password: false
+  - name: EMAIL_SMTP_SSL
+    description: "Use STARTTLS for SMTP (default true). Set false for local relays like ProtonMail Bridge that serve plaintext SMTP on a non-SSL port (e.g. 1025) with a self-signed cert."
+    prompt: "SMTP SSL (true/false)"
+    password: false
   - name: EMAIL_ALLOWED_USERS
     description: "Comma-separated email addresses allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"

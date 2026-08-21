@@ -7,8 +7,14 @@ Uses IMAP to receive and SMTP to send messages.
 Environment variables:
     EMAIL_IMAP_HOST     — IMAP server host (e.g., imap.gmail.com)
     EMAIL_IMAP_PORT     — IMAP server port (default: 993)
+    EMAIL_IMAP_SSL      — Use SSL/TLS for IMAP (default: true). Set false for
+                          local relays (e.g. ProtonMail Bridge) serving plaintext
+                          IMAP on a non-SSL port (e.g. 1143).
     EMAIL_SMTP_HOST     — SMTP server host (e.g., smtp.gmail.com)
     EMAIL_SMTP_PORT     — SMTP server port (default: 587)
+    EMAIL_SMTP_SSL      — Use STARTTLS for SMTP (default: true). Set false for
+                          local relays (e.g. ProtonMail Bridge) serving plaintext
+                          SMTP on a non-SSL port (e.g. 1025) with a self-signed cert.
     EMAIL_ADDRESS       — Email address for the agent
     EMAIL_PASSWORD      — Email password or app-specific password
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
@@ -88,7 +94,10 @@ def _esecret_int(name: str, default: int) -> int:
 
 def _esecret_bool(name: str, default: bool = False) -> bool:
     """Scope-aware boolean read (``env_bool`` variant of ``_get_esecret``)."""
-    return is_truthy_value(_get_esecret(name, ""), default=default)
+    raw = _get_esecret(name, "").strip()
+    if not raw:
+        return default
+    return is_truthy_value(raw, default=default)
 
 
 # Automated sender patterns — emails from these are silently ignored
@@ -554,8 +563,16 @@ class EmailAdapter(BasePlatformAdapter):
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = (_get_secret("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
+        # ProtonMail Bridge and other local relays serve plaintext IMAP on a
+        # non-SSL port (e.g. 1143). Default is SSL (True) to preserve the
+        # historical behaviour for remote IMAP servers (993).
+        self._imap_ssl = _esecret_bool("EMAIL_IMAP_SSL", True)
         self._smtp_host = (_get_secret("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
         self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
+        # ProtonMail Bridge and other local relays serve plaintext SMTP on a
+        # non-SSL port (e.g. 1025) with a self-signed cert. Default is SSL
+        # (True) so remote servers still use STARTTLS.
+        self._smtp_ssl = _esecret_bool("EMAIL_SMTP_SSL", True)
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
 
         # Skip attachments — configured via config.yaml:
@@ -653,11 +670,15 @@ class EmailAdapter(BasePlatformAdapter):
             if port == 465:
                 return smtp_ssl_cls(host, port, timeout=SMTP_CONNECT_TIMEOUT, context=ctx)
             smtp = smtp_cls(host, port, timeout=SMTP_CONNECT_TIMEOUT)
-            try:
-                smtp.starttls(context=ctx)
-            except Exception:
-                smtp.close()
-                raise
+            # ProtonMail Bridge and other local relays serve plaintext SMTP.
+            # Skip STARTTLS when EMAIL_SMTP_SSL=false so the self-signed
+            # bridge certificate does not fail cert validation.
+            if self._smtp_ssl:
+                try:
+                    smtp.starttls(context=ctx)
+                except Exception:
+                    smtp.close()
+                    raise
             return smtp
 
         try:
@@ -668,6 +689,16 @@ class EmailAdapter(BasePlatformAdapter):
             # Connection-level failure (may be unreachable IPv6).
             # Retry with IPv4 only.
             return _connect(ipv4_only=True)
+
+    def _connect_imap(self) -> "imaplib.IMAP4":
+        """Create an IMAP connection, honouring ``EMAIL_IMAP_SSL``.
+
+        ``IMAP4_SSL`` for remote servers (993). ``IMAP4`` for local relays
+        such as ProtonMail Bridge that serve plaintext on a non-SSL port.
+        """
+        if self._imap_ssl:
+            return imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+        return imaplib.IMAP4(self._imap_host, self._imap_port, timeout=30)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
@@ -711,7 +742,7 @@ class EmailAdapter(BasePlatformAdapter):
             # (#79889).
             imap = None
             try:
-                imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+                imap = self._connect_imap()
                 imap.login(self._address, self._password)
                 _send_imap_id(imap)
                 imap.select("INBOX")
@@ -853,7 +884,7 @@ class EmailAdapter(BasePlatformAdapter):
         results = []
         imap: Optional[imaplib.IMAP4] = None
         try:
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            imap = self._connect_imap()
             try:
                 imap.login(self._address, self._password)
                 _send_imap_id(imap)
@@ -1460,7 +1491,10 @@ async def _standalone_send(
         msg["Date"] = formatdate(localtime=True)
 
         server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls(context=_ssl.create_default_context())
+        # Skip STARTTLS for local relays (ProtonMail Bridge) whose self-signed
+        # cert fails ssl.create_default_context() validation.
+        if _esecret_bool("EMAIL_SMTP_SSL", True):
+            server.starttls(context=_ssl.create_default_context())
         server.login(address, password)
         server.send_message(msg)
         server.quit()

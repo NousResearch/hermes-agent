@@ -963,6 +963,71 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         self.assertLess(names.index("login"), names.index("xatom"))
 
 
+class TestConnectImapSslToggle(unittest.TestCase):
+    """``EMAIL_IMAP_SSL`` controls IMAP4_SSL vs IMAP4 selection.
+
+    ProtonMail Bridge and other local relays serve plaintext IMAP on a
+    non-SSL port (e.g. 1143).  The adapter must honour ``EMAIL_IMAP_SSL=false``
+    and use ``imaplib.IMAP4`` instead of ``IMAP4_SSL`` — otherwise every
+    connection fails with ``[SSL: WRONG_VERSION_NUMBER]``.
+    """
+
+    def _make_adapter(self, imap_ssl=None):
+        from gateway.config import PlatformConfig
+        env = {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "127.0.0.1",
+            "EMAIL_IMAP_PORT": "1143",
+            "EMAIL_SMTP_HOST": "127.0.0.1",
+            "EMAIL_SMTP_PORT": "1025",
+        }
+        if imap_ssl is not None:
+            env["EMAIL_IMAP_SSL"] = imap_ssl
+        with patch.dict(os.environ, env, clear=False):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_ssl_default_is_true(self):
+        """Without EMAIL_IMAP_SSL set, default is SSL (IMAP4_SSL)."""
+        adapter = self._make_adapter(imap_ssl=None)
+        self.assertTrue(adapter._imap_ssl)
+
+    def test_ssl_false_uses_plaintext_imap(self):
+        """EMAIL_IMAP_SSL=false selects imaplib.IMAP4 (plaintext)."""
+        adapter = self._make_adapter(imap_ssl="false")
+        self.assertFalse(adapter._imap_ssl)
+        with patch("imaplib.IMAP4") as mock_imap4, \
+             patch("imaplib.IMAP4_SSL") as mock_imap4_ssl:
+            mock_imap4.return_value = MagicMock()
+            adapter._connect_imap()
+            mock_imap4.assert_called_once()
+            mock_imap4_ssl.assert_not_called()
+
+    def test_ssl_true_uses_imap4_ssl(self):
+        """EMAIL_IMAP_SSL=true selects imaplib.IMAP4_SSL."""
+        adapter = self._make_adapter(imap_ssl="true")
+        self.assertTrue(adapter._imap_ssl)
+        with patch("imaplib.IMAP4") as mock_imap4, \
+             patch("imaplib.IMAP4_SSL") as mock_imap4_ssl:
+            mock_imap4_ssl.return_value = MagicMock()
+            adapter._connect_imap()
+            mock_imap4_ssl.assert_called_once()
+            mock_imap4.assert_not_called()
+
+    def test_fetch_new_messages_uses_plaintext_when_ssl_false(self):
+        """_fetch_new_messages honours EMAIL_IMAP_SSL=false (ProtonMail Bridge)."""
+        adapter = self._make_adapter(imap_ssl="false")
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4", return_value=mock_imap) as mock_imap4, \
+             patch("imaplib.IMAP4_SSL") as mock_imap4_ssl:
+            adapter._fetch_new_messages()
+            mock_imap4.assert_called_once()
+            mock_imap4_ssl.assert_not_called()
+
+
 class TestConnectSmtp(unittest.TestCase):
     """Test _connect_smtp() helper: protocol selection and IPv6 fallback."""
 

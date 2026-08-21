@@ -1034,6 +1034,42 @@ class TestGetModelContextLength:
         # The local probe MUST be called exactly once
         mock_local_ctx.assert_called_once()
 
+    # ── github-copilot Claude under-report correction (probe override) ──
+
+    def test_copilot_claude_opus_context_corrected_to_1m(self):
+        """github-copilot claude-opus 4.x resolves to the corrected 1M window.
+
+        The models.dev catalog under-reports Copilot's Claude 4.x at 200K,
+        but the /v1/messages long-context path serves 1,000,000 tokens.  The
+        probe-verified correction in models_dev.lookup_models_dev_context
+        (step 5f of this resolver) must surface the corrected value end to
+        end. get_copilot_model_context (step 5a) is patched to miss so the
+        models.dev path is exercised.
+        """
+        registry = {
+            "github-copilot": {
+                "models": {
+                    "claude-opus-4.6": {
+                        "tool_call": True,
+                        "limit": {"context": 200000, "output": 64000},
+                    },
+                },
+            },
+        }
+        import agent.models_dev as md
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("hermes_cli.models.get_copilot_model_context", return_value=None), \
+             patch.object(md, "_load_model_overrides", return_value={}), \
+             patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            ctx = get_model_context_length(
+                "claude-opus-4.6",
+                provider="copilot",
+                base_url="https://api.githubcopilot.com",
+                api_key="copilot-token",
+            )
+        assert ctx == 1_000_000
+
 
 
 

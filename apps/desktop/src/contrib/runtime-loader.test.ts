@@ -22,6 +22,7 @@ const readFileText = vi.fn<(path: string) => Promise<{ text: string; truncated?:
 const readPluginSource = vi.fn<(path: string) => Promise<{ text: string; truncated?: boolean }>>()
 const watchDirectory = vi.fn<(path: string) => Promise<{ id: string }>>()
 const watchPreviewFile = vi.fn<(path: string) => Promise<{ id: string }>>()
+const stopPreviewFileWatch = vi.fn<(id: string) => Promise<boolean>>()
 const onPreviewFileChanged = vi.fn()
 
 beforeEach(() => {
@@ -32,6 +33,8 @@ beforeEach(() => {
   readPluginSource.mockReset()
   watchDirectory.mockReset()
   watchPreviewFile.mockReset()
+  stopPreviewFileWatch.mockReset()
+  stopPreviewFileWatch.mockResolvedValue(true)
   onPreviewFileChanged.mockReset()
   getStatus.mockClear()
   ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
@@ -40,6 +43,7 @@ beforeEach(() => {
     onPreviewFileChanged,
     readDir,
     readFileText,
+    stopPreviewFileWatch,
     watchDirectory,
     watchPreviewFile
   }
@@ -74,22 +78,28 @@ describe('scanDiskPlugins (#66899)', () => {
     expect(readDir).not.toHaveBeenCalled()
   })
 
-  it('probes desktop/plugin.js inside agent-plugin packages (unified packaging)', async () => {
+  it('treats a package without a Desktop half as metadata, not a throwing file read', async () => {
     desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
     agentPluginsRoot.mockResolvedValue('/local/.hermes/plugins')
-    readDir.mockImplementation(async dir =>
-      dir === '/local/.hermes/plugins'
-        ? { entries: [{ isDirectory: true, name: 'my-feature', path: '/local/.hermes/plugins/my-feature' }] }
-        : { entries: [] }
-    )
-    // No desktop half in this package — probe must target desktop/plugin.js.
-    readFileText.mockRejectedValue(new Error('ENOENT'))
+    readDir.mockImplementation(async dir => {
+      if (dir === '/local/.hermes/plugins') {
+        return { entries: [{ isDirectory: true, name: 'my-feature', path: '/local/.hermes/plugins/my-feature' }] }
+      }
+
+      if (dir === '/local/.hermes/plugins/my-feature') {
+        return {
+          entries: [{ isDirectory: false, name: 'plugin.yaml', path: '/local/.hermes/plugins/my-feature/plugin.yaml' }]
+        }
+      }
+
+      return { entries: [] }
+    })
 
     await discoverRuntimePlugins()
 
-    expect(readFileText).toHaveBeenCalledWith('/local/.hermes/plugins/my-feature/desktop/plugin.js')
-    // The Python half's files must never be probed as a desktop entry.
-    expect(readFileText).not.toHaveBeenCalledWith('/local/.hermes/plugins/my-feature/plugin.js')
+    expect(readDir).toHaveBeenCalledWith('/local/.hermes/plugins/my-feature')
+    expect(readDir).not.toHaveBeenCalledWith('/local/.hermes/plugins/my-feature/desktop')
+    expect(readFileText).not.toHaveBeenCalled()
   })
 
   it('still scans the standalone root when agentPluginsRoot is absent (older shell)', async () => {
@@ -106,11 +116,35 @@ describe('scanDiskPlugins (#66899)', () => {
   it('loads a unified desktop half OPT-IN: inventoried but not activated by default', async () => {
     desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
     agentPluginsRoot.mockResolvedValue('/local/.hermes/plugins')
-    readDir.mockImplementation(async dir =>
-      dir === '/local/.hermes/plugins'
-        ? { entries: [{ isDirectory: true, name: 'uni', path: '/local/.hermes/plugins/uni' }] }
-        : { entries: [] }
-    )
+    let desktopEntryPresent = true
+
+    readDir.mockImplementation(async dir => {
+      if (dir === '/local/.hermes/plugins') {
+        return { entries: [{ isDirectory: true, name: 'uni', path: '/local/.hermes/plugins/uni' }] }
+      }
+
+      if (dir === '/local/.hermes/plugins/uni') {
+        return {
+          entries: [{ isDirectory: true, name: 'desktop', path: '/local/.hermes/plugins/uni/desktop' }]
+        }
+      }
+
+      if (dir === '/local/.hermes/plugins/uni/desktop') {
+        return {
+          entries: desktopEntryPresent
+            ? [
+                {
+                  isDirectory: false,
+                  name: 'plugin.js',
+                  path: '/local/.hermes/plugins/uni/desktop/plugin.js'
+                }
+              ]
+            : []
+        }
+      }
+
+      return { entries: [] }
+    })
 
     const register = vi.fn()
 
@@ -154,6 +188,14 @@ describe('scanDiskPlugins (#66899)', () => {
       await setPluginEnabled('uni', true)
       expect(register).toHaveBeenCalledTimes(1)
       expect($pluginRecords.get().uni.status).toBe('loaded')
+
+      // Removing only desktop/plugin.js (while the Python package folder
+      // remains) unloads the previous Desktop registration instead of leaving
+      // a live ghost behind.
+      desktopEntryPresent = false
+      await discoverRuntimePlugins()
+      expect($pluginRecords.get().uni).toBeUndefined()
+      expect(stopPreviewFileWatch).toHaveBeenCalledWith('w-uni')
     } finally {
       createObjectURL.mockRestore()
       revokeObjectURL.mockRestore()
@@ -209,15 +251,30 @@ describe('plugin source reads (512 KiB preview-cap bug)', () => {
     }
   }
 
+  /** Two-level standalone-root listing the metadata-walk probe needs:
+   *  the root lists the package folder, the folder lists plugin.js. */
+  const standaloneRootWith = (name: string) => {
+    const folder = `/local/.hermes/desktop-plugins/${name}`
+
+    readDir.mockImplementation(async dir => {
+      if (dir === '/local/.hermes/desktop-plugins') {
+        return { entries: [{ isDirectory: true, name, path: folder }] }
+      }
+
+      if (dir === folder) {
+        return { entries: [{ isDirectory: false, name: 'plugin.js', path: `${folder}/plugin.js` }] }
+      }
+
+      return { entries: [] }
+    })
+  }
+
   it('loads the full source via readPluginSource when the shell offers it', async () => {
     ;(window.hermesDesktop as unknown as { readPluginSource: unknown }).readPluginSource = readPluginSource
     desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
     agentPluginsRoot.mockResolvedValue('')
-    readDir.mockResolvedValue({
-      entries: [{ isDirectory: true, name: 'big', path: '/local/.hermes/desktop-plugins/big' }]
-    })
-    // The existence probe still uses the preview read (metadata is enough
-    // there) — it may report truncation without failing the scan.
+    standaloneRootWith('big')
+    // The preview read would truncate this source — it must never be used.
     readFileText.mockResolvedValue({ text: '// first 512 KiB only', truncated: true })
 
     const register = vi.fn()
@@ -246,9 +303,7 @@ describe('plugin source reads (512 KiB preview-cap bug)', () => {
   it('older shell without readPluginSource: a truncated preview read fails LOUDLY, never evaluates', async () => {
     desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
     agentPluginsRoot.mockResolvedValue('')
-    readDir.mockResolvedValue({
-      entries: [{ isDirectory: true, name: 'huge', path: '/local/.hermes/desktop-plugins/huge' }]
-    })
+    standaloneRootWith('huge')
     // 512 KiB window of a larger file — parses fine, but is NOT the plugin.
     readFileText.mockResolvedValue({
       text: 'export default { id: "huge", register: () => { throw new Error("must never evaluate") } }',
@@ -276,9 +331,7 @@ describe('plugin source reads (512 KiB preview-cap bug)', () => {
   it('older shell, small plugin (not truncated): still loads through readFileText', async () => {
     desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
     agentPluginsRoot.mockResolvedValue('')
-    readDir.mockResolvedValue({
-      entries: [{ isDirectory: true, name: 'small', path: '/local/.hermes/desktop-plugins/small' }]
-    })
+    standaloneRootWith('small')
 
     const register = vi.fn()
 

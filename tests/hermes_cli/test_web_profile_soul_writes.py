@@ -254,6 +254,79 @@ class TestIsolatedProfileSoulScope:
         assert d.status_code == 403, d.text
         assert x.status_code == 403, x.text
 
+    def test_create_with_clone_from_sibling_refused(self, isolated_home, monkeypatch):
+        """Adversarial witness (#91330 review, stop-the-line bypass): an
+        isolated server must not read a sibling profile through
+        ``POST /api/profiles`` ``clone_from`` — cloning copies the source's
+        config/.env/SOUL/skills into a new profile the client controls."""
+        bob = isolated_home / "bob"
+        bob.mkdir(parents=True, exist_ok=True)
+        sentinel = "SECRET_SENTINEL_NEVER_COPY_ME=1\n"
+        (bob / ".env").write_text(sentinel, encoding="utf-8")
+        (bob / "SOUL.md").write_text("# Bob\n", encoding="utf-8")
+
+        with self._client(monkeypatch, isolated=True) as c:
+            r = c.post(
+                "/api/profiles",
+                json={"name": "evil", "clone_from": "bob"},
+            )
+
+        assert r.status_code == 403, r.text
+        # No destination profile was created...
+        assert not (isolated_home / "evil").exists()
+        # ...and the sentinel never left Bob.
+        found = [str(p) for p in isolated_home.rglob("*") if p.is_file() and sentinel in p.read_text(encoding="utf-8", errors="ignore")]
+        assert found == [str(bob / ".env")], f"sentinel leaked to: {found}"
+
+    def test_create_clone_all_implicit_default_refused(self, tmp_path, monkeypatch):
+        """The implicit clone-all source ('default') is also authority-bearing:
+        an isolated server scoped to a named profile must not full-copy the
+        machine default profile without ever naming it."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        profiles_root = hermes_root / "profiles"
+        default_profile = hermes_root  # root HERMES_HOME *is* the default profile
+        sentinel = "DEFAULT_SECRET_SENTINEL=1\n"
+        (default_profile / ".env").write_text(sentinel, encoding="utf-8")
+        (profiles_root / "alice").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(profiles_root / "alice"))
+
+        with self._client(monkeypatch, isolated=True) as c:
+            r = c.post("/api/profiles", json={"name": "evil", "clone_all": True})
+
+        assert r.status_code == 403, r.text
+        assert not (profiles_root / "evil").exists()
+
+    def test_import_refused_when_isolated(self, isolated_home, monkeypatch):
+        """Archive import creates a full profile directory — machine-global
+        control-plane mutation, refused on an isolated server."""
+        with self._client(monkeypatch, isolated=True) as c:
+            r = c.post("/api/profiles/import", json={"archive": "/tmp/nope.tar.gz"})
+
+        assert r.status_code == 403, r.text
+
+    def test_active_switch_refused_when_isolated(self, isolated_home, monkeypatch):
+        """Switching the machine-wide active profile regains authority over
+        other profiles' CLI/gateway routing — refused when isolated."""
+        with self._client(monkeypatch, isolated=True) as c:
+            r = c.post("/api/profiles/active", json={"name": "bob"})
+
+        assert r.status_code == 403, r.text
+
+    def test_control_plane_works_on_machine_dashboard(self, tmp_path, monkeypatch):
+        """Control: the unified machine dashboard keeps profile creation and
+        active-profile switching (intentional machine-wide management)."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        profiles_root = tmp_path / ".hermes" / "profiles"
+        profiles_root.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+        with self._client(monkeypatch, isolated=False) as c:
+            r = c.post("/api/profiles", json={"name": "fresh"})
+
+        assert r.status_code == 200, r.text
+
     def test_cross_profile_endpoints_work_on_machine_dashboard(
         self, tmp_path, monkeypatch
     ):

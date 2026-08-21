@@ -789,6 +789,12 @@ async def list_profiles_endpoint():
 
 @router.post("/api/profiles")
 async def create_profile_endpoint(body: ProfileCreate):
+    # Every clone source (explicit clone_from, clone_all, and the implicit
+    # "default") is an authority-bearing profile selector: cloning READS the
+    # source profile's config/.env/SOUL/skills. On an isolated server the
+    # source may be a sibling profile, so creation is refused outright before
+    # any source file is touched (#91330 review).
+    _assert_machine_control_plane_allowed("profile create")
     from hermes_cli import profiles as profiles_mod
     explicit_source = (body.clone_from or "").strip()
     if explicit_source:
@@ -928,6 +934,9 @@ async def set_active_profile_endpoint(body: ProfileActiveUpdate):
     Note: this does not retarget the already-running dashboard process —
     it changes which profile subsequent CLI commands and gateways use.
     """
+    # Switching the machine-wide active profile is a control-plane operation
+    # over the whole profile set — refused on an isolated server (#91330 review).
+    _assert_machine_control_plane_allowed("active-profile switch")
     from hermes_cli import profiles as profiles_mod
     try:
         profiles_mod.set_active_profile(body.name)
@@ -1090,6 +1099,37 @@ def _assert_profile_in_scope(name: str) -> None:
     )
 
 
+def _assert_machine_control_plane_allowed(action: str) -> None:
+    """Refuse machine-global profile operations from a scoped (isolated) server.
+
+    Profile creation, archive import, and active-profile switching are
+    control-plane operations over the WHOLE machine's profile set, not over a
+    single ``{name}`` target: ``POST /api/profiles`` accepts caller-controlled
+    ``clone_from``/``clone_all`` (and an implicit ``default`` source), so a
+    client of an isolated server could copy a sibling profile's
+    config/.env/SOUL/skills into a new profile it legitimately controls —
+    reading the protected profile through the clone source even though every
+    destination-side route is guarded (#91330 review, "authority-bearing
+    selectors"). Import archives and active-profile switches carry the same
+    cross-profile authority shape.
+
+    An isolated server is scoped to exactly one profile, so these operations
+    are denied outright (fail-closed) instead of partially permitted. The
+    unified machine dashboard keeps them by design.
+    """
+    if not _is_isolated_server():
+        return
+    current = _current_profile_name()
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            f"This dashboard is isolated to profile '{current}'. "
+            f"Refusing machine-global profile operation ({action})."
+        ),
+    )
+
+
+
 @router.get("/api/profiles/{name}/soul")
 async def get_profile_soul(name: str):
     _assert_profile_in_scope(name)
@@ -1247,6 +1287,9 @@ async def export_profile_endpoint(name: str, body: ProfileExport):
 
 @router.post("/api/profiles/import")
 async def import_profile_endpoint(body: ProfileImport):
+    # An imported archive becomes a full profile directory under this server's
+    # control plane — machine-global mutation, refused when isolated.
+    _assert_machine_control_plane_allowed("profile import")
     from hermes_cli import profiles as profiles_mod
 
     archive = (body.archive or "").strip()

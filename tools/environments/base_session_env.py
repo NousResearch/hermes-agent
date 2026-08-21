@@ -60,6 +60,8 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
     the snapshot and execute on the next ``source`` (issue #71296). Unsetting first means ``export -p``
     never emits those vars — including any continuation lines.
     """
+    from agent.delegation_context import SCOPED_SUBPROCESS_ENV_MARKERS
+
     # ${!PREFIX*} is bash 3.2+ name-prefix expansion; empty matches are ignored
     # under 2>/dev/null. Caller names are quoted so malformed config can never
     # become shell syntax (valid names stay unquoted by shlex.quote()).
@@ -72,14 +74,14 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
         # by every wrapper with ${VAR:-default} semantics; persisting them would
         # let the FIRST command's value override a later outer-harness value.
         "AI_AGENT HERMES_AGENT "
-        # HERMES_DELEGATED_CHILD_CONTEXT is scoped to the delegate_task child's
-        # lifetime by the ContextVar, but scrub_kanban_env() injects it into the
-        # SUBPROCESS env — if a snapshot is captured while that child runs, the
-        # marker outlives the child and every later `source` re-asserts it,
-        # locking kanban mutations out of the PARENT session (#90782).
-        # HERMES_CRON_SESSION is the same shape: a per-scope bridge that must
-        # not persist.
-        "HERMES_DELEGATED_CHILD_CONTEXT HERMES_CRON_SESSION "
+        # Scoped subprocess markers (delegation child, cron session bridge):
+        # injected into subprocess envs by scrub_kanban_env()/cron bridging,
+        # excluded here by construction. The unset list is BUILT from
+        # SCOPED_SUBPROCESS_ENV_MARKERS so a marker added at the injection
+        # side is excluded automatically — persisting one would make every
+        # later `source` re-assert it (#90782's leak class, closed
+        # structurally rather than per-incident).
+        f"{' '.join(SCOPED_SUBPROCESS_ENV_MARKERS)} "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
         "export -p; ) || true; } "
         f"> {tmp_path}")

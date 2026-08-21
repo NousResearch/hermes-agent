@@ -7166,8 +7166,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Set after a wake (re-arm cooldown, 0.F) so we don't immediately re-go
         # dormant before the drained backlog has a chance to update the clock.
         self._scale_to_zero_cooldown_until: float = 0.0
-        # One-shot so the "platform owns the suspend" notice is logged once per
-        # process rather than on every idle tick.
+        # One-shot: log the "platform owns the suspend" notice once, not per tick.
         self._scale_to_zero_no_suspend_logged: bool = False
 
 
@@ -8772,30 +8771,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 go_dormant = getattr(adapter, "go_dormant", None)
                 if not callable(go_dormant):
                     continue
-                # Quiesce ONLY when a suspend can follow it. Off-Fly the platform
-                # owns the freeze on its own timer (Azure ACA autoSuspendPolicy,
-                # 600s of no INGRESS, which cannot see the relay WS at all), so
-                # quiescing here does not bring the freeze any closer. It does
-                # actively harm:
-                #
-                #   go_dormant() flips the relay destination to buffered-only and
-                #   closes the socket, which arms the reconnect supervisor. ~1.4s
-                #   later it re-dials and the connector's reconnect drain clears
-                #   the flip; 60s later the cooldown expires and it repeats. The
-                #   destination is therefore flipped for ~1.4s out of every 60,
-                #   so when the platform finally freezes the machine it is almost
-                #   certainly UNFLIPPED. Inbound then takes the live path into a
-                #   frozen socket and is dropped instead of buffered and poked.
-                #   Observed on staging 2026-08-20: 60s dormant/reconnect cycles,
-                #   then a Telegram message to the suspended instance was never
-                #   buffered and never woke it.
-                #
-                # Staying connected is strictly better: the agent keeps serving
-                # until the platform freezes it, and the connector's orphan
-                # detection adopts the destination on the first inbound after
-                # that (buffer + wake poke). That path requires the connector to
-                # notice the frozen socket, so it depends on the relay's WS
-                # keepalive reaping the stale session-authority entry.
+                # Quiesce only when a suspend can follow it. Off-Fly the platform
+                # owns the freeze on its own timer, so this does not bring it any
+                # closer, and go_dormant()'s socket close arms the reconnect
+                # supervisor: it re-dials ~1.4s later and the drain clears the
+                # flip, every cooldown. The destination is then unflipped when the
+                # freeze lands, and inbound is dropped instead of buffered. Stay
+                # connected and let the connector's orphan detection adopt the
+                # destination once the platform freezes us.
                 from gateway.scale_to_zero import self_suspend_available
 
                 if not self_suspend_available():
@@ -8803,9 +8786,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         self._scale_to_zero_no_suspend_logged = True
                         logger.info(
                             "scale-to-zero: idle, but this platform suspends on "
-                            "its own timer (no in-machine suspend API) — staying "
-                            "connected rather than quiescing; the connector "
-                            "adopts the destination when the platform freezes us"
+                            "its own timer (no in-machine suspend API); staying "
+                            "connected rather than quiescing"
                         )
                     continue
                 logger.info(

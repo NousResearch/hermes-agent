@@ -61,13 +61,9 @@ def _runner_with(monkeypatch, *, idle, armed_adapter=True, can_self_suspend=True
 async def test_watcher_does_not_quiesce_when_the_platform_owns_the_suspend(
     monkeypatch,
 ):
-    """Off-Fly the platform freezes on its own timer and cannot see the relay WS,
-    so quiescing does not bring the freeze closer -- it only flips the relay
-    destination and closes the socket, which the reconnect supervisor undoes
-    ~1.4s later. Repeated every cooldown, that leaves the destination unflipped
-    when the freeze finally lands, and inbound is dropped instead of buffered.
-    Staying connected lets the connector's orphan detection adopt the
-    destination after the freeze instead.
+    """Quiescing cannot help when the platform owns the freeze, and the reconnect
+    that follows the socket close undoes the flip, so the destination ends up
+    unflipped when the freeze lands.
     """
     r, adapter = _runner_with(monkeypatch, idle=True, can_self_suspend=False)
     suspends = []

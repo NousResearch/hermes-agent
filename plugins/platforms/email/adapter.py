@@ -13,6 +13,9 @@ Environment variables:
     EMAIL_PASSWORD      — Email password or app-specific password
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
+    EMAIL_AUTHSERV_ID   — Exact authserv-id the receiving MTA stamps on
+                          Authentication-Results (required when an allowlist
+                          is used and From: authentication is on)
 """
 
 import asyncio
@@ -403,6 +406,29 @@ def _verify_sender_authentication(
     ``Authentication-Results`` an attacker injected into the body of their
     message sorts below it.
 
+    ``authserv_id`` is required and compared **exactly** (case-folded,
+    surrounding whitespace stripped). Relaxed domain alignment is *not*
+    used here: a pin of ``mx.example.com`` must not trust ``example.com``
+    or ``attacker.mx.example.com``. That helper is only for SPF/DKIM
+    organizational alignment of the From domain.
+
+    RFC 8601 trust model: a matching authserv-id is **not** provenance by
+    itself. An attacker can copy the configured id into a forged header.
+    Hermes therefore trusts only the **topmost** ``Authentication-Results``
+    and only when its id equals the pin. The receiving MTA (the one this
+    adapter IMAP-polls) must:
+
+      1. strip inbound ``Authentication-Results`` that claim this
+         authserv-id namespace, then
+      2. prepend its own result.
+
+    Without that sanitization contract, a matching pin still cannot prove
+    the stamp came from the operator's server. Hermes does not implement
+    MTA-side stripping; operators whose IMAP host does not stamp (or does
+    not sanitize) should set ``EMAIL_AUTHSERV_ID`` only after confirming
+    the host's behaviour, or opt out via
+    ``platforms.email.require_authenticated_sender: false``.
+
     Returns ``(authenticated, reason)``. ``authenticated`` is True when:
       * a DMARC pass is recorded for the From domain, OR
       * an SPF pass aligned with the From domain, OR
@@ -417,26 +443,21 @@ def _verify_sender_authentication(
     if not from_domain:
         return False, "missing From domain"
 
-    # get_all preserves header order; the receiving server prepends its result,
-    # so the FIRST Authentication-Results is the trusted one. We pin to the
-    # configured authserv-id when provided to defend against an injected header
-    # that happens to sort first.
     headers = msg.get_all("Authentication-Results") or []
     if not headers:
         return False, "no Authentication-Results header"
+    pin = (authserv_id or "").strip().lower()
+    if not pin:
+        return False, "authserv-id is not configured; refusing to trust Authentication-Results"
 
-    trusted = None
-    for raw in headers:
-        value = " ".join(str(raw).split())
-        if authserv_id:
-            # authserv-id is the first token before the first ';'
-            serv = value.split(";", 1)[0].strip().lower()
-            if not _domains_aligned(serv, authserv_id) and serv != authserv_id.lower():
-                continue
-        trusted = value
-        break
-    if trusted is None:
-        return False, "no Authentication-Results from trusted authserv-id"
+    # Trust only the topmost header. A real receiving-MTA stamp is prepended;
+    # scanning downward would let a forged lower ``mx.pinned; dmarc=pass``
+    # authenticate after a legitimate but non-matching top header.
+    top = " ".join(str(headers[0]).split())
+    serv = top.split(";", 1)[0].strip().lower()
+    if serv != pin:
+        return False, "topmost Authentication-Results authserv-id does not match pin"
+    trusted = top
 
     methods = {m.lower(): r.lower() for m, r in _AUTH_METHOD_RE.findall(trusted)}
     props = {p.lower(): v.strip().strip('"') for p, v in _AUTH_PROP_RE.findall(trusted)}
@@ -585,9 +606,10 @@ class EmailAdapter(BasePlatformAdapter):
         else:
             self._require_authenticated_sender = True
 
-        # Optional authserv-id to pin Authentication-Results to the operator's
-        # own receiving server (defends against an injected header that sorts
-        # first). Defaults to the From-domain of the agent's own address.
+        # Required authserv-id to pin Authentication-Results to the operator's
+        # own receiving server. Without it, a sender-injected header would be
+        # treated as trusted. Leave unset to fail closed (or opt out via
+        # require_authenticated_sender / EMAIL_TRUST_FROM_HEADER).
         self._authserv_id = (
             extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")
         ).strip().lower()
@@ -1065,7 +1087,9 @@ class EmailAdapter(BasePlatformAdapter):
         ):
             logger.warning(
                 "[Email] Dropping sender with unauthenticated From: %s (%s). "
-                "If your mail server does not stamp Authentication-Results, set "
+                "If the receiving MTA stamps Authentication-Results, set "
+                "EMAIL_AUTHSERV_ID (or platforms.email.authserv_id) to that "
+                "exact authserv-id. If it does not stamp, set "
                 "platforms.email.require_authenticated_sender: false (or "
                 "EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
                 sender_addr,

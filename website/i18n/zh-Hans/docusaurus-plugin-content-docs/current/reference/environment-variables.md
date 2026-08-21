@@ -322,6 +322,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `EMAIL_SMTP_HOST` | 邮件适配器的 SMTP 主机名 |
 | `EMAIL_SMTP_PORT` | SMTP 端口 |
 | `EMAIL_ALLOWED_USERS` | 允许向 bot 发送消息的逗号分隔邮箱地址 |
+| `EMAIL_AUTHSERV_ID` | 接收 MTA 盖在 Authentication-Results 上的精确 authserv-id。启用邮件白名单时必填，按完整字符串比较。 |
 | `EMAIL_HOME_ADDRESS` | 主动邮件投递的默认收件人 |
 | `EMAIL_HOME_ADDRESS_NAME` | 邮件主目标的显示名称 |
 | `EMAIL_POLL_INTERVAL` | 邮件轮询间隔（秒） |

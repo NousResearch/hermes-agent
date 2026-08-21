@@ -33,6 +33,10 @@ optional_env:
     description: "Comma-separated email addresses allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"
     password: false
+  - name: EMAIL_AUTHSERV_ID
+    description: "Exact Authentication-Results authserv-id stamped by the receiving MTA (required with an allowlist)"
+    prompt: "Receiving MTA authserv-id (e.g. mx.example.com)"
+    password: false
   - name: EMAIL_HOME_ADDRESS
     description: "Default address for cron / notification delivery"
     prompt: "Home address"

@@ -64,8 +64,11 @@ EMAIL_PASSWORD=abcd efgh ijkl mnop    # 应用专用密码（非常规密码）
 EMAIL_IMAP_HOST=imap.gmail.com
 EMAIL_SMTP_HOST=smtp.gmail.com
 
-# 安全设置（推荐）
+# 安全（推荐）
 EMAIL_ALLOWED_USERS=your@email.com,colleague@work.com
+# 接收 MTA 在 Authentication-Results 上盖的精确 authserv-id。
+# 启用白名单时必填（From: 认证默认开启）。
+EMAIL_AUTHSERV_ID=mx.example.com
 
 # 可选
 EMAIL_IMAP_PORT=993                    # 默认：993（IMAP SSL）
@@ -141,6 +144,8 @@ platforms:
 2. **未设置白名单** → 未知发件人会收到配对码
 3. **`EMAIL_ALLOW_ALL_USERS=true`** → 接受任意发件人（请谨慎使用）
 
+启用白名单时，还需要接收 MTA 盖 `Authentication-Results`，并把 `EMAIL_AUTHSERV_ID`（或 `platforms.email.authserv_id`）设成**完全一致**的 authserv-id。Hermes 只信任最上面那条，且 id 必须与 pin 完全相等。pin 匹配本身不能证明来源：接收 MTA 必须剥掉声称该命名空间的入站结果并自己盖戳（RFC 8601）。若 IMAP 主机不盖戳，应设置 `platforms.email.require_authenticated_sender: false`（或 `EMAIL_TRUST_FROM_HEADER=true`），不要留空 pin。
+
 :::warning
 **请务必配置 `EMAIL_ALLOWED_USERS`。** 若不配置，任何知道 Agent 邮箱地址的人都可以发送命令。Agent 默认具有终端访问权限。
 :::
@@ -186,5 +191,6 @@ platforms:
 | `EMAIL_SMTP_PORT` | 否 | `587` | SMTP 服务器端口 |
 | `EMAIL_POLL_INTERVAL` | 否 | `15` | 收件箱检查间隔（秒） |
 | `EMAIL_ALLOWED_USERS` | 否 | — | 允许的发件人地址，逗号分隔 |
+| `EMAIL_AUTHSERV_ID` | 白名单 + From 认证时 | — | 接收 MTA 的精确 authserv-id，按完整字符串比较 |
 | `EMAIL_HOME_ADDRESS` | 否 | — | cron 任务的默认投递目标 |
 | `EMAIL_ALLOW_ALL_USERS` | 否 | `false` | 允许所有发件人（不推荐） |

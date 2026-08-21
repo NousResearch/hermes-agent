@@ -73,6 +73,9 @@ EMAIL_SMTP_HOST=smtp.gmail.com
 
 # Security (recommended)
 EMAIL_ALLOWED_USERS=your@email.com,colleague@work.com
+# Exact authserv-id your receiving MTA prepends on Authentication-Results.
+# Required when an allowlist is in effect (From: authentication is on).
+EMAIL_AUTHSERV_ID=mx.example.com
 
 # Optional
 EMAIL_IMAP_PORT=993                    # Default: 993 (IMAP SSL)
@@ -149,6 +152,8 @@ Email access is stricter by default than chat-style platforms:
 3. **`EMAIL_ALLOW_ALL_USERS=true`** → any sender is accepted (use with caution)
 4. **`platforms.email.unauthorized_dm_behavior: pair`** → unknown senders receive a pairing code
 
+When an allowlist is in effect, Hermes also requires the receiving MTA to stamp `Authentication-Results` and you must set `EMAIL_AUTHSERV_ID` (or `platforms.email.authserv_id`) to that **exact** authserv-id. Hermes trusts only the topmost header and only when its id equals the pin. Matching the pin is not provenance by itself: the receiving MTA must strip inbound results that claim this namespace and prepend its own (RFC 8601). If your IMAP host does not stamp, set `platforms.email.require_authenticated_sender: false` (or `EMAIL_TRUST_FROM_HEADER=true`) instead of leaving the pin empty.
+
 :::warning
 **Use a dedicated inbox and configure `EMAIL_ALLOWED_USERS` for normal operation.** Email pairing is opt-in because shared inboxes often contain unrelated unread messages, and Hermes should not reply to those contacts by default.
 :::
@@ -194,5 +199,6 @@ Email access is stricter by default than chat-style platforms:
 | `EMAIL_SMTP_PORT` | No | `587` | SMTP server port |
 | `EMAIL_POLL_INTERVAL` | No | `15` | Seconds between inbox checks |
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
+| `EMAIL_AUTHSERV_ID` | When allowlist + From auth | — | Exact receiving-MTA authserv-id. Compared exactly, not as a parent domain. |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |

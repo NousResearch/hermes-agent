@@ -150,6 +150,99 @@ class TestCleanStreamEndMidToolCall:
 
 
 
+# ── Clean stream-end after reasoning-only delivery ─────────────────────────
+
+class TestCleanStreamEndReasoningOnly:
+    """The upstream closes the SSE stream cleanly after delivering ONLY
+    reasoning/thinking deltas — no content, no tool calls, no exception,
+    no finish_reason, no [DONE].
+
+    This shape slips past the zero-chunk guard (``reasoning_parts`` is
+    non-empty) and the text-only guard (``content_parts`` is empty), so
+    without a dedicated guard it falls through to
+    ``effective_finish_reason = finish_reason or "stop"`` and the turn
+    ends as if complete: the thinking block freezes mid-sentence, no
+    answer text ever arrives, and nothing is logged.  Retrying is
+    display-safe because ``deltas_were_sent`` only tracks visible
+    content deltas — reasoning deltas don't set it — so the standard
+    EmptyStreamError retry path accepts the retry.
+    """
+
+    def _make_reasoning_chunk(self, reasoning_text):
+        delta = SimpleNamespace(
+            content=None, tool_calls=None,
+            reasoning_content=reasoning_text, reasoning=None,
+        )
+        choice = SimpleNamespace(index=0, delta=delta, finish_reason=None)
+        return SimpleNamespace(choices=[choice], model=None, usage=None)
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_reasoning_only_clean_end_raises_empty_stream(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        from agent.errors import EmptyStreamError
+
+        def _clean_ending_stream():
+            # Thinking arrives, then the generator simply RETURNS
+            # (StopIteration) — no content, no raise, no finish_reason.
+            yield self._make_reasoning_chunk("Let me think about")
+            yield self._make_reasoning_chunk(" this problem step by")
+            # falls off the end — clean close mid-thinking
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _clean_ending_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_reasoning_delta = lambda text: None
+
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        with pytest.raises(EmptyStreamError, match="reasoning"):
+            agent._interruptible_streaming_api_call({})
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_reasoning_only_drop_is_retried_then_succeeds(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """The reasoning-only drop must ride the standard stream-retry
+        loop: first attempt dies mid-thinking, the retry delivers a
+        complete response."""
+        attempts = {"n": 0}
+
+        def _flaky_stream():
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                yield self._make_reasoning_chunk("Thinking out loud")
+                return  # clean close, no finish_reason — the drop
+            yield self._make_reasoning_chunk("Thinking out loud")
+            yield _make_stream_chunk(content="The answer is 42.")
+            yield _make_stream_chunk(finish_reason="stop")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _flaky_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_stream_delta = lambda text: None
+        agent._fire_reasoning_delta = lambda text: None
+
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+        response = agent._interruptible_streaming_api_call({})
+
+        assert attempts["n"] == 2, (
+            "A reasoning-only clean stream end must be retried, not "
+            "silently stamped finish_reason='stop' with empty content."
+        )
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.content == "The answer is 42."
+
+
 
 # ── Clean stream-end before any argument byte arrives (#80498) ─────────────
 

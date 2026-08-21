@@ -4412,6 +4412,31 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 dropped_tool_names=_dropped_names or None,
             )
 
+        # Reasoning-only stream drop: the upstream closed the connection (or
+        # the SSE stream simply ended) with no finish_reason after delivering
+        # ONLY reasoning/thinking deltas — no content, no tool calls.  This
+        # shape slips past both the zero-chunk guard (reasoning_parts is
+        # non-empty) and the text-only guard below (content_parts is empty),
+        # so without this guard it is silently stamped finish_reason="stop"
+        # with content=None and the turn ends as if complete: the user
+        # watches the thinking block freeze mid-sentence and never gets an
+        # answer, with nothing logged.  Retrying is display-safe here —
+        # deltas_were_sent only tracks visible content deltas, so the retry
+        # loop accepts this, and the re-streamed thinking simply replaces
+        # the frozen partial block.
+        _reasoning_only_dropped_no_finish = (
+            finish_reason is None
+            and reasoning_parts
+            and not content_parts
+            and not tool_calls_acc
+        )
+        if _reasoning_only_dropped_no_finish:
+            raise EmptyStreamError(
+                "Provider stream ended with no finish_reason after delivering "
+                "only reasoning content (possible upstream error or malformed "
+                "SSE response); retrying."
+            )
+
         # Text-only stream drop: the upstream closed the connection (or the
         # SSE stream simply ended) with no finish_reason after delivering
         # text content but no tool calls.  Without this guard the partial

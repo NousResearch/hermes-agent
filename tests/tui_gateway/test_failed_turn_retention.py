@@ -189,6 +189,55 @@ def test_completed_turn_still_clears_inflight(emits, turn_env):
     assert server._inflight_snapshot(session) is None
 
 
+def test_returned_partial_error_keeps_final_response_text(emits, turn_env):
+    """#75801: returned-error path must set partial=true when final_response
+    holds the stitched answer, matching the exception path so Desktop does
+    not strip already-streamed bubble text.
+    """
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        run_conversation=lambda *a, **k: {
+            "final_response": "Hello! How can I help?",
+            "error": "Response remained truncated after 4 continuation attempts",
+            "failed": True,
+            "partial": True,
+        },
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True)
+    server._start_inflight_turn(session, "hello")
+
+    server._run_prompt_submit("rid", "sid", session, "hello")
+
+    completes = _events(emits, "message.complete")
+    assert len(completes) == 1
+    payload = completes[0]
+    assert payload["status"] == "error"
+    assert payload["partial"] is True
+    assert payload["text"] == "Hello! How can I help?"
+    assert "truncated" in payload["error"]
+
+
+def test_returned_error_without_partial_does_not_set_flag(emits, turn_env):
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        run_conversation=lambda *a, **k: {
+            "final_response": "",
+            "error": "provider 402: billing wall",
+            "failed": True,
+        },
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True)
+    server._start_inflight_turn(session, "do the thing")
+
+    server._run_prompt_submit("rid", "sid", session, "do the thing")
+
+    payload = _events(emits, "message.complete")[0]
+    assert payload["status"] == "error"
+    assert "partial" not in payload
+
+
 # ── Exception path ─────────────────────────────────────────────────────
 
 

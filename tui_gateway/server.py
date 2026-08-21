@@ -11251,6 +11251,21 @@ def _run_prompt_submit(
                     (result.get("error") if isinstance(result, dict) else "") or raw
                 )
                 payload["recoverable"] = True
+                # Match the exception path (_emit_terminal_turn_error): when the
+                # agent finished partial=True with a non-empty final_response
+                # that is not just the error string, keep that text under the
+                # red banner. Desktop only retains bubble text when
+                # failure.partial is set (#75801).
+                if isinstance(result, dict):
+                    final_text = result.get("final_response")
+                    err_text = str(result.get("error") or "")
+                    if (
+                        result.get("partial")
+                        and isinstance(final_text, str)
+                        and final_text.strip()
+                        and final_text.strip() != err_text.strip()
+                    ):
+                        payload["partial"] = True
             _retire_turn_marker(session, marker_key)
             _emit("message.complete", sid, payload)
 

@@ -94,6 +94,120 @@ class TestPartialStreamStubFinishReason:
 
 # ── Clean stream-end mid-tool-call (no exception, no finish_reason) ─────────
 
+class TestCleanTextEndWithoutFinishReason:
+    """#75801: OpenCode Go (gpt-5.6-luna) completes text-only turns cleanly
+    but omits finish_reason on the final SSE chunk. Generic providers must
+    still treat that shape as a mid-stream drop (#32086). Exception-based
+    stalls on OpenCode still stub.
+    """
+
+    def _run_clean_text_stream(self, agent, mock_create, monkeypatch, text="Hello!"):
+        def _clean_text_stream():
+            yield _make_stream_chunk(content=text)
+            # clean end: no finish_reason chunk, no exception
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _clean_text_stream()
+        )
+        mock_create.return_value = mock_client
+        agent._fire_stream_delta = lambda t: None
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        return agent._interruptible_streaming_api_call({})
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_generic_provider_still_stubs(self, _mock_close, mock_create, monkeypatch):
+        agent = _make_agent()
+        agent.provider = "openrouter"
+        response = self._run_clean_text_stream(agent, mock_create, monkeypatch)
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_opencode_go_accepts_as_stop(self, _mock_close, mock_create, monkeypatch):
+        agent = _make_agent()
+        agent.provider = "opencode-go"
+        agent.base_url = "https://opencode.ai/zen/go/v1"
+        agent.model = "gpt-5.6-luna"
+        response = self._run_clean_text_stream(
+            agent, mock_create, monkeypatch, text="Hello! How can I help?"
+        )
+        assert response.id != PARTIAL_STREAM_STUB_ID, (
+            "OpenCode Go clean text end without finish_reason must not be "
+            "classified as a mid-stream drop (#75801)."
+        )
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.content == "Hello! How can I help?"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_opencode_go_exception_still_stubs(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        def _stalling_stream():
+            yield _make_stream_chunk(content="partial answer")
+            raise RuntimeError("connection reset")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _stalling_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent.provider = "opencode-go"
+        agent._current_streamed_assistant_text = "partial answer"
+        agent._fire_stream_delta = lambda t: None
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_opencode_host_fallback_accepts_as_stop(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """Provider id may be blank; official opencode.ai host still counts."""
+        agent = _make_agent()
+        agent.provider = ""
+        agent.base_url = "https://opencode.ai/zen/go/v1"
+        response = self._run_clean_text_stream(
+            agent, mock_create, monkeypatch, text="from host fallback",
+        )
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_path_containing_opencode_ai_still_stubs(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """Path substring must not be treated as OpenCode (#76112 review)."""
+        agent = _make_agent()
+        agent.provider = "openrouter"
+        agent.base_url = "https://evil.com/opencode.ai/v1"
+        response = self._run_clean_text_stream(agent, mock_create, monkeypatch)
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_lookalike_host_still_stubs(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """Lookalike hostnames must not match base_url_host_matches."""
+        agent = _make_agent()
+        agent.provider = "custom"
+        agent.base_url = "https://opencode.ai.evil/v1"
+        response = self._run_clean_text_stream(agent, mock_create, monkeypatch)
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+
+
 class TestCleanStreamEndMidToolCall:
     """The upstream closes the SSE stream cleanly after delivering a tool
     name + the opening '{' of its arguments — NO exception, NO finish_reason,

@@ -3240,6 +3240,34 @@ def cleanup_task_resources(agent, task_id: str) -> None:
             logger.warning("Failed to cleanup browser for task %s: %s", task_id, e)
 
 
+# Gateways that routinely complete a full text-only answer without sending
+# finish_reason on the final SSE event. Real connection drops still raise
+# and keep using the partial-stream stub path (#32086 / #75801).
+_CLEAN_TEXT_NO_FINISH_PROVIDERS = frozenset({
+    "opencode-go",
+    "opencode-zen",
+    "opencode",
+    "go",
+    "zen",
+})
+
+
+def _provider_accepts_clean_text_end_without_finish_reason(agent) -> bool:
+    """Return True when a clean text stream with no finish_reason is complete.
+
+    OpenCode Go (e.g. gpt-5.6-luna) ends some successful text-only turns
+    without a finish_reason chunk. Classifying those as mid-stream drops
+    forces useless length-continuation retries (#75801). Match by provider
+    id first, then by known OpenCode hostnames on base_url.
+    """
+    provider = (getattr(agent, "provider", None) or "").strip().lower()
+    if provider in _CLEAN_TEXT_NO_FINISH_PROVIDERS:
+        return True
+    base = getattr(agent, "base_url", None) or ""
+    # Host match only — reject path/lookalike false positives (utils.base_url_host_matches).
+    return base_url_host_matches(base, "opencode.ai")
+
+
 def _build_partial_stream_stub(
     role, full_content, full_reasoning, model_name, usage_obj, *,
     dropped_tool_names=None,
@@ -4417,21 +4445,38 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # text content but no tool calls.  Without this guard the partial
         # text is silently stamped finish_reason="stop" and the turn ends as
         # if complete — the model's intended next step is lost (#32086).
+        #
+        # Exception: some OpenCode gateways (notably gpt-5.6-luna on
+        # opencode-go) complete a full text answer cleanly and still omit
+        # finish_reason on the final SSE chunk. Treating those as mid-stream
+        # drops burns the length-continuation budget four times and leaves
+        # Desktop showing "Response remained truncated..." while wiping the
+        # already-streamed answer (#75801). Exception-based stalls on the
+        # same providers still hit the exception -> stub path and keep the
+        # #32086 behaviour.
         _text_only_dropped_no_finish = (
             finish_reason is None
             and content_parts
             and not tool_calls_acc
         )
         if _text_only_dropped_no_finish:
-            logger.warning(
-                "Stream ended with no finish_reason after delivering text "
-                "with no tool calls; treating as a mid-stream drop."
-            )
-            return _build_partial_stream_stub(
-                role, full_content,
-                "".join(reasoning_parts) or None,
-                model_name, usage_obj,
-            )
+            if _provider_accepts_clean_text_end_without_finish_reason(agent):
+                logger.info(
+                    "Stream ended with no finish_reason after delivering text "
+                    "with no tool calls on provider %r; treating as clean stop "
+                    "(gateway omits finish_reason on complete text turns).",
+                    getattr(agent, "provider", None),
+                )
+            else:
+                logger.warning(
+                    "Stream ended with no finish_reason after delivering text "
+                    "with no tool calls; treating as a mid-stream drop."
+                )
+                return _build_partial_stream_stub(
+                    role, full_content,
+                    "".join(reasoning_parts) or None,
+                    model_name, usage_obj,
+                )
 
         effective_finish_reason = finish_reason or "stop"
         if has_truncated_tool_args:

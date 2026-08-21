@@ -2656,7 +2656,6 @@ export const zhHant = defineLocale({
       errorSwitchProvider: '切換服務商',
       errorOpenLogs: '開啟日誌',
       errorOpenLogsFailed: '無法開啟日誌資料夾',
-      errorNousSupport: 'Nous 支援',
       errorCopyDiagnostics: '複製診斷資訊',
       filesChanged: count => `${count} 個檔案已變更`,
       reviewChanges: '檢視',

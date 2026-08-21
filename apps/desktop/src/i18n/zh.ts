@@ -3258,7 +3258,6 @@ export const zh: Translations = {
       errorSwitchProvider: '切换服务商',
       errorOpenLogs: '打开日志',
       errorOpenLogsFailed: '无法打开日志文件夹',
-      errorNousSupport: 'Nous 支持',
       errorCopyDiagnostics: '复制诊断信息',
       filesChanged: count => `${count} 个文件已更改`,
       reviewChanges: '查看',

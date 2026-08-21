@@ -420,9 +420,6 @@ generic error toast. The card offers recovery actions matched to the failure:
   deterministically reproduce the failure, e.g. a content-policy rejection).
 - **Switch provider** — jumps to Settings → Models for provider, endpoint,
   auth, and billing failures.
-- **Nous support** — shown when the session runs on Nous Portal auth; opens
-  the [portal help hub](https://portal.nousresearch.com/help) (docs, Discord,
-  GitHub) in your browser.
 - **Open logs** — opens `HERMES_HOME/logs` in your file manager.
 - **Copy diagnostics** — copies a compact plain-text summary (layer, code,
   provider/model, error message) you can paste into a bug report or Discord.

@@ -10651,7 +10651,14 @@ def cmd_profile(args):
 
         from hermes_cli.profiles import profile_exists, validate_alias_name
 
-        if not profile_exists(name):
+        if not remove and not profile_exists(name):
+            # Removal must stay reachable for orphaned wrappers — the target
+            # profile may be gone (manual dir removal, interrupted delete,
+            # typo'd alias), which is exactly when the CLI is the only
+            # supported cleanup path (`hermes doctor` reports these as
+            # "Orphan alias"). remove_wrapper_script() already refuses
+            # traversal-shaped names and only unlinks files whose content
+            # carries the `hermes -p` marker (#90983).
             print(f"Error: Profile '{name}' does not exist.")
             sys.exit(1)
 
@@ -10668,6 +10675,10 @@ def cmd_profile(args):
                 print(f"✓ Removed alias '{alias_name}'")
             else:
                 print(f"No alias '{alias_name}' found to remove.")
+                print(
+                    "  Tip: run `hermes doctor` — its \"Orphan alias\" section "
+                    "lists wrapper/profile mismatches like this one (#90983)."
+                )
         else:
             collision = check_alias_collision(alias_name)
             if collision:

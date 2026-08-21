@@ -525,11 +525,30 @@ def _fetch_codex_account_usage(
     payload = response.json() or {}
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
-    for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
+    # The Codex usage API keys these "primary_window"/"secondary_window" by
+    # response position, not by which duration each one is — it does not
+    # guarantee primary_window is always the short (session) window. When
+    # only one window is returned it can be the weekly one occupying
+    # primary_window, which the old position-based mapping mislabeled as
+    # "Session" and reported Weekly as unavailable (#65387). Prefer each
+    # window's OWN limit_window_seconds when the API provides it: anything
+    # over a day is the weekly window, everything else (ChatGPT's session
+    # window is documented at 5 hours = 18000s) is the session window. Fall
+    # back to the position default (primary=Session, secondary=Weekly) only
+    # when limit_window_seconds is absent — some callers/pool credentials
+    # never receive it, and position is still the best signal available then.
+    _WEEKLY_WINDOW_THRESHOLD_SECONDS = 86400
+    _POSITION_DEFAULT_LABEL = {"primary_window": "Session", "secondary_window": "Weekly"}
+    for key in ("primary_window", "secondary_window"):
         window = rate_limit.get(key) or {}
         used = window.get("used_percent")
         if used is None:
             continue
+        limit_seconds = window.get("limit_window_seconds")
+        if isinstance(limit_seconds, (int, float)):
+            label = "Weekly" if limit_seconds > _WEEKLY_WINDOW_THRESHOLD_SECONDS else "Session"
+        else:
+            label = _POSITION_DEFAULT_LABEL[key]
         windows.append(
             AccountUsageWindow(
                 label=label,

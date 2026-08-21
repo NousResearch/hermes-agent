@@ -1304,7 +1304,13 @@ class ProcessRegistry:
             if not session.exited:
                 self._running[session.id] = session
 
-        if not session.exited:
+        if session.exited:
+            # Keep dead-on-arrival launches discoverable. Skipping
+            # ``_running`` is deliberate (this is not a live process), but
+            # dropping the session entirely made process(list/poll) return
+            # empty/not_found for an id the caller just received.
+            self._move_to_finished(session)
+        else:
             self._write_checkpoint()
 
         return session

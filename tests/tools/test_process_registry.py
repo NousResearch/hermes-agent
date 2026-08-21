@@ -770,8 +770,10 @@ class TestSpawnEnvSanitization:
         assert session.pid is None
         assert session.output_buffer == "syntax error"
         fake_thread.start.assert_not_called()
-        # A failed launch must not be exposed as a running/tracked session.
+        # A failed launch must not be exposed as a running session, but it
+        # must remain discoverable as a finished record for list/poll.
         assert session.id not in registry._running
+        assert registry._finished.get(session.id) is session
 
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")

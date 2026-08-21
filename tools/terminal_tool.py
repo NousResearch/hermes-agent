@@ -3092,6 +3092,58 @@ def terminal_tool(
                         session_key=session_key,
                     )
 
+                if getattr(proc_session, "exited", False):
+                    # spawn_via_env can return already-exited (no PID /
+                    # execute exception). Classify instead of reporting
+                    # fake "Background process started" success. Do not
+                    # treat every immediate exit as failed_start: exit 0
+                    # is a completed command; nonzero without failed_start
+                    # is a command error.
+                    from agent.redact import redact_terminal_output
+
+                    captured = redact_terminal_output(
+                        getattr(proc_session, "output_buffer", "") or "",
+                        command,
+                        force=True,
+                    )
+                    exit_code = getattr(proc_session, "exit_code", None)
+                    if exit_code is None:
+                        exit_code = -1
+                    reason = getattr(proc_session, "completion_reason", "") or ""
+                    if reason == "failed_start":
+                        detail = captured or "process never produced a PID"
+                        return json.dumps({
+                            "output": captured,
+                            "session_id": proc_session.id,
+                            "pid": proc_session.pid,
+                            "exit_code": exit_code,
+                            "error": _redact_terminal_error_text(
+                                f"Failed to start background process: {detail}"
+                            ),
+                            "status": "failed_start",
+                        }, ensure_ascii=False)
+                    if exit_code != 0:
+                        detail = captured or f"process exited immediately (reason: {reason})"
+                        return json.dumps({
+                            "output": captured,
+                            "session_id": proc_session.id,
+                            "pid": proc_session.pid,
+                            "exit_code": exit_code,
+                            "error": _redact_terminal_error_text(
+                                f"Background process exited immediately with "
+                                f"exit code {exit_code}: {detail}"
+                            ),
+                            "status": "exited",
+                        }, ensure_ascii=False)
+                    return json.dumps({
+                        "output": captured or "Background process completed successfully",
+                        "session_id": proc_session.id,
+                        "pid": proc_session.pid,
+                        "exit_code": 0,
+                        "error": None,
+                        "status": "exited",
+                    }, ensure_ascii=False)
+
                 result_data = {
                     "output": "Background process started",
                     "session_id": proc_session.id,

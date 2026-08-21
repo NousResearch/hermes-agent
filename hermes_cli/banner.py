@@ -139,6 +139,30 @@ _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 UPDATE_AVAILABLE_NO_COUNT = -1
 
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
+
+
+def _git_probe_timeout() -> int:
+    """Timeout (seconds) for the passive update check's network git probes.
+
+    The check runs on a background daemon thread, so a generous ceiling is
+    safe. 10s is not enough on high-latency links to GitHub (e.g. behind the
+    GFW or a slow VPN), where the TLS handshake plus ref advertisement can
+    routinely take 20-40s — users on such links saw the desktop "Check for
+    updates" permanently report failure while `hermes update` itself worked
+    fine. Override with HERMES_UPDATE_GIT_TIMEOUT (positive integer,
+    seconds).
+    """
+    raw = os.environ.get("HERMES_UPDATE_GIT_TIMEOUT", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return 30
+
+
 _OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
 
 
@@ -245,7 +269,7 @@ def _upstream_main_sha() -> Optional[str]:
         result = subprocess.run(
             ["git", "ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=10,
+            timeout=_git_probe_timeout(),
         )
     except Exception:
         return None
@@ -342,7 +366,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         fetch_args.append("--quiet")
         subprocess.run(
             fetch_args,
-            capture_output=True, timeout=10,
+            capture_output=True, timeout=_git_probe_timeout(),
             cwd=str(repo_dir),
         )
     except Exception:

@@ -126,3 +126,52 @@ def test_check_via_local_git_ssh_fastpath_offline_keeps_sentinel(tmp_path):
         behind = banner._check_via_local_git(repo_dir)
 
     assert behind == banner.UPDATE_AVAILABLE_NO_COUNT
+
+
+def test_git_probe_timeout_default():
+    import os
+
+    from hermes_cli import banner
+
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("HERMES_UPDATE_GIT_TIMEOUT", None)
+        assert banner._git_probe_timeout() == 30
+
+
+def test_git_probe_timeout_env_override():
+    import os
+
+    from hermes_cli import banner
+
+    with patch.dict(os.environ, {"HERMES_UPDATE_GIT_TIMEOUT": "60"}):
+        assert banner._git_probe_timeout() == 60
+
+
+def test_git_probe_timeout_invalid_env_falls_back_to_default():
+    import os
+
+    from hermes_cli import banner
+
+    for bad in ("abc", "0", "-5", ""):
+        with patch.dict(os.environ, {"HERMES_UPDATE_GIT_TIMEOUT": bad}):
+            assert banner._git_probe_timeout() == 30, f"input {bad!r}"
+
+
+def test_upstream_main_sha_passes_probe_timeout_to_git():
+    import os
+
+    from hermes_cli import banner
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return MagicMock(returncode=0, stdout="fab8479aa\trefs/heads/main\n")
+
+    with (
+        patch.dict(os.environ, {"HERMES_UPDATE_GIT_TIMEOUT": "42"}),
+        patch("hermes_cli.banner.subprocess.run", side_effect=fake_run),
+    ):
+        assert banner._upstream_main_sha() == "fab8479aa"
+
+    assert captured["timeout"] == 42

@@ -36,6 +36,68 @@ _BUILD_SHA_FILE = Path(__file__).parent.parent / ".hermes_build_sha"
 _code_identity_cache: Optional[dict] = None
 
 
+def _resolve_git_head_sha(project_root: Path) -> Optional[str]:
+    """Resolve the checkout's HEAD commit sha by reading .git directly.
+
+    Deliberately NOT ``git rev-parse`` in a subprocess: this helper runs
+    inside library paths (gateway runtime-status writes, update receipts)
+    where spawning processes is both slow and hostile to tests that mock
+    ``subprocess.run`` tightly (call-count asserts, sequenced side effects).
+    Handles regular checkouts, worktrees/submodules (``.git`` file with a
+    ``gitdir:`` pointer + ``commondir``), loose refs, and packed-refs.
+    Returns None on any failure.
+    """
+    try:
+        git_path = project_root / ".git"
+        if git_path.is_file():
+            # Worktree/submodule: ".git" is a pointer file.
+            pointer = git_path.read_text(encoding="utf-8", errors="replace").strip()
+            if not pointer.startswith("gitdir:"):
+                return None
+            git_dir = Path(pointer[len("gitdir:"):].strip())
+            if not git_dir.is_absolute():
+                git_dir = (project_root / git_dir).resolve()
+        elif git_path.is_dir():
+            git_dir = git_path
+        else:
+            return None
+
+        # Refs live in the COMMON git dir for worktrees.
+        common_dir = git_dir
+        commondir_file = git_dir / "commondir"
+        if commondir_file.is_file():
+            rel = commondir_file.read_text(encoding="utf-8", errors="replace").strip()
+            common = Path(rel)
+            if not common.is_absolute():
+                common = (git_dir / common).resolve()
+            common_dir = common
+
+        head = (git_dir / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+        if not head.startswith("ref:"):
+            # Detached HEAD: the file holds the sha itself.
+            return head if len(head) == 40 else None
+        ref_name = head[len("ref:"):].strip()
+
+        loose = common_dir / ref_name
+        if loose.is_file():
+            sha = loose.read_text(encoding="utf-8", errors="replace").strip()
+            return sha if len(sha) == 40 else None
+
+        packed = common_dir / "packed-refs"
+        if packed.is_file():
+            for line in packed.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line or line.startswith(("#", "^")):
+                    continue
+                parts = line.split(" ", 1)
+                if len(parts) == 2 and parts[1].strip() == ref_name:
+                    sha = parts[0].strip()
+                    return sha if len(sha) == 40 else None
+    except Exception:
+        return None
+    return None
+
+
 def get_code_identity(refresh: bool = False) -> dict:
     """Return the running checkout's code identity as a dict.
 
@@ -59,24 +121,10 @@ def get_code_identity(refresh: bool = False) -> dict:
     sha: Optional[str] = None
     source = "unknown"
     project_root = Path(__file__).parent.parent
-    try:
-        import subprocess
-
-        proc = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-        )
-        candidate = (proc.stdout or "").strip()
-        if proc.returncode == 0 and candidate:
-            sha = candidate
-            source = "git"
-    except Exception:
-        pass
+    resolved = _resolve_git_head_sha(project_root)
+    if resolved:
+        sha = resolved
+        source = "git"
     if sha is None:
         baked = get_build_sha(short=0)
         if baked:

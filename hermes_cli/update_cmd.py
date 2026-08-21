@@ -6428,6 +6428,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # needed to forward already-restarted units to
         # ``_finish_dashboard_update_cleanup`` (review on #83595).
         restarted_services: list = []
+        # Same outside-the-try treatment: the post-restart fleet version
+        # check consults killed_pids to decide whether to wait for
+        # freshly-restarted gateways to settle, and the phase's except
+        # path forwards it to the update receipt.
+        killed_pids: set = set()
 
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
@@ -7271,7 +7276,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             # A brief settle window: freshly restarted gateways need a
             # moment to rewrite gateway_state.json with their new identity.
-            _time.sleep(2.0)
+            # Skipped when the restart phase touched nothing (no gateways
+            # were running) — nothing to settle.
+            if restarted_services or killed_pids:
+                _time.sleep(2.0)
             _fleet_snapshot = collect_fleet_versions()
             if print_fleet_version_matrix(_fleet_snapshot):
                 gateway_fleet_restart_incomplete = True

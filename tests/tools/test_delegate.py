@@ -364,6 +364,35 @@ class TestDelegateTask(unittest.TestCase):
             _, kwargs = MockAgent.call_args
             self.assertIsNone(kwargs["session_db"])
 
+    def test_child_inherits_parent_persistence_opt_out(self):
+        parent = _make_mock_parent(depth=0)
+        parent._persist_disabled = True
+        parent._session_db = MagicMock()
+
+        with (
+            patch("run_agent.AIAgent") as MockAgent,
+            patch("hermes_state.SessionDB") as MockSessionDB,
+        ):
+            mock_child = MagicMock()
+            mock_child._persist_disabled = False
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="test",
+                context=None,
+                toolsets=None,
+                model="test-model",
+                max_iterations=5,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+            _, kwargs = MockAgent.call_args
+            MockSessionDB.assert_not_called()
+            self.assertIsNone(kwargs["session_db"])
+            self.assertIs(mock_child._persist_disabled, True)
+
     def test_child_dedicated_db_follows_parents_db_path(self):
         """Per-profile parents: the child's dedicated handle must target the
         parent's database FILE, not the launch profile's default state.db.

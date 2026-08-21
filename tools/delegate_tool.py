@@ -1912,8 +1912,11 @@ def _build_child_agent(
     # parent_session_id lineage and session_search. AsyncSessionDB wrappers
     # (gateway) forward .db_path via __getattr__, so this works through them.
     child_session_db = None
+    parent_persist_disabled = (
+        getattr(parent_agent, "_persist_disabled", False) is True
+    )
     parent_session_db = getattr(parent_agent, "_session_db", None)
-    if parent_session_db is not None:
+    if parent_session_db is not None and not parent_persist_disabled:
         try:
             from hermes_state import SessionDB
 
@@ -1985,6 +1988,11 @@ def _build_child_agent(
                 except Exception:
                     pass
             raise
+    if parent_persist_disabled:
+        # Persistence isolation is transitive: a caller-managed parent run
+        # must not let a delegated child lazily open state.db and persist a
+        # separate transcript.
+        child._persist_disabled = True
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Ownership transfer for the dedicated handle: the child's close() must
     # release it (nothing else holds a reference), and no parent teardown can

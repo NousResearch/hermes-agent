@@ -259,6 +259,107 @@ class TestStartRun:
         assert kwargs["requested_model"] == "MiniMax-M3"
         assert kwargs["requested_provider"] == "minimax"
         assert kwargs["model_options"] == model_options
+        assert kwargs["persist_session"] is True
+
+    @pytest.mark.asyncio
+    async def test_start_store_false_disables_session_persistence(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "store": False},
+                )
+                assert resp.status == 202
+                for _ in range(20):
+                    if mock_create.call_args is not None:
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert mock_create.call_args.kwargs["persist_session"] is False
+
+    @pytest.mark.asyncio
+    async def test_store_false_real_agent_writes_no_session_artifacts(
+        self, adapter, monkeypatch, tmp_path
+    ):
+        """Exercise the real AIAgent construction and persistence funnel."""
+        hermes_home = tmp_path / "hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openrouter",
+                "api_key": "test-key",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "test/model")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 1)
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda model="": {}),
+        )
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_fallback_model",
+            staticmethod(lambda: None),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_: set(),
+        )
+
+        from run_agent import AIAgent
+
+        def _run_without_model_call(
+            agent, user_message=None, conversation_history=None, task_id=None
+        ):
+            messages = list(conversation_history or [])
+            messages.extend(
+                [
+                    {"role": "user", "content": user_message},
+                    {"role": "assistant", "content": "done"},
+                ]
+            )
+            # Exercise both persistence paths even when JSON snapshots are
+            # enabled globally and a provider error would request a debug dump.
+            agent._session_json_enabled = True
+            agent._persist_session(messages, conversation_history or [])
+            agent._dump_api_request_debug(
+                {"messages": messages},
+                reason="test",
+            )
+            return {"final_response": "done", "messages": messages}
+
+        monkeypatch.setattr(AIAgent, "run_conversation", _run_without_model_call)
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={"input": "hello", "store": False},
+            )
+            assert resp.status == 202
+            run_id = (await resp.json())["run_id"]
+            for _ in range(40):
+                status_resp = await cli.get(f"/v1/runs/{run_id}")
+                status = await status_resp.json()
+                if status["status"] == "completed":
+                    break
+                await asyncio.sleep(0.05)
+
+        assert status["status"] == "completed"
+        assert not (hermes_home / "state.db").exists()
+        assert list((hermes_home / "sessions").glob("session_*.json")) == []
+        assert list((hermes_home / "sessions").glob("request_dump_*.json")) == []
 
 
 # ---------------------------------------------------------------------------

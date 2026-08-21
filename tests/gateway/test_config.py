@@ -771,6 +771,101 @@ class TestLoadGatewayConfig:
         assert config.platforms[Platform.TELEGRAM].enabled is True
 
 
+    def test_relay_exclusive_reads_profile_scoped_env(self, tmp_path, monkeypatch):
+        """Under a multiplexed profile secret scope, the relay-exclusive
+        trigger and opt-out must read the PROFILE's values, not process
+        globals. A process-wide GATEWAY_RELAY_URL must not disable direct
+        platforms in a profile whose own .env carries no relay stamp."""
+        from agent import secret_scope as ss
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      enabled: true\n"
+            "      bot_token: '123:abc'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Process-global stamp that must be INVISIBLE inside the scope.
+        monkeypatch.setenv("GATEWAY_RELAY_URL", "https://global.example/relay")
+
+        profile_dir = tmp_path / "profile-a"
+        profile_dir.mkdir()
+        (profile_dir / ".env").write_text("", encoding="utf-8")  # no relay stamp
+
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope(ss.build_profile_secret_scope(profile_dir))
+        try:
+            config = load_gateway_config()
+        finally:
+            ss.reset_secret_scope(tok)
+            ss.set_multiplex_active(False)
+
+        # No profile-scoped relay stamp -> no exclusive sweep in this profile.
+        assert config.platforms[Platform.TELEGRAM].enabled is True
+
+        # And the inverse: a profile-scoped stamp triggers the sweep even
+        # though the process env carries none.
+        monkeypatch.delenv("GATEWAY_RELAY_URL", raising=False)
+        (profile_dir / ".env").write_text(
+            "GATEWAY_RELAY_URL=https://profile.example/relay\n", encoding="utf-8"
+        )
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope(ss.build_profile_secret_scope(profile_dir))
+        try:
+            config = load_gateway_config()
+        finally:
+            ss.reset_secret_scope(tok)
+            ss.set_multiplex_active(False)
+
+        assert config.platforms[Platform.RELAY].enabled is True
+        assert config.platforms[Platform.TELEGRAM].enabled is False
+
+
+    def test_relay_exclusive_sweep_log_levels_and_marker_cleanup(self, tmp_path, monkeypatch, caplog):
+        """Explicitly-enabled platforms are disabled at WARNING, auto-enabled
+        ones at INFO, and the _enabled_explicit marker never survives config
+        load."""
+        import logging as _logging
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      enabled: true\n"
+            "      bot_token: '123:abc'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GATEWAY_RELAY_URL", "https://connector.example/relay")
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "fake-token-for-test")
+
+        with caplog.at_level(_logging.INFO, logger="gateway.config"):
+            config = load_gateway_config()
+
+        warnings = [
+            r for r in caplog.records
+            if r.levelno == _logging.WARNING and "telegram" in r.getMessage()
+        ]
+        assert warnings, "explicit platform must be disabled at WARNING"
+        discord_infos = [
+            r for r in caplog.records
+            if r.levelno == _logging.INFO and "discord" in r.getMessage()
+        ]
+        if config.platforms.get(Platform.DISCORD) is not None:
+            assert discord_infos, "auto-enabled platform must be disabled at INFO"
+
+        for pc in config.platforms.values():
+            assert "_enabled_explicit" not in (pc.extra or {})
+
+
     def test_thread_require_mention_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
         """Explicit env var should win over config.yaml (env > yaml precedence)."""
         hermes_home = tmp_path / ".hermes"

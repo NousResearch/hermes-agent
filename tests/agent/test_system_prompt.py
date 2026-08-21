@@ -484,3 +484,71 @@ class TestSkillsInVolatileBand:
         full = _build(build_system_prompt)
         assert full.index(_CONTEXT) < full.index(_SKILLS)
         assert full.index(_SKILLS) < full.index("Conversation started:")
+
+# ── skill-graph build_skills_index hook tests ──────────────────────────
+
+def _make_skill_graph_agent(**overrides):
+    """Agent with skill_graph_search tool available."""
+    return _make_agent(
+        valid_tool_names=["skill_graph_search"],
+        **overrides,
+    )
+
+
+def _mock_skill_graph_hook(identity=None, guidance=None, skills_prompt=""):
+    """Mock invoke_hook to simulate skill-graph plugin's build_skills_index callback."""
+    from agent.prompt_builder import SKILL_GRAPH_IDENTITY, SKILL_GRAPH_GUIDANCE
+    return [
+        {
+            "skills_prompt": skills_prompt,
+            "identity": identity if identity is not None else SKILL_GRAPH_IDENTITY,
+            "guidance": guidance if guidance is not None else SKILL_GRAPH_GUIDANCE,
+        }
+    ]
+
+
+def test_build_skills_index_hook_suppresses_flat_index():
+    """When the hook returns empty skills_prompt, the flat index is suppressed."""
+    agent = _make_agent(valid_tool_names=["skills_list", "skill_graph_search"])
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("run_agent.build_skills_system_prompt", return_value="SHOULD_NOT_APPEAR"),
+        patch("hermes_cli.lifecycle.invoke_hook", return_value=_mock_skill_graph_hook()),
+    ):
+        parts = build_system_prompt_parts(agent)
+    volatile = parts.get("volatile", "")
+    assert "SHOULD_NOT_APPEAR" not in volatile
+
+
+def test_build_skills_index_hook_injects_identity():
+    """The hook can inject identity protocol into the stable tier."""
+    agent = _make_agent(valid_tool_names=["skill_graph_search"])
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("hermes_cli.lifecycle.invoke_hook", return_value=_mock_skill_graph_hook()),
+    ):
+        parts = build_system_prompt_parts(agent)
+    stable = parts.get("stable", "")
+    assert "Skill Discovery Protocol" in stable
+
+
+def test_build_skills_index_no_hook_preserves_flat_index():
+    """Without any hook registered, the default flat index is used."""
+    agent = _make_agent(valid_tool_names=["skills_list"])
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("run_agent.build_skills_system_prompt", return_value="FLAT_INDEX_SENTINEL"),
+        patch("hermes_cli.lifecycle.invoke_hook", return_value=[]),
+    ):
+        parts = build_system_prompt_parts(agent)
+    volatile = parts.get("volatile", "")
+    assert "FLAT_INDEX_SENTINEL" in volatile

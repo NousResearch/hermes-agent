@@ -44,6 +44,8 @@ from agent.prompt_builder import (
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
+    SKILL_GRAPH_GUIDANCE,
+    SKILL_GRAPH_IDENTITY,
     STEER_CHANNEL_NOTE,
     TASK_COMPLETION_GUIDANCE,
     TELEGRAM_RICH_MESSAGES_HINT,
@@ -391,6 +393,18 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
+    # ── Skill index hook ─────────────────────────────────────────────
+    # ``build_skills_index`` lets plugins replace the flat skill index,
+    # inject identity protocol, and/or inject tool guidance — all before
+    # the system prompt is cached.  The hook fires after the default
+    # index is built (so plugins see it) and before it's appended to the
+    # volatile tier.  Each callback may return a dict with any of:
+    #   {"skills_prompt": str,   # replace the index ("" to suppress)
+    #    "identity": str,        # append to stable_parts
+    #    "guidance": str}        # append to tool_guidance
+    _skills_identity_parts: list[str] = []
+    _skills_guidance_parts: list[str] = []
+
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
@@ -435,6 +449,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in agent.valid_tool_names:
         tool_guidance.append(SKILLS_GUIDANCE)
+    # Skill-graph GUIDANCE moved to build_skills_index hook (below).
     # Kanban worker/orchestrator lifecycle — only present when the
     # dispatcher spawned this process (kanban_show check_fn gates on
     # HERMES_KANBAN_TASK env var). Normal chat sessions never see
@@ -523,7 +538,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         if _exec_inject:
             stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
+    # Build the default flat skill index.
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
+
     if has_skills_tools:
         avail_toolsets = {
             toolset
@@ -532,10 +549,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
             if toolset
         }
-        # Focus mode (opt-in) demotes non-coding skill categories to
-        # names-only in the index (never hidden — skill_view/skills_list
-        # reach everything, and every name stays visible for recall). The
-        # default coding posture leaves the index untouched.
         _compact_cats = frozenset()
         try:
             from agent.coding_context import coding_compact_skill_categories
@@ -551,8 +564,48 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             compact_categories=_compact_cats or None,
             skills_dir_override=_agent_skills_dir(agent),
         )
+        if skills_prompt:
+            import re as _re
+            _skill_names = _re.findall(r'^\s+- (.+?)(?::\s|$)', skills_prompt, _re.MULTILINE)
+            logger.info(
+                "skill-graph: built flat skill index with %d skills: %s",
+                len(_skill_names),
+                ", ".join(_skill_names[:30]) + ("..." if len(_skill_names) > 30 else ""),
+            )
     else:
         skills_prompt = ""
+
+    # ── build_skills_index hook ──────────────────────────────────────
+    # Plugins may replace the index, inject identity protocol, and/or
+    # inject tool guidance.  This is the single extension point for
+    # skill-discovery plugins (skill-graph, semantic search, etc.).
+    try:
+        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        _index_results = _invoke_hook(
+            "build_skills_index",
+            agent=agent,
+            skills_prompt=skills_prompt,
+            valid_tool_names=set(agent.valid_tool_names),
+        )
+        for _r_hook in (_index_results or []):
+            if not isinstance(_r_hook, dict):
+                continue
+            if "skills_prompt" in _r_hook:
+                skills_prompt = _r_hook["skills_prompt"]
+            _identity = _r_hook.get("identity")
+            if _identity:
+                _skills_identity_parts.append(_identity)
+            _guidance = _r_hook.get("guidance")
+            if _guidance:
+                _skills_guidance_parts.append(_guidance)
+    except Exception as exc:
+        logger.warning("build_skills_index hook failed: %s", exc)
+
+    # Apply hook-injected identity and guidance.
+    for _part in _skills_identity_parts:
+        stable_parts.append(_part)
+    for _part in _skills_guidance_parts:
+        tool_guidance.append(_part)
 
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt

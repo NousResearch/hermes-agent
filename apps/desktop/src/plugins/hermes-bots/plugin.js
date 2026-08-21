@@ -3042,12 +3042,26 @@ function probeImagen() {
 
 async function generateAvatarImage(bot, title, description) {
   const who = [title || bot, description].filter(Boolean).join(' — ')
-  const res = await host.request('image.generate', {
-    prompt:
-      `Cute minimal robot avatar for an AI agent named "${who}". ` +
-      'Friendly simple mascot face, bold flat vector style, solid color background, centered, no text.',
-    aspect_ratio: 'square'
-  })
+  return requestGeneratedImage(
+    `Cute minimal robot avatar for an AI agent named "${who}". ` +
+      'Friendly simple mascot face, bold flat vector style, solid color background, centered, no text.'
+  )
+}
+
+// Image models can legitimately take longer than the gateway's generic 30s
+// interactive deadline. Give observed 40s-class renders and result inlining
+// enough headroom while keeping this interactive wait bounded.
+const IMAGE_GENERATE_REQUEST_TIMEOUT_MS = 90_000
+
+async function requestGeneratedImage(prompt) {
+  const res = await host.request(
+    'image.generate',
+    {
+      prompt,
+      aspect_ratio: 'square'
+    },
+    IMAGE_GENERATE_REQUEST_TIMEOUT_MS
+  )
 
   if (!res?.success) {
     throw new Error(res?.error || 'generation failed')
@@ -3102,18 +3116,9 @@ function AvatarPicker({ shape, color, image, onShape, onColor, onImage, generate
     try {
       const custom = describe.trim()
       const img = custom
-        ? await (async () => {
-            const res = await host.request('image.generate', {
-              prompt: `${custom}. Avatar for an AI agent: centered, bold flat vector style, solid color background, no text.`,
-              aspect_ratio: 'square'
-            })
-
-            if (!res?.success) {
-              throw new Error(res?.error || 'generation failed')
-            }
-
-            return res.image_data || res.image
-          })()
+        ? await requestGeneratedImage(
+            `${custom}. Avatar for an AI agent: centered, bold flat vector style, solid color background, no text.`
+          )
         : await generateAvatarImage(generateSeed?.name || 'agent', generateSeed?.title, generateSeed?.description)
 
       if (img) {
@@ -9423,18 +9428,10 @@ function GroupImageControls({ image, onImage, seedName, seedMembers }) {
       const who = [seedName, seedMembers?.length ? `a team of ${seedMembers.join(', ')}` : '']
         .filter(Boolean)
         .join(' — ')
-      const res = await host.request('image.generate', {
-        prompt:
-          `Group chat icon for an AI agent team called "${who || 'a bot team'}". ` +
-          'Friendly minimal emblem, bold flat vector style, solid color background, centered, no text.',
-        aspect_ratio: 'square'
-      })
-
-      if (!res?.success) {
-        throw new Error(res?.error || 'generation failed')
-      }
-
-      const img = res.image_data || res.image
+      const img = await requestGeneratedImage(
+        `Group chat icon for an AI agent team called "${who || 'a bot team'}". ` +
+          'Friendly minimal emblem, bold flat vector style, solid color background, centered, no text.'
+      )
 
       if (img) {
         onImage(await normalizeAvatarImage(img))

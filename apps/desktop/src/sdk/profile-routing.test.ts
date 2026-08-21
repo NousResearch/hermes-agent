@@ -103,8 +103,13 @@ const { host } = await import('./index')
 const { openSession: openSessionCore } = await import('@/app/open-session')
 const { deleteProfile } = await import('@/hermes')
 
-const { openGatewayForProfile, requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } =
-  await import('@/store/gateway')
+const {
+  $gateway,
+  openGatewayForProfile,
+  requestGatewayForAgent,
+  requestGatewayForProfile,
+  retireLocalProfileGateways
+} = await import('@/store/gateway')
 
 const {
   $activeGatewayProfile,
@@ -134,6 +139,7 @@ const profile = (name: string): ProfileInfo => ({
 
 afterEach(() => {
   vi.clearAllMocks()
+  $gateway.set(null)
   $activeGatewayProfile.set('remote-worker')
   $gatewaySwapTarget.set(null)
   setMockAtom($focusedRuntimeId, null)
@@ -147,6 +153,34 @@ afterEach(() => {
 })
 
 describe('connection-aware plugin host APIs', () => {
+  it('forwards an explicit plugin RPC deadline to the live gateway', async () => {
+    const request = vi.fn(async () => ({ success: true }))
+    const signal = new AbortController().signal
+
+    const pluginRequest = host.request as <T>(
+      method: string,
+      params?: Record<string, unknown>,
+      timeoutMs?: number,
+      signal?: AbortSignal
+    ) => Promise<T>
+
+    $gateway.set({ request } as never)
+
+    await pluginRequest('image.generate', { prompt: 'health agent avatar' }, 90_000, signal)
+
+    expect(request).toHaveBeenCalledWith('image.generate', { prompt: 'health agent avatar' }, 90_000, signal)
+  })
+
+  it('keeps the two-argument gateway call shape when no plugin deadline is set', async () => {
+    const request = vi.fn(async () => ({ profiles: [] }))
+
+    $gateway.set({ request } as never)
+
+    await host.request('profiles.list', { include_sessions: true })
+
+    expect(request.mock.calls[0]).toEqual(['profiles.list', { include_sessions: true }])
+  })
+
   it('retires a profile gateway before deleting it', async () => {
     const order: string[] = []
 

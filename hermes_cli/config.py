@@ -2751,6 +2751,42 @@ def _items_by_unique_name(items):
     return indexed
 
 
+def _strip_unchanged_resolved_model_key(
+    current: Dict[str, Any],
+    raw: Dict[str, Any],
+    loaded_expanded: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Avoid persisting ``model.api_key`` materialized from ``model.key_env``.
+
+    ``load_config()`` resolves the reference for runtime consumers. If an
+    unrelated setting is later saved from that loaded dict, restore the
+    on-disk reference contract unless the caller changed the resolved value.
+    A raw inline ``api_key`` remains authoritative and is never stripped.
+    """
+    current_model = current.get("model")
+    raw_model = raw.get("model")
+    loaded_model = (
+        loaded_expanded.get("model") if isinstance(loaded_expanded, dict) else None
+    )
+    if (
+        not isinstance(current_model, dict)
+        or not isinstance(raw_model, dict)
+        or not isinstance(loaded_model, dict)
+    ):
+        return current
+
+    raw_key_env = str(
+        raw_model.get("key_env") or raw_model.get("api_key_env") or ""
+    ).strip()
+    raw_api_key = str(raw_model.get("api_key") or "").strip()
+    current_api_key = str(current_model.get("api_key") or "").strip()
+    loaded_api_key = str(loaded_model.get("api_key") or "").strip()
+    if raw_key_env and not raw_api_key and current_api_key == loaded_api_key:
+        current = copy.deepcopy(current)
+        current["model"].pop("api_key", None)
+    return current
+
+
 def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
     """Restore raw ``${VAR}`` templates when a value is otherwise unchanged.
 
@@ -3739,6 +3775,30 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                 managed_normalized["model"] = {"default": managed_normalized["model"]}
             managed_expanded = _expand_env_vars(managed_normalized)
             expanded = _deep_merge(expanded, managed_expanded)
+        # Resolve model.key_env / model.api_key_env into model.api_key so all
+        # downstream consumers (agent_init, credential_pool, gateway) see the
+        # resolved value without each needing independent key_env support.
+        # Mirrors the fallback_providers path in chat_completion_helpers.py and
+        # the Desktop UI writer in web_server.py which writes model.key_env but
+        # whose value was never consumed by the config loader. Applied AFTER
+        # managed merge so a managed api_key pin still wins over key_env;
+        # resolved AFTER managed merge so we also fold the env var into the
+        # cache snapshot below and bust on rotation (key_env is not a ${VAR}
+        # ref so _env_ref_snapshot wouldn't otherwise see it).
+        _key_env_name = ""
+        _model_section = expanded.get("model")
+        if isinstance(_model_section, dict):
+            _existing_key = str(_model_section.get("api_key") or "").strip()
+            if not _existing_key:
+                _key_env_name = str(
+                    _model_section.get("key_env")
+                    or _model_section.get("api_key_env")
+                    or ""
+                ).strip()
+                if _key_env_name:
+                    _resolved = os.getenv(_key_env_name, "").strip()
+                    if _resolved:
+                        _model_section["api_key"] = _resolved
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:
             # Cache stores a separate deepcopy so subsequent ``load_config()``
@@ -3753,6 +3813,13 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             env_snapshot = _env_ref_snapshot(normalized)
             if managed_config:
                 _env_ref_snapshot(managed_config, env_snapshot)
+            # key_env is an env var NAME, not a ${VAR} ref, so _env_ref_snapshot
+            # never sees it. Record its current value explicitly so a rotation
+            # (e.g. ``hermes config set`` writes ``save_env_value`` which only
+            # updates ``os.environ``) invalidates the cached model.api_key
+            # without requiring a config.yaml edit.
+            if _key_env_name:
+                env_snapshot[_key_env_name] = os.environ.get(_key_env_name)
             _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot)
             # On the readonly path return the same cached object subsequent
             # calls will see — keeps "two readonly calls return the same
@@ -3910,10 +3977,16 @@ def save_config(
             else {}
         )
         if raw_existing:
+            loaded_expanded = _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path))
+            normalized = _strip_unchanged_resolved_model_key(
+                normalized,
+                raw_existing,
+                loaded_expanded,
+            )
             normalized = _preserve_env_ref_templates(
                 normalized,
                 raw_existing,
-                _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
+                loaded_expanded,
             )
 
         # Strip schema-default values so the user's custom settings are not

@@ -1731,7 +1731,12 @@ class TestWebServerEndpoints:
 
     def test_custom_endpoint_save_keeps_the_api_key_out_of_config(self):
         """The key belongs in .env behind key_env, never in config.yaml (#69449)."""
-        from hermes_cli.config import custom_endpoint_key_env, get_env_value, load_config
+        from hermes_cli.config import (
+            custom_endpoint_key_env,
+            get_env_value,
+            load_config,
+            read_raw_config,
+        )
 
         self.client.post(
             "/api/providers/custom-endpoints",
@@ -1750,9 +1755,14 @@ class TestWebServerEndpoints:
         env_var = custom_endpoint_key_env("proxy")
         assert entry["key_env"] == env_var
         assert "api_key" not in entry
-        assert "api_key" not in cfg["model"]
-        assert get_env_value(env_var) == "sk-super-secret"
-        assert "sk-super-secret" not in yaml.safe_dump(cfg)
+        resolved_key = get_env_value(env_var)
+        assert resolved_key
+        assert cfg["model"]["api_key"] == resolved_key
+
+        raw = read_raw_config()
+        assert "api_key" not in raw["providers"]["proxy"]
+        assert "api_key" not in raw["model"]
+        assert resolved_key not in yaml.safe_dump(raw)
 
 
     def test_custom_endpoint_save_leaves_a_hand_written_env_ref_alone(self, monkeypatch):

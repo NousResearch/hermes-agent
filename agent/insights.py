@@ -60,10 +60,10 @@ def _estimate_cost(
         session = session_or_model
         model = session.get("model") or ""
         usage = CanonicalUsage(
-            input_tokens=session.get("input_tokens") or 0,
-            output_tokens=session.get("output_tokens") or 0,
-            cache_read_tokens=session.get("cache_read_tokens") or 0,
-            cache_write_tokens=session.get("cache_write_tokens") or 0,
+            input_tokens=_safe_int(session.get("input_tokens")),
+            output_tokens=_safe_int(session.get("output_tokens")),
+            cache_read_tokens=_safe_int(session.get("cache_read_tokens")),
+            cache_write_tokens=_safe_int(session.get("cache_write_tokens")),
         )
         provider = session.get("billing_provider")
         base_url = session.get("billing_base_url")
@@ -92,6 +92,22 @@ def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
     if peak == 0:
         return ["" for _ in values]
     return ["█" * max(1, int(v / peak * max_width)) if v > 0 else "" for v in values]
+
+
+def _safe_float(val):
+    """Coerce to float, returning 0.0 for non-numeric values (defensive)."""
+    try:
+        return float(val) if val is not None else 0.0
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _safe_int(val):
+    """Coerce to int, returning 0 for non-numeric values (defensive)."""
+    try:
+        return int(val) if val is not None else 0
+    except (ValueError, TypeError):
+        return 0
 
 
 class InsightsEngine:
@@ -489,13 +505,13 @@ class InsightsEngine:
         models: Optional[List[Dict]] = None,
     ) -> Dict:
         """Compute high-level overview statistics."""
-        total_input = sum(s.get("input_tokens") or 0 for s in sessions)
-        total_output = sum(s.get("output_tokens") or 0 for s in sessions)
-        total_cache_read = sum(s.get("cache_read_tokens") or 0 for s in sessions)
-        total_cache_write = sum(s.get("cache_write_tokens") or 0 for s in sessions)
+        total_input = sum(_safe_int(s.get("input_tokens")) for s in sessions)
+        total_output = sum(_safe_int(s.get("output_tokens")) for s in sessions)
+        total_cache_read = sum(_safe_int(s.get("cache_read_tokens")) for s in sessions)
+        total_cache_write = sum(_safe_int(s.get("cache_write_tokens")) for s in sessions)
         total_tokens = total_input + total_output + total_cache_read + total_cache_write
-        total_tool_calls = sum(s.get("tool_call_count") or 0 for s in sessions)
-        total_messages = sum(s.get("message_count") or 0 for s in sessions)
+        total_tool_calls = sum(_safe_int(s.get("tool_call_count")) for s in sessions)
+        total_messages = sum(_safe_int(s.get("message_count")) for s in sessions)
 
         # Cost estimation (weighted by model)
         total_cost = 0.0
@@ -508,7 +524,7 @@ class InsightsEngine:
             model = s.get("model") or ""
             estimated, status = _estimate_cost(s)
             total_cost += estimated
-            actual_cost += s.get("actual_cost_usd") or 0.0
+            actual_cost += _safe_float(s.get("actual_cost_usd"))
             display = model.split("/")[-1] if "/" in model else (model or "unknown")
             if status == "included":
                 included_cost_sessions += 1
@@ -520,7 +536,7 @@ class InsightsEngine:
                 models_without_pricing.add(display)
 
         if models:
-            total_cost = sum(float(m.get("cost") or 0.0) for m in models)
+            total_cost = sum(_safe_float(m.get("cost")) for m in models)
             # Token totals likewise: the per-model breakdown includes
             # auxiliary usage rows (vision/compression/titles — task
             # dimension in session_model_usage, #23270) plus reconciled
@@ -528,10 +544,10 @@ class InsightsEngine:
             # only. Summing the breakdown keeps overview totals consistent
             # with the per-model table and stops `hermes insights`
             # undercounting aux spend (#58592, #9979).
-            total_input = sum(int(m.get("input_tokens") or 0) for m in models)
-            total_output = sum(int(m.get("output_tokens") or 0) for m in models)
-            total_cache_read = sum(int(m.get("cache_read_tokens") or 0) for m in models)
-            total_cache_write = sum(int(m.get("cache_write_tokens") or 0) for m in models)
+            total_input = sum(_safe_int(m.get("input_tokens")) for m in models)
+            total_output = sum(_safe_int(m.get("output_tokens")) for m in models)
+            total_cache_read = sum(_safe_int(m.get("cache_read_tokens")) for m in models)
+            total_cache_write = sum(_safe_int(m.get("cache_write_tokens")) for m in models)
             total_tokens = total_input + total_output + total_cache_read + total_cache_write
 
         # Session duration stats (guard against negative durations from clock drift)
@@ -565,9 +581,9 @@ class InsightsEngine:
             "avg_session_duration": avg_duration,
             "avg_messages_per_session": total_messages / len(sessions) if sessions else 0,
             "avg_tokens_per_session": total_tokens / len(sessions) if sessions else 0,
-            "user_messages": message_stats.get("user_messages") or 0,
-            "assistant_messages": message_stats.get("assistant_messages") or 0,
-            "tool_messages": message_stats.get("tool_messages") or 0,
+            "user_messages": _safe_int(message_stats.get("user_messages")),
+            "assistant_messages": _safe_int(message_stats.get("assistant_messages")),
+            "tool_messages": _safe_int(message_stats.get("tool_messages")),
             "date_range_start": date_range_start,
             "date_range_end": date_range_end,
             "models_with_pricing": sorted(models_with_pricing),
@@ -658,10 +674,10 @@ class InsightsEngine:
                     provider=provider or None, base_url=base_url,
                 )
             else:
-                estimate = float(stored_cost or 0.0)
+                estimate = _safe_float(stored_cost)
                 status = cost_status or "unknown"
             d["cost"] += estimate
-            d["actual_cost"] += float(actual_cost or 0.0)
+            d["actual_cost"] += _safe_float(actual_cost)
             d["cost_status"] = status
             if has_known_pricing(model, provider or None, base_url):
                 d["has_pricing"] = True
@@ -676,20 +692,22 @@ class InsightsEngine:
             "api_call_count": 0, "estimated_cost_usd": 0.0,
             "actual_cost_usd": 0.0,
         })
+
         for r in usage_rows:
             totals: Dict[str, Any] = usage_totals[r["session_id"]]
             for key in (
                 "input_tokens", "output_tokens", "cache_read_tokens",
                 "cache_write_tokens", "reasoning_tokens", "api_call_count",
             ):
-                totals[key] += r[key] or 0
-            totals["estimated_cost_usd"] += r["estimated_cost_usd"] or 0.0
-            totals["actual_cost_usd"] += r["actual_cost_usd"] or 0.0
+                totals[key] += _safe_int(r[key])
+            totals["estimated_cost_usd"] += _safe_float(r["estimated_cost_usd"])
+            totals["actual_cost_usd"] += _safe_float(r["actual_cost_usd"])
             d = _accumulate(
                 r["model"], r["billing_provider"], r.get("billing_base_url"),
-                r["session_id"], r["input_tokens"] or 0, r["output_tokens"] or 0,
-                r["cache_read_tokens"] or 0, r["cache_write_tokens"] or 0,
-                r["reasoning_tokens"] or 0,
+                r["session_id"],
+                _safe_int(r["input_tokens"]), _safe_int(r["output_tokens"]),
+                _safe_int(r["cache_read_tokens"]), _safe_int(r["cache_write_tokens"]),
+                _safe_int(r["reasoning_tokens"]),
                 stored_cost=(
                     r["estimated_cost_usd"]
                     if r.get("cost_status") or r.get("cost_source")
@@ -698,31 +716,32 @@ class InsightsEngine:
                 actual_cost=r["actual_cost_usd"],
                 cost_status=r.get("cost_status"),
             )
-            model_data[d]["api_calls"] += r["api_call_count"] or 0
+            model_data[d]["api_calls"] += _safe_int(r["api_call_count"])
 
         # Reconcile against the aggregate row. This covers legacy sessions,
         # interrupted migrations, and absolute cumulative updates without
         # double-counting already-attributed route deltas.
+
         for s in sessions:
             totals = usage_totals[s["id"]]
-            inp = max(0, (s.get("input_tokens") or 0) - totals["input_tokens"])
-            out = max(0, (s.get("output_tokens") or 0) - totals["output_tokens"])
+            inp = max(0, _safe_int(s.get("input_tokens")) - totals["input_tokens"])
+            out = max(0, _safe_int(s.get("output_tokens")) - totals["output_tokens"])
             cache_read = max(
-                0, (s.get("cache_read_tokens") or 0) - totals["cache_read_tokens"]
+                0, _safe_int(s.get("cache_read_tokens")) - totals["cache_read_tokens"]
             )
             cache_write = max(
-                0, (s.get("cache_write_tokens") or 0) - totals["cache_write_tokens"]
+                0, _safe_int(s.get("cache_write_tokens")) - totals["cache_write_tokens"]
             )
             residual_cost = max(
-                0.0, float(s.get("estimated_cost_usd") or 0.0)
+                0.0, _safe_float(s.get("estimated_cost_usd"))
                 - totals["estimated_cost_usd"],
             )
             residual_actual = max(
-                0.0, float(s.get("actual_cost_usd") or 0.0)
+                0.0, _safe_float(s.get("actual_cost_usd"))
                 - totals["actual_cost_usd"],
             )
             residual_calls = max(
-                0, (s.get("api_call_count") or 0) - totals["api_call_count"]
+                0, _safe_int(s.get("api_call_count")) - totals["api_call_count"]
             )
             if not (
                 inp or out or cache_read or cache_write or residual_cost
@@ -742,7 +761,7 @@ class InsightsEngine:
 
         # Tool calls are attributed by the session's recorded model.
         for s in sessions:
-            tool_calls = s.get("tool_call_count") or 0
+            tool_calls = _safe_int(s.get("tool_call_count"))
             if not tool_calls:
                 continue
             model = s.get("model") or "unknown"
@@ -775,17 +794,17 @@ class InsightsEngine:
             source = s.get("source") or "unknown"
             d = platform_data[source]
             d["sessions"] += 1
-            d["messages"] += s.get("message_count") or 0
-            inp = s.get("input_tokens") or 0
-            out = s.get("output_tokens") or 0
-            cache_read = s.get("cache_read_tokens") or 0
-            cache_write = s.get("cache_write_tokens") or 0
+            d["messages"] += _safe_int(s.get("message_count"))
+            inp = _safe_int(s.get("input_tokens"))
+            out = _safe_int(s.get("output_tokens"))
+            cache_read = _safe_int(s.get("cache_read_tokens"))
+            cache_write = _safe_int(s.get("cache_write_tokens"))
             d["input_tokens"] += inp
             d["output_tokens"] += out
             d["cache_read_tokens"] += cache_read
             d["cache_write_tokens"] += cache_write
             d["total_tokens"] += inp + out + cache_read + cache_write
-            d["tool_calls"] += s.get("tool_call_count") or 0
+            d["tool_calls"] += _safe_int(s.get("tool_call_count"))
 
         result = [
             {"platform": platform, **data}
@@ -831,7 +850,7 @@ class InsightsEngine:
                 s["total_count"],
                 s["view_count"],
                 s["manage_count"],
-                s["last_used_at"] or 0,
+                _safe_int(s["last_used_at"]) if s["last_used_at"] else 0,
                 s["skill"],
             ),
             reverse=True,
@@ -928,21 +947,22 @@ class InsightsEngine:
             })
 
         # Most messages
-        most_msgs = max(sessions, key=lambda s: s.get("message_count") or 0)
-        if (most_msgs.get("message_count") or 0) > 0:
+        most_msgs = max(sessions, key=lambda s: _safe_int(s.get("message_count")))
+        msg_count = _safe_int(most_msgs.get("message_count"))
+        if msg_count > 0:
             top.append({
                 "label": "Most messages",
                 "session_id": most_msgs["id"][:16],
-                "value": f"{most_msgs['message_count']} msgs",
+                "value": f"{msg_count} msgs",
                 "date": datetime.fromtimestamp(most_msgs["started_at"]).strftime("%b %d") if most_msgs.get("started_at") else "?",
             })
 
         # Most tokens
         most_tokens = max(
             sessions,
-            key=lambda s: (s.get("input_tokens") or 0) + (s.get("output_tokens") or 0),
+            key=lambda s: _safe_int(s.get("input_tokens")) + _safe_int(s.get("output_tokens")),
         )
-        token_total = (most_tokens.get("input_tokens") or 0) + (most_tokens.get("output_tokens") or 0)
+        token_total = _safe_int(most_tokens.get("input_tokens")) + _safe_int(most_tokens.get("output_tokens"))
         if token_total > 0:
             top.append({
                 "label": "Most tokens",
@@ -952,12 +972,13 @@ class InsightsEngine:
             })
 
         # Most tool calls
-        most_tools = max(sessions, key=lambda s: s.get("tool_call_count") or 0)
-        if (most_tools.get("tool_call_count") or 0) > 0:
+        most_tools = max(sessions, key=lambda s: _safe_int(s.get("tool_call_count")))
+        tool_count = _safe_int(most_tools.get("tool_call_count"))
+        if tool_count > 0:
             top.append({
                 "label": "Most tool calls",
                 "session_id": most_tools["id"][:16],
-                "value": f"{most_tools['tool_call_count']} calls",
+                "value": f"{tool_count} calls",
                 "date": datetime.fromtimestamp(most_tools["started_at"]).strftime("%b %d") if most_tools.get("started_at") else "?",
             })
 

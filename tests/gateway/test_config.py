@@ -1203,3 +1203,64 @@ class TestApiServerEnvOverride:
         assert config.platforms[Platform.API_SERVER].enabled is False
         # The key is still wired through for the shared listener.
         assert config.platforms[Platform.API_SERVER].extra.get("key") == api_server_key
+
+
+class TestQQBotEnvOverride:
+    def test_env_credentials_do_not_reenable_explicitly_disabled_qqbot(self):
+        """An explicit ``platforms.qqbot.enabled: false`` must survive
+        _apply_env_overrides() even when QQ_APP_ID / QQ_CLIENT_SECRET are
+        present in the env.
+
+        Regression: the QQBot block unconditionally set ``enabled = True``
+        whenever env credentials existed, so the Desktop/dashboard toggle
+        (which writes ``platforms.qqbot.enabled: false`` to config.yaml)
+        flipped back to ON after a gateway restart and QQBot reconnected.
+
+        The fix routes QQBot through the same ``_enabled_explicit`` guard
+        used by Telegram/Slack (#41112): when ``enabled`` was explicitly
+        written to config, env credentials must not re-enable it — but they
+        are still wired into ``extra`` so skills can use them.
+        """
+        config = GatewayConfig(
+            platforms={
+                Platform.QQBOT: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+            },
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "QQ_APP_ID": "env-app-id",
+                "QQ_CLIENT_SECRET": "env-client-secret",
+            },
+            clear=True,
+        ):
+            _apply_env_overrides(config)
+
+        # Explicit disable wins over the env-credential presence.
+        assert config.platforms[Platform.QQBOT].enabled is False
+        # Credentials are still wired through for skills / manual use.
+        assert config.platforms[Platform.QQBOT].extra.get("app_id") == "env-app-id"
+        assert config.platforms[Platform.QQBOT].extra.get("client_secret") == "env-client-secret"
+        # The marker is cleaned up after the pass.
+        assert "_enabled_explicit" not in config.platforms[Platform.QQBOT].extra
+
+    def test_env_credentials_enable_qqbot_when_not_configured(self):
+        """Env-only setup (no config.yaml block) still arms QQBot."""
+        config = GatewayConfig(platforms={})
+
+        with patch.dict(
+            os.environ,
+            {
+                "QQ_APP_ID": "env-app-id",
+                "QQ_CLIENT_SECRET": "env-client-secret",
+            },
+            clear=True,
+        ):
+            _apply_env_overrides(config)
+
+        assert config.platforms[Platform.QQBOT].enabled is True
+        assert config.platforms[Platform.QQBOT].extra.get("app_id") == "env-app-id"

@@ -2487,10 +2487,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     qq_app_id = getenv("QQ_APP_ID")
     qq_client_secret = getenv("QQ_CLIENT_SECRET")
     if qq_app_id or qq_client_secret:
-        if Platform.QQBOT not in config.platforms:
-            config.platforms[Platform.QQBOT] = PlatformConfig()
-        config.platforms[Platform.QQBOT].enabled = True
-        extra = config.platforms[Platform.QQBOT].extra
+        # Respect an explicit ``platforms.qqbot.enabled: false`` instead of
+        # unconditionally re-enabling whenever env credentials are present.
+        # Same ``_enabled_explicit`` guard as Telegram/Slack (#41112); the
+        # Desktop/dashboard toggle writes the explicit disable to config.yaml
+        # and must survive a gateway restart with QQ_APP_ID/QQ_CLIENT_SECRET
+        # still set in .env. #80333.
+        qq_config = _enable_from_env(Platform.QQBOT)
+        extra = qq_config.extra
         if qq_app_id:
             extra["app_id"] = qq_app_id
         if qq_client_secret:

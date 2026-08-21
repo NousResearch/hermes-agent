@@ -73,6 +73,27 @@ class TestBuildRelaunchArgv:
         argv = relaunch_mod.build_relaunch_argv(["--resume", "abc"])
         assert argv[0] == "/usr/bin/hermes"
 
+    def test_runs_python_argv0_with_current_interpreter(self, monkeypatch, tmp_path):
+        """An extensionless Python launcher must not bypass the active venv.
+
+        The installed wrapper invokes the repository's ``hermes`` script with
+        the managed interpreter, but ``sys.argv[0]`` points at that script.
+        Executing it directly during a relaunch would let its shebang select
+        system Python instead.
+        """
+        script = tmp_path / "hermes"
+        script.write_text("#!/usr/bin/env python3\n")
+        script.chmod(0o755)
+        managed_python = "/venv/bin/python"
+        monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: str(script))
+        monkeypatch.setattr(relaunch_mod.sys, "argv", [str(script)])
+        monkeypatch.setattr(relaunch_mod.sys, "executable", managed_python)
+
+        argv = relaunch_mod.build_relaunch_argv(
+            ["update"], preserve_inherited=False
+        )
+
+        assert argv == [managed_python, str(script), "update"]
 
     def test_preserves_inherited_flags(self, monkeypatch):
         monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: "/usr/bin/hermes")

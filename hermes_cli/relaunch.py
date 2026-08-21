@@ -51,6 +51,18 @@ def _build_inherited_flag_table() -> list[tuple[str, bool]]:
 _INHERITED_FLAGS_TABLE = _build_inherited_flag_table()
 
 
+def _is_python_script(path: str) -> bool:
+    """Return whether *path* is a Python script, including extensionless ones."""
+    if path.lower().endswith((".py", ".pyc")):
+        return True
+    try:
+        with open(path, "rb") as stream:
+            first_line = stream.readline(256).decode("utf-8", errors="replace")
+    except OSError:
+        return False
+    return first_line.startswith("#!") and "python" in first_line.lower()
+
+
 def _extract_inherited_flags(argv: Sequence[str]) -> list[str]:
     """Pull out flags that should carry over into a self-relaunched hermes."""
     flags: list[str] = []
@@ -139,7 +151,18 @@ def build_relaunch_argv(
     bin_path = resolve_hermes_bin()
 
     if bin_path:
-        argv = [bin_path]
+        # When a Python launcher was entered through a wrapper, Python keeps
+        # the implementation script in sys.argv[0]. Executing that script
+        # directly would let its shebang select a different interpreter on
+        # POSIX. Reuse the interpreter that is already running Hermes instead.
+        current_script = os.path.abspath(sys.argv[0])
+        if (
+            _is_python_script(bin_path)
+            and os.path.abspath(bin_path) == current_script
+        ):
+            argv = [sys.executable, bin_path]
+        else:
+            argv = [bin_path]
     else:
         argv = [sys.executable, "-m", "hermes_cli.main"]
 

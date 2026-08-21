@@ -23,6 +23,7 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -520,6 +521,48 @@ def _save_jwt_to_disk(
         logger.debug("Failed to persist Copilot JWT: %s", exc)
 
 
+# Hard wall-clock cap for the token-exchange HTTP call. urllib's ``timeout``
+# only bounds socket operations AFTER DNS resolution succeeds; getaddrinfo
+# blocks in C and ignores it entirely, so on a networkless Windows host the
+# resolver can hang for many minutes (observed: a 17-minute event-loop stall
+# on 2026-08-22 that took the whole backend down with it).
+_DNS_GRACE_SECONDS = 5.0
+
+
+def _urlopen_bounded(req, timeout: float):
+    """urlopen() with a hard wall-clock cap of timeout + _DNS_GRACE_SECONDS.
+
+    Runs the call on a daemon thread and abandons it if the cap fires, so a
+    DNS/getaddrinfo hang cannot block the caller indefinitely. Raises the
+    worker's exception, or TimeoutError when the cap fires.
+    """
+    import urllib.request
+
+    box: dict = {}
+
+    def _worker() -> None:
+        try:
+            box["resp"] = urllib.request.urlopen(req, timeout=timeout)
+        except BaseException as exc:  # re-raised on the caller's thread
+            box["exc"] = exc
+
+    t = threading.Thread(
+        target=_worker, name="copilot-token-exchange", daemon=True
+    )
+    t.start()
+    t.join(timeout + _DNS_GRACE_SECONDS)
+    if t.is_alive():
+        raise TimeoutError(
+            "copilot token exchange exceeded hard cap of "
+            f"{timeout + _DNS_GRACE_SECONDS:.0f}s (DNS/getaddrinfo hang?)"
+        )
+    if "exc" in box:
+        raise box["exc"]
+    if "resp" not in box:
+        raise TimeoutError("copilot token exchange worker died without result")
+    return box["resp"]
+
+
 def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[str, float, Optional[str]]:
     """Exchange a raw GitHub token for a short-lived Copilot API token.
 
@@ -593,7 +636,7 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
     permanent_failure = False
     for attempt in range(_EXCHANGE_MAX_ATTEMPTS):
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _urlopen_bounded(req, timeout) as resp:
                 data = json.loads(resp.read().decode())
             break
         except Exception as exc:  # noqa: BLE001 — retry all, re-raise below

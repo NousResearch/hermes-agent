@@ -17450,6 +17450,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 return "Could not start /learn — please try again."
 
+        if canonical == "upskill":
+            # /upskill: sweep this session for reusable skills and PROPOSE them.
+            # The automatic inverse of /learn: rewrite the turn to a
+            # standards-guided prompt and fall through to normal agent
+            # processing (same fall-through as /learn so role alternation is
+            # preserved). The live agent reviews what it actually did this
+            # session (via session_search + its own history), dedupes against
+            # existing skills, and proposes candidates for approval before
+            # saving any via skill_manage. No engine, works on any backend.
+            from agent.upskill_prompt import build_upskill_prompt
+
+            _upskill_scope = event.get_command_args().strip()
+            _ack = (
+                "Sweeping this session for skills to save (scoped)…"
+                if _upskill_scope
+                else "Sweeping this session for reusable skills…"
+            )
+            try:
+                adapter = self._adapter_for_source(source)
+                if adapter:
+                    _ack_meta = self._thread_metadata_for_source(source)
+                    await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
+            except Exception:
+                logger.debug("upskill ack send failed", exc_info=True)
+            try:
+                event.text = build_upskill_prompt(_upskill_scope)
+                # fall through to agent processing
+            except Exception:
+                return "Could not start /upskill — please try again."
+
         if canonical == "init":
             # /init: rewrite the turn to a guidance-laden prompt and fall
             # through to normal agent processing (same fall-through as /learn

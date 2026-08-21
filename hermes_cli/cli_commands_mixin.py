@@ -2118,6 +2118,34 @@ class CLICommandsMixin:
         else:  # pragma: no cover - defensive (no live input loop)
             print("  /learn needs an active chat session to run.")
 
+    def _handle_upskill_command(self, cmd: str):
+        """Handle /upskill — sweep this session for reusable skills and PROPOSE them.
+
+        The automatic inverse of /learn: instead of the user naming a source to
+        distill, the agent reviews what actually happened in this session (its
+        tool-call history and workflows) and proposes candidate reusable skills
+        — including small/multi-step ones the user might not think to save.
+        Candidates are deduped against existing skills and presented for
+        approval before anything is saved. Mirrors /learn's architecture: build
+        a standards-guided prompt and inject it onto the agent's input queue; no
+        engine, no model-tool footprint.
+        """
+        from agent.upskill_prompt import build_upskill_prompt
+
+        # Everything after the command word is optional scope emphasis.
+        parts = cmd.strip().split(None, 1)
+        scope_hint = parts[1].strip() if len(parts) > 1 else ""
+
+        msg = build_upskill_prompt(scope_hint)
+        if scope_hint:
+            print("\n⚡ Sweeping this session for skills to save (scoped)...")
+        else:
+            print("\n⚡ Sweeping this session for skills to save...")
+        if hasattr(self, "_pending_input"):
+            self._pending_input.put(msg)
+        else:  # pragma: no cover - defensive (no live input loop)
+            print("  /upskill needs an active chat session to run.")
+
     def _handle_init_command(self, cmd: str):
         """Handle /init — generate or update AGENTS.md from a project scan.
 

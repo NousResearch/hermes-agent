@@ -12068,6 +12068,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._handle_skills_command(cmd_original)
         elif canonical == "learn":
             self._handle_learn_command(cmd_original)
+        elif canonical == "upskill":
+            self._handle_upskill_command(cmd_original)
         elif canonical == "init":
             self._handle_init_command(cmd_original)
         elif canonical == "memory":

@@ -40,6 +40,7 @@ from agent.model_metadata import (
     estimate_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
+from agent.tool_argument_integrity import completed_tool_call_pairs
 from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
@@ -3590,6 +3591,7 @@ class ContextCompressor(ContextEngine):
             return messages, 0
 
         result = [m.copy() for m in messages]
+        completed_calls = set(completed_tool_call_pairs(result))
         pruned = 0
 
         # Build index: tool_call_id -> (tool_name, arguments_json)
@@ -3742,10 +3744,10 @@ class ContextCompressor(ContextEngine):
                 return False
             new_tcs = []
             modified = False
-            for tc in msg["tool_calls"]:
+            for call_index, tc in enumerate(msg["tool_calls"]):
                 if isinstance(tc, dict):
                     args = tc.get("function", {}).get("arguments", "")
-                    if len(args) > 500:
+                    if (idx, call_index) in completed_calls and len(args) > 500:
                         new_args = _truncate_tool_call_args_json(args)
                         if new_args != args:
                             tc = {**tc, "function": {**tc["function"], "arguments": new_args}}

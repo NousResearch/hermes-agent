@@ -371,6 +371,52 @@ class TestDefaultContextLengths:
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
 
+    def test_upstage_solar_context_lengths(self):
+        """Upstage reports context windows on GET /v1/solar/models, not on the
+        OpenAI-compatible /v1/models the resolver probes, so this table is the
+        offline source for every id in the chat catalog.
+        """
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        expected_keys = {
+            "solar-pro4": 524288,
+            "solar-pro3": 131072,
+            "solar-pro2": 65536,
+            "solar-mini": 32768,
+            "syn-pro": 65536,
+        }
+        for key, value in expected_keys.items():
+            assert key in DEFAULT_CONTEXT_LENGTHS, f"{key} missing"
+            assert DEFAULT_CONTEXT_LENGTHS[key] == value, (
+                f"{key} should be {value}, got {DEFAULT_CONTEXT_LENGTHS[key]}"
+            )
+
+        # Dated snapshots resolve through their family prefix (longest-first),
+        # so no Solar id falls through to the 256K default. Both directions of
+        # that fallback were wrong: solar-pro4 lost half its 512K window, and
+        # syn-pro claimed 4x its real 64K window, overflowing the server limit.
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            cases = [
+                ("solar-pro4", 524288),
+                ("solar-pro4-260806", 524288),
+                ("solar-pro3", 131072),
+                ("solar-pro3-260323", 131072),
+                ("solar-pro2", 65536),
+                ("solar-pro2-251215", 65536),
+                ("solar-mini", 32768),
+                ("solar-mini-250422", 32768),
+                ("syn-pro", 65536),
+                ("syn-pro-251021", 65536),
+            ]
+            for model_id, expected_ctx in cases:
+                actual = get_model_context_length(model_id)
+                assert actual == expected_ctx, (
+                    f"{model_id}: expected {expected_ctx}, got {actual}"
+                )
+
 
 
 

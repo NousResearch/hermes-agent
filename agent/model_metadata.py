@@ -546,16 +546,18 @@ DEFAULT_CONTEXT_LENGTHS = {
     # still hit the generic 256K fallback.
     "kimi-k3": 1_048_576,
     "kimi": 262144,
-    # Upstage Solar — api.upstage.ai/v1/models does not return context_length,
-    # so these fallbacks keep token budgeting / compression from probing down
-    # to the 128k default. Ids are matched longest-first, so dated variants
-    # (e.g. solar-pro3-250127) resolve via their family prefix.
-    # Sources: Solar Pro 3 = 128K, Solar Pro 2 = 64K, Solar Mini = 32K,
-    # Solar Open 2 = 256K.
+    # Upstage Solar — /v1/models omits context_length; GET /v1/solar/models
+    # reports max_model_len. Ids are matched longest-first, so dated variants
+    # (e.g. solar-pro3-260323) resolve via their family prefix. syn-pro is not
+    # on models.dev, so its entry is the only source for that window.
+    # Sources: Solar Pro 4 = 512K, Solar Pro 3 = 128K, Solar Pro 2 = 64K,
+    # Solar Mini = 32K, Syn Pro = 64K, Solar Open 2 = 256K.
     "solar-open2": 262144,  # 256K
+    "solar-pro4": 524288,   # 512K
     "solar-pro3": 131072,
     "solar-pro2": 65536,
     "solar-mini": 32768,
+    "syn-pro": 65536,       # 64K
     # Tencent — Hy3 Preview (Hunyuan) with 256K context window.
     # OpenRouter live metadata reports 262144 (256 × 1024); align the
     # static fallback so cache and offline both agree (issue #22268).

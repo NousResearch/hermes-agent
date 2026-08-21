@@ -2990,14 +2990,26 @@ class TelegramAdapter(BasePlatformAdapter):
                     # the gateway silently drops messages for hours.
                     # Bounding stop() lets the reconnect ladder always advance.
                     # Refs: NousResearch/hermes-agent#58270
-                    await asyncio.wait_for(app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
+                    await _await_with_thread_deadline(
+                        app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT
+                    )
                 except asyncio.TimeoutError:
-                    logger.warning(
+                    message = (
+                        "Telegram updater.stop() did not finish before the network-"
+                        "recovery deadline; rebuilding the adapter instead of reusing "
+                        "an Updater whose lifecycle lock may still be held."
+                    )
+                    logger.error(
                         "[%s] updater.stop() timed out during network-error "
-                        "reconnect (likely CLOSE-WAIT socket); forcing drain "
-                        "and restart without clean stop",
+                        "reconnect (likely CLOSE-WAIT socket); escalating to fresh-"
+                        "adapter recovery",
                         self.name,
                     )
+                    self._set_fatal_error(
+                        "telegram_network_error", message, retryable=True
+                    )
+                    await self._handoff_polling_fatal_error()
+                    return
         except Exception:
             pass
 

@@ -158,6 +158,24 @@ def make_restart_runner(
     runner.pairing_store = MagicMock()
     runner.session_store = MagicMock()
     runner.session_store._entries = {}
+    runner.session_store._ensure_loaded = MagicMock()
+    runner.session_store.load_transcript = MagicMock(return_value=[])
+    runner._async_session_store = MagicMock()
+    runner._async_session_store._store = runner.session_store
+    runner._async_session_store._ensure_loaded = AsyncMock()
+    runner._async_session_store.list_resume_pending = AsyncMock(
+        side_effect=lambda platform=None: [
+            entry
+            for entry in runner.session_store._entries.values()
+            if entry.resume_pending
+            and not entry.suspended
+            and entry.origin is not None
+            and (platform is None or entry.origin.platform == platform)
+        ]
+    )
+    runner._async_session_store.load_transcript = AsyncMock(return_value=[])
+    runner._async_session_store.clear_resume_pending = AsyncMock()
+    runner._session_db = None
     runner.delivery_router = MagicMock()
 
     platform_adapter = adapter or RestartTestAdapter()

@@ -25,6 +25,7 @@
  * the minted one (which the dashboard may regen).
  */
 
+import { Buffer } from 'node:buffer'
 import crypto from 'node:crypto'
 
 import { parseRemoteProfileListing } from './connection-registry'
@@ -101,6 +102,17 @@ function shq(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
 }
 
+// sshd sends a remote command through the account's login shell before any
+// command inside it runs. Fish therefore parses a raw POSIX lifecycle payload
+// (parameter expansion, [ ], &&, redirects, etc.) and rejects it. Keep that
+// payload out of the login-shell command line: Python decodes it and execs
+// POSIX sh with the payload as one argv value.
+function posixShell(command: string) {
+  const encoded = Buffer.from(String(command), 'utf8').toString('base64')
+
+  return `python3 -c "import base64,os;os.execvp('sh',['sh','-lc',base64.b64decode('${encoded}').decode()])"`
+}
+
 function validateRemotePath(p) {
   const s = String(p || '')
 
@@ -154,7 +166,7 @@ async function locateHermes(ssh, remoteHermesPath) {
   const isExecutable = async (candidate: string) => {
     try {
       validateRemotePath(candidate)
-      const ok = (await ssh.exec(`[ -x ${expandRemotePath(candidate)} ] && echo OK || true`)).trim()
+      const ok = (await ssh.exec(posixShell(`[ -x ${expandRemotePath(candidate)} ] && echo OK || true`))).trim()
 
       return ok === 'OK'
     } catch {
@@ -180,7 +192,7 @@ async function locateHermes(ssh, remoteHermesPath) {
   const candidates: string[] = []
 
   try {
-    const found = (await ssh.exec(`bash -lc ${shq('command -v hermes')}`)).trim()
+    const found = (await ssh.exec(posixShell('command -v hermes'))).trim()
 
     if (found) {
       candidates.push(found.split('\n').pop().trim())
@@ -220,7 +232,7 @@ async function locateHermes(ssh, remoteHermesPath) {
 // connection uses, so a stale/unexpected install is visible.
 async function probeHermesVersion(ssh, hermesPath) {
   try {
-    const out = (await ssh.exec(`${expandRemotePath(hermesPath)} --version 2>&1`)).trim()
+    const out = (await ssh.exec(posixShell(`${expandRemotePath(hermesPath)} --version 2>&1`))).trim()
 
     return (out.split('\n')[0] || '').trim()
   } catch {
@@ -229,7 +241,7 @@ async function probeHermesVersion(ssh, hermesPath) {
 }
 
 async function probeRemotePlatform(ssh) {
-  const out = (await ssh.exec('uname -s; uname -m')).trim().split('\n')
+  const out = (await ssh.exec(posixShell('uname -s; uname -m'))).trim().split('\n')
   const osName = (out[0] || '').trim()
   const arch = (out[1] || '').trim()
 
@@ -250,7 +262,7 @@ async function probeRemotePlatform(ssh) {
 // state store; best-effort.
 async function probeRemoteHermesHome(ssh) {
   try {
-    const out = (await ssh.exec('echo "${HERMES_HOME:-$HOME/.hermes}"')).trim().split('\n').pop()
+    const out = (await ssh.exec(posixShell('echo "${HERMES_HOME:-$HOME/.hermes}"'))).trim().split('\n').pop()
 
     return out || '~/.hermes'
   } catch (cause) {
@@ -267,7 +279,7 @@ async function listRemoteHermesProfiles(ssh) {
   let listing = ''
 
   try {
-    listing = await ssh.exec(`if [ -d ${dir} ]; then ls -1 ${dir}; fi`)
+    listing = await ssh.exec(posixShell(`if [ -d ${dir} ]; then ls -1 ${dir}; fi`))
   } catch (cause) {
     const error: any = new Error('Could not list remote Hermes profiles.')
     error.kind = 'transient-transport-error'
@@ -295,7 +307,7 @@ async function readLockfile(ssh, ownershipId) {
   let raw
 
   try {
-    raw = await ssh.exec(`if [ ! -e ${expandRemotePath(lpath)} ]; then exit 0; fi; cat ${expandRemotePath(lpath)}`)
+    raw = await ssh.exec(posixShell(`if [ ! -e ${expandRemotePath(lpath)} ]; then exit 0; fi; cat ${expandRemotePath(lpath)}`))
   } catch (cause) {
     const error: any = new Error('Could not read the SSH backend ownership record.')
     error.kind = 'transient-transport-error'
@@ -364,18 +376,18 @@ async function writeLockfile(ssh, ownershipId, lock) {
   const lpath = lockfilePath(ownershipId)
   const temporaryPath = `${directory}/.${crypto.randomBytes(8).toString('hex')}.lock.tmp`
   const json = JSON.stringify({ ...lock, schemaVersion: LOCKFILE_SCHEMA_VERSION })
-  await ssh.exec(
+  await ssh.exec(posixShell(
     `umask 077 && mkdir -p ${expandRemotePath(directory)} && ` +
       `printf '%s' ${shq(json)} > ${expandRemotePath(temporaryPath)} && ` +
       `mv -f ${expandRemotePath(temporaryPath)} ${expandRemotePath(lpath)}`
-  )
+  ))
 }
 
 async function removeLockfile(ssh, ownershipId) {
   const lpath = lockfilePath(ownershipId)
 
   try {
-    await ssh.exec(`rm -f ${expandRemotePath(lpath)}`)
+    await ssh.exec(posixShell(`rm -f ${expandRemotePath(lpath)}`))
   } catch {
     // best effort
   }
@@ -387,7 +399,7 @@ async function remotePidAlive(ssh, pid) {
   }
 
   try {
-    const out = (await ssh.exec(`kill -0 ${Number(pid)} 2>/dev/null && echo ALIVE || echo DEAD`)).trim()
+    const out = (await ssh.exec(posixShell(`kill -0 ${Number(pid)} 2>/dev/null && echo ALIVE || echo DEAD`))).trim()
 
     return out === 'ALIVE'
   } catch (cause) {
@@ -461,7 +473,7 @@ async function pidIsOurDashboard(
       'except (ValueError,IndexError):pass\n' +
       'print("OWNED" if ok else "FOREIGN")'
 
-    const out = await ssh.exec(`python3 -c ${shq(script)}`)
+    const out = await ssh.exec(posixShell(`python3 -c ${shq(script)}`))
 
     return String(out || '').trim() === 'OWNED'
   } catch (cause) {
@@ -489,11 +501,11 @@ async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
   ) {
     try {
       const result = (
-        await ssh.exec(
+        await ssh.exec(posixShell(
           `kill ${Number(lock.pid)} && ` +
             `i=0; while kill -0 ${Number(lock.pid)} 2>/dev/null; do ` +
             `i=$((i+1)); [ "$i" -ge 50 ] && exit 1; sleep 0.1; done`
-        )
+        ))
       ).trim()
 
       void result
@@ -509,7 +521,7 @@ async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
 
   if (lock?.logPath === expectedLogPath) {
     try {
-      await ssh.exec(`rm -f ${expandRemotePath(lock.logPath)}`)
+      await ssh.exec(posixShell(`rm -f ${expandRemotePath(lock.logPath)}`))
     } catch {
       void 0
     }
@@ -543,11 +555,11 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
 async function remoteSupportsSshOwnership(ssh, hermesPath) {
   const hermes = expandRemotePath(hermesPath)
 
-  const out = await ssh.exec(
+  const out = await ssh.exec(posixShell(
     `help="$(${hermes} serve --help 2>&1)"; ` +
       `printf '%s' "$help" | grep -q ssh-session-token-file && ` +
       `printf '%s' "$help" | grep -q ssh-owner-nonce && echo YES || echo NO`
-  )
+  ))
 
   return String(out || '')
     .trim()
@@ -570,7 +582,7 @@ async function scrapeReadyPort(ssh, logPath, { timeoutMs = DEFAULT_READY_TIMEOUT
     let tail
 
     try {
-      tail = await ssh.exec(`cat ${remoteLog} 2>/dev/null || true`)
+      tail = await ssh.exec(posixShell(`cat ${remoteLog} 2>/dev/null || true`))
     } catch {
       tail = ''
     }
@@ -635,10 +647,10 @@ async function spawnRemoteDashboard(ssh, { hermesPath, profile, token, ownership
     'finally:os.close(dd)'
 
   try {
-    await ssh.exec(`python3 -c ${shq(tokenUploadPy)}`, { stdinData: token })
+    await ssh.exec(posixShell(`python3 -c ${shq(tokenUploadPy)}`), { stdinData: token })
   } catch (error) {
     try {
-      await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`)
+      await ssh.exec(posixShell(`rm -f ${expandRemotePath(tokenFilePath)}`))
     } catch {
       void 0
     }
@@ -649,10 +661,10 @@ async function spawnRemoteDashboard(ssh, { hermesPath, profile, token, ownership
   let out
 
   try {
-    out = await ssh.exec(buildSpawnCommand(hermesPath, profile, { spawnNonce, tokenFilePath, logPath }))
+    out = await ssh.exec(posixShell(buildSpawnCommand(hermesPath, profile, { spawnNonce, tokenFilePath, logPath })))
   } catch (error) {
     try {
-      await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`)
+      await ssh.exec(posixShell(`rm -f ${expandRemotePath(tokenFilePath)}`))
     } catch {
       void 0
     }
@@ -670,7 +682,7 @@ async function spawnRemoteDashboard(ssh, { hermesPath, profile, token, ownership
 
   if (!Number.isInteger(pid) || pid <= 0) {
     try {
-      await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`)
+      await ssh.exec(posixShell(`rm -f ${expandRemotePath(tokenFilePath)}`))
     } catch {
       void 0
     }
@@ -944,7 +956,7 @@ async function connect(deps) {
     }
 
     try {
-      await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`)
+      await ssh.exec(posixShell(`rm -f ${expandRemotePath(tokenFilePath)}`))
     } catch {
       void 0
     }

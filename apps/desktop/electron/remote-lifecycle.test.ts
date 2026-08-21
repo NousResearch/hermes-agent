@@ -62,17 +62,22 @@ function ownedLock(over: any = {}) {
 // [regex|fn, response|fn] rules. First match wins; unmatched commands return ''.
 function fakeSsh(rules: any[] = []) {
   const calls: string[] = []
+  const rawCalls: string[] = []
 
   return {
     calls,
+    rawCalls,
     async exec(cmd) {
-      calls.push(cmd)
+      rawCalls.push(cmd)
+      const encoded = /base64\.b64decode\('([A-Za-z0-9+/=]+)'\)/.exec(cmd)?.[1]
+      const payload = encoded ? Buffer.from(encoded, 'base64').toString('utf8') : cmd
+      calls.push(payload)
 
       for (const [matcher, resp] of rules) {
-        const hit = typeof matcher === 'function' ? matcher(cmd) : matcher.test(cmd)
+        const hit = typeof matcher === 'function' ? matcher(payload) : matcher.test(payload)
 
         if (hit) {
-          const out = typeof resp === 'function' ? resp(cmd) : resp
+          const out = typeof resp === 'function' ? resp(payload) : resp
 
           if (out instanceof Error) {
             throw out
@@ -87,6 +92,12 @@ function fakeSsh(rules: any[] = []) {
   }
 }
 
+function decodeFishSafePayload(command: string): string {
+  const encoded = /base64\.b64decode\('([A-Za-z0-9+/=]+)'\)/.exec(command)?.[1]
+
+  return encoded ? Buffer.from(encoded, 'base64').toString('utf8') : command
+}
+
 test('listRemoteHermesProfiles inventories Mini-style profile dirs without spawning a dashboard', async () => {
   const ssh = fakeSsh([
     [/HERMES_HOME/, '/Users/zillajr/.hermes\n'],
@@ -98,6 +109,22 @@ test('listRemoteHermesProfiles inventories Mini-style profile dirs without spawn
     ssh.calls.some(cmd => cmd.includes('serve') || cmd.includes('dashboard')),
     false
   )
+})
+
+test('remote lifecycle commands use a Fish-safe POSIX launcher', async () => {
+  const ssh = fakeSsh([
+    [/HERMES_HOME/, '/Users/zillajr/.hermes\n'],
+    [/ls -1/, 'camille\n']
+  ])
+
+  await listRemoteHermesProfiles(ssh)
+
+  assert.ok(ssh.rawCalls.length > 0)
+
+  for (const command of ssh.rawCalls) {
+    assert.match(command, /^python3 -c "/)
+    assert.match(command, /os\.execvp\('sh',\['sh','-lc',base64\.b64decode\('/)
+  }
 })
 
 test('listRemoteHermesProfiles rejects a hostile HERMES_HOME', async () => {
@@ -212,7 +239,7 @@ test('locateHermes throws a hermes-not-found error with an install hint', async 
   )
 })
 
-test('locateHermes uses a login shell for the command -v probe', async () => {
+test('locateHermes sends its command -v probe through the Fish-safe launcher', async () => {
   const ssh = fakeSsh([
     [/command -v hermes/, '/x/hermes'],
     [/\[ -x/, 'OK']
@@ -220,8 +247,8 @@ test('locateHermes uses a login shell for the command -v probe', async () => {
 
   await locateHermes(ssh, '')
   assert.ok(
-    ssh.calls.some(c => /bash -lc/.test(c)),
-    'must probe in a login shell (PATH pitfall)'
+    ssh.rawCalls.some(c => /^python3 -c "/.test(c) && /base64\.b64decode/.test(c)),
+    'must keep the probe safe for a Fish login shell'
   )
 })
 
@@ -1064,24 +1091,25 @@ test('spawnRemoteDashboard streams the token over stdin, not argv/env', async ()
     calls,
     async exec(cmd, opts?) {
       calls.push(cmd)
+      const payload = decodeFishSafePayload(cmd)
 
       if (opts?.stdinData) {
         stdinCalls.push(opts.stdinData)
       }
 
-      if (/grep -q ssh-session-token-file/.test(cmd)) {
+      if (/grep -q ssh-session-token-file/.test(payload)) {
         return 'YES\n'
       }
 
-      if (/python3 -c/.test(cmd)) {
+      if (/python3 -c/.test(payload)) {
         return ''
       }
 
-      if (/setsid|nohup/.test(cmd)) {
+      if (/setsid|nohup/.test(payload)) {
         return '4242\n'
       }
 
-      if (/printf '%s\\n'/.test(cmd)) {
+      if (/printf '%s\\n'/.test(payload)) {
         return ''
       }
 
@@ -1115,20 +1143,21 @@ test('spawnRemoteDashboard upload uses exclusive-create and O_NOFOLLOW', async (
     calls,
     async exec(cmd, opts?) {
       calls.push(cmd)
+      const payload = decodeFishSafePayload(cmd)
 
-      if (/grep -q ssh-session-token-file/.test(cmd)) {
+      if (/grep -q ssh-session-token-file/.test(payload)) {
         return 'YES\n'
       }
 
-      if (/python3 -c/.test(cmd)) {
+      if (/python3 -c/.test(payload)) {
         return ''
       }
 
-      if (/setsid|nohup/.test(cmd)) {
+      if (/setsid|nohup/.test(payload)) {
         return '4242\n'
       }
 
-      if (/printf '%s\\n'/.test(cmd)) {
+      if (/printf '%s\\n'/.test(payload)) {
         return ''
       }
 
@@ -1142,7 +1171,7 @@ test('spawnRemoteDashboard upload uses exclusive-create and O_NOFOLLOW', async (
     token: 'tk',
     ownershipId: OWNERSHIP_ID
   })
-  const uploadCmd = calls.find(c => /python3 -c/.test(c))
+  const uploadCmd = calls.map(decodeFishSafePayload).find(c => /python3 -c/.test(c))
   assert.ok(uploadCmd, 'must use python3 -c for token upload')
   assert.match(uploadCmd, /O_EXCL/, 'upload must use O_EXCL to reject existing files')
   assert.match(uploadCmd, /O_NOFOLLOW/, 'upload must use O_NOFOLLOW to reject symlinks')

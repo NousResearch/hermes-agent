@@ -105,6 +105,43 @@ def _get_apptainer_cache_dir() -> Path:
 _sif_build_lock = threading.Lock()
 
 
+def _apptainer_exec_env() -> dict[str, str]:
+    """Build the env for ``apptainer exec`` child processes (#90298).
+
+    Apptainer/Singularity strips the entire inherited environment at the
+    container boundary when ``APPTAINER_CLEANENV`` is set (via the host
+    environment or the system ``apptainer.conf``) — every variable without
+    an ``APPTAINERENV_`` prefix is dropped, so ``terminal.env_passthrough``
+    entries silently never reach the container. Forward each allowlisted
+    entry under the documented ``APPTAINERENV_<NAME>`` prefix (the prefixed
+    value wins inside the container), resolving values through the shared
+    secret-scope resolver so profile isolation semantics match the local
+    backend. Only allowlisted names are forwarded: cleanenv's default-deny
+    isolation is preserved for everything else.
+    """
+    env = dict(os.environ)
+    try:
+        from tools.env_passthrough import (
+            get_all_passthrough,
+            resolve_passthrough_value,
+        )
+    except Exception as exc:
+        # Passthrough quietly does nothing on this install; name the reason
+        # so the silent no-op is diagnosable the first time the module
+        # layout shifts (review on #90298).
+        logger.debug("env_passthrough unavailable; Apptainer forwarding skipped: %s", exc)
+        return env
+    for name in get_all_passthrough():
+        if not name or "=" in name or name.startswith("APPTAINERENV_"):
+            continue
+        value = resolve_passthrough_value(name, os.environ.get(name))
+        if value is None:
+            continue
+        env[f"APPTAINERENV_{name}"] = value
+        env[name] = value
+    return env
+
+
 def _get_or_build_sif(image: str, executable: str = "apptainer") -> str:
     if image.endswith('.sif') and Path(image).exists():
         return image
@@ -246,7 +283,7 @@ class SingularityEnvironment(BaseEnvironment):
         else:
             cmd.extend(["bash", "-c", cmd_string])
 
-        return _popen_bash(cmd, stdin_data)
+        return _popen_bash(cmd, stdin_data, env=_apptainer_exec_env())
 
     def cleanup(self):
         """Stop the instance. If persistent, the overlay dir survives."""

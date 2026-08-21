@@ -9,6 +9,8 @@ description: >
   channels/DMs and the Hermes agent.  Pure stdlib — shells out to the
   buzz CLI binary (JSON in/out); no Python packages required.
 author: Nous Research
+provides_tools:
+  - buzz_channels
 # ``requires_env`` entries are surfaced in ``hermes config`` UI via the
 # platform-plugin env var injector in ``hermes_cli/config.py``.
 requires_env:

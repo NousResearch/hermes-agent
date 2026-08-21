@@ -119,6 +119,7 @@ CONFIGURABLE_TOOLSETS = [
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
+    ("buzz_admin",      "🐝 Buzz Channel Management",   "create and list channels with the active Buzz identity"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS/Windows/Linux)", "background desktop control via cua-driver"),
 ]
@@ -153,7 +154,7 @@ def gui_toolset_label(label: str) -> str:
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a"}
+_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "buzz_admin", "video", "video_gen", "x_search", "a2a"}
 
 
 # Config-only capabilities: they appear in `hermes tools` for provider/API-key
@@ -214,6 +215,7 @@ def _homeassistant_credentials_present() -> bool:
 # server admin, Slack workspace admin, etc.).  Keeps every other platform's
 # checklist from filling up with irrelevant toggles.
 _TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
+    "buzz_admin": {"buzz"},
     "discord": {"discord"},
     "discord_admin": {"discord"},
 }

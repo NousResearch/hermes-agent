@@ -107,6 +107,24 @@ By default the allow-list is empty, which means every community member who menti
 
 Cron jobs and notifications (`deliver=buzz`) are delivered to the **home channel** — `BUZZ_HOME_CHANNEL` if set, otherwise the first watched channel — and work even when cron runs outside the gateway process.
 
+## Let the agent create channels
+
+Buzz channel management is off by default. Enable it only for profiles that
+should be allowed to change workspace structure:
+
+```bash
+hermes tools enable --platform buzz buzz_admin
+```
+
+The `buzz_channels` tool can create a stream or forum channel and list channels
+visible to the active profile. New channels default to private unless the agent
+explicitly requests open visibility. The tool uses the same profile-scoped
+`BUZZ_PRIVATE_KEY`, relay URL, and `buzz` CLI path as the gateway adapter. It
+never puts the private key in command arguments or tool output.
+
+The initial tool does not update, archive, or delete channels. Those durable or
+destructive lifecycle operations remain operator actions.
+
 ## Run the gateway
 
 ```bash

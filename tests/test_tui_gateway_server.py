@@ -9271,7 +9271,7 @@ def test_session_compress_reports_aborted_summary_without_success(monkeypatch):
         assert result["removed"] == 0
         assert result["summary"]["aborted"] is True
         assert result["summary"]["headline"] == (
-            "Compression aborted: 6 messages preserved"
+            "Compression aborted: 6 messages preserved (you ran /compress)"
         )
         assert "no API key was found" in result["summary"]["note"]
         assert "Compressed:" not in result["summary"]["headline"]

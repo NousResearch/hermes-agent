@@ -1172,6 +1172,24 @@ def _normalize_command_for_detection(command: str) -> str:
     # first would eat the prefix the Hermes-home fold needs.
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
+    # Collapse redundant `/` runs and no-op `/./` segments inside path tokens.
+    # POSIX resolves `~//.hermes/config.yaml` and `~/./.ssh/authorized_keys` to
+    # the same files as their single-separator spellings, but the sensitive-path
+    # fragments (_SSH_SENSITIVE_PATH, _HERMES_CONFIG_PATH, ...) anchor on exactly
+    # one `/` between components, so the redundant spellings slip every rule —
+    # including the write gate on ~/.hermes/config.yaml, which IS the approval
+    # policy (approvals.mode, yolo, the permanent allowlist) and is re-read
+    # mtime-keyed, so a write takes effect mid-session.
+    #
+    # The absolute spellings already tolerate this because _home_prefix_fold_regex
+    # joins components with `[/\\]+`; this closes the same hole for the `~` and
+    # $HOME/$HERMES_HOME forms the fold above produces.
+    #
+    # Both substitutions require a preceding path character so URL schemes
+    # (`http://`), UNC roots (`\\server`) and arithmetic (`2 // 3`) are left
+    # alone. Runs first for `/./` so `~/././x` collapses fully.
+    command = re.sub(r'(?<=[\w~.\-])(?:/\.)+/', '/', command)
+    command = re.sub(r'(?<=[\w~.\-])//+', '/', command)
     # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
     command = re.sub(r'\\([^\n])', r'\1', command)
     # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.

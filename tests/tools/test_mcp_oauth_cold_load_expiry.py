@@ -106,6 +106,64 @@ class TestSetTokensAbsoluteExpiry:
         assert "expires_at" not in on_disk
 
 
+class TestGetTokensMalformedExpiresAt:
+    def test_malformed_expires_at_forces_refresh(
+        self, tmp_path, monkeypatch
+    ):
+        """#90704: a non-numeric expires_at makes the token's real age
+        unknowable — the whole token is treated as corrupt (get_tokens
+        returns None → refresh flow) rather than loaded with an unknown TTL
+        the SDK might read as "never expires" (review on #90704)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.mcp_oauth import HermesTokenStorage, _get_token_dir
+
+        token_dir = _get_token_dir()
+        token_dir.mkdir(parents=True, exist_ok=True)
+        (token_dir / "srv.json").write_text(
+            json.dumps(
+                {
+                    "access_token": "a",
+                    "token_type": "Bearer",
+                    "expires_at": "soon",
+                    "refresh_token": "r",
+                }
+            )
+        )
+
+        storage = HermesTokenStorage("srv")
+        # Corrupt-token semantics: never a TypeError out of get_tokens, and
+        # never a token loaded with an unknown age — None drives the refresh.
+        reloaded = asyncio.run(storage.get_tokens())
+        assert reloaded is None
+
+    def test_numeric_expires_at_still_reconstructs_ttl(
+        self, tmp_path, monkeypatch
+    ):
+        """The guard must not change the healthy path: a numeric absolute
+        expiry still reconstructs the remaining TTL."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.mcp_oauth import HermesTokenStorage, _get_token_dir
+
+        token_dir = _get_token_dir()
+        token_dir.mkdir(parents=True, exist_ok=True)
+        (token_dir / "srv.json").write_text(
+            json.dumps(
+                {
+                    "access_token": "a",
+                    "token_type": "Bearer",
+                    "expires_at": time.time() + 3600,
+                    "refresh_token": "r",
+                }
+            )
+        )
+
+        storage = HermesTokenStorage("srv")
+        reloaded = asyncio.run(storage.get_tokens())
+        assert reloaded is not None
+        assert reloaded.expires_in is not None
+        assert 3500 < reloaded.expires_in <= 3600
+
+
 class TestGetTokensReconstructsExpiresIn:
     def test_get_tokens_uses_expires_at_for_remaining_ttl(
         self, tmp_path, monkeypatch

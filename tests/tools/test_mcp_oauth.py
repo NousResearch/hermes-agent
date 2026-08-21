@@ -892,6 +892,38 @@ def test_resolve_redirect_uri(cfg, expected):
     assert _resolve_redirect_uri(cfg, 1234) == expected
 
 
+@pytest.mark.parametrize("bad_uri", [
+    "file:///tmp/x",
+    "ftp://example.com/callback",
+    "javascript:alert(1)",
+    "not-a-uri",
+])
+def test_resolve_redirect_uri_rejects_non_http_schemes(bad_uri):
+    """#90704: the configured redirect_uri flows into client metadata and the
+    authorize request — schemes other than http/https have no legitimate
+    OAuth use and must fail closed instead of being forwarded verbatim."""
+    from tools.mcp_oauth import _resolve_redirect_uri
+
+    with pytest.raises(ValueError, match="http or https"):
+        _resolve_redirect_uri({"redirect_uri": bad_uri}, 1234)
+
+
+def test_callback_error_page_escapes_reflected_markup():
+    """#90704: ?error=<script> must not round-trip into the loopback page."""
+    from tools.mcp_oauth import _render_callback_error_page
+
+    page = _render_callback_error_page("<script>alert(1)</script>").decode()
+    assert "<script>" not in page
+    assert "&lt;script&gt;" in page
+
+
+def test_callback_error_page_escapes_none_as_unknown():
+    from tools.mcp_oauth import _render_callback_error_page
+
+    page = _render_callback_error_page(None).decode()
+    assert "unknown" in page
+
+
 def test_build_oauth_auth_preserves_server_url_path():
     """server_url with path is forwarded to OAuthClientProvider unmodified.
 

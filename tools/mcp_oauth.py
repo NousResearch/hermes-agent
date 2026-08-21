@@ -44,6 +44,7 @@ Configuration in config.yaml::
 
 import asyncio
 import contextvars
+import html
 import json
 import logging
 import os
@@ -505,7 +506,19 @@ class HermesTokenStorage:
         # model_validate because it's not part of the SDK's OAuthToken schema.
         absolute_expiry = data.pop("expires_at", None)
         if absolute_expiry is not None:
-            data["expires_in"] = int(max(absolute_expiry - time.time(), 0))
+            try:
+                data["expires_in"] = int(max(absolute_expiry - time.time(), 0))
+            except (TypeError, ValueError):
+                # A malformed expires_at means the token's real age is
+                # unknowable. Treat the WHOLE token as corrupt and force the
+                # refresh flow — loading it with an unknown/absent TTL risks
+                # the SDK reading "no known expiry" and using a long-expired
+                # access token until an API 401 (review on #90704).
+                logger.warning(
+                    "Corrupt expires_at in tokens at %s -- forcing refresh",
+                    self._tokens_path(),
+                )
+                return None
         elif data.get("expires_in") is not None:
             try:
                 file_mtime = self._tokens_path().stat().st_mtime
@@ -743,6 +756,24 @@ def _authorization_code_result(code: str, state: "str | None", iss: "str | None"
     return AuthorizationCodeResult(code=code, state=state, iss=iss)
 
 
+def _render_callback_error_page(error: object) -> bytes:
+    """Render the loopback failure page for a reflected ``error`` param.
+
+    The value arrives from the authorization server's redirect (attacker
+    controllable query input), so it is html-escaped and the page ships a
+    deny-all CSP — reflected markup must never round-trip (#90704). The
+    text is truncated before escaping: authorization servers sometimes echo
+    huge query payloads, and a loopback tab rendering megabytes of escaped
+    text is pure noise (already sound security-wise).
+    """
+    body = (
+        "<html><body><h2>Authorization Failed</h2>"
+        f"<p>Error: {html.escape(str(error or 'unknown')[:200])}</p>"
+        "</body></html>"
+    )
+    return body.encode()
+
+
 def _make_callback_handler() -> tuple[type, dict]:
     """Create a per-flow callback HTTP handler class with its own result dict.
 
@@ -776,14 +807,17 @@ def _make_callback_handler() -> tuple[type, dict]:
             body = (
                 "<html><body><h2>Authorization Successful</h2>"
                 "<p>You can close this tab and return to Hermes.</p></body></html>"
-            ) if code else (
-                "<html><body><h2>Authorization Failed</h2>"
-                f"<p>Error: {error or 'unknown'}</p></body></html>"
-            )
+            ).encode() if code else _render_callback_error_page(error)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            # Defense in depth for the reflected param: no scripts are
+            # legitimate on this one-shot callback page.
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'none'; style-src 'none'; script-src 'none'",
+            )
             self.end_headers()
-            self.wfile.write(body.encode())
+            self.wfile.write(body)
 
         def log_message(self, fmt: str, *args: Any) -> None:
             logger.debug("OAuth callback: %s", fmt % args)
@@ -1616,6 +1650,15 @@ def _resolve_redirect_uri(cfg: dict, port: int) -> str:
     """
     configured = cfg.get("redirect_uri")
     if configured:
+        # Scheme allowlist (#90704): the redirect_uri flows into client
+        # metadata and the authorize request. ftp:/file:/javascript: style
+        # values have no legitimate OAuth use and must never be forwarded.
+        parsed = urlparse(str(configured))
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(
+                f"oauth.redirect_uri must use http or https, got scheme "
+                f"{parsed.scheme!r} in {configured!r}"
+            )
         return configured
     host = cfg.get("redirect_host") or "127.0.0.1"
     return f"http://{host}:{port}/callback"

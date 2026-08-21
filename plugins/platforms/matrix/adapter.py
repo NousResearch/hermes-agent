@@ -85,6 +85,13 @@ try:
         TrustState,
         UserID,
     )
+    from mautrix.errors import (  # type: ignore[assignment]
+        MatrixConnectionError,
+        MatrixStandardRequestError,
+        MForbidden,
+        MUnknownToken,
+        MUnauthorized,
+    )
 except ImportError:
     # Stubs so the module is importable without mautrix installed.
     # check_matrix_requirements() will return False and the adapter
@@ -119,6 +126,24 @@ except ImportError:
         TRUSTED_PRIVATE = "trusted_private_chat"
 
     RoomCreatePreset = _RoomCreatePresetStub  # type: ignore[misc,assignment]
+
+    # Stubs for the error classes used in the sync loop's permanent-failure
+    # detection.  Without mautrix installed the adapter is never instantiated
+    # in production, but tests may import the module, so these must exist.
+    class MatrixConnectionError(Exception):  # type: ignore[no-redef]
+        pass
+
+    class MatrixStandardRequestError(Exception):  # type: ignore[no-redef]
+        pass
+
+    class MForbidden(MatrixStandardRequestError):  # type: ignore[no-redef]
+        pass
+
+    class MUnknownToken(MatrixStandardRequestError):  # type: ignore[no-redef]
+        pass
+
+    class MUnauthorized(MatrixStandardRequestError):  # type: ignore[no-redef]
+        pass
 
     class _TrustStateStub:  # type: ignore[no-redef]
         UNVERIFIED = 0
@@ -3081,16 +3106,36 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if self._closing:
                     return
-                # Detect permanent auth/permission failures.
-                err_str = str(exc).lower()
-                if (
-                    "401" in err_str
-                    or "403" in err_str
-                    or "unauthorized" in err_str
-                    or "forbidden" in err_str
-                ):
+                # Detect permanent auth/permission failures by exception TYPE,
+                # not by substring-matching the whole error string.  The old
+                # check looked for "401"/"403"/"unauthorized"/"forbidden"
+                # anywhere in str(exc), but the sync URL embeds the `since`
+                # token, which can itself contain those substrings (e.g. a
+                # token like "...11340138189...").  A transient connection
+                # timeout whose URL happened to contain "401" was therefore
+                # misclassified as a permanent auth failure and killed the
+                # sync loop permanently.  mautrix raises distinct exception
+                # types for these cases, so branch on those instead.
+                if isinstance(exc, MatrixConnectionError):
+                    # Transient network/DNS failure: retry, never stop.
+                    logger.warning(
+                        "Matrix: sync connection error: %s — retrying in 5s", exc
+                    )
+                    await asyncio.sleep(5)
+                    continue
+                if isinstance(exc, (MForbidden, MUnknownToken, MUnauthorized)):
                     logger.error(
                         "Matrix: permanent auth error: %s — stopping sync", exc
+                    )
+                    return
+                # Fall back to the HTTP status code for any other
+                # MatrixStandardRequestError (e.g. M_NOT_JOINED, M_LIMIT_EXCEEDED).
+                status = getattr(exc, "http_status", None)
+                if isinstance(exc, MatrixStandardRequestError) and status in (401, 403):
+                    logger.error(
+                        "Matrix: permanent auth error (HTTP %s): %s — stopping sync",
+                        status,
+                        exc,
                     )
                     return
                 logger.warning("Matrix: sync error: %s — retrying in 5s", exc)

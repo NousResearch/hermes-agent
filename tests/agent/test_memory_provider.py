@@ -277,11 +277,18 @@ class TestMemoryManager:
         mgr.add_provider(builtin)
         mgr.add_provider(external)
 
+        # The stuck external provider is skipped; only the builtin item renders.
+        # Each provider's legacy string is now host-framed as one untrusted
+        # RecallItem (tier B, #84251), so assert on provenance-framed content.
+        builtin_frame = "[recall — provider=builtin; trust=untrusted]\nbuiltin memory"
+        external_frame = "[recall — provider=hy-memory; trust=untrusted]\nlate external memory"
+
         started = time.monotonic()
         result = mgr.prefetch_all("query")
         elapsed = time.monotonic() - started
 
-        assert result == "builtin memory"
+        assert result == builtin_frame
+        assert "late external memory" not in result
         assert elapsed < 0.5
         assert external.started.wait(timeout=1.0)
         assert external.prefetch_queries == ["query"]
@@ -290,7 +297,7 @@ class TestMemoryManager:
         result = mgr.prefetch_all("query 2")
         elapsed = time.monotonic() - started
 
-        assert result == "builtin memory"
+        assert result == builtin_frame
         assert elapsed < 0.2
         assert external.prefetch_queries == ["query"]
 
@@ -306,7 +313,7 @@ class TestMemoryManager:
 
         result = mgr.prefetch_all("query 3")
 
-        assert result == "builtin memory\n\nlate external memory"
+        assert result == f"{builtin_frame}\n\n{external_frame}"
         assert external.prefetch_queries == ["query", "query 3"]
         assert external.name not in mgr._external_prefetch_threads
 

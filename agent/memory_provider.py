@@ -36,8 +36,9 @@ from __future__ import annotations
 import logging
 import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,73 @@ class RecallStatus:
     provider_label: str
     count: int
     glyph: str = INDICATOR_GLYPH
+
+
+# ---------------------------------------------------------------------------
+# Structured recall-provenance envelope (tier B of #84251)
+# ---------------------------------------------------------------------------
+#
+# Recalled memory used to reach the host as an opaque, already-formatted
+# ``str`` (see ``prefetch`` below). Flattening to a string that early destroyed
+# every provenance signal — which provider produced a line, whether the host or
+# a provider authored a "trust" framing, where a fact came from — so the host
+# could not reason about, or defend against, recalled content. ``RecallItem``
+# is the structured envelope that carries that provenance from a provider up to
+# (and only up to) ``build_memory_context_block()``, which renders it back to a
+# single ``str``. Nothing downstream of that render changes type.
+
+
+class RecallTrust(Enum):
+    """Host-controlled trust level for a recalled item.
+
+    Only the HOST sets this. Provider-supplied text or metadata must never be
+    able to elevate an item's trust — the aggregation path in
+    ``MemoryManager`` re-stamps every item ``UNTRUSTED`` regardless of what the
+    provider returned. ``TRUSTED`` exists for a future host-authored
+    elevation mechanism; nothing in tier B ever sets it.
+    """
+
+    UNTRUSTED = "untrusted"
+    TRUSTED = "trusted"
+
+
+class RecallSensitivity(Enum):
+    """Optional, diagnostic sensitivity hint for a recalled item.
+
+    Sensitivity classification POLICY (what to do with a sensitive item) is
+    explicitly out of scope for tier B; this enum only gives providers a place
+    to record a hint. It carries no host behavior yet.
+    """
+
+    NORMAL = "normal"
+    SENSITIVE = "sensitive"
+
+
+@dataclass(frozen=True)
+class RecallItem:
+    """A single recalled memory plus its host-verifiable provenance.
+
+    ``text`` and ``provider`` are required. ``provider`` and ``trust`` are
+    HOST-STAMPED during aggregation — a provider cannot spoof either. The
+    remaining fields are optional provenance; ``metadata`` is diagnostic only
+    (never authoritative, never trusted).
+
+    Deliberately has NO ``__str__``: an implicit string conversion is exactly
+    the flattening that erased provenance in the first place, so callers must
+    render items explicitly (via ``build_memory_context_block``) and can never
+    accidentally interpolate a bare item into a prompt.
+    """
+
+    text: str
+    provider: str
+    trust: RecallTrust = RecallTrust.UNTRUSTED
+    source: Optional[str] = None
+    writer: Optional[str] = None
+    sensitivity: Optional[RecallSensitivity] = None
+    verified: bool = False
+    record_id: Optional[str] = None
+    occurred_at: Optional[str] = None
+    metadata: Mapping[str, str] = field(default_factory=dict)
 
 
 # Prompts that carry no semantic signal — trivial acknowledgements, greetings,
@@ -176,6 +244,28 @@ class MemoryProvider(ABC):
         per-session scoping can ignore it.
         """
         return ""
+
+    def prefetch_items(
+        self, query: str, *, session_id: str = ""
+    ) -> Optional[List["RecallItem"]]:
+        """Structured recall hook — return provenance-bearing ``RecallItem``s.
+
+        This is the tier-B (#84251) opt-in companion to :meth:`prefetch`.
+        Return a list of :class:`RecallItem` to hand the host structured recall
+        it can frame per-item (provider, trust, source). Returning an empty
+        list means "implemented, but nothing to recall this turn".
+
+        Return ``None`` (the default) to signal "not implemented" — the host
+        then falls back to the legacy string :meth:`prefetch` and wraps its
+        output as a single untrusted item. Providers overriding this should be
+        just as fast as ``prefetch`` (return cached results; do the real recall
+        on a background thread).
+
+        The host ALWAYS re-stamps ``provider`` and ``trust`` on every returned
+        item, so a provider cannot elevate its own trust or impersonate another
+        provider by populating those fields.
+        """
+        return None
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Queue a background recall for the NEXT turn.

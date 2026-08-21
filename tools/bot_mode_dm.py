@@ -45,6 +45,8 @@ import logging
 import os
 import re
 import shlex
+import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -290,9 +292,15 @@ def message_agent_tool(
                 f"No registered peer named '{peer_name}'.", roster=teammates, peers=peers
             )
         dm_target = f"{peer_name}/{peer_profile}" if peer_profile else peer_name
-        command = f"hermes peer dm {shlex.quote(dm_target)} < {shlex.quote(_write_dm_file(prefix + body))}"
         label = f"@{peer_profile or peer_name} on peer '{peer_name}'"
-        return _spawn_delivery(command, label, task_id=task_id, agent=agent)
+        return _start_delivery(
+            ["hermes", "peer", "dm", dm_target],
+            prefix + body,
+            label,
+            stdin_file=True,
+            task_id=task_id,
+            agent=agent,
+        )
 
     # ── local teammate ──
     if not _LOCAL_TARGET_RE.match(raw_target) and "@" not in raw_target:
@@ -326,12 +334,25 @@ def message_agent_tool(
             return relayed
         return _err("You can't message yourself. Pick a teammate from the roster.")
 
-    dm_file = _write_dm_file(prefix + body)
-    command = (
-        f"hermes -p {shlex.quote(resolved)} chat --in ~ -c \"Bot Chat\" "
-        f"--create-if-missing -Q --query-file {shlex.quote(dm_file)}"
+    return _start_delivery(
+        [
+            "hermes",
+            "-p",
+            resolved,
+            "chat",
+            "--in",
+            "~",
+            "-c",
+            "Bot Chat",
+            "--create-if-missing",
+            "-Q",
+        ],
+        prefix + body,
+        f"@{_handle(resolved)}",
+        stdin_file=False,
+        task_id=task_id,
+        agent=agent,
     )
-    return _spawn_delivery(command, f"@{_handle(resolved)}", task_id=task_id, agent=agent)
 
 
 def _try_relay_delivery(
@@ -395,13 +416,90 @@ def _try_relay_delivery(
 def _write_dm_file(content: str) -> str:
     """The message rides a temp file — never inline shell text."""
     fd, path = tempfile.mkstemp(prefix="hermes-dm-", suffix=".txt", text=True)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(content)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+    except BaseException:
+        # fdopen owns the descriptor once it succeeds, but if fdopen itself
+        # failed the raw descriptor is still ours. Closing twice is harmless.
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        _unlink_dm_file(path)
+        raise
     return path
 
 
-def _spawn_delivery(command: str, label: str, *, task_id: Optional[str], agent: Any) -> str:
-    """Run the delivery command tracked + background, notify on completion."""
+def _unlink_dm_file(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
+    """Run one DM transport and remove its plaintext file after consumption."""
+    try:
+        if stdin_file:
+            with open(dm_file, "r", encoding="utf-8") as stream:
+                return subprocess.run(argv, stdin=stream, check=False).returncode
+        return subprocess.run(
+            [*argv, "--query-file", dm_file],
+            check=False,
+        ).returncode
+    finally:
+        _unlink_dm_file(dm_file)
+
+
+def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool) -> str:
+    """Build an argv-safe command for the cleanup-owning background runner."""
+    runner_argv = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--run-delivery",
+        "stdin" if stdin_file else "query-file",
+        dm_file,
+        *argv,
+    ]
+    return shlex.join(runner_argv)
+
+
+def _start_delivery(
+    argv: list[str],
+    content: str,
+    label: str,
+    *,
+    stdin_file: bool,
+    task_id: Optional[str],
+    agent: Any,
+) -> str:
+    """Create a DM file and transfer its cleanup ownership to the runner."""
+    dm_file = _write_dm_file(content)
+    try:
+        command = _delivery_command(argv, dm_file, stdin_file=stdin_file)
+    except BaseException:
+        _unlink_dm_file(dm_file)
+        raise
+    return _spawn_delivery(
+        command,
+        label,
+        dm_file=dm_file,
+        task_id=task_id,
+        agent=agent,
+    )
+
+
+def _spawn_delivery(
+    command: str,
+    label: str,
+    *,
+    dm_file: str,
+    task_id: Optional[str],
+    agent: Any,
+) -> str:
+    """Launch the cleanup-owning runner and transfer file ownership on ack."""
+    transferred = False
     try:
         from tools.terminal_tool import terminal_tool
 
@@ -418,6 +516,11 @@ def _spawn_delivery(command: str, label: str, *, task_id: Optional[str], agent: 
         proc_id = parsed.get("session_id") or ""
         if parsed.get("error"):
             return _err(f"Delivery to {label} failed to start: {parsed['error']}")
+        if not proc_id:
+            return _err(f"Delivery to {label} failed to start: no process id returned")
+        # From this point the background runner owns the file and removes it
+        # only after the local query-file or peer stdin consumer has finished.
+        transferred = True
         return json.dumps(
             {
                 "status": "sent",
@@ -435,6 +538,26 @@ def _spawn_delivery(command: str, label: str, *, task_id: Optional[str], agent: 
     except Exception as exc:
         logger.error("message_agent delivery spawn failed: %s", exc, exc_info=True)
         return _err(f"Delivery to {label} could not be started: {exc}")
+    finally:
+        if not transferred:
+            _unlink_dm_file(dm_file)
+
+
+def _delivery_main(args: list[str]) -> int:
+    if len(args) < 3 or args[0] != "--run-delivery":
+        return 2
+    stdin_file = args[1] == "stdin"
+    if not stdin_file and args[1] != "query-file":
+        return 2
+    dm_file = args[2]
+    try:
+        return _run_delivery(args[3:], dm_file, stdin_file=stdin_file)
+    except Exception as exc:
+        print(
+            f"message_agent delivery failed: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
 
 
 # ── agent-context helpers (mirror system_prompt.py's resolution) ─────────────
@@ -464,3 +587,7 @@ def _session_title(agent: Any) -> str:
     except Exception:
         pass
     return ""
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised as a background process
+    raise SystemExit(_delivery_main(sys.argv[1:]))

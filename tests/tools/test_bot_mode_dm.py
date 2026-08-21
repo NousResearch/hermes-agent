@@ -6,6 +6,9 @@ deliver from anywhere else even if a schema leaks.
 """
 
 import json
+import shlex
+import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -206,6 +209,12 @@ def _capture_spawn(monkeypatch):
     return calls
 
 
+def _runner_parts(command):
+    parts = shlex.split(command)
+    marker = parts.index("--run-delivery")
+    return parts[marker + 1], parts[marker + 2], parts[marker + 3 :]
+
+
 def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     calls = _capture_spawn(monkeypatch)
     home = _managed_home(tmp_path, teammates=("researcher",))
@@ -228,14 +237,25 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     assert call["background"] is True
     assert call["notify_on_complete"] is True
     command = call["command"]
-    assert command.startswith("hermes -p researcher chat --in ~ -c \"Bot Chat\"")
-    assert "--query-file" in command
+    mode, dm_file, transport_argv = _runner_parts(command)
+    assert mode == "query-file"
+    assert transport_argv == [
+        "hermes",
+        "-p",
+        "researcher",
+        "chat",
+        "--in",
+        "~",
+        "-c",
+        "Bot Chat",
+        "--create-if-missing",
+        "-Q",
+    ]
     # message body rides the temp file, never the command line
     assert "final" not in command
     assert "$(" not in command
 
     # attribution prefix applied server-side; body verbatim inside the file
-    dm_file = command.rsplit(" ", 1)[-1].strip("'")
     content = Path(dm_file).read_text(encoding="utf-8")
     assert content.startswith("Message from 🤖 hermes (@hermes): ")
     assert '$(and this is not shell)' in content
@@ -251,15 +271,18 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     )
     assert result["status"] == "sent"
     assert "spark" in result["to"]
-    command = calls[0]["command"]
-    assert command.startswith("hermes peer dm spark/researcher < ")
+    mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
+    assert mode == "stdin"
+    assert transport_argv == ["hermes", "peer", "dm", "spark/researcher"]
 
     # bare peer name targets the peer's main agent
     result2 = json.loads(
         bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent)
     )
     assert result2["status"] == "sent"
-    assert calls[1]["command"].startswith("hermes peer dm spark < ")
+    mode, _dm_file, transport_argv = _runner_parts(calls[1]["command"])
+    assert mode == "stdin"
+    assert transport_argv == ["hermes", "peer", "dm", "spark"]
 
 
 def test_named_profile_sender_prefix(tmp_path, monkeypatch):
@@ -273,7 +296,7 @@ def test_named_profile_sender_prefix(tmp_path, monkeypatch):
         bot_mode_dm.message_agent_tool(target="researcher", message="hi", agent=agent)
     )
     assert result["status"] == "sent"
-    dm_file = calls[0]["command"].rsplit(" ", 1)[-1].strip("'")
+    _mode, dm_file, _transport_argv = _runner_parts(calls[0]["command"])
     assert Path(dm_file).read_text(encoding="utf-8").startswith(
         "Message from 🤖 coder (@coder): "
     )
@@ -294,3 +317,149 @@ def test_spawn_failure_reports_error(tmp_path, monkeypatch):
     )
     assert "error" in result
     assert "could not be started" in result["error"]
+
+
+# ── plaintext tempfile lifecycle ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("stdin_file", [False, True])
+def test_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, stdin_file):
+    dm_file = tmp_path / "message with spaces.txt"
+    dm_file.write_text("secret $(not shell)", encoding="utf-8")
+    observed = tmp_path / "observed.txt"
+    child = tmp_path / "child.py"
+    child.write_text(
+        textwrap.dedent(
+            """\
+            import pathlib
+            import sys
+
+            source = sys.stdin if sys.argv[1] == "-" else open(sys.argv[1], encoding="utf-8")
+            with source:
+                pathlib.Path(sys.argv[2]).write_text(source.read(), encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+    source_arg = "-" if stdin_file else str(dm_file)
+
+    returncode = bot_mode_dm._run_delivery(
+        [sys.executable, str(child), source_arg, str(observed)],
+        str(dm_file),
+        stdin_file=stdin_file,
+    )
+
+    assert returncode == 0
+    assert observed.read_text(encoding="utf-8") == "secret $(not shell)"
+    assert not dm_file.exists()
+
+
+def test_delivery_runner_unlinks_when_child_launch_raises(tmp_path, monkeypatch):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("child launch failed")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    with pytest.raises(RuntimeError, match="child launch failed"):
+        bot_mode_dm._run_delivery(["hermes"], str(dm_file), stdin_file=False)
+    assert not dm_file.exists()
+
+
+def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    child = tmp_path / "fail.py"
+    child.write_text(
+        "import pathlib, sys\n"
+        "assert pathlib.Path(sys.argv[-1]).read_text(encoding='utf-8') == 'secret'\n"
+        "raise SystemExit(7)\n",
+        encoding="utf-8",
+    )
+
+    returncode = bot_mode_dm._run_delivery(
+        [sys.executable, str(child)], str(dm_file), stdin_file=False
+    )
+
+    assert returncode == 7
+    assert not dm_file.exists()
+
+
+@pytest.mark.parametrize(
+    ("terminal_result", "raises"),
+    [
+        (json.dumps({"error": "rejected"}), False),
+        ("not json", False),
+        (None, True),
+    ],
+)
+def test_spawn_failure_unlinks_untransferred_file(
+    tmp_path, monkeypatch, terminal_result, raises
+):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+
+    import tools.terminal_tool as terminal_tool_module
+
+    def fail_spawn(command, **kwargs):
+        assert dm_file.exists()
+        if raises:
+            raise RuntimeError("spawn failed")
+        return terminal_result
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", fail_spawn)
+    result = json.loads(
+        bot_mode_dm._spawn_delivery(
+            "unused", "@researcher", dm_file=str(dm_file), task_id=None, agent=None
+        )
+    )
+
+    assert "error" in result
+    assert not dm_file.exists()
+
+
+def test_successful_spawn_transfers_cleanup_to_runner(tmp_path, monkeypatch):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+
+    import tools.terminal_tool as terminal_tool_module
+
+    def launched(command, **kwargs):
+        assert dm_file.exists()
+        return json.dumps({"session_id": "proc_test1234"})
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", launched)
+    result = json.loads(
+        bot_mode_dm._spawn_delivery(
+            "unused", "@researcher", dm_file=str(dm_file), task_id=None, agent=None
+        )
+    )
+
+    assert result["status"] == "sent"
+    assert dm_file.exists(), "the parent must not delete before the background runner reads"
+
+
+def test_write_dm_file_unlinks_partial_file_on_write_exception(tmp_path, monkeypatch):
+    dm_file = tmp_path / "partial.txt"
+    real_mkstemp = bot_mode_dm.tempfile.mkstemp
+
+    def fixed_mkstemp(**kwargs):
+        return real_mkstemp(dir=tmp_path, **kwargs)
+
+    class BrokenWriter:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def write(self, content):
+            raise OSError("disk full")
+
+    monkeypatch.setattr(bot_mode_dm.tempfile, "mkstemp", fixed_mkstemp)
+    monkeypatch.setattr(bot_mode_dm.os, "fdopen", lambda *args, **kwargs: BrokenWriter())
+
+    with pytest.raises(OSError, match="disk full"):
+        bot_mode_dm._write_dm_file("secret")
+    assert list(tmp_path.glob("hermes-dm-*.txt")) == []

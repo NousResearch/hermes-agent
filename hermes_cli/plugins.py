@@ -172,6 +172,18 @@ VALID_HOOKS: Set[str] = {
     # Streaming LLM output observer hooks. Fired asynchronously off the token
     # path by agent.plugin_stream_hooks; callbacks observe immutable normalized
     # text/lifecycle payloads and cannot transform the stream.
+    #
+    # All four share a base payload: turn_id, iteration, session_id, model,
+    # provider, surface, plus the delivery target — chat_id, chat_type and
+    # thread_id. The target is what tells a per-chat observer which of the
+    # gateway's many concurrent conversations a turn belongs to; session_id
+    # answers a different question (which stored history it extends). All three
+    # are "" for a CLI turn, which has no chat.
+    #
+    # on_stream_delta adds delta + kind ("text" or "reasoning"; reasoning is
+    # opt-in via plugins.stream_reasoning_deltas). on_stream_end adds
+    # final_text, finished and error. on_interim_message adds text and
+    # already_streamed.
     "on_stream_start",
     "on_stream_delta",
     "on_stream_end",

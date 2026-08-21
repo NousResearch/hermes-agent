@@ -6791,12 +6791,10 @@ class AIAgent:
 
             enqueue_plugin_stream_hook(
                 "on_interim_message",
-                turn_id=getattr(self, "_current_turn_id", "") or "",
-                iteration=int(getattr(self, "_api_call_count", 0) or 0),
-                session_id=self.session_id or "",
-                model=self.model or "",
-                provider=self.provider or "",
-                surface=self.platform or "cli",
+                # Same base payload as the stream lifecycle hooks, so a plugin
+                # routing a turn by chat does not find the identity present on
+                # its deltas and missing on its interim messages.
+                **self._stream_hook_base_payload(),
                 text=visible,
                 already_streamed=already_streamed,
             )
@@ -6898,6 +6896,16 @@ class AIAgent:
             "model": self.model or "",
             "provider": self.provider or "",
             "surface": self.platform or "cli",
+            # Where the turn is being delivered. session_id identifies the
+            # conversation's stored history, which is not the same question a
+            # per-chat observer has to answer: one gateway serves many chats at
+            # once, and a plugin mirroring tokens has to know which one this
+            # turn belongs to. Defensive getattr with "" defaults — these are
+            # only populated for gateway sessions, and a CLI turn simply has no
+            # chat.
+            "chat_id": str(getattr(self, "_chat_id", "") or ""),
+            "chat_type": str(getattr(self, "_chat_type", "") or ""),
+            "thread_id": str(getattr(self, "_thread_id", "") or ""),
         }
 
     def _emit_stream_start(self) -> None:

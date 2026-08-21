@@ -23,6 +23,7 @@ def _install_fake_google_auth(monkeypatch, *, adc_ok=True, adc_project="adc-proj
     gtr = types.ModuleType("google.auth.transport.requests")
     go = types.ModuleType("google.oauth2")
     gsa = types.ModuleType("google.oauth2.service_account")
+    goc = types.ModuleType("google.oauth2.credentials")
     gp = types.ModuleType("google")
 
     gtr.Request = type("Request", (), {})
@@ -48,12 +49,32 @@ def _install_fake_google_auth(monkeypatch, *, adc_ok=True, adc_project="adc-proj
     class _SA:
         @staticmethod
         def from_service_account_file(path, scopes=None):
+            # Simulate real behavior: service_account parsing fails on
+            # authorized_user JSON files (missing client_email, token_uri)
+            import json
+            with open(path) as f:
+                data = json.load(f)
+            if data.get("type") == "authorized_user":
+                raise ValueError(
+                    "Service account info was not in the expected format, "
+                    "missing fields client_email, token_uri."
+                )
             c = _Creds()
             c.project_id = sa_project
             return c
 
     gsa.Credentials = _SA
     go.service_account = gsa
+
+    class _UserCreds:
+        @staticmethod
+        def from_authorized_user_file(path, scopes=None):
+            c = _Creds()
+            return c
+
+    goc.Credentials = _UserCreds
+    go.credentials = goc
+
     gp.auth = ga
     gp.oauth2 = go
 
@@ -61,6 +82,7 @@ def _install_fake_google_auth(monkeypatch, *, adc_ok=True, adc_project="adc-proj
         ("google", gp), ("google.auth", ga), ("google.auth.transport", gt),
         ("google.auth.transport.requests", gtr), ("google.oauth2", go),
         ("google.oauth2.service_account", gsa),
+        ("google.oauth2.credentials", goc),
     ]:
         monkeypatch.setitem(sys.modules, name, mod)
     return gp
@@ -157,5 +179,27 @@ def test_adc_refuses_foreign_profile_google_application_credentials(
         secret_scope.set_multiplex_active(False)
 
 
+def test_authorized_user_adc_fallback(vertex_adapter, monkeypatch, tmp_path):
+    """When GOOGLE_APPLICATION_CREDENTIALS points to an ADC authorized_user
+    JSON file (not a service-account JSON), from_service_account_file() raises
+    ValueError. The fallback must load it via from_authorized_user_file()
+    instead of calling google.auth.default() (which would bypass secret scope)."""
+    adc_file = tmp_path / "adc.json"
+    adc_file.write_text(
+        '{"type": "authorized_user", "client_id": "test", '
+        '"client_secret": "secret", "refresh_token": "token"}'
+    )
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(adc_file))
 
+    # Patch _resolve_credentials_path to find our file
+    monkeypatch.setattr(
+        vertex_adapter, "_resolve_credentials_path",
+        lambda explicit: str(adc_file)
+    )
+
+    # from_service_account_file should fail; from_authorized_user_file should succeed
+    token, project = vertex_adapter.get_vertex_credentials()
+    assert token == "ya29.FAKE"
+    # project_id is None for authorized_user creds (no embedded project)
+    assert project is None
 

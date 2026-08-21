@@ -154,6 +154,37 @@ class TestCreateProfile:
 
 
 
+    def test_clone_strips_platform_bot_tokens(self, profile_env):
+        """Cloned .env must not contain platform bot tokens (#71143)."""
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        # Create source .env with both API keys and bot tokens
+        (default_home / ".env").write_text(
+            "OPENAI_API_KEY=sk-test123\n"
+            "TELEGRAM_BOT_TOKEN=123:ABC\n"
+            "DISCORD_BOT_TOKEN=MTIzNA\n"
+            "SLACK_BOT_TOKEN=xoxb-123\n"
+            "WEIXIN_TOKEN=ilink-token\n"
+            "FEISHU_APP_SECRET=feishu_secret\n"
+            "ANTHROPIC_API_KEY=sk-ant-test\n"
+            "MATRIX_ACCESS_TOKEN=syt_matrix\n",
+            encoding="utf-8",
+        )
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        cloned_env = (profile_dir / ".env").read_text(encoding="utf-8")
+        # API keys preserved
+        assert "OPENAI_API_KEY=sk-test123" in cloned_env
+        assert "ANTHROPIC_API_KEY=sk-ant-test" in cloned_env
+        # Bot tokens stripped
+        assert "TELEGRAM_BOT_TOKEN" not in cloned_env
+        assert "DISCORD_BOT_TOKEN" not in cloned_env
+        assert "SLACK_BOT_TOKEN" not in cloned_env
+        assert "WEIXIN_TOKEN" not in cloned_env
+        assert "FEISHU_APP_SECRET" not in cloned_env
+        assert "MATRIX_ACCESS_TOKEN" not in cloned_env
+
 
 # ===================================================================
 # TestNoSkillsOptOut

@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Dict, List, Optional, Tuple
 
+logger = logging.getLogger(__name__)
+
 from agent.skill_utils import is_excluded_skill_path
 
 logger = logging.getLogger(__name__)
@@ -75,6 +77,71 @@ _CLONE_SUBDIR_FILES = [
 # Runtime files stripped after --clone-all (shouldn't carry over).
 # Kept as a post-copy step rather than in the ignore filter because they
 # are created dynamically during normal use and may be absent at copy time.
+
+# Platform bot-token env vars that must NOT survive a profile clone.
+# If the cloned .env contains any of these, the new profile's gateway
+# would connect to the same bot account as the source, causing duplicate
+# message delivery and endless pairing challenges (#71143).
+_PLATFORM_BOT_TOKEN_KEYS: set[str] = {
+    "TELEGRAM_BOT_TOKEN",
+    "DISCORD_BOT_TOKEN",
+    "SLACK_BOT_TOKEN",
+    "SLACK_APP_TOKEN",
+    "MATRIX_ACCESS_TOKEN",
+    "MATRIX_HOMESERVER_URL",
+    "WEIXIN_TOKEN",
+    "WEIXIN_ACCOUNT_ID",
+    "WEIXIN_BASE_URL",
+    "FEISHU_APP_ID",
+    "FEISHU_APP_SECRET",
+    "FEISHU_ENCRYPT_KEY",
+    "FEISHU_VERIFICATION_TOKEN",
+    "SIGNAL_PHONE_NUMBER",
+    "WHATSAPP_PHONE_NUMBER_ID",
+    "WHATSAPP_ACCESS_TOKEN",
+    "WHATSAPP_BUSINESS_ACCOUNT_ID",
+    "QQ_APP_ID",
+    "QQ_APP_SECRET",
+}
+
+
+def _strip_platform_bot_tokens(env_path: Path) -> None:
+    """Remove platform bot-token lines from a cloned .env file.
+
+    After ``shutil.copy2`` copies the source profile's ``.env``, this
+    strips every line whose key matches :data:`_PLATFORM_BOT_TOKEN_KEYS`
+    so the new profile doesn't silently connect to the same bot accounts.
+    API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.) are preserved.
+    """
+    try:
+        text = env_path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return
+    kept: list[str] = []
+    stripped: list[str] = []
+    for line in text.splitlines(keepends=True):
+        stripped_line = line.strip()
+        if stripped_line.startswith("#") or "=" not in stripped_line:
+            kept.append(line)
+            continue
+        key = stripped_line.split("=", 1)[0].strip().upper()
+        if key in _PLATFORM_BOT_TOKEN_KEYS:
+            stripped.append(key)
+        else:
+            kept.append(line)
+    if stripped:
+        try:
+            env_path.write_text("".join(kept), encoding="utf-8")
+            os.chmod(str(env_path), 0o600)
+        except OSError:
+            pass
+        logger.info(
+            "Stripped %d platform bot token(s) from cloned .env: %s",
+            len(stripped),
+            ", ".join(stripped),
+        )
+
+
 _CLONE_ALL_STRIP: list[str] = [
     "gateway.pid",
     "gateway_state.json",
@@ -1174,6 +1241,13 @@ def create_profile(
                             os.chmod(str(dst), 0o600)
                         except OSError:
                             pass
+                        # Strip platform bot tokens from the cloned .env so
+                        # the new profile doesn't silently connect to the
+                        # same bot accounts as the source (#71143).  Without
+                        # this, two gateways serve the same Telegram / Discord
+                        # / Weixin bot and the clone's empty pairing store
+                        # produces endless "I don't recognize you" challenges.
+                        _strip_platform_bot_tokens(dst)
 
             # Clone installed skills from the source profile. The dashboard's
             # "clone from default" flow is expected to preserve both bundled

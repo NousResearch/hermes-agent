@@ -84,6 +84,21 @@ class TestKnownPrefixes:
         text = "fw-tooshort fw_tooshort fpk_tooshort"
         assert redact_sensitive_text(text) == text
 
+    def test_google_oauth_tokens(self):
+        samples = [
+            "ya29.a0AfH6SM" + "a" * 30,
+            "1//0eX" + "b" * 30,
+        ]
+
+        for token in samples:
+            result = redact_sensitive_text(f"auth error {token}")
+            assert token not in result
+            assert "..." in result
+
+    def test_short_google_oauth_like_text_unchanged(self):
+        text = "ya29.tooshort and a fraction 1//2 in prose"
+        assert redact_sensitive_text(text) == text
+
 
 
 

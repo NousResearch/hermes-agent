@@ -32,6 +32,14 @@ janedoe
 - Do NOT add new entries to `AUTHOR_MAP` in `scripts/release.py`. That dict
   is frozen legacy data; the release tooling merges it with this directory
   (directory entries win on duplicates).
+- **Case-colliding emails go in `emails.caseless.json`, not the directory.**
+  Two emails that differ only by letter case (e.g. `agent@Agents-Mac-mini.local`
+  and `agent@agents-Mac-mini.local`) are two distinct git identities but the
+  *same file* on case-insensitive filesystems (macOS APFS, Windows NTFS), so
+  the directory can never hold both. Such mappings live as `"email": "login"`
+  entries in `contributors/emails.caseless.json`; `scripts/add_contributor.py`
+  detects the collision and writes there automatically, and the CI job rejects
+  new case-only filename collisions in `emails/` (#88257).
 - GitHub noreply emails (`<id>+<login>@users.noreply.github.com` and
   `<login>@users.noreply.github.com`) auto-resolve — no file needed.
 - The `Contributor Attribution Check` CI job fails a PR whose commits carry

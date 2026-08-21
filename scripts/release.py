@@ -2077,6 +2077,11 @@ LEGACY_AUTHOR_MAP = {
 # Directory-based mappings: contributors/emails/<email> → login
 # ──────────────────────────────────────────────────────────────────────
 CONTRIBUTORS_EMAILS_DIR = REPO_ROOT / "contributors" / "emails"
+# Collision-free store for emails whose filename would differ from another
+# entry only by letter case (e.g. agent@Agents vs agent@agents): on
+# case-insensitive filesystems (macOS APFS, Windows NTFS) those two names
+# are the same file, so a directory entry can never be checked out cleanly.
+CONTRIBUTORS_CASELESS_SIDECAR = REPO_ROOT / "contributors" / "emails.caseless.json"
 
 
 def _load_contributor_dir(directory: "Path | None" = None) -> dict:
@@ -2104,8 +2109,38 @@ def _load_contributor_dir(directory: "Path | None" = None) -> dict:
     return mapping
 
 
-# Effective map: frozen legacy dict + directory entries (directory wins).
-AUTHOR_MAP = {**LEGACY_AUTHOR_MAP, **_load_contributor_dir()}
+def _load_caseless_sidecar(path: "Path | None" = None) -> dict:
+    """Load contributors/emails.caseless.json (email → login).
+
+    Holds mappings whose email case-collides with another entry and so
+    cannot live in the one-file-per-email directory. Malformed or missing
+    file yields an empty dict; a non-string value is skipped rather than
+    crashing the release tooling.
+    """
+    import json
+
+    path = path or CONTRIBUTORS_CASELESS_SIDECAR
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        email: str(login).lstrip("@")
+        for email, login in data.items()
+        if isinstance(email, str) and login
+    }
+
+
+# Effective map: frozen legacy dict + directory entries (directory wins)
+# + case-colliding sidecar entries (sidecar wins: deterministic for the
+# exact emails it exists for).
+AUTHOR_MAP = {
+    **LEGACY_AUTHOR_MAP,
+    **_load_contributor_dir(),
+    **_load_caseless_sidecar(),
+}
 
 
 def git(*args, cwd=None):

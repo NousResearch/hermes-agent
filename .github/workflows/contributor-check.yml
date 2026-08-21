@@ -27,6 +27,27 @@ jobs:
           # Get the merge base between this PR and main
           MERGE_BASE=$(git merge-base origin/main HEAD)
 
+          # Reject case-only filename collisions in contributors/emails/:
+          # two entries differing only by letter case are the same file on
+          # macOS/Windows checkouts, which dirties every working tree and
+          # blocks rebase/merge (see #88257). Colliding mappings belong in
+          # contributors/emails.caseless.json instead.
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+          d = Path("contributors/emails")
+          seen = {}
+          for p in sorted(d.iterdir()) if d.is_dir() else []:
+              key = p.name.casefold()
+              if key in seen:
+                  sys.exit(
+                      f"contributors/emails: case-only collision between "
+                      f"{seen[key]!r} and {p.name!r}; move one into "
+                      f"contributors/emails.caseless.json (#88257)"
+                  )
+              seen[key] = p.name
+          PY
+
           # Find any new author emails in this PR's commits
           NEW_EMAILS=$(git log ${MERGE_BASE}..HEAD --format='%ae' --no-merges | sort -u)
 
@@ -38,8 +59,9 @@ jobs:
           fi
 
           # An email is mapped if it has a file in contributors/emails/
-          # (one file per email — conflict-free) or an entry in the frozen
-          # legacy AUTHOR_MAP in scripts/release.py.
+          # (one file per email — conflict-free), an entry in the frozen
+          # legacy AUTHOR_MAP in scripts/release.py, or an entry in
+          # contributors/emails.caseless.json (case-colliding emails).
           MISSING=""
           while IFS= read -r email; do
             # Skip teknium and bot emails
@@ -54,6 +76,10 @@ jobs:
 
             if [ -f "contributors/emails/${email}" ]; then
               continue  # mapped via the contributors directory
+            fi
+
+            if grep -qF "\"${email}\"" contributors/emails.caseless.json 2>/dev/null; then
+              continue  # mapped via the case-collision sidecar
             fi
 
             if ! grep -qF "\"${email}\"" scripts/release.py 2>/dev/null; then

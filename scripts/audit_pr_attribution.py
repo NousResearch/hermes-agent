@@ -68,6 +68,16 @@ def is_mapped(email: str) -> bool:
         return True
     if (REPO_ROOT / "contributors" / "emails" / email).is_file():
         return True
+    # Case-colliding emails live in the sidecar, not the directory (#88257).
+    sidecar = REPO_ROOT / "contributors" / "emails.caseless.json"
+    try:
+        import json
+
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and email in data:
+            return True
+    except (OSError, ValueError):
+        pass
     release_py = REPO_ROOT / "scripts" / "release.py"
     try:
         if f'"{email}"' in release_py.read_text(encoding="utf-8", errors="replace"):

@@ -5659,7 +5659,10 @@ def _guard_supervised_gateway_conflict(force: bool = False) -> None:
         "  Pass --force to start a foreground gateway anyway (not recommended\n"
         "  while the service is running)."
     )
-    sys.exit(1)
+    # Exit 0, not 1 — the gateway is already supervised, which is the
+    # desired end-state. Exiting non-zero causes agents/scripts to retry
+    # indefinitely, creating respawn storms (issue #73203).
+    sys.exit(0)
 
 
 def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
@@ -5691,7 +5694,10 @@ def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
     print("  Use 'hermes gateway restart' to replace it,")
     print("  or 'hermes gateway stop' first.")
     print("  Or use 'hermes gateway run --replace' to auto-replace.")
-    sys.exit(1)
+    # Exit 0, not 1 — the gateway is already running, which is the
+    # desired end-state. Exiting non-zero causes agents/scripts to retry
+    # indefinitely, creating respawn storms (issue #73203).
+    sys.exit(0)
 
 
 def _guard_official_docker_root_gateway() -> None:

@@ -345,6 +345,17 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "matrix": {
+        "description": "Matrix room introspection and participation tools",
+        "tools": ["matrix"],
+        "includes": []
+    },
+    "matrix_admin": {
+        "description": "Matrix admin tools (redact, invite, room create) — gated by config",
+        "tools": ["matrix_admin"],
+        "includes": []
+    },
+
     "yuanbao": {
         "description": "Yuanbao platform tools - group info, member queries, DM, stickers",
         "tools": [
@@ -572,7 +583,10 @@ TOOLSETS = {
 
     "hermes-matrix": {
         "description": "Matrix bot toolset - decentralized encrypted messaging (full access)",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_CORE_TOOLS + [
+            "matrix",
+            "matrix_admin",
+        ],
         "includes": []
     },
 

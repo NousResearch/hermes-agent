@@ -915,3 +915,12 @@ For more information on securing your Hermes Agent deployment, see the [Security
 - **Auto-join**: The bot automatically accepts room invites and joins. It starts responding immediately after joining.
 - **Media support**: Hermes can send and receive images, audio, video, and file attachments. Media is uploaded to your homeserver using the Matrix content repository API.
 - **Native voice messages (MSC3245)**: The Matrix adapter automatically tags outgoing voice messages with the `org.matrix.msc3245.voice` flag. This means TTS responses and voice audio are rendered as **native voice bubbles** in Element and other clients that support MSC3245, rather than as generic audio file attachments. Incoming voice messages with the MSC3245 flag are also correctly identified and routed to speech-to-text transcription. No configuration is needed — this works automatically.
+
+## Matrix tools
+
+When the Matrix gateway is connected, Hermes can expose compact `matrix` / `matrix_admin` tools (Discord-style split).
+
+- Gates live in `config.yaml` under `matrix.tools` (preferred). Legacy `MATRIX_*` env bridges may still be read for compatibility; config wins when both are set.
+- Destructive/admin actions are off by default (`allow_redaction`, `allow_invites`, `allow_room_create`, `allow_public_rooms`).
+- Cross-room targeting is off by default (`allow_cross_room`).
+- Adapter work runs on the gateway event loop; multiplex secondary profiles fail closed if no Matrix adapter is bound.

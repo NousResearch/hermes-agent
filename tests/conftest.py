@@ -1334,15 +1334,20 @@ def _live_system_guard(request, monkeypatch):
             return True
         if pid < 0:
             return False
+        if sys.platform == "win32" and pid in (1, 4):
+            return False
         if pid == test_pid or pid in _initial_children:
             return True
         if _psutil is None:
             return False
         try:
             walker = _psutil.Process(pid)
-        except Exception:
-            # Stale PID — kill would be a no-op anyway, allow it.
+        except getattr(_psutil, "NoSuchProcess", Exception):
+            # Stale PID that already exited — kill is a no-op, allow it.
             return True
+        except Exception:
+            # AccessDenied or system process — definitely not our child.
+            return False
         try:
             for parent in walker.parents():
                 if parent.pid == test_pid:
@@ -1360,9 +1365,32 @@ def _live_system_guard(request, monkeypatch):
         # foreign parent chain) must not trip the guard. Flaked in CI on
         # test_entire_tree_is_sigkilled_not_just_parent.
         if int(sig) == 0:
-            return real_kill(pid, sig, *args, **kwargs)
+            try:
+                return real_kill(pid, sig, *args, **kwargs)
+            except OSError as exc:
+                if getattr(exc, "winerror", None) == 87 and sys.platform == "win32":
+                    return None
+                raise
         if _is_own_subtree(int(pid)):
-            return real_kill(pid, sig, *args, **kwargs)
+            try:
+                if sys.platform == "win32" and int(sig) != 0:
+                    import signal as _sig
+                    valid_win_signals = {
+                        getattr(_sig, "SIGTERM", 15),
+                        getattr(_sig, "CTRL_C_EVENT", 0),
+                        getattr(_sig, "CTRL_BREAK_EVENT", 1),
+                    }
+                    if int(sig) not in valid_win_signals:
+                        sig = getattr(_sig, "SIGTERM", 15)
+                return real_kill(pid, sig, *args, **kwargs)
+            except OSError as exc:
+                if getattr(exc, "winerror", None) == 87 and sys.platform == "win32":
+                    try:
+                        import signal as _sig
+                        return real_kill(pid, getattr(_sig, "SIGTERM", 15))
+                    except Exception:
+                        return None
+                raise
         raise RuntimeError(
             f"tests/conftest.py live-system guard: blocked os.kill("
             f"{pid}, {sig}) — PID is outside the test process subtree. "

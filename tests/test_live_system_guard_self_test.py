@@ -219,7 +219,7 @@ def test_os_popen_systemctl_blocked():
 
 
 def test_pty_spawn_systemctl_blocked():
-    import pty
+    pty = pytest.importorskip("pty")
     with pytest.raises(RuntimeError, match="live-system guard"):
         pty.spawn(["systemctl", "--user", "restart", "hermes-gateway"])
 

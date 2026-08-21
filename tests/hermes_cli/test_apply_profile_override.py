@@ -20,6 +20,7 @@ from types import SimpleNamespace
 def _run_apply_profile_override(
     tmp_path, monkeypatch, *, hermes_home: str | None, active_profile: str | None,
     argv: list[str] | None = None,
+    invocation_id: str | None = None,
 ):
     """Run _apply_profile_override in isolation.
 
@@ -40,6 +41,11 @@ def _run_apply_profile_override(
         monkeypatch.setenv("HERMES_HOME", hermes_home)
     else:
         monkeypatch.delenv("HERMES_HOME", raising=False)
+
+    if invocation_id is not None:
+        monkeypatch.setenv("INVOCATION_ID", invocation_id)
+    else:
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
 
     monkeypatch.setattr(sys, "argv", argv or ["hermes", "gateway", "start"])
 
@@ -155,6 +161,66 @@ class TestSupervisedChildIgnoresStickyProfile:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setenv("HERMES_S6_SUPERVISED_CHILD", "1")
+        monkeypatch.setattr(sys, "argv", ["hermes", "-p", "coder", "gateway", "run"])
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        result = os.environ.get("HERMES_HOME")
+        assert result is not None
+        assert result.endswith("coder")
+
+
+class TestSystemdSupervisedIgnoresStickyProfile:
+    """A bare-metal systemd default gateway must not follow active_profile.
+
+    systemd sets ``INVOCATION_ID`` for every unit it launches. A default
+    gateway installed as a systemd unit (the documented bare-metal setup)
+    runs with a fixed HERMES_HOME passed by the unit file; following the
+    sticky ``active_profile`` on every ``hermes profile use`` redirects the
+    default gateway into the named profile's HERMES_HOME, producing a
+    duplicate gateway (the default now serves the named profile) and a
+    crash-loop on the named service (stale ``gateway.lock`` held by the
+    redirected default). This is the same failure mode the s6 guard
+    prevents; ``INVOCATION_ID`` is the systemd equivalent of the s6 sentinel.
+    """
+
+    def test_systemd_default_gateway_ignores_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """A bare ``hermes gateway run`` under systemd (INVOCATION_ID set)
+        must NOT redirect to active_profile, even when it points at a
+        non-default profile."""
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="sam",
+            argv=["hermes", "gateway", "run"],
+            invocation_id="abc-123-def",  # simulate systemd
+        )
+
+        # HERMES_HOME must NOT point into profiles/sam — the default gateway
+        # stays on the root HERMES_HOME profile.
+        if result is not None:
+            assert not result.endswith("sam"), (
+                f"systemd default gateway was redirected to {result!r}; "
+                "it must ignore active_profile when INVOCATION_ID is set"
+            )
+
+    def test_systemd_named_profile_flag_still_wins(self, tmp_path, monkeypatch):
+        """A systemd named-profile service passes ``-p <name>`` explicitly;
+        that must still resolve (the INVOCATION_ID guard only skips the
+        sticky active_profile fallback, never an explicit flag)."""
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        (hermes_root / "active_profile").write_text("briefer")
+        (hermes_root / "profiles" / "briefer").mkdir(parents=True, exist_ok=True)
+        (hermes_root / "profiles" / "coder").mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("INVOCATION_ID", "abc-123-def")
         monkeypatch.setattr(sys, "argv", ["hermes", "-p", "coder", "gateway", "run"])
 
         from hermes_cli.main import _apply_profile_override

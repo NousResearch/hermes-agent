@@ -7,7 +7,7 @@ from gateway.browser_control_broker import (
     BrowserControlBroker,
     ControllerCancelled,
     ControllerScope,
-    TicketInvalid,
+    ControllerTicketInvalid,
 )
 
 
@@ -34,12 +34,12 @@ def test_registration_ticket_is_short_lived_single_use_and_identity_bound():
     assert len(ticket.value) >= 32
     assert ticket.expires_at == 130.0
     assert broker.consume_ticket(ticket.value) == scope
-    with pytest.raises(TicketInvalid, match="unknown|consumed"):
+    with pytest.raises(ControllerTicketInvalid, match="unknown|consumed"):
         broker.consume_ticket(ticket.value)
 
     expired = broker.mint_ticket(scope)
     now[0] = 131.0
-    with pytest.raises(TicketInvalid, match="expired"):
+    with pytest.raises(ControllerTicketInvalid, match="expired"):
         broker.consume_ticket(expired.value)
 
 

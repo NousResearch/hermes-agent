@@ -138,7 +138,7 @@ from gateway.browser_control_broker import (
     BROWSER_CONTROL_CAPABILITIES,
     BROWSER_CONTROL_DEVELOPER_CAPABILITIES,
     ControllerScope,
-    TicketInvalid,
+    ControllerTicketInvalid,
     browser_control_developer_mode,
     browser_control_protocol_supported,
     filter_browser_control_capabilities,
@@ -3591,7 +3591,7 @@ class APIServerAdapter(BasePlatformAdapter):
             raise web.HTTPUnauthorized()
         try:
             scope = self._browser_control_broker.consume_ticket(ticket_value)
-        except TicketInvalid:
+        except ControllerTicketInvalid:
             raise web.HTTPUnauthorized() from None
         except Exception:
             logger.exception("browser-control WS ticket consumption failed")

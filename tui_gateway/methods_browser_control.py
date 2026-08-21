@@ -41,6 +41,10 @@ from gateway.browser_control_broker import (
     browser_control_protocol_supported,
     filter_browser_control_capabilities,
 )
+from hermes_cli.dashboard_auth.ws_tickets import (
+    INTERNAL_PROVIDER as _INTERNAL_PROVIDER,
+    INTERNAL_USER_ID as _INTERNAL_USER_ID,
+)
 
 from .method_ctx import HandlerRegistry
 
@@ -56,12 +60,6 @@ _CLOUD_TRANSPORT_FAMILY = "cloud-ticket-ws"
 
 #: JSON-RPC error code for identity / session / flag denials (forbidden).
 _ERR_FORBIDDEN = 4403
-
-#: Identity recorded for server-spawned WS clients (see
-#: ``hermes_cli.dashboard_auth.ws_tickets``) — never allowed to act as a
-#: browser controller.
-_INTERNAL_USER_ID = "server-internal"
-_INTERNAL_PROVIDER = "server-internal"
 
 
 def _is_authenticated_identity(identity: object) -> bool:

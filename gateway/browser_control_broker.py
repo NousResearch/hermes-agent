@@ -22,7 +22,7 @@ Contract (each rule is exercised by tests/gateway/test_browser_control_broker.py
   (``secrets``-derived, >= 32 chars) plus an expiry derived from the injected
   clock; ``consume_ticket`` exchanges it exactly once for the
   :class:`ControllerScope` it was minted for, raising
-  :class:`TicketInvalid` for unknown, already-consumed, or expired values.
+  :class:`ControllerTicketInvalid` for unknown, already-consumed, or expired values.
   The ticket is the only cross-transport credential minted here; transports
   decide how to carry it.
 
@@ -207,7 +207,7 @@ class BrowserControlError(Exception):
     """Base class for broker contract failures."""
 
 
-class TicketInvalid(BrowserControlError):
+class ControllerTicketInvalid(BrowserControlError):
     """A registration ticket is unknown, already consumed, or expired."""
 
 
@@ -372,7 +372,7 @@ class BrowserControlBroker:
     def consume_ticket(self, value: str) -> ControllerScope:
         """Exchange a ticket for its scope, exactly once.
 
-        Raises :class:`TicketInvalid` for unknown, already-consumed, or
+        Raises :class:`ControllerTicketInvalid` for unknown, already-consumed, or
         expired tickets. The expiry check happens against the live clock at
         consume time, so a ticket that outlived its TTL can never be used.
         """
@@ -380,11 +380,11 @@ class BrowserControlBroker:
         with self._lock:
             record = self._tickets.get(value)
             if record is None:
-                raise TicketInvalid("unknown ticket")
+                raise ControllerTicketInvalid("unknown ticket")
             if record.consumed:
-                raise TicketInvalid("ticket already consumed")
+                raise ControllerTicketInvalid("ticket already consumed")
             if now > record.expires_at:
-                raise TicketInvalid("ticket expired")
+                raise ControllerTicketInvalid("ticket expired")
             record.consumed = True
             return record.scope
 

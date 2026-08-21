@@ -3164,6 +3164,17 @@ def _normalize_empty_agent_response(
     synthetic_empty = _is_synthetic_empty_terminal_response(agent_result, response)
     empty_sentinel_message = _empty_sentinel_user_message(agent_result, response)
 
+    # end_turn batches stay silent when the closer is the persistable
+    # ``(empty)`` placeholder (no ``_empty_terminal_sentinel``; that flag
+    # would rewind the tool batch on persist). Visible handoff text still
+    # passes through.
+    if agent_result.get("turn_exit_reason") == "end_turn_tool_batch" and (
+        synthetic_empty
+        or not (response or "").strip()
+        or (response or "").strip() == "(empty)"
+    ):
+        return ""
+
     if (response and not empty_sentinel_message
             and not (is_overflow and _looks_like_gateway_provider_error(response))):
         return response

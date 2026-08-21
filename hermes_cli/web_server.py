@@ -6095,6 +6095,22 @@ def _run_setup_command(
     )
 
 
+def _memory_provider_command_argv(command: str) -> List[str]:
+    """Split an external dependency command and resolve Windows npm shims.
+
+    On Windows, CreateProcess cannot execute a bare npm-generated command such
+    as ``brv`` when the actual executable is ``brv.cmd``. Resolve argv[0]
+    through PATH first so commands such as ``brv --version`` work correctly.
+    """
+    argv = shlex.split(command, posix=os.name != "nt")
+
+    if argv and os.name == "nt":
+        resolved = shutil.which(argv[0])
+        if resolved:
+            argv[0] = resolved
+
+    return argv
+
 def _memory_provider_dependencies_installed(setup: Dict[str, Any]) -> bool:
     pip_dependencies = _string_list(setup.get("pip_dependencies"))
     external_dependencies = setup.get("external_dependencies") or []
@@ -6112,7 +6128,7 @@ def _memory_provider_dependencies_installed(setup: Dict[str, Any]) -> bool:
             continue
         try:
             completed = _run_setup_command(
-                shlex.split(check_cmd),
+                _memory_provider_command_argv(check_cmd),
                 display=check_cmd,
                 timeout=20,
             )
@@ -6197,7 +6213,7 @@ def _install_memory_provider_external_dependencies(
         if check_cmd:
             try:
                 check = _run_setup_command(
-                    shlex.split(check_cmd),
+                    _memory_provider_command_argv(check_cmd),
                     display=check_cmd,
                     timeout=20,
                 )
@@ -6269,7 +6285,7 @@ def _install_memory_provider_external_dependencies(
             if check_cmd and install.returncode == 0:
                 try:
                     post_check = _run_setup_command(
-                        shlex.split(check_cmd),
+                        _memory_provider_command_argv(check_cmd),
                         display=check_cmd,
                         timeout=20,
                     )

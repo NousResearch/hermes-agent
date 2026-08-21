@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import shlex
+import shutil
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -193,8 +194,18 @@ def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
         install_cmd = dep.get("install", "")
         if check_cmd:
             try:
+                argv = shlex.split(check_cmd, posix=os.name != "nt")
+
+                if argv and os.name == "nt":
+                    resolved = shutil.which(argv[0])
+                    if resolved:
+                        argv[0] = resolved
+
                 subprocess.run(
-                    shlex.split(check_cmd), check=True, capture_output=True, timeout=5
+                    argv,
+                    check=True,
+                    capture_output=True,
+                    timeout=5,
                 )
             except Exception:
                 if install_cmd:

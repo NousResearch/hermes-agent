@@ -346,14 +346,20 @@ class Mem0MemoryProvider(MemoryProvider):
         #   2. Gateway-native id from kwargs (Telegram numeric id, Discord
         #      snowflake, etc.) — preserves per-platform isolation when no
         #      override is configured.
-        #   3. Hardcoded fallback _DEFAULT_USER_ID (CLI with no auth).
+        #   3. Stable gateway session key (API clients without a native user id).
+        #   4. Hardcoded fallback _DEFAULT_USER_ID (CLI with no auth).
         # The literal _DEFAULT_USER_ID string is treated as unset so users who
         # ran the setup wizard with the suggested default still get gateway-
         # native ids instead of being silently bucketed together.
         configured = self._config.get("user_id")
         if configured == _DEFAULT_USER_ID:
             configured = None
-        self._user_id = configured or kwargs.get("user_id") or _DEFAULT_USER_ID
+        self._user_id = (
+            configured
+            or kwargs.get("user_id")
+            or kwargs.get("gateway_session_key")
+            or _DEFAULT_USER_ID
+        )
         self._agent_id = self._config.get("agent_id", "hermes")
         # Persisted rerank preference (setup wizard / mem0.json). Used as the
         # DEFAULT for mem0_search when the model doesn't pass ``rerank``

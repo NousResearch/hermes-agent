@@ -289,7 +289,7 @@ class TestMem0ModeSwitch:
 
 
 class TestMem0UserIdResolution:
-    """user_id resolution: configured override > gateway-native id > placeholder.
+    """user_id resolution: configured > gateway user > stable gateway key > placeholder.
 
     Same human across CLI / Telegram / Discord / Slack / etc. should map to
     the same memory store when MEM0_USER_ID is set, and only fall back to the
@@ -307,7 +307,12 @@ class TestMem0UserIdResolution:
     def test_env_override_beats_gateway_native_id(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MEM0_USER_ID", "ryan@example.com")
         provider = self._provider(monkeypatch, tmp_path)
-        provider.initialize("test", user_id="123456789", platform="telegram")
+        provider.initialize(
+            "test",
+            user_id="123456789",
+            gateway_session_key="agent:main:telegram:dm:123456789",
+            platform="telegram",
+        )
         assert provider._user_id == "ryan@example.com"
 
     def test_file_override_beats_gateway_native_id(self, monkeypatch, tmp_path):
@@ -320,9 +325,31 @@ class TestMem0UserIdResolution:
     def test_unset_falls_back_to_gateway_native_id(self, monkeypatch, tmp_path):
         monkeypatch.delenv("MEM0_USER_ID", raising=False)
         provider = self._provider(monkeypatch, tmp_path)
-        provider.initialize("test", user_id="123456789", platform="telegram")
+        provider.initialize(
+            "test",
+            user_id="123456789",
+            gateway_session_key="agent:main:telegram:dm:123456789",
+            platform="telegram",
+        )
         assert provider._user_id == "123456789"
 
+    def test_api_session_key_scopes_user_when_gateway_user_id_is_absent(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.delenv("MEM0_USER_ID", raising=False)
+        provider = self._provider(monkeypatch, tmp_path)
+        provider.initialize(
+            "test",
+            gateway_session_key="agent:main:webui:dm:user-42",
+            platform="api_server",
+        )
+        assert provider._user_id == "agent:main:webui:dm:user-42"
+
+    def test_no_gateway_identity_keeps_cli_placeholder(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MEM0_USER_ID", raising=False)
+        provider = self._provider(monkeypatch, tmp_path)
+        provider.initialize("test", platform="cli")
+        assert provider._user_id == "hermes-user"
 
     def test_legacy_placeholder_in_config_does_not_override_kwargs(self, monkeypatch, tmp_path):
         # Setup wizard historically wrote {"user_id": "hermes-user"} as the
@@ -407,5 +434,3 @@ class TestSelfHostedConfig:
     def test_load_config_reads_mem0_host_env(self, monkeypatch):
         monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
         assert mem0_plugin._load_config()["host"] == "http://localhost:8888"
-
-

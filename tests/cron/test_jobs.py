@@ -69,6 +69,45 @@ class TestParseSchedule:
         assert run_at > now
         assert run_at < now + timedelta(minutes=31)
 
+    def test_reparses_own_once_at_display(self):
+        """Round-trip the serializer's timestamp display (#89560): jobs
+        list/edit surfaces re-submit the display as the new schedule, and a
+        one-shot edit used to die with ValueError (surfaced as HTTP 500)."""
+        display = parse_schedule("2030-01-15T14:00:00")["display"]
+        assert display.startswith("once at ")
+        result = parse_schedule(display)
+        assert result["kind"] == "once"
+        assert result["run_at"].startswith("2030-01-15T14:00")
+
+    def test_reparses_own_once_in_display(self):
+        """Round-trip the duration display the same way (#89560): 'once in
+        30m' must re-parse as a one-shot ~30 minutes out, not ValueError."""
+        display = parse_schedule("30m")["display"]
+        assert display == "once in 30m"
+        result = parse_schedule(display)
+        assert result["kind"] == "once"
+        run_at = datetime.fromisoformat(result["run_at"])
+        now = datetime.now().astimezone()
+        assert now < run_at < now + timedelta(minutes=31)
+
+    def test_once_in_display_survives_double_round_trip(self):
+        """Review follow-up on #89560: the duration branch echoes
+        ``original`` in its display. When ``original`` was captured BEFORE
+        the prefix strip, re-submitting "once in 30m" re-serialized as
+        "once in once in 30m" — which itself no longer round-trips. The
+        display must stay stable across repeated edit cycles."""
+        display = parse_schedule("30m")["display"]
+        second = parse_schedule(display)["display"]
+        third = parse_schedule(second)["display"]
+        assert second == display
+        assert third == display
+
+    def test_once_prefix_with_bad_payload_still_rejected(self):
+        """Prefix stripping must not swallow validation: garbage after the
+        prefix still raises the actionable Invalid schedule error."""
+        with pytest.raises(ValueError, match="Invalid schedule"):
+            parse_schedule("once at not a timestamp")
+
     def test_every_becomes_interval(self):
         result = parse_schedule("every 2h")
         assert result["kind"] == "interval"

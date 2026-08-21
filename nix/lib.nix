@@ -207,8 +207,18 @@ let
   # resolves each package from the lockfile's own `integrity` hashes, so the
   # lockfile is the single source of truth — no separate dependency hash to
   # keep in sync with it.
+  #
+  # package/packageLock come from repoRoot, not npmDepsSrc: left to itself
+  # importNpmLock would importJSON them out of the fileset copy, which only
+  # materialises when nix may write to the store.  Reading one during
+  # evaluation therefore breaks read-only eval (`nix flake check --no-build`,
+  # which downstream flakes run in CI) with "path '…-source' is not valid".
+  # repoRoot is the flake's own source, so it is always a valid store path.
+  # npmRoot stays npmDepsSrc, keeping the derivation's rebuild scope as is.
   npmDeps = importNpmLock.importNpmLock {
     npmRoot = npmDepsSrc;
+    package = rootPackageJson;
+    packageLock = builtins.fromJSON (builtins.readFile (repoRoot + "/package-lock.json"));
   };
 
   # Build a per-package npm source: workspace resolution files + the

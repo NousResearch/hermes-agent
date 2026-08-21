@@ -13,7 +13,12 @@
   dependency-groups ? [ "all" ],
 }:
 let
-  workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = pythonSrc; };
+  # Not pythonSrc: loadWorkspace reads pyproject.toml / uv.lock at evaluation
+  # time, and reading a cleanSourceWith copy breaks read-only eval (see the
+  # npmDeps comment in lib.nix).  hermes-agent's src is set back to pythonSrc
+  # below, so the venv's rebuild scope is unaffected.
+  workspaceRoot = ./..;
+  workspace = uv2nix.lib.workspace.loadWorkspace { inherit workspaceRoot; };
   hacks = callPackage pyproject-nix.build.hacks { };
 
   overlay = workspace.mkPyprojectOverlay {
@@ -114,21 +119,24 @@ let
           # Hermes derivation. This is deliberately a derivation environment
           # variable, not a devShell variable: ``nix develop -c uv build``
           # must remain blocked.
+          #
+          # src is the filtered pythonSrc, not the workspace root the
+          # workspace was loaded from, so .tsx/doc/skill edits still don't
+          # rebuild the venv.
           (final: prev: {
             hermes-agent = prev.hermes-agent.overrideAttrs (_old: {
+              src = pythonSrc;
               HERMES_NIX_BUILD = "1";
             });
           })
         ]
       );
 
-  # The editable venv points at the live checkout, so it uses an
-  # UNFILTERED workspace rooted at a real path — mkEditablePyprojectOverlay
-  # computes relative paths via lib.path.splitRoot, which rejects the
-  # filtered pythonSrc (a cleanSourceWith set, not a path).  Filtering
-  # buys nothing here anyway: the editable install reads from
-  # $HERMES_PYTHON_SRC_ROOT at runtime.
-  workspaceRoot = ./..;
+  # The editable venv points at the live checkout, so it reuses the same
+  # UNFILTERED workspaceRoot — mkEditablePyprojectOverlay computes relative
+  # paths via lib.path.splitRoot, which rejects the filtered pythonSrc (a
+  # cleanSourceWith set, not a path).  Filtering buys nothing here anyway:
+  # the editable install reads from $HERMES_PYTHON_SRC_ROOT at runtime.
   editableWorkspace = uv2nix.lib.workspace.loadWorkspace { inherit workspaceRoot; };
   editableOverlay = editableWorkspace.mkEditablePyprojectOverlay {
     root = "$HERMES_PYTHON_SRC_ROOT"; # resolved at shellHook time

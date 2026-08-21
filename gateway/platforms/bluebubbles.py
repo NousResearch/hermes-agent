@@ -114,14 +114,18 @@ _TAPBACK_REMOVED = {
     3003: "laugh", 3004: "emphasize", 3005: "question",
 }
 
-# Webhook event types that carry user messages
-_MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
+# Webhook event types that represent a new user prompt. ``updated-message``
+# repeats the same physical iMessage with a reduced payload on some
+# BlueBubbles builds; treating it as new can both duplicate the turn and fall
+# back from the group GUID to the sender's 1:1 address.
+_MESSAGE_EVENTS = {"new-message", "message"}
 
 # Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
+_SEEN_MESSAGE_GUIDS_SIZE = 2000  # Bounded idempotency window for webhook retries
 
 
 def _redact(text: str) -> str:
@@ -188,6 +192,44 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not str(self.webhook_path).startswith("/"):
             self.webhook_path = f"/{self.webhook_path}"
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
+        _working_ack = extra.get("working_ack_emoji")
+        if _working_ack is None:
+            _working_ack = os.getenv("BLUEBUBBLES_WORKING_ACK_EMOJI", "")
+        self.working_ack_emoji = str(_working_ack or "").strip()
+        _group_prompt = extra.get("group_prompt")
+        if _group_prompt is None:
+            _group_prompt = os.getenv("BLUEBUBBLES_GROUP_PROMPT", "")
+        self.group_prompt = str(_group_prompt or "").strip() or None
+        _allowed_chat_guids = extra.get("allowed_chat_guids")
+        if _allowed_chat_guids is None:
+            _allowed_chat_guids = os.getenv("BLUEBUBBLES_ALLOWED_CHAT_GUIDS", "")
+        self._allowed_chat_keys = {
+            self._chat_scope_key(chat_id)
+            for chat_id in self._parse_chat_allowlist(_allowed_chat_guids)
+            if self._chat_scope_key(chat_id)
+        }
+        _required_participants = extra.get("required_participants")
+        if _required_participants is None:
+            _required_participants = os.getenv(
+                "BLUEBUBBLES_REQUIRED_PARTICIPANTS",
+                "",
+            )
+        self._required_participant_keys = {
+            self._participant_key(participant)
+            for participant in self._parse_chat_allowlist(_required_participants)
+            if self._participant_key(participant)
+        }
+        # The exact-chat / required-participant gate runs synchronously at
+        # webhook intake before the event reaches GatewayRunner. When either
+        # restriction is configured, it is the authoritative access boundary:
+        # every sender in an admitted group may address Hermes, while chats
+        # outside the scope never reach gateway authorization or acknowledgements.
+        self._enforces_own_access_policy = bool(
+            self._allowed_chat_keys or self._required_participant_keys
+        )
+        _scope_policy = "allowlist" if self._enforces_own_access_policy else "open"
+        self._group_policy = _scope_policy
+        self._dm_policy = _scope_policy
         _require_mention = extra.get("require_mention")
         if _require_mention is None:
             _require_mention = os.getenv("BLUEBUBBLES_REQUIRE_MENTION")
@@ -202,6 +244,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._seen_message_guids: OrderedDict[str, None] = OrderedDict()
+
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """Whether configured chat/participant scope gates intake authoritatively."""
+        return self._enforces_own_access_policy
 
     # ------------------------------------------------------------------
     # API helpers
@@ -386,19 +434,29 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return False
 
         webhook_url = self._webhook_register_url
+        desired_events = ["new-message"]
 
         # Crash resilience — reuse an existing registration if present
         existing = await self._find_registered_webhooks(webhook_url)
-        if existing:
+        matching = [
+            wh for wh in existing
+            if sorted(wh.get("events") or []) == desired_events
+        ]
+        if matching and len(existing) == 1:
             logger.info(
                 "[bluebubbles] webhook already registered: %s",
                 self._webhook_register_url_for_log,
             )
             return True
+        if existing:
+            # Reconcile registrations created by older Hermes builds that also
+            # subscribed to ``updated-message``. Those events replayed one
+            # physical iMessage and could lose its group chat GUID.
+            await self._unregister_webhook()
 
         payload = {
             "url": webhook_url,
-            "events": ["new-message", "updated-message"],
+            "events": desired_events,
         }
 
         try:
@@ -768,6 +826,28 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Tapback reactions
     # ------------------------------------------------------------------
 
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Send an optional emoji-only acknowledgement to the originating chat."""
+        if (
+            not self.working_ack_emoji
+            or event.is_command()
+            or not event.source
+            or not event.source.chat_id
+        ):
+            return
+        result = await self.send(
+            event.source.chat_id,
+            self.working_ack_emoji,
+            reply_to=event.message_id,
+        )
+        if not result.success:
+            logger.debug(
+                "[%s] Working acknowledgement failed for %s: %s",
+                self.name,
+                event.source.chat_id,
+                result.error,
+            )
+
     # ------------------------------------------------------------------
     # Chat info
     # ------------------------------------------------------------------
@@ -892,6 +972,66 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             if isinstance(candidate, str) and candidate.strip():
                 return candidate.strip()
         return None
+
+    @staticmethod
+    def _parse_chat_allowlist(value: Any) -> List[str]:
+        """Parse a list or JSON/comma-separated string of allowed chat GUIDs."""
+        if isinstance(value, (list, tuple, set)):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if not value:
+            return []
+        text = str(value).strip()
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        return [item.strip() for item in re.split(r"[,\n]", text) if item.strip()]
+
+    @staticmethod
+    def _chat_scope_key(chat_id: Any) -> str:
+        """Normalize a chat GUID while ignoring BlueBubbles' service prefix."""
+        value = str(chat_id or "").strip().casefold()
+        if ";" in value:
+            return value.split(";", 1)[1]
+        return value
+
+    def _chat_is_allowed(self, chat_id: Any) -> bool:
+        if not self._allowed_chat_keys:
+            return True
+        return self._chat_scope_key(chat_id) in self._allowed_chat_keys
+
+    @staticmethod
+    def _participant_key(participant: Any) -> str:
+        value = str(participant or "").strip().casefold()
+        if "@" in value:
+            return value
+        digits = re.sub(r"\D", "", value)
+        return f"+{digits}" if digits else value
+
+    async def _chat_has_required_participant(self, chat_id: str) -> bool:
+        """Require at least one configured identity to be present in the chat."""
+        if not self._required_participant_keys:
+            return True
+
+        # A BlueBubbles direct-chat GUID embeds its sole remote participant.
+        parts = str(chat_id or "").split(";", 2)
+        if len(parts) == 3 and parts[1] == "-":
+            return self._participant_key(parts[2]) in self._required_participant_keys
+
+        # Group GUIDs do not encode membership. Query the local BlueBubbles
+        # server on each inbound message so a participant leaving takes effect
+        # immediately rather than being hidden by a stale authorization cache.
+        info = await self.get_chat_info(chat_id)
+        participants = info.get("participants") or []
+        participant_keys = {
+            self._participant_key(participant)
+            for participant in participants
+            if self._participant_key(participant)
+        }
+        return bool(participant_keys & self._required_participant_keys)
 
     async def _handle_webhook(self, request):
         from aiohttp import web
@@ -1026,8 +1166,41 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
 
-        session_chat_id = chat_guid or chat_identifier
+        # BlueBubbles can retry a webhook delivery. Keep one bounded in-memory
+        # idempotency window so one physical iMessage GUID starts at most one
+        # Hermes turn. Do this only after the payload is validated so a malformed
+        # event cannot poison a later valid delivery for the same GUID.
+        message_guid = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        if message_guid:
+            if message_guid in self._seen_message_guids:
+                self._seen_message_guids.move_to_end(message_guid)
+                logger.debug(
+                    "[bluebubbles] ignoring duplicate message webhook guid=%s",
+                    _redact(message_guid),
+                )
+                return web.Response(text="ok")
+            self._seen_message_guids[message_guid] = None
+            while len(self._seen_message_guids) > _SEEN_MESSAGE_GUIDS_SIZE:
+                self._seen_message_guids.popitem(last=False)
+
+        session_chat_id = str(chat_guid or chat_identifier)
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        if not self._chat_is_allowed(session_chat_id):
+            logger.info(
+                "[bluebubbles] ignoring message from unapproved chat=%s",
+                _redact(str(session_chat_id)),
+            )
+            return web.Response(text="ok")
+        if not await self._chat_has_required_participant(session_chat_id):
+            logger.info(
+                "[bluebubbles] ignoring message because required participant is absent chat=%s",
+                _redact(str(session_chat_id)),
+            )
+            return web.Response(text="ok")
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
                 logger.debug(
@@ -1035,6 +1208,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 )
                 return web.Response(text="ok")
             text = self._clean_mention_text(text)
+        sender_authorized = self._is_sender_authorized(
+            sender,
+            "group" if is_group else "dm",
+            session_chat_id,
+        )
+        if sender_authorized is False:
+            # on_processing_start runs before the gateway message handler. Gate
+            # here so an unauthorized sender receives neither the standalone
+            # working acknowledgement nor an agent turn.
+            logger.info(
+                "[bluebubbles] ignoring message from unauthorized sender=%s chat=%s",
+                _redact(str(sender)),
+                _redact(str(session_chat_id)),
+            )
+            return web.Response(text="ok")
         source = self.build_source(
             chat_id=session_chat_id,
             chat_name=chat_identifier or sender,
@@ -1048,17 +1236,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             message_type=msg_type,
             source=source,
             raw_message=payload,
-            message_id=self._value(
-                record.get("guid"),
-                record.get("messageGuid"),
-                record.get("id"),
-            ),
+            message_id=message_guid,
             reply_to_message_id=self._value(
                 record.get("threadOriginatorGuid"),
                 record.get("associatedMessageGuid"),
             ),
             media_urls=media_urls,
             media_types=media_types,
+            channel_prompt=self.group_prompt if is_group else None,
         )
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)

@@ -82,7 +82,9 @@ def test_group_messages_can_require_direct_trigger_via_config():
             quotedParticipant="15551230000@lid",
         )
     ) is True
-    assert adapter._should_process_message(_group_message("/status")) is True
+    # Unlike Telegram, a WhatsApp slash command has no bot-address suffix.
+    # It must not bypass a group's explicit mention requirement.
+    assert adapter._should_process_message(_group_message("/status")) is False
 
 
 def test_regex_mention_patterns_allow_custom_wake_words():
@@ -95,6 +97,17 @@ def test_regex_mention_patterns_allow_custom_wake_words():
     assert adapter._should_process_message(_group_message("chompy status")) is True
     assert adapter._should_process_message(_group_message("   chompy help")) is True
     assert adapter._should_process_message(_group_message("hey chompy")) is False
+
+
+def test_rico_fallback_pattern_requires_at_symbol():
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"(?<![\w@])@(?:rico|hermes)\b"],
+        group_policy="open",
+    )
+
+    assert adapter._should_process_message(_group_message("@Rico status")) is True
+    assert adapter._should_process_message(_group_message("Rico status")) is False
 
 
 def test_invalid_regex_patterns_are_ignored():

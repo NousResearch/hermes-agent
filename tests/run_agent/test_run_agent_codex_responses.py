@@ -1,3 +1,5 @@
+import base64
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -1273,6 +1275,19 @@ def _build_xai_oauth_agent(monkeypatch):
     return agent
 
 
+def _jwt_for_account(account_id: str) -> str:
+    """Build a structurally valid, unsigned test JWT with Codex account claims."""
+    payload = json.dumps(
+        {
+            "sub": f"user-{account_id}",
+            "https://api.openai.com/auth": {"chatgpt_account_id": account_id},
+        },
+        separators=(",", ":"),
+    ).encode()
+    encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    return f"header.{encoded}.signature"
+
+
 def test_build_api_kwargs_xai_oauth_sends_cache_key_via_extra_body(monkeypatch):
     """xai-oauth + codex_responses must route prompt caching via the
     ``prompt_cache_key`` body field on /v1/responses (xAI's documented
@@ -1422,6 +1437,77 @@ def test_try_refresh_codex_client_credentials_skips_xai_oauth_when_singleton_dif
 
 
 
+
+
+def test_try_refresh_codex_adopts_same_account_token_rotated_during_auxiliary_work(monkeypatch):
+    """A compression-side OAuth refresh must not strand the primary request."""
+    agent = _build_agent(monkeypatch)
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    stale = _jwt_for_account("same-account")
+    # Preserve the claims payload while changing the token string, just like a
+    # real OAuth rotation does. The account identity remains the same.
+    rotated = f"header.{stale.split('.')[1]}.rotated-signature"
+    agent.api_key = stale
+
+    refresh_calls = {"count": 0}
+    rebuilt = {"kwargs": None}
+
+    class _ExistingClient:
+        pass
+
+    class _RebuiltClient:
+        pass
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        if force_refresh:
+            refresh_calls["count"] += 1
+        return {
+            "api_key": rotated,
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        _fake_resolve,
+    )
+    monkeypatch.setattr(
+        run_agent,
+        "OpenAI",
+        lambda **kwargs: rebuilt.update(kwargs=kwargs) or _RebuiltClient(),
+    )
+    agent.client = _ExistingClient()
+    monkeypatch.setattr(agent, "_retire_shared_openai_client", lambda *_a, **_k: None)
+
+    assert agent._try_refresh_codex_client_credentials(force=True) is True
+    assert refresh_calls["count"] == 0
+    assert agent.api_key == rotated
+    assert rebuilt["kwargs"]["api_key"] == rotated
+
+
+def test_try_refresh_codex_rejects_rotated_token_from_different_account(monkeypatch):
+    """Codex 401 recovery must still refuse an actual cross-account swap."""
+    agent = _build_agent(monkeypatch)
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    agent.api_key = _jwt_for_account("active-account")
+    refresh_calls = {"count": 0}
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        if force_refresh:
+            refresh_calls["count"] += 1
+        return {
+            "api_key": _jwt_for_account("other-account"),
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        _fake_resolve,
+    )
+
+    assert agent._try_refresh_codex_client_credentials(force=True) is False
+    assert refresh_calls["count"] == 0
 
 
 def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):

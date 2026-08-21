@@ -413,8 +413,12 @@ class WhatsAppBehaviorMixin:
         if not self._whatsapp_require_mention():
             return True
         body = str(data.get("body") or "").strip()
+        # WhatsApp has no bot-command routing equivalent to Telegram's
+        # `/command@bot` syntax.  In a mention-gated group, a bare slash
+        # command is therefore not an address to this bot and must not bypass
+        # the explicit mention rule.
         if body.startswith("/"):
-            return True
+            return False
         if self._message_is_reply_to_bot(data):
             return True
         if self._message_mentions_bot(data):

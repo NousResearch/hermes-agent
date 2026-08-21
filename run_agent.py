@@ -5809,6 +5809,43 @@ class AIAgent:
         singleton_key = str(singleton_now.get("api_key") or "").strip()
         active_key = str(self.api_key or "").strip()
         if singleton_key and active_key and singleton_key != active_key:
+            # An auxiliary Codex call (notably context compression) can refresh
+            # the singleton while this primary agent is still holding the old
+            # access token. The strings differ, but this is safe to adopt when
+            # their embedded claims identify the same ChatGPT account. Without
+            # this branch the 401 recovery mistakes a normal in-flight rotation
+            # for an account swap and aborts the user turn.
+            same_codex_account = False
+            if self.provider == "openai-codex":
+                try:
+                    from hermes_cli.auth import _decode_jwt_claims
+
+                    def _chatgpt_account_id(token: str) -> str:
+                        claims = _decode_jwt_claims(token)
+                        auth_claim = claims.get("https://api.openai.com/auth")
+                        if isinstance(auth_claim, dict):
+                            return str(auth_claim.get("chatgpt_account_id") or "").strip()
+                        return ""
+
+                    active_account_id = _chatgpt_account_id(active_key)
+                    singleton_account_id = _chatgpt_account_id(singleton_key)
+                    same_codex_account = (
+                        bool(active_account_id)
+                        and active_account_id == singleton_account_id
+                    )
+                except Exception:
+                    same_codex_account = False
+            if same_codex_account:
+                refreshed_base_url = str(singleton_now.get("base_url") or "").strip().rstrip("/")
+                if not refreshed_base_url:
+                    return False
+                self.api_key = singleton_key
+                self.base_url = refreshed_base_url
+                self._client_kwargs["api_key"] = self.api_key
+                self._client_kwargs["base_url"] = self.base_url
+                return self._replace_primary_openai_client(
+                    reason="openai-codex_same_account_token_rotation"
+                )
             logger.debug(
                 "%s singleton tokens differ from the active api_key; "
                 "skipping singleton force-refresh to avoid silent account swap. "

@@ -134,6 +134,57 @@ Send and receive iMessages. Markdown is automatically stripped for clean plain-t
 ### Tapback Reactions
 Love, like, dislike, laugh, emphasize, and question reactions. Requires the BlueBubbles [Private API helper](https://docs.bluebubbles.app/helper-bundle/installation).
 
+### Emoji Working Acknowledgement
+
+For a lightweight acknowledgement that does not require the Private API helper, configure a standalone emoji response:
+
+```yaml
+platforms:
+  bluebubbles:
+    extra:
+      working_ack_emoji: "👀"
+```
+
+Hermes sends the emoji to the exact originating chat before processing, then sends the final answer normally. Set `BLUEBUBBLES_WORKING_ACK_EMOJI` instead if you prefer an environment variable. Leave both unset to disable it.
+
+### Conversation Allowlist
+
+Restrict Hermes to exact BlueBubbles conversations with `allowed_chat_guids`:
+
+```yaml
+platforms:
+  bluebubbles:
+    extra:
+      allowed_chat_guids:
+        - "any;+;approved-group-guid"
+        - "any;-;approved-direct-address"
+```
+
+When configured, messages from every unlisted group or direct chat are acknowledged by the webhook but ignored before the agent starts, so no working emoji or final answer is sent. Matching ignores only the BlueBubbles service prefix (`any` versus `iMessage`) while preserving the group/direct marker and conversation identifier. `BLUEBUBBLES_ALLOWED_CHAT_GUIDS` accepts a JSON or comma-separated list.
+
+To authorize conversations dynamically based on who is present, use `required_participants` instead:
+
+```yaml
+platforms:
+  bluebubbles:
+    extra:
+      required_participants:
+        - "+15550000001"
+```
+
+Hermes responds only when at least one configured identity is a current participant. Direct-chat identity is read from the chat GUID; group membership is fetched from the local BlueBubbles server on every inbound message so leaving a group takes effect immediately. When this scope is configured, the adapter treats it as the authoritative intake allowlist: any participant in an admitted group may address Hermes without separate per-sender pairing, while messages from chats outside the scope are dropped before acknowledgement. If `allowed_chat_guids` is also configured, both checks must pass. `BLUEBUBBLES_REQUIRED_PARTICIPANTS` accepts a JSON or comma-separated list.
+
+Add an ephemeral system prompt to every BlueBubbles group turn with `group_prompt`:
+
+```yaml
+platforms:
+  bluebubbles:
+    extra:
+      group_prompt: "Treat information learned outside this group as private."
+```
+
+The prompt is applied at API-call time only to group events; it is not persisted as a chat message and does not affect direct-message sessions. `BLUEBUBBLES_GROUP_PROMPT` provides the equivalent environment-variable override.
+
 ### Typing Indicators
 Shows "typing..." in the iMessage conversation while the agent is processing. Requires Private API.
 

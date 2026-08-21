@@ -5,6 +5,7 @@ import json
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import SendResult
 
 
 def _make_adapter(monkeypatch, **extra):
@@ -115,6 +116,310 @@ class TestBlueBubblesMentionGating:
 
 
 class TestBlueBubblesWebhookParsing:
+
+    @pytest.mark.asyncio
+    async def test_updated_message_is_acknowledged_without_starting_a_turn(self, monkeypatch):
+        """An iMessage update must not replay the original message as a new prompt."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": {
+                "guid": "msg-update-1",
+                "text": "same physical iMessage",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_duplicate_new_message_guid_is_processed_once(self, monkeypatch):
+        """Webhook retries for one physical iMessage must be idempotent."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-dedup-1",
+                "text": "one physical iMessage",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+                "isGroup": True,
+                "chats": [{"guid": "iMessage;+;family-group"}],
+            },
+        }
+
+        first = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        second = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        await asyncio.sleep(0)
+
+        assert first.status == 200
+        assert second.status == 200
+        assert len(handled) == 1
+
+    @pytest.mark.asyncio
+    async def test_chat_allowlist_blocks_unlisted_direct_message(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            send_read_receipts=False,
+            allowed_chat_guids=[
+                "any;+;approved-group",
+                "any;-;+15550000001",
+            ],
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(
+                {
+                    "type": "new-message",
+                    "data": {
+                        "guid": "blocked-dm-message",
+                        "text": "Hello from an unapproved DM",
+                        "handle": {"address": "+15550000002"},
+                        "isFromMe": False,
+                        "isGroup": False,
+                        "chats": [{"guid": "any;-;+15550000002"}],
+                    },
+                }
+            )
+        )
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_chat_allowlist_accepts_service_alias_for_approved_dm(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            send_read_receipts=False,
+            allowed_chat_guids=["any;-;+15550000001"],
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(
+                {
+                    "type": "new-message",
+                    "data": {
+                        "guid": "approved-dm-message",
+                        "text": "Hello from the approved DM",
+                        "handle": {"address": "+15550000001"},
+                        "isFromMe": False,
+                        "isGroup": False,
+                        "chats": [{"guid": "iMessage;-;+15550000001"}],
+                    },
+                }
+            )
+        )
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(handled) == 1
+        assert handled[0].source.chat_id == "iMessage;-;+15550000001"
+
+    @pytest.mark.asyncio
+    async def test_required_participant_allows_only_direct_chat_with_bryan(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            required_participants=["+15550000001"],
+        )
+
+        assert await adapter._chat_has_required_participant("any;-;+15550000001")
+        assert not await adapter._chat_has_required_participant("any;-;+15550000002")
+
+    @pytest.mark.asyncio
+    async def test_required_participant_checks_group_membership(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            required_participants=["+15550000001"],
+        )
+
+        async def fake_get_chat_info(chat_id):
+            if chat_id.endswith("bryan-present"):
+                return {"participants": ["+15550000001", "+15550000002"]}
+            return {"participants": ["+15550000002", "+15550000003"]}
+
+        monkeypatch.setattr(adapter, "get_chat_info", fake_get_chat_info)
+
+        assert await adapter._chat_has_required_participant("any;+;bryan-present")
+        assert not await adapter._chat_has_required_participant("any;+;bryan-absent")
+
+    def test_required_participant_policy_is_authoritative_at_gateway(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            required_participants=["+15550000001"],
+        )
+
+        assert adapter.enforces_own_access_policy is True
+        assert adapter._group_policy == "allowlist"
+        assert adapter._dm_policy == "allowlist"
+
+    def test_open_adapter_does_not_claim_authoritative_access_policy(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        assert adapter.enforces_own_access_policy is False
+        assert adapter._group_policy == "open"
+        assert adapter._dm_policy == "open"
+
+    @pytest.mark.asyncio
+    async def test_webhook_silently_blocks_chat_without_required_participant(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            send_read_receipts=False,
+            required_participants=["+15550000001"],
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        async def missing_required_participant(chat_id):
+            return False
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(
+            adapter,
+            "_chat_has_required_participant",
+            missing_required_participant,
+        )
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(
+                {
+                    "type": "new-message",
+                    "data": {
+                        "guid": "group-without-bryan-message",
+                        "text": "Rico, can you help?",
+                        "handle": {"address": "+15550000002"},
+                        "isFromMe": False,
+                        "isGroup": True,
+                        "chats": [{"guid": "any;+;group-without-bryan"}],
+                    },
+                }
+            )
+        )
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_webhook_blocks_before_ack_when_gateway_auth_rejects_sender(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            send_read_receipts=False,
+            working_ack_emoji="👀",
+            required_participants=["+15550000001"],
+        )
+        handled = []
+        sent = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        async def fake_send(*args, **kwargs):
+            sent.append((args, kwargs))
+            return SendResult(success=True)
+
+        async def has_required_participant(chat_id):
+            return True
+
+        adapter.set_authorization_check(lambda user_id, chat_type, chat_id: False)
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "send", fake_send)
+        monkeypatch.setattr(
+            adapter,
+            "_chat_has_required_participant",
+            has_required_participant,
+        )
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(
+                {
+                    "type": "new-message",
+                    "data": {
+                        "guid": "unauthorized-group-message",
+                        "text": "Rico, can you help?",
+                        "handle": {"address": "+15550000002"},
+                        "isFromMe": False,
+                        "isGroup": True,
+                        "chats": [{"guid": "any;+;group-with-bryan"}],
+                    },
+                }
+            )
+        )
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert handled == []
+        assert sent == []
+
+    @pytest.mark.asyncio
+    async def test_group_privacy_prompt_is_attached_only_to_group_turns(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            send_read_receipts=False,
+            group_prompt="Protect information learned outside this group.",
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        for payload in (
+            {
+                "type": "new-message",
+                "data": {
+                    "guid": "group-prompt-message",
+                    "text": "Rico, help us plan",
+                    "handle": {"address": "+15550000001"},
+                    "isFromMe": False,
+                    "isGroup": True,
+                    "chats": [{"guid": "any;+;group-chat"}],
+                },
+            },
+            {
+                "type": "new-message",
+                "data": {
+                    "guid": "dm-no-prompt-message",
+                    "text": "Help me privately",
+                    "handle": {"address": "+15550000001"},
+                    "isFromMe": False,
+                    "isGroup": False,
+                    "chats": [{"guid": "any;-;+15550000001"}],
+                },
+            },
+        ):
+            response = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+            assert response.status == 200
+        await asyncio.sleep(0)
+
+        assert len(handled) == 2
+        assert handled[0].channel_prompt == "Protect information learned outside this group."
+        assert handled[1].channel_prompt is None
 
     def test_webhook_can_fall_back_to_sender_when_chat_fields_missing(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
@@ -232,6 +537,62 @@ class TestBlueBubblesGuidResolution:
         monkeypatch.setattr(adapter, "_api_post", fake_api_post)
         await adapter._resolve_chat_guid("user@example.com")
         assert "user@example.com" not in adapter._guid_cache
+
+
+class TestBlueBubblesWorkingAcknowledgement:
+    @pytest.mark.asyncio
+    async def test_sends_configured_emoji_to_exact_originating_chat(self, monkeypatch):
+        from gateway.platforms.base import MessageEvent, SendResult
+        from gateway.session import SessionSource
+
+        adapter = _make_adapter(monkeypatch, working_ack_emoji="👀")
+        sent = []
+
+        async def fake_send(chat_id, content, reply_to=None, metadata=None):
+            sent.append((chat_id, content, reply_to))
+            return SendResult(success=True, message_id="ack-guid")
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+        event = MessageEvent(
+            text="Please handle this",
+            source=SessionSource(
+                platform=Platform.BLUEBUBBLES,
+                chat_id="iMessage;+;group-chat",
+                chat_type="group",
+            ),
+            message_id="trigger-guid",
+        )
+
+        await adapter.on_processing_start(event)
+
+        assert sent == [("iMessage;+;group-chat", "👀", "trigger-guid")]
+
+    @pytest.mark.asyncio
+    async def test_skips_working_emoji_when_not_configured(self, monkeypatch):
+        from gateway.platforms.base import MessageEvent, SendResult
+        from gateway.session import SessionSource
+
+        adapter = _make_adapter(monkeypatch)
+        sent = []
+
+        async def fake_send(chat_id, content, reply_to=None, metadata=None):
+            sent.append((chat_id, content, reply_to))
+            return SendResult(success=True, message_id="ack-guid")
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+        event = MessageEvent(
+            text="Please handle this",
+            source=SessionSource(
+                platform=Platform.BLUEBUBBLES,
+                chat_id="iMessage;+;group-chat",
+                chat_type="group",
+            ),
+            message_id="trigger-guid",
+        )
+
+        await adapter.on_processing_start(event)
+
+        assert sent == []
 
 
 class TestBlueBubblesAttachmentDownload:
@@ -374,6 +735,29 @@ class TestBlueBubblesWebhookRegistration:
         )
         assert ok is True
 
+    def test_register_subscribes_only_to_new_messages(self, monkeypatch):
+        """Message updates are metadata changes, not new user prompts."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": []},
+            post_response={"status": 200, "data": {"id": 42}},
+        )
+        posted = []
+
+        async def tracking_post(path, payload):
+            posted.append((path, payload))
+            return {"status": 200, "data": {"id": 42}}
+
+        adapter._api_post = tracking_post
+        ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+
+        assert ok is True
+        assert posted == [("/api/v1/webhook", {
+            "url": adapter._webhook_register_url,
+            "events": ["new-message"],
+        })]
+
 
     def test_register_reuses_existing(self, monkeypatch):
         """Crash resilience — existing registration is reused, no POST needed."""
@@ -400,6 +784,41 @@ class TestBlueBubblesWebhookRegistration:
         )
         assert ok is True
         assert not post_called, "Should reuse existing, not POST again"
+
+    def test_register_replaces_legacy_updated_message_subscription(self, monkeypatch):
+        """Old new+updated registrations are removed before creating the quiet one."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_register_url
+        deleted = []
+        posted = []
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 7, "url": url, "events": ["new-message", "updated-message"]},
+            ]},
+        )
+
+        async def mock_delete(*args, **kwargs):
+            deleted.append(args[0])
+            class R:
+                def raise_for_status(self):
+                    pass
+            return R()
+
+        async def tracking_post(path, payload):
+            posted.append((path, payload))
+            return {"status": 200, "data": {"id": 8}}
+
+        adapter.client.delete = mock_delete
+        adapter._api_post = tracking_post
+        ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+
+        assert ok is True
+        assert len(deleted) == 1
+        assert posted == [("/api/v1/webhook", {
+            "url": url,
+            "events": ["new-message"],
+        })]
 
 
     # -- _unregister_webhook --

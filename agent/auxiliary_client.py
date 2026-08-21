@@ -1042,7 +1042,7 @@ _OR_HEADERS_BASE = {
 _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
-def _apply_user_default_headers(headers: dict | None) -> dict | None:
+def _apply_user_default_headers(headers: dict | None, base_url: str | None = None) -> dict | None:
     """Merge user-configured ``model.default_headers`` onto resolved headers.
 
     User values take precedence over provider/SDK defaults, mirroring the main
@@ -1052,6 +1052,10 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
     ``X-Stainless-*``) override them for auxiliary calls too — otherwise the
     main turn would succeed but title/compression/vision calls to the same
     endpoint would still fail. (#40033)
+
+    When *base_url* is given, per-provider ``custom_providers[].extra_headers``
+    matching that route are merged on top (most specific wins), mirroring the
+    main client's ``apply_custom_provider_extra_headers_to_client_kwargs``.
 
     Returns the merged dict, or the original ``headers`` (possibly ``None``)
     when nothing is configured. No allocation when there are no overrides.
@@ -1073,13 +1077,45 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
             user_headers = merged_user
     except Exception:
         return headers
-    if not isinstance(user_headers, dict) or not user_headers:
+
+    # Per-provider extra_headers lookup is kept outside the user_headers
+    # try/except so its own failures can't cause us to discard user_headers.
+    # The block below has its own try/except for defence-in-depth.
+    provider_headers: dict = {}
+    if base_url:
+        try:
+            from hermes_cli.config import get_custom_provider_extra_headers
+            provider_headers = get_custom_provider_extra_headers(base_url, config=_cfg)
+        except Exception as exc:
+            # Never let a lookup failure break auxiliary client
+            # construction or discard the user_headers merge above, but
+            # leave a breadcrumb so operators can tell why their
+            # custom_providers[].extra_headers didn't apply. Neither
+            # header values nor the base_url are logged — both can be
+            # sensitive (credentials, internal topology).
+            logger.warning(
+                "aux headers: custom-provider extra_headers lookup failed: %s",
+                type(exc).__name__,
+            )
+            provider_headers = {}
+        if not isinstance(provider_headers, dict):
+            provider_headers = {}
+
+    if (not isinstance(user_headers, dict) or not user_headers) and not provider_headers:
         return headers
     merged = dict(headers or {})
-    for key, value in user_headers.items():
+    if isinstance(user_headers, dict):
+        for key, value in user_headers.items():
+            if value is None:
+                continue
+            merged[str(key)] = str(value)
+    # Per-provider extra_headers are the most specific level — applied last.
+    for key, value in provider_headers.items():
         if value is None:
             continue
         merged[str(key)] = str(value)
+    if not merged:
+        return headers
     return merged or headers
 
 
@@ -2769,7 +2805,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                         extra["default_headers"] = dict(_ph_aux.default_headers)
                 except Exception:
                     pass
-            _merged_aux = _apply_user_default_headers(extra.get("default_headers"))
+            _merged_aux = _apply_user_default_headers(extra.get("default_headers"), base_url=base_url)
             if _merged_aux:
                 extra["default_headers"] = _merged_aux
             _client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
@@ -2809,7 +2845,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                     extra["default_headers"] = dict(_ph_aux2.default_headers)
             except Exception:
                 pass
-        _merged_aux2 = _apply_user_default_headers(extra.get("default_headers"))
+        _merged_aux2 = _apply_user_default_headers(extra.get("default_headers"), base_url=base_url)
         if _merged_aux2:
             extra["default_headers"] = _merged_aux2
         _client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
@@ -3671,7 +3707,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     # headers (User-Agent: OpenAI/Python ..., X-Stainless-*) on this custom
     # endpoint's auxiliary calls too — matching the main agent client so the
     # whole session reaches a gateway/WAF that rejects the SDK fingerprint. (#40033)
-    _custom_headers = _apply_user_default_headers(None)
+    _custom_headers = _apply_user_default_headers(None, base_url=_clean_base)
     if _custom_headers:
         _extra["default_headers"] = _custom_headers
     if custom_mode == "codex_responses":
@@ -6186,7 +6222,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
                     async_kwargs["default_headers"] = dict(_ph_async.default_headers)
         except Exception:
             pass
-    _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
+    _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"), base_url=sync_base_url)
     if _merged_async:
         async_kwargs["default_headers"] = _merged_async
     async_kwargs = {
@@ -6575,7 +6611,7 @@ def resolve_provider_client(
                         extra["default_headers"] = dict(_ph_custom.default_headers)
                 except Exception:
                     pass
-            _merged_custom = _apply_user_default_headers(extra.get("default_headers"))
+            _merged_custom = _apply_user_default_headers(extra.get("default_headers"), base_url=_clean_base)
             if _merged_custom:
                 extra["default_headers"] = _merged_custom
             client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
@@ -6665,7 +6701,7 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
-                _headers2 = _apply_user_default_headers(_extra2.get("default_headers"))
+                _headers2 = _apply_user_default_headers(_extra2.get("default_headers"), base_url=_clean_base2)
                 if _headers2:
                     _extra2["default_headers"] = _headers2
                 logger.debug(
@@ -6690,7 +6726,7 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
-                        _fb_headers = _apply_user_default_headers(_fb_extra.get("default_headers"))
+                        _fb_headers = _apply_user_default_headers(_fb_extra.get("default_headers"), base_url=_fb_clean)
                         if _fb_headers:
                             _fb_extra["default_headers"] = _fb_headers
                         client = _create_openai_client(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
@@ -6877,7 +6913,7 @@ def resolve_provider_client(
                     headers.update(_ph_main.default_headers)
             except Exception:
                 pass
-        _merged_main = _apply_user_default_headers(headers)
+        _merged_main = _apply_user_default_headers(headers, base_url=base_url)
         if _merged_main:
             headers = _merged_main
         client = _create_openai_client(api_key=api_key, base_url=base_url,

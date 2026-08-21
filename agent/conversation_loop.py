@@ -8098,13 +8098,24 @@ def run_conversation(
                 try:
                     from agent.verification_stop import (
                         build_verify_on_stop_nudge,
+                        qualify_unverified_claim,
                         verify_on_stop_enabled,
                     )
 
                     if verify_on_stop_enabled():
+                        _changed_paths = getattr(agent, "_turn_file_mutation_paths", set())
+                        _qualified = qualify_unverified_claim(
+                            final_response or "",
+                            session_id=getattr(agent, "session_id", None),
+                            changed_paths=_changed_paths,
+                        )
+                        if _qualified != (final_response or "") and isinstance(final_response, str):
+                            final_response = _qualified
+                            if isinstance(final_msg.get("content"), str):
+                                final_msg["content"] = _qualified
                         _verify_nudge = build_verify_on_stop_nudge(
                             session_id=getattr(agent, "session_id", None),
-                            changed_paths=getattr(agent, "_turn_file_mutation_paths", set()),
+                            changed_paths=_changed_paths,
                             attempts=getattr(agent, "_verification_stop_nudges", 0),
                         )
                     else:

@@ -528,6 +528,25 @@ def finalize_turn(
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 
+        # Verification-claim gate (P0 of the verify_on_stop extension):
+        # if the model claims tests/checks passed after editing code and
+        # the ledger is not passed, append a footer. Idempotent with the
+        # same helper used on the interim candidate in conversation_loop.
+        try:
+            from agent.verification_stop import (
+                qualify_unverified_claim,
+                verify_on_stop_enabled,
+            )
+
+            if verify_on_stop_enabled():
+                final_response = qualify_unverified_claim(
+                    final_response,
+                    session_id=getattr(agent, "session_id", None),
+                    changed_paths=getattr(agent, "_turn_file_mutation_paths", set()),
+                )
+        except Exception as _claim_err:
+            logger.debug("verification claim footer failed: %s", _claim_err)
+
     # Turn-completion explainer.
     # When a turn ends abnormally after substantive work — empty content
     # after retries, a partial/truncated stream, a still-pending tool

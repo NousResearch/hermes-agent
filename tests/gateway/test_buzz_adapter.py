@@ -24,6 +24,7 @@ validate_config = _buzz_mod.validate_config
 register = _buzz_mod.register
 _env_enablement = _buzz_mod._env_enablement
 _standalone_send = _buzz_mod._standalone_send
+_thread_root = _buzz_mod._thread_root
 
 # Real key pair (Chip's public identity — public information, not a secret)
 SELF_PUBKEY = "9fd5c7ba6d3ef224da78f541e0fcb9c50f72cc63edb19aae76ac6a0474dfa860"
@@ -538,3 +539,76 @@ class TestStandaloneSend:
         assert all("nsec1x" not in str(a) for a in captured["args"])
 
 
+
+
+ROOT_EVT = "a" * 64
+MID_EVT = "b" * 64
+OTHER_EVT = "c" * 64
+
+
+class TestThreadRoot:
+    """Replies must land in the EXISTING thread instead of opening a new one.
+
+    Before this, inbound events were dispatched with no thread context, so every
+    reply went out as a top-level post and a threaded client rendered each answer
+    as a brand new thread — one per turn, without limit.
+    """
+
+    def test_top_level_post_has_no_thread(self):
+        # Real relay shape for a plain channel message: h + auth tags only.
+        event = {"tags": [["h", CHANNEL], ["auth", SELF_PUBKEY, "", "sig"]]}
+        assert _thread_root(event) is None
+
+    def test_single_e_tag_is_the_root(self):
+        assert _thread_root({"tags": [["e", ROOT_EVT]]}) == ROOT_EVT
+
+    def test_nested_reply_returns_root_not_immediate_parent(self):
+        # Positional NIP-10: first e-tag is the root, last is the parent.
+        # Returning the parent would nest a new sub-thread on every turn.
+        event = {"tags": [["e", ROOT_EVT], ["e", MID_EVT]]}
+        assert _thread_root(event) == ROOT_EVT
+
+    def test_explicit_root_marker_wins_over_position(self):
+        event = {"tags": [["e", MID_EVT, "", "reply"], ["e", ROOT_EVT, "", "root"]]}
+        assert _thread_root(event) == ROOT_EVT
+
+    def test_empty_e_tag_id_is_ignored(self):
+        assert _thread_root({"tags": [["e", ""], ["e", ROOT_EVT]]}) == ROOT_EVT
+
+    def test_p_tag_mention_is_not_a_thread(self):
+        assert _thread_root({"tags": [["p", OTHER_EVT]]}) is None
+
+    def test_malformed_tags_do_not_raise(self):
+        assert _thread_root({"tags": "nonsense"}) is None
+        assert _thread_root({}) is None
+
+
+class TestThreadedReplySend:
+    """The resolved thread id must reach the CLI as --reply-to."""
+
+    def _adapter(self, captured):
+        adapter = BuzzAdapter.__new__(BuzzAdapter)
+        adapter._seen_event_ids = set()
+        adapter._channel_state = {}
+
+        async def fake_cli(args, input_text=None):
+            captured.append(args)
+            return 0, json.dumps({"event_id": "evt-1"}), ""
+
+        adapter._run_cli = fake_cli
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_thread_id_metadata_becomes_reply_to(self):
+        captured = []
+        adapter = self._adapter(captured)
+        await adapter.send(CHANNEL, "hi", metadata={"thread_id": ROOT_EVT})
+        assert "--reply-to" in captured[0]
+        assert captured[0][captured[0].index("--reply-to") + 1] == ROOT_EVT
+
+    @pytest.mark.asyncio
+    async def test_no_thread_context_sends_top_level(self):
+        captured = []
+        adapter = self._adapter(captured)
+        await adapter.send(CHANNEL, "hi")
+        assert "--reply-to" not in captured[0]

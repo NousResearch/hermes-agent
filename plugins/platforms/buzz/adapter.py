@@ -348,6 +348,35 @@ def _parse_json_list(stdout: str) -> List[dict]:
 # Buzz Adapter
 # ---------------------------------------------------------------------------
 
+def _thread_root(event: dict) -> Optional[str]:
+    """Return the thread root event id for an inbound chat event, if any.
+
+    Buzz threads are NIP-10 style: a reply carries ``["e", <event_id>, ...]``
+    tags. A NIP-10 marker ("root"/"reply") is preferred when present; otherwise
+    the FIRST e-tag is the root by positional convention (the last is the
+    immediate parent).
+
+    Replying to the ROOT rather than the immediate parent keeps a conversation
+    as one flat thread instead of nesting a new sub-thread per turn. Returning
+    None means the message is a top-level post, and a reply to it correctly
+    opens exactly one new thread.
+    """
+    tags = event.get("tags")
+    if not isinstance(tags, list):
+        return None
+    e_tags = [
+        tag for tag in tags
+        if isinstance(tag, (list, tuple)) and len(tag) > 1 and tag[0] == "e" and tag[1]
+    ]
+    if not e_tags:
+        return None
+    for tag in e_tags:
+        # ["e", <id>, <relay>, <marker>] — an explicit root marker wins.
+        if len(tag) > 3 and str(tag[3]).lower() == "root":
+            return str(tag[1])
+    return str(e_tags[0][1])
+
+
 class BuzzAdapter(BasePlatformAdapter):
     """Poll-based Buzz adapter implementing the BasePlatformAdapter interface.
 
@@ -1056,6 +1085,7 @@ class BuzzAdapter(BasePlatformAdapter):
             user_name=await self._resolve_user_name(pubkey),
             message_id=event_id,
             created_at=created_at,
+            thread_root=_thread_root(event),
         )
 
     # ── DM classification (issue #68871) ──────────────────────────────────
@@ -1219,17 +1249,26 @@ class BuzzAdapter(BasePlatformAdapter):
         user_name: str,
         message_id: str,
         created_at: int,
+        thread_root: Optional[str] = None,
     ) -> None:
         """Build a MessageEvent and hand it to the base class handler."""
         if not self._message_handler:
             return
 
+        # Carry the thread root so the reply lands IN the existing thread.
+        # Without it every reply is a top-level post, and in a threaded client
+        # each answer spawns a brand new thread.  When the inbound message is
+        # itself top-level, thread_root is the message's own id so the first
+        # reply opens one thread and subsequent turns stay inside it.
+        # DMs are not threaded, so they keep thread_id=None.
         source = self.build_source(
             chat_id=chat_id,
             chat_name=self._channel_names.get(chat_id, chat_id),
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
+            thread_id=None if chat_type == "dm" else (thread_root or message_id),
+            message_id=message_id,
         )
 
         event = MessageEvent(

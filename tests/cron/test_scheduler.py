@@ -118,6 +118,24 @@ class TestPerJobToolsetMcpMerge:
         assert m_platform.call_args[0][1] == "cron"
         assert set(result) == set(sentinel)
 
+    def test_resolver_strips_memory_from_per_job_list(self):
+        result = _resolve_cron_enabled_toolsets(
+            {"enabled_toolsets": ["memory", "file"]},
+            {"mcp_servers": {}},
+        )
+        assert "memory" not in result
+        assert "file" in result
+
+    def test_resolver_strips_memory_from_platform_fallback(self):
+        job = {"enabled_toolsets": None}
+        with patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            return_value={"web", "memory", "file"},
+        ):
+            result = _resolve_cron_enabled_toolsets(job, {})
+        assert result == ["file", "web"]
+        assert "memory" not in result
+
 
 class TestResolveOrigin:
     def test_full_origin(self):
@@ -613,10 +631,9 @@ class TestRunJobSessionPersistence:
     def test_run_job_memory_toolset_disabled_in_cron(self, tmp_path):
         """memory toolset must be disabled in cron sessions — issue #38129.
 
-        Cron agents are constructed with skip_memory=True, so the memory
-        backend is not initialised.  Exposing the memory tool only gives the
-        model an unbacked tool that fails at runtime with
-        "Memory is not available."  Hiding it from the schema prevents that.
+        Cron agents are constructed with skip_memory=True. The memory tool
+        stays off the schema, and memory is stripped from enabled_toolsets
+        so MEMORY.md is not loaded into the job prompt.
         """
         job = {
             "id": "memory-hide-job",
@@ -634,10 +651,9 @@ class TestRunJobSessionPersistence:
     def test_run_job_disables_memory_even_when_per_job_enables_it(self, tmp_path):
         """Cron runs pass skip_memory=True, so memory must not be exposed.
 
-        A cron job can request the memory tool through enabled_toolsets, but
-        there is no MemoryStore injected for cron agents.  Keep memory in the
-        disabled set so AIAgent filters the unbacked tool out before the model
-        can call it and receive "Memory is not available" failures.
+        A cron job can name the memory toolset in enabled_toolsets. The
+        resolver drops it, and the denylist still lists it, so the model
+        never gets the tool and init never builds MemoryStore.
         """
         job = {
             "id": "memory-toolset-job",
@@ -650,7 +666,8 @@ class TestRunJobSessionPersistence:
 
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["skip_memory"] is True
-        assert kwargs["enabled_toolsets"] == ["memory", "file"]
+        assert kwargs["enabled_toolsets"] == ["file"]
+        assert "memory" not in (kwargs["enabled_toolsets"] or [])
         assert "memory" in kwargs["disabled_toolsets"]
 
     def test_tick_skips_due_jobs_while_dispatch_is_paused(self, tmp_path):

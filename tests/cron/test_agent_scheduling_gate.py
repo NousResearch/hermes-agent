@@ -21,7 +21,7 @@ from cron.scheduler import _resolve_cron_disabled_toolsets
 
 # The toolsets that must be denied in cron context no matter what the
 # agent-scheduling gate says: messaging/clarify are interactive-only,
-# memory is unbacked in cron runs (skip_memory=True).
+# memory stays off in cron runs (skip_memory=True, toolset denylisted).
 ALWAYS_DISABLED = ["messaging", "clarify", "memory"]
 
 

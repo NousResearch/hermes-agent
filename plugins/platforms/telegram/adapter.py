@@ -481,6 +481,15 @@ def _strip_mdv2(text: str) -> str:
     """
     # Remove escape backslashes before special characters
     cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)
+    # Remove blockquote / expandable-blockquote markers (>, >>, >>>, **> ...
+    # ||) so a fallback to plain text never leaks the raw quote syntax.
+    def _strip_blockquote_line(m):
+        prefix, content = m.group(1), m.group(2)
+        if prefix.startswith('**') and content.endswith('||'):
+            return content[:-2]
+        return content
+
+    cleaned = re.sub(r'(?m)^((?:\*\*)?>{1,3}) (.*)$', _strip_blockquote_line, cleaned)
     # Remove standard markdown bold (**text** → text) BEFORE MarkdownV2 bold
     cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)
     # Remove MarkdownV2 bold markers that format_message converted from **bold**
@@ -8392,14 +8401,44 @@ class TelegramAdapter(BasePlatformAdapter):
             r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE
         )
 
-        # 5) Convert bold: **text** → *text* (MarkdownV2 bold)
+        # 5) Protect blockquotes: > at line start → protect the marker from
+        #    escaping and from being consumed by the bold/italic/spoiler steps
+        #    below. Handle both regular blockquotes (> text) and expandable
+        #    blockquotes (Telegram MarkdownV2: **> for expandable start, ||
+        #    to end the quote). This must run BEFORE bold conversion: a quote
+        #    whose content starts with **bold** right after the opener (e.g.
+        #    "**> **Heading** more text||") would otherwise have its "**>"
+        #    marker consumed by the bold regex, which pairs the opener's "**"
+        #    with the next "**" it finds and destroys the quote entirely.
+        #    Only the prefix/closer markers are protected here; the quoted
+        #    content itself is left unescaped so bold/italic/spoiler below
+        #    still convert markdown nested inside the quote.
+        def _protect_blockquote(m):
+            prefix = m.group(1)  # >, >>, >>>, **>, or **>> etc.
+            content = m.group(2)
+            closer = ''
+            # Check if content ends with || (expandable blockquote end marker)
+            # In this case, preserve the trailing || unescaped for Telegram
+            if prefix.startswith('**') and content.endswith('||'):
+                content = content[:-2]
+                closer = _ph('||')
+            return f'{_ph(prefix)} {content}{closer}'
+
+        text = re.sub(
+            r'^((?:\*\*)?>{1,3}) (.+)$',
+            _protect_blockquote,
+            text,
+            flags=re.MULTILINE,
+        )
+
+        # 6) Convert bold: **text** → *text* (MarkdownV2 bold)
         text = re.sub(
             r'\*\*(.+?)\*\*',
             lambda m: _ph(f'*{_escape_mdv2(m.group(1))}*'),
             text,
         )
 
-        # 6) Convert italic: *text* (single asterisk) → _text_ (MarkdownV2 italic)
+        # 7) Convert italic: *text* (single asterisk) → _text_ (MarkdownV2 italic)
         #    [^*\n]+ prevents matching across newlines (which would corrupt
         #    bullet lists using * markers and multi-line content).
         text = re.sub(
@@ -8408,37 +8447,18 @@ class TelegramAdapter(BasePlatformAdapter):
             text,
         )
 
-        # 7) Convert strikethrough: ~~text~~ → ~text~ (MarkdownV2)
+        # 8) Convert strikethrough: ~~text~~ → ~text~ (MarkdownV2)
         text = re.sub(
             r'~~(.+?)~~',
             lambda m: _ph(f'~{_escape_mdv2(m.group(1))}~'),
             text,
         )
 
-        # 8) Convert spoiler: ||text|| → ||text|| (protect from | escaping)
+        # 9) Convert spoiler: ||text|| → ||text|| (protect from | escaping)
         text = re.sub(
             r'\|\|(.+?)\|\|',
             lambda m: _ph(f'||{_escape_mdv2(m.group(1))}||'),
             text,
-        )
-
-        # 9) Convert blockquotes: > at line start → protect > from escaping
-        #    Handle both regular blockquotes (> text) and expandable blockquotes
-        #    (Telegram MarkdownV2: **> for expandable start, || to end the quote)
-        def _convert_blockquote(m):
-            prefix = m.group(1)  # >, >>, >>>, **>, or **>> etc.
-            content = m.group(2)
-            # Check if content ends with || (expandable blockquote end marker)
-            # In this case, preserve the trailing || unescaped for Telegram
-            if prefix.startswith('**') and content.endswith('||'):
-                return _ph(f'{prefix} {_escape_mdv2(content[:-2])}||')
-            return _ph(f'{prefix} {_escape_mdv2(content)}')
-
-        text = re.sub(
-            r'^((?:\*\*)?>{1,3}) (.+)$',
-            _convert_blockquote,
-            text,
-            flags=re.MULTILINE,
         )
 
         # 10) Escape remaining special characters in plain text
@@ -9035,11 +9055,24 @@ class TelegramAdapter(BasePlatformAdapter):
         return self._telegram_guest_mode() and self._message_mentions_bot(message)
 
     def _clean_bot_trigger_text(self, text: Optional[str]) -> Optional[str]:
+        """Remove ``@botname`` trigger from inbound text.
+
+        In DMs Telegram sends ``/resume 2`` — nothing to clean.
+        In groups, the bot command menu auto-fills ``/resume@botname 2``.
+        The ``\b`` word-boundary anchors to the end of ``botname``; we must
+        NOT consume the trailing space after ``@botname`` because that space
+        separates the command name from its arguments.
+
+        Before fix: ``/resume@botname 2`` -> ``/resume2`` (space eaten)
+        After fix:  ``/resume@botname 2`` -> ``/resume 2`` (space preserved)
+        """
         bot_username = self._current_bot_username()
         if not text or not bot_username:
             return text
         username = re.escape(bot_username)
-        cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
+        # Do not consume trailing whitespace after @botname; that whitespace
+        # separates a slash command token from its arguments.
+        cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*", "", text).strip()
         return cleaned or text
 
     def _should_observe_unmentioned_group_message(self, message: Message) -> bool:

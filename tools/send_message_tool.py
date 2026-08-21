@@ -1455,6 +1455,19 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             text_chunks = BasePlatformAdapter.truncate_message(
                 formatted, 4096, len_fn=utf16_len
             )
+            if len(text_chunks) > 1 and send_parse_mode == ParseMode.MARKDOWN_V2:
+                # truncate_message appends a raw " (1/2)" suffix after MarkdownV2
+                # escaping. Escape its parentheses too, or Telegram rejects the
+                # chunk's parse and the whole message falls back to plain text
+                # (mirrors gateway/platforms/telegram/adapter.py's send()).
+                from plugins.platforms.telegram.adapter import _separate_chunk_indicator_from_fence
+
+                text_chunks = [
+                    _separate_chunk_indicator_from_fence(
+                        re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
+                    )
+                    for chunk in text_chunks
+                ]
             for chunk in text_chunks:
                 try:
                     last_msg = await _send_telegram_message_with_retry(

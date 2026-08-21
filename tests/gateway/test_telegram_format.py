@@ -288,6 +288,40 @@ class TestFormatMessageBlockquote:
         assert "\\|" in result
         assert "\\>" not in result
 
+    def test_expandable_blockquote_with_nested_bold_stays_intact(self, adapter):
+        """Bold text right after the **> opener must not consume the opener.
+
+        Regression test: the bold regex used to run before the blockquote
+        regex, so it paired the opener's leading ** with the next ** it
+        found and destroyed the **> marker entirely (issue: bold conversion
+        runs before blockquote conversion).
+        """
+        text = "**> **Action Plan** 1. **Health Shag Area Skill** - do the thing||"
+        result = adapter.format_message(text)
+        assert "**>" in result
+        assert result.rstrip().endswith("||")
+        assert "*Action Plan*" in result
+        assert "*Health Shag Area Skill*" in result
+
+
+# =========================================================================
+# _strip_mdv2 - blockquote fallback stripping
+# =========================================================================
+
+
+class TestStripMdv2Blockquote:
+
+    def test_strip_removes_regular_blockquote_prefix(self):
+        assert _strip_mdv2("> quoted text") == "quoted text"
+
+    def test_strip_removes_expandable_blockquote_markers(self):
+        text = "**> *Action Plan* more text||"
+        result = _strip_mdv2(text)
+        assert ">" not in result
+        assert "||" not in result
+        assert "Action Plan" in result
+        assert "more text" in result
+
 
 # =========================================================================
 # format_message - mixed/complex

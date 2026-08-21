@@ -297,8 +297,8 @@ TOOLSETS = {
     },
     
     "delegation": {
-        "description": "Spawn subagents with isolated context for complex subtasks",
-        "tools": ["delegate_task"],
+        "description": "Delegate work to isolated Hermes subagents or persistent external-agent sessions",
+        "tools": ["delegate_task", "delegate_session"],
         "includes": []
     },
 

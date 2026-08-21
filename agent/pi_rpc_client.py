@@ -135,6 +135,33 @@ def answer_oldest_pending_question(text: str) -> bool:
     return True
 
 
+def pending_question_for_owner(owner: "PiRPCClient") -> PendingQuestion | None:
+    """Return the oldest live question owned by one persistent Pi client."""
+    with _registry_lock:
+        matches = [
+            question
+            for question in pending_questions.values()
+            if question.owner is owner and not owner.is_closed
+        ]
+    return min(matches, key=lambda question: question.created_at) if matches else None
+
+
+def answer_pending_question_for_owner(owner: "PiRPCClient", text: str) -> bool:
+    """Answer only a question belonging to *owner*; never steal another session's input."""
+    with _registry_lock:
+        matches = [
+            question
+            for question in pending_questions.values()
+            if question.owner is owner and not owner.is_closed
+        ]
+        if not matches:
+            return False
+        question = min(matches, key=lambda item: item.created_at)
+        pending_questions.pop(question.id, None)
+    question.answer_with(text)
+    return True
+
+
 def _resolve_pi_bin() -> str:
     return (
         os.getenv("HERMES_PI_BIN", "").strip()
@@ -180,20 +207,31 @@ class PiRPCClient:
         acp_cwd: str | None = None,
         command: str | None = None,
         args: list[str] | None = None,
+        persistent_session: bool = False,
+        session_id: str | None = None,
+        session_name: str | None = None,
         **_: Any,
     ) -> None:
         self.api_key = api_key or "pi-rpc"
         self.base_url = base_url or PI_RPC_MARKER_BASE_URL
         self._pi_bin = _resolve_acp_command(command or acp_command)
         self._cwd = str(Path(acp_cwd or os.getcwd()).resolve())
+        self._persistent_session = bool(persistent_session)
+        self._session_id = (session_id or "").strip() or None
+        self._session_name = (session_name or "").strip() or None
         self.chat = _PiChatNamespace(self)
         self.is_closed = False
         self._proc: subprocess.Popen[str] | None = None
         self._stdin_lock = threading.Lock()
+        self._prompt_lock = threading.Lock()
         self._pending: dict[int, list] = {}
         self._pending_lock = threading.Lock()
         self._next_id = 0
         self._stderr_tail: deque[str] = deque(maxlen=40)
+        self._text_parts: list[str] = []
+        self._reasoning_parts: list[str] = []
+        self._settled = threading.Event()
+        self.text_streamed = False
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -269,7 +307,18 @@ class PiRPCClient:
     # -- pi protocol -------------------------------------------------------
 
     def _spawn(self) -> subprocess.Popen[str]:
-        argv = [self._pi_bin, "--mode", "rpc", "--no-session"]
+        if self._proc is not None and self._proc.poll() is None:
+            return self._proc
+        if self.is_closed:
+            raise RuntimeError("pi rpc client is closed")
+        argv = [self._pi_bin, "--mode", "rpc"]
+        if self._persistent_session:
+            if self._session_id:
+                argv += ["--session-id", self._session_id]
+            if self._session_name:
+                argv += ["--name", self._session_name]
+        else:
+            argv.append("--no-session")
         model = os.getenv("HERMES_PI_MODEL", "").strip()
         if model:
             argv += ["--model", model]
@@ -478,6 +527,97 @@ class PiRPCClient:
             )
         except Exception:
             pass
+
+    # -- persistent-session control -------------------------------------------
+
+    def start(self, *, timeout: float = 30.0) -> dict[str, Any]:
+        """Start the Pi RPC process and return native session state."""
+        self._spawn()
+        response = self._request_pi({"type": "get_state"}, timeout=timeout)
+        if response.get("success") is False:
+            raise RuntimeError(response.get("error") or "pi get_state failed")
+        data = response.get("data")
+        return data if isinstance(data, dict) else {}
+
+    def get_state(self, *, timeout: float = 30.0) -> dict[str, Any]:
+        self._spawn()
+        response = self._request_pi({"type": "get_state"}, timeout=timeout)
+        if response.get("success") is False:
+            raise RuntimeError(response.get("error") or "pi get_state failed")
+        data = response.get("data")
+        return data if isinstance(data, dict) else {}
+
+    def get_messages(self, *, timeout: float = 30.0) -> list[Any]:
+        self._spawn()
+        response = self._request_pi({"type": "get_messages"}, timeout=timeout)
+        if response.get("success") is False:
+            raise RuntimeError(response.get("error") or "pi get_messages failed")
+        data = response.get("data")
+        if isinstance(data, dict) and isinstance(data.get("messages"), list):
+            return data["messages"]
+        return data if isinstance(data, list) else []
+
+    def answer_pending_question(self, text: str) -> bool:
+        return answer_pending_question_for_owner(self, text)
+
+    def steer(self, message: str, *, timeout: float = 30.0) -> dict[str, Any]:
+        """Steer a running Pi turn, or answer its pending extension question."""
+        if self.answer_pending_question(message):
+            return {"success": True, "command": "answer_question"}
+        self._spawn()
+        return self._request_pi({"type": "steer", "message": message}, timeout=timeout)
+
+    def abort(self, *, timeout: float = 30.0) -> dict[str, Any]:
+        self._spawn()
+        return self._request_pi({"type": "abort"}, timeout=timeout)
+
+    def run_session_prompt(
+        self,
+        message: str,
+        *,
+        timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
+        """Run one turn against the same persistent Pi process/session.
+
+        Unlike the OpenAI compatibility path, this method does not reconstruct
+        prior conversation into the prompt: Pi owns the conversation state.
+        """
+        with self._prompt_lock:
+            self._spawn()
+            self._text_parts = []
+            self._reasoning_parts = []
+            self._settled = threading.Event()
+            self.text_streamed = False
+            started = time.monotonic()
+            response = self._request_pi(
+                {"type": "prompt", "message": message}, timeout=timeout_seconds
+            )
+            if not response.get("success"):
+                raise RuntimeError(response.get("error") or "pi prompt rejected")
+            self._settled.wait(timeout_seconds)
+            if not self._settled.is_set():
+                try:
+                    self._send_pi({"type": "abort"})
+                except Exception:
+                    pass
+                self._settled.wait(10)
+                raise TimeoutError(f"pi session turn timed out after {timeout_seconds:.0f}s")
+            if not self.text_streamed:
+                try:
+                    last = self._request_pi({"type": "get_last_assistant_text"})
+                    text = (last.get("data") or {}).get("text")
+                    if isinstance(text, str) and text:
+                        self._text_parts.append(text)
+                except Exception:
+                    pass
+            state = self.get_state(timeout=min(30.0, timeout_seconds))
+            return {
+                "success": True,
+                "text": "".join(self._text_parts),
+                "reasoning": "".join(self._reasoning_parts),
+                "duration_s": round(time.monotonic() - started, 1),
+                "state": state,
+            }
 
     # -- run ------------------------------------------------------------------
 

@@ -49,7 +49,8 @@ from utils import base_url_hostname, is_truthy_value
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset(
     [
-        "delegate_task",  # no recursive delegation
+        "delegate_task",  # no recursive Hermes-child delegation
+        "delegate_session",  # no external-agent delegation from leaf children
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
@@ -4653,6 +4654,7 @@ def _build_top_level_description() -> str:
         "USE FOR: reasoning-heavy subtasks, work that would flood your context "
         "with intermediate data, or independent parallel workstreams.\n"
         "DO NOT USE FOR (use these instead):\n"
+        "- Persistent Pi coding delegation -> delegate_session (native Pi RPC session)\n"
         "- Mechanical multi-step work with no reasoning needed -> execute_code\n"
         "- A single tool call -> call the tool directly\n"
         "- Tasks needing user interaction -> subagents cannot ask questions\n"

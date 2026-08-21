@@ -674,7 +674,26 @@ def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
     normalized = _normalize_base_url_text(base_url).lower()
     if not normalized:
         return False
-    return "azure.com" in normalized
+    # Copilot's Anthropic /v1/messages deployment serves Claude's 1M input
+    # window only when the request carries the context-1m beta; without it the
+    # window is clamped. Suffix-match so plan-scoped hosts (business/enterprise)
+    # are covered too, not just the shared api.githubcopilot.com front door.
+    return "azure.com" in normalized or base_url_host_matches(normalized, "githubcopilot.com")
+
+
+def _is_copilot_base_url(base_url: str | None) -> bool:
+    """Return True for GitHub Copilot's Anthropic deployment (``*.githubcopilot.com``).
+
+    Copilot serves Claude on ``POST /v1/messages`` at the real 1M-token input
+    window. That endpoint requires ``Authorization: Bearer`` (NOT Anthropic's
+    ``x-api-key``); routing Claude there without this branch would fall through
+    to the ``x-api-key`` default and 401. Suffix-match (not an exact host ==)
+    so business/enterprise hosts (``api.business.githubcopilot.com``,
+    ``api.enterprise.githubcopilot.com``) are also recognized.
+    """
+    if not base_url:
+        return False
+    return base_url_host_matches(_normalize_base_url_text(base_url), "githubcopilot.com")
 
 
 def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
@@ -924,6 +943,35 @@ def build_anthropic_client(
             "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
             **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
         }
+    elif _is_copilot_base_url(normalized_base_url):
+        # GitHub Copilot's Anthropic deployment (POST /v1/messages) is the only
+        # Copilot endpoint that serves Claude at the real 1,000,000-token input
+        # window; /chat/completions clamps it and returns a misleading "exceeds
+        # the limit of 168000" error. It requires:
+        #   1. Authorization: Bearer  (NOT Anthropic's x-api-key).
+        #   2. The Copilot CLI identity headers (User-Agent, Copilot-Integration-Id)
+        #      so the account's full entitlement applies.
+        #   3. anthropic-beta context-window betas (already in common_betas for
+        #      this base_url) to unlock the 1M window.
+        # Checked BEFORE _requires_bearer_auth and the x-api-key fallthrough so
+        # the Copilot bearer token is sent as auth_token, not as an API key.
+        kwargs["auth_token"] = api_key
+        _copilot_headers: dict[str, str] = {}
+        try:
+            from hermes_cli.copilot_auth import copilot_request_headers
+            # Reuse the single inference-path identity builder so /v1/messages
+            # and /chat/completions present one consistent Copilot identity.
+            _copilot_headers = dict(copilot_request_headers(is_agent_turn=True))
+        except Exception:
+            # Never block client construction on header enrichment; the bearer
+            # token alone still authenticates.
+            _copilot_headers = {}
+        # The anthropic-beta set (computed in common_betas) is authoritative;
+        # apply it last so it wins over anything the identity set may carry.
+        if common_betas:
+            _copilot_headers["anthropic-beta"] = ",".join(common_betas)
+        if _copilot_headers:
+            kwargs["default_headers"] = _copilot_headers
     elif _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
         # Authorization: Bearer *** for regular API keys. Route those endpoints

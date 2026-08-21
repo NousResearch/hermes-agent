@@ -5223,12 +5223,22 @@ def copilot_model_api_mode(
     *,
     catalog: Optional[list[dict[str, Any]]] = None,
     api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> str:
     """Determine the API mode for a Copilot model.
 
     Uses the model ID pattern (matching opencode's approach) as the
     primary signal.  Falls back to the catalog's ``supported_endpoints``
     only for models not covered by the pattern check.
+
+    ``base_url`` identifies which Copilot host serves the model. Claude
+    models are routed to the Anthropic Messages endpoint (``/v1/messages``)
+    on Copilot hosts because Copilot's OpenAI-compatible
+    ``/chat/completions`` route clamps Claude prompts to ~168k tokens and
+    misreports ``exceeds the limit of 168000``, while ``/v1/messages``
+    serves the model's real ~1M input window. When ``base_url`` is not
+    supplied it defaults to the canonical Copilot host, so the automatic
+    provider+model routing keeps working without extra config.
     """
     # Fetch the catalog once so normalize + endpoint check share it
     # (avoids two redundant network calls for non-GPT-5 models).
@@ -5243,11 +5253,24 @@ def copilot_model_api_mode(
     if _should_use_copilot_responses_api(normalized):
         return "codex_responses"
 
-    # Copilot's Claude models are exposed through its OpenAI-compatible chat
-    # endpoint, not through Hermes' native Anthropic adapter. The live catalog may
-    # advertise /v1/messages, but the Copilot token/header scheme is handled by
-    # the OpenAI client path; selecting anthropic_messages would send the wrong
-    # auth/wire shape. Keep non-GPT Copilot slots on chat_completions.
+    # Copilot's Claude models: route to the Anthropic Messages transport so we
+    # hit Copilot's ``/v1/messages`` endpoint and get Claude's real ~1M input
+    # window. The OpenAI-compatible ``/chat/completions`` route clamps Claude
+    # prompts to ~168k and returns "exceeds the limit of 168000".
+    #
+    # Suffix-safe host match (base_url_host_matches, not host == ...): this
+    # must ALSO match plan-scoped Copilot hosts such as
+    # api.business.githubcopilot.com and api.enterprise.githubcopilot.com,
+    # which an exact api.githubcopilot.com check would wrongly exclude
+    # (upstream landed *.githubcopilot.com support in fb0721584; an exact-host
+    # check regresses it).
+    effective_base_url = base_url or COPILOT_BASE_URL
+    if normalized.startswith("claude-") and base_url_host_matches(
+        effective_base_url, "githubcopilot.com"
+    ):
+        return "anthropic_messages"
+
+    # Non-GPT, non-Claude Copilot slots (Gemini, etc.) stay on chat_completions.
     return "chat_completions"
 
 

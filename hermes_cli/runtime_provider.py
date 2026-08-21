@@ -374,6 +374,7 @@ def _copilot_runtime_api_mode(
     api_key: str,
     *,
     target_model: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> str:
     configured_provider = str(model_cfg.get("provider") or "").strip().lower()
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
@@ -393,7 +394,7 @@ def _copilot_runtime_api_mode(
     try:
         from hermes_cli.models import copilot_model_api_mode
 
-        return copilot_model_api_mode(model_name, api_key=api_key)
+        return copilot_model_api_mode(model_name, api_key=api_key, base_url=base_url)
     except Exception:
         return "chat_completions"
 
@@ -522,12 +523,13 @@ def _resolve_runtime_from_pool_entry(
         api_mode = nous_api_mode(effective_model)
         base_url = _nous_inference_base_url_override() or base_url
     elif provider == "copilot":
+        base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
         api_mode = _copilot_runtime_api_mode(
             model_cfg,
             getattr(entry, "runtime_api_key", ""),
             target_model=effective_model,
+            base_url=base_url,
         )
-        base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
     elif provider == "azure-foundry":
         # Azure Foundry: read api_mode and base_url from config
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -1731,6 +1733,7 @@ def _resolve_explicit_runtime(
                 model_cfg,
                 api_key,
                 target_model=target_model,
+                base_url=base_url,
             )
         elif provider == "xai":
             api_mode = "codex_responses"
@@ -2358,6 +2361,7 @@ def resolve_runtime_provider(
                 model_cfg,
                 creds.get("api_key", ""),
                 target_model=target_model,
+                base_url=base_url,
             )
         elif provider == "xai":
             api_mode = "codex_responses"

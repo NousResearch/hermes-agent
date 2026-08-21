@@ -62,6 +62,74 @@ class TestBuildAnthropicClient:
             assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
 
 
+    def test_copilot_v1messages_uses_bearer_not_x_api_key(self):
+        """Claude on Copilot (/v1/messages) must authenticate with Bearer
+        (auth_token), NOT Anthropic's x-api-key, or Copilot returns 401.
+        The context-1m beta must also be present to unlock the 1M window."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "gho_copilot_token",
+                base_url="https://api.githubcopilot.com",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            # Bearer, not x-api-key.
+            assert kwargs["auth_token"] == "gho_copilot_token"
+            assert "api_key" not in kwargs
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" in betas
+            assert "interleaved-thinking-2025-05-14" in betas
+
+    def test_copilot_enterprise_host_also_uses_bearer(self):
+        """Plan-scoped Copilot hosts (business/enterprise) must be recognized
+        too — the routing uses a suffix host match, not an exact
+        api.githubcopilot.com check, so enterprise accounts don't 401."""
+        for host in (
+            "https://api.business.githubcopilot.com",
+            "https://api.enterprise.githubcopilot.com",
+        ):
+            with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+                build_anthropic_client("gho_ent_token", base_url=host)
+                kwargs = mock_sdk.Anthropic.call_args[1]
+                assert kwargs["auth_token"] == "gho_ent_token", host
+                assert "api_key" not in kwargs, host
+
+    def test_copilot_lookalike_host_does_not_get_bearer(self):
+        """A lookalike host must NOT be treated as Copilot (hostname match,
+        not substring), so it falls through to the normal auth path."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "sk-ant-api03-real",
+                base_url="https://evil.com/api.githubcopilot.com/v1",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["api_key"] == "sk-ant-api03-real"
+            assert "auth_token" not in kwargs
+
+    def test_copilot_header_enrichment_failure_is_non_fatal(self):
+        """If copilot_request_headers raises, client construction still
+        proceeds with the bearer token + beta header alone (no crash)."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+             patch("hermes_cli.copilot_auth.copilot_request_headers",
+                   side_effect=RuntimeError("boom")):
+            build_anthropic_client(
+                "gho_copilot_token",
+                base_url="https://api.githubcopilot.com",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["auth_token"] == "gho_copilot_token"
+            assert "context-1m-2025-08-07" in kwargs["default_headers"]["anthropic-beta"]
+
+    def test_is_copilot_base_url_detection(self):
+        from agent.anthropic_adapter import _is_copilot_base_url
+        assert _is_copilot_base_url("https://api.githubcopilot.com") is True
+        assert _is_copilot_base_url("https://api.githubcopilot.com/v1") is True
+        assert _is_copilot_base_url("https://api.business.githubcopilot.com") is True
+        assert _is_copilot_base_url("https://api.anthropic.com") is False
+        assert _is_copilot_base_url("https://evil.com/api.githubcopilot.com") is False
+        assert _is_copilot_base_url("") is False
+        assert _is_copilot_base_url(None) is False
+
+
 
 
 

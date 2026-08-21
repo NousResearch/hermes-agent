@@ -11102,17 +11102,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if result.warning_message:
             _cprint(f"    ⚠ {result.warning_message}")
         if persist_global:
-            HermesCLI._clear_persisted_context_for_model_switch(self, result)
-            save_config_value("model.default", result.new_model)
-            save_config_value("model.provider", result.target_provider)
-            # base_url/api_mode were previously never persisted here, so a
-            # global switch left the OLD provider's endpoint/wire-protocol in
-            # config.yaml. result.base_url/api_mode are always freshly
-            # resolved for the target provider (see model_switch.py), so sync
-            # them every time; None clears a value the new provider doesn't
-            # need (#25106).
-            save_config_value("model.base_url", result.base_url or None)
-            save_config_value("model.api_mode", result.api_mode or None)
+            from hermes_cli.model_activation import model_activation_lock
+
+            with model_activation_lock():
+                HermesCLI._clear_persisted_context_for_model_switch(self, result)
+                save_config_value("model.default", result.new_model)
+                save_config_value("model.provider", result.target_provider)
+                # base_url/api_mode were previously never persisted here, so a
+                # global switch left the OLD provider's endpoint/wire-protocol in
+                # config.yaml. result.base_url/api_mode are always freshly
+                # resolved for the target provider (see model_switch.py), so sync
+                # them every time; None clears a value the new provider doesn't
+                # need (#25106).
+                save_config_value("model.base_url", result.base_url or None)
+                save_config_value("model.api_mode", result.api_mode or None)
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
@@ -11501,13 +11504,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Persistence
         if persist_global:
-            HermesCLI._clear_persisted_context_for_model_switch(self, result)
-            save_config_value("model.default", result.new_model)
-            save_config_value("model.provider", result.target_provider)
-            # See _apply_model_switch_result above for why base_url/api_mode
-            # must be synced on every global switch (#25106).
-            save_config_value("model.base_url", result.base_url or None)
-            save_config_value("model.api_mode", result.api_mode or None)
+            from hermes_cli.model_activation import model_activation_lock
+
+            with model_activation_lock():
+                HermesCLI._clear_persisted_context_for_model_switch(self, result)
+                save_config_value("model.default", result.new_model)
+                save_config_value("model.provider", result.target_provider)
+                # See _apply_model_switch_result above for why base_url/api_mode
+                # must be synced on every global switch (#25106).
+                save_config_value("model.base_url", result.base_url or None)
+                save_config_value("model.api_mode", result.api_mode or None)
             _cprint("    Saved to config.yaml")
         elif one_turn:
             _cprint("    (next turn only — restores after one response)")

@@ -7322,6 +7322,18 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
 def _apply_model_assignment_sync(
     scope: str, provider: str, model: str, task: str, base_url: str, api_key: str = ""
 ):
+    """Apply a model assignment under the shared route transaction lock."""
+    from hermes_cli.model_activation import model_activation_lock
+
+    with model_activation_lock():
+        return _apply_model_assignment_sync_unlocked(
+            scope, provider, model, task, base_url, api_key
+        )
+
+
+def _apply_model_assignment_sync_unlocked(
+    scope: str, provider: str, model: str, task: str, base_url: str, api_key: str = ""
+):
     """Synchronous body of POST /api/model/set.
 
     Runs inside ``_profile_scope`` (in a worker thread) so every

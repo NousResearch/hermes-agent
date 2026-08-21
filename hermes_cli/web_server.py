@@ -7342,7 +7342,36 @@ def _apply_model_assignment_sync(
             cfg.get("model", {}), provider, model, base_url, api_key
         )
         if isinstance(provider_entry, dict) and provider_entry.get("api_key"):
-            model_cfg["api_key"] = provider_entry["api_key"]
+            # `cfg` is the env-EXPANDED document: when the raw yaml holds
+            # `api_key: ${MY_KEY}` (or the entry carries `key_env`), copying
+            # `provider_entry["api_key"]` verbatim writes the resolved secret
+            # in plaintext under `model:` in config.yaml (#88990) — and
+            # `_preserve_env_ref_templates` can't save it because no template
+            # ever lived at `model.api_key`. Prefer the credential POINTER:
+            # key_env when present, else the raw `${VAR}` template, and only
+            # fall back to the expanded value when the raw yaml itself stores
+            # the key as a literal (no new exposure in that case).
+            raw_providers = read_raw_config().get("providers")
+            raw_entry = (
+                raw_providers.get(provider) if isinstance(raw_providers, dict) else None
+            )
+            raw_key = (
+                str(raw_entry.get("api_key") or "").strip()
+                if isinstance(raw_entry, dict)
+                else ""
+            )
+            key_env = (
+                str(raw_entry.get("key_env") or "").strip()
+                if isinstance(raw_entry, dict)
+                else ""
+            )
+            if key_env:
+                model_cfg["key_env"] = key_env
+                model_cfg.pop("api_key", None)
+            elif raw_key.startswith("${") and raw_key.endswith("}"):
+                model_cfg["api_key"] = raw_key
+            else:
+                model_cfg["api_key"] = provider_entry["api_key"]
         cfg["model"] = model_cfg
 
         # When switching the main provider to Nous, mirror the CLI's
@@ -8260,7 +8289,24 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 model_cfg["key_env"] = entry["key_env"]
                 model_cfg.pop("api_key", None)
             elif entry.get("api_key"):
-                model_cfg["api_key"] = entry["api_key"]
+                # Same #88990 shape as /api/model/set: `cfg` is env-expanded,
+                # so a raw `${VAR}` api_key would land as plaintext. Copy the
+                # raw template when that's what's on disk.
+                raw_providers = read_raw_config().get("providers")
+                raw_entry = (
+                    raw_providers.get(provider_key)
+                    if isinstance(raw_providers, dict)
+                    else None
+                )
+                raw_key = (
+                    str(raw_entry.get("api_key") or "").strip()
+                    if isinstance(raw_entry, dict)
+                    else ""
+                )
+                if raw_key.startswith("${") and raw_key.endswith("}"):
+                    model_cfg["api_key"] = raw_key
+                else:
+                    model_cfg["api_key"] = entry["api_key"]
             cfg["model"] = model_cfg
             save_config(cfg)
         return {"ok": True, "provider": provider_key, "model": model}

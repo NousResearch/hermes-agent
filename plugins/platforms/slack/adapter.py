@@ -9392,8 +9392,10 @@ async def _standalone_send(
     treats every upload as a generic file share.
 
     When ``caption`` is set (single captionable MEDIA:<path> + short text), the
-    text rides as ``initial_comment`` on the upload instead of a separate
-    ``chat.postMessage``.
+    text normally rides as ``initial_comment`` on the upload instead of a
+    separate ``chat.postMessage``. If link-preview controls are explicit, the
+    text is posted separately because Slack's file-upload API cannot carry
+    those controls.
     """
     del force_document  # signature parity with other standalone senders
     # Profile-scoped read: under multiplex os.environ may hold ANOTHER
@@ -9463,6 +9465,7 @@ async def _standalone_send(
 
     formatted = _format_mrkdwn(message) if message else message
     formatted_caption = _format_mrkdwn(caption) if caption else caption
+    unfurl_kwargs = _slack_unfurl_kwargs(getattr(pconfig, "extra", None))
 
     # --- Media path: AsyncWebClient.files_upload_v2 (+ optional text) ---
     if media_files:
@@ -9483,14 +9486,19 @@ async def _standalone_send(
         _apply_slack_proxy(client, resolve_proxy_url())
         last_message_id = None
 
-        # Caption mode: skip a separate text post; comment rides the upload.
-        text_to_send = "" if formatted_caption else (formatted or "")
+        # Slack's file-upload API cannot accept chat.postMessage's unfurl
+        # controls. When either control is explicit, keep the caption as a
+        # separate text post so the configured behavior is actually honored.
+        caption_as_upload_comment = bool(formatted_caption) and not unfurl_kwargs
+        text_to_send = (
+            "" if caption_as_upload_comment else (formatted_caption or formatted or "")
+        )
         if text_to_send.strip():
             post_kwargs: Dict[str, Any] = {
                 "channel": chat_id,
                 "text": text_to_send,
                 "mrkdwn": True,
-                **_slack_unfurl_kwargs(pconfig.extra),
+                **unfurl_kwargs,
             }
             if thread_id:
                 post_kwargs["thread_ts"] = thread_id
@@ -9506,7 +9514,7 @@ async def _standalone_send(
             except Exception as e:
                 return {"error": f"Slack send failed: {e}"}
 
-        caption_pending = bool(formatted_caption)
+        caption_pending = caption_as_upload_comment
         uploaded_any = False
         for media_path, _is_voice in media_files:
             if not os.path.exists(media_path):
@@ -9520,6 +9528,7 @@ async def _standalone_send(
                             "channel": chat_id,
                             "text": formatted_caption,
                             "mrkdwn": True,
+                            **unfurl_kwargs,
                         }
                         if thread_id:
                             fallback_kwargs["thread_ts"] = thread_id
@@ -9540,7 +9549,7 @@ async def _standalone_send(
                     client,
                     chat_id,
                     media_path,
-                    initial_comment=formatted_caption if caption_pending else "",
+                    initial_comment=(formatted_caption or "") if caption_pending else "",
                     thread_id=thread_id,
                 )
                 if upload_result.get("error"):
@@ -9610,7 +9619,7 @@ async def _standalone_send(
                 "channel": chat_id,
                 "text": formatted,
                 "mrkdwn": True,
-                **_slack_unfurl_kwargs(pconfig.extra),
+                **unfurl_kwargs,
             }
             if thread_id:
                 payload["thread_ts"] = thread_id

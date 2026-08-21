@@ -2212,6 +2212,7 @@ DEFAULT_CONFIG = {
             "max_dispatches": 10,         # Cap on recovered messages dispatched per reconnect
         },
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
+        "chunk_indicators": True,      # Append visible (N/M) labels to split responses
         # Discord Gateway transport health. These settings inspect the active
         # WebSocket's ready/open/heartbeat state; they never use Discord REST as
         # proof that Gateway events are still arriving. Set any value to 0 to

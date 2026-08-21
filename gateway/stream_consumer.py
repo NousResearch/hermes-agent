@@ -1546,13 +1546,15 @@ class GatewayStreamConsumer:
         those rules with newline-only slicing.  Non-base test doubles and
         legacy adapters retain the historical two-argument call shape.
         """
-        truncate = getattr(self.adapter, "truncate_message", None)
-        if not callable(truncate):
-            return self._split_text_chunks(text, limit, len_fn)
-
         if isinstance(self.adapter, _BasePlatformAdapter):
-            chunks = truncate(text, limit, len_fn=len_fn)
+            split = getattr(self.adapter, "split_message", None)
+            if not callable(split):
+                return self._split_text_chunks(text, limit, len_fn)
+            chunks = split(text, limit, len_fn=len_fn)
         else:
+            truncate = getattr(self.adapter, "truncate_message", None)
+            if not callable(truncate):
+                return self._split_text_chunks(text, limit, len_fn)
             chunks = truncate(text, limit)
         if not isinstance(chunks, (list, tuple)) or not all(
             isinstance(chunk, str) for chunk in chunks

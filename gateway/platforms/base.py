@@ -7247,12 +7247,22 @@ class BasePlatformAdapter(ABC):
         Default implementation returns content as-is.
         """
         return content
-    
+
+    def split_message(
+        self,
+        content: str,
+        max_length: int = 4096,
+        len_fn: Optional["Callable[[str], int]"] = None,
+    ) -> List[str]:
+        """Split one platform delivery using this adapter's runtime settings."""
+        return self.truncate_message(content, max_length, len_fn=len_fn)
+
     @staticmethod
     def truncate_message(
         content: str,
         max_length: int = 4096,
         len_fn: Optional["Callable[[str], int]"] = None,
+        include_chunk_indicators: bool = True,
     ) -> List[str]:
         """
         Split a long message into chunks, preserving code block boundaries.
@@ -7260,7 +7270,7 @@ class BasePlatformAdapter(ABC):
         When a split falls inside a triple-backtick code block, the fence is
         closed at the end of the current chunk and reopened (with the original
         language tag) at the start of the next chunk.  Multi-chunk responses
-        receive indicators like ``(1/3)``.
+        receive indicators like ``(1/3)`` unless the platform disables them.
 
         Args:
             content: The full message content
@@ -7269,6 +7279,8 @@ class BasePlatformAdapter(ABC):
                      Defaults to ``len`` (Unicode code-points).  Pass
                      ``utf16_len`` for platforms that measure message
                      length in UTF-16 code units (e.g. Telegram).
+            include_chunk_indicators: Append visible ``(N/M)`` labels to
+                                      multi-message responses.
 
         Returns:
             List of message chunks
@@ -7411,7 +7423,7 @@ class BasePlatformAdapter(ABC):
             chunks.append(full_chunk)
 
         # Append chunk indicators when the response spans multiple messages
-        if len(chunks) > 1:
+        if include_chunk_indicators and len(chunks) > 1:
             total = len(chunks)
             chunks = [
                 f"{chunk} ({i + 1}/{total})" for i, chunk in enumerate(chunks)

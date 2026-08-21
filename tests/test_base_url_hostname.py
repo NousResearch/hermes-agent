@@ -43,6 +43,13 @@ def test_port_is_ignored():
     assert base_url_hostname("https://api.openai.com:443/v1") == "api.openai.com"
 
 
+def test_malformed_ipv6_url_fails_closed():
+    malformed = "http://[::1"
+
+    assert base_url_hostname(malformed) == ""
+    assert base_url_host_matches(malformed, "api.openai.com") is False
+
+
 
 
 # ─── base_url_host_matches ────────────────────────────────────────────────
@@ -117,4 +124,3 @@ class TestOllamaUrlHostCheck:
         assert base_url_host_matches(
             "https://ollama.com/api/generate", "ollama.com"
         ) is True
-

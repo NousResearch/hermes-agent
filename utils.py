@@ -861,8 +861,13 @@ def base_url_hostname(base_url: str) -> str:
     raw = (base_url or "").strip()
     if not raw:
         return ""
-    parsed = urlparse(raw if "://" in raw else f"//{raw}")
-    return (parsed.hostname or "").lower().rstrip(".")
+    try:
+        parsed = urlparse(raw if "://" in raw else f"//{raw}")
+        return (parsed.hostname or "").lower().rstrip(".")
+    except ValueError:
+        # urllib rejects malformed bracketed IPv6 netlocs. Provider routing
+        # is a hostname classification step, so invalid input is no match.
+        return ""
 
 
 # ─── Model Capability Detection ──────────────────────────────────────────────

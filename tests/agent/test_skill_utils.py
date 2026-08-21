@@ -285,6 +285,34 @@ class TestNormalizeSkillLookupName:
         monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
         assert normalize_skill_lookup_name(str(link)) == "my-skill"
 
+    def test_external_dir_that_is_the_skill_package_yields_its_name(
+        self, tmp_path, monkeypatch
+    ):
+        """#88064: skills.external_dirs may point at the skill package itself
+        (a one-skill repo configured as its own dir). relative_to(root) then
+        yields "." — not a skill_view()-safe name — and /<skill> slash
+        dispatch failed with "not a skill command". The package directory
+        name is the identifier."""
+        from agent.skill_utils import get_external_skills_dirs, normalize_skill_lookup_name
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        package = tmp_path / "my-skills" / "wayfinder"
+        package.mkdir(parents=True)
+
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(
+            "agent.skill_utils.get_external_skills_dirs", lambda: [package]
+        )
+        # Sanity: the module-level accessor the resolver consults is patched.
+        import agent.skill_utils as _su
+
+        assert _su.get_external_skills_dirs() == [package]
+
+        assert normalize_skill_lookup_name(str(package)) == "wayfinder"
+        # Parent-dir layouts keep producing the nested relative path.
+        assert normalize_skill_lookup_name(str(package)) != "."
+
 
 
 # ── parse_frontmatter: UTF-8 BOM tolerance ─────────────────────────────────

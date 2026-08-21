@@ -940,9 +940,18 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     # an arbitrary absolute path that skill_view() refuses to load.
     for root in trusted_roots:
         try:
-            return str(identifier_path.relative_to(root))
+            relative = identifier_path.relative_to(root)
         except ValueError:
             continue
+        # A skills.external_dirs entry may BE the skill package (a one-skill
+        # repo configured as its own dir) rather than a parent of many
+        # skills — relative_to(root) then yields ".", which is not a valid
+        # skill_view() name and made /<skill> slash dispatch fail with
+        # "not a skill command" (#88064). The package directory name is the
+        # identifier discovery registered the skill under.
+        if str(relative) == ".":
+            return identifier_path.name
+        return str(relative)
 
     try:
         return str(identifier_path.resolve().relative_to(primary_root.resolve()))

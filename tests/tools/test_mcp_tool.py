@@ -906,6 +906,70 @@ class TestMCPServerTask:
         asyncio.run(_test())
 
 
+    @pytest.mark.parametrize(
+        ("config_args", "expected_args"),
+        [
+            (None, []),  # explicit YAML ``args:`` null -> empty list (#80437)
+            ("__missing__", []),  # key absent -> current behavior
+            (["-y", "test"], ["-y", "test"]),  # real list -> preserved
+        ],
+    )
+    def test_start_stdio_args_null_treated_as_empty_list(self, config_args, expected_args):
+        """Regression test for #80437.
+
+        ``config.get("args", [])`` only defaults when the key is *missing*;
+        an explicit YAML null (``args:``) came through as ``None`` and then
+        crashed the watchdog wrapper's ``*args`` splat with ``TypeError:
+        Value after * must be an iterable, not NoneType``. A null ``args``
+        must behave like an omitted one: the stdio spawn sees an empty
+        argument list, and real lists pass through unchanged.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        mock_tools = [_make_mcp_tool("echo")]
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(
+            return_value=SimpleNamespace(tools=mock_tools)
+        )
+
+        spawned_args = {}
+
+        def _fake_ssp(command=None, args=None, env=None, **kwargs):
+            spawned_args["args"] = args
+            return MagicMock()
+
+        config = {"command": "npx"}
+        if config_args != "__missing__":
+            config["args"] = config_args
+
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch(
+                "tools.mcp_tool.StdioServerParameters", side_effect=_fake_ssp
+            ), patch(
+                # Isolate the fix: bypass the watchdog argv rewrite so the
+                # args observed by StdioServerParameters are exactly the
+                # config-derived ones.
+                "tools.mcp_tool._wrap_command_with_watchdog",
+                side_effect=lambda command, args: (command, args),
+            ), patch(
+                "tools.osv_check.check_package_for_malware", return_value=None
+            ), p_stdio, p_cs:
+                server = MCPServerTask("null_args_srv")
+                # args: null previously raised TypeError here; now connects.
+                await server.start(config)
+
+                assert server.session is mock_session
+                assert len(server._tools) == 1
+
+                await server.shutdown()
+
+        asyncio.run(_test())
+        assert spawned_args["args"] == expected_args
+
+
     def test_stdio_recycle_deadline_pauses_while_rpc_active(self):
         from tools.mcp_tool import MCPServerTask
 

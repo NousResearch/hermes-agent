@@ -3010,7 +3010,12 @@ class MCPServerTask:
             )
 
         command = config.get("command")
-        args = config.get("args", [])
+        # ``args:`` with an explicit YAML null yields None -- the .get()
+        # default only fires for a *missing* key. None then explodes in the
+        # watchdog wrapper's ``*args`` splat with "Value after * must be an
+        # iterable, not NoneType" (#80437). Treat null as an empty list,
+        # matching mcp_schema_cache.
+        args = config.get("args") or []
         user_env = config.get("env")
 
         if not command:

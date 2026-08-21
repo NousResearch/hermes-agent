@@ -1864,6 +1864,95 @@ test('durableGroupChatRooms carries roomId — omitting it drops the durable id 
   assert.equal(durable.Legacy.roomId, null, 'a room with no roomId persists an explicit null, not undefined')
 })
 
+test('complete member schema survives projection, pull-before-push, cold merge, and persistence', () => {
+  const gc = load(() => '(pass)')
+  const source = {
+    Team: {
+      log: [{ id: 'user:1', from: { kind: 'user', name: 'You' }, text: 'hello', at: 1 }],
+      watermarks: {},
+      members: [
+        { name: 'default', connectionId: 'house', sourceScoped: true },
+        { name: 'lokay', connectionId: 'local', sourceScoped: true }
+      ],
+      membersSchema: 2,
+      syncRevision: 4
+    }
+  }
+
+  const localSnapshot = gc.groupChatSyncSnapshot(source)
+  const roomKey = Object.keys(localSnapshot.rooms)[0]
+  const pulled = gc.mergeGroupChatSyncSnapshots(
+    {
+      version: 3,
+      rooms: {
+        [roomKey]: {
+          name: 'Team',
+          log: source.Team.log,
+          members: [{ name: 'stale', connectionId: 'old' }],
+          revision: 3
+        }
+      }
+    },
+    localSnapshot,
+    { changedRooms: ['Team'], writeRevision: 5 }
+  )
+  const projected = pulled.rooms[roomKey]
+  const merged = gc.mergeRemoteGroupChatSnapshotIntoRooms(pulled, {})
+  const durable = gc.durableGroupChatRooms(merged)
+
+  assert.equal(projected.membersSchema, 2)
+  assert.equal(projected.members.some(member => member.name === 'stale'), false)
+  assert.equal(merged.Team.membersSchema, 2)
+  assert.equal(durable.Team.membersSchema, 2)
+  assert.equal(merged.Team.members.length, 2)
+})
+
+test('member schema follows the revision whose member list wins', () => {
+  const gc = load(() => '(pass)')
+  const current = {
+    Team: {
+      log: [{ id: 'user:1', from: { kind: 'user', name: 'You' }, text: 'hello', at: 1 }],
+      watermarks: {},
+      members: [
+        { name: 'default', connectionId: 'house', sourceScoped: true },
+        { name: 'lokay', connectionId: 'local', sourceScoped: true }
+      ],
+      membersSchema: 2,
+      syncRevision: 3
+    }
+  }
+  const olderLegacy = {
+    version: 3,
+    rooms: {
+      'name:Team': {
+        name: 'Team',
+        log: current.Team.log,
+        members: [{ name: 'phantom', connectionId: 'old' }],
+        revision: 2
+      }
+    }
+  }
+  const newerLegacy = {
+    version: 3,
+    rooms: {
+      'name:Team': {
+        name: 'Team',
+        log: current.Team.log,
+        members: [{ name: 'default', connectionId: 'house' }],
+        revision: 4
+      }
+    }
+  }
+
+  const kept = gc.mergeRemoteGroupChatSnapshotIntoRooms(olderLegacy, current)
+  const replaced = gc.mergeRemoteGroupChatSnapshotIntoRooms(newerLegacy, current)
+
+  assert.equal(kept.Team.membersSchema, 2)
+  assert.equal(kept.Team.members.some(member => member.name === 'phantom'), false)
+  assert.equal(replaced.Team.membersSchema, undefined)
+  assert.equal(JSON.stringify(replaced.Team.members.map(member => member.name)), JSON.stringify(['default']))
+})
+
 test('remote-merge reachability: a disband tombstone that survives a merge (gateway has not received the delete yet) is never written to storage', async () => {
   const gc = load(() => '(pass)')
 

@@ -466,11 +466,20 @@ def _rescue_eligible(provider) -> bool:
 
         name = getattr(provider, "name", "")
         if name in _KEYLESS_RING:
+            if name == "firecrawl":
+                # Firecrawl is the one ring vendor with a self-hosted
+                # (FIRECRAWL_API_URL) / managed-gateway keyed mode that an
+                # API-key-only check can't see — re-deriving eligibility from
+                # just FIRECRAWL_API_KEY misclassifies those as "already
+                # walked the ring" and wrongly denies the rescue. Use the
+                # provider's own dispatch decision instead of guessing it.
+                from plugins.web.firecrawl.provider import _use_keyless_ring
+
+                return not _use_keyless_ring()
             key_var = {
                 "exa": "EXA_API_KEY",
                 "parallel": "PARALLEL_API_KEY",
                 "tavily": "TAVILY_API_KEY",
-                "firecrawl": "FIRECRAWL_API_KEY",
                 "keenable": "KEENABLE_API_KEY",
             }.get(name, "")
             from agent.web_search_provider import get_provider_env

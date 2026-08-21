@@ -101,6 +101,63 @@ class TestEligibility:
         )
         assert web_tools._rescue_eligible(_KeyedBoomProvider()) is False
 
+    def test_firecrawl_self_hosted_is_eligible(self, monkeypatch):
+        """Self-hosted Firecrawl (FIRECRAWL_API_URL, no key) is a keyed path,
+        not the keyless ring — its failure must still get a rescue.
+
+        A naive api-key-only eligibility check can't see FIRECRAWL_API_URL and
+        misclassifies this as "already walked the ring", wrongly denying the
+        rescue the whole feature exists to provide (verified against the
+        provider's own dispatch decision, ``_use_keyless_ring()``, not a
+        re-derivation of it).
+        """
+        from plugins.web.firecrawl.provider import (
+            FirecrawlWebSearchProvider,
+            _use_keyless_ring,
+        )
+
+        monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+        monkeypatch.setenv("FIRECRAWL_API_URL", "https://firecrawl.internal.example")
+        monkeypatch.setattr(web_tools, "_peek_nous_access_token", lambda: None)
+
+        provider = FirecrawlWebSearchProvider()
+        assert _use_keyless_ring() is False, "sanity: self-hosted must dispatch keyed"
+        assert web_tools._rescue_eligible(provider) is True
+
+    def test_firecrawl_keyless_mode_not_eligible(self, monkeypatch):
+        """No FIRECRAWL_API_URL/API_KEY: the call rode the keyless ring;
+        its failure must not double-walk the ring."""
+        from plugins.web.firecrawl.provider import (
+            FirecrawlWebSearchProvider,
+            _use_keyless_ring,
+        )
+
+        monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+        monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
+        monkeypatch.setattr(web_tools, "_peek_nous_access_token", lambda: None)
+        monkeypatch.setattr(
+            "agent.web_search_registry._keyless_tier_enabled", lambda: True
+        )
+
+        provider = FirecrawlWebSearchProvider()
+        assert _use_keyless_ring() is True, "sanity: no config must dispatch keyless"
+        assert web_tools._rescue_eligible(provider) is False
+
+    def test_firecrawl_keyed_api_key_is_eligible(self, monkeypatch):
+        """A real FIRECRAWL_API_KEY (direct, non-self-hosted) is keyed too."""
+        from plugins.web.firecrawl.provider import (
+            FirecrawlWebSearchProvider,
+            _use_keyless_ring,
+        )
+
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-real-key")
+        monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
+        monkeypatch.setattr(web_tools, "_peek_nous_access_token", lambda: None)
+
+        provider = FirecrawlWebSearchProvider()
+        assert _use_keyless_ring() is False, "sanity: a real key must dispatch keyed"
+        assert web_tools._rescue_eligible(provider) is True
+
 
 class TestSearchRescue:
     def _dispatch(self, monkeypatch, provider):

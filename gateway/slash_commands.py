@@ -3588,7 +3588,11 @@ class GatewaySlashCommandsMixin:
             self._save_gateway_config_key(
                 f"display.platforms.{platform_key}.show_reasoning", False
             )
-            return t("gateway.reasoning.display_set_off", platform=platform_key)
+            return (
+                t("gateway.reasoning.display_set_off", platform=platform_key)
+                + "\n"
+                + t("gateway.reasoning.display_set_off_warn")
+            )
 
         if value == "reset":
             if persist_global:

@@ -63,6 +63,25 @@ def test_export_snippet_shape():
     assert snippet.rstrip().endswith('> "$__hermes_snap_tmp"')
 
 
+def test_export_snippet_excludes_delegated_child_and_cron_session_markers():
+    """Issue #90782: per-session lifecycle markers must not survive in the
+    snapshot. The dump's ``unset`` line must strip both
+    ``HERMES_DELEGATED_CHILD_CONTEXT`` and ``HERMES_CRON_SESSION`` so a later
+    ``source`` of the snapshot cannot re-inject them into unrelated commands.
+    """
+    snippet = _export_dump_excluding_session_vars('"$__hermes_snap_tmp"')
+    # Both markers must appear after ``unset`` so ``export -p`` never emits them.
+    unset_idx = snippet.index("unset")
+    for name in (
+        "HERMES_DELEGATED_CHILD_CONTEXT",
+        "HERMES_CRON_SESSION",
+    ):
+        assert name in snippet[unset_idx:], (
+            f"{name} must be unset before export -p in the snapshot snippet; "
+            f"otherwise a delegate_task leaks into every later terminal call."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Integration: real LocalEnvironment, two sessions, no cross-contamination.
 # ---------------------------------------------------------------------------

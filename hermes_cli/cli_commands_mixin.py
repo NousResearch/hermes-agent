@@ -3559,6 +3559,7 @@ class CLICommandsMixin:
                 self.agent.reasoning_callback = self._current_reasoning_callback()
             save_config_value("display.show_reasoning", False)
             _cprint(f"  {_ACCENT}✓ Reasoning display: OFF (saved){_RST}")
+            _cprint(f"  {_DIM}  Thinking is still running — use /reasoning none to disable it.{_RST}")
             return
 
         # Full / clamped recap toggle

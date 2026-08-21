@@ -87,6 +87,32 @@ class TestHandleReasoningCommand(unittest.TestCase):
         stub.reasoning_config = parsed
         self.assertEqual(stub.reasoning_config, {"enabled": False})
 
+    def test_reasoning_off_warns_thinking_still_running(self):
+        """/reasoning off hides display but must warn that thinking is still on."""
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        stub = self._make_cli(show_reasoning=True)
+        stub.agent = None
+        with patch("cli.save_config_value"), patch("cli._cprint") as mock_print:
+            CLICommandsMixin._handle_reasoning_command(stub, "/reasoning off")
+
+        self.assertFalse(stub.show_reasoning)
+        printed = " ".join(str(call[0][0]) for call in mock_print.call_args_list)
+        self.assertIn("/reasoning none", printed)
+
+    def test_reasoning_hide_warns_thinking_still_running(self):
+        """/reasoning hide also warns (same code path as off)."""
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        stub = self._make_cli(show_reasoning=True)
+        stub.agent = None
+        with patch("cli.save_config_value"), patch("cli._cprint") as mock_print:
+            CLICommandsMixin._handle_reasoning_command(stub, "/reasoning hide")
+
+        self.assertFalse(stub.show_reasoning)
+        printed = " ".join(str(call[0][0]) for call in mock_print.call_args_list)
+        self.assertIn("/reasoning none", printed)
+
 
 
 

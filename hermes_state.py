@@ -3220,7 +3220,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             logger.debug("Could not close a SessionDB connection", exc_info=True)
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
-        self.db_path = db_path or _default_db_path()
+        self.db_path = Path(db_path) if db_path is not None else _default_db_path()
         # Fail hard (before any connection/pragma/mkdir) if a pytest-context
         # process resolved the developer's production state.db — see the
         # live-DB test-isolation guard block near _default_db_path().

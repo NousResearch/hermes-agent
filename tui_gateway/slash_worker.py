@@ -149,7 +149,10 @@ def main():
     _sw_recovery_times: list[float] = []
 
     def _sw_log(reason: str) -> None:
-        print(f"[slash-worker] {reason}", file=sys.stderr, flush=True)
+        try:
+            print(f"[slash-worker] {reason}", file=sys.stderr, flush=True)
+        except (BrokenPipeError, ValueError, OSError):
+            pass
 
     while True:
         raw = sys.stdin.readline()

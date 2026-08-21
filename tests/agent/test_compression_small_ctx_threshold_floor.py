@@ -142,3 +142,92 @@ class TestTailBudgetProportionality:
         assert comp.tail_token_budget == int(comp.threshold_tokens * comp.summary_target_ratio)
         # Sanity: tail protection stays a modest slice of the window (<= 20%).
         assert comp.tail_token_budget <= comp.context_length * 0.20
+
+
+class TestSmallContextFloorWarning:
+    """Warn when the small-context floor overrides the configured threshold (#91007)."""
+
+    def test_warns_when_floor_overrides_configured_threshold(self, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING):
+            with patch.object(cc, "get_model_context_length", return_value=262_144):
+                comp = ContextCompressor(
+                    model="test/model", threshold_percent=0.60, quiet_mode=False,
+                )
+                # Trigger resolution
+                _ = comp.context_length
+        assert comp.threshold_percent == 0.75
+        assert any(
+            "raised from 60% to 75%" in record.message
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        ), "Expected a warning about the threshold floor override"
+
+    def test_no_warn_when_configured_above_floor(self, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING):
+            with patch.object(cc, "get_model_context_length", return_value=262_144):
+                comp = ContextCompressor(
+                    model="test/model", threshold_percent=0.85, quiet_mode=False,
+                )
+                _ = comp.context_length
+        assert comp.threshold_percent == 0.85
+        floor_warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING and "raised from" in r.message
+        ]
+        assert not floor_warnings, "No floor-override warning expected when configured above floor"
+
+    def test_no_warn_on_quiet_mode(self, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING):
+            with patch.object(cc, "get_model_context_length", return_value=262_144):
+                comp = ContextCompressor(
+                    model="test/model", threshold_percent=0.60, quiet_mode=True,
+                )
+                _ = comp.context_length
+        assert comp.threshold_percent == 0.75
+        floor_warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING and "raised from" in r.message
+        ]
+        assert not floor_warnings, "No floor-override warning expected in quiet_mode"
+
+    def test_warns_on_model_switch_to_small_context(self, caplog):
+        import logging
+        # Start large (no floor), then switch to small (floor applies)
+        with caplog.at_level(logging.WARNING):
+            with patch.object(cc, "get_model_context_length", return_value=1_000_000):
+                comp = ContextCompressor(
+                    model="big/model", threshold_percent=0.50, quiet_mode=False,
+                )
+                _ = comp.context_length
+            assert comp.threshold_percent == 0.50
+            # Switch to a small-context model
+            with patch.object(cc, "get_model_context_length", return_value=262_144):
+                comp.update_model("small/model", 262_144)
+        assert comp.threshold_percent == 0.75
+        assert any(
+            "raised from 50% to 75%" in record.message
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        ), "Expected a warning about the threshold floor override on model switch"
+
+    def test_warns_on_context_length_setter_to_small(self, caplog):
+        import logging
+        # Start large, then set context_length to small
+        with caplog.at_level(logging.WARNING):
+            with patch.object(cc, "get_model_context_length", return_value=1_000_000):
+                comp = ContextCompressor(
+                    model="test/model", threshold_percent=0.50, quiet_mode=False,
+                )
+                _ = comp.context_length
+            assert comp.threshold_percent == 0.50
+            # Set context_length to small
+            comp.context_length = 262_144
+        assert comp.threshold_percent == 0.75
+        assert any(
+            "raised from 50% to 75%" in record.message
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        ), "Expected a warning about the threshold floor override via context_length setter"

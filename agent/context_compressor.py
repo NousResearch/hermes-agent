@@ -2179,9 +2179,28 @@ class ContextCompressor(ContextEngine):
             # __init__ along with the resolution itself, #32221).
             # _base_threshold_percent already has the per-model override
             # applied, so the floor stacks on top of it.
+            _configured_pct = self._base_threshold_percent
             self.threshold_percent = self._effective_threshold_percent(
                 self._resolved_context_length, self._base_threshold_percent,
             )
+            # Warn when the small-context floor overrides the configured
+            # threshold — the floor is silent otherwise and ``hermes config
+            # get`` still reports the unclamped value (#91007).
+            if (
+                not self.quiet_mode
+                and self.threshold_percent > _configured_pct
+            ):
+                logger.warning(
+                    "Compression threshold raised from %.0f%% to %.0f%% "
+                    "for model %s (context_length=%d < %d). The small-"
+                    "context floor overrides compression.threshold; set "
+                    "compression.threshold_tokens for an absolute override.",
+                    _configured_pct * 100,
+                    self.threshold_percent * 100,
+                    self.model,
+                    self._resolved_context_length,
+                    _SMALL_CTX_WINDOW_LIMIT,
+                )
             self._emit_init_summary_once()
         return self._resolved_context_length
 
@@ -2207,9 +2226,27 @@ class ContextCompressor(ContextEngine):
         # __init__ (no _base_threshold_percent).
         _base = getattr(self, "_base_threshold_percent", None)
         if _base is not None:
+            _configured_pct = _base
             self.threshold_percent = self._effective_threshold_percent(
                 value, _base,
             )
+            # Warn when the small-context floor overrides the configured
+            # threshold (#91007).
+            if (
+                not self.quiet_mode
+                and self.threshold_percent > _configured_pct
+            ):
+                logger.warning(
+                    "Compression threshold raised from %.0f%% to %.0f%% "
+                    "for model %s (context_length=%d < %d). The small-"
+                    "context floor overrides compression.threshold; set "
+                    "compression.threshold_tokens for an absolute override.",
+                    _configured_pct * 100,
+                    self.threshold_percent * 100,
+                    self.model,
+                    value,
+                    _SMALL_CTX_WINDOW_LIMIT,
+                )
         self._threshold_tokens = None
         self._tail_token_budget = None
         self._max_summary_tokens = None
@@ -2790,6 +2827,20 @@ class ContextCompressor(ContextEngine):
         self.threshold_percent = self._effective_threshold_percent(
             context_length, _new_base,
         )
+        # Warn when the small-context floor overrides the configured
+        # threshold on a model switch (#91007).
+        if not self.quiet_mode and self.threshold_percent > _new_base:
+            logger.warning(
+                "Compression threshold raised from %.0f%% to %.0f%% "
+                "for model %s (context_length=%d < %d). The small-"
+                "context floor overrides compression.threshold; set "
+                "compression.threshold_tokens for an absolute override.",
+                _new_base * 100,
+                self.threshold_percent * 100,
+                model,
+                context_length,
+                _SMALL_CTX_WINDOW_LIMIT,
+            )
         # max_tokens=None here means "caller didn't specify" → keep the existing
         # output reservation. A switch that genuinely changes the output budget
         # passes the new value explicitly. (#43547)

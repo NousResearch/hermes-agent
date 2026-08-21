@@ -529,7 +529,7 @@ def _cwd_marker(session_id: str) -> str:
 # as the Python-side contract for the exclusion set; the dump path unsets by
 # name/prefix instead of grepping declare lines (see below / issue #71296).
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
-    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|HERMES_CRON_SESSION)"
+    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|HERMES_CRON_SESSION|HERMES_DELEGATED_CHILD_CONTEXT)"
 )
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -580,6 +580,12 @@ def _export_dump_excluding_session_vars(
         # harness value arriving via the process env, exactly like the
         # session-var leak this dump already guards against.
         "AI_AGENT HERMES_AGENT "
+        # HERMES_DELEGATED_CHILD_CONTEXT / HERMES_CRON_SESSION are
+        # per-session lifecycle markers: a child-context exit resets the
+        # ContextVar but the snapshot file persists, re-injecting the
+        # stale marker into every later command and breaking kanban
+        # mutations (#90782) / cron approval checks.
+        "HERMES_DELEGATED_CHILD_CONTEXT HERMES_CRON_SESSION "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
         "export -p; "
         ") || true; } "

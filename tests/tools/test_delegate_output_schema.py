@@ -361,3 +361,47 @@ class TestDelegateTaskDispatch:
         assert "OUTPUT CONTRACT" in (captured.get("context") or "")
         results = payload.get("results") or []
         assert results and results[0].get("schema_valid") is True
+
+    def test_model_dispatch_top_level_schema_reaches_real_delegate_path(self):
+        """Model dispatch preserves the schema through the real delegate path."""
+        import run_agent
+
+        captured = {}
+
+        def fake_build(**kwargs):
+            captured.update(kwargs)
+            return _StubChild(['{"city": "Rio"}'])
+
+        parent = _make_mock_parent()
+        parent._delegate_depth = 1  # Subagent dispatch stays synchronous.
+        with (
+            patch("tools.delegate_tool._load_config", return_value={"max_iterations": 5}),
+            patch("tools.delegate_tool._get_max_spawn_depth", return_value=2),
+            patch(
+                "tools.delegate_tool._resolve_delegation_credentials",
+                return_value={
+                    "provider": None,
+                    "model": None,
+                    "base_url": None,
+                    "api_key": None,
+                    "api_mode": None,
+                },
+            ),
+            patch(
+                "tools.delegate_tool._build_child_preserving_parent_tools",
+                side_effect=fake_build,
+            ),
+        ):
+            out = run_agent.AIAgent._dispatch_delegate_task(
+                parent,
+                {
+                    "goal": "produce the address",
+                    "context": "base context",
+                    "output_schema": ADDRESS_SCHEMA,
+                },
+            )
+
+        payload = json.loads(out)
+        assert "OUTPUT CONTRACT" in (captured.get("context") or "")
+        results = payload.get("results") or []
+        assert results and results[0].get("schema_valid") is True

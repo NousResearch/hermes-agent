@@ -11,6 +11,7 @@ Auth supports:
 """
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -503,6 +504,23 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     return True  # Any other endpoint is a third-party proxy
 
 
+def _session_affinity_headers(
+    base_url: str | None,
+    session_id: str | None,
+    *,
+    enabled: bool = False,
+) -> dict[str, str]:
+    """Return an opted-in opaque affinity header for proxy endpoints."""
+    if (
+        not enabled
+        or not session_id
+        or not _is_third_party_anthropic_endpoint(base_url)
+    ):
+        return {}
+    affinity = hashlib.sha256(str(session_id).encode("utf-8")).hexdigest()
+    return {"x-session-affinity": affinity}
+
+
 def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
     """Return True for Kimi's /coding endpoint that requires claude-code UA."""
     normalized = _normalize_base_url_text(base_url)
@@ -749,10 +767,12 @@ def _common_betas_for_base_url(
 
 def _build_anthropic_client_with_bearer_hook(
     token_provider,
-    base_url: str = None,
-    timeout: float = None,
+    base_url: str | None = None,
+    timeout: float | None = None,
     *,
     drop_context_1m_beta: bool = False,
+    session_id: str | None = None,
+    session_affinity: bool = False,
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`.
 
@@ -819,6 +839,16 @@ def _build_anthropic_client_with_bearer_hook(
     )
     if common_betas:
         kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+    affinity_headers = _session_affinity_headers(
+        base_url,
+        session_id,
+        enabled=session_affinity,
+    )
+    if affinity_headers:
+        kwargs["default_headers"] = {
+            **kwargs.get("default_headers", {}),
+            **affinity_headers,
+        }
 
     client = _anthropic_sdk.Anthropic(**kwargs)
     # Same env-inference trap as build_anthropic_client: auth_token-only
@@ -829,10 +859,12 @@ def _build_anthropic_client_with_bearer_hook(
 
 def build_anthropic_client(
     api_key,
-    base_url: str = None,
-    timeout: float = None,
+    base_url: str | None = None,
+    timeout: float | None = None,
     *,
     drop_context_1m_beta: bool = False,
+    session_id: str | None = None,
+    session_affinity: bool = False,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -874,6 +906,8 @@ def build_anthropic_client(
         return _build_anthropic_client_with_bearer_hook(
             api_key, base_url, timeout,
             drop_context_1m_beta=drop_context_1m_beta,
+            session_id=session_id,
+            session_affinity=session_affinity,
         )
 
     normalize_proxy_env_vars()
@@ -970,6 +1004,17 @@ def build_anthropic_client(
         headers.setdefault("X-Title", "Hermes Agent")
         headers.setdefault("User-Agent", f"HermesAgent/{_HERMES_VERSION}")
         kwargs["default_headers"] = headers
+
+    affinity_headers = _session_affinity_headers(
+        base_url,
+        session_id,
+        enabled=session_affinity,
+    )
+    if affinity_headers:
+        kwargs["default_headers"] = {
+            **kwargs.get("default_headers", {}),
+            **affinity_headers,
+        }
 
     client = _anthropic_sdk.Anthropic(**kwargs)
     # Bearer-only construction leaves ``api_key`` unset, so the SDK fills it

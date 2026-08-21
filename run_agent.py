@@ -5554,6 +5554,43 @@ class AIAgent:
             self._request_anthropic_client_cache = cache
         return cache
 
+    def _build_anthropic_client(
+        self,
+        api_key: Any,
+        base_url: Optional[str] = None,
+        timeout: Optional[float] = None,
+        *,
+        drop_context_1m_beta: bool = False,
+    ) -> Any:
+        """Build an Anthropic client bound to this Hermes conversation."""
+        from agent.anthropic_adapter import build_anthropic_client
+
+        session_affinity = False
+        try:
+            from hermes_cli.config import (
+                get_custom_provider_session_affinity,
+                load_config_readonly,
+            )
+
+            session_affinity = get_custom_provider_session_affinity(
+                base_url,
+                config=load_config_readonly(),
+            )
+        except Exception:
+            logger.debug(
+                "custom-provider session affinity resolution skipped",
+                exc_info=True,
+            )
+
+        return build_anthropic_client(
+            api_key,
+            base_url,
+            timeout=timeout,
+            drop_context_1m_beta=drop_context_1m_beta,
+            session_id=getattr(self, "session_id", None),
+            session_affinity=session_affinity,
+        )
+
     def _request_anthropic_client_key(self) -> tuple:
         """Cache key covering everything that forces a fresh client: credential
         rotation, base URL / region changes, timeout changes (model switch),
@@ -5626,8 +5663,7 @@ class AIAgent:
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             client = build_anthropic_bedrock_client(key[1])
         else:
-            from agent.anthropic_adapter import build_anthropic_client
-            client = build_anthropic_client(
+            client = self._build_anthropic_client(
                 self._anthropic_api_key,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
@@ -6277,7 +6313,7 @@ class AIAgent:
             return False
 
         try:
-            from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client
+            from agent.anthropic_adapter import resolve_anthropic_token
 
             new_token = resolve_anthropic_token()
         except Exception as exc:
@@ -6296,7 +6332,7 @@ class AIAgent:
             pass
 
         try:
-            self._anthropic_client = build_anthropic_client(
+            self._anthropic_client = self._build_anthropic_client(
                 new_token,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
@@ -6430,7 +6466,7 @@ class AIAgent:
         )
 
         if self.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
+            from agent.anthropic_adapter import _is_oauth_token
 
             try:
                 self._anthropic_client.close()
@@ -6439,7 +6475,7 @@ class AIAgent:
 
             self._anthropic_api_key = runtime_key
             self._anthropic_base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
-            self._anthropic_client = build_anthropic_client(
+            self._anthropic_client = self._build_anthropic_client(
                 runtime_key, self._anthropic_base_url,
                 timeout=get_provider_request_timeout(self.provider, self.model),
             )
@@ -6548,8 +6584,7 @@ class AIAgent:
             region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
             self._anthropic_client = build_anthropic_bedrock_client(region)
         else:
-            from agent.anthropic_adapter import build_anthropic_client
-            self._anthropic_client = build_anthropic_client(
+            self._anthropic_client = self._build_anthropic_client(
                 self._anthropic_api_key,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),

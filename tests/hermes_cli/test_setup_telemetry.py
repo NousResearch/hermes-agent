@@ -11,6 +11,7 @@ from hermes_cli.subcommands.setup import build_setup_parser
 
 def test_shared_metrics_are_registered_disabled_by_default():
     assert DEFAULT_CONFIG["telemetry"]["shared_metrics"]["enabled"] is False
+    assert DEFAULT_CONFIG["privacy"]["allow_third_party_identifiers"] is False
 
 
 def test_setup_telemetry_enables_shared_metrics(monkeypatch):
@@ -23,6 +24,7 @@ def test_setup_telemetry_enables_shared_metrics(monkeypatch):
     setup_telemetry(config)
 
     assert config["telemetry"]["shared_metrics"]["enabled"] is True
+    assert config["privacy"]["allow_third_party_identifiers"] is True
 
 
 def test_setup_parser_accepts_telemetry_section():

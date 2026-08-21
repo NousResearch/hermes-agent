@@ -632,7 +632,10 @@ def _match_user_deny_rule(command: str) -> str | None:
     Matching is case-insensitive and runs over the same normalized /
     deobfuscated command variants the dangerous-pattern detector uses, so
     quoting tricks (``r\\m``, ``git st""atus``) can't sidestep a rule any
-    more easily than they sidestep detection. Empty/absent list = no-op.
+    more easily than they sidestep detection. Whitespace runs are collapsed
+    to a single space on both the candidate and the glob before matching, so
+    a rule with single spaces also matches double-spaced / tab-separated
+    variants. Empty/absent list = no-op.
     """
     try:
         deny_patterns = _get_approval_config().get("deny") or []
@@ -644,10 +647,17 @@ def _match_user_deny_rule(command: str) -> str | None:
              if isinstance(p, str) and p.strip()]
     if not globs:
         return None
+    # Collapse whitespace runs to a single space on BOTH the candidate and
+    # each glob before matching. fnmatch has no "one-or-more whitespace"
+    # metacharacter, so a rule written with literal single spaces (`git push
+    # --force origin main`) is otherwise sidestepped by `git  push` (double
+    # space) or a tab between arguments (#86568). The ORIGINAL pattern string
+    # is still returned below so the block message echoes the user's rule.
+    normalized_globs = [" ".join(p.lower().split()) for p in globs]
     for command_variant in _command_detection_variants(command):
-        candidate = command_variant.lower().strip()
-        for pattern in globs:
-            if fnmatch.fnmatchcase(candidate, pattern.lower()):
+        candidate = " ".join(command_variant.lower().split())
+        for pattern, pattern_normalized in zip(globs, normalized_globs):
+            if fnmatch.fnmatchcase(candidate, pattern_normalized):
                 return pattern
     return None
 

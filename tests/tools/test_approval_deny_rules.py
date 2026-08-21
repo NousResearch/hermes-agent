@@ -56,6 +56,35 @@ class TestMatchUserDenyRule:
         deny_config(["git push --force*"])
         assert mod._match_user_deny_rule('git pu""sh --force origin main') is not None
 
+    def test_whitespace_variants_still_match(self, deny_config):
+        """Repeated spaces / tabs can't sidestep a single-space deny glob.
+
+        fnmatch has no "one-or-more whitespace" metacharacter, so a deny
+        rule written with literal single spaces was previously bypassed by a
+        double space or a tab between arguments (#86568). Both the candidate
+        and the glob are whitespace-collapsed before matching, and the
+        ORIGINAL user-written glob is still returned.
+        """
+        deny_config(["git push --force origin main", "gh repo delete *"])
+        cases = {
+            "git push --force origin main": "git push --force origin main",
+            "git  push --force origin main": "git push --force origin main",
+            "git\tpush --force origin main": "git push --force origin main",
+            "git   push --force origin main": "git push --force origin main",
+            "git\tpush\t--force origin main": "git push --force origin main",
+            " git  push --force origin main ": "git push --force origin main",
+            "GIT  PUSH --FORCE origin main": "git push --force origin main",
+            "gh  repo  delete someorg/somerepo": "gh repo delete *",
+        }
+        for variant, expected in cases.items():
+            assert mod._match_user_deny_rule(variant) == expected, variant
+
+    def test_whitespace_normalization_no_false_positive(self, deny_config):
+        """Whitespace collapse must not broaden a rule beyond its glob."""
+        deny_config(["git push --force origin main"])
+        assert mod._match_user_deny_rule("git status") is None
+        assert mod._match_user_deny_rule("git  push --force origin main2") is None
+
 
 class TestDenyBeatsYolo:
     def test_deny_blocks_under_yolo_env(self, deny_config, clean_env, monkeypatch):

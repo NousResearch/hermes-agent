@@ -4706,8 +4706,16 @@ def _refresh_windows_gateway_launchers() -> None:
     (#54220/#56747) and, since #70344, the console-less gateway died at
     startup with ``RuntimeError: sys.stderr is None`` (#71671).
 
-    The task's /TR points at a stable script path, so rewriting the files in
-    place retargets the task without any schtasks call (no UAC needed).
+    For installs created by the hidden-console rework the task's /TR points
+    at a stable ``.vbs`` path, so rewriting the files in place retargets the
+    task without any schtasks call (no UAC needed). Tasks registered by
+    pre-#45599 builds point at the console ``.cmd`` wrapper instead, which a
+    file rewrite cannot retarget — those are recreated here (delete+create,
+    same as ``install()``) so a legacy install is healed by the first update
+    that ships this code. If the recreate is blocked (e.g. the task lives in
+    an admin-protected namespace and the update is not elevated), a warning
+    points at ``hermes gateway install``.
+
     ``_write_task_script`` is idempotent and renders from current code, so
     this is a no-op for modern installs. Best-effort: a failed refresh must
     never fail the update.
@@ -4720,6 +4728,21 @@ def _refresh_windows_gateway_launchers() -> None:
         if not gateway_windows.is_installed():
             return
         gateway_windows._write_task_script()
+        # Legacy pre-#45599 tasks launch the console .cmd wrapper; a file
+        # rewrite cannot retarget the task's action, so recreate the task.
+        if gateway_windows.task_launcher_is_current() is False:
+            ok, detail = gateway_windows._install_scheduled_task(
+                gateway_windows.get_task_name(),
+                gateway_windows.get_task_script_path(),
+            )
+            if ok:
+                print("  ✓ Retargeted legacy Scheduled Task to the hidden VBS launcher")
+            elif "access is denied" in detail.lower():
+                print("  ⚠ Legacy Scheduled Task launcher is outdated and needs admin to fix")
+                print("    Run: hermes gateway install")
+            else:
+                first_line = (detail.splitlines() or [detail])[0]
+                print(f"  ⚠ Could not retarget legacy Scheduled Task launcher: {first_line}")
         print("  ✓ Refreshed Windows gateway launcher scripts")
     except Exception as exc:
         logger.debug("Could not refresh Windows gateway launchers after update: %s", exc)

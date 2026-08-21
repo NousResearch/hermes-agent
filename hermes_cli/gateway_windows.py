@@ -38,7 +38,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape, unescape
 
 from hermes_cli._subprocess_compat import (
     _WINDOWS_GATEWAY_BREAKAWAY_ENV,
@@ -1105,6 +1105,9 @@ def install(
         _install_startup_fallback(script_path, start_now, "administrator approval was not used")
         return
 
+    if is_task_registered() and task_launcher_is_current() is False:
+        print("ℹ Replacing outdated Scheduled Task (legacy launcher used a visible console)")
+
     ok, detail = _install_scheduled_task(task_name, script_path)
     if ok:
         print(f"✓ {detail}")
@@ -1309,6 +1312,86 @@ def _gateway_pids() -> list[int]:
     return list(find_gateway_pids())
 
 
+# ---------------------------------------------------------------------------
+# Task launcher currency (legacy-install migration)
+# ---------------------------------------------------------------------------
+#
+# The hidden-console rework (issue #45599) made install() register the
+# Scheduled Task with a ``wscript.exe`` action that runs the console-less
+# ``.vbs`` launcher. Tasks registered by older builds point at the console
+# ``.cmd`` wrapper instead: at logon they flash a console window and can be
+# reaped by the CTRL_CLOSE broadcast (0xC000013A), so the gateway silently
+# disappears on every reboot. ``hermes update`` refreshes the launcher *files*
+# in place but cannot retarget a task whose action references the ``.cmd``,
+# so legacy tasks survive updates forever unless they are detected. The
+# helpers below detect that state; status()/start() surface it and
+# install()/the post-update refresh heal it.
+
+
+def _parse_task_xml_launcher(xml_text: str) -> tuple[str, str] | None:
+    """Extract (Command, Arguments) of the first Exec action from a task XML dump.
+
+    ``schtasks /Query /XML`` emits the task definition verbatim (UTF-16 with a
+    BOM on disk, decoded here through the locale code page), so a full XML
+    parser would fight the encoding declaration. We only need the Exec
+    action's Command/Arguments, so a targeted regex is both robust and
+    encoding-agnostic (all the tokens we match are ASCII). Returns None when
+    the shape is unexpected.
+    """
+    if not xml_text:
+        return None
+    m_cmd = re.search(r"<Command>(.*?)</Command>", xml_text, re.S)
+    if not m_cmd:
+        return None
+    m_args = re.search(r"<Arguments>(.*?)</Arguments>", xml_text, re.S)
+    command = unescape(m_cmd.group(1)).strip()
+    arguments = unescape(m_args.group(1)).strip() if m_args else ""
+    return (command, arguments)
+
+
+def _task_launcher_is_current_xml(xml_text: str, expected_launcher: Path) -> bool | None:
+    """True when a task XML launches ``wscript.exe`` against ``expected_launcher``.
+
+    False = the task predates the hidden-console rework (issue #45599) and
+    still launches the console ``.cmd`` wrapper — it will flash a console
+    window at logon and can be reaped by the logon CTRL_CLOSE broadcast.
+    None = the XML is unparseable; callers should stay silent.
+    """
+    parsed = _parse_task_xml_launcher(xml_text)
+    if parsed is None:
+        return None
+    command, arguments = parsed
+    if command.lower() != "wscript.exe":
+        return False
+    # The generated XML renders the launcher as: //B //Nologo "<vbs path>".
+    # Compare the raw path (case-insensitively) so quote style differences
+    # between schtasks renderings don't matter.
+    expected = os.path.normcase(str(expected_launcher))
+    return expected in os.path.normcase(arguments)
+
+
+def task_launcher_is_current(task_name: str | None = None) -> bool | None:
+    """Whether the registered Scheduled Task launches the current hidden VBS.
+
+    True  — task launches ``wscript.exe`` against the current ``.vbs``.
+    False — task exists but was created by an older Hermes build (pre-#45599
+            installs point at the console ``.cmd`` wrapper). ``hermes update``
+            refreshes the launcher *files* but cannot retarget the task's
+            action; re-running ``hermes gateway install`` (or the post-update
+            refresh) recreates it with the hidden launcher.
+    None  — unknown (no task registered, or the query failed). Callers must
+            not alarm on None.
+    """
+    _assert_windows()
+    task_name = task_name or get_task_name()
+    if not is_task_registered():
+        return None
+    code, out, _err = _exec_schtasks(["/Query", "/TN", task_name, "/XML"])
+    if code != 0:
+        return None
+    return _task_launcher_is_current_xml(out, get_task_script_path().with_suffix(".vbs"))
+
+
 def _print_deep_probes() -> None:
     """Print PASS/FAIL per individual probe of gateway liveness.
 
@@ -1452,6 +1535,11 @@ def status(deep: bool = False) -> None:
 
     if task_installed:
         print(f"✓ Scheduled Task registered: {task_name}")
+        if task_launcher_is_current() is False:
+            print("⚠ Scheduled Task launcher is outdated: it launches the console .cmd wrapper")
+            print("  instead of the hidden VBS launcher. At logon it shows a console window and")
+            print("  can be terminated by the logon console-close event (issue #45599).")
+            print("  Fix: run 'hermes gateway install' to retarget it.")
         info = query_task_status()
         if info:
             for key in ("status", "last run time", "last run result"):
@@ -1488,13 +1576,19 @@ def status(deep: bool = False) -> None:
 def start() -> None:
     """Start the gateway using the canonical detached Windows launch path."""
     _assert_windows()
+    task_installed = is_task_registered()
+    startup_installed = is_startup_entry_installed()
+
+    if task_installed and task_launcher_is_current() is False:
+        print("⚠ Scheduled Task launcher is outdated: it launches the console .cmd wrapper")
+        print("  instead of the hidden VBS launcher (issue #45599). At logon the gateway")
+        print("  shows a console window and may be terminated by the logon close event.")
+        print("  Fix: run 'hermes gateway install' to retarget it.")
+
     running_pids = _gateway_pids()
     if running_pids:
         print(f"✓ Gateway already running (PID: {', '.join(map(str, running_pids))})")
         return
-
-    task_installed = is_task_registered()
-    startup_installed = is_startup_entry_installed()
 
     if not task_installed and not startup_installed:
         from hermes_cli.setup import prompt_yes_no

@@ -370,3 +370,65 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
 
 
 
+# ---------------------------------------------------------------------------
+# Task launcher currency — legacy pre-#45599 install migration
+#
+# Tasks registered before the hidden-console rework launch the console .cmd
+# wrapper. ``hermes update`` rewrites the launcher *files* but cannot
+# retarget the task's action, so status()/start() must surface the stale
+# task and install()/the post-update refresh must recreate it. These tests
+# cover the pure XML-parsing/decision helpers (run on any host; the schtasks
+# query wrapper is windows_only and exercised end-to-end by the refresh
+# tests in test_update_gateway_launcher_refresh.py).
+# ---------------------------------------------------------------------------
+
+
+def test_parse_task_xml_launcher_roundtrips_generated_xml():
+    launcher = Path(r"C:\Users\me\AppData\Local\hermes\gateway-service\Hermes_Gateway.vbs")
+    xml_text = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, None)
+
+    command, arguments = gateway_windows._parse_task_xml_launcher(xml_text)
+
+    assert command == "wscript.exe"
+    assert "Hermes_Gateway.vbs" in arguments
+
+
+def test_task_launcher_is_current_xml_matches_wscript_vbs():
+    launcher = Path(r"C:\h\gateway-service\Hermes_Gateway.vbs")
+    xml_text = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, None)
+
+    assert gateway_windows._task_launcher_is_current_xml(xml_text, launcher) is True
+
+
+def test_task_launcher_is_current_xml_flags_legacy_cmd_launcher():
+    """A pre-#45599 task action (cmd.exe + .cmd wrapper) must be flagged stale."""
+    xml_text = (
+        '<?xml version="1.0" encoding="UTF-16"?><Task><Actions><Exec>'
+        "<Command>cmd.exe</Command>"
+        '<Arguments>/c "C:\\Users\\me\\gateway-service\\Hermes_Gateway.cmd"</Arguments>'
+        "</Exec></Actions></Task>"
+    )
+
+    assert (
+        gateway_windows._task_launcher_is_current_xml(
+            xml_text, Path(r"C:\Users\me\gateway-service\Hermes_Gateway.vbs")
+        )
+        is False
+    )
+
+
+def test_task_launcher_is_current_xml_unparseable_is_unknown():
+    assert gateway_windows._task_launcher_is_current_xml("", Path("x.vbs")) is None
+    assert gateway_windows._task_launcher_is_current_xml("<not a task>", Path("x.vbs")) is None
+
+
+def test_task_launcher_is_current_xml_ignores_quote_style():
+    """The vbs path may be quoted/unquoted in schtasks renderings — the raw
+    path comparison must not care."""
+    launcher = Path(r"C:\h\gateway-service\Hermes_Gateway.vbs")
+    for args in (
+        '//B //Nologo "C:\\h\\gateway-service\\Hermes_Gateway.vbs"',
+        "//B //Nologo C:\\h\\gateway-service\\Hermes_Gateway.vbs",
+    ):
+        xml_text = "<Task><Actions><Exec><Command>wscript.exe</Command><Arguments>{args}</Arguments></Exec></Actions></Task>".format(args=args)
+        assert gateway_windows._task_launcher_is_current_xml(xml_text, launcher) is True

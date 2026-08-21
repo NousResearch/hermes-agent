@@ -92,3 +92,78 @@ def test_restart_spec_normalizes_legacy_pythonw_argv(tmp_path):
 
 
 
+
+# ---------------------------------------------------------------------------
+# _refresh_windows_gateway_launchers: hermes update regenerates launchers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.windows_only
+def test_refresh_retargets_legacy_cmd_task(monkeypatch, capsys):
+    """A pre-#45599 Scheduled Task whose action launches the console .cmd
+    wrapper must be recreated (delete+create) with the hidden VBS launcher
+    during the post-update refresh — a launcher-file rewrite alone cannot
+    retarget the task's action."""
+    import hermes_cli.update_cmd as update_cmd
+
+    script_path = Path(r"C:\Users\me\AppData\Local\hermes\gateway-service\Hermes_Gateway.cmd")
+    called_with = {}
+
+    def fake_install(task_name, path):
+        called_with["task_name"] = task_name
+        called_with["path"] = path
+        return (True, "Created Scheduled Task 'Hermes_Gateway'")
+
+    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "task_launcher_is_current", lambda *a, **k: False)
+    monkeypatch.setattr(gateway_windows, "_install_scheduled_task", fake_install)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
+
+    update_cmd._refresh_windows_gateway_launchers()
+
+    assert called_with == {"task_name": "Hermes_Gateway", "path": script_path}
+    out = capsys.readouterr().out
+    assert "Retargeted legacy Scheduled Task to the hidden VBS launcher" in out
+
+
+@pytest.mark.windows_only
+def test_refresh_leaves_current_task_alone(monkeypatch, capsys):
+    """A task that already launches the hidden VBS must not be recreated."""
+    import hermes_cli.update_cmd as update_cmd
+
+    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: Path("unused.cmd"))
+    monkeypatch.setattr(gateway_windows, "task_launcher_is_current", lambda *a, **k: True)
+
+    update_cmd._refresh_windows_gateway_launchers()
+
+    out = capsys.readouterr().out
+    assert "Retargeted legacy" not in out
+    assert "Refreshed Windows gateway launcher scripts" in out
+
+
+@pytest.mark.windows_only
+def test_refresh_warns_when_legacy_retarget_blocked(monkeypatch, capsys):
+    """Access-denied on the recreate must surface an actionable warning, not
+    fail the update (best-effort contract)."""
+    import hermes_cli.update_cmd as update_cmd
+
+    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: Path("unused.cmd"))
+    monkeypatch.setattr(gateway_windows, "task_launcher_is_current", lambda *a, **k: False)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_install_scheduled_task",
+        lambda *a, **k: (False, "schtasks /Create failed (code 5): access is denied"),
+    )
+
+    update_cmd._refresh_windows_gateway_launchers()
+
+    out = capsys.readouterr().out
+    assert "needs admin to fix" in out
+    assert "hermes gateway install" in out

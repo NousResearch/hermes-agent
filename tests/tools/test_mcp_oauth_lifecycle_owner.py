@@ -143,3 +143,83 @@ async def test_cancellation_closes_inner_flow(tmp_path, monkeypatch):
         await flow.asend(httpx.Response(200))
 
     assert closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_does_not_mask_primary_flow_error(tmp_path, monkeypatch):
+    from mcp.client.auth.oauth2 import OAuthClientProvider
+
+    provider = await _provider(tmp_path, monkeypatch)
+
+    class Inner:
+        async def __anext__(self):
+            return httpx.Request("POST", "https://example.com/mcp")
+
+        async def asend(self, _response):
+            raise RuntimeError("primary OAuth failure")
+
+        async def aclose(self):
+            raise ValueError("cleanup failure")
+
+    monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", lambda self, request: Inner())
+    flow = provider.async_auth_flow(httpx.Request("POST", "https://example.com/mcp"))
+    await flow.__anext__()
+
+    with pytest.raises(RuntimeError, match="primary OAuth failure") as exc_info:
+        await flow.asend(httpx.Response(500))
+
+    assert exc_info.value.__notes__ == [
+        "MCP OAuth inner auth-flow cleanup also raised ValueError"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_does_not_mask_cancellation(tmp_path, monkeypatch):
+    from mcp.client.auth.oauth2 import OAuthClientProvider
+
+    provider = await _provider(tmp_path, monkeypatch)
+
+    class Inner:
+        async def __anext__(self):
+            return httpx.Request("POST", "https://example.com/mcp")
+
+        async def asend(self, _response):
+            raise asyncio.CancelledError()
+
+        async def aclose(self):
+            raise ValueError("cleanup failure")
+
+    monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", lambda self, request: Inner())
+    flow = provider.async_auth_flow(httpx.Request("POST", "https://example.com/mcp"))
+    await flow.__anext__()
+
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await flow.asend(httpx.Response(500))
+
+    assert exc_info.value.__notes__ == [
+        "MCP OAuth inner auth-flow cleanup also raised ValueError"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_outer_close_surfaces_cleanup_failure(tmp_path, monkeypatch):
+    from mcp.client.auth.oauth2 import OAuthClientProvider
+
+    provider = await _provider(tmp_path, monkeypatch)
+
+    class Inner:
+        async def __anext__(self):
+            return httpx.Request("POST", "https://example.com/mcp")
+
+        async def asend(self, _response):
+            raise AssertionError("flow is intentionally closed before response")
+
+        async def aclose(self):
+            raise ValueError("cleanup failure")
+
+    monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", lambda self, request: Inner())
+    flow = provider.async_auth_flow(httpx.Request("POST", "https://example.com/mcp"))
+    await flow.__anext__()
+
+    with pytest.raises(ValueError, match="cleanup failure"):
+        await flow.aclose()

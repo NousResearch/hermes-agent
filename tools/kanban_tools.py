@@ -35,6 +35,7 @@ from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
+from hermes_constants import VALID_REASONING_EFFORTS
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 
@@ -1411,6 +1412,7 @@ def _handle_create(args: dict, **kw) -> str:
     goal_max_turns = args.get("goal_max_turns")
     model_override = args.get("model")
     provider_override = args.get("provider")
+    reasoning_effort = args.get("reasoning_effort")
     if provider_override and not model_override:
         return tool_error("'provider' requires 'model' to be set as well")
     if isinstance(parents, str):
@@ -1454,6 +1456,7 @@ def _handle_create(args: dict, **kw) -> str:
                 skills=skills,
                 model_override=model_override,
                 provider_override=provider_override,
+                reasoning_effort=reasoning_effort,
                 goal_mode=goal_mode,
                 goal_max_turns=(
                     int(goal_max_turns) if goal_max_turns is not None else None
@@ -2301,6 +2304,15 @@ KANBAN_CREATE_SCHEMA = {
                     "provider — a model name alone is resolved against "
                     "the profile's provider and will fail if it belongs "
                     "to a different one. Requires 'model'."
+                ),
+            },
+            "reasoning_effort": {
+                "type": "string",
+                "enum": ["none", *VALID_REASONING_EFFORTS],
+                "description": (
+                    "Override the dispatched worker's reasoning effort for "
+                    "this task. Omit to inherit the assignee profile's "
+                    "configured level."
                 ),
             },
             "board": _board_schema_prop(),

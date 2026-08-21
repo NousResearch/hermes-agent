@@ -57,6 +57,20 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     )
 
 
+def test_create_accepts_per_task_reasoning_effort(kanban_home):
+    raw = kc.run_slash(
+        "create 'risk-sensitive task' --assignee reviewer "
+        "--reasoning xhigh --json"
+    )
+
+    task = json.loads(raw)
+    assert task["reasoning_effort"] == "xhigh"
+    with kb.connect_closing() as conn:
+        stored = kb.get_task(conn, task["id"])
+    assert stored is not None
+    assert stored.reasoning_effort == "xhigh"
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kb.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")

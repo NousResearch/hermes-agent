@@ -1861,6 +1861,7 @@ class _CodexCompletionsAdapter:
                     val = obj.get(key, default)
                 return val if val is not None else default
 
+            reasoning_items_raw: List[Dict[str, Any]] = []
             for item in (getattr(final, "output", None) or []):
                 item_type = _item_get(item, "type")
                 if item_type == "message":
@@ -1877,6 +1878,32 @@ class _CodexCompletionsAdapter:
                             arguments=_item_get(item, "arguments", "{}"),
                         ),
                     ))
+                elif item_type == "reasoning":
+                    # Preserve encrypted reasoning state for multi-turn
+                    # continuity, mirroring the main transport's
+                    # _normalize_codex_response. Transient items are skipped.
+                    encrypted = _item_get(item, "encrypted_content")
+                    if isinstance(encrypted, str) and encrypted:
+                        raw_item: Dict[str, Any] = {
+                            "type": "reasoning",
+                            "encrypted_content": encrypted,
+                        }
+                        item_id = _item_get(item, "id")
+                        if isinstance(item_id, str) and item_id.startswith("rs_tmp_"):
+                            continue
+                        if isinstance(item_id, str) and item_id:
+                            raw_item["id"] = item_id
+                        summary = _item_get(item, "summary")
+                        if isinstance(summary, list):
+                            raw_summary = []
+                            for part in summary:
+                                text = _item_get(part, "text")
+                                if isinstance(text, str):
+                                    raw_summary.append(
+                                        {"type": "summary_text", "text": text}
+                                    )
+                            raw_item["summary"] = raw_summary
+                        reasoning_items_raw.append(raw_item)
 
             resp_usage = getattr(final, "usage", None)
             if resp_usage:
@@ -1899,16 +1926,55 @@ class _CodexCompletionsAdapter:
 
         content = "".join(text_parts).strip() or None
 
+        # Check-6 parity with the main transport: a model that emitted
+        # ``assistant to=functions.foo {...}`` as plain text (instead of a
+        # structured function_call item) must not surface as a confident
+        # summary with no tools executed. Clear the text and mark the turn
+        # incomplete so the continuation path can re-elicit a proper tool
+        # call. Encrypted reasoning items are preserved above so the model
+        # keeps its chain-of-thought on the retry.
+        leaked_tool_call_text = False
+        if content and not tool_calls_raw:
+            try:
+                from agent.codex_responses_adapter import (
+                    _TOOL_CALL_LEAK_PATTERN,
+                    _neutralize_harmony_tokens,
+                )
+            except Exception:
+                _TOOL_CALL_LEAK_PATTERN = None
+                _neutralize_harmony_tokens = None
+            if _TOOL_CALL_LEAK_PATTERN is not None and _TOOL_CALL_LEAK_PATTERN.search(content):
+                leaked_tool_call_text = True
+                logger.warning(
+                    "Codex auxiliary response contains leaked tool-call text "
+                    "in assistant content (no structured function_call items). "
+                    "Treating as incomplete so the continuation path can "
+                    "re-elicit a proper tool call. Leaked snippet: %r",
+                    content[:300],
+                )
+                content = ""
+            elif _neutralize_harmony_tokens is not None:
+                # Reserved Harmony wire tokens must not be replayed into
+                # later requests (the backend rejects them pre-inference).
+                content = _neutralize_harmony_tokens(content)
+
         # Build a response that looks like chat.completions
         message = SimpleNamespace(
             role="assistant",
             content=content,
-            tool_calls=tool_calls_raw or None,
+            tool_calls=tool_calls_raw or [],
+            codex_reasoning_items=reasoning_items_raw or None,
         )
+        if tool_calls_raw:
+            finish_reason = "tool_calls"
+        elif leaked_tool_call_text:
+            finish_reason = "incomplete"
+        else:
+            finish_reason = "stop"
         choice = SimpleNamespace(
             index=0,
             message=message,
-            finish_reason="stop" if not tool_calls_raw else "tool_calls",
+            finish_reason=finish_reason,
         )
         return SimpleNamespace(
             choices=[choice],

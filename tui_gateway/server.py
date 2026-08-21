@@ -4569,6 +4569,8 @@ def _load_service_tier() -> str | None:
         return None
     if raw in {"fast", "priority", "on"}:
         return "priority"
+    if raw in {"auto", "cold"}:
+        return raw
     return None
 
 
@@ -7185,6 +7187,9 @@ def _make_agent(
             service_tier_override
             if service_tier_override is not None
             else _load_service_tier()
+        ),
+        fast_auto_on_seconds=(cfg.get("agent") or {}).get(
+            "fast_auto_on_seconds", 60
         ),
         enabled_toolsets=_load_enabled_toolsets(_resolve_agent_platform(platform_override)),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
@@ -12033,32 +12038,35 @@ def _(rid, params: dict) -> dict:
         raw = str(value or "").strip().lower()
         agent = session.get("agent") if session else None
         if agent is not None:
-            current_fast = getattr(agent, "service_tier", None) == "priority"
+            current_tier = getattr(agent, "service_tier", None)
         elif session is not None and session.get("create_service_tier_override") is not None:
             # Pre-build session with a pinned tier (desktop draft pick or an
             # earlier session-scoped toggle) — report/toggle from the pin, not
             # the global default.
-            current_fast = session["create_service_tier_override"] == "priority"
+            current_tier = session["create_service_tier_override"]
         else:
-            current_fast = _load_service_tier() == "priority"
+            current_tier = _load_service_tier()
+        current_mode = "fast" if current_tier == "priority" else current_tier or "normal"
 
         if raw in {"status"}:
             return _ok(
                 rid,
-                {"key": key, "value": "fast" if current_fast else "normal"},
+                {"key": key, "value": current_mode},
             )
 
         if raw in {"", "toggle"}:
-            nv = "normal" if current_fast else "fast"
+            nv = "normal" if current_mode != "normal" else "fast"
         elif raw in {"fast", "on"}:
             nv = "fast"
         elif raw in {"normal", "off"}:
             nv = "normal"
+        elif raw in {"auto", "cold"}:
+            nv = raw
         else:
             return _err(rid, 4002, f"unknown fast mode: {value}")
 
         overrides = None
-        if nv == "fast":
+        if nv in {"fast", "auto", "cold"}:
             from hermes_cli.models import resolve_fast_mode_overrides
 
             if agent is not None:
@@ -12097,17 +12105,22 @@ def _(rid, params: dict) -> dict:
             # create override so lazily-built sessions and rebuilds (/new,
             # deferred resume) keep the choice; "" pins normal explicitly.
             session["create_service_tier_override"] = (
-                "priority" if nv == "fast" else ""
+                "priority" if nv == "fast" else nv if nv in {"auto", "cold"} else ""
             )
         else:
             _write_config_key("agent.service_tier", nv)
         if agent is not None:
-            agent.service_tier = "priority" if nv == "fast" else None
+            agent.service_tier = (
+                "priority" if nv == "fast" else nv if nv in {"auto", "cold"} else None
+            )
             current_overrides = dict(getattr(agent, "request_overrides", {}) or {})
             current_overrides.pop("service_tier", None)
             current_overrides.pop("speed", None)
             if nv == "fast":
                 current_overrides.update(overrides)
+            from agent.fast_mode import invalidate_fast_mode_turn
+
+            invalidate_fast_mode_turn(agent)
             agent.request_overrides = current_overrides
             _persist_live_session_runtime(session)
             _emit(
@@ -14217,6 +14230,11 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
                 agent.service_tier = "priority"
             elif mode in {"normal", "off"}:
                 agent.service_tier = None
+            elif mode in {"auto", "cold"}:
+                agent.service_tier = mode
+            from agent.fast_mode import invalidate_fast_mode_turn
+
+            invalidate_fast_mode_turn(agent)
             _emit("session.info", sid, _session_info(agent, session))
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()

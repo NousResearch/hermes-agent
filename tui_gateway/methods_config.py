@@ -274,7 +274,8 @@ def _(rid, params: dict) -> dict:
                 tier = session["create_service_tier_override"]
         if tier is None:
             tier = _load_service_tier()
-        return _ok(rid, {"value": "fast" if tier == "priority" else "normal"})
+        value = "fast" if tier == "priority" else tier or "normal"
+        return _ok(rid, {"value": value})
     if key == "busy":
         return _ok(rid, {"value": _load_busy_input_mode()})
     if key in {"approval_mode", "approvals.mode"}:

@@ -3705,9 +3705,13 @@ class CLICommandsMixin:
 
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or parts[1].strip().lower() == "status":
-            status = "fast" if self.service_tier == "priority" else "normal"
+            status = (
+                "fast"
+                if self.service_tier == "priority"
+                else self.service_tier or "normal"
+            )
             _cprint(f"  {_ACCENT}{feature_name}: {status}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|auto|cold|status] [--global]{_RST}")
             return
 
         arg_tokens = parts[1].strip().lower().split()
@@ -3725,9 +3729,13 @@ class CLICommandsMixin:
             self.service_tier = None
             saved_value = "normal"
             label = "NORMAL"
+        elif arg in {"auto", "cold"}:
+            self.service_tier = arg
+            saved_value = arg
+            label = arg.upper()
         else:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|auto|cold|status] [--global]{_RST}")
             return
 
         self.agent = None  # Force agent re-init with new service-tier config

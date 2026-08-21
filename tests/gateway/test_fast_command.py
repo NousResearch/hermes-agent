@@ -124,6 +124,27 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
     assert route["request_overrides"] == {"service_tier": "priority"}
 
 
+@pytest.mark.parametrize("mode", ["auto", "cold"])
+def test_turn_route_defers_dynamic_modes_to_agent(mode):
+    runner = _make_runner()
+    runner._service_tier = mode
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "https://openrouter.ai/api/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "hi", "gpt-5.4", runtime_kwargs,
+    )
+
+    assert route["request_overrides"] == {}
+
+
 @pytest.mark.asyncio
 async def test_handle_fast_command_global_flag_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()
@@ -169,4 +190,20 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
     # A different session still gets the config default.
     assert runner._resolve_session_service_tier(session_key="other-session") == "priority"
 
+
+@pytest.mark.asyncio
+async def test_session_cold_override_preserves_exact_mode(monkeypatch, tmp_path):
+    runner = _make_runner()
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
+
+    event = _make_event("/fast cold")
+    session_key = runner._session_key_for_source(event.source)
+
+    response = await runner._handle_fast_command(event)
+
+    assert "COLD" in response
+    assert runner._resolve_session_service_tier(session_key=session_key) == "cold"
 

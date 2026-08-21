@@ -1151,8 +1151,12 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "agent.service_tier": {
         "type": "select",
-        "description": "API service tier (OpenAI/Anthropic)",
-        "options": ["", "auto", "default", "flex"],
+        "description": "Speed policy (normal, fast, bounded auto, or first-turn cold)",
+        "options": ["normal", "fast", "auto", "cold"],
+    },
+    "agent.fast_auto_on_seconds": {
+        "type": "number",
+        "description": "Fast window in seconds for auto/cold policies",
     },
     "delegation.reasoning_effort": {
         "type": "select",

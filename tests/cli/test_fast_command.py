@@ -29,6 +29,10 @@ class TestParseServiceTierConfig(unittest.TestCase):
         self.assertEqual(self._parse("fast"), "priority")
         self.assertEqual(self._parse("priority"), "priority")
 
+    def test_dynamic_modes_are_preserved(self):
+        self.assertEqual(self._parse("auto"), "auto")
+        self.assertEqual(self._parse("cold"), "cold")
+
 
 
 class TestHandleFastCommand(unittest.TestCase):
@@ -70,6 +74,19 @@ class TestHandleFastCommand(unittest.TestCase):
         # Session-scoped by default: no config write.
         mock_save.assert_not_called()
         self.assertIsNone(stub.service_tier)
+        self.assertIsNone(stub.agent)
+
+    def test_auto_argument_sets_turn_local_mode(self):
+        cli_mod = _import_cli()
+        stub = self._make_cli(service_tier=None)
+        with (
+            patch.object(cli_mod, "_cprint"),
+            patch.object(cli_mod, "save_config_value") as mock_save,
+        ):
+            cli_mod.HermesCLI._handle_fast_command(stub, "/fast auto")
+
+        mock_save.assert_not_called()
+        self.assertEqual(stub.service_tier, "auto")
         self.assertIsNone(stub.agent)
 
 

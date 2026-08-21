@@ -3622,7 +3622,13 @@ def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     return "opus-4-6" in base or "opus-4.6" in base
 
 
-def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:
+def resolve_fast_mode_overrides(
+    model_id: Optional[str],
+    *,
+    provider: Optional[str] = None,
+    api_mode: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> dict[str, Any] | None:
     """Return request_overrides for fast/priority mode, or None if unsupported.
 
     Returns provider-appropriate overrides:
@@ -3633,11 +3639,56 @@ def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | Non
     The overrides are injected into the API request kwargs by
     ``_build_api_kwargs`` in run_agent.py — each API path handles its own
     keys (service_tier for OpenAI/Codex, speed for Anthropic Messages).
+
+    Fail-closed endpoint verification: the keyword-only ``provider`` /
+    ``api_mode`` / ``base_url`` describe the *runtime* endpoint the request
+    will actually hit. They all default to ``None`` so every existing
+    zero-arg call site is byte-identical and the legacy static ``fast`` path
+    is unchanged. When a caller *does* supply runtime identity, a ``gpt``- or
+    ``grok``-shaped model name is not enough to earn ``service_tier:
+    priority`` — the endpoint must be an allow-listed first-party origin
+    (native OpenAI, ChatGPT-Codex, or xAI). An OpenAI-compatible proxy that
+    merely echoes the model name fails closed to ``None``.
     """
     if not model_supports_fast_mode(model_id):
         return None
     if _is_anthropic_fast_model(model_id):
+        # Anthropic speed=fast is valid only on the native Anthropic Messages
+        # transport; any other declared api_mode fails closed.
+        if api_mode is not None and api_mode != "anthropic_messages":
+            return None
         return {"speed": "fast"}
+
+    # Preserve the legacy model-only resolver for static ``fast`` callers, but
+    # dynamic policies provide runtime identity and must fail closed. A gpt- or
+    # grok-shaped model name on an OpenAI-compatible proxy does not prove
+    # support for first-party Priority Processing.
+    if any(value is not None for value in (provider, api_mode, base_url)):
+        normalized_provider = normalize_provider(provider)
+        hostname = (
+            urllib.parse.urlparse(str(base_url or "")).hostname or ""
+        ).lower()
+        direct_api = (
+            normalized_provider in {"openai", "openai-api"}
+            and api_mode in {"chat_completions", "codex_responses"}
+            and hostname == "api.openai.com"
+        )
+        codex_backend = (
+            normalized_provider == "openai-codex"
+            and api_mode == "codex_responses"
+            and hostname in {"chatgpt.com", "chat.openai.com"}
+        )
+        # xAI Grok 4.6 Priority Processing. The runtime routes ``api.x.ai``
+        # through the codex_responses transport (see
+        # ``runtime_provider._detect_api_mode_for_url``); accept the
+        # chat_completions surface too — both are first-party xAI.
+        xai_direct = (
+            normalized_provider in {"xai", "xai-oauth"}
+            and api_mode in {"chat_completions", "codex_responses"}
+            and hostname == "api.x.ai"
+        )
+        if not (direct_api or codex_backend or xai_direct):
+            return None
     return {"service_tier": "priority"}
 
 

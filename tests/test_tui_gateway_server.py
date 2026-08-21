@@ -17065,6 +17065,13 @@ def test_session_create_records_ui_model_as_session_override(monkeypatch):
         normal_sess = server._sessions[normal["result"]["session_id"]]
         assert normal_sess["create_service_tier_override"] == ""
 
+        for mode in ("auto", "cold"):
+            dynamic = server._methods["session.create"](
+                f"r-{mode}", {"cols": 80, "fast": False, "service_tier": mode}
+            )
+            dynamic_sess = server._sessions[dynamic["result"]["session_id"]]
+            assert dynamic_sess["create_service_tier_override"] == mode
+
         # No knobs → no overrides; the session builds from the profile default.
         plain = server._methods["session.create"]("r3", {"cols": 80})
         plain_sess = server._sessions[plain["result"]["session_id"]]

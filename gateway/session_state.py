@@ -39,7 +39,7 @@ from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
-# Presence-sensitive sentinel: /fast stores "priority" or None (explicit
+# Presence-sensitive sentinel: /fast stores "priority"/"auto"/"cold" or None
 # normal), so key PRESENCE — not value truthiness — decides whether the
 # override applies.  ``_UNSET_TIER`` means "no override recorded".
 _UNSET_TIER = object()
@@ -97,7 +97,7 @@ class ConversationState:
     one_turn_restore: Optional[Dict[str, Any]] = None
     # /reasoning per-session override.
     reasoning_override: Optional[Dict[str, Any]] = None
-    # /fast per-session override: "priority" or None; _UNSET_TIER = absent.
+    # /fast override: "priority"/"auto"/"cold" or None; sentinel = absent.
     service_tier_override: Any = _UNSET_TIER
     # Last successfully-resolved non-empty model (#35314 recovery).
     last_resolved_model: str = ""

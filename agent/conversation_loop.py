@@ -38,6 +38,7 @@ from agent.conversation_compression import (
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.fast_mode import begin_fast_mode_turn
 from agent.message_metadata import append_message
 from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
@@ -1800,6 +1801,10 @@ def run_conversation(
     Returns:
         Dict: Complete conversation result with final response and message history
     """
+    # Start the bounded window before prompt assembly, middleware, and hooks so
+    # all preflight work consumes the same user-turn budget.
+    begin_fast_mode_turn(agent, conversation_history)
+
     if moa_config is None:
         try:
             from hermes_cli.moa_config import decode_moa_turn

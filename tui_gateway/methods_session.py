@@ -61,11 +61,18 @@ def _(rid, params: dict) -> dict:
             create_reasoning_override = parse_reasoning_effort(effort)
         except Exception:
             create_reasoning_override = None
-    # Presence is part of the contract: omitted means inherit the profile,
-    # true pins priority, and false pins normal. Empty string is the internal
-    # explicit-normal sentinel because _make_agent uses None for inheritance.
+    # Presence is part of the contract: service_tier carries all four modes;
+    # legacy fast=true/false remains accepted for older Desktop clients.
     create_service_tier_override = None
-    if "fast" in params:
+    if "service_tier" in params:
+        raw_tier = str(params.get("service_tier") or "").strip().lower()
+        if raw_tier in {"fast", "priority", "on"}:
+            create_service_tier_override = "priority"
+        elif raw_tier in {"auto", "cold"}:
+            create_service_tier_override = raw_tier
+        else:
+            create_service_tier_override = ""
+    elif "fast" in params:
         create_service_tier_override = (
             "priority" if is_truthy_value(params.get("fast")) else ""
         )

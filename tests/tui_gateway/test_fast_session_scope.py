@@ -107,6 +107,19 @@ class TestConfigSetFastSessionScope:
         assert resp["result"]["value"] == "normal"
         write_key.assert_called_once_with("agent.service_tier", "normal")
 
+    def test_dynamic_mode_preserves_exact_session_value(self) -> None:
+        agent = _agent()
+        session = {"session_key": "k7", "agent": agent}
+        with patch.dict(server._sessions, {"s7": session}, clear=False), \
+                patch.object(server, "_write_config_key") as write_key, \
+                patch.object(server, "_persist_live_session_runtime"), \
+                patch.object(server, "_emit"):
+            resp = _set({"key": "fast", "session_id": "s7", "value": "auto"})
+        assert resp["result"]["value"] == "auto"
+        assert agent.service_tier == "auto"
+        assert session["create_service_tier_override"] == "auto"
+        write_key.assert_not_called()
+
 
 class TestConfigGetFastSessionScope:
     def test_reads_prebuild_pin(self) -> None:
@@ -124,3 +137,13 @@ class TestConfigGetFastSessionScope:
         with patch.object(server, "_load_service_tier", return_value="priority"):
             resp = _get({"key": "fast"})
         assert resp["result"]["value"] == "fast"
+
+    def test_reads_dynamic_prebuild_pin(self) -> None:
+        session = {
+            "session_key": "k8",
+            "agent": None,
+            "create_service_tier_override": "cold",
+        }
+        with patch.dict(server._sessions, {"s8": session}, clear=False):
+            resp = _get({"key": "fast", "session_id": "s8"})
+        assert resp["result"]["value"] == "cold"

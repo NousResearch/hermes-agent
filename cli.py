@@ -399,12 +399,14 @@ def _parse_reasoning_config(effort) -> dict | None:
 
 
 def _parse_service_tier_config(raw: str) -> str | None:
-    """Parse a persisted service-tier preference into a Responses API value."""
+    """Parse a persisted normal/fast/auto/cold preference."""
     value = str(raw or "").strip().lower()
     if not value or value in {"normal", "default", "standard", "off", "none"}:
         return None
     if value in {"fast", "priority", "on"}:
         return "priority"
+    if value in {"auto", "cold"}:
+        return value
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 
@@ -480,6 +482,7 @@ def load_cli_config() -> Dict[str, Any]:
             "prefill_messages_file": "",
             "reasoning_effort": "",
             "service_tier": "",
+            "fast_auto_on_seconds": 60,
             # Built-in personalities live in hermes_cli.personality
             # (BUILTIN_PERSONALITIES) — the single owner. Entries here are
             # user-defined additions/overrides merged on top by name.

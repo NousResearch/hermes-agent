@@ -953,6 +953,12 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 500
 
+  # Provider speed policy: normal, fast, auto, or cold.
+  # auto opens a bounded fast window on each user turn; cold only on the first
+  # logical-session turn. Both return to normal after this many seconds.
+  service_tier: normal
+  fast_auto_on_seconds: 60
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

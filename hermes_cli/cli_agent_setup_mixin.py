@@ -325,7 +325,7 @@ class CLIAgentSetupMixin:
         }
 
         service_tier = getattr(self, "service_tier", None)
-        if not service_tier:
+        if not service_tier or service_tier in {"auto", "cold"}:
             route["request_overrides"] = None
             return route
 
@@ -335,6 +335,15 @@ class CLIAgentSetupMixin:
             overrides = None
         route["request_overrides"] = overrides
         return route
+
+    def _fast_auto_on_seconds_setting(self) -> float:
+        """Read ``agent.fast_auto_on_seconds`` from the CLI config, defaulting to 60."""
+        try:
+            from cli import CLI_CONFIG
+
+            return (CLI_CONFIG.get("agent", {}) or {}).get("fast_auto_on_seconds", 60)
+        except Exception:
+            return 60
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
         """
@@ -510,6 +519,7 @@ class CLIAgentSetupMixin:
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
                 service_tier=self.service_tier,
+                fast_auto_on_seconds=self._fast_auto_on_seconds_setting(),
                 request_overrides=request_overrides,
                 providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore,

@@ -403,6 +403,85 @@ _OAUTH_ONLY_BETAS = [
     "oauth-2025-04-20",
 ]
 
+
+def _apply_fast_mode_to_kwargs(
+    kwargs: Dict[str, Any],
+    *,
+    enabled: bool,
+    model: str,
+    base_url: str | None,
+    is_oauth: bool,
+    drop_context_1m_beta: bool = False,
+) -> Dict[str, Any]:
+    """Apply (or revoke) Anthropic Fast Mode request metadata idempotently.
+
+    Fast mode adds ``extra_body["speed"] = "fast"`` plus the ``_FAST_MODE_BETA``
+    token on ``extra_headers["anthropic-beta"]`` for ~2.5x output throughput on
+    Opus 4.6 (native Anthropic endpoints only — third-party providers 400 on the
+    speed parameter and the unknown beta header).
+
+    The helper first STRIPS any fast-mode artifacts it may previously have
+    written — the ``speed`` key and the ``_FAST_MODE_BETA`` token — before
+    deciding. This makes it both **idempotent** (applying twice yields the same
+    kwargs) and **revocable** (applying with ``enabled=False`` cleanly reverts a
+    prior application). Non-fast-mode ``extra_body`` / ``extra_headers`` entries
+    and other beta tokens are preserved through the strip.
+
+    When *enabled* is True and the endpoint/model support fast mode, the
+    resulting kwargs are byte-identical to the historical inline block: fresh
+    base-url/oauth betas plus the fast-mode beta, written as a single
+    ``anthropic-beta`` ``extra_headers`` entry.
+
+    Returns a shallow copy; the caller's dict is not mutated.
+    """
+    kwargs = dict(kwargs)
+
+    # ── Revoke any prior fast-mode artifacts (idempotent + revocable) ──
+    extra_body = dict(kwargs.get("extra_body") or {})
+    extra_body.pop("speed", None)
+    if extra_body:
+        kwargs["extra_body"] = extra_body
+    else:
+        kwargs.pop("extra_body", None)
+
+    extra_headers = dict(kwargs.get("extra_headers") or {})
+    surviving_betas = [
+        beta.strip()
+        for beta in str(extra_headers.get("anthropic-beta") or "").split(",")
+        if beta.strip() and beta.strip() != _FAST_MODE_BETA
+    ]
+    if surviving_betas:
+        extra_headers["anthropic-beta"] = ",".join(surviving_betas)
+    else:
+        extra_headers.pop("anthropic-beta", None)
+    if extra_headers:
+        kwargs["extra_headers"] = extra_headers
+    else:
+        kwargs.pop("extra_headers", None)
+
+    if not (
+        enabled
+        and not _is_third_party_anthropic_endpoint(base_url)
+        and _supports_fast_mode(model)
+    ):
+        return kwargs
+
+    # ── Apply fast mode (byte-identical to the historical inline block) ──
+    kwargs.setdefault("extra_body", {})["speed"] = "fast"
+    # Build extra_headers with ALL applicable betas (the per-request
+    # extra_headers override the client-level anthropic-beta header).
+    betas = list(_common_betas_for_base_url(
+        base_url,
+        drop_context_1m_beta=drop_context_1m_beta,
+    ))
+    if is_oauth:
+        betas.extend(_OAUTH_ONLY_BETAS)
+    betas.append(_FAST_MODE_BETA)
+    kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
+
+    return kwargs
+
+
 # Claude Code identity — required for OAuth requests to be routed correctly.
 # Without these, Anthropic's infrastructure intermittently 500s OAuth traffic.
 # The version must stay reasonably current — Anthropic rejects OAuth requests
@@ -3135,24 +3214,14 @@ def build_anthropic_kwargs(
     # Opus 4.6 — Opus 4.7 and other models 400 on the speed parameter.
     # Only for native Anthropic endpoints — third-party providers would
     # reject the unknown beta header and speed parameter.
-    if (
-        fast_mode
-        and not _is_third_party_anthropic_endpoint(base_url)
-        and _supports_fast_mode(model)
-    ):
-        kwargs.setdefault("extra_body", {})["speed"] = "fast"
-        # Build extra_headers with ALL applicable betas (the per-request
-        # extra_headers override the client-level anthropic-beta header).
-        betas = list(_common_betas_for_base_url(
-            base_url,
-            drop_context_1m_beta=drop_context_1m_beta,
-        ))
-        if is_oauth:
-            betas.extend(_OAUTH_ONLY_BETAS)
-        betas.append(_FAST_MODE_BETA)
-        kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
-
-    return kwargs
+    return _apply_fast_mode_to_kwargs(
+        kwargs,
+        enabled=fast_mode,
+        model=model,
+        base_url=base_url,
+        is_oauth=is_oauth,
+        drop_context_1m_beta=drop_context_1m_beta,
+    )
 
 
 # Keys that belong exclusively to the OpenAI Responses / Codex API shape.

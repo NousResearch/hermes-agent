@@ -1364,95 +1364,119 @@ async def vision_analyze_tool(
         logger.info("Analyzing image: %s", image_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
 
-        # Resolve the source to raw bytes through the single resolver (unifies
-        # data:/http/file/local/container and enforces terminal-backend
-        # confinement). Materialize to a temp file so the existing path-based
-        # encode/resize pipeline below is reused verbatim.
-        from tools.image_source import (
-            ImageResolutionError,
-            ResolveContext,
-            resolve_image_source,
-        )
-
+        # Public-image mode: some auxiliary vision providers (e.g. SenseNova)
+        # only accept a publicly reachable HTTP(S) URL and reject inline
+        # base64 images outright. When auxiliary.vision.public_url_only is
+        # set and the input is already such a URL, skip the
+        # download/normalize/base64 pipeline below and forward the URL
+        # through unchanged — the provider fetches it server-side, same as
+        # the native image-attachment path already does.
+        public_url_only = False
         try:
-            resolved = await resolve_image_source(image_url, ResolveContext(task_id=task_id))
-        except ImageResolutionError as exc:
-            raise ValueError(str(exc))
+            from hermes_cli.config import cfg_get, load_config
+            public_url_only = bool(
+                cfg_get(load_config(), "auxiliary", "vision", "public_url_only", default=False)
+            )
+        except Exception:
+            pass
 
-        detected_mime_type = resolved.mime
-        temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.img"
-        await asyncio.to_thread(temp_image_path.write_bytes, resolved.data)
-        should_cleanup = True
-
-        # Get image file size for logging
-        image_size_bytes = len(resolved.data)
-        image_size_kb = image_size_bytes / 1024
-        logger.info("Image ready (%.1f KB)", image_size_kb)
-        # Normalize unsupported formats (SVG, BMP, ...) to PNG. Vision providers
-        # reject these media types; convert before encoding. Offloaded — the
-        # rasterizers/Pillow are blocking.
-        normalized_path, detected_mime_type, _norm_err = await asyncio.to_thread(
-            _normalize_to_supported_image, temp_image_path, detected_mime_type,
-        )
-        if _norm_err or normalized_path is None:
-            raise ValueError(_norm_err or "Image normalization failed.")
-        if normalized_path != temp_image_path:
-            if should_cleanup and temp_image_path.exists():
-                try:
-                    temp_image_path.unlink()
-                except Exception:
-                    pass
-            temp_image_path = normalized_path
-            should_cleanup = True
-
-        # Optional region zoom: crop BEFORE the encode/downscale pipeline so
-        # the cropped area gets the full resolution budget.
         _crop_offset: dict = {}
         _scale_info: dict = {}
-        if region is not None:
-            cropped_path, cropped_mime, crop_err = await asyncio.to_thread(
-                _crop_image_region, temp_image_path, region,
-                offset_out=_crop_offset,
+        if public_url_only and region is None and await _validate_image_url_async(image_url):
+            blocked = check_website_access(image_url)
+            if blocked:
+                raise PermissionError(blocked["message"])
+            image_data_url = image_url.strip()
+            image_size_bytes = 0
+            logger.info("Public-image mode: forwarding URL without base64 encoding")
+        else:
+            # Resolve the source to raw bytes through the single resolver (unifies
+            # data:/http/file/local/container and enforces terminal-backend
+            # confinement). Materialize to a temp file so the existing path-based
+            # encode/resize pipeline below is reused verbatim.
+            from tools.image_source import (
+                ImageResolutionError,
+                ResolveContext,
+                resolve_image_source,
             )
-            if crop_err or cropped_path is None:
-                raise ValueError(crop_err or "Region crop failed.")
-            if should_cleanup and temp_image_path.exists():
-                try:
-                    temp_image_path.unlink()
-                except Exception:
-                    pass
-            temp_image_path = cropped_path
-            detected_mime_type = cropped_mime
+
+            try:
+                resolved = await resolve_image_source(image_url, ResolveContext(task_id=task_id))
+            except ImageResolutionError as exc:
+                raise ValueError(str(exc))
+
+            detected_mime_type = resolved.mime
+            temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.img"
+            await asyncio.to_thread(temp_image_path.write_bytes, resolved.data)
             should_cleanup = True
 
-        # Convert image to base64 — send at full resolution first.
-        # If the provider rejects it as too large, we auto-resize and retry.
-        # Offloaded to the bounded vision CPU executor so a fan-out of encodes
-        # can't saturate every core and starve the event loop.
-        logger.info("Converting image to base64...")
-        image_data_url = await _run_encode_on_cpu_executor(
-            _image_to_base64_data_url, temp_image_path, mime_type=detected_mime_type)
-        data_size_kb = len(image_data_url) / 1024
-        logger.info("Image converted to base64 (%.1f KB)", data_size_kb)
+            # Get image file size for logging
+            image_size_bytes = len(resolved.data)
+            image_size_kb = image_size_bytes / 1024
+            logger.info("Image ready (%.1f KB)", image_size_kb)
+            # Normalize unsupported formats (SVG, BMP, ...) to PNG. Vision providers
+            # reject these media types; convert before encoding. Offloaded — the
+            # rasterizers/Pillow are blocking.
+            normalized_path, detected_mime_type, _norm_err = await asyncio.to_thread(
+                _normalize_to_supported_image, temp_image_path, detected_mime_type,
+            )
+            if _norm_err or normalized_path is None:
+                raise ValueError(_norm_err or "Image normalization failed.")
+            if normalized_path != temp_image_path:
+                if should_cleanup and temp_image_path.exists():
+                    try:
+                        temp_image_path.unlink()
+                    except Exception:
+                        pass
+                temp_image_path = normalized_path
+                should_cleanup = True
 
-        # Hard limit (20 MB) — no provider accepts payloads this large.
-        if len(image_data_url) > _MAX_BASE64_BYTES:
-            # Try to resize down to 5 MB before giving up.
-            image_data_url = await _run_encode_on_cpu_executor(
-                _resize_image_for_vision,
-                temp_image_path, mime_type=detected_mime_type,
-                scale_out=_scale_info)
-            if len(image_data_url) > _MAX_BASE64_BYTES:
-                raise ValueError(
-                    f"Image too large for vision API: base64 payload is "
-                    f"{len(image_data_url) / (1024 * 1024):.1f} MB "
-                    f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) "
-                    f"even after resizing. "
-                    f"Install Pillow (`pip install Pillow`) for better auto-resize, "
-                    f"or compress the image manually."
+            # Optional region zoom: crop BEFORE the encode/downscale pipeline so
+            # the cropped area gets the full resolution budget.
+            if region is not None:
+                cropped_path, cropped_mime, crop_err = await asyncio.to_thread(
+                    _crop_image_region, temp_image_path, region,
+                    offset_out=_crop_offset,
                 )
+                if crop_err or cropped_path is None:
+                    raise ValueError(crop_err or "Region crop failed.")
+                if should_cleanup and temp_image_path.exists():
+                    try:
+                        temp_image_path.unlink()
+                    except Exception:
+                        pass
+                temp_image_path = cropped_path
+                detected_mime_type = cropped_mime
+                should_cleanup = True
+
+            # Convert image to base64 — send at full resolution first.
+            # If the provider rejects it as too large, we auto-resize and retry.
+            # Offloaded to the bounded vision CPU executor so a fan-out of encodes
+            # can't saturate every core and starve the event loop.
+            logger.info("Converting image to base64...")
+            image_data_url = await _run_encode_on_cpu_executor(
+                _image_to_base64_data_url, temp_image_path, mime_type=detected_mime_type)
+            data_size_kb = len(image_data_url) / 1024
+            logger.info("Image converted to base64 (%.1f KB)", data_size_kb)
+
+            # Hard limit (20 MB) — no provider accepts payloads this large.
+            if len(image_data_url) > _MAX_BASE64_BYTES:
+                # Try to resize down to 5 MB before giving up.
+                image_data_url = await _run_encode_on_cpu_executor(
+                    _resize_image_for_vision,
+                    temp_image_path, mime_type=detected_mime_type,
+                    scale_out=_scale_info)
+                if len(image_data_url) > _MAX_BASE64_BYTES:
+                    raise ValueError(
+                        f"Image too large for vision API: base64 payload is "
+                        f"{len(image_data_url) / (1024 * 1024):.1f} MB "
+                        f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) "
+                        f"even after resizing. "
+                        f"Install Pillow (`pip install Pillow`) for better auto-resize, "
+                        f"or compress the image manually."
+                    )
 
         debug_call_data["image_size_bytes"] = image_size_bytes
         
@@ -1511,6 +1535,7 @@ async def vision_analyze_tool(
             response = await async_call_llm(**call_kwargs)
         except Exception as _api_err:
             if (_is_image_size_error(_api_err)
+                    and temp_image_path is not None
                     and len(image_data_url) > _RESIZE_TARGET_BYTES):
                 logger.info(
                     "API rejected image (%.1f MB, likely too large); "

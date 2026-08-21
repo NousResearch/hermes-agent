@@ -1058,6 +1058,7 @@ DEFAULT_CONFIG = {
             "extra_body": {},      # OpenAI-compatible provider-specific request fields
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
             "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
+            "public_url_only": False,  # forward http(s) image URLs as-is instead of base64 — for providers (e.g. SenseNova) that reject inline images
         },
         "web_extract": {
             "provider": "auto",

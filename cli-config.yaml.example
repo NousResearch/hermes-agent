@@ -743,6 +743,12 @@ prompt_caching:
 #     timeout: 30            # LLM API call timeout (seconds)
 #     download_timeout: 30   # Image HTTP download timeout (seconds)
 #                            # Increase for slow connections or self-hosted image servers
+#     public_url_only: false # Forward http(s) image URLs as-is instead of
+#                            # downloading + base64-encoding them. Enable for
+#                            # providers (e.g. SenseNova) that only accept a
+#                            # publicly reachable image URL and reject inline
+#                            # base64 images. Local file paths still download
+#                            # normally.
 #     reasoning_effort: ""   # Per-task thinking level: none, minimal, low, medium,
 #                            # high, xhigh, max, ultra. Empty = provider default.
 #                            # Works on every auxiliary task block (vision,

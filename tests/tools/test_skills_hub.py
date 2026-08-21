@@ -1655,6 +1655,103 @@ class TestInstallPathSafety:
         assert installed.is_dir()
         record_installed.assert_called_once_with("good-skill")
 
+    def test_install_supports_symlinked_skills_root(self, tmp_path):
+        """A profile may point its whole skills root at a versioned catalog.
+
+        The updater must resolve the destination safely while recording the
+        portable path relative to the configured root, not reject the root
+        symlink or persist the external absolute target.
+        """
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        catalog_skills = tmp_path / "catalog" / "skills"
+        quarantine_root = catalog_skills / ".hub" / "quarantine"
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir(parents=True)
+        skill_md = "---\nname: linked-skill\n---\n\n# Linked\n"
+        (q_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
+
+        hermes_home = tmp_path / "home" / ".hermes"
+        hermes_home.mkdir(parents=True)
+        linked_root = hermes_home / "skills"
+        try:
+            linked_root.symlink_to(catalog_skills, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("directory symlinks unsupported on this platform")
+
+        bundle = hub.SkillBundle(
+            name="linked-skill",
+            files={"SKILL.md": skill_md},
+            source="community",
+            identifier="linked/source",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="linked-skill",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+        lock_path = catalog_skills / ".hub" / "lock.json"
+
+        with patch.object(hub, "SKILLS_DIR", linked_root), \
+             patch.object(hub, "HUB_DIR", catalog_skills / ".hub"), \
+             patch.object(hub, "LOCK_FILE", lock_path), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+            installed = hub.install_from_quarantine(
+                q_dir, "linked-skill", "personal", bundle, scan_result,
+            )
+            entry = hub.HubLockFile().get_installed("linked-skill")
+
+        assert installed == catalog_skills / "personal" / "linked-skill"
+        assert (installed / "SKILL.md").read_text(encoding="utf-8") == skill_md
+        assert entry["install_path"] == "personal/linked-skill"
+
+    def test_lock_failure_restores_previous_skill(self, tmp_path):
+        """The active directory and scanned bundle survive lock persistence failure."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        existing = skills_dir / "safe-skill"
+        existing.mkdir(parents=True)
+        (existing / "SKILL.md").write_text("old active content", encoding="utf-8")
+
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir(parents=True)
+        skill_md = "---\nname: safe-skill\n---\n\nnew content\n"
+        (q_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
+        bundle = hub.SkillBundle(
+            name="safe-skill",
+            files={"SKILL.md": skill_md},
+            source="community",
+            identifier="safe/source",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="safe-skill",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "HUB_DIR", skills_dir / ".hub"), \
+             patch.object(hub, "LOCK_FILE", skills_dir / ".hub" / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
+             patch.object(hub.HubLockFile, "save", side_effect=OSError("disk full")):
+            with pytest.raises(OSError, match="disk full"):
+                hub.install_from_quarantine(
+                    q_dir, "safe-skill", "", bundle, scan_result,
+                )
+
+        assert (existing / "SKILL.md").read_text(encoding="utf-8") == "old active content"
+        assert (q_dir / "SKILL.md").read_text(encoding="utf-8") == skill_md
+        assert not (skills_dir / ".safe-skill.install-staging").exists()
+        assert not (skills_dir / ".safe-skill.install-backup").exists()
+
 
 # ---------------------------------------------------------------------------
 # parallel_search_sources — overall_timeout must be honoured even when a

@@ -3745,7 +3745,18 @@ class HubLockFile:
 
     def save(self, data: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+        temporary = self.path.with_name(
+            f".{self.path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+        )
+        try:
+            with temporary.open("x", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def record_install(
         self,
@@ -4007,8 +4018,6 @@ def install_from_quarantine(
                     f"{', '.join(sorted(skill_dirs_in))}. "
                     f"Use a different --name or install into a subcategory."
                 )
-        shutil.rmtree(install_dir)
-
     # Warn (but don't block) if SKILL.md is very large
     skill_md = quarantine_path / "SKILL.md"
     if skill_md.exists():
@@ -4041,22 +4050,72 @@ def install_from_quarantine(
         )
 
     install_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(quarantine_path), str(install_dir))
-
-    # Record in lock file
+    staging_dir = install_dir.with_name(f".{safe_skill_name}.install-staging")
+    backup_dir = install_dir.with_name(f".{safe_skill_name}.install-backup")
     lock = HubLockFile()
-    lock.record_install(
-        name=safe_skill_name,
-        source=bundle.source,
-        identifier=bundle.identifier,
-        trust_level=bundle.trust_level,
-        scan_verdict=scan_result.verdict,
-        skill_hash=content_hash(install_dir),
-        install_path=install_dir.resolve().relative_to(_skills_dir().resolve()).as_posix(),
-        files=list(bundle.files.keys()),
-        metadata=bundle.metadata,
-        scan_provenance=scan_provenance or getattr(scan_result, "scan_provenance", None),
-    )
+
+    # Recover a previous interrupted swap before beginning a new one. The
+    # lock hash is the commit marker: matching target means the install
+    # committed and only backup cleanup was interrupted; otherwise restore
+    # the previous active directory.
+    if backup_dir.exists():
+        if not install_dir.exists():
+            os.replace(backup_dir, install_dir)
+        else:
+            locked = lock.get_installed(safe_skill_name)
+            if locked and locked.get("content_hash") == content_hash(install_dir):
+                shutil.rmtree(backup_dir)
+            else:
+                shutil.rmtree(install_dir)
+                os.replace(backup_dir, install_dir)
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir)
+
+    # Stage on the destination filesystem before touching the active skill.
+    # The two os.replace calls make the visible directory swap atomic; a lock
+    # persistence failure rolls both the skill and its provenance back.
+    shutil.move(str(quarantine_path), str(staging_dir))
+    staged_hash = content_hash(staging_dir)
+    had_previous = install_dir.exists()
+    try:
+        if had_previous:
+            os.replace(install_dir, backup_dir)
+        os.replace(staging_dir, install_dir)
+        try:
+            lock.record_install(
+                name=safe_skill_name,
+                source=bundle.source,
+                identifier=bundle.identifier,
+                trust_level=bundle.trust_level,
+                scan_verdict=scan_result.verdict,
+                skill_hash=staged_hash,
+                install_path=install_rel_path,
+                files=list(bundle.files.keys()),
+                metadata=bundle.metadata,
+                scan_provenance=scan_provenance or getattr(scan_result, "scan_provenance", None),
+            )
+        except Exception:
+            # Keep the scanned bundle available for retry, then restore the
+            # exact directory that was active before this install.
+            if install_dir.exists():
+                try:
+                    shutil.move(str(install_dir), str(quarantine_path))
+                except Exception:
+                    # Restoring the previously active skill is the primary
+                    # safety invariant. If the retry copy cannot be preserved,
+                    # remove it so it cannot block the rollback.
+                    if install_dir.exists():
+                        shutil.rmtree(install_dir)
+            if had_previous and backup_dir.exists():
+                os.replace(backup_dir, install_dir)
+            raise
+    except Exception:
+        if staging_dir.exists() and not quarantine_path.exists():
+            shutil.move(str(staging_dir), str(quarantine_path))
+        raise
+    else:
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir)
 
     append_audit_log(
         "INSTALL", safe_skill_name, bundle.source,

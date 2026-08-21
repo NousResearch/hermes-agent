@@ -82,6 +82,7 @@ import {
   openGatewayForProfile,
   pruneSecondaryGateways,
   reconnectPrimaryGateway,
+  requestGatewayForProfile,
   setPrimaryGateway
 } from './gateway'
 
@@ -210,6 +211,39 @@ describe('profile-scoped gateway request leases', () => {
 
     expect(source.close).toHaveBeenCalledOnce()
     await expect(lease.request('session.branch', params)).rejects.toThrow('Hermes source gateway unavailable')
+  })
+
+  it('releases a pending prune once after both request and command owners finish without retargeting', async () => {
+    const source = await createSecondary()
+    const commandLease = acquireGatewayRequestLease(source as unknown as HermesGateway, 'source')
+    const requestResult = deferred<{ ok: true }>()
+
+    source.requestImplementation = async () => requestResult.promise
+
+    const backgroundRequest = requestGatewayForProfile<{ ok: true }>('source', 'profiles.list')
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledOnce())
+
+    await ensureGatewayForProfile('newer')
+    const newerTarget = activeGateway()
+
+    pruneSecondaryGateways(new Set())
+    commandLease.release()
+
+    expect(source.close).not.toHaveBeenCalled()
+    expect(activeGateway()).toBe(newerTarget)
+
+    requestResult.resolve({ ok: true })
+    await expect(backgroundRequest).resolves.toEqual({ ok: true })
+
+    expect(source.close).toHaveBeenCalledOnce()
+    expect(activeGateway()).toBe(newerTarget)
+
+    commandLease.release()
+    pruneSecondaryGateways(new Set())
+    closeSecondaryGateways()
+
+    expect(source.close).toHaveBeenCalledOnce()
+    expect(activeGateway()).toBe(newerTarget)
   })
 
   it('shares one reconnect across concurrent leased requests instead of starting a reconnect storm', async () => {

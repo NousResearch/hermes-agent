@@ -369,4 +369,31 @@ describe('requestGatewayForAgent', () => {
     expect(onActiveConnectionChanged).not.toHaveBeenCalled()
     expect($gateway.get()).toBe(primary)
   })
+
+  it('never treats a bare profile keep as ownership of a registry-scoped socket', async () => {
+    const primary = makePrimary()
+
+    setPrimaryGateway(primary as never, 'default')
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(),
+      getConnectionFor: vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile })),
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
+        ok: true as const,
+        wsUrl: `ws://${connectionId}/${profile}`
+      })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+
+    await openGatewayForAgent('source-a', 'work')
+    const registryGateway = secondaryGateways[0]
+
+    pruneSecondaryGateways(new Set(['work']))
+
+    expect(registryGateway.close).toHaveBeenCalledOnce()
+
+    pruneSecondaryGateways(new Set(['conn:source-a::work']))
+    closeSecondaryGateways()
+    expect(registryGateway.close).toHaveBeenCalledOnce()
+    expect($gateway.get()).toBe(primary)
+  })
 })

@@ -347,24 +347,32 @@ function publishActiveConnection(connection: HermesConnection): void {
   }
 }
 
-function claimActivation(): number {
-  g.activationGeneration += 1
-
-  return g.activationGeneration
+interface GatewayActivationClaim {
+  generation: number
+  routeEpoch: number
 }
 
-function setActiveIfOwned(profile: string, activation: number): boolean {
+function claimActivation(): GatewayActivationClaim {
+  g.activationGeneration += 1
+
+  return {
+    generation: g.activationGeneration,
+    // Preserve current-main's eager route epoch: a registry edit can capture
+    // and invalidate this intent while its descriptor/socket dial is pending.
+    routeEpoch: beginGatewayActivation()
+  }
+}
+
+function setActiveIfOwned(profile: string, activation: GatewayActivationClaim): boolean {
   // Opening/reconnecting the physical transport is still useful after the user
   // selects another agent, but its late completion no longer owns the global UI
   // pointer. Request leases (including captured slash/branch work) stay pinned
   // to their concrete transport and are intentionally independent of this token.
-  if (g.activationGeneration !== activation) {
+  if (g.activationGeneration !== activation.generation) {
     return false
   }
 
-  setActive(profile)
-
-  return true
+  return applyActive(profile, activation.routeEpoch)
 }
 
 type SecondaryLeaseKind = 'command' | 'request'
@@ -839,7 +847,7 @@ export async function openGatewayForAgent(connectionId: null | string, profile: 
 async function activateGatewayForAgent(
   connectionId: null | string,
   profile: string,
-  activation: number
+  activation: GatewayActivationClaim
 ): Promise<boolean> {
   const scope = registryBackendScopeKey(connectionId, profile)
 
@@ -906,7 +914,7 @@ export function ensureGatewayForAgent(connectionId: null | string, profile: stri
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The
 // primary is a no-op fast path. Background sockets are never closed here.
-async function activateGatewayForProfile(profile: string, activation: number): Promise<boolean> {
+async function activateGatewayForProfile(profile: string, activation: GatewayActivationClaim): Promise<boolean> {
   const key = normKey(profile)
 
   if (key === g.primaryProfile) {

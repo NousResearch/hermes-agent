@@ -9939,9 +9939,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     )
 
                 tool_call_count = sum(
-                    len(msg["tool_calls"])
+                    len(tool_calls) if isinstance(tool_calls, list) else 1
                     for msg in projected[: len(messages)]
-                    if isinstance(msg.get("tool_calls"), list)
+                    if (tool_calls := msg.get("tool_calls")) is not None
                 )
                 conn.execute(
                     "UPDATE sessions SET message_count = ?, tool_call_count = ? "

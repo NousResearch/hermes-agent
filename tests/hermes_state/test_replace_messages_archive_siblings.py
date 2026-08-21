@@ -230,6 +230,66 @@ class TestArchiveDroppedIsRecoverable:
             (original[3]["id"], 0),
         ]
 
+    def test_retained_object_tool_call_keeps_rows_data_and_counter(self, state_db):
+        """A prefix rewrite must use the same tool-call count as insertion.
+
+        Legacy/imported transcripts can contain one object instead of a list.
+        Insertion counts that non-null object as one call; malformed JSON is
+        normalized away and explicit null contributes zero. Retaining all three
+        shapes must not rewrite rows or change the canonical aggregate.
+        """
+        sid = "archive-object-tool-call"
+        state_db.create_session(sid, "test")
+        state_db.append_messages_batch(
+            sid,
+            [
+                {
+                    "role": "assistant",
+                    "content": "object call",
+                    "tool_calls": {"id": "call-object", "name": "legacy_tool"},
+                },
+                {
+                    "role": "assistant",
+                    "content": "malformed call",
+                    "tool_calls": "{not-json",
+                },
+                {
+                    "role": "assistant",
+                    "content": "null call",
+                    "tool_calls": None,
+                },
+                {"role": "user", "content": "drop suffix"},
+            ],
+        )
+        before = state_db.get_messages(sid)
+        snapshot = state_db.get_messages_as_conversation(sid, include_row_ids=True)
+        expected_ids = [message["id"] for message in before]
+
+        assert before[0]["tool_calls"] == {
+            "id": "call-object",
+            "name": "legacy_tool",
+        }
+        assert before[1]["tool_calls"] is None
+        assert before[2]["tool_calls"] is None
+        assert state_db.get_session(sid)["tool_call_count"] == 1
+
+        state_db.replace_messages(
+            sid,
+            snapshot[:3],
+            active_only=True,
+            archive_dropped=True,
+            expected_active_ids=expected_ids,
+        )
+
+        after = state_db.get_messages(sid, include_inactive=True)
+        assert after[:3] == before[:3]
+        assert [message["id"] for message in after[:3]] == expected_ids[:3]
+        assert after[3]["id"] == expected_ids[3]
+        assert after[3]["active"] == 0
+        session = state_db.get_session(sid)
+        assert session["message_count"] == 3
+        assert session["tool_call_count"] == 1
+
     def test_replacement_mode_preserves_tui_row_id_recovery_contract(self, state_db):
         """Archive-only replacement still accepts verified non-prefix live order.
 

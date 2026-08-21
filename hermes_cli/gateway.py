@@ -4141,6 +4141,7 @@ def systemd_restart(system: bool = False):
             f"⏳ {scope_label} service restarting gracefully (PID {pid}) — "
             f"waiting up to {wait_budget:.0f}s for in-flight turns + drain..."
         )
+        service_action = "restart"
         if _graceful_restart_via_sigusr1(pid, wait_budget):
             # Exit 75 transfers restart ownership to systemd.  Observe that
             # single replacement instead of issuing another restart that can
@@ -4153,6 +4154,8 @@ def systemd_restart(system: bool = False):
             # A replacement may have started but not reached gateway runtime
             # readiness before the wait expired.  Never stop that generation.
             props = _read_systemd_unit_properties(system=system)
+            if not props:
+                return
             replacement_pid = _systemd_main_pid_from_props(props)
             if (
                 props.get("ActiveState") in {"active", "activating", "reloading"}
@@ -4163,8 +4166,11 @@ def systemd_restart(system: bool = False):
 
             print(
                 "⚠ Systemd did not relaunch the gateway after its graceful exit; "
-                "forcing a service restart..."
+                "starting the inactive service..."
             )
+            # ``start`` is intentionally idempotent: if a replacement appears
+            # after the snapshot, this must not stop that new generation.
+            service_action = "start"
         else:
             print(
                 f"⚠ Graceful restart did not complete within {int(wait_budget)}s; "
@@ -4178,7 +4184,9 @@ def systemd_restart(system: bool = False):
             timeout=30,
         )
         try:
-            _run_systemctl(["restart", svc], system=system, check=True, timeout=90)
+            _run_systemctl(
+                [service_action, svc], system=system, check=True, timeout=90
+            )
         except subprocess.CalledProcessError as exc:
             if _systemd_error_indicates_start_limit(
                 exc

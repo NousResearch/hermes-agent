@@ -47,7 +47,7 @@ export function parseErrorSurface(value: unknown): ErrorSurface | null {
   }
 }
 
-/** Plain-text diagnostics blob for the error card's "Copy diagnostics". */
+/** Plain-text error-details blob for the error card's "Copy error details". */
 export function formatErrorDiagnostics(input: {
   appVersion?: string
   errorText: string

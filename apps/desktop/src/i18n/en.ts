@@ -3094,7 +3094,7 @@ export const en: Translations = {
       errorSwitchProvider: 'Switch provider',
       errorOpenLogs: 'Open logs',
       errorOpenLogsFailed: 'Could not open the logs folder',
-      errorCopyDiagnostics: 'Copy diagnostics',
+      errorCopyDiagnostics: 'Copy error details',
       filesChanged: count => (count === 1 ? '1 file changed' : `${count} files changed`),
       reviewChanges: 'Review',
       readAloudFailed: 'Read aloud failed',

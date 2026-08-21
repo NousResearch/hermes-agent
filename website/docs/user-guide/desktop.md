@@ -421,13 +421,13 @@ generic error toast. The card offers recovery actions matched to the failure:
 - **Switch provider** — jumps to Settings → Models for provider, endpoint,
   auth, and billing failures.
 - **Open logs** — opens `HERMES_HOME/logs` in your file manager.
-- **Copy diagnostics** — copies a compact plain-text summary (layer, code,
+- **Copy error details** — copies a compact plain-text summary (layer, code,
   provider/model, error message) you can paste into a bug report or Discord.
 
 The layer comes from the same error classifier the agent's retry loop uses,
 so it reflects the real failure semantics, not a guess from the message text.
 Older backends that predate the descriptor still render the card with a
-generic title and the Retry / Open logs / Copy diagnostics actions.
+generic title and the Retry / Open logs / Copy error details actions.
 
 Boot logs land in `HERMES_HOME/logs/desktop.log` (it includes backend output and recent Python tracebacks) — check it first if the app reports a boot failure. You can also tail it from the CLI:
 

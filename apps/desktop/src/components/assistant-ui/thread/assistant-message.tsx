@@ -449,7 +449,7 @@ const StreamingMarker: FC = () => {
 // descriptor (metadata.custom.errorSurface — see agent/error_surface.py).
 // These leaves render the layer label + recovery actions. Older backends
 // never send the descriptor: the label falls back to a generic title and the
-// action row still offers Retry / Open Logs / Copy diagnostics, so nothing
+// action row still offers Retry / Open Logs / Copy error details, so nothing
 // regresses on version skew.
 
 const ErrorLayerLabel: FC = () => {

@@ -17,7 +17,7 @@ import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $sessions } from '@/store/session'
 
-import { resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
+import { $unconfirmedPinWrites, resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
@@ -306,6 +306,39 @@ describe('watchSessionPins remote pull', () => {
     // Deterministic: exactly one row wins, so the local set settles and no
     // runaway re-entrant reconcile occurs.
     expect($pinnedSessionIds.get()).toEqual(['shared'])
+  })
+
+  it('publishes the fence so the sidebar can ignore the rows it covers', async () => {
+    // The Pinned section falls back to the server flag for pins the local set
+    // doesn't hold. Without the fence it reads a just-unpinned row's stale
+    // pinned=true as a foreign pin and re-lists the session.
+    $sessions.set([row('exposed', { pinned: true })])
+    await flush()
+    expect($pinnedSessionIds.get()).toContain('exposed')
+
+    $pinnedSessionIds.set([])
+    await flush()
+
+    expect($unconfirmedPinWrites.get().has('exposed')).toBe(true)
+
+    // Server catches up; nothing left to fence.
+    $sessions.set([row('exposed', { pinned: false })])
+    await flush()
+
+    expect($unconfirmedPinWrites.get().has('exposed')).toBe(false)
+  })
+
+  it('keeps the published fence reference stable across an unrelated refresh', async () => {
+    // The sidebar memoizes the Pinned section on this set; a fresh Set every
+    // session refresh would rebuild the list for nothing.
+    $sessions.set([row('quiet')])
+    await flush()
+
+    const before = $unconfirmedPinWrites.get()
+    $sessions.set([row('quiet'), row('another')])
+    await flush()
+
+    expect($unconfirmedPinWrites.get()).toBe(before)
   })
 
   it('prefers the active gateway profile when duplicate ids disagree', async () => {

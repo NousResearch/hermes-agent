@@ -479,6 +479,12 @@ def _chat_messages_to_responses_input(
     conversation is still on the wire.
     """
     items: List[Dict[str, Any]] = []
+    # Parallel to `items`: the raw chat message each converted item came
+    # from. Pruning needs this to read a canonical summary carrier's
+    # up-to-date, provenance-tagged content directly — the converted `item`
+    # can be a lossy shape (stale exact-replay, or a typed
+    # `function_call_output` wrapper) that no longer carries it (#90976).
+    item_sources: List[Optional[Dict[str, Any]]] = []
     seen_item_ids: set = set()
 
     for msg in messages:
@@ -567,6 +573,7 @@ def _chat_messages_to_responses_input(
                                 if k not in ("id", "_issuer_kind")
                             }
                             items.append(replay_item)
+                            item_sources.append(msg)
                             if item_id:
                                 seen_item_ids.add(item_id)
                             has_codex_reasoning = True
@@ -623,14 +630,17 @@ def _chat_messages_to_responses_input(
                         if isinstance(phase, str) and phase.strip():
                             replay_item["phase"] = phase.strip()
                         items.append(replay_item)
+                        item_sources.append(msg)
                         replayed_message_items += 1
 
                 if replayed_message_items > 0:
                     pass
                 elif content_parts:
                     items.append({"role": "assistant", "content": content_parts})
+                    item_sources.append(msg)
                 elif content_text.strip():
                     items.append({"role": "assistant", "content": content_text})
+                    item_sources.append(msg)
                 elif has_codex_reasoning:
                     # The Responses API requires a following item after each
                     # reasoning item (otherwise: missing_following_item error).
@@ -638,6 +648,7 @@ def _chat_messages_to_responses_input(
                     # content, emit an empty assistant message as the required
                     # following item.
                     items.append({"role": "assistant", "content": ""})
+                    item_sources.append(msg)
 
                 tool_calls = msg.get("tool_calls")
                 if isinstance(tool_calls, list):
@@ -680,6 +691,7 @@ def _chat_messages_to_responses_input(
                             "name": fn_name,
                             "arguments": arguments,
                         })
+                        item_sources.append(msg)
                 continue
 
             # Non-assistant (user) role: emit multimodal parts when present,
@@ -688,6 +700,7 @@ def _chat_messages_to_responses_input(
                 items.append({"role": role, "content": content_parts})
             else:
                 items.append({"role": role, "content": content_text})
+            item_sources.append(msg)
             continue
 
         if role == "tool":
@@ -722,24 +735,38 @@ def _chat_messages_to_responses_input(
                 "call_id": _clamp_responses_call_id(call_id),
                 "output": output_value,
             })
+            item_sources.append(msg)
 
     # Native server-side compaction: when a replayed checkpoint is present,
     # restructure the wire around it. The server renders nothing placed
     # before a compaction item (live-verified Aug 2026), so pre-checkpoint
-    # history is dead upload weight and — worse — the user's plaintext asks
-    # from before the boundary silently vanish from the model's view. Keep
-    # the newest checkpoint first, retain pre-checkpoint USER messages
-    # verbatim within a token budget (Codex CLI parity), and leave the
+    # history is dead upload weight and — worse — the user's plaintext asks,
+    # and any local-compression summary already merged into that history,
+    # silently vanish from the model's view. Keep the newest checkpoint
+    # first, retain pre-checkpoint USER messages and compression-SUMMARY
+    # messages (whole, never byte-sliced) verbatim within a token budget
+    # each (Codex CLI parity for the user side), and leave the
     # post-checkpoint tail untouched. Gated on the CURRENT request's native
     # eligibility, not merely on the presence of a checkpoint: a persisted
     # checkpoint outlives the gate, and pruning for a request that carries no
     # ``context_management`` deletes history the server never compacted.
+    #
+    # ``item_sources`` (parallel to ``items``) carries the raw chat message
+    # each converted item came from. A canonical summary carrier's content
+    # can be lost or gone stale by the time it becomes a Responses item — a
+    # merge-into-tail tool-result carrier becomes a typed
+    # ``function_call_output`` (no ``content``/``role`` at all), and a
+    # merge-into-tail assistant carrier can be shadowed by a stale exact
+    # ``codex_message_items`` replay from before the merge rewrote its
+    # content. Pruning reads the source message's own up-to-date,
+    # provenance-tagged content directly instead of trying to recover it
+    # from whatever shape the conversion produced (#90976).
     if not native_compaction_eligible:
         return items
 
     from agent.native_compaction import prune_pre_checkpoint_items
 
-    return prune_pre_checkpoint_items(items)
+    return prune_pre_checkpoint_items(items, item_sources=item_sources)
 
 
 # ---------------------------------------------------------------------------

@@ -657,6 +657,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
     if job.get("script"):
         result["script"] = job["script"]
+    if job.get("reasoning_effort"):
+        result["reasoning_effort"] = job["reasoning_effort"]
     if job.get("monitor_script"):
         result["monitor_script"] = job["monitor_script"]
     if job.get("monitor_url"):
@@ -1211,6 +1213,7 @@ def cronjob(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
 ) -> str:
@@ -1311,6 +1314,12 @@ def cronjob(
                     attach_to_session=attach_to_session,
                     monitor_script=_normalize_optional_job_value(monitor_script),
                     monitor_url=_normalize_optional_job_value(monitor_url),
+                    # reasoning_effort reaches here from the CLI
+                    # (hermes cron create --reasoning-effort) ONLY — it is
+                    # deliberately absent from CRONJOB_SCHEMA and the model
+                    # dispatch below: models do not make model-config
+                    # decisions (standing policy).
+                    reasoning_effort=reasoning_effort,
                 )
             except CronSchedulerRegistrationError as exc:
                 _partial = exc.to_dict()
@@ -1493,6 +1502,10 @@ def cronjob(
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+            if reasoning_effort is not None:
+                # CLI-only lane (see create above): update_job validates
+                # against the canonical grammar; empty string clears the pin.
+                updates["reasoning_effort"] = reasoning_effort
             # Re-validate the EFFECTIVE provider/base_url on EVERY update, not
             # only when this update supplies provider/base_url. A job persisted
             # before this guard (or written directly to the jobs store) may

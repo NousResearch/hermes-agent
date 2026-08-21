@@ -358,11 +358,9 @@ class CronPromptInjectionBlocked(Exception):
 def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """Toolsets a cron-spawned agent must never receive.
 
-    Three toolsets are always disabled in cron context regardless of config:
+    Two toolsets are always disabled in cron context regardless of config:
       - ``messaging`` — interactive, needs a live gateway session
       - ``clarify`` — interactive, blocks waiting for user input
-      - ``memory`` — cron agents are constructed with ``skip_memory=True``, so
-        exposing this tool only gives the model an unbacked tool that fails
 
     ``cronjob`` is policy-denied by default (loop prevention, not a security
     boundary) and config-gated: setting ``cron.allow_agent_scheduling: true``
@@ -377,9 +375,9 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """
     cron_cfg = (cfg or {}).get("cron") or {}
     if cron_cfg.get("allow_agent_scheduling"):
-        disabled = ["messaging", "clarify", "memory"]
+        disabled = ["messaging", "clarify"]
     else:
-        disabled = ["cronjob", "messaging", "clarify", "memory"]
+        disabled = ["cronjob", "messaging", "clarify"]
     agent_cfg = (cfg or {}).get("agent") or {}
     from agent.skill_utils import parse_config_string_list
 
@@ -453,6 +451,49 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
             exc,
         )
         return None
+
+
+def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | None:
+    """Resolve the effective reasoning config for a cron run.
+
+    Precedence: per-job ``reasoning_effort`` pin (validated at the store
+    choke point, ``cron/jobs.py::_normalize_reasoning_effort``) wins outright
+    over config resolution — both the global ``agent.reasoning_effort`` and
+    per-model ``agent.reasoning_overrides``. The pin is model-independent by
+    design: it also governs an auth-fallback model swap, and capability
+    clamping for the model that actually runs stays owned by the provider
+    transports at send time (exactly like config-set effort).
+
+    A value that no longer parses (hand-edited jobs.json) logs a warning and
+    falls back to config resolution — a bad pin must degrade the run's
+    thinking level, never kill the tick.
+
+    Absent/None pin returns ``resolve_reasoning_config(cfg, model)``
+    byte-identical, preserving pre-feature behavior.
+    """
+    from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+
+    pinned = job.get("reasoning_effort")
+    if pinned is not None:
+        parsed = parse_reasoning_effort(pinned)
+        if parsed is not None:
+            logger.info(
+                "Job '%s': using per-job reasoning_effort '%s'",
+                job.get("id", "?"),
+                pinned,
+            )
+            return parsed
+        logger.warning(
+            "Job '%s': invalid stored reasoning_effort %r — ignoring the pin "
+            "and falling back to config resolution. Fix with `cronjob "
+            "action=update job_id=%s reasoning_effort=<level>` (valid: none, "
+            "minimal, low, medium, high, xhigh, max, ultra).",
+            job.get("id", "?"),
+            pinned,
+            job.get("id", "?"),
+        )
+    return resolve_reasoning_config(cfg if isinstance(cfg, dict) else {}, str(model))
+
 
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
@@ -5385,7 +5426,8 @@ def run_job(
 
         # Reasoning config is resolved after provider authentication so an auth
         # fallback can first replace the primary model with its configured model.
-        from hermes_constants import resolve_reasoning_config
+        # Resolution itself happens via _resolve_job_reasoning_config below
+        # (per-job pin > agent.reasoning_overrides > agent.reasoning_effort).
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is
@@ -5603,8 +5645,8 @@ def run_job(
             if runtime is None:
                 raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
-        reasoning_config = resolve_reasoning_config(
-            _cfg if isinstance(_cfg, dict) else {}, str(model)
+        reasoning_config = _resolve_job_reasoning_config(
+            job, _cfg if isinstance(_cfg, dict) else {}, str(model)
         )
 
         # Provider/model-drift fail-closed guard (#44585).
@@ -5770,7 +5812,11 @@ def run_job(
             # Without a workdir, keep cwd context discovery disabled.
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
-            skip_memory=True,  # Cron system prompts would corrupt user representations
+            # Memory is enabled for cron agents like any other agent run:
+            # MEMORY.md / USER.md load into the system prompt and the memory
+            # tool follows normal toolset resolution, so jobs benefit from
+            # (and can update) the user's persistent memory.
+            skip_memory=False,
             skip_background_review=True,  # Cron has no human-in-the-loop need for skill/memory review forks (~30K tok/event)
             platform="cron",
             session_id=_cron_session_id,

@@ -415,3 +415,83 @@ async def test_heartbeat_poll_task_does_not_block_idle():
     finally:
         r._heartbeat_poll_task.cancel()
         await asyncio.gather(r._heartbeat_poll_task, return_exceptions=True)
+
+
+# ── in-flight cron / API-server work must block suspend (the 10:45 near-miss) ──
+#
+# Cron jobs run on the scheduler's thread pool and API-server runs live on the
+# adapter — both outside _running_agents (the #60432 blind spot). The idle
+# predicate must consume _active_work_count() (agents + cron + api runs), or a
+# suspend can freeze a cron job mid-run: observed on staging 2026-08-20, where
+# is_idle held True throughout a live cron run and only tick timing saved it.
+
+
+def _work_count_runner(monkeypatch, *, agents=0, cron_ids=(), api_runs=0):
+    from types import SimpleNamespace
+
+    r = GatewayRunner.__new__(GatewayRunner)
+    r._running = True
+    r._running_agents = {f"a{i}": object() for i in range(agents)}
+    r._background_tasks = set()
+    r._last_inbound_at = 0.0  # inbound-quiet for hours
+    monkeypatch.setattr(
+        r, "_scale_to_zero_idle_timeout_seconds", lambda: 300.0, raising=False
+    )
+    monkeypatch.setattr(
+        "cron.scheduler.get_running_job_ids", lambda: set(cron_ids)
+    )
+    api_adapter = SimpleNamespace(active_agent_work_count=lambda: api_runs)
+    from gateway.platforms.base import Platform
+
+    r.adapters = {Platform.API_SERVER: api_adapter}
+    return r
+
+
+def test_running_cron_job_blocks_idle(monkeypatch):
+    r = _work_count_runner(monkeypatch, cron_ids={"job1"})
+    assert r._scale_to_zero_is_idle() is False
+
+
+def test_active_api_run_blocks_idle(monkeypatch):
+    r = _work_count_runner(monkeypatch, api_runs=1)
+    assert r._scale_to_zero_is_idle() is False
+
+
+def test_idle_true_when_all_work_sources_quiet(monkeypatch):
+    r = _work_count_runner(monkeypatch)
+    assert r._scale_to_zero_is_idle() is True
+
+
+def test_unreadable_cron_source_fails_awake(monkeypatch):
+    """A transient failure reading the cron work source must count as WORK
+    (stay awake), not as idle — fail-open accounting would reopen the
+    mid-job-freeze hole exactly when bookkeeping is broken."""
+    r = _work_count_runner(monkeypatch)
+
+    def _boom():
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr("cron.scheduler.get_running_job_ids", _boom)
+    assert r._scale_to_zero_is_idle() is False
+
+
+def test_unreadable_api_source_fails_awake(monkeypatch):
+    from types import SimpleNamespace
+
+    def _boom():
+        raise RuntimeError("adapter wedged")
+
+    r = _work_count_runner(monkeypatch)
+    from gateway.platforms.base import Platform
+
+    r.adapters = {Platform.API_SERVER: SimpleNamespace(active_agent_work_count=_boom)}
+    assert r._scale_to_zero_is_idle() is False
+
+
+def test_missing_api_adapter_is_not_work(monkeypatch):
+    """No api_server adapter at all (common: relay-only instance before the
+    key existed) is a NORMAL state, not an unreadable source — must not hold
+    the machine awake."""
+    r = _work_count_runner(monkeypatch)
+    r.adapters = {}
+    assert r._scale_to_zero_is_idle() is True

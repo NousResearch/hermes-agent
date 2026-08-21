@@ -243,12 +243,22 @@ def _(rid, params: dict) -> dict:
                 from pathlib import Path as _Path
 
                 meta_path = _Path(str(p.path)) / "profile.yaml"
+                # Presence of this field feature-detects gateway-owned CAS,
+                # including a brand-new profile whose revision map is empty.
+                row["ui_meta_revisions"] = {}
                 if meta_path.is_file():
                     with open(meta_path, "r", encoding="utf-8") as f:
                         raw_meta = _yaml.safe_load(f) or {}
                     ui_meta = raw_meta.get("ui_meta")
                     if isinstance(ui_meta, dict) and ui_meta:
                         row["ui_meta"] = ui_meta
+                    revisions = raw_meta.get("_ui_meta_revisions")
+                    if isinstance(revisions, dict) and revisions:
+                        row["ui_meta_revisions"] = {
+                            str(key): max(0, int(value))
+                            for key, value in revisions.items()
+                            if isinstance(value, int) and not isinstance(value, bool)
+                        }
             except Exception:
                 pass
 
@@ -693,7 +703,9 @@ def _(rid, params: dict) -> dict:
     ``model`` + ``provider`` (both required together),
     ``disabled_skills`` (list[str], replace semantics),
     ``enabled_toolsets`` (list[str], replace semantics; empty list clears
-    the pin so every toolset is enabled again).
+    the pin so every toolset is enabled again), and
+    ``ui_meta_expected_revisions`` (dict[str, int], optional compare-and-swap
+    preconditions for keys supplied in ``ui_meta``).
 
     Each section is applied independently and best-effort; the result
     reports per-section success so a UI can surface partial failures.
@@ -728,32 +740,73 @@ def _(rid, params: dict) -> dict:
                 else:
                     import yaml as _yaml
 
-                    meta_path = profile_dir / "profile.yaml"
-                    existing = {}
-                    if meta_path.is_file():
-                        try:
-                            with open(meta_path, "r", encoding="utf-8") as f:
-                                loaded = _yaml.safe_load(f) or {}
-                            if isinstance(loaded, dict):
-                                existing = loaded
-                        except Exception:
-                            existing = {}
-                    current = existing.get("ui_meta")
-                    if not isinstance(current, dict):
-                        current = {}
-                    for key, value in incoming.items():
-                        if value is None:
-                            current.pop(key, None)
-                        else:
-                            current[key] = value
-                    if current:
-                        existing["ui_meta"] = current
-                    else:
-                        existing.pop("ui_meta", None)
-                    from utils import atomic_yaml_write
+                    expected = params.get("ui_meta_expected_revisions")
+                    if expected is not None and not isinstance(expected, dict):
+                        raise ValueError("ui_meta_expected_revisions must be an object")
 
-                    atomic_yaml_write(meta_path, existing, sort_keys=False)
-                    applied["ui_meta"] = True
+                    meta_path = profile_dir / "profile.yaml"
+                    with _profile_ui_meta_lock:
+                        existing = {}
+                        if meta_path.is_file():
+                            try:
+                                with open(meta_path, "r", encoding="utf-8") as f:
+                                    loaded = _yaml.safe_load(f) or {}
+                                if isinstance(loaded, dict):
+                                    existing = loaded
+                            except Exception:
+                                existing = {}
+
+                        raw_revisions = existing.get("_ui_meta_revisions")
+                        revisions = dict(raw_revisions) if isinstance(raw_revisions, dict) else {}
+                        revisions = {
+                            str(key): max(0, int(value))
+                            for key, value in revisions.items()
+                            if isinstance(value, int) and not isinstance(value, bool)
+                        }
+                        conflicts = {}
+                        if isinstance(expected, dict):
+                            for key in incoming:
+                                wanted = expected.get(key)
+                                actual = revisions.get(key, 0)
+                                if (
+                                    not isinstance(wanted, int)
+                                    or isinstance(wanted, bool)
+                                    or wanted < 0
+                                    or wanted != actual
+                                ):
+                                    conflicts[key] = {"expected": wanted, "actual": actual}
+
+                        if conflicts:
+                            applied["ui_meta"] = False
+                            applied["ui_meta_conflicts"] = conflicts
+                            applied["ui_meta_revisions"] = {
+                                key: revisions.get(key, 0) for key in incoming
+                            }
+                        else:
+                            current = existing.get("ui_meta")
+                            if not isinstance(current, dict):
+                                current = {}
+                            for key, value in incoming.items():
+                                if value is None:
+                                    current.pop(key, None)
+                                else:
+                                    current[key] = value
+                                revisions[key] = revisions.get(key, 0) + 1
+                            if current:
+                                existing["ui_meta"] = current
+                            else:
+                                existing.pop("ui_meta", None)
+                            # Revisions intentionally survive deletion: a
+                            # stale client must not recreate a removed key by
+                            # presenting the initial revision again.
+                            existing["_ui_meta_revisions"] = revisions
+                            from utils import atomic_yaml_write
+
+                            atomic_yaml_write(meta_path, existing, sort_keys=False)
+                            applied["ui_meta"] = True
+                            applied["ui_meta_revisions"] = {
+                                key: revisions[key] for key in incoming
+                            }
             except Exception:
                 applied["ui_meta"] = False
 

@@ -59,6 +59,56 @@ def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
 # (Firecrawl / Tavily / …). Mapped back to ``web_search`` in normalize_response.
 _XAI_CLIENT_WEB_SEARCH_ALIAS = "hermes_web_search"
 
+# OpenCode's /v1/responses endpoints (Zen and Go, including custom providers
+# pointing at opencode.ai) reserve certain function names server-side and
+# reject client tools that use them with HTTP 400 ("custom function name
+# 'X' is reserved"). Reported for grok-4.5 on Go with `search_files` and
+# `web_search` (#85589). Same treatment as the xAI web_search collision:
+# rename on the wire (hermes_<name>), map back in normalize_response so
+# Hermes dispatch is unaffected.
+_OPENCODE_RESERVED_TOOL_NAMES = ("web_search", "search_files")
+_RESERVED_TOOL_ALIAS_PREFIX = "hermes_"
+_RESERVED_ALIAS_TO_NAME = {
+    f"{_RESERVED_TOOL_ALIAS_PREFIX}{name}": name
+    for name in _OPENCODE_RESERVED_TOOL_NAMES
+}
+
+
+def _is_opencode_responses_backend(params: Dict[str, Any]) -> bool:
+    """True when this Responses request targets an OpenCode endpoint.
+
+    Matches the built-in opencode-zen/go providers, custom ``opencode-go-*`` /
+    ``opencode-zen-*`` family providers, and any base_url hosted on
+    opencode.ai (covers custom providers with arbitrary names pointing at
+    the OpenCode gateway).
+    """
+    try:
+        from hermes_cli.models import opencode_provider_family
+
+        if opencode_provider_family(params.get("provider")) is not None:
+            return True
+    except Exception:
+        pass
+    try:
+        from utils import base_url_hostname
+
+        return base_url_hostname(str(params.get("base_url") or "")).lower() == "opencode.ai"
+    except Exception:
+        return False
+
+
+def _rename_reserved_tools_for_opencode(response_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Alias OpenCode-reserved client function names on the wire."""
+    rewritten: List[Dict[str, Any]] = []
+    for tool in response_tools:
+        if isinstance(tool, dict) and tool.get("name") in _OPENCODE_RESERVED_TOOL_NAMES:
+            aliased = dict(tool)
+            aliased["name"] = f"{_RESERVED_TOOL_ALIAS_PREFIX}{tool['name']}"
+            rewritten.append(aliased)
+        else:
+            rewritten.append(tool)
+    return rewritten
+
 
 def _xai_prefers_native_web_search() -> bool:
     """True when xAI Responses should use Grok's native ``web_search`` built-in.
@@ -503,6 +553,12 @@ class ResponsesApiTransport(ProviderTransport):
                 else:
                     response_tools = _rename_client_web_search_for_xai(response_tools)
 
+        # OpenCode Responses backends reserve web_search / search_files as
+        # function names (HTTP 400 "custom function name 'X' is reserved",
+        # #85589). Alias them on the wire; normalize_response maps them back.
+        if response_tools and _is_opencode_responses_backend(params):
+            response_tools = _rename_reserved_tools_for_opencode(response_tools)
+
         # ``tools`` MUST be omitted entirely when there are no functions to
         # expose: the openai SDK's ``responses.stream()`` / ``responses.parse()``
         # eagerly call ``_make_tools(tools)`` which does ``for tool in tools``
@@ -734,6 +790,10 @@ class ResponsesApiTransport(ProviderTransport):
                 # the real ``web_search`` tool (Firecrawl / etc.).
                 if name == _XAI_CLIENT_WEB_SEARCH_ALIAS:
                     name = "web_search"
+                # Undo the OpenCode reserved-name wire aliases the same way
+                # (hermes_web_search / hermes_search_files, #85589).
+                elif name in _RESERVED_ALIAS_TO_NAME:
+                    name = _RESERVED_ALIAS_TO_NAME[name]
                 tool_calls.append(ToolCall(
                     id=tc.id if hasattr(tc, "id") else (name or None),
                     name=name,

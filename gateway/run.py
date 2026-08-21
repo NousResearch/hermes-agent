@@ -895,6 +895,94 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
+def _approval_send_outcome(future, timeout: float) -> str:
+    """Classify an approval prompt send as ``sent`` / ``failed`` / ``ambiguous``.
+
+    ``ambiguous`` == the scheduling future timed out. The card may well have
+    posted: the connector may only ack after the deadline (slow platform API
+    call, transient backpressure, event-loop stall), and treating that timeout
+    as a failure has been observed in live relay testing to re-send the card
+    repeatedly, leaving the user's tap resolving a prompt whose turn had moved
+    on. Callers must treat
+    ``ambiguous`` as possibly-delivered: keep the prompt registration alive
+    and do NOT re-send or fall back — the boundary rule is that only a
+    DEFINITIVE failure (error result / non-timeout exception / no future)
+    re-asks.
+
+    Definitive failures log their detail here (scheduling exception text or
+    the SendResult error) so callers sharing this classifier keep the
+    diagnostic breadcrumb the old inline code had.
+    """
+    if future is None:
+        logger.warning("Prompt send failed: no scheduling future (loop unavailable)")
+        return "failed"
+    try:
+        result = future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        return "ambiguous"
+    except Exception as exc:
+        logger.warning("Prompt send failed: %s", exc)
+        return "failed"
+    if getattr(result, "success", False):
+        return "sent"
+    logger.warning(
+        "Prompt send failed: %s", getattr(result, "error", None) or "unknown error"
+    )
+    return "failed"
+
+
+def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | None":
+    """Decide whether a clarify prompt send aborts the wait, per the boundary rule.
+
+    Same physics as the exec-approval card: the scheduling future can hit its
+    deadline while the clarify card HAS already posted (late connector ack).
+    Treating that timeout as a definitive failure cleared the session out from
+    under a rendered card — the user answers a question whose registration is
+    gone. Only a DEFINITIVE failure (error result / non-timeout exception /
+    no future) tears down the registration and aborts; ``ambiguous`` keeps the
+    registration armed and proceeds to the normal bounded wait, which already
+    handles the truly-lost-card case via its response timeout.
+
+    Returns the abort sentinel string on definitive failure, else ``None``
+    (proceed to ``wait_for_response``).
+    """
+    outcome = _approval_send_outcome(fut, timeout=15)
+    if outcome == "failed":
+        # Couldn't deliver the prompt — clean up and return the sentinel so
+        # the agent can fall back to a sensible default rather than hanging.
+        logger.warning("Clarify send failed definitively; clearing registration")
+        clarify_mod.clear_session(session_key)
+        return "[clarify prompt could not be delivered]"
+    if outcome == "ambiguous":
+        logger.warning(
+            "Clarify prompt send timed out — treating as possibly-delivered "
+            "(no teardown; the registration stays armed for a late reply)"
+        )
+    return None
+
+
+def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod) -> str:
+    """Resolve a clarify prompt: send disposition, then the bounded wait.
+
+    The full caller contract in one testable seam: a definitive send failure
+    returns the undeliverable sentinel (registration torn down); ``sent`` and
+    ``ambiguous`` both proceed to ``wait_for_response`` with the configured
+    timeout — for ambiguous, the registration stays armed so a late reply to
+    the (probably rendered) card still resolves.
+    """
+    abort = _clarify_send_disposition(
+        fut, session_key=session_key, clarify_mod=clarify_mod
+    )
+    if abort is not None:
+        return abort
+    timeout = clarify_mod.get_clarify_timeout()
+    response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
+    if response is None or response == "":
+        # Timeout or session-boundary cancellation
+        return f"[user did not respond within {int(timeout / 60)}m]"
+    return response
+
+
 def _resolve_progress_thread_id(
     platform: Any,
     source_thread_id: Any,
@@ -5911,7 +5999,6 @@ class TurnRunner:
                     exc_info=True,
                 )
 
-            send_ok = False
             fut = safe_schedule_threadsafe(
                 ctx._status_adapter.send_clarify(
                     chat_id=ctx._status_chat_id,
@@ -5925,29 +6012,16 @@ class TurnRunner:
                 logger=logger,
                 log_message="Clarify send failed to schedule",
             )
-            if fut is None:
-                send_ok = False
-            else:
-                try:
-                    result = fut.result(timeout=15)
-                    send_ok = bool(getattr(result, "success", False))
-                except Exception as exc:
-                    logger.warning("Clarify send failed: %s", exc)
-                    send_ok = False
-
-            if not send_ok:
-                # Couldn't deliver the prompt — clean up and return
-                # sentinel so the agent can fall back to a sensible
-                # default rather than hanging.
-                _clarify_mod.clear_session(ctx.session_key or "")
-                return "[clarify prompt could not be delivered]"
-
-            timeout = _clarify_mod.get_clarify_timeout()
-            response = _clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
-            if response is None or response == "":
-                # Timeout or session-boundary cancellation
-                return f"[user did not respond within {int(timeout / 60)}m]"
-            return response
+            # Boundary rule (see _approval_send_outcome): a send timeout is
+            # AMBIGUOUS — the card may have posted with a late ack. Only a
+            # definitive failure tears down the registration; ambiguous
+            # falls through to the bounded wait so a late reply resolves.
+            return _clarify_send_then_wait(
+                fut,
+                clarify_id=clarify_id,
+                session_key=ctx.session_key or "",
+                clarify_mod=_clarify_mod,
+            )
 
         agent.clarify_callback = _clarify_callback_sync
 
@@ -6083,12 +6157,26 @@ class TurnRunner:
                     )
                     if _approval_fut is None:
                         raise RuntimeError("send_exec_approval: loop unavailable")
-                    _approval_result = _approval_fut.result(timeout=15)
-                    if _approval_result.success:
+                    _outcome = _approval_send_outcome(_approval_fut, timeout=15)
+                    if _outcome == "sent":
+                        return
+                    if _outcome == "ambiguous":
+                        # Timeout ≠ failure: the card may have posted with a
+                        # late ack (slow platform API call or transient
+                        # connector backpressure). The prompt
+                        # registration stays alive, so a tap on the rendered
+                        # card still resolves; re-sending here is what
+                        # produced duplicate cards and an orphaned
+                        # "/approve: nothing pending" in live relay testing.
+                        # Skip the text fallback.
+                        logger.warning(
+                            "Button-based approval send timed out — treating "
+                            "as possibly-delivered (no re-send; the prompt "
+                            "stays armed for a late tap)"
+                        )
                         return
                     logger.warning(
-                        "Button-based approval failed (send returned error), falling back to text: %s",
-                        _approval_result.error,
+                        "Button-based approval failed (send returned error), falling back to text"
                     )
                 except Exception as _e:
                     logger.warning(
@@ -8693,8 +8781,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _scale_to_zero_is_idle(self) -> bool:
         from gateway.scale_to_zero import is_idle
 
+        # The FULL work aggregate, not _running_agent_count(): cron jobs run
+        # on the scheduler's own thread pool and API-server runs live on the
+        # adapter — both outside _running_agents (the #60432 blind spot), so
+        # counting agents alone let a suspend land mid-cron-job.
+        #
+        # Fail-AWAKE accounting: the shared shutdown-drain counters
+        # (_active_cron_job_count/_active_api_run_count) swallow exceptions to
+        # 0, which is fine for a drain but unsafe for a suspend predicate — a
+        # transient read failure would make live work look idle and reopen the
+        # mid-job freeze. Here an unreadable source counts as work (sentinel 1)
+        # so the machine stays awake until the source is readable again.
+        try:
+            from cron.scheduler import get_running_job_ids
+
+            cron_count = len(get_running_job_ids())
+        except Exception:  # noqa: BLE001 - unreadable source => assume busy
+            logger.debug("scale-to-zero: cron work count unreadable — staying awake", exc_info=True)
+            cron_count = 1
+        try:
+            adapter = getattr(self, "adapters", {}).get(Platform.API_SERVER)
+            helper = getattr(adapter, "active_agent_work_count", None)
+            api_count = max(0, int(helper())) if callable(helper) else 0
+        except Exception:  # noqa: BLE001 - unreadable source => assume busy
+            logger.debug("scale-to-zero: api work count unreadable — staying awake", exc_info=True)
+            api_count = 1
         return is_idle(
-            running_agent_count=self._running_agent_count(),
+            active_work_count=self._running_agent_count() + cron_count + api_count,
             seconds_since_last_inbound=time.time() - self._last_inbound_at,
             idle_timeout_seconds=self._scale_to_zero_idle_timeout_seconds(),
             has_live_background_work=self._scale_to_zero_has_live_background_work(),

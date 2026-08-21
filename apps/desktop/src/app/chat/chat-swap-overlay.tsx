@@ -1,33 +1,20 @@
 import { useEffect, useState } from 'react'
 
+import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-
-// Braille spinner frames — reads as a tiny ASCII loader in monospace.
-const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 
 // Shown over the conversation while the live gateway swaps to another profile's
 // backend (lazily spawned). Keeps the last profile name through the fade-out so
 // the label doesn't blank. Purely visual — pointer-events-none.
 export function ChatSwapOverlay({ profile }: { profile: string | null }) {
   const { t } = useI18n()
-  const [frame, setFrame] = useState(0)
   const [label, setLabel] = useState<null | string>(profile)
 
   useEffect(() => {
     if (profile) {
       setLabel(profile)
     }
-  }, [profile])
-
-  useEffect(() => {
-    if (!profile) {
-      return
-    }
-
-    const id = window.setInterval(() => setFrame(value => (value + 1) % FRAMES.length), 80)
-
-    return () => window.clearInterval(id)
   }, [profile])
 
   return (
@@ -39,7 +26,14 @@ export function ChatSwapOverlay({ profile }: { profile: string | null }) {
       )}
     >
       <div className="flex items-center gap-2 bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-4 py-2 font-mono text-[0.8125rem] text-foreground shadow-composer">
-        <span className="w-3 text-(--ui-accent)">{FRAMES[frame]}</span>
+        {/* Was a local 80ms setInterval + setState braille ticker — the same
+            mechanism class (per-tick DOM mutation scheduling style recalc)
+            that GlyphSpinner was rewritten to remove. `braille` is exactly the
+            frame set and 80ms cadence this used. `justify-start` keeps the
+            glyph left-aligned in its w-3 box the way the bare span was, and
+            `paused` restores the old "no ticking once the swap is done"
+            behaviour while the overlay fades out still mounted. */}
+        <GlyphSpinner className="w-3 justify-start text-(--ui-accent)" paused={!profile} spinner="braille" />
         {t.composer.wakingProfile(label ?? '')}
       </div>
     </div>

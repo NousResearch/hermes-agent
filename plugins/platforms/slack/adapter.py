@@ -893,11 +893,11 @@ def _is_slack_voice_clip(file_obj: Dict[str, Any]) -> bool:
 
 class SlackAdapter(BasePlatformAdapter):
     """
-    Slack bot adapter using Socket Mode.
+    Slack bot adapter using the Web API and optional Socket Mode ingress.
 
-    Requires two tokens:
-      - SLACK_BOT_TOKEN (xoxb-...) for API calls
-      - SLACK_APP_TOKEN (xapp-...) for Socket Mode connection
+    ``SLACK_BOT_TOKEN`` (xoxb-...) enables outbound API calls. When
+    ``SLACK_APP_TOKEN`` (xapp-...) is also configured, the adapter opens a
+    Socket Mode connection for inbound events.
 
     Features:
       - DMs and channel messages (mention-gated in channels)
@@ -1808,7 +1808,7 @@ class SlackAdapter(BasePlatformAdapter):
             pass
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Connect to Slack via Socket Mode."""
+        """Authenticate Slack Web API clients and optionally start Socket Mode."""
         if not SLACK_AVAILABLE:
             logger.error(
                 "[Slack] slack-bolt not installed. Run: pip install slack-bolt",
@@ -1844,22 +1844,6 @@ class SlackAdapter(BasePlatformAdapter):
                 retryable=False,
             )
             return False
-        if not app_token:
-            logger.error(
-                "[Slack] SLACK_APP_TOKEN not set — this is a permanent config "
-                "error; set SLACK_APP_TOKEN via `hermes gateway setup` "
-                "or in the active profile's ~/.hermes/.env file, then restart "
-                "the gateway.",
-            )
-            self._set_fatal_error(
-                "missing_slack_app_token",
-                "SLACK_APP_TOKEN not configured. Use `hermes gateway setup` "
-                "or add it to your active profile's ~/.hermes/.env file, "
-                "then restart the gateway.",
-                retryable=False,
-            )
-            return False
-
         proxy_url = _resolve_slack_proxy_url()
         if proxy_url:
             logger.info(
@@ -1901,11 +1885,12 @@ class SlackAdapter(BasePlatformAdapter):
 
         lock_acquired = False
         try:
-            if not self._acquire_platform_lock(
-                "slack-app-token", app_token, "Slack app token"
-            ):
-                return False
-            lock_acquired = True
+            if app_token:
+                if not self._acquire_platform_lock(
+                    "slack-app-token", app_token, "Slack app token"
+                ):
+                    return False
+                lock_acquired = True
             self._running = False
 
             # Tear down any prior reconnect state before flipping ``_running``
@@ -1993,6 +1978,18 @@ class SlackAdapter(BasePlatformAdapter):
                 self._warn_if_missing_group_dm_scopes(auth_response, team_name)
                 self._warn_if_not_bot_token(auth_response, team_name)
                 self._warn_if_inchannel_without_flat_reply(team_name)
+
+            if not app_token:
+                # Bot-token-only profiles are valid outbound transports. Keep
+                # the authenticated Web API clients live for cron and explicit
+                # sends, but do not register handlers or open Socket Mode.
+                self._running = True
+                logger.info(
+                    "[Slack] Outbound-only mode ready (%d workspace(s)); "
+                    "SLACK_APP_TOKEN is not configured, so inbound events are disabled",
+                    len(self._team_clients),
+                )
+                return True
 
             # Register message event handler
             @self._app.event("message")
@@ -9434,8 +9431,9 @@ def interactive_setup() -> None:
     print_info("Steps to create a Slack app:")
     print_info("   1. Go to https://api.slack.com/apps → Create New App")
     print_info("      Pick 'From an app manifest' — we'll generate one for you below.")
-    print_info("   2. Enable Socket Mode: Settings → Socket Mode → Enable")
+    print_info("   2. For inbound messages, enable Socket Mode: Settings → Socket Mode → Enable")
     print_info("      • Create an App-Level Token with 'connections:write' scope")
+    print_info("      • Skip this step for outbound-only cron and notification delivery")
     print_info("   3. Install to Workspace: Settings → Install App")
     print_info("   4. After installing, invite the bot to channels: /invite @YourBot")
     print()
@@ -9452,9 +9450,13 @@ def interactive_setup() -> None:
     if not bot_token:
         return
     save_env_value("SLACK_BOT_TOKEN", bot_token)
-    app_token = prompt("Slack App Token (xapp-...)", password=True)
+    app_token = prompt(
+        "Slack App Token (xapp-..., leave empty for outbound-only)", password=True
+    )
     if app_token:
         save_env_value("SLACK_APP_TOKEN", app_token)
+    else:
+        remove_env_value("SLACK_APP_TOKEN")
     print_success("Slack tokens saved")
 
     print()
@@ -9581,7 +9583,7 @@ def register(ctx) -> None:
         check_fn=slack_deps_present,
         ensure_deps_fn=check_slack_requirements,
         is_connected=_is_connected,
-        required_env=["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
+        required_env=["SLACK_BOT_TOKEN"],
         install_hint="Run `hermes setup` to install Slack support.",
         # Interactive setup wizard — replaces hermes_cli/setup.py::_setup_slack
         # and the static _PLATFORMS["slack"] dict in hermes_cli/gateway.py.

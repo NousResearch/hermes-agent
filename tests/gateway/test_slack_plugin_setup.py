@@ -52,6 +52,24 @@ def test_interactive_setup_saves_home_channel(monkeypatch, tmp_path):
     assert "SLACK_HOME_CHANNEL" not in removed
 
 
+def test_blank_app_token_clears_existing_inbound_credential(monkeypatch, tmp_path):
+    """Selecting outbound-only mode must remove a stale Socket Mode token."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    saved, removed = {}, []
+    _patch_setup_io(
+        monkeypatch,
+        ["«redacted:xox…»", "", "", ""],
+        saved,
+        removed,
+        existing={"SLACK_APP_TOKEN": "xapp-existing"},
+    )
+
+    interactive_setup()
+
+    assert "SLACK_APP_TOKEN" in removed
+    assert "SLACK_APP_TOKEN" not in saved
+
+
 class TestSlackHomeChannelClear:
     """Blank home-channel answer must clear SLACK_HOME_CHANNEL (#12423)."""
 

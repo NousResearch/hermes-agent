@@ -516,6 +516,40 @@ class TestDeliverResultWrapping:
 class TestDeliverResultErrorReturns:
     """Verify _deliver_result returns error strings on failure, None on success."""
 
+    def test_bot_token_only_slack_explicit_target_uses_standalone_sender(
+        self, tmp_path, monkeypatch
+    ):
+        from gateway.config import Platform, load_gateway_config
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-outbound")
+        monkeypatch.delenv("SLACK_APP_TOKEN", raising=False)
+
+        config = load_gateway_config()
+        slack_config = config.platforms[Platform.SLACK]
+        assert slack_config.enabled is True
+        assert slack_config.token == "xoxb-outbound"
+
+        send = AsyncMock(return_value={"success": True})
+        with (
+            patch("gateway.config.load_gateway_config", return_value=config),
+            patch(
+                "cron.scheduler.load_config",
+                return_value={"cron": {"wrap_response": False}},
+            ),
+            patch("tools.send_message_tool._send_to_platform", new=send),
+        ):
+            result = _deliver_result(
+                {"id": "slack-outbound", "deliver": "slack:C123"},
+                "scheduled result",
+            )
+
+        assert result is None
+        send.assert_awaited_once()
+        assert send.await_args.args[:3] == (Platform.SLACK, slack_config, "C123")
+
     def test_returns_error_when_platform_disabled(self):
         from gateway.config import Platform
 

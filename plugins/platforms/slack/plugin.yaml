@@ -4,10 +4,10 @@ kind: platform
 version: 1.0.0
 description: >
   Slack gateway adapter for Hermes Agent.
-  Connects to Slack via slack-bolt in Socket Mode and relays messages
-  between Slack channels/DMs and the Hermes agent. Supports slash
-  commands, threads, mrkdwn rendering, approval blocks, free-response
-  channels, mention gating, and channel skill bindings.
+  Sends messages through the Slack Web API and, when a Socket Mode app
+  token is configured, relays inbound Slack channels/DMs to the Hermes
+  agent. Supports slash commands, threads, mrkdwn rendering, approval
+  blocks, free-response channels, mention gating, and channel skill bindings.
 author: NousResearch
 requires_env:
   - name: SLACK_BOT_TOKEN
@@ -15,12 +15,12 @@ requires_env:
     prompt: "Slack Bot Token (xoxb-...)"
     url: "https://api.slack.com/apps"
     password: true
+optional_env:
   - name: SLACK_APP_TOKEN
-    description: "Slack app-level token for Socket Mode (xapp-..., scope connections:write)"
-    prompt: "Slack App Token (xapp-...)"
+    description: "Optional Slack app-level token for inbound Socket Mode (xapp-..., scope connections:write)"
+    prompt: "Slack App Token for inbound events (xapp-...)"
     url: "https://api.slack.com/apps"
     password: true
-optional_env:
   - name: SLACK_ALLOWED_USERS
     description: "Comma-separated Slack member IDs allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"

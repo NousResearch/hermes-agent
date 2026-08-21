@@ -1,4 +1,7 @@
 import asyncio
+import json
+import queue
+import threading
 import time
 
 import pytest
@@ -19,6 +22,12 @@ def test_ringbuffer_drops_oldest_over_capacity():
     rb.append(b"abcdef")          # 6 bytes into a 4-byte buffer
     assert rb.snapshot() == b"cdef"
     assert rb.truncated is True
+
+
+def test_ringbuffer_snapshot_from_rejects_future_offset():
+    rb = RingBuffer(10)
+    rb.append(b"abc")
+    assert rb.snapshot_from(4) is None
 
 
 
@@ -62,6 +71,49 @@ class FakeWS:
         self.close_code = code
 
 
+class QueueBridge(FakeBridge):
+    """Thread-safe bridge whose output can be injected during an async test."""
+
+    def __init__(self):
+        super().__init__([])
+        self._queue = queue.Queue()
+        self.read_started = threading.Event()
+
+    def push(self, data):
+        self._queue.put(data)
+
+    def read(self, timeout):
+        try:
+            chunk = self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return b""
+        self.read_started.set()
+        return chunk
+
+
+class BlockingFirstBinaryWS(FakeWS):
+    def __init__(self):
+        super().__init__()
+        self.first_binary_started = asyncio.Event()
+        self.release_first_binary = asyncio.Event()
+        self.live_sent = asyncio.Event()
+        self._binary_count = 0
+
+    async def send_bytes(self, data):
+        self._binary_count += 1
+        if self._binary_count == 1:
+            self.first_binary_started.set()
+            await self.release_first_binary.wait()
+        await super().send_bytes(data)
+        if data == b"live":
+            self.live_sent.set()
+
+
+class FailingControlWS(FakeWS):
+    async def send_text(self, text):
+        raise RuntimeError("disconnected during attach")
+
+
 @pytest.mark.asyncio
 async def test_attach_replays_buffer_then_streams_live():
     from hermes_cli.pty_session import PtySession
@@ -73,6 +125,56 @@ async def test_attach_replays_buffer_then_streams_live():
     await s.attach(ws)
     replay = b"".join(p for kind, p in ws.sent if kind == "bytes")
     assert replay == b"hello world"
+    control = json.loads(next(p for kind, p in ws.sent if kind == "text"))
+    assert control == {
+        "type": "pty.replay",
+        "epoch": s.epoch,
+        "start_offset": 0,
+        "replay_end_offset": len(b"hello world"),
+        "reset": True,
+        "reason": "initial",
+    }
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_attach_serializes_chunked_replay_before_live_output():
+    """A live frame cannot cut between chunks of a large replay."""
+    from hermes_cli.pty_session import PtySession
+
+    replay = b"r" * (16384 + 97)
+    bridge = QueueBridge()
+    s = PtySession("k", bridge, buffer_cap=len(replay) + 1024, read_timeout=0.01)
+    s.buffer.append(replay)
+    await s.start()
+    ws = BlockingFirstBinaryWS()
+
+    attach_task = asyncio.create_task(s.attach(ws))
+    await asyncio.wait_for(ws.first_binary_started.wait(), timeout=1)
+
+    # The drain thread reads this while attach() is blocked in the first
+    # replay frame. It must then wait on the session send lock.
+    bridge.push(b"live")
+    assert await asyncio.to_thread(bridge.read_started.wait, 1)
+    ws.release_first_binary.set()
+
+    await asyncio.wait_for(attach_task, timeout=1)
+    await asyncio.wait_for(ws.live_sent.wait(), timeout=1)
+    binary = b"".join(p for kind, p in ws.sent if kind == "bytes")
+    assert binary == replay + b"live"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_attach_send_failure_leaves_session_detached_and_reapable():
+    from hermes_cli.pty_session import PtySession
+
+    s = PtySession("k", FakeBridge([]), buffer_cap=1024, read_timeout=0.01)
+    ws = FailingControlWS()
+    with pytest.raises(RuntimeError, match="disconnected during attach"):
+        await s.attach(ws)
+    assert s.attached is False
+    assert s.last_detached_at is not None
     await s.close()
 
 
@@ -179,3 +281,93 @@ async def test_reaper_loop_invokes_reap(monkeypatch):
     except asyncio.CancelledError:
         pass
     assert calls["n"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_attach_incremental_replay_from_offset():
+    """Reconnect with a prior byte offset sends only the delta, not the full buffer.
+
+    The connection-lifecycle architecture (suspend on hide / resume on show)
+    relies on this: when a tab returns, the client reconnects with the offset
+    it had before suspend, and the server sends only bytes appended after that
+    offset — not the entire 1MB buffer.
+    """
+    from hermes_cli.pty_session import PtySession
+    bridge = FakeBridge([b"hello ", b"world", None])
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    await asyncio.sleep(0.05)  # drain consumes "hello world"
+
+    # First attach: full replay
+    ws1 = FakeWS()
+    await s.attach(ws1, client_offset=None)
+    replay1 = b"".join(p for kind, p in ws1.sent if kind == "bytes")
+    assert replay1 == b"hello world"
+
+    # Reconnect with offset = len("hello world") — should send nothing (zero delta)
+    ws2 = FakeWS()
+    await s.attach(
+        ws2,
+        client_offset=len(b"hello world"),
+        client_epoch=s.epoch,
+    )
+    replay2 = b"".join(p for kind, p in ws2.sent if kind == "bytes")
+    assert replay2 == b""  # no sentinel, no full replay — just return
+    control = json.loads(next(p for kind, p in ws2.sent if kind == "text"))
+    assert control["reset"] is False
+    assert control["reason"] == "resume"
+
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_attach_rolled_out_offset_resets_with_retained_snapshot():
+    """A gap is explicit and never silently discards retained bytes."""
+    from hermes_cli.pty_session import PtySession
+    bridge = FakeBridge([b"a" * 2000, None])
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    await asyncio.sleep(0.05)  # drain consumes 2000 bytes (cap=1024, so oldest evicted)
+
+    # Reconnect with offset=100 (rolled out — earliest available is 2000-1024=976)
+    ws = FakeWS()
+    await s.attach(ws, client_offset=100, client_epoch=s.epoch)
+    replay = b"".join(p for kind, p in ws.sent if kind == "bytes")
+    control = json.loads(next(p for kind, p in ws.sent if kind == "text"))
+    assert control["reset"] is True
+    assert control["reason"] == "offset_rolled_out"
+    assert control["start_offset"] == 976
+    assert replay == b"a" * 1024
+
+    await s.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("client_offset", "client_epoch", "reason"),
+    [
+        (2001, "current", "offset_ahead"),
+        (2000, "different-epoch", "epoch_mismatch"),
+    ],
+)
+async def test_attach_invalid_cursor_resets_with_retained_snapshot(
+    client_offset, client_epoch, reason
+):
+    from hermes_cli.pty_session import PtySession
+
+    bridge = FakeBridge([b"retained", None])
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    await asyncio.sleep(0.05)
+
+    if client_epoch == "current":
+        client_epoch = s.epoch
+    ws = FakeWS()
+    await s.attach(ws, client_offset=client_offset, client_epoch=client_epoch)
+    control = json.loads(next(p for kind, p in ws.sent if kind == "text"))
+    replay = b"".join(p for kind, p in ws.sent if kind == "bytes")
+    assert control["reset"] is True
+    assert control["reason"] == reason
+    assert replay == b"retained"
+
+    await s.close()

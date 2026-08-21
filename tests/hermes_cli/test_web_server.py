@@ -1123,6 +1123,203 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["session_id"] == "cyc-b"
 
+    def test_latest_descendant_skips_delegate_subagent_children(self):
+        """A delegate_task subagent session (tagged ``_delegate_from`` in
+        model_config) is a short-lived parallel worker, NOT a continuation
+        target. Clicking the parent session in the dashboard must resolve back
+        to the parent itself, not hijack into the newest subagent session."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="par-a", source="cli")
+            # /model-style child: a genuine fork the user chose to continue.
+            db.create_session(
+                session_id="child-model", source="cli", parent_session_id="par-a"
+            )
+            # delegate subagent child: tagged with _delegate_from → must be skipped.
+            db.create_session(
+                session_id="child-del", source="cli", parent_session_id="par-a"
+            )
+            db._conn.execute(
+                "UPDATE sessions SET model_config='{\"_delegate_from\": \"par-a\"}' "
+                "WHERE id='child-del'"
+            )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        # The /model child is newer than the parent, so a parent with only a
+        # delegate child resolves back to itself; with a /model child present
+        # the newest NON-delegate child wins.
+        resp = self.client.get("/api/sessions/par-a/latest-descendant")
+        assert resp.status_code == 200
+        assert resp.json()["session_id"] == "child-model"
+
+    def test_latest_descendant_parent_with_only_delegate_children_resolves_to_self(self):
+        """A parent whose only children are delegate subagents must resolve
+        back to itself — otherwise clicking it in the dashboard silently opens
+        an unrelated subagent session."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="par-only-del", source="cli")
+            db.create_session(
+                session_id="del-1", source="cli", parent_session_id="par-only-del"
+            )
+            db.create_session(
+                session_id="del-2", source="cli", parent_session_id="par-only-del"
+            )
+            db._conn.execute(
+                "UPDATE sessions SET model_config='{\"_delegate_from\": \"par-only-del\"}' "
+                "WHERE id IN ('del-1','del-2')"
+            )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/par-only-del/latest-descendant")
+        assert resp.status_code == 200
+        assert resp.json()["session_id"] == "par-only-del"
+
+    def test_latest_descendant_only_treats_top_level_delegate_marker_as_delegate(self):
+        """Marker-like text and nested keys are ordinary model config data.
+
+        A real top-level marker prunes that session and its descendants from
+        the continuation chain.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            configs = {
+                "literal-marker": {"notes": 'mentions "_delegate_from" here'},
+                "nested-marker": {"delegation": {"_delegate_from": "json-root"}},
+                "delegate-marker": {"_delegate_from": "json-root"},
+            }
+            db.create_session(session_id="json-root", source="cli")
+            db.create_session(
+                session_id="literal-marker",
+                source="cli",
+                parent_session_id="json-root",
+                model_config=configs["literal-marker"],
+            )
+            db.create_session(
+                session_id="nested-marker",
+                source="cli",
+                parent_session_id="literal-marker",
+                model_config=configs["nested-marker"],
+            )
+            db.create_session(
+                session_id="malformed-config",
+                source="cli",
+                parent_session_id="nested-marker",
+            )
+            db._conn.execute(
+                "UPDATE sessions SET model_config = ? WHERE id = ?",
+                ("{not-json", "malformed-config"),
+            )
+            db._conn.commit()
+            db.create_session(
+                session_id="delegate-marker",
+                source="cli",
+                parent_session_id="malformed-config",
+                model_config=configs["delegate-marker"],
+            )
+            db.create_session(
+                session_id="delegate-descendant",
+                source="cli",
+                parent_session_id="delegate-marker",
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/json-root/latest-descendant")
+        assert resp.status_code == 200
+        assert resp.json()["session_id"] == "malformed-config"
+        assert resp.json()["path"] == [
+            "json-root",
+            "literal-marker",
+            "nested-marker",
+            "malformed-config",
+        ]
+
+    def test_latest_descendant_connectionless_fallback_parses_delegate_marker(self):
+        from hermes_cli.web_server import _session_latest_descendant
+
+        class ConnectionlessDB:
+            conn = None
+
+            def resolve_session_id(self, session_id):
+                return session_id
+
+            def get_session(self, session_id):
+                return {"id": session_id}
+
+            def list_sessions_rich(self, **_kwargs):
+                return [
+                    {
+                        "id": "fallback-root",
+                        "parent_session_id": None,
+                        "started_at": 1,
+                        "model_config": None,
+                    },
+                    {
+                        "id": "literal-marker",
+                        "parent_session_id": "fallback-root",
+                        "started_at": 2,
+                        "model_config": json.dumps(
+                            {"notes": 'mentions "_delegate_from" here'}
+                        ),
+                    },
+                    {
+                        "id": "nested-marker",
+                        "parent_session_id": "literal-marker",
+                        "started_at": 3,
+                        "model_config": json.dumps(
+                            {"delegation": {"_delegate_from": "fallback-root"}}
+                        ),
+                    },
+                    {
+                        "id": "null-marker",
+                        "parent_session_id": "nested-marker",
+                        "started_at": 4,
+                        "model_config": json.dumps({"_delegate_from": None}),
+                    },
+                    {
+                        "id": "malformed-config",
+                        "parent_session_id": "null-marker",
+                        "started_at": 5,
+                        "model_config": "{not-json",
+                    },
+                    {
+                        "id": "delegate-marker",
+                        "parent_session_id": "malformed-config",
+                        "started_at": 6,
+                        "model_config": json.dumps(
+                            {"_delegate_from": "fallback-root"}
+                        ),
+                    },
+                    {
+                        "id": "delegate-descendant",
+                        "parent_session_id": "delegate-marker",
+                        "started_at": 7,
+                        "model_config": None,
+                    },
+                ]
+
+        latest, path = _session_latest_descendant("fallback-root", ConnectionlessDB())
+
+        assert latest == "malformed-config"
+        assert path == [
+            "fallback-root",
+            "literal-marker",
+            "nested-marker",
+            "null-marker",
+            "malformed-config",
+        ]
+
 
 
 

@@ -11901,6 +11901,14 @@ def _session_latest_descendant(session_id: str, db):
 
     /model may create child sessions. Dashboard refresh should continue the
     newest child instead of reopening the old parent.
+
+    Delegate subagent sessions (created via the delegate_task tool, tagged in
+    ``model_config._delegate_from``) are NOT continuation targets: they are
+    short-lived parallel workers spawned *by* the parent, not forks the user
+    chose to continue. Including them hijacks the resume — clicking the parent
+    session in the dashboard silently opens the newest subagent session
+    instead. The recursion skips them, so a parent with only delegate children
+    resolves back to itself.
     """
     def row_get(row, key, index):
         if isinstance(row, dict):
@@ -11912,6 +11920,13 @@ def _session_latest_descendant(session_id: str, db):
                 return row[index]
             except Exception:
                 return None
+
+    def is_delegate_model_config(model_config):
+        try:
+            parsed = json.loads(model_config or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return False
+        return isinstance(parsed, dict) and parsed.get("_delegate_from") is not None
 
     sid = db.resolve_session_id(session_id)
     if not sid or not db.get_session(sid):
@@ -11928,14 +11943,19 @@ def _session_latest_descendant(session_id: str, db):
     if conn is not None:
         raw_rows = conn.execute(
             """
-            WITH RECURSIVE descendants(id, parent_session_id, started_at) AS (
-                SELECT id, parent_session_id, started_at FROM sessions WHERE id = ?
+            WITH RECURSIVE descendants(id, parent_session_id, started_at, model_config) AS (
+                SELECT id, parent_session_id, started_at, model_config FROM sessions WHERE id = ?
                 UNION
-                SELECT s.id, s.parent_session_id, s.started_at
+                SELECT s.id, s.parent_session_id, s.started_at, s.model_config
                 FROM sessions s
                 JOIN descendants d ON s.parent_session_id = d.id
+                WHERE CASE
+                    WHEN json_valid(s.model_config)
+                    THEN json_extract(s.model_config, '$._delegate_from') IS NULL
+                    ELSE 1
+                END
             )
-            SELECT id, parent_session_id, started_at FROM descendants
+            SELECT id, parent_session_id, started_at, model_config FROM descendants
             """,
             (sid,),
         ).fetchall()
@@ -11947,6 +11967,10 @@ def _session_latest_descendant(session_id: str, db):
             })
     else:
         rows = db.list_sessions_rich(limit=10000, offset=0, compact_rows=True)
+        rows = [
+            r for r in rows
+            if not is_delegate_model_config(r.get("model_config"))
+        ]
 
     children = {}
     for row in rows:
@@ -15720,6 +15744,8 @@ _PTY_READ_CHUNK_TIMEOUT = 0.2
 # the event loop.  A positive sleep lets other coroutines run and keeps
 # dashboard idle CPU low (#42627).
 _PTY_IDLE_BACKOFF = 0.05
+_PTY_EPOCH_RE = re.compile(r"[0-9a-f]{32}")
+_PTY_MAX_CLIENT_OFFSET = (1 << 53) - 1
 
 # Keep-alive PTY sessions: a terminal connecting with ``?attach=<token>`` is
 # bound to a process that survives disconnect/refresh and is reattachable.
@@ -15731,6 +15757,39 @@ PTY_REGISTRY = PtySessionRegistry(
     buffer_cap=1 * 1024 * 1024,
     read_timeout=_PTY_READ_CHUNK_TIMEOUT,
 )
+
+
+def _parse_pty_replay_cursor(ws: "WebSocket") -> tuple[Optional[str], Optional[int]]:
+    """Parse the optional all-or-nothing PTY replay cursor.
+
+    Offsets cross the JavaScript/Python boundary, so they are restricted to
+    non-negative safe integers and canonical decimal spelling. Epochs are the
+    128-bit lowercase-hex values minted by ``PtySession``. Rejecting malformed
+    cursors before spawning or attaching avoids silently treating typos as a
+    first connection and duplicating terminal history.
+    """
+    epochs = ws.query_params.getlist("epoch")
+    offsets = ws.query_params.getlist("offset")
+    if len(epochs) > 1 or len(offsets) > 1:
+        raise ValueError("duplicate epoch or offset")
+
+    raw_epoch = epochs[0] if epochs else None
+    raw_offset = offsets[0] if offsets else None
+    if raw_epoch is None and raw_offset is None:
+        return None, None
+    if raw_epoch is None or raw_offset is None:
+        raise ValueError("epoch and offset must be provided together")
+    if not (ws.query_params.get("attach") or "").strip():
+        raise ValueError("epoch and offset require an attach token")
+    if _PTY_EPOCH_RE.fullmatch(raw_epoch) is None:
+        raise ValueError("epoch must be 32 lowercase hexadecimal characters")
+    if re.fullmatch(r"0|[1-9][0-9]*", raw_offset) is None:
+        raise ValueError("offset must be a canonical non-negative integer")
+
+    offset = int(raw_offset)
+    if offset > _PTY_MAX_CLIENT_OFFSET:
+        raise ValueError("offset exceeds the JavaScript safe-integer range")
+    return raw_epoch, offset
 
 
 async def _legacy_pump(ws: "WebSocket", bridge) -> None:
@@ -17027,6 +17086,16 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4408, reason=_ws_close_reason(client_reason))
         return
 
+    try:
+        client_epoch, client_offset = _parse_pty_replay_cursor(ws)
+    except ValueError as exc:
+        _log.warning("pty refused: invalid replay cursor peer=%s error=%s", peer, exc)
+        await ws.close(
+            code=4400,
+            reason=_ws_close_reason(f"invalid replay cursor: {exc}"),
+        )
+        return
+
     await ws.accept()
     _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
 
@@ -17129,15 +17198,21 @@ async def pty_ws(ws: WebSocket) -> None:
     # A fresh xterm cannot reliably reconstruct the TUI from an arbitrary
     # bounded tail of alternate-screen, differential ANSI output. Reused PTYs
     # emit a complete frame after replay so reconnects never reopen blank.
-    await session.attach(ws, force_redraw=not _created)
 
-    # --- writer loop: WebSocket → PTY master ----------------------------
-    # No reader task here: the session's drain task (spawned once per PTY,
-    # inside the registry) forwards PTY output to whichever socket is
-    # attached and rings-buffers it while detached.  On child EOF the drain
-    # closes the attached socket with 4410, which unparks ``ws.receive()``
-    # below — same half-open-socket protection the legacy pump has (#54028).
     try:
+        await session.attach(
+            ws,
+            client_offset=client_offset,
+            client_epoch=client_epoch,
+            force_redraw=not _created,
+        )
+
+        # --- writer loop: WebSocket → PTY master ------------------------
+        # No reader task here: the session's drain task (spawned once per PTY,
+        # inside the registry) forwards PTY output to whichever socket is
+        # attached and rings-buffers it while detached. On child EOF the drain
+        # closes the attached socket with 4410, which unparks ``ws.receive()``
+        # below -- same half-open-socket protection the legacy pump has.
         while True:
             try:
                 msg = await ws.receive()

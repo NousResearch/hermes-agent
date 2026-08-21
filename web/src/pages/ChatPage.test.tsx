@@ -17,9 +17,13 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static instances: FakeTerminal[] = [];
+
   options: Record<string, unknown>;
   rows = 24;
   cols = 80;
+  resetCount = 0;
+  writes: string[] = [];
   parser = {
     registerOscHandler: vi.fn(),
   };
@@ -27,6 +31,7 @@ class FakeTerminal {
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeTerminal.instances.push(this);
   }
 
   attachCustomKeyEventHandler() {
@@ -75,12 +80,26 @@ class FakeTerminal {
 
   refresh() {}
 
-  write() {}
+  reset() {
+    this.resetCount += 1;
+  }
+
+  write(data: string) {
+    this.writes.push(data);
+  }
 }
 
 const maybeReloadForLoopbackWsAuthFailure = vi.fn(() => false);
 const apiMocks = vi.hoisted(() => ({
-  buildWsUrl: vi.fn(async () => "ws://localhost/api/pty?channel=chat-1"),
+  buildWsUrl: vi.fn(
+    async (path: string, params?: Record<string, string>) => {
+      const url = new URL(path, "ws://localhost");
+      for (const [key, value] of Object.entries(params ?? {})) {
+        url.searchParams.set(key, value);
+      }
+      return url.toString();
+    },
+  ),
 }));
 
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: FakeFitAddon }));
@@ -128,9 +147,13 @@ vi.mock("@/lib/api", () => ({
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
+  static CONNECTING = 0;
   static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
 
   binaryType = "blob";
+  closeCalls: Array<{ code?: number; reason?: string }> = [];
   onclose: ((event: CloseEventLike) => void) | null = null;
   onmessage: ((event: { data: ArrayBuffer | string }) => void) | null = null;
   onopen: (() => void) | null = null;
@@ -142,8 +165,9 @@ class FakeWebSocket {
     FakeWebSocket.instances.push(this);
   }
 
-  close() {
-    this.readyState = 3;
+  close(code?: number, reason?: string) {
+    this.closeCalls.push({ code, reason });
+    this.readyState = FakeWebSocket.CLOSED;
   }
 
   send() {}
@@ -191,9 +215,22 @@ async function render(ui: ReactNode) {
 
 beforeEach(() => {
   FakeWebSocket.instances = [];
+  FakeTerminal.instances = [];
   maybeReloadForLoopbackWsAuthFailure.mockClear();
   apiMocks.buildWsUrl.mockReset();
-  apiMocks.buildWsUrl.mockResolvedValue("ws://localhost/api/pty?channel=chat-1");
+  apiMocks.buildWsUrl.mockImplementation(
+    async (path: string, params?: Record<string, string>) => {
+      const url = new URL(path, "ws://localhost");
+      for (const [key, value] of Object.entries(params ?? {})) {
+        url.searchParams.set(key, value);
+      }
+      return url.toString();
+    },
+  );
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    value: "visible",
+  });
   vi.stubGlobal("WebSocket", FakeWebSocket);
   vi.stubGlobal(
     "ResizeObserver",
@@ -252,6 +289,7 @@ afterEach(async () => {
   await act(async () => root?.unmount());
   container?.remove();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("ChatPage", () => {
@@ -320,6 +358,194 @@ describe("ChatPage", () => {
       "resize",
       "scroll",
     ]);
+  });
+
+  it("resumes the same PTY epoch using raw binary byte offsets", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    let now = 5_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    const epoch = "a".repeat(32);
+    const first = FakeWebSocket.instances[0];
+    await act(async () => first.onopen?.());
+    await act(async () =>
+      first.onmessage?.({
+        data: JSON.stringify({
+          type: "pty.replay",
+          epoch,
+          start_offset: 0,
+          replay_end_offset: 0,
+          reset: true,
+          reason: "initial",
+        }),
+      }),
+    );
+    // First half of "é" advances one raw byte even though TextDecoder has
+    // not emitted a JavaScript character yet.
+    await act(async () =>
+      first.onmessage?.({ data: new Uint8Array([0xc3]).buffer }),
+    );
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await act(async () =>
+      first.onclose?.({ code: 1000, reason: "tab hidden", wasClean: true }),
+    );
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+
+    const second = FakeWebSocket.instances[1];
+    const secondUrl = new URL(second.url);
+    expect(secondUrl.searchParams.get("epoch")).toBe(epoch);
+    expect(secondUrl.searchParams.get("offset")).toBe("1");
+    expect(FakeTerminal.instances).toHaveLength(1);
+
+    await act(async () => second.onopen?.());
+    await act(async () =>
+      second.onmessage?.({
+        data: JSON.stringify({
+          type: "pty.replay",
+          epoch,
+          start_offset: 1,
+          replay_end_offset: 1,
+          reset: false,
+          reason: "resume",
+        }),
+      }),
+    );
+    await act(async () =>
+      second.onmessage?.({ data: new Uint8Array([0xa9, 0xff]).buffer }),
+    );
+    expect(FakeTerminal.instances[0].writes).toContain("é�");
+
+    now += 2_000;
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await act(async () =>
+      second.onclose?.({ code: 1000, reason: "tab hidden", wasClean: true }),
+    );
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(3));
+    expect(new URL(FakeWebSocket.instances[2].url).searchParams.get("offset")).toBe(
+      "3",
+    );
+  });
+
+  it("attaches visualViewport keyboard-inset listeners only while the chat tab is active", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    const root = createRoot(container!);
+    const addEventListener = vi.fn();
+    const removeEventListener = vi.fn();
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: { addEventListener, removeEventListener, width: 1280 },
+    });
+
+    await act(async () =>
+      root.render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive={false} />
+        </MemoryRouter>,
+      ),
+    );
+    expect(addEventListener).not.toHaveBeenCalled();
+
+    await act(async () =>
+      root.render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      ),
+    );
+    expect(addEventListener.mock.calls.map((c) => c[0]).sort()).toEqual([
+      "resize",
+      "scroll",
+    ]);
+    expect(removeEventListener).not.toHaveBeenCalled();
+
+    await act(async () =>
+      root.render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive={false} />
+        </MemoryRouter>,
+      ),
+    );
+    expect(removeEventListener.mock.calls.map((c) => c[0]).sort()).toEqual([
+      "resize",
+      "scroll",
+    ]);
+
+  });
+
+  it("binds lifecycle suspension to the socket that was closed", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    const first = FakeWebSocket.instances[0];
+    await act(async () => first.onopen?.());
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+
+    // Resume before the old socket delivers its delayed close event.
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+    const second = FakeWebSocket.instances[1];
+    await act(async () => second.onopen?.());
+
+    const writesBeforeStaleFrame = FakeTerminal.instances[0].writes.length;
+    await act(async () =>
+      first.onmessage?.({ data: new Uint8Array([0x78]).buffer }),
+    );
+    expect(FakeTerminal.instances[0].writes).toHaveLength(
+      writesBeforeStaleFrame,
+    );
+
+    // A clean close from the replacement is a real session end; it must not
+    // consume the old socket's pending lifecycle-suspend marker.
+    await act(async () =>
+      second.onclose?.({ code: 1000, reason: "", wasClean: true }),
+    );
+    expect(container.textContent).toContain("Session ended.");
+
+    await act(async () =>
+      first.onclose?.({ code: 1000, reason: "tab hidden", wasClean: true }),
+    );
+    expect(container.textContent).toContain("Session ended.");
   });
 });
 

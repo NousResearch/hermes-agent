@@ -3353,7 +3353,20 @@ class GatewaySlashCommandsMixin:
         arg = " ".join(arg_parts)
 
         if not arg:
+            # List checkpoints — fall back to the cross-project view when the
+            # current directory has none (#10505, reapply of PR #10633 by
+            # @nightq, ported here from hermes_cli.cli_commands_mixin's
+            # identical fix). Without this, a checkpoint written under a
+            # different cwd than TERMINAL_CWD's project reports "No
+            # checkpoints found" despite fresh checkpoints existing.
             checkpoints = mgr.list_checkpoints(cwd)
+            if not checkpoints:
+                all_checkpoints = mgr.list_all_checkpoints()
+                if all_checkpoints:
+                    return (
+                        f"No checkpoints for {cwd} — showing all directories.\n"
+                        + format_checkpoint_list(all_checkpoints, "all directories")
+                    )
             return format_checkpoint_list(checkpoints, cwd)
 
         # Restore by number or hash

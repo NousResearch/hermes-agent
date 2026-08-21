@@ -1311,17 +1311,31 @@ def _(rid, params: dict) -> dict:
         def go(mgr, cwd):
             if not mgr.enabled:
                 return _ok(rid, {"enabled": False, "checkpoints": []})
+            checkpoints = mgr.list_checkpoints(cwd)
+            all_directories = False
+            # Fall back to the cross-project view when the current directory
+            # has none (#10505, reapply of PR #10633 by @nightq, mirroring
+            # hermes_cli.cli_commands_mixin's identical CLI fix). Without
+            # this, a checkpoint written under a different cwd than the
+            # session's reports zero checkpoints despite fresh ones existing
+            # elsewhere.
+            if not checkpoints:
+                all_checkpoints = mgr.list_all_checkpoints()
+                if all_checkpoints:
+                    checkpoints = all_checkpoints
+                    all_directories = True
             return _ok(
                 rid,
                 {
                     "enabled": True,
+                    "all_directories": all_directories,
                     "checkpoints": [
                         {
                             "hash": c.get("hash", ""),
                             "timestamp": c.get("timestamp", ""),
                             "message": c.get("message", ""),
                         }
-                        for c in mgr.list_checkpoints(cwd)
+                        for c in checkpoints
                     ],
                 },
             )

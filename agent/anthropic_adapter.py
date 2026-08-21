@@ -2556,13 +2556,15 @@ def _manage_thinking_signatures(
     stripping, message merging) invalidates the signature, causing HTTP 400
     "Invalid signature in thinking block".
 
-    Signatures are Anthropic-proprietary.  Third-party endpoints (MiniMax,
-    Azure AI Foundry, AWS Bedrock, self-hosted proxies) cannot validate them
+    Signatures are Anthropic-proprietary.  Third-party endpoints (Azure
+    AI Foundry, AWS Bedrock, self-hosted proxies) cannot validate them
     and will reject them outright.  Kimi's /coding and DeepSeek's /anthropic
     endpoints speak the Anthropic protocol upstream but require unsigned
     thinking blocks (synthesised from ``reasoning_content``) to round-trip on
     replayed assistant tool-call messages.  See hermes-agent#13848 (Kimi) and
-    hermes-agent#16748 (DeepSeek).
+    hermes-agent#16748 (DeepSeek).  MiniMax's /anthropic endpoints accept
+    signed thinking blocks verbatim or mutated (live-probed 2026-08-01), so
+    they replay as-is like Kimi.
 
     Nous Portal's ``/v1/messages`` route is the exception among third-party
     hosts: it proxies Claude to Anthropic/Vertex/Bedrock and validates the
@@ -2607,6 +2609,13 @@ def _manage_thinking_signatures(
                     continue
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
+        elif _is_minimax_anthropic_endpoint(base_url):
+            # MiniMax does not enforce thinking signatures (live-probed
+            # 2026-08-01: verbatim AND content-mutated signed blocks both
+            # replay with HTTP 200).  Replay as-is — stripping silently
+            # dropped the prior turn's chain-of-thought and broke interleaved
+            # reasoning on multi-turn / tool-loop work.
+            pass
         elif _is_third_party or idx != last_assistant_idx:
             # Third-party: strip ALL thinking blocks (signatures are proprietary).
             # Direct Anthropic: strip from non-latest assistant messages only.

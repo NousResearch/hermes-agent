@@ -654,7 +654,9 @@ class MCPOAuthManager:
             _maybe_preregister_client,
             _make_callback_waiter,
             _make_redirect_handler,
+            build_m2m_provider,
             cimd_provider_kwargs,
+            is_m2m_grant,
             token_request_user_agent,
         )
 
@@ -667,6 +669,14 @@ class MCPOAuthManager:
         apply_oauth_provider_defaults(
             cfg, server_name=server_name, server_url=entry.server_url
         )
+
+        # Headless M2M grant (client_credentials): no browser, no callback, no
+        # interactivity gate. The SDK's provider mints on the first 401 and
+        # re-mints on expiry (client_credentials — no refresh_token) inside
+        # its own httpx auth flow, so nothing extra is needed here.
+        if is_m2m_grant(cfg):
+            return build_m2m_provider(server_name, entry.server_url, cfg)
+
         storage = HermesTokenStorage(server_name)
 
         from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
@@ -708,6 +718,23 @@ class MCPOAuthManager:
             token_user_agent=token_request_user_agent(cfg),
             **cimd_provider_kwargs(cfg),
         )
+
+    def is_m2m(
+        self,
+        server_name: str,
+        hermes_home: str | Path | None = None,
+    ) -> bool:
+        """True when this server uses a headless machine-to-machine grant.
+
+        Used to tailor the auth-failure message: an M2M server has no browser
+        ``hermes mcp login`` flow, so prompting for one would be wrong.
+        """
+        entry = self._entries.get(self._key(server_name, hermes_home))
+        if entry is None:
+            return False
+        from tools.mcp_oauth import is_m2m_grant
+
+        return is_m2m_grant(entry.oauth_config)
 
     def remove(
         self,

@@ -34,7 +34,7 @@ Hermes prints the exact port it bound to on the `Waiting for callback on ...` li
 | Provider | Loopback port | Tunnel needed? |
 |----------|---------------|----------------|
 | Spotify | `43827` (default) | Yes, when Hermes is remote |
-| MCP servers (`auth: oauth`) | auto-picked per server | Yes, when Hermes is remote (or paste redirect URL) |
+| MCP servers (`auth: oauth`) | auto-picked per server | Yes, when Hermes is remote (or paste redirect URL). No tunnel at all when the server supports the headless [`client_credentials`](../user-guide/features/mcp.md#headless-machine-to-machine-servers-client_credentials) grant |
 | `xai-oauth` (Grok SuperGrok) | n/a | No — device code flow |
 | `anthropic` (Claude Pro/Max) | n/a | No — paste-the-code flow |
 | `openai-codex` (ChatGPT Plus/Pro) | n/a | No — device code flow |

@@ -4682,6 +4682,39 @@ def _is_auth_error(exc: BaseException) -> bool:
     return True
 
 
+def _needs_reauth_error(server_name: str, *, m2m: bool) -> str:
+    """Build the structured auth-failure payload returned to the model.
+
+    ``m2m`` servers (client_credentials) have no interactive authorization step
+    — the SDK already re-mints on 401, so reaching this point means a freshly
+    minted token was rejected (bad client_id / client secret / scope / gateway
+    audience or group policy). Steer the model at the credentials, not at a
+    re-auth that would mint the same rejected token again.
+    """
+    if m2m:
+        return tool_error(
+            f"MCP server '{server_name}' rejected a freshly minted token "
+            f"(machine-to-machine auth). This is a credential/config issue, "
+            f"not a session expiry — check the OAuth client_id, client "
+            f"secret, scopes, and the gateway's audience/group policy. "
+            f"Re-authenticating will NOT help: this grant has no "
+            f"interactive step and mints a new token on every attempt. "
+            f"Do NOT retry this tool.",
+            needs_reauth=True,
+            m2m=True,
+            server=server_name,
+        )
+
+    return tool_error(
+        f"MCP server '{server_name}' requires re-authentication. "
+        f"Run `hermes mcp login {server_name}` (or delete the tokens "
+        f"file under ~/.hermes/mcp-tokens/ and restart). Do NOT retry "
+        f"this tool — ask the user to re-authenticate.",
+        needs_reauth=True,
+        server=server_name,
+    )
+
+
 def _handle_auth_error_and_retry(
     server_name: str,
     exc: BaseException,
@@ -4776,14 +4809,7 @@ def _handle_auth_error_and_retry(
     # needs_reauth error. Bumps the circuit breaker so the model stops
     # retrying the tool.
     _bump_server_error(server_name)
-    return tool_error(
-        f"MCP server '{server_name}' requires re-authentication. "
-        f"Run `hermes mcp login {server_name}` (or delete the tokens "
-        f"file under ~/.hermes/mcp-tokens/ and restart). Do NOT retry "
-        f"this tool — ask the user to re-authenticate.",
-        needs_reauth=True,
-        server=server_name,
-    )
+    return _needs_reauth_error(server_name, m2m=manager.is_m2m(server_name))
 
 
 # Substrings (lower-cased match) that indicate the MCP server rejected

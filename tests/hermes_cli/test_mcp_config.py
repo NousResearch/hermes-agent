@@ -206,6 +206,45 @@ class TestMcpAdd:
         assert "ink" in config.get("mcp_servers", {})
         assert config["mcp_servers"]["ink"]["url"] == "https://mcp.ml.ink/mcp"
 
+    def test_add_client_credentials(self, capsys, monkeypatch):
+        """--auth client_credentials writes the oauth block + secret to .env."""
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, config, **kw: [("list_items", "list items")],
+        )
+        # client_id + scope come from flags; only the secret is prompted.
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._prompt",
+            lambda q, password=False, default="": "s3cr3t" if "secret" in q.lower() else default,
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")  # accept all tools
+
+        from hermes_cli.mcp_config import cmd_mcp_add, get_env_value
+
+        cmd_mcp_add(
+            _make_args(
+                name="gw",
+                url="https://gw/mcp",
+                auth="client_credentials",
+                client_id="mcp-gateway",
+                scope="profile",
+            )
+        )
+
+        import yaml
+
+        from hermes_cli.config import get_config_path, load_config
+
+        srv = load_config()["mcp_servers"]["gw"]
+        assert srv["auth"] == "oauth"
+        assert srv["oauth"]["grant"] == "client_credentials"
+        assert srv["oauth"]["client_id"] == "mcp-gateway"
+        assert srv["oauth"]["scope"] == "profile"
+        # The secret is stored as a ${VAR} reference in config.yaml (resolved from
+        # .env at load time) — the literal secret never lands in config.yaml.
+        raw = yaml.safe_load(get_config_path().read_text())
+        assert raw["mcp_servers"]["gw"]["oauth"]["client_secret"] == "${MCP_GW_CLIENT_SECRET}"
+        assert get_env_value("MCP_GW_CLIENT_SECRET") == "s3cr3t"
 
     def test_add_stdio_server_with_env(self, tmp_path, capsys, monkeypatch):
         """Stdio servers can persist explicit environment variables."""
@@ -750,6 +789,42 @@ class TestMcpLogin:
         assert "no OAuth token was obtained" in out
         assert "Authenticated" not in out
         assert "client_id" in out
+
+    def test_login_failure_on_m2m_skips_registration_guidance(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A failed M2M login must not tell the operator to inline the secret.
+
+        The registration guidance exists for servers that reject RFC 7591 and
+        need a hand-made OAuth client. A client_credentials server already has
+        one — printing that advice would recommend pasting the secret into
+        config.yaml, which is precisely what this grant avoids.
+        """
+        _seed_config(tmp_path, {
+            "gateway": {
+                "url": "https://gateway.internal/mcp",
+                "auth": "oauth",
+                "oauth": {
+                    "grant": "client_credentials",
+                    "client_id": "cid",
+                    "client_secret": "${MCP_GATEWAY_CLIENT_SECRET}",
+                },
+            },
+        })
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, cfg, connect_timeout=30: [("list_items", "d")],
+        )
+        # No token file is created → _oauth_tokens_present() returns False.
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="gateway"))
+        out = capsys.readouterr().out
+
+        assert "no OAuth token was obtained" in out
+        assert "machine-to-machine grant" in out
+        assert "<your-oauth-client-secret>" not in out
+        assert "do not support" not in out
 
     def test_login_genuine_success_with_token(self, tmp_path, capsys, monkeypatch):
         """Probe lists tools AND a token exists → report real success."""

@@ -255,6 +255,8 @@ mcp_servers:
 Or: `hermes mcp install figma`, then `hermes mcp login figma`.
 :::
 
+This section covers the **interactive** flow — a human approves in a browser once. If the server instead issues you a client ID and secret (typical for an internal gateway), skip to [Headless machine-to-machine servers](#headless-machine-to-machine-servers-client_credentials): that flow never opens a browser at all.
+
 ```yaml
 mcp_servers:
   linear:
@@ -280,7 +282,7 @@ mcp_servers:
       redirect_uri: "https://oauth.example.ts.net/callback"
 ```
 
-For fully headless gateways (messaging bot, no interactive terminal at all), the optional [`mcp-oauth-remote-gateway` skill](../skills/optional/mcp/mcp-mcp-oauth-remote-gateway.md) walks the agent through completing the flow manually and writing tokens where Hermes expects them.
+For fully headless gateways (messaging bot, no interactive terminal at all), the optional [`mcp-oauth-remote-gateway` skill](../skills/optional/mcp/mcp-mcp-oauth-remote-gateway.md) walks the agent through completing the flow manually and writing tokens where Hermes expects them. That workaround is only needed when the server *requires* the interactive grant — if it can issue you a client ID and secret, use [`client_credentials`](#headless-machine-to-machine-servers-client_credentials) instead and no manual step is involved.
 
 **Pitfall — WAF rejects `127.0.0.1` redirect URIs.** A few providers front their authorization server with a WAF that 403s any authorize request whose query string contains a literal `127.0.0.1` (Reclaim.ai's AWS API Gateway is a known example — every attempt returns `{"message":"Forbidden"}` before reaching the OAuth app). Set `oauth.redirect_host: localhost` to use `http://localhost:<port>/callback` instead; the callback listener still binds `127.0.0.1` either way.
 
@@ -301,6 +303,45 @@ mcp_servers:
 Then run `hermes mcp login googledrive` — with the pre-registered client, Hermes skips registration and runs the normal browser authorization flow.
 
 **Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
+
+### Headless machine-to-machine servers (`client_credentials`)
+
+The flow above needs a human at a browser once. That is a problem for a deployment with no browser at all — a gateway, a daemon, a messaging bot on a server. When the MCP server can issue you a **client ID and secret** (typical for an internal or self-hosted gateway), set `oauth.grant: client_credentials` and Hermes authenticates machine-to-machine: no browser, no callback listener, no interactive gate.
+
+Add it with the wizard:
+
+```bash
+hermes mcp add gateway --url https://gateway.internal/mcp --auth client_credentials
+```
+
+It prompts for the client ID, the secret, and an optional scope. The secret is written to `~/.hermes/.env` and referenced from `config.yaml` as `${VAR}`, so it never lands in the config file:
+
+```yaml
+mcp_servers:
+  gateway:
+    url: "https://gateway.internal/mcp"
+    auth: oauth
+    oauth:
+      grant: client_credentials
+      client_id: "my-client"
+      client_secret: "${MCP_GATEWAY_CLIENT_SECRET}"   # from ~/.hermes/.env
+      scope: "profile"
+```
+
+What changes compared with the interactive flow:
+
+- **Nothing to approve.** The first request goes out unauthenticated; the server answers `401`, Hermes discovers the authorization server from the protected-resource metadata it points at (RFC 9728), exchanges the client credentials for an access token, and replays the request. All of it without a prompt.
+- **No `refresh_token`.** The grant does not use one — the token is simply minted again when it expires. There is no stale-refresh failure mode and nothing to re-authorize.
+- **Tokens are still cached** at `~/.hermes/mcp-tokens/<server>.json` (0600), exactly as for the interactive flow, so a restart reuses a valid token instead of minting a new one.
+- **No interactive re-auth.** `hermes mcp login <server>` still works and forces a fresh mint (useful after you change scopes or rotate the secret), but it will not open a browser.
+- **`hermes mcp test <server>`** reports `Auth: OAuth client_credentials (headless M2M)` so you can tell the two modes apart.
+- **The configured `scope` is authoritative.** Whatever the server advertises, Hermes requests exactly the scope you set — it is never silently widened. If the server needs a different one, set it here.
+
+**Rotating the secret.** Re-running `hermes mcp add` keeps the value already in `~/.hermes/.env` — it will not prompt again. To rotate, edit `MCP_<SERVER>_CLIENT_SECRET` in that file, then run `hermes mcp login <server>` to discard the cached token and mint a new one.
+
+**Troubleshooting.** If a tool call comes back saying the server rejected a *freshly minted* token, it is not a session expiry — re-authenticating would mint the same token again. Check the client ID and secret, the scopes you requested, and the audience or group policy on the gateway side.
+
+See the [MCP Config Reference](../../reference/mcp-config-reference.md#machine-to-machine-client_credentials) for the `client_credentials` keys, including `token_endpoint_auth_method`.
 
 ## mTLS / client certificates
 

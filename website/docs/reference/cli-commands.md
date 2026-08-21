@@ -1389,7 +1389,8 @@ Manage MCP (Model Context Protocol) server configurations and run Hermes as an M
 | `catalog` | List Nous-approved MCPs (plain text, scriptable). |
 | `install <name>` | Install a catalog entry (e.g. `hermes mcp install n8n`). |
 | `serve [-v\|--verbose]` | Run Hermes as an MCP server — expose conversations to other agents. |
-| `add <name> [--url URL] [--command CMD] [--auth oauth\|header] [--args ...]` | Add a custom MCP server with automatic tool discovery. `--args` passes the remaining argv to the stdio command, so put it last. |
+| `add <name> [--url URL] [--command CMD] [--auth oauth\|header\|client_credentials] [--args ...]` | Add a custom MCP server with automatic tool discovery. `--args` passes the remaining argv to the stdio command, so put it last. `--auth client_credentials` sets up headless machine-to-machine OAuth (see `--client-id` / `--scope` below). |
+| `add … --auth client_credentials [--client-id ID] [--scope SCOPE]` | Headless M2M OAuth: no browser. Prompts for the client secret and stores it in `~/.hermes/.env`, referencing it from config as `${VAR}`. |
 | `remove <name>` (alias: `rm`) | Remove an MCP server from config. |
 | `list` (alias: `ls`) | List configured MCP servers. |
 | `test <name>` | Test connection to an MCP server. |

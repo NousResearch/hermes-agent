@@ -150,10 +150,14 @@ def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
     return True, []
 
 
-def _env_key_for_server(name: str) -> str:
-    """Convert server name to an env-var key like ``MCP_MYSERVER_API_KEY``."""
-    suffix = re.sub(r"[^A-Za-z0-9_]", "_", name.upper()).strip("_")
-    return f"MCP_{suffix}_API_KEY"
+def _env_key_for_server(name: str, suffix: str = "API_KEY") -> str:
+    """Convert server name to an env-var key like ``MCP_MYSERVER_API_KEY``.
+
+    ``suffix`` selects the credential kind: ``API_KEY`` for header auth,
+    ``CLIENT_SECRET`` for the headless ``client_credentials`` grant.
+    """
+    name_part = re.sub(r"[^A-Za-z0-9_]", "_", name.upper()).strip("_")
+    return f"MCP_{name_part}_{suffix}"
 
 
 def _strip_bearer_prefix(token: str) -> str:
@@ -534,6 +538,41 @@ def cmd_mcp_add(args):
                 _info("Cancelled.")
                 return
 
+    elif url and auth_type == "client_credentials":
+        # Headless machine-to-machine: client_id + client_secret. The
+        # authorization server is discovered from the MCP server's
+        # protected-resource metadata; the secret is stored in .env and
+        # referenced via ${VAR} so it never lands in config.yaml.
+        print()
+        _info(f"Configuring client_credentials (M2M) auth for '{name}'")
+        client_id = getattr(args, "client_id", None) or _prompt("OAuth client_id")
+        if not client_id:
+            _error("client_credentials requires a client_id.")
+            return
+        secret_key = _env_key_for_server(name, "CLIENT_SECRET")
+        if get_env_value(secret_key):
+            _success(f"{secret_key}: already configured")
+        else:
+            client_secret = _prompt("OAuth client_secret", password=True)
+            if not client_secret:
+                _error("client_credentials requires a client_secret.")
+                return
+            save_env_value(secret_key, client_secret)
+            _success(f"Saved to {display_hermes_home()}/.env as {secret_key}")
+        scope = getattr(args, "scope", None)
+        if scope is None:
+            scope = _prompt("Scope (optional, space-separated)", default="")
+        oauth_cfg: Dict[str, Any] = {
+            "grant": "client_credentials",
+            "client_id": client_id,
+            "client_secret": f"${{{secret_key}}}",
+        }
+        if scope and scope.strip():
+            oauth_cfg["scope"] = scope.strip()
+        server_config["auth"] = "oauth"
+        server_config["oauth"] = oauth_cfg
+        _success("client_credentials configured (token minted on first connection)")
+
     elif url:
         # Prompt for API key / Bearer token for HTTP servers
         print()
@@ -770,7 +809,11 @@ def cmd_mcp_test(args):
     auth_type = cfg.get("auth", "")
     headers = cfg.get("headers", {})
     if auth_type == "oauth":
-        _info("Auth: OAuth 2.1 PKCE")
+        grant = str((cfg.get("oauth") or {}).get("grant", "")).strip().lower()
+        if grant == "client_credentials":
+            _info("Auth: OAuth client_credentials (headless M2M)")
+        else:
+            _info("Auth: OAuth 2.1 PKCE")
     elif headers:
         for k, v in headers.items():
             if isinstance(v, str) and ("key" in k.lower() or "auth" in k.lower()):
@@ -873,6 +916,22 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
                 "authentication did not complete."
             )
             print()
+            # A machine-to-machine server already has a client_id/secret, so
+            # the registration guidance below does not apply — and it would
+            # tell the operator to inline the secret in config.yaml, which is
+            # exactly what this grant exists to avoid.
+            from tools.mcp_oauth import is_m2m_grant
+
+            if is_m2m_grant(server_config.get("oauth")):
+                _info(
+                    "This server uses a headless machine-to-machine grant, so "
+                    "there is no authorization step to complete. The token "
+                    "exchange itself was refused — check the client_id, the "
+                    "client secret in the Hermes .env file, the requested "
+                    "scope, and the authorization server's policy for this "
+                    "client."
+                )
+                return False
             _info(
                 "Some providers (e.g. Google Drive, Atlassian) do not support "
                 "automatic client registration. For those you must create an "

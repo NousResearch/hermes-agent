@@ -287,7 +287,6 @@ def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
         logger.debug("Sibling profile enumeration failed: %s", exc)
     return migrated
 
-
 def _check_and_apply_config_migration(
     *,
     assume_yes: bool = False,
@@ -316,10 +315,18 @@ def _check_and_apply_config_migration(
         get_missing_config_fields,
     )
 
-
-    missing_env = get_missing_env_vars(required_only=True)
-    missing_config = get_missing_config_fields()
-    current_ver, latest_ver = _run_config_check_fresh()
+    # Defensive (#91360): this helper runs on repair/retry completion paths
+    # too — a config-check failure must not break an otherwise-successful
+    # update. Log, point at the manual command, and return.
+    try:
+        missing_env = get_missing_env_vars(required_only=True)
+        missing_config = get_missing_config_fields()
+        current_ver, latest_ver = _run_config_check_fresh()
+    except Exception as exc:
+        logger.debug("Config check during update failed: %s", exc)
+        print("  ⚠️  Could not check config version.")
+        print("     Run 'hermes config migrate' to check manually.")
+        return
 
     has_new_options = bool(missing_env or missing_config)
     version_bump_only = (

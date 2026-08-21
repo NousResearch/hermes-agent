@@ -594,6 +594,19 @@ log "hermes update exit code: $CODE"
 if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   # Retry once: update-boundary class (fresh code on disk, stale in memory).
   # Exit 2 ("close all Hermes windows") is not retryable.
+  #
+  # A parked-branch SKIP (checkout on a feature branch with unmerged
+  # commits) is also deterministic — the retry would hit the exact same
+  # branch state and skip again, so it only wastes time. Detect the skip
+  # by its banner, skip the retry, and surface an honest message with a
+  # dedicated exit code (8) so callers can distinguish "skipped" from a
+  # real failure.
+  if printf '%s' "$OUT" | grep -q "CODE UPDATE SKIPPED"; then
+    log "hermes update skipped (checkout parked on a non-target branch); not retrying"
+    FINAL_CODE=8
+    FINAL_MSG="Update skipped: the git checkout is on a branch that isn't fully merged into $BRANCH. Switch to the target branch and update again (see the terminal output for the exact commands)."
+    exit 8
+  fi
   log "retrying once (freshly pulled fix loads on the second run)"
   publish_stage "Retrying update"
   OUT="$("$HERMES_BIN" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?

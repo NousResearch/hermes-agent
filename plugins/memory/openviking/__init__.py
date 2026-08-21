@@ -14,6 +14,9 @@ or a linked OpenViking CLI config:
   OPENVIKING_ACCOUNT   — Tenant account for local/trusted mode (default: default)
   OPENVIKING_USER      — Tenant user for local/trusted mode (default: default)
   OPENVIKING_AGENT     — Hermes peer ID in OpenViking (default: hermes)
+  OPENVIKING_SKIP_TOOL_OUTPUTS — Set to a truthy value to send empty tool_output
+    strings in the sync payload (keeps tool_name/tool_input/tool_status for
+    context but drops potentially large/multi-KB tool result text)
 
 Capabilities:
   - Automatic memory extraction on session commit (6 categories)
@@ -82,6 +85,7 @@ _DEFERRED_COMMIT_TIMEOUT = (_TIMEOUT * 2) + 5.0
 _SESSION_MESSAGE_BATCH_LIMIT = 100
 _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
 _SYNC_TRACE_ENV = "HERMES_OPENVIKING_SYNC_TRACE"
+_SKIP_TOOL_OUTPUTS_ENV = "OPENVIKING_SKIP_TOOL_OUTPUTS"
 _DEFAULT_RECALL_LIMIT = 6
 _DEFAULT_RECALL_SCORE_THRESHOLD = 0.15
 _DEFAULT_RECALL_MAX_INJECTED_CHARS = 4000
@@ -232,6 +236,16 @@ def _derive_openviking_user_text(content: Any) -> str:
 
 def _sync_trace_enabled() -> bool:
     return env_var_enabled(_SYNC_TRACE_ENV)
+
+
+def _skip_tool_outputs() -> bool:
+    """When true, sync tool parts carry an empty tool_output string.
+
+    Tool result text can be large (terminal output, file reads) and is rarely
+    useful to memory extraction relative to which tool ran and with what input.
+    Kept as an opt-in so default behaviour is unchanged.
+    """
+    return env_var_enabled(_SKIP_TOOL_OUTPUTS_ENV)
 
 
 def _preview(value: Any, limit: int = 160) -> str:
@@ -4431,6 +4445,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 payload_messages.append(payload_message("assistant", pending_tool_parts))
                 pending_tool_parts = []
 
+        skip_tool_outputs = _skip_tool_outputs()
+
         for message in messages:
             if not isinstance(message, dict):
                 continue
@@ -4450,7 +4466,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     "tool_id": tool_id,
                     "tool_name": tool_name,
                     "tool_input": prior_call.get("tool_input", {}),
-                    "tool_output": cls._message_text(message.get("content")),
+                    "tool_output": "" if skip_tool_outputs else cls._message_text(message.get("content")),
                     "tool_status": cls._tool_result_status(message),
                 }
                 pending_tool_parts.append(tool_part)

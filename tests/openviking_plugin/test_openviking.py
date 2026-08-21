@@ -544,6 +544,56 @@ class TestOpenVikingTurnConversion:
             {"type": "text", "text": "The current main does not expose assemble."}
         ]
 
+    def test_messages_to_openviking_batch_keeps_tool_output_by_default(self, monkeypatch):
+        monkeypatch.delenv("OPENVIKING_SKIP_TOOL_OUTPUTS", raising=False)
+        turn = [
+            {"role": "user", "content": "Run the tests."},
+            {
+                "role": "assistant",
+                "content": "Running.",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "shell_command", "arguments": json.dumps({"command": "pytest"})},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "name": "shell_command", "content": "12 passed in 3.2s"},
+            {"role": "assistant", "content": "All green."},
+        ]
+
+        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
+        tool_part = batch[2]["parts"][0]
+        assert tool_part["tool_output"] == "12 passed in 3.2s"
+
+    def test_messages_to_openviking_batch_drops_tool_output_when_skipped(self, monkeypatch):
+        monkeypatch.setenv("OPENVIKING_SKIP_TOOL_OUTPUTS", "1")
+        turn = [
+            {"role": "user", "content": "Run the tests."},
+            {
+                "role": "assistant",
+                "content": "Running.",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "shell_command", "arguments": json.dumps({"command": "pytest"})},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "name": "shell_command", "content": "12 passed in 3.2s"},
+            {"role": "assistant", "content": "All green."},
+        ]
+
+        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
+        tool_part = batch[2]["parts"][0]
+        assert tool_part["tool_output"] == ""
+        # tool_name/input/status are preserved
+        assert tool_part["tool_name"] == "shell_command"
+        assert tool_part["tool_input"] == {"command": "pytest"}
+        assert tool_part["tool_status"] == "completed"
+
 
 class TestOpenVikingRead:
     def test_overview_read_normalizes_uri_and_unwraps_result(self):

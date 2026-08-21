@@ -880,22 +880,49 @@ class ModelCapabilities:
 
 _OVERRIDE_WARNED_KEYS: set = set()
 
+# Memo for :func:`_load_model_overrides`, keyed on the config file's identity
+# (path, mtime_ns, size). The /model picker calls this once per provider row
+# (~4k rows); the upstream (mtime, size) cache in ``load_config_readonly()``
+# still pays a stat + lock + signature build per call, and an ``id(cfg)``-keyed
+# layer can serve stale overrides when CPython reuses a freed dict's address.
+# A file-signature key is immune to both. _MISSING distinguishes "not loaded
+# yet" from a legitimate empty ``{}`` result.
+_OVERRIDES_MEMO_MISSING = object()
+_OVERRIDES_MEMO: Dict[str, Any] = {"sig": None, "val": _OVERRIDES_MEMO_MISSING}
+
 
 def _load_model_overrides() -> Dict[str, Any]:
     """Load the ``model_overrides`` config section.
 
-    No local memoization on purpose: ``load_config_readonly()`` is already
-    (mtime, size)-cached upstream (a hit is ~one stat, no deepcopy, no
-    parse), and an ``id(cfg)``-keyed layer here can serve stale overrides
-    after a config reload when CPython reuses the freed dict's address.
-    Returns empty dict on any failure.
+    Memoized on the config file's (path, mtime, size) signature: a change to
+    the file bumps the signature and forces one reload, so edits are picked up
+    on the next call while the ~4k repeated reads in a single model-picker
+    build cost one stat each instead of a full upstream cache hit. Returns
+    empty dict on any failure.
     """
+    from hermes_cli.config import cfg_get, get_config_path, load_config_readonly
+
+    path = get_config_path()
     try:
-        from hermes_cli.config import cfg_get, load_config_readonly
+        st = path.stat()
+        sig: Optional[Tuple[Any, ...]] = (str(path), st.st_mtime_ns, st.st_size)
+    except FileNotFoundError:
+        sig = (str(path),)
+    except OSError:
+        sig = None  # unreadable: fall through to the live load each time
+
+    if sig is not None and sig == _OVERRIDES_MEMO["sig"] and _OVERRIDES_MEMO["val"] is not _OVERRIDES_MEMO_MISSING:
+        return _OVERRIDES_MEMO["val"]
+
+    try:
         raw = cfg_get(load_config_readonly(), "model_overrides", default={})
-        return raw if isinstance(raw, dict) else {}
+        result = raw if isinstance(raw, dict) else {}
     except Exception:
-        return {}
+        result = {}
+    if sig is not None:
+        _OVERRIDES_MEMO["sig"] = sig
+        _OVERRIDES_MEMO["val"] = result
+    return result
 
 
 def _provider_override_section(provider: str) -> Optional[Dict[str, Any]]:

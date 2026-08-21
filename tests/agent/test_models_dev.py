@@ -1244,6 +1244,66 @@ class TestModelOverrides:
             ctx = lookup_models_dev_context("upstage", "solar-pro4")
         assert ctx == 524288
 
+    # --- memoization (file-signature keyed) ---
+
+    @staticmethod
+    def _reset_overrides_memo():
+        """Clear the _load_model_overrides memo between tests so the module-level
+        cache never leaks one profile's config into another test's."""
+        import agent.models_dev as md
+
+        md._OVERRIDES_MEMO["sig"] = None
+        md._OVERRIDES_MEMO["val"] = md._OVERRIDES_MEMO_MISSING
+
+    @pytest.fixture(autouse=True)
+    def _reset_overrides_memo_fixture(self):
+        self._reset_overrides_memo()
+        yield
+        self._reset_overrides_memo()
+
+    def test_memo_reuses_result_until_config_file_changes(self, tmp_path, monkeypatch):
+        """Repeated reads cost one stat each (no upstream cache-hit plumbing),
+        and a change to config.yaml invalidates the memo on the next call."""
+        import agent.models_dev as md
+        import hermes_cli.config as hc
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        cfg = home / "config.yaml"
+        cfg.write_text(
+            "model_overrides:\n"
+            "  upstage:\n"
+            "    solar-pro4:\n"
+            "      context_window: 524288\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        hc_cache = getattr(hc, "_LOAD_CONFIG_CACHE", None)
+        if isinstance(hc_cache, dict):
+            hc_cache.clear()
+
+        first = md._load_model_overrides()
+        assert first["upstage"]["solar-pro4"]["context_window"] == 524288
+
+        # A second read must be a memo hit: same value, and the upstream
+        # load_config_readonly must NOT be called again.
+        with patch.object(hc, "load_config_readonly", wraps=hc.load_config_readonly) as spy:
+            second = md._load_model_overrides()
+        assert second == first
+        assert spy.call_count == 0, "memo hit must not re-load config"
+
+        # Rewrite the file: the signature changes, so the next call reloads.
+        time.sleep(0.01)  # guarantee an mtime change
+        cfg.write_text(
+            "model_overrides:\n"
+            "  upstage:\n"
+            "    solar-pro4:\n"
+            "      context_window: 999999\n",
+            encoding="utf-8",
+        )
+        third = md._load_model_overrides()
+        assert third["upstage"]["solar-pro4"]["context_window"] == 999999
+
     def test_suffix_keyed_model_counts_as_catalog_hit(self):
         """A suffix-keyed catalog model (kimi-k2.6:cloud) is KNOWN: a
         _default must not displace its capabilities."""

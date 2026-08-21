@@ -1838,6 +1838,37 @@ def test_reinstall_succeeds_when_only_old_backup_cleanup_is_blocked(
     assert (backups[0] / "SKILL.md").read_text() == "# Existing\n"
 
 
+def test_target_locks_serialize_parent_and_child_namespaces(tmp_path):
+    import tools.skills_hub as hub
+
+    skills_dir = tmp_path / "skills"
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+
+    def _first():
+        with hub._target_install_lock("cat/a", "a", skills_dir=skills_dir):
+            first_entered.set()
+            assert release_first.wait(timeout=5)
+
+    def _second():
+        assert first_entered.wait(timeout=5)
+        with hub._target_install_lock("cat", "cat", skills_dir=skills_dir):
+            second_entered.set()
+
+    first = threading.Thread(target=_first)
+    second = threading.Thread(target=_second)
+    first.start()
+    second.start()
+    assert first_entered.wait(timeout=5)
+    time.sleep(0.1)
+    assert not second_entered.is_set()
+    release_first.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+    assert second_entered.is_set()
+
+
 def test_lockfile_keeps_all_concurrent_install_records(tmp_path):
     lock_path = tmp_path / "lock.json"
     names = [f"skill-{index}" for index in range(24)]

@@ -875,14 +875,17 @@ def _target_install_lock(
     *,
     skills_dir: Optional[Path] = None,
 ):
-    with _exclusive_file_lock(
-        _target_install_lock_path(
-            install_path,
-            skill_name,
-            skills_dir=skills_dir,
-        )
-    ):
-        yield
+    target_path = _target_install_lock_path(
+        install_path,
+        skill_name,
+        skills_dir=skills_dir,
+    )
+    namespace_path = target_path.parent / ".namespace.lock"
+    # Serialize namespace mutations as well as logical-skill mutations. This
+    # prevents a category path (cat/a) racing a top-level skill named cat.
+    with _exclusive_file_lock(namespace_path):
+        with _exclusive_file_lock(target_path):
+            yield
 
 
 @contextmanager

@@ -10021,7 +10021,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._enqueue_fifo(session_key, event, adapter)
 
     async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
-        """Return steerable text for a busy follow-up, transcribing voice first.
+        """Return steerable text for a busy follow-up, enriching media first.
 
         Fresh and queued voice messages reach the normal inbound STT pipeline,
         but successful steer messages intentionally bypass that queue. Without
@@ -10040,8 +10040,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         echo respects the count-based ledger.  If steering later falls back
         to queue mode, the drain path reuses the cached transcript instead of
         paying for a second STT call or re-echoing the same line.
+
+        Image-only follow-ups are represented as an explicit instruction to
+        inspect their cached paths with ``vision_analyze``. Mixed media keeps
+        its original event and falls back to the normal queue pipeline.
         """
         text = (event.text or "").strip()
+        media_urls = list(getattr(event, "media_urls", None) or [])
+        all_images = bool(media_urls) and all(
+            _event_media_is_image(event, index)
+            for index in range(len(media_urls))
+        )
+        if all_images:
+            # A steer is text-only, so point the active agent at the cached
+            # files and require inspection at its next tool boundary. This is
+            # faster and less lossy than pre-analyzing the image while the
+            # current run may be about to finish. vision_analyze performs its
+            # own format normalization, including HEIC/AVIF when supported.
+            if text.lower() in {
+                "(attachment)",
+                "[attachment]",
+                "(image)",
+                "[image]",
+                "(the user sent a message with no text content)",
+            }:
+                text = ""
+            image_note = (
+                "[The user sent image attachment(s) during this run. "
+                "Inspect each image with vision_analyze before answering. "
+                "Do not ask the user to resend them.]\n"
+                + _build_media_placeholder(event)
+            )
+            return f"{text}\n\n{image_note}".strip() if text else image_note
+
         if not self._pending_event_audio_paths(event):
             return text
 
@@ -10258,6 +10289,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _steer_all_voice = bool(_steer_media_urls) and (
                 len(self._pending_event_audio_paths(event)) == len(_steer_media_urls)
             )
+            _steer_all_images = bool(_steer_media_urls) and all(
+                _event_media_is_image(event, index)
+                for index in range(len(_steer_media_urls))
+            )
             can_steer = (
                 steer_text
                 and (
@@ -10267,6 +10302,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         and not event.media_types
                     )
                     or _steer_all_voice
+                    or _steer_all_images
                 )
                 and running_agent is not None
                 and running_agent is not _AGENT_PENDING_SENTINEL
@@ -16963,7 +16999,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     event, _cmd_def_inner, _quick_key, source,
                 )
 
-            if event.message_type == MessageType.PHOTO:
+            if (
+                event.message_type == MessageType.PHOTO
+                and self._busy_input_mode != "steer"
+            ):
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
                 adapter = self._adapter_for_source(source)
                 if adapter:
@@ -17038,15 +17077,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
             if effective_busy_input_mode == "steer":
                 # Steer mode: inject text into the running agent mid-run via
-                # agent.steer().  Falls back to queue semantics if the payload
-                # is empty, the agent lacks steer(), or steer() rejects.
-                steer_text = (event.text or "").strip()
+                # agent.steer(). Voice and image-only payloads are converted to
+                # steerable text first; mixed/other media stays queued.
+                steer_text = await self._prepare_busy_steer_text(event)
+                _steer_media_urls = getattr(event, "media_urls", None) or []
+                _steer_all_voice = bool(_steer_media_urls) and (
+                    len(self._pending_event_audio_paths(event))
+                    == len(_steer_media_urls)
+                )
+                _steer_all_images = bool(_steer_media_urls) and all(
+                    _event_media_is_image(event, index)
+                    for index in range(len(_steer_media_urls))
+                )
                 steered = False
                 if (
-                    event.message_type == MessageType.TEXT
-                    and not event.media_urls
-                    and not event.media_types
-                    and steer_text
+                    steer_text
+                    and (
+                        (
+                            event.message_type == MessageType.TEXT
+                            and not event.media_urls
+                            and not event.media_types
+                        )
+                        or _steer_all_voice
+                        or _steer_all_images
+                    )
                     and hasattr(running_agent, "steer")
                 ):
                     try:

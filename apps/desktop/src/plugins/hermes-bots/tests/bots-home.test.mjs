@@ -549,11 +549,12 @@ test('entering Bot Mode fronts the selected-owner home over a Sessions composer'
   assert.equal(t.opened[0].id, 'hermes-bots:home')
 })
 
-test('source contract: sidebar entry and boot restore explicitly front the Bot Mode home', () => {
-  assert.match(pluginSource, /stopSidebarSync = \$sidebarVisible\.listen\(visible => \{[\s\S]{0,350}?syncWorkspaceSurfaces\(Boolean\(visible\)\)/)
+test('source contract: sidebar entry and boot restore reconcile passively after layout hydration', () => {
+  assert.match(pluginSource, /stopSidebarSync = \$sidebarVisible\.listen\(visible => \{[\s\S]{0,450}?syncWorkspaceSurfaces\(\)/)
+  assert.doesNotMatch(pluginSource, /stopSidebarSync = \$sidebarVisible\.listen\(visible => \{[\s\S]{0,450}?syncWorkspaceSurfaces\(Boolean\(visible\)\)/)
   assert.match(
     pluginSource,
-    /\$botChatFocused\.set\(sessionOwnsWorkspace\(\)\)[\s\S]{0,350}?syncWorkspaceSurfaces\(Boolean\(\$sidebarVisible\.get\(\)\)\)/
+    /\$botChatFocused\.set\(sessionOwnsWorkspace\(\)\)[\s\S]{0,500}?syncWorkspaceSurfaces\(\)[\s\S]{0,120}?scheduleSurfaceSync\(\)/
   )
 })
 
@@ -701,6 +702,14 @@ test('the home shows a loading state rather than flashing “No bots”', () => 
   assert.ok(spinnerAt >= 0 && emptyAt > spinnerAt, 'the empty state is only reachable after both hydrations')
 })
 
+test('the home uses the neutral workspace surface instead of a transient blue tint', () => {
+  const start = pluginSource.indexOf('function BotsHomeView(')
+  const view = pluginSource.slice(start, pluginSource.indexOf('function closeBotsHomeWorkspace('))
+
+  assert.match(view, /className: 'flex h-full min-h-0 flex-col bg-background'/)
+  assert.doesNotMatch(view, /bg-\(--ui-bg-primary\)/)
+})
+
 test('roster hydration and selection reconciliation run after render', () => {
   const start = pluginSource.indexOf('function BotsPane(')
   const pane = pluginSource.slice(start, pluginSource.indexOf('// ── registration'))
@@ -715,17 +724,28 @@ test('roster hydration and selection reconciliation run after render', () => {
     1,
     'BotsPane has one effect-bound reconciliation path'
   )
+  assert.match(
+    pane,
+    /sourceWithSelectedOwner = selectionHydrated && rosterHydrated[\s\S]{0,180}?rosterWithSelectedOwner/,
+    'an unavailable-owner placeholder cannot bypass initial roster hydration'
+  )
+  assert.match(
+    pane,
+    /\$lastRoster\.set\(roster\.filter\(row => !row\?\.ghost\)\)/,
+    'presentation-only owner placeholders never enter shared roster state'
+  )
 })
 
 test('an unavailable owner offers retry instead of a dead Open chat button', () => {
   const start = pluginSource.indexOf('function BotsHomeView(')
   const view = pluginSource.slice(start, pluginSource.indexOf('function closeBotsHomeWorkspace('))
 
-  assert.match(view, /unavailable\s*\n\s*\? jsx\(Button, \{[\s\S]{0,200}?children: 'Retry'/)
+  assert.match(view, /unavailable && !sourceRemoved\s*\n\s*\? jsx\(Button, \{[\s\S]{0,200}?children: 'Retry'/)
   // Retry re-polls the roster; it must not activate or route anything.
   assert.match(view, /queryClient\.invalidateQueries\(\{ queryKey: ROSTER_KEY \}\)/)
   assert.doesNotMatch(view, /ensureAgent|requestProfile|newChat/)
   assert.match(view, /\$\{gateway\} is unavailable\. Retry when it is back online\./)
+  assert.match(view, /\$\{gateway\} was removed\. Choose another bot from the sidebar\./)
   assert.doesNotMatch(view, /This bot remains selected/)
   assert.doesNotMatch(view, /its work keeps running on that gateway/)
 })

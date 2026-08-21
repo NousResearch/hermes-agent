@@ -3875,7 +3875,10 @@ function mergeMultiSourceRoster(local, union, activeConnectionId, previous = [])
       const name = String(row?.name || '').trim()
       const key = `${connectionId}::${name || 'default'}`
 
-      if (!row?.remoteSource || !connectionId || !name || present.has(key)) {
+      // Ghost owners are presentation-only placeholders. Re-adopting one as
+      // a cached remote row would keep it alive after the selection changes
+      // and let an identity without its durable handle leak into shared state.
+      if (row?.ghost || !row?.remoteSource || !connectionId || !name || present.has(key)) {
         continue
       }
 
@@ -4817,7 +4820,10 @@ function groupChatMemberBots(group, roster, metaByName) {
     }
 
     seated.add(key)
-    remote.push((roster || []).find(bot => botRosterKey(bot) === key) || descriptor)
+    // A selected-but-offline ghost intentionally carries only enough identity
+    // to paint the roster. Never let it replace the room's durable descriptor,
+    // which owns the full handle/title used by mentions and remote sync.
+    remote.push((roster || []).find(bot => !bot?.ghost && botRosterKey(bot) === key) || descriptor)
   }
 
   return [...local, ...remote]
@@ -11149,6 +11155,7 @@ function BotsHomeView() {
   const photo = image && !isBackfilledFacePng(image) ? image : null
   const description = String(meta?.description || bot.description || '').trim()
   const unavailable = !status.available
+  const sourceRemoved = status.key === 'missing'
   const remoteCopy = async () => {
     const mention = `@${handle}`
 
@@ -11168,7 +11175,7 @@ function BotsHomeView() {
   }
 
   return jsxs('div', {
-    className: 'flex h-full min-h-0 flex-col bg-(--ui-bg-primary)',
+    className: 'flex h-full min-h-0 flex-col bg-background',
     children: [
       jsxs('header', {
         className:
@@ -11236,12 +11243,14 @@ function BotsHomeView() {
                 unavailable ? 'text-amber-700 dark:text-amber-300' : 'text-(--ui-text-tertiary)'
               ),
               children: unavailable
-                ? `${gateway} is unavailable. Retry when it is back online.`
+                ? sourceRemoved
+                  ? `${gateway} was removed. Choose another bot from the sidebar.`
+                  : `${gateway} is unavailable. Retry when it is back online.`
                 : bot.remoteSource
                   ? `This bot lives on ${gateway}. Mention @${handle} from a Bot Chat to send it a message.`
                   : 'Open this bot’s continuous chat. Its background work keeps running when you switch away.'
             }),
-            unavailable
+            unavailable && !sourceRemoved
               ? jsx(Button, {
                   variant: 'secondary',
                   size: 'sm',
@@ -11699,6 +11708,7 @@ function BotsPane() {
   const groupRooms = useValue($groupChats)
   const rememberedSources = useValue($lastSources)
   useValue($botRosterPrefs)
+  const rosterHydrated = useValue($rosterHydrated)
   const selectionHydrated = useValue($selectedRosterHydrated)
   const selectedRosterKey = useValue($selectedRosterKey)
 
@@ -11729,7 +11739,7 @@ function BotsPane() {
   const live = Array.isArray(data?.profiles) ? data.profiles : null
   const source = live ?? (error ? $lastRoster.get() : [])
   const sourceSnapshot = Array.isArray(data?.sources) ? data.sources : rememberedSources
-  const sourceWithSelectedOwner = selectionHydrated
+  const sourceWithSelectedOwner = selectionHydrated && rosterHydrated
     ? rosterWithSelectedOwner(source, sourceSnapshot, selectedRosterKey)
     : source
   const roster = sourceWithSelectedOwner.slice().sort((a, b) => {
@@ -11868,7 +11878,9 @@ function BotsPane() {
   }, [hiddenExpanded, hasRosterConstraint])
 
   if (live) {
-    $lastRoster.set(roster)
+    // Offline-owner ghosts belong only to this render. Shared roster state
+    // feeds merge caching, group membership, creation, and durable sync.
+    $lastRoster.set(roster.filter(row => !row?.ghost))
     if (Array.isArray(data?.sources)) {
       $lastSources.set(data.sources)
     }
@@ -12739,11 +12751,10 @@ export default {
 
       const stopSidebarSync = $sidebarVisible.listen(visible => {
         $botsPaneVisible.set(Boolean(visible))
-        // Entering Bot Mode is a user-visible ownership transition, even
-        // when layout restore left a Sessions composer focused underneath.
-        // Front the selected bot's home; the session remains alive and can
-        // reclaim the center on its own focus edge.
-        syncWorkspaceSurfaces(Boolean(visible))
+        // A generic composer has no stored-session owner, so passive sync
+        // replaces it with the Bot home. A real restored chat keeps the
+        // center until the user explicitly selects a Bot owner.
+        syncWorkspaceSurfaces()
       })
       const stopGroupSync = $groupChatWorkspace.listen(syncWorkspaceSurfaces)
       // The home tab's visibility flips are the ONLY signal for two real
@@ -12784,10 +12795,11 @@ export default {
       $botsPaneVisible.set(Boolean($sidebarVisible.get()))
       $botChatFocused.set(sessionOwnsWorkspace())
       // A persisted layout can boot directly into Bot Mode while restoring
-      // the generic Sessions workspace as the active sibling. Treat that as
-      // entering Bot Mode so the exact selected owner, not the composer,
-      // owns the first frame after plugin hydration.
-      syncWorkspaceSurfaces(Boolean($sidebarVisible.get()))
+      // the generic Sessions workspace as the active sibling. Reconcile now,
+      // then once more after the layout mutation finishes: the deferred pass
+      // remains passive, so a real restored chat is never covered.
+      syncWorkspaceSurfaces()
+      scheduleSurfaceSync()
 
       if (typeof ctx.onDispose === 'function') {
         // The registration disposer is already tracked by ctx.register; only

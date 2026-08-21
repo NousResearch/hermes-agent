@@ -125,6 +125,34 @@ test('groupChatMemberBots: seats local meta members plus stored remote descripto
   assert.equal(members[2], roster[2])
 })
 
+test('groupChatMemberBots: stored descriptors beat presentation-only ghosts', () => {
+  const { groupChatMemberBots, $groupChats } = load()
+  const ghost = {
+    name: 'spark',
+    remoteSource: true,
+    sourceScoped: true,
+    ghost: true,
+    connectionId: 'c1',
+    connectionLabel: 'Workshop'
+  }
+  const stored = {
+    name: 'spark',
+    handle: 'spark-work',
+    title: 'Spark',
+    remoteSource: true,
+    sourceScoped: true,
+    connectionId: 'c1',
+    connectionLabel: 'Workshop'
+  }
+  $groupChats.set({ Research: { log: [], members: [stored] } })
+
+  const members = groupChatMemberBots('Research', [ghost], {})
+
+  assert.equal(members.length, 1)
+  assert.equal(members[0], stored)
+  assert.equal(members[0].handle, 'spark-work')
+})
+
 test('durableGroupChatMembers: retains active and remote source identities', () => {
   const { durableGroupChatMembers } = load()
   const members = durableGroupChatMembers([

@@ -445,6 +445,41 @@ test('merge: previously seen remotes survive a connect-on-demand empty union', (
   assert.equal(out.profiles.filter(p => p.name === 'default').length, 1)
 })
 
+test('merge: presentation-only ghost rows never survive as cached remotes', () => {
+  const { __mergeMultiSourceRoster: merge } = runtime()
+  const previous = [
+    { name: 'default', last_session: { id: 'this-chat' } },
+    {
+      name: 'researcher',
+      remoteSource: true,
+      sourceScoped: true,
+      ghost: true,
+      connectionId: 'workshop',
+      connectionKind: 'remote',
+      connectionLabel: 'Workshop'
+    }
+  ]
+  const local = { profiles: [{ name: 'default', last_session: { id: 'this-chat' } }] }
+  const union = {
+    primaryConnectionId: 'local',
+    agents: [
+      {
+        connectionId: 'local',
+        connectionKind: 'local',
+        connectionLabel: 'This device',
+        profile: 'default',
+        handle: 'default'
+      }
+    ],
+    sources: [{ connectionId: 'workshop', kind: 'remote', error: 'connect-on-demand' }]
+  }
+
+  const out = merge(local, union, 'local', previous)
+
+  assert.equal(out.profiles.some(profile => profile.ghost), false)
+  assert.equal(out.profiles.some(profile => profile.connectionId === 'workshop'), false)
+})
+
 test('merge: previous remotes from a removed connection do not resurrect', () => {
   const { __mergeMultiSourceRoster: merge } = runtime()
   const previous = [

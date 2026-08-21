@@ -130,3 +130,116 @@ class TestResolveGatewayModel:
     def test_string_model_config(self):
         from gateway.run import _resolve_gateway_model
         assert _resolve_gateway_model({"model": "my-model"}) == "my-model"
+
+
+class TestAdoptRuntimeModel:
+    """Bundled custom_providers model is fill-in (CLI rules); fallback overrides."""
+
+    def test_fills_empty_current_model(self):
+        from gateway.run import _adopt_runtime_model
+
+        model, kwargs = _adopt_runtime_model(
+            "",
+            {"model": "qwen3:32b", "provider": "custom", "requested_provider": "local-ollama"},
+        )
+        assert model == "qwen3:32b"
+        assert "model" not in kwargs
+        assert "_runtime_model_override" not in kwargs
+
+    def test_config_model_wins_over_bundled_model(self):
+        from gateway.run import _adopt_runtime_model
+
+        model, kwargs = _adopt_runtime_model(
+            "llama3:8b",
+            {"model": "qwen3:32b", "provider": "custom", "requested_provider": "local-ollama"},
+        )
+        assert model == "llama3:8b"
+        assert "model" not in kwargs
+
+    def test_provider_slug_is_replaced_with_bundled_model(self):
+        from gateway.run import _adopt_runtime_model
+
+        model, _kwargs = _adopt_runtime_model(
+            "local-ollama",
+            {"model": "qwen3:32b", "provider": "custom", "requested_provider": "local-ollama"},
+        )
+        assert model == "qwen3:32b"
+
+    def test_fallback_flag_overrides_nonempty_config_model(self):
+        from gateway.run import _adopt_runtime_model
+
+        model, kwargs = _adopt_runtime_model(
+            "llama3:8b",
+            {
+                "model": "fallback/model",
+                "provider": "openrouter",
+                "_runtime_model_override": True,
+            },
+        )
+        assert model == "fallback/model"
+        assert "model" not in kwargs
+        assert "_runtime_model_override" not in kwargs
+
+
+class TestGatewayRuntimeCustomProviderModel:
+    """A custom_providers entry with a ``model`` field propagates it to the
+    gateway agent (#9702): the runtime resolver emits the model and
+    _resolve_session_agent_runtime pops it before AIAgent construction."""
+
+    def _resolve(self, config_model, runtime_extra=None):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+        runtime = {
+            "provider": "custom",
+            "requested_provider": "local-ollama",
+            "api_key": "no-key-required",
+            "base_url": "https://ollama.local/v1",
+            "api_mode": "chat_completions",
+            "model": "qwen3:32b",
+        }
+        if runtime_extra:
+            runtime.update(runtime_extra)
+
+        with patch("gateway.run._resolve_gateway_model", return_value=config_model), \
+             patch("hermes_cli.runtime_provider._get_model_config", return_value={}), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=runtime):
+            return runner._resolve_session_agent_runtime()
+
+    def test_runtime_model_used_when_config_model_empty(self):
+        model, kwargs = self._resolve("")
+        assert model == "qwen3:32b"
+        assert "model" not in kwargs
+        assert kwargs["provider"] == "custom"
+
+    def test_config_model_beats_runtime_bundled_model(self):
+        """custom_providers.model fills in an empty default; it does not
+        replace a user-selected model.default (CLI fill-in rules)."""
+        model, kwargs = self._resolve("llama3:8b")
+        assert model == "llama3:8b"
+        assert "model" not in kwargs
+
+    def test_runtime_model_used_when_config_model_is_provider_slug(self):
+        model, kwargs = self._resolve("local-ollama")
+        assert model == "qwen3:32b"
+        assert "model" not in kwargs
+
+    def test_fallback_runtime_model_overrides_config_model(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+        with patch("gateway.run._resolve_gateway_model", return_value="llama3:8b"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+                 "provider": "openrouter",
+                 "api_key": "sk-fb",
+                 "base_url": "https://openrouter.ai/api/v1",
+                 "api_mode": "chat_completions",
+                 "model": "fallback/model",
+                 "_runtime_model_override": True,
+             }):
+            model, kwargs = runner._resolve_session_agent_runtime()
+        assert model == "fallback/model"
+        assert "model" not in kwargs
+        assert "_runtime_model_override" not in kwargs

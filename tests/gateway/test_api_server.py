@@ -3068,3 +3068,312 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="s2", gateway_session_key="ch")
         assert captured[1]["model"] == "anthropic/claude-opus-4.6"
+
+    def test_create_agent_bundled_model_fills_empty_config(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "custom",
+                "requested_provider": "local-ollama",
+                "base_url": "https://ollama.local/v1",
+                "api_mode": "chat_completions",
+                "model": "qwen3:32b",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        agent = adapter._create_agent(session_id="api-session")
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "qwen3:32b"
+
+    def test_create_agent_config_model_beats_bundled_model(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "custom",
+                "requested_provider": "local-ollama",
+                "base_url": "https://ollama.local/v1",
+                "api_mode": "chat_completions",
+                "model": "qwen3:32b",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "llama3:8b")
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        agent = adapter._create_agent(session_id="api-session")
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "llama3:8b"
+
+    def test_create_agent_fallback_model_overrides_config(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openrouter",
+                "api_key": "sk-fb",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+                "model": "fallback/model",
+                "_runtime_model_override": True,
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "llama3:8b")
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        agent = adapter._create_agent(session_id="api-session")
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "fallback/model"
+        assert "_runtime_model_override" not in captured
+
+    def test_create_agent_request_provider_adopts_bundled_model(self, monkeypatch):
+        """Per-request provider override with no model must fill in
+        custom_providers[].model, same as the default _create_agent path."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr("hermes_cli.runtime_provider._get_model_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.models.get_default_model_for_provider",
+            lambda _provider: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **_kwargs: {
+                "provider": "custom",
+                "requested_provider": "local-ollama",
+                "api_key": "no-key-required",
+                "base_url": "https://ollama.local/v1",
+                "api_mode": "chat_completions",
+                "model": "qwen3:32b",
+            },
+        )
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        agent = adapter._create_agent(
+            session_id="api-session",
+            requested_provider="local-ollama",
+        )
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "qwen3:32b"
+        assert captured["provider"] == "custom"
+        assert captured["base_url"] == "https://ollama.local/v1"
+        assert "_runtime_model_override" not in captured
+
+    def test_create_agent_request_provider_adopts_bundle_over_global_model(
+        self, monkeypatch,
+    ):
+        """Provider-only /v1 request matches CLI --provider without -m:
+        the bundled model replaces a nonempty model.default."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr("hermes_cli.runtime_provider._get_model_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.models.get_default_model_for_provider",
+            lambda _provider: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **_kwargs: {
+                "provider": "custom",
+                "requested_provider": "local-ollama",
+                "api_key": "no-key-required",
+                "base_url": "https://ollama.local/v1",
+                "api_mode": "chat_completions",
+                "model": "qwen3:32b",
+            },
+        )
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        agent = adapter._create_agent(
+            session_id="api-session",
+            requested_provider="local-ollama",
+        )
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "qwen3:32b"
+        assert captured["provider"] == "custom"
+
+    def test_create_agent_request_provider_keeps_global_when_no_bundle(
+        self, monkeypatch,
+    ):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr("hermes_cli.runtime_provider._get_model_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.models.get_default_model_for_provider",
+            lambda _provider: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **_kwargs: {
+                "provider": "custom",
+                "requested_provider": "local-ollama",
+                "api_key": "no-key-required",
+                "base_url": "https://ollama.local/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        agent = adapter._create_agent(
+            session_id="api-session",
+            requested_provider="local-ollama",
+        )
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "global/model"
+        assert captured["provider"] == "custom"
+
+    def test_create_agent_route_provider_ignores_alias_and_adopts_bundle(
+        self, monkeypatch,
+    ):
+        """A model_routes hit passes the alias as requested_model. That
+        string is not a real model and must not block the bundled fill-in."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr("hermes_cli.runtime_provider._get_model_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.models.get_default_model_for_provider",
+            lambda _provider: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **_kwargs: {
+                "provider": "custom",
+                "requested_provider": "local-ollama",
+                "api_key": "no-key-required",
+                "base_url": "https://ollama.local/v1",
+                "api_mode": "chat_completions",
+                "model": "qwen3:32b",
+            },
+        )
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        agent = adapter._create_agent(
+            session_id="api-session",
+            requested_model="hermes-agent",
+            route={"provider": "local-ollama"},
+        )
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "qwen3:32b"
+        assert captured["model"] != "hermes-agent"
+        assert captured["provider"] == "custom"
+
+    def test_create_agent_request_model_beats_bundled_model(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr("hermes_cli.runtime_provider._get_model_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **_kwargs: {
+                "provider": "custom",
+                "requested_provider": "local-ollama",
+                "api_key": "no-key-required",
+                "base_url": "https://ollama.local/v1",
+                "api_mode": "chat_completions",
+                "model": "qwen3:32b",
+            },
+        )
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        agent = adapter._create_agent(
+            session_id="api-session",
+            requested_provider="local-ollama",
+            requested_model="llama3:8b",
+        )
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "llama3:8b"
+        assert "_runtime_model_override" not in captured
+
+    def test_create_agent_request_provider_runtime_drops_internal_keys(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.platforms.api_server._resolve_request_runtime_agent_kwargs",
+            lambda provider, target_model=None: {
+                "provider": "openrouter",
+                "api_key": "sk-fb",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+                "model": "fallback/model",
+                "_runtime_model_override": True,
+                "name": "Local Ollama",
+            },
+        )
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        agent = adapter._create_agent(
+            session_id="api-session",
+            requested_provider="openrouter",
+        )
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "fallback/model"
+        assert "_runtime_model_override" not in captured
+        assert "name" not in captured

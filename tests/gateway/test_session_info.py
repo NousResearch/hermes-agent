@@ -116,6 +116,25 @@ class TestFormatSessionInfo:
         assert "config" in info
         assert "131K" not in info
 
+    def test_bundled_custom_provider_model_shown_when_default_empty(self, runner, tmp_path):
+        """/new and /reset banners must show the custom_providers bundled
+        model when model.default is empty (#9702)."""
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  provider: local-ollama\n",
+            "",
+            {
+                "provider": "custom",
+                "requested_provider": "local-ollama",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "api_key": "k",
+                "model": "qwen3:32b",
+            },
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "qwen3:32b" in info
+
 
 class TestResetNoticeSessionInfo:
     """#59003: the auto-reset banner must report the serving profile's config,

@@ -2808,6 +2808,49 @@ _CONVERSATION_SCOPED_STATE: tuple = (
 # Sentinel for "caller did not pass metadata" vs "caller passed None".
 _UNSET = object()
 
+# Fallback runtime dicts set this so `_adopt_runtime_model` still replaces a
+# non-empty config model. Custom-provider bundled models must not.
+_RUNTIME_MODEL_OVERRIDE_KEY = "_runtime_model_override"
+
+
+def _adopt_runtime_model(current_model, runtime_kwargs: dict):
+    """Pop a runtime-supplied model and adopt it using CLI fill-in rules.
+
+    ``custom_providers[].model`` fills in when the current model is empty or is
+    the provider slug. Fallback dicts set ``_runtime_model_override`` so their
+    model still replaces a non-empty config model. Both keys are popped so they
+    cannot leak into ``AIAgent(**kwargs)``.
+    """
+    runtime_model = runtime_kwargs.pop("model", None)
+    override = bool(runtime_kwargs.pop(_RUNTIME_MODEL_OVERRIDE_KEY, False))
+    if not isinstance(runtime_model, str):
+        return current_model or "", runtime_kwargs
+    runtime_model = runtime_model.strip()
+    if not runtime_model:
+        return current_model or "", runtime_kwargs
+    if override:
+        return runtime_model, runtime_kwargs
+    current = current_model.strip() if isinstance(current_model, str) else ""
+    if not current:
+        return runtime_model, runtime_kwargs
+    slugs = {
+        str(runtime_kwargs.get("provider") or "").strip(),
+        str(runtime_kwargs.get("requested_provider") or "").strip(),
+        str(runtime_kwargs.get("name") or "").strip(),
+    }
+    slugs.discard("")
+    if current in slugs:
+        return runtime_model, runtime_kwargs
+    return current, runtime_kwargs
+
+
+def _maybe_runtime_model(runtime: dict):
+    """Return a non-empty runtime model string, or None."""
+    model_name = runtime.get("model")
+    if isinstance(model_name, str) and model_name.strip():
+        return model_name.strip()
+    return None
+
 
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
@@ -2867,7 +2910,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         if isinstance(_runtime_mot, int) and _runtime_mot > 0:
             max_tokens = _runtime_mot
 
-    return {
+    result = {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
@@ -2878,6 +2921,13 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "credential_pool": runtime.get("credential_pool"),
         "max_tokens": max_tokens,
     }
+    # Propagate model from custom_provider config so gateway agents pick
+    # it up without requiring a separate model.default in config.yaml.
+    # Consumption is fill-in (see _adopt_runtime_model), not override.
+    runtime_model = _maybe_runtime_model(runtime)
+    if runtime_model:
+        result["model"] = runtime_model
+    return result
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2937,6 +2987,10 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
 
     try:
         runtime = _resolve_runtime_agent_kwargs()
+        # Adopt a bundled custom_providers model when model.default is empty
+        # (#9702). Same helper as session/API construction so the /new /reset
+        # banner matches the serving model.
+        resolved_model, runtime = _adopt_runtime_model(resolved_model, runtime)
         provider = runtime.get("provider") or provider
         base_url = runtime.get("base_url") or base_url
         api_key = runtime.get("api_key")
@@ -3007,7 +3061,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         runtime = resolve_runtime_provider(requested=provider)
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
-    return {
+    result = {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
@@ -3017,6 +3071,12 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
     }
+    # Propagate model from custom_provider config so channel-override
+    # providers pick it up too (consumed and popped by the caller).
+    runtime_model = _maybe_runtime_model(runtime)
+    if runtime_model:
+        result["model"] = runtime_model
+    return result
 
 
 def _credential_pool_for_provider(provider: Optional[str]):
@@ -3075,6 +3135,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
                     "model": entry.get("model"),
+                    _RUNTIME_MODEL_OVERRIDE_KEY: True,
                 }
             except Exception as fb_exc:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
@@ -8091,14 +8152,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        runtime_model = runtime_kwargs.pop("model", None)
-        if runtime_model:
+        previous_model = model
+        model, runtime_kwargs = _adopt_runtime_model(model, runtime_kwargs)
+        if model and model != previous_model:
             logger.info(
-                "Runtime provider supplied explicit model override: %s -> %s",
+                "Runtime provider supplied model: %s -> %s",
+                previous_model,
                 model,
-                runtime_model,
             )
-            model = runtime_model
 
         cfg = getattr(self, "config", None)
         if cfg and source is not None:
@@ -8119,17 +8180,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 parent_id=parent_id,
             )
             if ch:
-                if ch.model:
-                    model = ch.model
                 if ch.provider:
                     runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
                         ch.provider
                     )
-                    ch_runtime_model = runtime_kwargs.pop("model", None)
-                    # Only adopt the provider's bundled model when the override
-                    # did not specify an explicit model.
-                    if ch_runtime_model and not ch.model:
-                        model = ch_runtime_model
+                    # Current value is the channel model, not the already-resolved
+                    # global one: a provider-only override must fill from this
+                    # provider instead of keeping the previous provider's model.
+                    # Empty and provider-slug channel models fill in; an explicit
+                    # channel model wins. Adopt returning empty keeps the global
+                    # model (unset channel fields fall back to global defaults).
+                    _ch_model, runtime_kwargs = _adopt_runtime_model(
+                        ch.model, runtime_kwargs
+                    )
+                    model = _ch_model or model
+                elif ch.model:
+                    model = ch.model
 
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(

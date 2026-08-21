@@ -138,5 +138,28 @@ class TestWikiReverseLookup(unittest.TestCase):
         self.assertEqual(query_dict["obj_type"], "docx")
 
 
+class TestResolveModelAndRuntime(unittest.TestCase):
+    def test_adopts_bundled_custom_provider_model_when_default_empty(self):
+        from plugins.platforms.feishu.feishu_comment import _resolve_model_and_runtime
+
+        with patch("gateway.run._load_gateway_config", return_value={}), \
+             patch("gateway.run._resolve_gateway_model", return_value=""), \
+             patch(
+                 "gateway.run._resolve_runtime_agent_kwargs",
+                 return_value={
+                     "provider": "custom",
+                     "requested_provider": "local-ollama",
+                     "api_key": "k",
+                     "base_url": "http://127.0.0.1:11434/v1",
+                     "api_mode": "chat_completions",
+                     "model": "qwen3:32b",
+                 },
+             ), \
+             patch("hermes_cli.models.get_default_model_for_provider", return_value=None):
+            model, kwargs = _resolve_model_and_runtime()
+        self.assertEqual(model, "qwen3:32b")
+        self.assertNotIn("model", kwargs)
+
+
 if __name__ == "__main__":
     unittest.main()

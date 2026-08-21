@@ -334,6 +334,31 @@ def _apply_runtime_agent_overrides(
     return runtime_kwargs
 
 
+def _adopt_provider_runtime_model(
+    current_model,
+    runtime_kwargs: Dict[str, Any],
+    provider_runtime: Optional[Dict[str, Any]],
+):
+    """Fill in a bundled custom_provider model without widening the whitelist.
+
+    ``_apply_runtime_agent_overrides`` copies only ``_RUNTIME_AGENT_OVERRIDE_KEYS``,
+    which excludes ``model`` and ``_runtime_model_override``. Copy those onto a
+    working dict, let ``_adopt_runtime_model`` pop them, and return that dict.
+    ``requested_provider`` is copied for slug matching and is a valid
+    ``AIAgent`` argument. ``name`` is not copied: ``AIAgent.__init__`` has no
+    such parameter.
+    """
+    from gateway.run import _adopt_runtime_model
+
+    if not isinstance(provider_runtime, dict):
+        return current_model, runtime_kwargs
+    adopt_kwargs = dict(runtime_kwargs)
+    for key in ("model", "_runtime_model_override", "requested_provider"):
+        if key in provider_runtime and provider_runtime[key] is not None:
+            adopt_kwargs[key] = provider_runtime[key]
+    return _adopt_runtime_model(current_model, adopt_kwargs)
+
+
 def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[str] = None) -> Dict[str, Any]:
     """Resolve runtime kwargs for a one-request provider override.
 
@@ -365,16 +390,27 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
         if isinstance(runtime_max_tokens, int) and runtime_max_tokens > 0:
             max_tokens = runtime_max_tokens
 
-    return {
+    from gateway.run import _maybe_runtime_model, _RUNTIME_MODEL_OVERRIDE_KEY
+
+    result = {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
+        "requested_provider": runtime.get("requested_provider"),
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
         "max_tokens": max_tokens,
     }
+    # Fill-in only: consumed by _adopt_provider_runtime_model at the apply
+    # site, not copied through _RUNTIME_AGENT_OVERRIDE_KEYS.
+    runtime_model = _maybe_runtime_model(runtime)
+    if runtime_model:
+        result["model"] = runtime_model
+    if runtime.get(_RUNTIME_MODEL_OVERRIDE_KEY):
+        result[_RUNTIME_MODEL_OVERRIDE_KEY] = True
+    return result
 
 
 def _request_agent_overrides(
@@ -2697,6 +2733,7 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         from run_agent import AIAgent
         from gateway.run import (
+            _adopt_runtime_model,
             _checkpoint_agent_kwargs,
             _current_max_iterations,
             _resolve_runtime_agent_kwargs,
@@ -2720,17 +2757,12 @@ class APIServerAdapter(BasePlatformAdapter):
             raise _ProviderAuthResolutionError(str(exc)) from exc
         model = _resolve_gateway_model()
 
-        # When the primary provider's auth fails (expired token / 429 quota
-        # cap), _resolve_runtime_agent_kwargs() falls through to the fallback
-        # provider chain, whose runtime dict carries its own ``model`` key.
-        # Pop it and let it override the config model, mirroring the native
-        # gateway path (_resolve_session_agent_runtime in run.py). Otherwise
-        # the explicit ``model=model`` below collides with the ``**runtime_kwargs``
-        # spread → "got multiple values for keyword argument 'model'", 500ing
-        # every /v1/chat/completions request while a fallback is active.
-        runtime_model = runtime_kwargs.pop("model", None)
-        if runtime_model:
-            model = runtime_model
+        # Pop runtime ``model`` (and the fallback override flag) before
+        # ``AIAgent(model=model, **runtime_kwargs)``. Leaving ``model`` in
+        # kwargs 500s with "got multiple values for keyword argument 'model'".
+        # Bundled custom_providers models fill in; fallback dicts still replace
+        # a non-empty config model (same rules as _resolve_session_agent_runtime).
+        model, runtime_kwargs = _adopt_runtime_model(model, runtime_kwargs)
 
         request_reasoning_config = _request_reasoning_config(model_options)
         request_service_tier = _request_service_tier(model_options)
@@ -2857,9 +2889,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             if provider_runtime:
                 _apply_runtime_agent_overrides(runtime_kwargs, provider_runtime)
+                # Seed adopt from the caller's real model only. A nonempty
+                # model.default must not block a provider-only request
+                # (CLI --provider without -m). When a route is present,
+                # request_model is the route alias and is never a model id.
+                selection_model = route_model if route is not None else request_model
+                adopted, runtime_kwargs = _adopt_provider_runtime_model(
+                    selection_model, runtime_kwargs, provider_runtime
+                )
+                model = adopted or effective_model
             elif effective_provider and effective_provider != current_provider:
                 runtime_kwargs["provider"] = effective_provider
-            model = effective_model
+                model = effective_model
+            else:
+                model = effective_model
             # Per-route explicit transport secrets/base URLs win within the
             # route contract after provider resolution.
             if route_api_key:

@@ -3046,6 +3046,41 @@ def _ensure_session_db_row(session: dict) -> None:
                 pass
 
 
+def _install_has_prior_sessions(session: dict) -> bool:
+    """True when this install already has session rows beyond the current one.
+
+    Mirrors ``gateway.session.SessionStore.has_any_sessions``: the current
+    session row is persisted before ``_run_prompt_submit``, so a fresh install
+    with its first-ever message has exactly one row and this returns False.
+    """
+    profile_home = session.get("profile_home")
+    close_db = False
+    if profile_home:
+        from hermes_state import SessionDB
+
+        try:
+            db = SessionDB(db_path=Path(profile_home) / "state.db")
+            close_db = True
+        except Exception:
+            logger.debug("failed to open profile db for session count", exc_info=True)
+            return False
+    else:
+        db = _get_db()
+    if db is None:
+        return False
+    try:
+        return db.session_count_ge(2)
+    except Exception:
+        logger.debug("session_count_ge failed for first-contact check", exc_info=True)
+        return False
+    finally:
+        if close_db:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
 def _persist_branch_seed(session: dict) -> None:
     """First-turn persist of a branch's copied transcript.
 
@@ -10947,6 +10982,31 @@ def _run_prompt_submit(
             # Which window the message was typed into. HUD mode is per-turn
             # state, so it cannot live in the (byte-stable) system prompt.
             run_message = _prepend_note(run_message, _hud_surface_note(session))
+
+            # First-message onboarding (gateway parity): on the install's very
+            # first message ever, stage a one-shot sidecar note offering opt-in
+            # profile setup (or a plain intro when profile_build is off/already
+            # offered). Delivered via agent._gateway_turn_context_notes so the
+            # ephemeral system prompt stays byte-stable.
+            if not history:
+                try:
+                    from agent.onboarding import first_contact_turn_note
+                    from hermes_cli.config import load_config as _onb_load_config
+                    from hermes_constants import get_hermes_home
+
+                    _onb_cfg = _onb_load_config()
+                    _fc_note = first_contact_turn_note(
+                        _onb_cfg,
+                        get_hermes_home() / "config.yaml",
+                        session_history_empty=True,
+                        install_has_prior_sessions=_install_has_prior_sessions(session),
+                    )
+                    if _fc_note:
+                        agent._gateway_turn_context_notes = _fc_note
+                except Exception as _fc_err:
+                    logger.debug(
+                        "first-contact onboarding note failed: %s", _fc_err
+                    )
 
             def _stream(delta):
                 with session["history_lock"]:

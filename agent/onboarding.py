@@ -167,6 +167,43 @@ def profile_build_mode(config: Mapping[str, Any]) -> str:
     return "ask"
 
 
+PLAIN_INTRO_NOTE = (
+    "[System note: This is the user's very first message ever. "
+    "Briefly introduce yourself and mention that /help shows available commands. "
+    "Keep the introduction concise -- one or two sentences max.]"
+)
+
+
+def first_contact_turn_note(
+    config: Mapping[str, Any],
+    config_path: Path,
+    *,
+    session_history_empty: bool,
+    install_has_prior_sessions: bool,
+) -> Optional[str]:
+    """Return a one-shot sidecar note for the install's first-ever message.
+
+    Matches the gateway first-contact path: when ``profile_build`` is ``ask``
+    and the offer has not been latched yet, return the opt-in profile-build
+    directive and persist ``onboarding.seen.profile_build_offered``. Otherwise
+    return the plain intro note. Returns ``None`` when this is not the first
+    contact (non-empty session history or prior sessions exist on the install).
+    """
+    if not session_history_empty or install_has_prior_sessions:
+        return None
+    try:
+        if (
+            profile_build_mode(config) == "ask"
+            and not is_seen(config, PROFILE_BUILD_FLAG)
+        ):
+            mark_seen(config_path, PROFILE_BUILD_FLAG)
+            return profile_build_directive().strip()
+        return PLAIN_INTRO_NOTE
+    except Exception as e:
+        logger.debug("first_contact_turn_note failed, using plain intro: %s", e)
+        return PLAIN_INTRO_NOTE
+
+
 def profile_build_directive() -> str:
     """System-note directive appended to the very first message ever.
 
@@ -253,6 +290,8 @@ __all__ = [
     "TOOL_PROGRESS_FLAG",
     "OPENCLAW_RESIDUE_FLAG",
     "PROFILE_BUILD_FLAG",
+    "PLAIN_INTRO_NOTE",
+    "first_contact_turn_note",
     "busy_input_hint_gateway",
     "busy_input_hint_cli",
     "tool_progress_hint_gateway",

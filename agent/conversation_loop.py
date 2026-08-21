@@ -542,6 +542,34 @@ def _ra():
     return run_agent
 
 
+def _log_provider_event(
+    *,
+    agent: Any,
+    event: str,
+    provider: str = "",
+    total_retry: int = 0,
+    pool_stall: int = 0,
+    ceiling: int = 0,
+) -> None:
+    """Emit a structured provider-failover event.
+
+    Deliberately contains NO credentials: only provider name, retry/stall
+    counters and the ceiling constant. Used by the P0-1 hard-fallback
+    ceiling so operators can see the ceiling trip in logs without any
+    API key / token ever being written.
+    """
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "provider_failover event=%s provider=%s total_retry=%d pool_stall=%d ceiling=%d",
+        event,
+        provider or "unknown",
+        total_retry,
+        pool_stall,
+        ceiling,
+    )
+
+
 def _nous_entitlement_message(capability: str) -> str:
     try:
         from hermes_cli.nous_account import (
@@ -5357,6 +5385,37 @@ def run_conversation(
                             agent._credential_pool,
                         )
                     )
+                    # ── Hard ceiling for pool-stall (P0-1, 2026-08-15) ──────
+                    # pool_may_recover=True means "credential-pool rotation may
+                    # still recover", so the code deliberately waits for the
+                    # pool instead of falling back. But when the pool keeps
+                    # reporting "may recover" and the primary keeps 429ing
+                    # (e.g. Groq Free Tier TPM 8000), the loop burns the whole
+                    # retry budget and the task fails WITHOUT ever trying the
+                    # fallback chain. Add a hard, pool-independent ceiling:
+                    # after MAX_POOL_STALL consecutive pool-wait decisions the
+                    # fallback chain is forced, so a sick primary can never
+                    # starve the failover path. Bounded (no unbounded wait);
+                    # resets on a successful primary call and on restore.
+                    if pool_may_recover:
+                        pool_stall = getattr(agent, "_pool_stall_count", 0) + 1
+                        agent._pool_stall_count = pool_stall
+                        _MAX_POOL_STALL = 3
+                        if pool_stall >= _MAX_POOL_STALL:
+                            _log_provider_event(
+                                agent=agent,
+                                event="hard_fallback_ceiling_reached",
+                                provider=str(_base or agent.provider),
+                                total_retry=retry_count,
+                                pool_stall=pool_stall,
+                                ceiling=_MAX_POOL_STALL,
+                            )
+                            pool_may_recover = False
+                    else:
+                        # reset the stall counter when the pool is not the
+                        # reason we are waiting (transport/other failures)
+                        if getattr(agent, "_pool_stall_count", 0):
+                            agent._pool_stall_count = 0
                     if not pool_may_recover:
                         if _is_upstream:
                             _upstream_name = (classified.error_context or {}).get(

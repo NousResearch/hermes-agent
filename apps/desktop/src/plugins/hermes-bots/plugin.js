@@ -8935,6 +8935,11 @@ function CreateRoutineDialog({ bot, open, onClose }) {
   const [instruction, setInstruction] = useState('')
   const [sched, setSched] = useState(defaultScheduleState())
   const [continuity, setContinuity] = useState(false)
+  // Where the run's output lands: 'history' = the run session only (Run
+  // history / cron page, today's behavior); 'bot-chat' = inject into this
+  // bot's canonical Bot Chat as a real message — the bot reads it, acts on
+  // it, and responds there (costs the bot one agent turn per run).
+  const [target, setTarget] = useState('history')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const activeProfile = useValue(host.state.profile)
@@ -8945,6 +8950,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
     setInstruction('')
     setSched(defaultScheduleState())
     setContinuity(false)
+    setTarget('history')
     setBusy(false)
     setError(null)
   }
@@ -8978,7 +8984,11 @@ function CreateRoutineDialog({ bot, open, onClose }) {
         prompt: routinePrompt(bot, title, task, activeProfile),
         ...(bot ? { profile: bot } : {}),
         ...(repeatN ? { repeat: repeatN } : {}),
-        ...(continuity ? { continuity: true } : {})
+        ...(continuity ? { continuity: true } : {}),
+        // 'bot-chat' (bare, no name): the job is created IN the bot's own
+        // cron store (profile scoping above), so the scheduler resolves the
+        // token to that profile — no cross-gateway name ambiguity possible.
+        ...(target === 'bot-chat' ? { deliver: 'bot-chat' } : {})
       })
       await invalidateRoutineOwner(bot)
       host.notify({ kind: 'success', message: `Cronjob "${title}" scheduled` })
@@ -9031,6 +9041,13 @@ function CreateRoutineDialog({ bot, open, onClose }) {
               })
             ),
             labeled('When to run', jsx(SchedulePicker, { state: sched, setState: setSched })),
+            labeled(
+              'Send results to',
+              pickerSelect(target, setTarget, [
+                { id: 'history', label: 'Run history only' },
+                { id: 'bot-chat', label: `${displayName({ name: bot }, $botMeta.get()[bot])}\u2019s chat (bot responds)` }
+              ])
+            ),
             jsxs('label', {
               className: 'flex items-center gap-2 text-xs text-(--ui-text-tertiary) cursor-pointer select-none',
               children: [

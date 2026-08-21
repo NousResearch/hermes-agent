@@ -2056,6 +2056,18 @@ def fetch_openrouter_models(
             desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
         curated.append((preferred_id, desc))
 
+    # Append all remaining tool-capable models from the live catalog so the
+    # picker is searchable beyond the curated shortlist.  Curated models
+    # (already in ``curated``) are skipped; the rest keep their live order.
+    curated_ids = {mid for mid, _ in curated}
+    for mid, item in live_by_id.items():
+        if mid in curated_ids:
+            continue
+        if not _openrouter_model_supports_tools(item):
+            continue
+        desc = "free" if _openrouter_model_is_free(item.get("pricing")) else ""
+        curated.append((mid, desc))
+
     if not curated:
         return list(_openrouter_catalog_cache or fallback)
 
@@ -3468,6 +3480,10 @@ def detect_provider_for_model(
         return None
 
     # --- Step 2: check OpenRouter catalog ---
+    # Don't override custom providers — the user explicitly chose their endpoint.
+    _is_custom = current_provider == "custom" or (current_provider or "").startswith("custom:")
+    if _is_custom:
+        return None
     # First try exact match (handles provider/model format)
     or_slug = _find_openrouter_slug(name)
     if or_slug:

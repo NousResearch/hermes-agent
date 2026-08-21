@@ -279,6 +279,81 @@ Use `--yes` to skip confirmation: `hermes profile delete coder --yes`
 You cannot delete the default profile (`~/.hermes`). To remove everything, use `hermes uninstall`.
 :::
 
+## Retiring the default profile
+
+The default profile is not a real profile — it is `~/.hermes` itself (see [How it works](#how-it-works)). That single directory plays three roles at once:
+
+1. **The default agent's home** — `config.yaml`, `.env`, `auth.json`, skills, sessions, memories, logs.
+2. **The global shared layer** — plugins, pets, global cron, `channel_directory.json`.
+3. **The profiles root** — named profiles live inside it at `~/.hermes/profiles/<name>/`.
+
+Because `default` is hardwired to the root, it can never be renamed or deleted (`hermes profile rename` and `hermes profile delete` both refuse). If you run several profiles, you can still make the root a pure shared layer by moving the default agent's job to a named profile and retiring the root's agent-specific data.
+
+### Step 1 — clone the default agent into a named profile
+
+```bash
+hermes profile create main-agent --clone-all --clone-from default
+```
+
+`--clone-all` copies everything the default agent uses: `config.yaml`, `.env` (API keys and messaging bot tokens), `auth.json`, `SOUL.md`, memories, skills, cron jobs, plugins, pets, and logs. The new profile is a fresh workspace — session history is deliberately not copied (see the next step).
+
+### Step 2 — migrate session history (optional)
+
+`--clone-all` excludes per-profile history so the clone stays a fresh workspace and doesn't balloon by tens of GB: `state.db` (the SQLite session store), `sessions/` (transcripts), `backups/`, `state-snapshots/`, `checkpoints/`. Migrate them manually if you need them:
+
+- **Session transcripts and everything else** — use export/import *instead of* the `--clone-all` step above (import refuses an existing profile name). The export carries over `sessions/`, config, skills, cron, scripts, plugins, and memories — but **never** credentials or `state.db`:
+
+  ```bash
+  hermes profile export default
+  hermes profile import default.tar.gz --name main-agent
+  # Export skips credentials — copy them over explicitly:
+  cp ~/.hermes/.env ~/.hermes/auth.json ~/.hermes/profiles/main-agent/
+  chmod 600 ~/.hermes/profiles/main-agent/.env ~/.hermes/profiles/main-agent/auth.json
+  ```
+
+- **`state.db` (the SQLite session store)** — excluded from both `--clone-all` and export. Copy it only while the default gateway is stopped:
+
+  ```bash
+  hermes gateway stop
+  cp ~/.hermes/state.db ~/.hermes/profiles/main-agent/
+  # Also copy state.db-wal / state.db-shm if present
+  ```
+
+  Leave `backups/`, `state-snapshots/`, and `checkpoints/` in the root — they are the default agent's own restore points.
+
+### Step 3 — give the named profile its own gateway service
+
+The default gateway service (if you installed one) pins `HERMES_HOME` to the root. Install a per-profile service for the new profile instead (see [Persistent services](#persistent-services)):
+
+```bash
+hermes -p main-agent gateway install   # creates hermes-gateway-main-agent (systemd/launchd)
+hermes -p main-agent gateway start
+```
+
+Then disable the old default gateway service so the two don't run at the same time (e.g. `systemctl --user disable --now hermes-gateway` on systemd hosts, `launchctl unload` on macOS).
+
+### Step 4 — messaging pairing
+
+Bot tokens live in `.env`, which `--clone-all` copies — the new profile inherits your Telegram/Discord/Slack pairing. Because of the [token locks](#different-bot-tokens), two gateways cannot use the same bot token simultaneously: keep only one gateway running, or generate a fresh bot token for the new profile and update its `.env`.
+
+### Step 5 — switch over and trim the root
+
+```bash
+hermes profile use main-agent   # plain `hermes` now targets main-agent
+main-agent chat                 # smoke-test the clone
+```
+
+Once the new profile works, archive (don't delete) the default agent's data in the root so the shared layer stays intact:
+
+```bash
+mv ~/.hermes/config.yaml   ~/.hermes/.config.yaml.retired
+mv ~/.hermes/.env          ~/.hermes/.env.retired
+mv ~/.hermes/auth.json     ~/.hermes/.auth.json.retired
+mv ~/.hermes/sessions      ~/.hermes/.sessions.retired
+```
+
+Keep the genuinely shared infrastructure in place: `~/.hermes/plugins/`, `~/.hermes/pets/`, `~/.hermes/cron/`, `~/.hermes/profiles/`, and `channel_directory.json`. If a global fallback ever needs the default's config back, restore the `.retired` files.
+
 ## Tab completion
 
 ```bash

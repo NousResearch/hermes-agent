@@ -4452,6 +4452,24 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     _is_native_sdk_provider = _provider_lower in _NATIVE_SDK_PROVIDERS
 
     if configured_base_url and not _is_native_sdk_provider:
+        # delegation.request_overrides: same semantics as the named-provider
+        # branch below (runtime.get("request_overrides")) — a dict merged into
+        # the child's API kwargs by the transport's profile path. Keys are
+        # top-level kwargs (e.g. service_tier); an "extra_body" sub-dict is
+        # merged into extra_body. This is how a direct-endpoint delegation
+        # (provider=custom) forwards OpenRouter routing hints such as
+        # extra_body.provider = {"sort": "throughput"} to its children —
+        # the child's CustomProfile does not emit provider preferences, and
+        # the parent-inheritance path is deliberately cleared when
+        # delegation.provider/base_url overrides the parent (see the
+        # provider-preference clearing in _build_child_agent).
+        configured_request_overrides = cfg.get("request_overrides")
+        request_overrides = (
+            dict(configured_request_overrides)
+            if isinstance(configured_request_overrides, dict)
+            else None
+        )
+
         # When delegation.api_key is not set, return None so _build_child_agent
         # falls back to the parent agent's API key via the credential inheritance
         # path (effective_api_key = override_api_key or parent_api_key). This
@@ -4495,6 +4513,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
+            "request_overrides": request_overrides,
         }
 
     if not configured_provider:

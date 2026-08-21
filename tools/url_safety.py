@@ -209,6 +209,12 @@ _MAX_SSRF_CONNECT_IPS = 8
 # VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# 198.18.0.0/15 (Benchmarking, RFC 2544) is NOT a private or internal network.
+# Python ipaddress treats it as is_reserved, which causes SSRF false positives
+# when VPNs / proxies redirect DNS to this range (common with split-tunnel VPN
+# clients, OpenWrt, Tailscale DNS).  Must NOT be blocked as private/internal.
+_BENCHMARK_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+
 # ---------------------------------------------------------------------------
 # Global toggle: allow private/internal IP resolution
 # ---------------------------------------------------------------------------
@@ -292,12 +298,20 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     # by their embedded IPv4 address, not as IPv6
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         embedded_ip = ip.ipv4_mapped
+        # Benchmark range (198.18.0.0/15) is NOT private — always allow
+        if embedded_ip in _BENCHMARK_NETWORK:
+            return False
         return (embedded_ip.is_private or embedded_ip.is_loopback or
                 embedded_ip.is_link_local or embedded_ip.is_reserved or
                 embedded_ip.is_multicast or embedded_ip.is_unspecified or
                 embedded_ip in _CGNAT_NETWORK)
 
     # Standard IPv4/IPv6 address checking
+    # Benchmark range (198.18.0.0/15, RFC 2544) is NOT private — it is a
+    # reserved range for benchmarking that VPNs/proxies commonly redirect
+    # DNS to. Always allow it unless explicitly overridden.
+    if ip in _BENCHMARK_NETWORK:
+        return False
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
         return True
     if ip.is_multicast or ip.is_unspecified:

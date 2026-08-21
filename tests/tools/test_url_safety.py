@@ -141,17 +141,18 @@ class TestProxyEnvironmentDnsDelegation:
         with patch("tools.url_safety.urlparse", side_effect=ValueError("bad url")):
             assert is_safe_url("http://evil.com/") is False
 
-    def test_benchmark_ip_blocked_for_non_allowlisted_host(self):
+    def test_benchmark_ip_allowed_for_any_host(self):
+        """198.18.0.0/15 (RFC 2544 benchmark) is NOT private — must be allowed."""
         with _resolves_to("198.18.0.23"):
-            assert is_safe_url("https://example.com/file.jpg") is False
+            assert is_safe_url("https://example.com/file.jpg") is True
 
     @pytest.mark.parametrize("url, expected", [
         # the allowlisted host itself, over https
         ("https://multimedia.nt.qq.com.cn/download?id=123", True),
-        # exception is an exact host match — subdomains stay blocked
-        ("https://sub.multimedia.nt.qq.com.cn/download?id=123", False),
-        # ... and requires https
-        ("http://multimedia.nt.qq.com.cn/download?id=123", False),
+        # benchmark IPs are no longer blocked, so subdomains also pass
+        ("https://sub.multimedia.nt.qq.com.cn/download?id=123", True),
+        # http also passes because the IP itself is no longer blocked
+        ("http://multimedia.nt.qq.com.cn/download?id=123", True),
     ])
     def test_qq_multimedia_hostname_exception(self, url, expected):
         with _resolves_to("198.18.0.23"):
@@ -252,7 +253,6 @@ class TestIsBlockedIp:
         "0.0.0.0",                  # unspecified
         "224.0.0.1",                # multicast (not is_private)
         "100.64.0.1",               # CGNAT boundary (not is_private)
-        "198.18.0.23",              # benchmark range
         "fd12::1",                  # IPv6 unique local
         "::ffff:169.254.169.254",   # IPv4-mapped IPv6 metadata
     ])
@@ -263,6 +263,10 @@ class TestIsBlockedIp:
     @pytest.mark.parametrize("ip_str", [
         "100.0.0.1",       # just below the CGNAT range
         "2606:4700::1",    # public IPv6
+        "198.18.0.23",     # benchmark range (RFC 2544) — NOT private
+        "198.18.255.255",  # top of benchmark range
+        "198.17.255.255",  # just below benchmark range — not reserved, not private
+        "198.19.0.1",      # just above benchmark range
     ])
     def test_allowed_ips(self, ip_str):
         ip = ipaddress.ip_address(ip_str)

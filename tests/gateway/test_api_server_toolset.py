@@ -77,3 +77,39 @@ class TestApiServerAdapterToolset:
 
             call_kwargs = mock_agent_cls.call_args
             assert call_kwargs.kwargs.get("disabled_toolsets") is None
+
+    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    def test_create_agent_warns_when_disabled_toolsets_value_unparseable(self, caplog):
+        """A malformed agent.disabled_toolsets value must not silently degrade
+        to deny-nothing (fail-open): the gateway logs a warning so the
+        misconfiguration is visible in the log."""
+        import logging
+
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig())
+        fake_key = "k" + "-" * 10
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
+             patch("gateway.run._resolve_gateway_model") as mock_model, \
+             patch("gateway.run._load_gateway_config") as mock_config, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+
+            mock_kwargs.return_value = {"api_key": fake_key, "base_url": None,
+                                        "provider": None, "api_mode": None,
+                                        "command": None, "args": []}
+            mock_model.return_value = "test/model"
+            # A nested mapping is not a list-shaped value: parsing degrades to
+            # nothing, which must be surfaced rather than fail open silently.
+            mock_config.return_value = {
+                "agent": {"disabled_toolsets": {"oops": True}},
+            }
+            mock_agent_cls.return_value = MagicMock()
+
+            with caplog.at_level(logging.WARNING, logger="gateway.platforms.api_server"):
+                adapter._create_agent()
+
+            assert any("parsed to no toolsets" in record.message for record in caplog.records)
+            call_kwargs = mock_agent_cls.call_args
+            assert call_kwargs.kwargs.get("disabled_toolsets") is None

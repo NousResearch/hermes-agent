@@ -2386,7 +2386,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         from agent.skill_utils import parse_config_string_list
 
         agent_cfg = user_config.get("agent") or {}
-        disabled_toolsets = parse_config_string_list(agent_cfg.get("disabled_toolsets")) or None
+        _raw_disabled_toolsets = agent_cfg.get("disabled_toolsets")
+        disabled_toolsets = parse_config_string_list(_raw_disabled_toolsets) or None
+        if _raw_disabled_toolsets and not disabled_toolsets:
+            # A denial policy whose configured value fails to parse degrades
+            # to "deny nothing" (fail-open) — surface the misconfiguration in
+            # the gateway log rather than letting it be discovered from an
+            # unexpectedly available toolset.
+            logger.warning(
+                "agent.disabled_toolsets value %r parsed to no toolsets; "
+                "disabling nothing for this api_server agent",
+                _raw_disabled_toolsets,
+            )
 
         max_iterations = _current_max_iterations()
         if room_dispatch is not None:

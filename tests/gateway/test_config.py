@@ -598,6 +598,26 @@ class TestLoadGatewayConfig:
         assert config.group_sessions_per_user is False
 
 
+    def test_bridges_line_require_mention_from_config_yaml(self, tmp_path, monkeypatch):
+        """gateway.platforms.line.require_mention reaches config.extra."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    line:\n"
+            "      enabled: true\n"
+            "      require_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        line_config = config.platforms[Platform("line")]
+        assert line_config.extra["require_mention"] is True
+
     def test_reset_triggers_from_nested_gateway_section(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

@@ -18,6 +18,7 @@ resolution, so they fail if the tier stops reaching the transport layer.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import tui_gateway.server as server
@@ -90,3 +91,53 @@ def test_ineligible_model_sends_no_overrides():
     kwargs = _build("priority", model="gpt-5.3-codex")
 
     assert not kwargs.get("request_overrides")
+
+
+def _mirror(agent, arg: str):
+    """Run the typed-slash `/fast <arg>` mirror against a live agent."""
+    session = {"agent": agent}
+    with patch.object(server, "_emit"), patch.object(server, "_session_info", return_value={}):
+        server._mirror_slash_side_effects("sid-1", session, f"/fast {arg}")
+    return agent
+
+
+def test_typed_fast_off_clears_tier_overrides():
+    """`/fast off` must stop sending the tier, not just relabel the session.
+
+    Now that a configured tier populates request_overrides at build time, a
+    handler that clears only `service_tier` leaves the tier going out on the
+    wire while session info reports normal — the same drop this PR fixes,
+    inverted.
+    """
+    agent = SimpleNamespace(
+        model="gpt-5.4",
+        service_tier="priority",
+        request_overrides={"service_tier": "priority"},
+    )
+
+    _mirror(agent, "off")
+
+    assert agent.service_tier is None
+    assert not agent.request_overrides
+
+
+def test_typed_fast_on_sends_the_tier():
+    agent = SimpleNamespace(model="gpt-5.4", service_tier=None, request_overrides={})
+
+    _mirror(agent, "on")
+
+    assert agent.service_tier == "priority"
+    assert agent.request_overrides == {"service_tier": "priority"}
+
+
+def test_typed_fast_on_uses_provider_appropriate_key():
+    """Anthropic uses `speed`, not `service_tier` — and must not carry both."""
+    agent = SimpleNamespace(
+        model="claude-opus-4-6",
+        service_tier=None,
+        request_overrides={"service_tier": "priority"},
+    )
+
+    _mirror(agent, "on")
+
+    assert agent.request_overrides == {"speed": "fast"}

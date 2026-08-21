@@ -4229,6 +4229,168 @@ class TestEnsureDmConversation:
         post_kwargs = adapter._app.client.chat_postMessage.await_args.kwargs
         assert post_kwargs["channel"] == "D999NEW"
 
+    @pytest.mark.asyncio
+    async def test_send_clarify_renders_long_choices_in_full(self, adapter):
+        """A long PM option must render in full outside the button label."""
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "111.222"}
+        )
+        long_choice = (
+            "권장 MVP — 카테고리 조건은 기존 서비스 데이터 기준으로 자동 산정하고 "
+            "결제완료·탈퇴·수신거부 고객은 제외하며 상담원이 직접 선점합니다."
+        )
+
+        result = await adapter.send_clarify(
+            chat_id="C123",
+            question="어떤 운영 규칙을 기준으로 진행할까요?",
+            choices=[long_choice, "직접 입력"],
+            clarify_id="cl-long",
+            session_key="sk-long",
+        )
+
+        assert result.success is True
+        blocks = adapter._app.client.chat_postMessage.await_args.kwargs["blocks"]
+        rendered_text = "\n".join(
+            (block.get("text") or {}).get("text", "") for block in blocks
+        )
+        assert long_choice in rendered_text
+
+        select_button = blocks[1]["accessory"]
+        assert select_button["action_id"] == "hermes_clarify_choice_0"
+        assert select_button["value"] == "cl-long|0"
+        assert select_button["text"]["text"] == "Select 1"
+        assert len(select_button["text"]["text"]) <= 75
+
+    @pytest.mark.asyncio
+    async def test_send_clarify_uses_full_layout_for_wide_cjk_under_75_chars(
+        self, adapter
+    ):
+        """Wide CJK text can clip visually even below Slack's 75-char API cap."""
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "111.222"}
+        )
+        wide_choice = "가" * 25  # 25 chars, but 50 display columns.
+        assert len(wide_choice) < 75
+
+        result = await adapter.send_clarify(
+            chat_id="C123",
+            question="어떤 정책을 선택할까요?",
+            choices=[wide_choice, "직접 입력"],
+            clarify_id="cl-wide-cjk",
+            session_key="sk-wide-cjk",
+        )
+
+        assert result.success is True
+        blocks = adapter._app.client.chat_postMessage.await_args.kwargs["blocks"]
+        assert blocks[1]["text"]["text"] == f"*1.* {wide_choice}"
+        assert blocks[1]["accessory"]["text"]["text"] == "Select 1"
+
+    @pytest.mark.asyncio
+    async def test_send_clarify_splits_choice_over_section_limit(self, adapter):
+        """A choice beyond 3000 chars is split, not silently truncated."""
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "111.222"}
+        )
+        long_choice = "A&B<C>" * 700
+
+        result = await adapter.send_clarify(
+            chat_id="C123",
+            question="Pick one",
+            choices=[long_choice],
+            clarify_id="cl-split",
+            session_key="sk-split",
+        )
+
+        assert result.success is True
+        blocks = adapter._app.client.chat_postMessage.await_args.kwargs["blocks"]
+        choice_sections = [
+            block for block in blocks[1:-1] if block.get("type") == "section"
+        ]
+        assert len(choice_sections) > 1
+        escaped_rendered = "".join(block["text"]["text"] for block in choice_sections)
+        assert escaped_rendered.removeprefix("*1.* ") == (
+            long_choice.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        assert "accessory" in choice_sections[0]
+        assert all("accessory" not in block for block in choice_sections[1:])
+
+    @pytest.mark.asyncio
+    async def test_update_clarify_message_surfaces_resumed_state(self, adapter):
+        """A resolved choice durably confirms that the agent turn resumed."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+
+        await adapter._update_clarify_message(
+            "C123",
+            "111.222",
+            "❓ Pick one",
+            "✅ Test User: option A",
+            resumed=True,
+        )
+
+        blocks = adapter._app.client.chat_update.await_args.kwargs["blocks"]
+        context = blocks[1]["elements"][0]["text"]
+        assert "Choice received; request resumed" in context
+
+    @pytest.mark.asyncio
+    async def test_update_clarify_message_clamps_boundary_choice(self, adapter):
+        """A near-limit selected option cannot make chat.update invalid."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+
+        await adapter._update_clarify_message(
+            "C123",
+            "111.222",
+            "❓ Pick one",
+            "✅ Test User: " + ("x" * 2990),
+            resumed=True,
+        )
+
+        kwargs = adapter._app.client.chat_update.await_args.kwargs
+        context = kwargs["blocks"][1]["elements"][0]["text"]
+        assert len(context) <= 3000
+        assert context.startswith("✅ Choice received; request resumed")
+
+    @pytest.mark.asyncio
+    async def test_clarify_callback_clamps_boundary_choice(self, adapter, monkeypatch):
+        """The real callback path replaces buttons even for a near-limit choice."""
+        from tools import clarify_gateway as cm
+
+        long_choice = "x" * 2990
+        cm.register("cl-boundary", "sk-boundary", "Pick one", [long_choice])
+        adapter._clarify_resolved["111.222"] = False
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        monkeypatch.setattr(
+            adapter,
+            "_is_interactive_user_authorized",
+            MagicMock(return_value=True),
+        )
+
+        await adapter._handle_clarify_action(
+            AsyncMock(),
+            {
+                "channel": {"id": "C123"},
+                "user": {"id": "U123", "name": "Test User"},
+                "message": {
+                    "ts": "111.222",
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": "❓ Pick one"},
+                        },
+                        {"type": "actions", "elements": []},
+                    ],
+                },
+            },
+            {"action_id": "hermes_clarify_choice_0", "value": "cl-boundary|0"},
+        )
+
+        kwargs = adapter._app.client.chat_update.await_args.kwargs
+        context = kwargs["blocks"][1]["elements"][0]["text"]
+        assert len(context) <= 3000
+        assert context.startswith("✅ Choice received; request resumed")
+        assert "111.222" not in adapter._clarify_resolved
+
 
 # ---------------------------------------------------------------------------
 # TestThreadImageContext — C1-images: images/files in prior thread messages

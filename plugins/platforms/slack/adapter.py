@@ -7063,10 +7063,15 @@ class SlackAdapter(BasePlatformAdapter):
         """Render a clarify prompt as Block Kit interactive buttons.
 
         Multi-choice mode (``choices`` non-empty): one button per option
-        (unique ``hermes_clarify_choice_<idx>`` action_id, ``value`` packs
-        ``clarify_id|idx``) plus a final "✏️ Other…" button
-        (``hermes_clarify_other``).  A choice click resolves the clarify
-        primitive directly; the "Other" button flips the entry into
+        (unique ``hermes_clarify_choice_<idx>`` action ID; ``value`` packs
+        ``clarify_id|idx``) plus a final "✏️ Other…" button with action ID
+        ``hermes_clarify_other``. Slack caps button labels at 75 characters and
+        can visually clip wide labels below that API limit. Prompts containing
+        an option wider than 48 display columns (CJK characters count as two)
+        render each full option in a numbered section with a short ``Select N``
+        accessory button instead of silently truncating the answer text. A
+        choice click resolves the clarify primitive directly; the "Other"
+        button flips the entry into
         text-capture mode so the gateway's platform-agnostic text-intercept
         (:meth:`GatewayRunner._handle_message`) picks up the next typed
         message and resolves the clarify — no Slack-specific text machinery.
@@ -7107,10 +7112,15 @@ class SlackAdapter(BasePlatformAdapter):
             if len(body) > budget:
                 body = body[:budget] + "..."
 
-            # One button per choice + a free-text "Other" button.  Slack caps
-            # an actions block at 5 elements; the clarify tool caps choices at
-            # 4 (+ Other = 5) so this is normally one block, but chunk anyway
-            # so a larger choice list degrades gracefully instead of 400ing.
+            # One button per choice + a free-text "Other" button. Slack's API
+            # permits 75-character labels, but the client visually clips wide
+            # labels sooner (especially Korean/CJK). Switch conservatively at
+            # 48 display columns, counting East-Asian wide/full-width characters
+            # as two columns. The raw 75-character API cap remains an absolute
+            # fallback through the same display-width check.
+            long_choice_layout = any(
+                _disp_width(str(choice).strip()) > 48 for choice in choices
+            )
             elements = []
             for idx, choice in enumerate(choices):
                 label = str(choice).strip() or f"Option {idx + 1}"
@@ -7130,8 +7140,50 @@ class SlackAdapter(BasePlatformAdapter):
             blocks: list = [
                 {"type": "section", "text": {"type": "mrkdwn", "text": body}},
             ]
-            for start in range(0, len(elements), 5):
-                blocks.append({"type": "actions", "elements": elements[start:start + 5]})
+            if long_choice_layout:
+                for idx, choice in enumerate(choices):
+                    full_label = str(choice).strip() or f"Option {idx + 1}"
+                    prefix = f"*{idx + 1}.* "
+                    # Preserve the option across as many 3000-char section
+                    # blocks as needed. Escape one source character at a time
+                    # so an HTML entity such as ``&amp;`` is never split across
+                    # blocks and rendered incorrectly.
+                    choice_chunks = []
+                    chunk = prefix
+                    for char in full_label:
+                        escaped_char = {"&": "&amp;", "<": "&lt;", ">": "&gt;"}.get(
+                            char, char
+                        )
+                        if len(chunk) + len(escaped_char) > 3000:
+                            choice_chunks.append(chunk)
+                            chunk = ""
+                        chunk += escaped_char
+                    if chunk:
+                        choice_chunks.append(chunk)
+
+                    for chunk_idx, section_text in enumerate(choice_chunks):
+                        block = {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": section_text},
+                        }
+                        if chunk_idx == 0:
+                            block["accessory"] = {
+                                "type": "button",
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": f"Select {idx + 1}",
+                                    "emoji": True,
+                                },
+                                "action_id": f"hermes_clarify_choice_{idx}",
+                                "value": f"{clarify_id}|{idx}",
+                            }
+                        blocks.append(block)
+                blocks.append({"type": "actions", "elements": [elements[-1]]})
+            else:
+                # Slack caps an actions block at 5 elements; the clarify tool
+                # caps choices at 4 (+ Other = 5), but chunk defensively.
+                for start in range(0, len(elements), 5):
+                    blocks.append({"type": "actions", "elements": elements[start:start + 5]})
 
             kwargs: Dict[str, Any] = {
                 "channel": chat_id,
@@ -7503,8 +7555,15 @@ class SlackAdapter(BasePlatformAdapter):
         msg_ts: str,
         question_text: str,
         decision_text: str,
+        *,
+        resumed: bool = False,
     ) -> None:
         """Rewrite a clarify message to show the outcome and drop the buttons."""
+        if resumed:
+            # Durable acknowledgement rather than a live status: the following
+            # agent/MCP turn can take minutes, and this message is not updated
+            # again when that turn finishes.
+            decision_text = f"✅ Choice received; request resumed. {decision_text}"
         updated_blocks = [
             {
                 "type": "section",
@@ -7520,7 +7579,7 @@ class SlackAdapter(BasePlatformAdapter):
                 channel=channel_id,
                 ts=msg_ts,
                 text=decision_text,
-                blocks=updated_blocks,
+                blocks=sanitize_blocks(updated_blocks),
             )
         except Exception as e:
             logger.warning("[Slack] Failed to update clarify message: %s", e)
@@ -7611,6 +7670,7 @@ class SlackAdapter(BasePlatformAdapter):
             await self._update_clarify_message(
                 channel_id, msg_ts, original_text,
                 f"✅ {user_name}: {resolved_text}",
+                resumed=True,
             )
             # Privacy: keep the chosen option text out of INFO-level logs
             # (clarify choices can carry user/session context). Metadata at

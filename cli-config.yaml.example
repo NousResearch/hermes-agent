@@ -1822,6 +1822,24 @@ updates:
 #   #
 #   #   public_url: "https://example.com/hermes"
 #
+#   # Extra hostnames accepted by the dashboard's Host/Origin validation, in
+#   # addition to the bound interface. For a reverse proxy or tunnel (nginx,
+#   # Tailscale Serve, Cloudflare Tunnel) in front of a loopback-bound
+#   # dashboard: the proxy rewrites the HTTP Host header, but a browser's
+#   # WebSocket Origin header carries the public hostname and no proxy can
+#   # rewrite it — list that hostname here or every WS upgrade (chat, events,
+#   # PTY) is refused with origin_mismatch.
+#   #
+#   # Exact matches only: bare hostnames, compared case-insensitively, ports
+#   # ignored. No wildcards, schemes, or paths — malformed entries are ignored
+#   # with a warning. This is NOT a public-exposure switch: it only widens
+#   # Host/Origin validation for hostnames you explicitly trust; it changes no
+#   # bind address and adds no auth. Keep access control at the proxy (or use
+#   # the OAuth gate above). Unset = current strict behaviour.
+#   #
+#   #   extra_hosts:
+#   #     - hermes.example.com
+#
 # -----------------------------------------------------------------------------
 # Self-hosted OIDC dashboard auth (generic OpenID Connect — Authentik,
 # Keycloak, Zitadel, Authelia, Auth0, Okta, Google, …). Use this INSTEAD of the

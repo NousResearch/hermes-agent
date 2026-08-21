@@ -1097,6 +1097,41 @@ Instead of the in-app setting, you can point the desktop at a backend with an en
 - **Signed out on every restart** — set `HERMES_DASHBOARD_BASIC_AUTH_SECRET` to a stable value; otherwise the signing key is regenerated per boot.
 - **Connection refused / times out** — the backend bound to `127.0.0.1` (the default) instead of a reachable address, or a firewall/VPN is blocking the port. Bind to `0.0.0.0` or the tailscale IP and open the port to your trusted network.
 
+## Reverse proxies and tunnels (`dashboard.extra_hosts`)
+
+The dashboard validates the `Host` header of every HTTP request and the
+`Host`/`Origin` headers of every WebSocket upgrade against the interface it was
+bound to (DNS-rebinding defence, see [Authentication](#authentication-gated-mode)).
+Behind a reverse proxy or tunnel (nginx, Tailscale Serve, Cloudflare Tunnel)
+fronting a loopback-bound dashboard this fails asymmetrically: the proxy
+rewrites the HTTP `Host` header, so pages load — but a browser sets the
+WebSocket `Origin` header to the public hostname and **no proxy can rewrite
+it**, so every WS upgrade (chat, events feed, PTY) is refused with
+`origin_mismatch`.
+
+Declare the hostnames you explicitly trust in `config.yaml`:
+
+```yaml
+dashboard:
+  extra_hosts:
+    - hermes.example.com
+```
+
+Rules:
+
+- **Exact matches only.** Each entry is a single bare hostname, compared
+  case-insensitively with any port stripped. Wildcards, schemes, and paths are
+  not supported — a malformed entry is ignored with a warning, never partially
+  honoured.
+- **Not a public-exposure switch.** `extra_hosts` only widens Host/Origin
+  validation for hostnames you already trust; it does not change the bind
+  address and adds no authentication. Keep the dashboard loopback-bound and put
+  access control at the proxy (or use the OAuth gate above) for anything
+  reachable beyond the machine.
+- **Unset (the default) changes nothing:** only the bound interface (plus
+  loopback aliases on a loopback bind) is accepted, exactly as before.
+- The list is re-read when `config.yaml` changes — no dashboard restart needed.
+
 ## CORS
 
 The web server restricts CORS to localhost origins only:

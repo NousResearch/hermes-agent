@@ -68,6 +68,7 @@ from hermes_cli.config import (
     get_hermes_home,
     get_process_hermes_home,
     load_config,
+    load_config_readonly,
     load_env,
     read_raw_config,
     resolve_cron_model_drift_defaults,
@@ -660,6 +661,87 @@ def should_require_auth(host: str, allow_public: bool = False) -> bool:
     return host not in _LOOPBACK_HOST_VALUES
 
 
+# Malformed dashboard.extra_hosts entries already warned about, so the
+# per-request read below doesn't repeat the same warning on every request.
+_EXTRA_HOSTS_WARNED: set = set()
+
+
+def _extra_accepted_hosts() -> frozenset:
+    """Hostnames accepted in addition to the bound host (operator opt-in).
+
+    ``dashboard.extra_hosts`` in ``config.yaml`` is a list of hostnames the
+    operator explicitly trusts: the public name of a reverse proxy or
+    tunnel (nginx, Tailscale Serve, Cloudflare Tunnel) in front of a
+    loopback-bound dashboard. The proxy rewrites the ``Host`` header, but a
+    browser sets the WebSocket ``Origin`` header to the public hostname and
+    no proxy can rewrite it — so WS upgrades are refused without this
+    opt-in (see #70059).
+
+    Exact-match only: each entry is a single bare hostname, compared
+    case-insensitively against the request's host with any port stripped.
+    No wildcards, schemes, or paths — a malformed entry is ignored (with
+    one warning), never partially honoured, so a config mistake fails
+    closed instead of widening the accept set.
+
+    Read per call via the mtime-cached :func:`load_config_readonly` (no
+    disk I/O on the hot path) so a running dashboard picks up config
+    edits without a restart — the same live-edit behaviour tests rely on.
+    """
+    dashboard_cfg = load_config_readonly().get("dashboard") or {}
+    raw = dashboard_cfg.get("extra_hosts")
+    if raw is None:
+        return frozenset()
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        if "__type__" not in _EXTRA_HOSTS_WARNED:
+            _EXTRA_HOSTS_WARNED.add("__type__")
+            _log.warning(
+                "dashboard.extra_hosts must be a list of hostnames; "
+                "ignoring %s value",
+                type(raw).__name__,
+            )
+        return frozenset()
+
+    hosts = set()
+    for entry in raw:
+        if not isinstance(entry, str) or not entry.strip():
+            continue
+        h = entry.strip().lower()
+        if any(ch in h for ch in ("*", "/", "@", " ")):
+            if entry not in _EXTRA_HOSTS_WARNED:
+                _EXTRA_HOSTS_WARNED.add(entry)
+                _log.warning(
+                    "dashboard.extra_hosts: ignoring %r — entries must be "
+                    "bare hostnames (no wildcards, schemes, or paths)",
+                    entry,
+                )
+            continue
+        # Tolerate an accidental :port suffix — comparison is host-only,
+        # mirroring _is_accepted_host's own port stripping.
+        if h.startswith("["):
+            close = h.find("]")
+            h = h[1:close] if close != -1 else h.strip("[]")
+        elif ":" in h:
+            head, _, tail = h.rpartition(":")
+            if tail.isdigit():
+                h = head
+            else:
+                # Ambiguous (e.g. unbracketed IPv6) — refuse rather than
+                # guess which part is the host.
+                if entry not in _EXTRA_HOSTS_WARNED:
+                    _EXTRA_HOSTS_WARNED.add(entry)
+                    _log.warning(
+                        "dashboard.extra_hosts: ignoring %r — bracket IPv6 "
+                        "addresses ([::1]) and keep ports numeric",
+                        entry,
+                    )
+                continue
+        if h:
+            hosts.add(h)
+    return frozenset(hosts)
+
+
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     """True if the Host header targets the interface we bound to.
 
@@ -688,6 +770,11 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
     host_only = host_only.lower()
+
+    # Operator-trusted extra hostnames (reverse proxy / tunnel fronting a
+    # loopback bind) — see _extra_accepted_hosts.
+    if host_only in _extra_accepted_hosts():
+        return True
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer

@@ -9072,10 +9072,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # Message storage
     # =========================================================================
 
-    # Sentinel prefix used to distinguish JSON-encoded structured content
-    # (multimodal messages: lists of parts like text + image_url) from plain
-    # string content. The NUL byte is not legal in normal text, so this
-    # cannot collide with real user content.
+    # V2 uses printable type tags for structured content, escaped strings, and
+    # bytes. Ordinary strings remain bare so SQLite and FTS stay readable and
+    # searchable. Prefix-looking strings are escaped to keep decoding
+    # unambiguous without putting the legacy NUL sentinel into new rows.
+    _CONTENT_V2_PREFIX = "__HERMES_CONTENT_V2__:"
+    _CONTENT_V2_JSON_PREFIX = _CONTENT_V2_PREFIX + "j:"
+    _CONTENT_V2_STRING_PREFIX = _CONTENT_V2_PREFIX + "s:"
+    _CONTENT_V2_BYTES_PREFIX = _CONTENT_V2_PREFIX + "b:"
+
+    # Read compatibility for the original NUL-prefixed rows. V2 escapes this
+    # prefix on new string writes so literal prefix-looking text is unambiguous.
     _CONTENT_JSON_PREFIX = "\x00json:"
 
     @classmethod
@@ -9088,9 +9095,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         raises ``ProgrammingError: Error binding parameter N: type 'list' is
         not supported`` when bound directly.
 
-        Returns the value unchanged when it's already a safe scalar, or a
-        sentinel-prefixed JSON string for lists/dicts. Paired with
-        :meth:`_decode_content` on read.
+        Ordinary strings remain unchanged except that embedded NUL is replaced
+        with U+FFFD. Strings beginning with an internal prefix, structured JSON
+        values, and bytes use explicit printable V2 tags. Paired with
+        :meth:`_decode_content` on read. Existing numeric and NULL behavior is
+        preserved.
         """
         if isinstance(content, str):
             # Lone UTF-16 surrogates reach here inside tool results scraped
@@ -9102,29 +9111,88 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # land. Left raw, sqlite3 raises UnicodeEncodeError, the flush is
             # abandoned, and the session silently stops persisting for the
             # rest of its life. Scrub so persistence never fails.
-            return _sanitize_surrogates(content)
-        if content is None or isinstance(content, (bytes, int, float)):
+            sanitized = _sanitize_surrogates(content.replace("\x00", "\ufffd"))
+            recognized_prefixes = (
+                cls._CONTENT_V2_PREFIX,
+                cls._CONTENT_JSON_PREFIX,
+            )
+            # Test the raw string: NUL was already folded into ``sanitized``,
+            # so checking it there would never fire the escaping path.
+            must_escape = "\x00" in content or content.startswith(
+                recognized_prefixes
+            )
+            if must_escape:
+                return cls._CONTENT_V2_STRING_PREFIX + json.dumps(
+                    sanitized,
+                    separators=(",", ":"),
+                )
+            return sanitized
+        if isinstance(content, bytes):
+            return cls._CONTENT_V2_BYTES_PREFIX + content.hex()
+        if content is None or isinstance(content, (int, float)):
             return content
         try:
-            # json.dumps defaults to ensure_ascii=True, which escapes any
-            # surrogate as \udXXX — already safe to bind.
-            return cls._CONTENT_JSON_PREFIX + json.dumps(content)
+            return cls._CONTENT_V2_JSON_PREFIX + json.dumps(
+                content,
+                separators=(",", ":"),
+            )
         except (TypeError, ValueError):
             # Last-resort fallback: stringify so persistence never fails.
-            return _sanitize_surrogates(str(content))
+            return cls._encode_content(_sanitize_surrogates(str(content)))
 
     @classmethod
     def _decode_content(cls, content: Any) -> Any:
-        """Reverse :meth:`_encode_content`; returns scalars unchanged."""
-        if isinstance(content, str) and content.startswith(cls._CONTENT_JSON_PREFIX):
-            try:
-                return json.loads(content[len(cls._CONTENT_JSON_PREFIX):])
-            except (json.JSONDecodeError, TypeError):
+        """Reverse :meth:`_encode_content`; return unknown/malformed data raw."""
+        if isinstance(content, str):
+            if content.startswith(cls._CONTENT_V2_JSON_PREFIX):
+                payload = content[len(cls._CONTENT_V2_JSON_PREFIX) :]
+                try:
+                    decoded = json.loads(payload)
+                except (json.JSONDecodeError, TypeError):
+                    decoded = None
+                if isinstance(decoded, (list, dict)):
+                    return decoded
                 logger.warning(
-                    "Failed to decode JSON-encoded message content; "
+                    "Failed to decode V2 structured message content; "
                     "returning raw string"
                 )
                 return content
+
+            if content.startswith(cls._CONTENT_V2_STRING_PREFIX):
+                payload = content[len(cls._CONTENT_V2_STRING_PREFIX) :]
+                try:
+                    decoded = json.loads(payload)
+                except (json.JSONDecodeError, TypeError):
+                    decoded = None
+                if isinstance(decoded, str):
+                    return decoded
+                logger.warning(
+                    "Failed to decode V2 string message content; returning raw string"
+                )
+                return content
+
+            if content.startswith(cls._CONTENT_V2_BYTES_PREFIX):
+                payload = content[len(cls._CONTENT_V2_BYTES_PREFIX) :]
+                try:
+                    decoded = bytes.fromhex(payload)
+                except ValueError:
+                    decoded = None
+                if decoded is not None and decoded.hex() == payload:
+                    return decoded
+                logger.warning(
+                    "Failed to decode V2 bytes message content; returning raw string"
+                )
+                return content
+
+            if content.startswith(cls._CONTENT_JSON_PREFIX):
+                try:
+                    return json.loads(content[len(cls._CONTENT_JSON_PREFIX) :])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "Failed to decode JSON-encoded message content; "
+                        "returning raw string"
+                    )
+                    return content
         return content
 
     @staticmethod

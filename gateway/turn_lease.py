@@ -50,6 +50,7 @@ Known limits (deliberate, flagged on #64934):
 
 import asyncio
 import logging
+import sqlite3
 import time
 from typing import Dict, Optional
 
@@ -350,3 +351,291 @@ class SessionTurnLeaseRegistry:
         if lease.lock.locked():
             lease.lock.release()
         return True
+
+
+
+# ---------------------------------------------------------------------------
+# DB-level turn lease — async wrapper over the merged cross-process lease
+# ---------------------------------------------------------------------------
+#
+# The storage substrate (``session_turn_leases`` table, lineage-root key,
+# dead-PID reclaim, holder fencing via ``SessionTurnLeaseLostError``) landed
+# in ``6e929a9694`` ("fix(sessions): serialize turns across processes") and
+# follow-ups; the sync ``AIAgent`` consumer lives in ``run_agent.py``.  This
+# section is the async adapter for event-loop contexts (gateway dispatch
+# layer): the same acquire/refresh/release protocol exposed as a context
+# manager that never blocks the loop.
+
+# Default lease TTL (seconds).  Matches the merged storage default and the
+# ``run_agent`` consumer's ``_lease_ttl`` (300.0), so an async wrapper turn
+# and a sync AIAgent turn serialize on the same clock.
+DEFAULT_DB_LEASE_TTL = 300.0
+
+# Default total wait for the DB lease poll loop (seconds).  Mirrors the
+# merged ``acquire_session_turn_lease`` wait budget.  A DB-held lease that
+# outlives its TTL is reclaimed by the next acquirer (expired rows and rows
+# whose local holder PID is known dead are deleted inside the same write
+# transaction), so a crashed holder wedges the session for at most
+# ``ttl_seconds`` — the wait budget only bounds how long this caller polls
+# before failing open.
+DEFAULT_DB_LEASE_WAIT = 1800.0
+
+# Initial backoff interval between DB poll attempts (seconds).
+DEFAULT_DB_LEASE_POLL = 0.25
+
+# Maximum backoff interval (capped exponential).
+DEFAULT_DB_LEASE_POLL_MAX = 2.0
+
+# Backoff multiplier per retry.
+DEFAULT_DB_LEASE_BACKOFF = 1.5
+
+
+class TurnLease:
+    """Async context manager over the merged cross-process session turn lease.
+
+    ``async with TurnLease(state, session_id, holder) as acquired:``
+    serializes the [load history → run → flush] region against the merged
+    ``session_turn_leases`` table (``6e929a9694``, #67442), so a CLI process,
+    a gateway process, or two ``hermes serve`` backends sharing one
+    ``HERMES_HOME`` coordinate through the same DB row.  The in-process
+    :class:`SessionTurnLeaseRegistry` above cannot see across process
+    boundaries — this closes that gap for async callers.
+
+    The storage layer is sync
+    (``HermesState.try_acquire_session_turn_lease`` /
+    ``refresh_session_turn_lease`` / ``release_session_turn_lease``); this
+    wrapper adapts it to the event loop: each attempt is a short SQLite write
+    and the wait between attempts is ``asyncio.sleep``, so the loop never
+    blocks.
+
+    Usage::
+
+        async with TurnLease(
+            state, session_id,
+            holder=f"pid={os.getpid()}:turn={gen}:surface={surface}",
+        ) as acquired:
+            if not acquired:
+                # Timed out — fail-open: proceed unserialized.
+                ...
+            # Critical section: load history → run → flush.
+            ...
+
+    .. rubric:: Protocol
+
+    On enter, polls :meth:`HermesState.try_acquire_session_turn_lease` with
+    capped exponential backoff until the lease is acquired or the overall
+    ``wait_timeout`` expires.  Returns ``True`` when the lease was acquired,
+    ``False`` on timeout (fail-open — the caller proceeds unserialized rather
+    than wedging the session).  ``degraded`` is ``True`` exactly when
+    exclusivity was NOT proven.
+
+    On exit, calls :meth:`HermesState.release_session_turn_lease`.  Guaranteed
+    on every exit path: normal return, exception, and cancellation.  If a
+    background refresh task is running it is cancelled first.
+
+    .. rubric:: Holder contract
+
+    ``holder`` is the fence identity: the merged flush layer raises
+    :class:`hermes_state.SessionTurnLeaseLostError` when a transcript write
+    presents a holder that no longer owns the lease, and the dead-PID reclaim
+    parses ``pid=`` out of the holder string to reap crashed holders without
+    waiting for the TTL.  Pass a holder embedding the local PID (same
+    convention as the merged ``run_agent`` consumer's
+    ``f"pid={os.getpid()}:turn=<id>:platform=<...>"``).
+
+    .. rubric:: Background refresh
+
+    Set ``refresh_interval`` (seconds) to periodically bump the lease expiry
+    during long turns via :meth:`HermesState.refresh_session_turn_lease`.  The
+    refresh task is cancelled on exit.  Without it, a turn that runs longer
+    than ``ttl_seconds`` will see its lease expire — the next acquirer
+    reclaims the stale row and the two turns interleave.
+
+    .. rubric:: Safety properties
+
+    - **Fail-open on timeout.**  Returns ``False`` after ``wait_timeout``
+      with a loud ERROR log, never a wedged session.  Posture per #67442:
+      interactive user turns wait with a bounded budget; machine-initiated
+      paths should choose the storage layer's fail-closed semantics instead.
+    - **Guaranteed release.**  ``__aexit__`` is called on every path,
+      including cancellation.  The DB row is deleted iff this holder still
+      owns it (identity-checked by ``release_session_turn_lease``).
+    - **Expired/dead-holder reclamation.**  The storage layer deletes stale
+      rows transparently, so a crashed holder wedges the session for at most
+      ``ttl_seconds``, not indefinitely.
+    """
+
+    def __init__(
+        self,
+        state,  # HermesState / SessionDB
+        session_id: str,
+        holder: str,
+        *,
+        ttl_seconds: float = DEFAULT_DB_LEASE_TTL,
+        wait_timeout: float = DEFAULT_DB_LEASE_WAIT,
+        poll_interval: float = DEFAULT_DB_LEASE_POLL,
+        refresh_interval: Optional[float] = None,
+    ) -> None:
+        self._state = state
+        self._session_id = session_id
+        self._holder = holder
+        self._ttl_seconds = float(ttl_seconds)
+        self._wait_timeout = float(wait_timeout)
+        self._poll_interval = float(poll_interval)
+        self._refresh_interval = refresh_interval
+        self._acquired = False
+        self._refresh_task: Optional[asyncio.Task] = None
+
+    @property
+    def degraded(self) -> bool:
+        """True when exclusivity was NOT proven (fail-open timeout).
+
+        Posture contract from #67442: report whether the lease was proven,
+        let each caller class decide how to react.
+        """
+        return not self._acquired
+
+    async def __aenter__(self) -> bool:
+        """Acquire the DB turn lease with non-blocking polling backoff.
+
+        Returns ``True`` on success, ``False`` on timeout (fail-open).
+        """
+        if not self._session_id:
+            self._acquired = False
+            return False
+
+        deadline = time.time() + self._wait_timeout
+        backoff = self._poll_interval
+        attempts = 0
+
+        while True:
+            attempts += 1
+            try:
+                if self._state.try_acquire_session_turn_lease(
+                    self._session_id,
+                    self._holder,
+                    ttl_seconds=self._ttl_seconds,
+                ):
+                    self._acquired = True
+                    logger.debug(
+                        "DB turn lease acquired for session %s (holder=%s, "
+                        "attempts=%s, ttl=%.0fs)",
+                        self._session_id,
+                        self._holder,
+                        attempts,
+                        self._ttl_seconds,
+                    )
+                    break
+            except sqlite3.Error as exc:
+                # A holder's long write transaction (compression publish,
+                # large flush) can exhaust a single write-patience budget.
+                # Keep polling until the wait budget expires — same posture
+                # as the merged sync ``acquire_session_turn_lease`` loop.
+                logger.debug(
+                    "DB turn lease poll attempt %s on session %s hit sqlite "
+                    "error %s — retrying",
+                    attempts,
+                    self._session_id,
+                    exc,
+                )
+
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                logger.error(
+                    "DB turn lease wait timed out after %.1fs on session %s "
+                    "(holder=%s, attempts=%s) — failing open: this turn runs "
+                    "UNSERIALIZED; transcript writes may interleave with "
+                    "another process (#67442)",
+                    self._wait_timeout,
+                    self._session_id,
+                    self._holder,
+                    attempts,
+                )
+                self._acquired = False
+                break
+
+            # Log contention at WARNING on the first attempt only (avoid log
+            # spam during the poll loop).
+            if attempts == 1:
+                logger.warning(
+                    "DB turn lease contention on session %s: holder=%s "
+                    "waiting to acquire (ttl=%.0fs, wait=%.0fs) — another "
+                    "process holds the lease (#67442)",
+                    self._session_id,
+                    self._holder,
+                    self._ttl_seconds,
+                    self._wait_timeout,
+                )
+
+            sleep = min(backoff, remaining)
+            await asyncio.sleep(sleep)
+            backoff = min(backoff * DEFAULT_DB_LEASE_BACKOFF,
+                          DEFAULT_DB_LEASE_POLL_MAX)
+
+        if self._acquired and self._refresh_interval is not None:
+            self._start_refresh()
+
+        return self._acquired
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Release the DB turn lease.  Guaranteed on every exit path."""
+        try:
+            if self._refresh_task is not None:
+                self._refresh_task.cancel()
+                try:
+                    await self._refresh_task
+                except asyncio.CancelledError:
+                    pass
+                self._refresh_task = None
+
+            if self._acquired and self._session_id:
+                self._state.release_session_turn_lease(
+                    self._session_id,
+                    self._holder,
+                )
+                logger.debug(
+                    "DB turn lease released for session %s (holder=%s)",
+                    self._session_id,
+                    self._holder,
+                )
+        except Exception:
+            logger.debug(
+                "DB turn lease release error for session %s",
+                self._session_id,
+                exc_info=True,
+            )
+        finally:
+            self._acquired = False
+
+    def _start_refresh(self) -> None:
+        """Launch a background task that refreshes the lease periodically."""
+        if self._refresh_interval is None or self._refresh_interval <= 0:
+            return
+
+        async def _refresh_loop() -> None:
+            interval = self._refresh_interval
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    ok = self._state.refresh_session_turn_lease(
+                        self._session_id,
+                        self._holder,
+                        ttl_seconds=self._ttl_seconds,
+                    )
+                    if not ok:
+                        logger.warning(
+                            "DB turn lease refresh failed for session %s "
+                            "(holder=%s) — lease may have been reclaimed by "
+                            "another process (#67442)",
+                            self._session_id,
+                            self._holder,
+                        )
+                except Exception:
+                    logger.debug(
+                        "DB turn lease refresh error for session %s",
+                        self._session_id,
+                        exc_info=True,
+                    )
+
+        self._refresh_task = asyncio.create_task(_refresh_loop())
+

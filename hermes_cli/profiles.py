@@ -426,28 +426,32 @@ def check_alias_collision(name: str) -> Optional[str]:
     if canon in _HERMES_SUBCOMMANDS:
         return f"'{canon}' conflicts with a hermes subcommand"
 
-    # Check existing commands in PATH
+    # Check existing commands in PATH.
+    #
+    # Resolved in-process with shutil.which() rather than by shelling out to
+    # ``where``/``which``. Those are native console programs: on Windows their
+    # stdout carries the machine code page, and the decoded text was compared
+    # against a path this function builds from the filesystem. A CP932 lead
+    # byte followed by a 0x5C trail byte survives a UTF-8 decode as a literal
+    # backslash, so the comparison sees extra path separators and can never
+    # match. shutil.which() reads PATH and PATHEXT directly and never crosses
+    # a byte boundary, so no codepage enters into it.
     wrapper_dir = _get_wrapper_dir()
     is_windows = sys.platform == "win32"
-    try:
-        result = subprocess.run(
-            ["where" if is_windows else "which", canon],
-            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
-        )
-        if result.returncode == 0:
-            existing_path = result.stdout.strip().splitlines()[0]
-            # Allow overwriting our own wrappers
-            expected = wrapper_dir / (f"{canon}.bat" if is_windows else canon)
-            if existing_path == str(expected):
-                try:
-                    content = expected.read_text(encoding="utf-8")
-                    if "hermes -p" in content:
-                        return None  # it's our wrapper, safe to overwrite
-                except Exception:
-                    pass
-            return f"'{canon}' conflicts with an existing command ({existing_path})"
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    existing_path = shutil.which(canon)
+    if existing_path:
+        # Allow overwriting our own wrappers. normcase() folds the Windows
+        # separator and case so a PATH entry written with forward slashes
+        # still matches; it is a no-op on POSIX.
+        expected = wrapper_dir / (f"{canon}.bat" if is_windows else canon)
+        if os.path.normcase(existing_path) == os.path.normcase(str(expected)):
+            try:
+                content = expected.read_text(encoding="utf-8")
+                if "hermes -p" in content:
+                    return None  # it's our wrapper, safe to overwrite
+            except Exception:
+                pass
+        return f"'{canon}' conflicts with an existing command ({existing_path})"
 
     return None  # safe
 

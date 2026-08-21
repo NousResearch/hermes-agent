@@ -547,20 +547,95 @@ class TestAliasCollision:
         wrapper_dir.mkdir(parents=True, exist_ok=True)
         bat_path = wrapper_dir / "mybot.bat"
         bat_path.write_text("@echo off\r\nhermes -p mybot %*\r\n")
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0, stdout=str(bat_path),
-            )
+        with patch("hermes_cli.profiles.shutil.which", return_value=str(bat_path)):
             result = check_alias_collision("mybot")
         assert result is None  # our own wrapper, safe to overwrite
 
     def test_traversal_alias_rejected_before_path_lookup(self, profile_env):
-        """A path-traversal alias is rejected without ever shelling out to which/where."""
-        with patch("subprocess.run") as mock_run:
+        """A path-traversal alias is rejected without ever looking up PATH."""
+        with patch("hermes_cli.profiles.shutil.which") as mock_which:
             result = check_alias_collision("../../.bashrc")
         assert result is not None
         assert "invalid alias name" in result.lower()
+        mock_which.assert_not_called()
+
+    def test_path_lookup_does_not_spawn_a_child_process(self, profile_env):
+        """PATH resolution happens in-process.
+
+        ``where``/``which`` are native console programs whose stdout carries
+        the machine code page. Decoding that as UTF-8 corrupted the path this
+        function then compares against, so the lookup must not shell out at
+        all. Fails before the fix: ``subprocess.run`` was called.
+        """
+        with patch("hermes_cli.profiles.subprocess.run") as mock_run:
+            with patch("hermes_cli.profiles.shutil.which", return_value=None):
+                assert check_alias_collision("mybot") is None
         mock_run.assert_not_called()
+
+    def test_wrapper_recognised_when_its_path_is_not_ascii(self, profile_env, monkeypatch):
+        """A wrapper under a non-ASCII directory is still recognised as ours.
+
+        A real PATH lookup \u2014 nothing is mocked, so on a CP932 host this
+        exercises the actual decode. The three directory characters are
+        U+5341 U+80FD U+4E88; in CP932 each is a two-byte sequence whose
+        trail byte is 0x5C, so a UTF-8 decode of the native ``where`` output
+        turned every one of them into an extra path separator and the
+        comparison below could never hold.
+
+        Passes either way on a UTF-8 host: there is no decode to get wrong
+        there. It is a genuine regression test only on native Windows.
+        """
+        wrapper_dir = profile_env / "\u5341\u80fd\u4e88" / "bin"
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(
+            "hermes_cli.profiles._get_wrapper_dir", lambda: wrapper_dir
+        )
+        is_windows = sys.platform == "win32"
+        wrapper = wrapper_dir / ("mybot.bat" if is_windows else "mybot")
+        wrapper.write_text("hermes -p mybot\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+        monkeypatch.setenv(
+            "PATH", str(wrapper_dir) + os.pathsep + os.environ.get("PATH", "")
+        )
+
+        assert check_alias_collision("mybot") is None
+
+    def test_wrapper_match_tolerates_forward_slashes_in_path_entry(
+        self, profile_env, monkeypatch
+    ):
+        """A PATH entry written with ``/`` still resolves to our own wrapper.
+
+        ``shutil.which`` joins onto the PATH entry verbatim, so a Windows PATH
+        carrying ``C:/tools`` yields ``C:/tools\\mybot.bat``. ``where`` used to
+        normalise that for us; ``os.path.normcase`` now does, and is a no-op
+        off Windows.
+        """
+        wrapper_dir = profile_env / ".local" / "bin"
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        is_windows = sys.platform == "win32"
+        wrapper = wrapper_dir / ("mybot.bat" if is_windows else "mybot")
+        wrapper.write_text("hermes -p mybot\n", encoding="utf-8")
+
+        as_posix_style = str(wrapper).replace("\\", "/")
+        with patch(
+            "hermes_cli.profiles.shutil.which", return_value=as_posix_style
+        ):
+            assert check_alias_collision("mybot") is None
+
+    def test_cp932_trail_byte_becomes_a_path_separator_under_utf8(self):
+        """Pin the stdlib behaviour this change exists to avoid.
+
+        Independent of hermes: asserts what a CP932 path does when decoded as
+        UTF-8 with replacement, which is what the removed ``where`` call did.
+        """
+        path = "C:\\\u5341\u80fd\u4e88\\mybot.bat"
+        raw = path.encode("cp932")
+        assert raw.startswith(b"C:\\\x8f\x5c\x94\x5c\x97\x5c\\")
+        assert raw.decode("cp932") == path
+        mangled = raw.decode("utf-8", errors="replace")
+        assert mangled.count("\\") == 5
+        assert path.count("\\") == 2
+        assert mangled != path
 
 
 # ===================================================================

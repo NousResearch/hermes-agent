@@ -108,6 +108,117 @@ Secure by default; every widening step is explicit:
 
 Behind a reverse proxy or Kubernetes Service, set `A2A_PUBLIC_URL` (or rely on `X-Forwarded-Host`/`X-Forwarded-Proto`) so the Agent Card advertises a URL peers can actually call back.
 
+## Served-agent launchers
+
+The root/default A2A route is unchanged: it runs in the live gateway session and retains that session's Hermes memory and context. A served route with `profile:` and **no** `launcher:` is also unchanged: it uses the legacy Hermes profile launcher.
+
+For a served agent, `launcher:` takes precedence over `profile:` and selects an external runtime. Invalid launcher routes are omitted from the Agent Card and tenant lookup; they do not prevent the root server from starting.
+
+```text
+root/default route                         → live Hermes gateway session
+served route with launcher.transport=process → one owned subprocess per turn
+served route with launcher.transport=pi_rpc  → one worker per (agent slug, context ID)
+served route with profile and no launcher    → legacy Hermes profile launcher
+```
+
+Launcher specifications are parsed once into immutable route configuration. The only supported external transports are `process` and `pi_rpc`; `pi_rpc` supports only the code-owned `omp` and `feynman` profiles.
+
+### Process launcher
+
+`start` and optional `resume` are non-empty argv arrays, not shell command strings. Each element must be a string. Substitution happens inside an existing argv element and never invokes a shell or word-splits the value. The supported placeholders are `{prompt}`, `{context_id}`, `{session_key}`, `{peer}`, `{agent_slug}`, and `{session_id}`. `{session_key}` is a safe SHA-256 identifier derived from the agent slug and context ID.
+
+Process continuity is exactly one of:
+
+- **Stateless:** no session placeholder; every turn uses `start`.
+- **Deterministic:** `{session_key}` in `start`; the configured program owns the deterministic session contract.
+- **Opaque:** `resume` contains `{session_id}` and output extracts a session ID. The mapping is scoped by agent slug and A2A context under `<HERMES_HOME>/a2a_launchers/sessions.json`. A valid reply with no optional session ID still completes the current task and the next turn starts fresh.
+
+`cwd` must already exist. `timeout` must be positive. Process output is limited to 4 MiB per stdout/stderr stream; replies are UTF-8 and limited to 1 MiB. Empty replies, decoding/parsing errors, missing required fields, a missing executable, non-zero exit, timeout, or an output limit failure fail the A2A task. The owned process group is terminated on timeout, cancellation, and adapter shutdown so descendants are reaped.
+
+External process launchers default to `inherit_env: false`. They receive only available runtime variables from `PATH`, `HOME`, `USERPROFILE`, `SYSTEMROOT`, `PATHEXT`, `TEMP`, `TMP`, and `TMPDIR`; `pass_env` adds named parent variables and `env` adds literal string overrides. Use `pass_env` for credentials supplied by the parent environment rather than placing them in configuration. The legacy profile launcher retains its compatibility environment behavior.
+
+Text output selects `stdout` or `stderr` using `reply_from`; optional opaque session metadata uses `session_id_from` plus a capture-group `session_id_regex`. Set `strip_session_match: true` only when removing that marker from the same reply stream. JSON output is read from stdout; `reply_field` is required and `session_id_field` is optional. Both fields use simple dot-separated object paths, not JSONPath.
+
+#### Stateless Feynman process example
+
+This verified Feynman invocation is deliberately stateless: Spike 005 showed that one-shot calls do not resume merely by sharing `--session-dir`.
+
+```yaml
+gateway:
+  platforms:
+    a2a:
+      enabled: true
+      extra:
+        agents:
+          research:
+            name: Feynman Research
+            tenant: research
+            launcher:
+              transport: process
+              start: [feynman, --new-session, --thinking, "off", chat, "{prompt}"]
+              timeout: 300
+              output:
+                format: text
+                reply_from: stdout
+```
+
+### Versioned RPC launchers
+
+`pi_rpc` covers the Pi family of tools (bare Pi, OMP, Feynman, and compatible derivatives). The transport name is retained for configuration compatibility; it is not a promise that arbitrary Pi-compatible executables work — only profiles with proven versioned contracts are supported. `command` must be a non-empty argv array containing separate `--mode` and `rpc` elements; profiles define lifecycle behavior and do not rewrite the command. Workers use strict UTF-8 LF-delimited JSON objects, retain bounded frames (at most 1 MiB each), serialize turns per `(agent_slug, context_id)`, and never expose reasoning, tools, UI, or raw protocol frames as the reply.
+
+| Profile | Verified executable | Startup | Successful completion | Reply | Safe worker reuse after abort |
+|---|---|---|---|---|---|
+| `omp` | OMP `17.2.12` | Requires `ready`; smaller advertised frame limits apply | `agent_end` | Final assistant `message_end` | Successful abort response **and** `agent_end` |
+| `feynman` | Feynman `0.3.11` | Does not require `ready`; first prompt must receive correlated acceptance within `startup_timeout` | `agent_settled` | Last assistant `message_end` before settlement | Successful abort response **and** `agent_settled` |
+
+Prompt acceptance alone is never a completed A2A task. A timeout, malformed frame, protocol rejection, unexpected process exit, or failed UI classification fails the task and evicts the worker. Blocking extension UI requests receive a correlated `extension_ui_response` with `cancelled: true`. Idle workers are reaped after `idle_timeout`; adapter disconnect closes all workers. Cancellation sends correlated `abort`; if the required acknowledgement and profile terminal event do not both arrive, the worker is evicted.
+
+#### Feynman RPC example
+
+```yaml
+gateway:
+  platforms:
+    a2a:
+      enabled: true
+      extra:
+        agents:
+          research:
+            name: Feynman Research
+            tenant: research
+            launcher:
+              transport: pi_rpc
+              protocol_profile: feynman
+              command: [feynman, --mode, rpc, --new-session, --thinking, "off"]
+              timeout: 300
+              startup_timeout: 30
+              idle_timeout: 900
+```
+
+#### OMP RPC example
+
+```yaml
+gateway:
+  platforms:
+    a2a:
+      enabled: true
+      extra:
+        agents:
+          reviewer:
+            name: OMP Reviewer
+            tenant: reviewer
+            launcher:
+              transport: pi_rpc
+              protocol_profile: omp
+              command: [omp, --mode, rpc, --no-session]
+              timeout: 300
+              startup_timeout: 30
+              idle_timeout: 900
+```
+
+### Unsupported launcher recipes
+
+Bare Pi has no supported launcher recipe: a successful-turn, versioned contract has not been established. Codex, generic RPC profiles, declarative RPC event mappings, A2A history replay, and automatic prompt/history replay are unsupported. Do not substitute a process recipe as proof of an RPC lifecycle contract.
+
 ## Quick test
 
 ```bash

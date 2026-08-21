@@ -1181,6 +1181,56 @@ platform_toolsets:
 #       # the active profile's scripts directory and receive webhook JSON on stdin.
 #       script_timeout_seconds: 30
 #
+# A2A served-agent launchers live at `gateway.platforms.a2a.extra.agents`.
+# The root/default A2A route remains the live Hermes gateway session; an agent
+# with `profile:` but no `launcher:` keeps the legacy Hermes profile launcher.
+# A `launcher:` overrides `profile:`. Only argv arrays are accepted; do not use
+# a shell command string. Supported placeholders in process argv elements are
+# {prompt}, {context_id}, {session_key}, {peer}, {agent_slug}, and {session_id}.
+#
+#   gateway:
+#     platforms:
+#       a2a:
+#         enabled: true
+#         extra:
+#           agents:
+#             # Feynman one-shot process: intentionally stateless.
+#             research:
+#               name: Feynman Research
+#               tenant: research
+#               launcher:
+#                 transport: process
+#                 start: [feynman, --new-session, --thinking, "off", chat, "{prompt}"]
+#                 timeout: 300
+#                 output: { format: text, reply_from: stdout }
+#             # RPC examples. transport: pi_rpc covers the Pi family (OMP, Feynman,
+#             # and compatible derivatives); protocol_profile selects the lifecycle contract.
+#             # Feynman RPC: command requires separate --mode, rpc argv.
+#             feynman_rpc:
+#               name: Feynman RPC
+#               tenant: research
+#               launcher:
+#                 transport: pi_rpc
+#                 protocol_profile: feynman
+#                 command: [feynman, --mode, rpc, --new-session, --thinking, "off"]
+#                 timeout: 300
+#                 startup_timeout: 30
+#                 idle_timeout: 900
+#             # OMP RPC.
+#             reviewer:
+#               name: OMP Reviewer
+#               tenant: reviewer
+#               launcher:
+#                 transport: pi_rpc
+#                 protocol_profile: omp
+#                 command: [omp, --mode, rpc, --no-session]
+#                 timeout: 300
+#                 startup_timeout: 30
+#                 idle_timeout: 900
+#
+# Unsupported: bare Pi, Codex, generic RPC profiles, history replay, and
+# automatic prompt replay. External process launchers default to inherit_env:
+# false; use pass_env to add named parent variables and env for literal values.
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
 # discord:

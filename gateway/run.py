@@ -2681,6 +2681,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    _custom_unit_to_cp,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     build_auto_tts_output_path,
@@ -4870,11 +4871,44 @@ class TurnRunner:
         def _progress_text(lines: list) -> str:
             return "\n".join(str(line) for line in lines)
 
+        def _split_progress_line(line) -> list[str]:
+            """Split one logical line without changing its visible content."""
+            remaining = str(line)
+            chunks: list[str] = []
+            while _progress_len_fn(remaining) > _PROGRESS_TEXT_LIMIT:
+                split_at = (
+                    _PROGRESS_TEXT_LIMIT
+                    if _progress_len_fn is len
+                    else _custom_unit_to_cp(
+                        remaining,
+                        _PROGRESS_TEXT_LIMIT,
+                        _progress_len_fn,
+                    )
+                )
+                # A codepoint is indivisible even when a pathological unit
+                # budget is smaller than that one codepoint.
+                split_at = max(1, split_at)
+                chunks.append(remaining[:split_at])
+                remaining = remaining[split_at:]
+            chunks.append(remaining)
+            return chunks
+
         def _split_progress_groups(lines: list) -> list[list]:
             """Partition progress lines into platform-sized editable bubbles."""
             groups: list[list] = []
             current: list = []
-            for line in lines:
+            for raw_line in lines:
+                parts = _split_progress_line(raw_line)
+                if len(parts) > 1:
+                    if current:
+                        groups.append(current)
+                    # Each head chunk is a complete immutable bubble. Keep the
+                    # tail editable so a later logical line can join it with
+                    # the normal newline separator when there is room.
+                    groups.extend([[part] for part in parts[:-1]])
+                    current = [parts[-1]]
+                    continue
+                line = parts[0]
                 candidate = current + [line]
                 if current and _progress_len_fn(_progress_text(candidate)) > _PROGRESS_TEXT_LIMIT:
                     groups.append(current)

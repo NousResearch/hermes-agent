@@ -1796,6 +1796,24 @@ async def _running_progress_worker(adapter, *, grouping="accumulate"):
 
 
 @pytest.mark.asyncio
+async def test_oversized_single_progress_line_is_split_before_adapter_delivery():
+    adapter = SmallLimitProgressAdapter(platform=Platform.SLACK)
+    progress_line = "x" * (adapter.MAX_MESSAGE_LENGTH + 50)
+
+    async with _running_progress_worker(adapter) as (progress_queue, _task):
+        progress_queue.put(progress_line)
+        for _ in range(100):
+            if sum(len(call["content"]) for call in adapter.sent) >= len(progress_line):
+                break
+            await asyncio.sleep(0.01)
+
+    sent_chunks = [call["content"] for call in adapter.sent]
+    assert "".join(sent_chunks) == progress_line
+    assert adapter.oversized_sends == []
+    assert adapter.oversized_edits == []
+
+
+@pytest.mark.asyncio
 async def test_slack_native_progress_correlates_concurrent_duplicate_tools_by_id(
     monkeypatch, tmp_path
 ):

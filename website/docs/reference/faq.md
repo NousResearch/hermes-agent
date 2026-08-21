@@ -868,3 +868,21 @@ If your issue isn't covered here:
 1. **Search existing issues:** [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
 2. **Ask the community:** [Nous Research Discord](https://discord.gg/nousresearch)
 3. **File a bug report:** Include your OS, Python version (`python3 --version`), Hermes version (`hermes --version`), and the full error message
+
+
+### Running the API server on a different model than the rest of the gateway
+
+**Scenario:** You want the HTTP API server (`gateway/platforms/api_server.py`) to answer on a cheaper/faster model (e.g. Sonnet) while CLI, Discord, and Telegram stay on your premium default (e.g. Opus).
+
+**Solution: `platform_models` override (opt-in).** Add a `platform_models` section to `config.yaml`:
+
+```yaml
+model:
+  default: claude-opus-4-8
+platform_models:
+  api_server:
+    default: claude-sonnet-4-6   # or a bare string: api_server: claude-sonnet-4-6
+```
+
+Only the named platform is affected; every other platform continues to use `model.default`. Provider and credentials still come from the global runtime config, so the override must name a model compatible with the active provider.
+

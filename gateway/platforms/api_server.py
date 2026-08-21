@@ -2718,7 +2718,8 @@ class APIServerAdapter(BasePlatformAdapter):
             runtime_kwargs = _resolve_runtime_agent_kwargs()
         except RuntimeError as exc:
             raise _ProviderAuthResolutionError(str(exc)) from exc
-        model = _resolve_gateway_model()
+        user_config = _load_gateway_config()
+        model = _resolve_gateway_model(user_config, platform="api_server")
 
         # When the primary provider's auth fails (expired token / 429 quota
         # cap), _resolve_runtime_agent_kwargs() falls through to the fallback

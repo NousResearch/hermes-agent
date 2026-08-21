@@ -194,7 +194,7 @@ class TestAdapterInit:
                 "api_mode": "codex_responses",
             },
         )
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *a, **k: "gpt-5.5")
         monkeypatch.setattr(
             "gateway.run._load_gateway_config",
             lambda: {
@@ -2465,7 +2465,7 @@ def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
             "api_mode": "chat_completions",
         },
     )
-    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
+    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *a, **k: "global/model")
     monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
     monkeypatch.setattr(
         "gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {})
@@ -2926,7 +2926,7 @@ class TestCreateAgentModelRecovery:
             lambda: {"provider": "openai-codex", "base_url": "https://example.test/v1",
                      "api_mode": "codex_responses"},
         )
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *a, **k: "")
         monkeypatch.setattr(
             "hermes_cli.models.get_default_model_for_provider",
             lambda provider: "gpt-5.5-codex" if provider == "openai-codex" else None,
@@ -2959,14 +2959,14 @@ class TestCreateAgentModelRecovery:
 
         # Turn 1: model resolves fine — populates the last-known-good cache
         # (keyed on gateway_session_key).
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "minimax/minimax-m3")
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *a, **k: "minimax/minimax-m3")
         adapter._create_agent(session_id="api-session", gateway_session_key="stable-chan-1")
         assert captured[0]["model"] == "minimax/minimax-m3"
         assert adapter._last_resolved_model["stable-chan-1"] == "minimax/minimax-m3"
 
         # Turn 2: transient empty resolution, no provider catalog default —
         # must recover the model from turn 1, not build model="".
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *a, **k: "")
         monkeypatch.setattr(
             "gateway.run._resolve_runtime_agent_kwargs",
             lambda: {"provider": None, "base_url": None, "api_mode": None},

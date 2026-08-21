@@ -3758,14 +3758,35 @@ def _load_gateway_runtime_config() -> dict:
     return expanded if isinstance(expanded, dict) else {}
 
 
-def _resolve_gateway_model(config: dict | None = None) -> str:
+def _resolve_gateway_model(config: dict | None = None, platform: str | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
     Without this, temporary AIAgent instances (e.g. /compress) fall
     back to the hardcoded default which fails when the active provider is
     openai-codex.
+
+    Per-platform override (opt-in): when ``platform`` is supplied AND
+    ``platform_models.<platform>`` is set in config.yaml, that model wins
+    over the global ``model.default``. This lets a single platform (e.g.
+    the HTTP API server) run a cheaper/faster model than every other
+    platform. Callers that omit ``platform`` — every existing call site —
+    are unchanged.
+
+    Override shape: bare string, or ``{default|model: name}``. Provider and
+    credentials still come from the global runtime config, so a platform
+    override must name a model that works with the active provider.
     """
     cfg = config if config is not None else _load_gateway_config()
+    if platform:
+        platform_models = cfg.get("platform_models")
+        if isinstance(platform_models, dict):
+            override = platform_models.get(platform)
+            if isinstance(override, str) and override.strip():
+                return override.strip()
+            if isinstance(override, dict):
+                name = override.get("default") or override.get("model") or ""
+                if isinstance(name, str) and name.strip():
+                    return name.strip()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, str):
         return model_cfg

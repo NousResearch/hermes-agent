@@ -2323,6 +2323,14 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
 
     if deliver_value == "origin":
         if origin:
+            origin_platform = str(origin["platform"]).lower()
+            if not _is_known_delivery_platform(origin_platform):
+                logger.info(
+                    "Job %s: origin platform %r has no cron delivery "
+                    "transport — treating output as local",
+                    job.get("name", job.get("id", "?")), origin_platform,
+                )
+                return None
             return {
                 "platform": origin["platform"],
                 "chat_id": str(origin["chat_id"]),

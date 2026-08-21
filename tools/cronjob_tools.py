@@ -397,8 +397,9 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
     return (
         "This is a local-only cron job: its output is saved (view it with "
         "cronjob(action='list')) but will NOT be delivered back into this "
-        "session — CLI/TUI sessions have no live-delivery channel. To be "
-        "notified when it runs, recreate or update the job with deliver set to "
+        "session because its origin has no live cron-delivery channel "
+        "(for example, CLI, TUI, or WebUI). To be notified when it runs, "
+        "recreate or update the job with deliver set to "
         "a gateway-connected platform, e.g. deliver='telegram' or deliver='all'."
     )
 

@@ -2096,6 +2096,28 @@ class TestDeliverOriginUnresolvableIsLocal:
         assert self._deliver(job, monkeypatch) is None
 
 
+class TestDeliverWebUIOriginIsLocal:
+    """WebUI is an origin surface, not a gateway delivery transport."""
+
+    def test_webui_origin_has_no_delivery_target(self):
+        from cron.scheduler import _resolve_delivery_targets
+
+        job = {
+            "id": "webui-job",
+            "deliver": "origin",
+            "origin": {"platform": "webui", "chat_id": "session-123"},
+        }
+        assert _resolve_delivery_targets(job) == []
+
+    def test_webui_origin_delivery_succeeds_locally(self):
+        job = {
+            "id": "webui-job",
+            "deliver": "origin",
+            "origin": {"platform": "webui", "chat_id": "session-123"},
+        }
+        assert _deliver_result(job, "Saved cron output") is None
+
+
 class TestSendMediaTimeoutCancelsFuture:
     """Same orphan-coroutine guarantee for _send_media_via_adapter's
     future.result(timeout=30) call. If this times out mid-batch, the

@@ -3420,6 +3420,178 @@ def _strip_markdown_syntax(text: str) -> str:
     return plain.strip("\n")
 
 
+# ---------------------------------------------------------------------------
+# Line-wise markdown styling for the STREAMING path.
+#
+# Rich's Markdown renderer is a block renderer: it needs the whole document
+# before it can lay out a paragraph, list, or code block.  The streaming
+# emitter publishes one line at a time and can never reflow what it already
+# wrote to scrollback, so it cannot call Rich at all.  That is why
+# `display.final_response_markdown: render` used to be silently ignored while
+# `display.streaming: true` — only the "strip" branch existed, and "render"
+# fell through to the raw path, printing `**markers**` verbatim.
+#
+# This stylizer covers the constructs that are decidable from a single line
+# (headings, bullets, rules, quotes, inline spans) plus fenced code, which
+# needs one bit of carry-over state.  Tables are deliberately untouched: the
+# emitter already buffers and re-aligns them through realign_markdown_tables.
+#
+# Spans close with SGR *off* codes (22/23/24/29) and restore the caller's base
+# color rather than emitting a full reset, so the surrounding response color
+# set by _emit_stream_text survives the span.
+# ---------------------------------------------------------------------------
+
+_STREAM_MD_STYLE_CACHE: dict = {}
+
+_MD_FENCE_RE = re.compile(r"^\s{0,3}(?:```|~~~)")
+_MD_HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
+_MD_HR_RE = re.compile(r"^\s{0,3}(?:(?:-\s*){3,}|(?:_\s*){3,}|(?:\*\s*){3})$")
+_MD_QUOTE_RE = re.compile(r"^(\s*)>\s?(.*)$")
+_MD_BULLET_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
+_MD_ORDERED_RE = re.compile(r"^(\s*)(\d{1,9}[.)])\s+(.*)$")
+
+
+def _ansi_fg(hex_color: str) -> str:
+    """Truecolor SGR prefix for a ``#rrggbb`` string, or "" when unparsable."""
+    try:
+        return (
+            f"\033[38;2;{int(hex_color[1:3], 16)};"
+            f"{int(hex_color[3:5], 16)};{int(hex_color[5:7], 16)}m"
+        )
+    except (ValueError, IndexError, TypeError):
+        return ""
+
+
+def _stream_markdown_styles() -> dict:
+    """ANSI prefixes mirroring the ``markdown.*`` keys of _skin_markdown_theme.
+
+    Kept in lockstep with that theme so a streamed response and a
+    Rich-rendered one read as the same palette.  Falls back to no color
+    (structure only: markers removed, bold/italic still applied) when the
+    skin engine is unavailable.
+    """
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+
+        c = get_active_skin().get_color
+        accent = c("ui_accent") or c("banner_accent") or "#FFBF00"
+        primary = c("ui_primary") or c("banner_title") or accent
+        dim = c("banner_dim") or "#808080"
+        border = c("ui_border") or c("banner_border") or accent
+        code = c("syntax_string") or accent
+        comment = c("syntax_comment") or dim
+    except Exception:
+        accent = primary = dim = border = code = comment = ""
+
+    key = (accent, primary, dim, border, code, comment)
+    cached = _STREAM_MD_STYLE_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    styles = {
+        # Headings: h1/h2 bold like the Rich theme, h4/h5 italic.
+        "h": [
+            "\033[1m" + _ansi_fg(primary),
+            "\033[1m" + _ansi_fg(accent),
+            _ansi_fg(accent),
+            "\033[3m" + _ansi_fg(accent),
+            "\033[3m" + _ansi_fg(dim),
+            "\033[2m" + _ansi_fg(dim),
+        ],
+        "code": "\033[1m" + _ansi_fg(code),
+        "code_block": _ansi_fg(code),
+        "fence": "\033[2m" + _ansi_fg(comment),
+        "quote": _ansi_fg(comment),
+        "hr": _ansi_fg(border),
+        "bullet": "\033[1m" + _ansi_fg(accent),
+        "link": "\033[4m" + _ansi_fg(accent),
+    }
+    _STREAM_MD_STYLE_CACHE[key] = styles
+    return styles
+
+
+def _stylize_markdown_inline(text: str, base: str, styles: dict) -> str:
+    """Apply inline markdown spans (code, bold, italic, strike, links).
+
+    ``base`` is re-emitted after every span so the response body color set by
+    the streaming emitter is restored instead of being reset to the terminal
+    default.
+    """
+
+    def span(open_sgr: str, close_sgr: str, body: str) -> str:
+        return f"{open_sgr}{body}{close_sgr}{base}"
+
+    # Inline code first: its content must not be re-scanned for emphasis.
+    placeholders: list = []
+
+    def _stash_code(m):
+        placeholders.append(span(styles["code"], "\033[39m\033[22m", m.group(1)))
+        return f"\x00{len(placeholders) - 1}\x00"
+
+    text = re.sub(r"`([^`]+)`", _stash_code, text)
+
+    # [label](url) -> underlined label. The URL is dropped: it would blow past
+    # the terminal width mid-stream, and OSC-8 hyperlinks are stripped by the
+    # TUI's ANSI parser anyway (see _OSC_ESCAPE_RE).
+    text = re.sub(
+        r"!?\[([^\]]+)\]\([^)]*\)",
+        lambda m: span(styles["link"], "\033[24m\033[39m", m.group(1)),
+        text,
+    )
+    text = re.sub(r"\*\*\*([^*]+)\*\*\*", lambda m: span("\033[1m\033[3m", "\033[23m\033[22m", m.group(1)), text)
+    text = re.sub(r"\*\*([^*]+)\*\*", lambda m: span("\033[1m", "\033[22m", m.group(1)), text)
+    text = re.sub(r"(?<!\w)__([^_]+)__(?!\w)", lambda m: span("\033[1m", "\033[22m", m.group(1)), text)
+    # Same guard as _strip_markdown_syntax: never touch cron-like "* * * * *".
+    text = re.sub(r"\*([^\s*][^*]*?[^\s*]|[^\s*])\*", lambda m: span("\033[3m", "\033[23m", m.group(1)), text)
+    text = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", lambda m: span("\033[3m", "\033[23m", m.group(1)), text)
+    text = re.sub(r"~~([^~]+)~~", lambda m: span("\033[9m", "\033[29m", m.group(1)), text)
+
+    if placeholders:
+        text = re.sub(r"\x00(\d+)\x00", lambda m: placeholders[int(m.group(1))], text)
+    return text
+
+
+def _stylize_markdown_line(line: str, base: str, in_code: bool) -> tuple:
+    """Return ``(styled_line, in_code)`` for one streamed markdown line."""
+    try:
+        styles = _stream_markdown_styles()
+
+        if _MD_FENCE_RE.match(line):
+            return f"{styles['fence']}{line}\033[22m\033[39m{base}", not in_code
+        if in_code:
+            return f"{styles['code_block']}{line}\033[39m{base}", True
+
+        m = _MD_HEADING_RE.match(line)
+        if m:
+            level = min(len(m.group(1)), 6) - 1
+            body = _stylize_markdown_inline(m.group(2), base, styles)
+            return f"{styles['h'][level]}{body}\033[23m\033[22m\033[39m{base}", False
+
+        if _MD_HR_RE.match(line):
+            width = max(4, _terminal_width_for_streaming())
+            return f"{styles['hr']}{'─' * width}\033[39m{base}", False
+
+        m = _MD_QUOTE_RE.match(line)
+        if m:
+            body = _stylize_markdown_inline(m.group(2), base, styles)
+            return f"{m.group(1)}{styles['quote']}│ \033[39m{base}{body}", False
+
+        m = _MD_BULLET_RE.match(line)
+        if m:
+            body = _stylize_markdown_inline(m.group(2), base, styles)
+            return f"{m.group(1)}{styles['bullet']}•\033[22m\033[39m{base} {body}", False
+
+        m = _MD_ORDERED_RE.match(line)
+        if m:
+            body = _stylize_markdown_inline(m.group(3), base, styles)
+            return f"{m.group(1)}{styles['bullet']}{m.group(2)}\033[22m\033[39m{base} {body}", False
+
+        return _stylize_markdown_inline(line, base, styles), False
+    except Exception:
+        # Display styling must never break the stream: fall back to raw text.
+        return line, in_code
+
+
 _WINDOWS_PATH_WITH_DOT_SEGMENT_RE = re.compile(
     r"(?i)(?:\b[a-z]:\\|\\\\)[^\s`]*\\\.[^\s`]*"
 )
@@ -7948,6 +8120,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             if self.final_response_markdown == "strip":
                 line = _strip_markdown_syntax(line)
+            elif self.final_response_markdown == "render":
+                line, self._stream_md_in_code = _stylize_markdown_line(
+                    line, _tc, getattr(self, "_stream_md_in_code", False)
+                )
             _emit_one(line)
 
         # Long partial lines are emitted ONLY at real newlines — we no
@@ -8021,6 +8197,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         if self._stream_buf:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
+            if self.final_response_markdown == "render":
+                line, self._stream_md_in_code = _stylize_markdown_line(
+                    line, _tc, getattr(self, "_stream_md_in_code", False)
+                )
             _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
             self._stream_buf = ""
 
@@ -8036,6 +8216,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._stream_box_opened = False
         self._stream_text_ansi = ""
         self._stream_prefilt = ""
+        # Fenced-code carry-over for the line-wise markdown stylizer.
+        self._stream_md_in_code = False
         self._in_reasoning_block = False
         self._stream_last_was_newline = True
         self._reasoning_box_opened = False

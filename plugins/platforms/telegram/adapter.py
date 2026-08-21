@@ -495,6 +495,83 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+def _citation_source_urls(content: str) -> tuple[Optional[int], dict[str, str]]:
+    """Return the Sources block line and its numbered URL mappings.
+
+    Research replies may use ``[16]`` inline citations and declare the
+    corresponding URLs later under ``Sources`` or ``Источники``.  Markdown
+    treats the marker as plain text, so it needs to be joined with its URL
+    before Telegram's MarkdownV2 conversion.  The block boundary is returned
+    so callers can leave the bibliography itself unchanged.
+    """
+    lines = content.splitlines()
+    source_start = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        heading_match = re.fullmatch(
+            r"(?:#{1,6}\s+(sources|источники):?"
+            r"|(?:\*\*|__)(sources|источники):?(?:\*\*|__)"
+            r"|(sources|источники):)",
+            stripped,
+            re.IGNORECASE,
+        )
+        if heading_match:
+            source_start = index
+            break
+    if source_start is None:
+        return None, {}
+
+    mappings: dict[str, str] = {}
+    for line in lines[source_start + 1 :]:
+        match = re.match(r"^\s*\[(\d+)\]\s+(.+?)\s*$", line)
+        if not match:
+            continue
+        number, remainder = match.groups()
+
+        # Prefer an existing Markdown link, including simple parenthesized
+        # URL segments such as ``https://example.com/paper_(2026)``.
+        link_match = re.search(
+            r"\]\((https?://(?:[^()]|\([^()]*\))*)\)", remainder
+        )
+        if link_match:
+            mappings[number] = link_match.group(1)
+            continue
+
+        bare_match = re.search(r"https?://\S+", remainder)
+        if bare_match:
+            mappings[number] = bare_match.group(0).rstrip(".,;:!?\u3002\u3001")
+    return source_start, mappings
+
+
+def _link_citations_to_sources(content: str) -> str:
+    """Turn declared bare citation markers such as ``[16]`` into links."""
+    source_start, source_urls = _citation_source_urls(content)
+    if source_start is None or not source_urls:
+        return content
+
+    lines = content.splitlines(keepends=True)
+    before_sources = "".join(lines[:source_start])
+    sources_block = "".join(lines[source_start:])
+
+    def replace(match: re.Match[str]) -> str:
+        number = match.group(1)
+        url = source_urls.get(number)
+        # The nested brackets make the visible link text ``[16]`` rather than
+        # using the outer Markdown brackets as the only link syntax.
+        return f"[[{number}]]({url})" if url else match.group(0)
+
+    def replace_outside_code(text: str) -> str:
+        parts = re.split(r"(```[\s\S]*?```|`[^`]+`)", text)
+        for index in range(0, len(parts), 2):
+            parts[index] = re.sub(r"\[(\d+)\](?!\()", replace, parts[index])
+        return "".join(parts)
+
+    # Do not rewrite the numbered entries in the Sources block itself.  They
+    # may already have a linked title, and changing them would duplicate the
+    # same URL in the rendered bibliography.
+    return replace_outside_code(before_sources) + sources_block
+
+
 _CHUNK_INDICATOR_ON_FENCE_RE = re.compile(
     r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$'
 )
@@ -8372,16 +8449,23 @@ class TelegramAdapter(BasePlatformAdapter):
             text,
         )
 
-        # 3) Convert markdown links – escape the display text; inside the URL
-        #    only ')' and '\' need escaping per the MarkdownV2 spec.
+        # 3) Join numbered citations with URLs declared in the Sources block.
+        text = _link_citations_to_sources(text)
+
+        # 4) Convert markdown links – escape the display text; inside the URL
+        #    only ')' and '\\' need escaping per the MarkdownV2 spec.
         def _convert_link(m):
             display = _escape_mdv2(m.group(1))
             url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
             return _ph(f'[{display}]({url})')
 
-        text = re.sub(r'\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)', _convert_link, text)
+        text = re.sub(
+            r'\[((?:\[[^\]]+\]|[^\]])+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)',
+            _convert_link,
+            text,
+        )
 
-        # 4) Convert markdown headers (## Title) → bold *Title*
+        # 5) Convert markdown headers (## Title) → bold *Title*
         def _convert_header(m):
             inner = m.group(1).strip()
             # Strip redundant bold markers that may appear inside a header
@@ -8392,14 +8476,14 @@ class TelegramAdapter(BasePlatformAdapter):
             r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE
         )
 
-        # 5) Convert bold: **text** → *text* (MarkdownV2 bold)
+        # 6) Convert bold: **text** → *text* (MarkdownV2 bold)
         text = re.sub(
             r'\*\*(.+?)\*\*',
             lambda m: _ph(f'*{_escape_mdv2(m.group(1))}*'),
             text,
         )
 
-        # 6) Convert italic: *text* (single asterisk) → _text_ (MarkdownV2 italic)
+        # 7) Convert italic: *text* (single asterisk) → _text_ (MarkdownV2 italic)
         #    [^*\n]+ prevents matching across newlines (which would corrupt
         #    bullet lists using * markers and multi-line content).
         text = re.sub(
@@ -8408,21 +8492,21 @@ class TelegramAdapter(BasePlatformAdapter):
             text,
         )
 
-        # 7) Convert strikethrough: ~~text~~ → ~text~ (MarkdownV2)
+        # 8) Convert strikethrough: ~~text~~ → ~text~ (MarkdownV2)
         text = re.sub(
             r'~~(.+?)~~',
             lambda m: _ph(f'~{_escape_mdv2(m.group(1))}~'),
             text,
         )
 
-        # 8) Convert spoiler: ||text|| → ||text|| (protect from | escaping)
+        # 9) Convert spoiler: ||text|| → ||text|| (protect from | escaping)
         text = re.sub(
             r'\|\|(.+?)\|\|',
             lambda m: _ph(f'||{_escape_mdv2(m.group(1))}||'),
             text,
         )
 
-        # 9) Convert blockquotes: > at line start → protect > from escaping
+        # 10) Convert blockquotes: > at line start → protect > from escaping
         #    Handle both regular blockquotes (> text) and expandable blockquotes
         #    (Telegram MarkdownV2: **> for expandable start, || to end the quote)
         def _convert_blockquote(m):
@@ -8441,15 +8525,15 @@ class TelegramAdapter(BasePlatformAdapter):
             flags=re.MULTILINE,
         )
 
-        # 10) Escape remaining special characters in plain text
+        # 11) Escape remaining special characters in plain text
         text = _escape_mdv2(text)
 
-        # 11) Restore placeholders in reverse insertion order so that
+        # 12) Restore placeholders in reverse insertion order so that
         #    nested references (a placeholder inside another) resolve correctly.
         for key in reversed(list(placeholders.keys())):
             text = text.replace(key, placeholders[key])
 
-        # 12) Safety net: escape unescaped ( ) { } that slipped through
+        # 13) Safety net: escape unescaped ( ) { } that slipped through
         #     placeholder processing.  Split the text into code/non-code
         #     segments so we never touch content inside ``` or ` spans.
         _code_split = re.split(r'(```[\s\S]*?```|`[^`]+`)', text)

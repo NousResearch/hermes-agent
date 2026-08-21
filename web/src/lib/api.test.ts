@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, fetchJSON } from "./api";
+import { api, fetchJSON, setManagementProfile } from "./api";
 
 const reloadMocks = vi.hoisted(() => ({
   attemptDashboardTokenReloadOnce: vi.fn(() => false),
@@ -33,6 +33,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setManagementProfile("");
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -115,6 +116,26 @@ describe("api.getModelOptions", () => {
       "/api/model/options?profile=default&refresh=1&include_unconfigured=1",
       expect.objectContaining({ credentials: "include" }),
     );
+  });
+});
+
+describe("api Credential Pool helpers", () => {
+  it("scopes credential pool requests to the selected management profile", async () => {
+    vi.stubGlobal("window", {});
+    setManagementProfile("coder");
+
+    const fetchMock = jsonFetchMock({ providers: [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getCredentialPool();
+    await api.addCredentialPoolEntry("openrouter", "sk-or-test", "coder key");
+    await api.removeCredentialPoolEntry("openrouter", 1);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/credentials/pool?profile=coder",
+      "/api/credentials/pool?profile=coder",
+      "/api/credentials/pool/openrouter/1?profile=coder",
+    ]);
   });
 });
 

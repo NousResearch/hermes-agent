@@ -7,6 +7,8 @@ contract and the CLI-config parity (servers/keys written via the API are
 visible to the CLI data layer), not specific catalog values.
 """
 
+import json
+
 import pytest
 
 
@@ -208,6 +210,41 @@ class TestCredentialPoolEndpoints:
         save_env_value("OPENROUTER_API_KEY", fake_key)
         sources = sorted(e.source for e in load_pool("openrouter").entries())
         assert sources == ["env:OPENROUTER_API_KEY", "manual"]
+
+    def test_credential_pool_actions_are_scoped_to_selected_profile(self):
+        """Dashboard pool mutations must target the selected management profile."""
+        from hermes_constants import get_hermes_home
+
+        hermes_home = get_hermes_home()
+        worker_home = hermes_home / "profiles" / "worker"
+        worker_home.mkdir(parents=True)
+
+        response = self.client.post(
+            "/api/credentials/pool?profile=worker",
+            json={
+                "provider": "openrouter",
+                "api_key": "sk-or-" + "w" * 20,
+                "label": "worker-key",
+            },
+        )
+        assert response.status_code == 200
+
+        worker_auth = json.loads((worker_home / "auth.json").read_text())
+        assert worker_auth["credential_pool"]["openrouter"][0]["label"] == "worker-key"
+        assert not (hermes_home / "auth.json").exists()
+
+        listed = self.client.get("/api/credentials/pool?profile=worker").json()
+        assert listed["providers"][0]["provider"] == "openrouter"
+        assert listed["providers"][0]["entries"][0]["label"] == "worker-key"
+
+        response = self.client.delete(
+            "/api/credentials/pool/openrouter/1?profile=worker"
+        )
+        assert response.status_code == 200
+
+        worker_auth = json.loads((worker_home / "auth.json").read_text())
+        assert worker_auth["credential_pool"]["openrouter"] == []
+        assert not (hermes_home / "auth.json").exists()
 
 
 

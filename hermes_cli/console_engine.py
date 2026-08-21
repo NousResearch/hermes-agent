@@ -877,7 +877,7 @@ class HermesConsoleEngine:
         )
         self.register(
             ("sessions", "export"),
-            "sessions export <output> [--source SOURCE] [--session-id ID]",
+            "sessions export <output> [--source SOURCE] [--session-id ID] [--lineage single|logical]",
             "Export sessions to JSONL.",
             _sessions_export,
             mutating=True,
@@ -1422,6 +1422,11 @@ def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> str:
     parser.add_argument("output")
     parser.add_argument("--source")
     parser.add_argument("--session-id")
+    parser.add_argument(
+        "--lineage",
+        choices=["single", "logical"],
+        default="single",
+    )
     ns = parser.parse_args(args)
 
     def _run() -> None:
@@ -1458,7 +1463,11 @@ def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> str:
                 if not resolved_session_id:
                     raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
                 _guard_exports([resolved_session_id])
-                data = db.export_session(resolved_session_id)
+                data = (
+                    db.export_session_lineage(resolved_session_id)
+                    if ns.lineage == "logical"
+                    else db.export_session(resolved_session_id)
+                )
                 if not data:
                     raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
                 rows = [data]
@@ -1468,7 +1477,7 @@ def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> str:
                     for session in db.search_sessions(source=ns.source, limit=100000)
                 ]
                 _guard_exports(session_ids)
-                rows = db.export_all(source=ns.source)
+                rows = db.export_all(source=ns.source, lineage=ns.lineage)
 
             lines = [json.dumps(row, ensure_ascii=False) for row in rows]
             text = "\n".join(lines)

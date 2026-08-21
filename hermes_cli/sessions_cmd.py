@@ -434,12 +434,44 @@ def cmd_sessions(args, sessions_parser=None):
 
             return redact_session_data(data)
 
+        lineage_mode = getattr(args, "lineage", "single")
+        lineage_is_logical = lineage_mode == "logical"
+
+        def _export_json_one(session_id):
+            if lineage_is_logical:
+                return db.export_session_lineage(session_id)
+            return db.export_session(session_id)
+
+        def _export_json_many(session_ids):
+            if not lineage_is_logical:
+                return [
+                    session
+                    for session in (
+                        db.export_session(session_id) for session_id in session_ids
+                    )
+                    if session
+                ]
+            seen_roots = set()
+            exported = []
+            for session_id in session_ids:
+                chain = db.get_compression_lineage(session_id)
+                if not chain:
+                    continue
+                root = chain[0]
+                if root in seen_roots:
+                    continue
+                seen_roots.add(root)
+                data = db.export_session_lineage(session_id)
+                if data:
+                    exported.append(data)
+            return exported
+
         def _collect_sessions():
             """Resolve --session-id / filters / bare export into a list
             of redacted session dicts, or None after printing an error."""
             if args.session_id:
                 resolved = db.resolve_session_id(args.session_id)
-                data = _redact(db.export_session(resolved)) if resolved else None
+                data = _redact(_export_json_one(resolved)) if resolved else None
                 if not data:
                     print(f"Session '{args.session_id}' not found.")
                     return None
@@ -457,16 +489,16 @@ def cmd_sessions(args, sessions_parser=None):
                         print(f"  ... {len(candidates) - 100} more")
                     return None
                 return [
-                    s
-                    for s in (
-                        _redact(db.export_session(row["id"])) for row in candidates
-                    )
-                    if s
+                    _redact(session)
+                    for session in _export_json_many(row["id"] for row in candidates)
                 ]
             if args.dry_run:
                 print("--dry-run requires at least one filter.")
                 return None
-            return [_redact(s) for s in db.export_all(source=None)]
+            return [
+                _redact(session)
+                for session in db.export_all(source=None, lineage=lineage_mode)
+            ]
 
         # Prompt-only export (--only user-prompts): one prompt record per
         # line (jsonl) or headed sections (md). Delegates rendering to
@@ -652,7 +684,7 @@ def cmd_sessions(args, sessions_parser=None):
                 if not resolved_session_id:
                     print(f"Session '{args.session_id}' not found.")
                     return
-                data = _redact(db.export_session(resolved_session_id))
+                data = _redact(_export_json_one(resolved_session_id))
                 if not data:
                     print(f"Session '{args.session_id}' not found.")
                     return
@@ -677,18 +709,12 @@ def cmd_sessions(args, sessions_parser=None):
                         if len(candidates) > 100:
                             print(f"  ... {len(candidates) - 100} more")
                         return
-                    sessions = [
-                        s
-                        for s in (
-                            db.export_session(row["id"]) for row in candidates
-                        )
-                        if s
-                    ]
+                    sessions = _export_json_many(row["id"] for row in candidates)
                 else:
                     if args.dry_run:
                         print("--dry-run requires at least one filter.")
                         return
-                    sessions = db.export_all(source=None)
+                    sessions = db.export_all(source=None, lineage=lineage_mode)
                 if args.output == "-":
 
                     for s in sessions:
@@ -743,8 +769,6 @@ def cmd_sessions(args, sessions_parser=None):
             print("--delete-after-verified is only supported with --session-id.")
             db.close()
             return
-
-        lineage_is_logical = getattr(args, "lineage", "single") == "logical"
 
         if args.session_id:
             resolved_session_id = db.resolve_session_id(args.session_id)

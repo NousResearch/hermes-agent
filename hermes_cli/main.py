@@ -13426,7 +13426,10 @@ def main():
         "--lineage",
         choices=["single", "logical"],
         default="single",
-        help="md/qmd only: export one row or its compression lineage",
+        help=(
+            "export one physical row (single) or stitch its compression "
+            "lineage (logical). Applies to json/jsonl and md/qmd"
+        ),
     )
     sessions_export.add_argument(
         "--delete-after-verified",

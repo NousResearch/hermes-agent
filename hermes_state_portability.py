@@ -291,16 +291,40 @@ class SessionPortabilityMixin:
         base["messages"] = [msg for seg in segments for msg in (seg.get("messages") or [])]
         return base
 
-    def export_all(self, source: str = None) -> List[Dict[str, Any]]:
+    def export_all(
+        self, source: str = None, lineage: str = "single"
+    ) -> List[Dict[str, Any]]:
         """
         Export all sessions (with messages) as a list of dicts.
         Suitable for writing to a JSONL file for backup/analysis.
+
+        ``lineage='single'`` (default) emits one record per physical session
+        row. ``lineage='logical'`` folds compression continuations into one
+        record per conversation via :meth:`export_session_lineage`; branch,
+        delegate, and tool children remain their own entries.
         """
         sessions = self.search_sessions(source=source, limit=100000)
+        if lineage != "logical":
+            results = []
+            for session in sessions:
+                messages = self.get_messages(session["id"])
+                results.append({**session, "messages": messages})
+            return results
+
         results = []
+        seen_roots = set()
         for session in sessions:
-            messages = self.get_messages(session["id"])
-            results.append({**session, "messages": messages})
+            sid = session["id"]
+            lineage_ids = self.get_compression_lineage(sid)
+            if not lineage_ids:
+                continue
+            root = lineage_ids[0]
+            if root in seen_roots:
+                continue
+            seen_roots.add(root)
+            exported = self.export_session_lineage(sid)
+            if exported is not None:
+                results.append(exported)
         return results
 
     @staticmethod

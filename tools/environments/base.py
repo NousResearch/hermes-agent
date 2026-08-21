@@ -846,11 +846,15 @@ class BaseEnvironment(ABC):
         """
         return shlex.quote(path)
 
+    def _emit_user_command(self, command: str) -> str:
+        """Return the script line(s) that execute a user's command."""
+
+        escaped = command.replace("'", "'\\''")
+        return f"eval '{escaped}'"
+
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
-        escaped = command.replace("'", "'\\''")
-
         # Quote the snapshot path (see init_session — LocalEnvironment
         # rewrites ``C:/...`` to ``/c/...`` so MSYS doesn't mangle it).
         _quoted_snap = self._quote_shell_path(self._snapshot_path)
@@ -924,7 +928,7 @@ class BaseEnvironment(ABC):
         parts.append(f"builtin cd -- {quoted_cwd} || exit 126")
 
         # Run the actual command
-        parts.append(f"eval '{escaped}'")
+        parts.append(self._emit_user_command(command))
         parts.append("__hermes_ec=$?")
         # Restrict Hermes metadata files without changing the user's command
         # umask. Snapshot files may contain env-carried secrets.

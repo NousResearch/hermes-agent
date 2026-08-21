@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -1777,6 +1778,24 @@ class LocalEnvironment(BaseEnvironment):
         """Rewrite native/mixed Windows paths before quoting for Git Bash."""
         return _quote_bash_path(path)
 
+    def _emit_user_command(self, command: str) -> str:
+        """Avoid Windows argv re-parsing by transporting commands in a file."""
+
+        if not _IS_WINDOWS:
+            return super()._emit_user_command(command)
+        cmd_path = f"{self._snapshot_path}.cmd.{uuid.uuid4().hex[:12]}.sh"
+        with open(cmd_path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(command)
+            if not command.endswith("\n"):
+                fh.write("\n")
+        quoted = _quote_bash_path(cmd_path)
+        return (
+            f"__hermes_cmd_text=$(cat -- {quoted}) || "
+            "{ echo 'hermes: command file unreadable' >&2; exit 125; }\n"
+            f"rm -f -- {quoted} 2>/dev/null\n"
+            'eval "$__hermes_cmd_text"'
+        )
+
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
@@ -1971,14 +1990,15 @@ class LocalEnvironment(BaseEnvironment):
                 os.unlink(f)
             except OSError:
                 pass
-        # Remove any orphaned atomic-write temp snapshots (snap.tmp.<bashpid>)
-        # a failed/interrupted mv could have left behind (#38249).
+        # Remove orphaned atomic snapshots and per-call command transports.
         try:
             import glob
-            for tmp in glob.glob(f"{self._snapshot_path}.tmp.*"):
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
+            for pattern in (f"{self._snapshot_path}.tmp.*",
+                            f"{self._snapshot_path}.cmd.*"):
+                for tmp in glob.glob(pattern):
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
         except Exception:
             pass

@@ -320,17 +320,34 @@ def install_modify_other_keys_aliases() -> int:
     # "[27;2;97~" in the prompt buffer — the "caps locked" / "every key
     # combo is broken" symptom (#87711).
     # Map Shift+letter to the uppercase character so typing works normally.
-    # This is safe across all Latin keyboard layouts: Shift always uppercases
-    # letters.  Shift+digit symbols are layout-specific (US: '!', AZERTY: '¹',
-    # etc.) so they are NOT mapped here — if the terminal sends those under
-    # modifyOtherKeys, they will leak, but that's better than wrong input.
+    # This is safe across all keyboard layouts for letters that have case:
+    # Shift always uppercases them.  Non-Latin scripts (Cyrillic, Greek,
+    # Latin-extended, Armenian — #87631) are included: WezTerm re-encodes
+    # Shift+П the same way it re-encodes Shift+p, and the Latin-only table
+    # left every non-Latin layout broken.  Codepoints without case (CJK,
+    # digits, symbols) are layout-specific and stay unmapped — leaking is
+    # better than wrong input.
     # Map both the lowercase and uppercase codepoints — some terminals send
-    # the already-shifted codepoint (65 for 'A') with modifier=2.
+    # the already-shifted codepoint (65 for 'A', 1055 for 'П') with
+    # modifier=2.
+    cased_letter_ranges = (
+        (0x41, 0x7A),    # Basic Latin A-z (0x5B-0x60 are uncased, filtered)
+        (0xC0, 0xFF),    # Latin-1 letters (× 0xD7 / ÷ 0xF7 uncased, filtered)
+        (0x100, 0x17F),  # Latin Extended-A
+        (0x386, 0x3CE),  # Greek
+        (0x400, 0x45F),  # Cyrillic + Cyrillic Supplement
+        (0x531, 0x58F),  # Armenian
+    )
     shift_map: dict[int, str] = {}
-    for ch in range(ord('a'), ord('z') + 1):
-        upper_char = chr(ch - 32)  # 'A'..'Z'
-        shift_map[ch] = upper_char
-        shift_map[ch - 32] = upper_char
+    for start, end in cased_letter_ranges:
+        for cp in range(start, end + 1):
+            ch = chr(cp)
+            if ch.islower():
+                upper_char = ch.upper()
+                if len(upper_char) == 1:
+                    shift_map[cp] = upper_char
+            elif ch.isupper():
+                shift_map[cp] = ch
     _install_paired(2, shift_map)
 
     # -- Multi-modifier letters: Shift+Alt (4), Ctrl+Shift (6),
@@ -352,6 +369,17 @@ def install_modify_other_keys_aliases() -> int:
             if ctrl_key is not None:
                 ctrl_shift_map[cp] = ctrl_key
                 ctrl_alt_map[cp] = (Keys.Escape, ctrl_key)
+    # Non-Latin cased scripts get the Shift+Alt normalization too (#87631);
+    # their Ctrl-bearing combos stay unmapped (Ctrl bindings are Latin).
+    for start, end in cased_letter_ranges:
+        for cp in range(start, end + 1):
+            ch = chr(cp)
+            if ch.islower():
+                upper_char = ch.upper()
+                if len(upper_char) == 1:
+                    shift_alt_map.setdefault(cp, (Keys.Escape, upper_char))
+            elif ch.isupper():
+                shift_alt_map.setdefault(cp, (Keys.Escape, ch))
     _install_paired(4, shift_alt_map)
     _install_paired(6, ctrl_shift_map)
     _install_paired(7, ctrl_alt_map)

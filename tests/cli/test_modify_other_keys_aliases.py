@@ -52,6 +52,16 @@ def _parse(byte_seq: str):
     return [kp.key for kp in out]
 
 
+def _parse_events(byte_seq: str):
+    """Like _parse, but returns the full KeyPress objects (key AND data)."""
+    out = []
+    parser = Vt100Parser(out.append)
+    for ch in byte_seq:
+        parser.feed(ch)
+    parser.flush()
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Ctrl+letter: a-z
 # ---------------------------------------------------------------------------
@@ -261,6 +271,101 @@ def test_modify_other_keys_shift_letter_produces_uppercase(letter):
     csiu_seq = f"\x1b[{ord(letter)};2u"
     assert _parse(csiu_seq) == [upper], (
         f"CSI-u Shift+{letter} ({csiu_seq!r}) should produce '{upper}'"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Shift+letter for non-Latin cased scripts (#87631)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "lower,upper",
+    [
+        ("п", "П"),  # Cyrillic
+        ("р", "Р"),
+        ("и", "И"),
+        ("α", "Α"),  # Greek
+        ("ü", "Ü"),  # Latin-1
+        ("ā", "Ā"),  # Latin Extended-A
+        ("ա", "Ա"),  # Armenian
+    ],
+)
+def test_modify_other_keys_shift_non_latin_letter_produces_uppercase(lower, upper):
+    """#87631: WezTerm re-encodes Shift+П exactly like Shift+p; the Latin-only
+    table left every non-Latin layout leaking literal CSI into the buffer."""
+    for cp in (ord(lower), ord(upper)):
+        mok_seq = f"\x1b[27;2;{cp}~"
+        assert _parse(mok_seq) == [upper], (
+            f"modifyOtherKeys Shift codepoint {cp} ({mok_seq!r}) should "
+            f"produce '{upper}'"
+        )
+        csiu_seq = f"\x1b[{cp};2u"
+        assert _parse(csiu_seq) == [upper], (
+            f"CSI-u Shift codepoint {cp} ({csiu_seq!r}) should produce '{upper}'"
+        )
+
+
+def test_modify_other_keys_shift_cyrillic_word_types_cleanly():
+    """The issue's exact repro: typing ПРИВЕТ inserts ПРИВЕТ — the ESC byte
+    is not swallowed as Escape and no literal '[27;2;...' text leaks."""
+    typed = "".join(
+        ch
+        for part in (_parse(f"\x1b[27;2;{ord(ch)}~") for ch in "ПРИВЕТ")
+        for ch in part
+    )
+    assert typed == "ПРИВЕТ"
+
+
+def test_modify_other_keys_shift_alt_non_latin_letter():
+    """Shift+Alt+non-Latin normalizes onto (Escape, UPPER) like Latin."""
+    assert _parse(f"\x1b[27;4;{ord('п')}~") == [Keys.Escape, "П"]
+    assert _parse(f"\x1b[{ord('α')};4u") == [Keys.Escape, "Α"]
+
+
+@pytest.mark.parametrize("codepoint", [0x4E2D, 0x6587])  # 中, 文
+def test_modify_other_keys_uncased_codepoint_stays_unmapped(codepoint):
+    """Case-less scripts (CJK) are layout-specific and deliberately NOT
+    mapped — a leak is better than potentially wrong input. The sequences
+    parse as Escape + literal text (prompt_toolkit's default for unmapped
+    CSI), never as a bare character."""
+    result = _parse(f"\x1b[27;2;{codepoint}~")
+    assert result != [chr(codepoint)]
+
+
+# ---------------------------------------------------------------------------
+# Insertion-level contract (data path) — #87637 review, coordinated with #87785
+# ---------------------------------------------------------------------------
+
+@pytest.mark.xfail(
+    reason=(
+        "prompt_toolkit's default Keys.Any binding inserts event.data (the "
+        "matched bytes), not the key — so a character-valued mapping types "
+        "the raw escape sequence until the data-path fix in #87785 lands. "
+        "Turns green automatically once #87785 is applied on top."
+    ),
+    strict=False,
+)
+@pytest.mark.parametrize(
+    "seq,expected",
+    [
+        ("\x1b[27;2;104~", "H"),      # Latin — the #87511 case
+        ("\x1b[27;2;1087~", "П"),     # Cyrillic
+        ("\x1b[27;2;945~", "Α"),      # Greek
+    ],
+)
+def test_shift_letter_data_path_types_the_character(seq, expected):
+    """Insertion-level guard: the parse-level `key` assertion above cannot
+    see what actually reaches the prompt buffer — prompt_toolkit inserts
+    ``KeyPress.data`` for character-valued entries, and before #87785 data
+    is still the raw sequence. This pins the full observable (key AND data)
+    so the insertion path cannot regress silently once #87785 makes data the
+    character."""
+    events = _parse_events(seq)
+    assert len(events) == 1, f"expected a single KeyPress for {seq!r}"
+    assert events[0].key == expected
+    assert events[0].data == expected, (
+        f"insertion inserts event.data; for {seq!r} data is still the raw "
+        f"bytes {events[0].data!r} rather than {expected!r} (needs #87785)"
     )
 
 

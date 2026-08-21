@@ -2,6 +2,7 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getStatus } from '@/hermes'
+import { $storageStatus } from '@/store/storage-status'
 
 import { useStatusSnapshot } from './use-status-snapshot'
 
@@ -32,6 +33,7 @@ async function flushAsync() {
 beforeEach(() => {
   vi.useFakeTimers()
   vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+  $storageStatus.set('ok')
   vi.mocked(getStatus)
     .mockReset()
     .mockResolvedValue({} as never)
@@ -65,6 +67,16 @@ describe('useStatusSnapshot', () => {
 
     expect(getStatus).toHaveBeenCalledOnce()
     expect(requestGateway).toHaveBeenCalledTimes(2)
+  })
+
+  it('publishes a degraded storage state for the persistent desktop warning', async () => {
+    vi.mocked(getStatus).mockResolvedValue({ storage: 'degraded' } as never)
+    const requestGateway = vi.fn(async () => ({ ok: true }) as never) as unknown as GatewayRequester
+
+    renderHook(() => useStatusSnapshot('open', requestGateway))
+    await flushAsync()
+
+    expect($storageStatus.get()).toBe('degraded')
   })
 
   it('keeps the last authoritative readiness through a transient RPC failure', async () => {

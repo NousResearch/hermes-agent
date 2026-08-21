@@ -156,7 +156,15 @@ def get_sessions(
                 s["pinned"] = bool(s.get("pinned"))
             if not full:
                 _strip_session_list_rows(sessions)
-            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+            from hermes_state import get_storage_status
+
+            return {
+                "sessions": sessions,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "storage": get_storage_status(db.db_path),
+            }
         finally:
             db.close()
     except HTTPException:

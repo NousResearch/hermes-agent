@@ -445,6 +445,8 @@ export interface PaginatedSessions {
   /** Per-profile read failures from the cross-profile aggregator (e.g. a locked
    *  or corrupt state.db). Present only on `/api/profiles/sessions`. */
   errors?: Array<{ profile: string; error: string }>
+  /** The selected profile's backend-visible persistence state. */
+  storage?: 'degraded' | 'ok'
 }
 
 export interface RpcEvent<T = unknown> {
@@ -1188,6 +1190,8 @@ export interface StatusResponse {
   hermes_home: string
   latest_config_version: number
   release_date: string
+  /** Latched when the backend observes state.db corruption and pauses writes. */
+  storage?: 'degraded' | 'ok'
   version: string
 }
 

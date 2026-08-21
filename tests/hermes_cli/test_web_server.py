@@ -397,6 +397,29 @@ class TestWebServerEndpoints:
         assert response.status_code == 200
         assert response.json()["sessions"] == []
         assert response.json()["total"] == 0
+        assert response.json()["storage"] == "ok"
+
+    def test_storage_degraded_is_exposed_to_session_and_status_clients(self, monkeypatch):
+        import hermes_state
+
+        from hermes_constants import get_hermes_home
+        from hermes_state import mark_storage_degraded
+
+        monkeypatch.setattr(hermes_state, "_storage_status_by_path", {})
+
+        mark_storage_degraded(
+            get_hermes_home() / "state.db",
+            RuntimeError("database disk image is malformed"),
+        )
+
+        sessions = self.client.get("/api/sessions?limit=50&offset=0")
+        status = self.client.get("/api/status")
+
+        assert sessions.status_code == 200
+        assert sessions.json()["storage"] == "degraded"
+        assert status.status_code == 200
+        assert status.json()["storage"] == "degraded"
+        assert status.json()["components"]["storage"]["status"] == "degraded"
 
     @pytest.mark.parametrize(
         "missing_column", ["archived", "pinned", "last_activity_at"]

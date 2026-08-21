@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 
 import { getStatus } from '@/hermes'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { setStorageStatus } from '@/store/storage-status'
 import type { StatusResponse } from '@/types/hermes'
 
 // Statusbar health is ambient chrome, not live data — nothing the user acts on
@@ -58,6 +59,7 @@ export function useStatusSnapshot(gatewayState: string | undefined, requestGatew
 
         if (statusResult.status === 'fulfilled') {
           setStatusSnapshot(statusResult.value)
+          setStorageStatus(statusResult.value.storage)
         }
 
         if (inferenceResult.status === 'fulfilled') {

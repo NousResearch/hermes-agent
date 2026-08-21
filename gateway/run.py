@@ -837,11 +837,35 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
-def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+_RECOVERY_STATUS_RE = re.compile(
+    r"("
+    r"model returned empty after tool calls.{0,80}nudging to continue"
+    r"|thinking-only response.{0,80}prefilling to continue"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _is_recovery_status(event_type: str, text: str) -> bool:
+    """True for recovery-class statuses (empty-after-tools nudge, thinking prefill)."""
+    if str(event_type or "").strip().lower() == "recovery":
+        return True
+    return bool(_RECOVERY_STATUS_RE.search(text))
+
+
+def _prepare_gateway_status_message(
+    platform: Any,
+    event_type: str,
+    message: str,
+    *,
+    diagnostic_status: str = "all",
+) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
     Local/CLI sessions keep the raw diagnostic stream. Messaging gateway
     surfaces should not receive transient auxiliary/compression chatter.
+    Recovery-class statuses are gated by ``display.diagnostic_status``
+    (default ``all``). Lifecycle and warning events still deliver.
     """
     text = str(message or "").strip()
     if not text:
@@ -850,6 +874,12 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
+    resolved_diagnostic = str(diagnostic_status or "all").strip().lower()
+    if (
+        _is_recovery_status(event_type, text)
+        and resolved_diagnostic in {"off", "false", "0", "no"}
+    ):
+        return None
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         # Opt-in #52995: `compression.progress_notices: true` lets ROUTINE
         # compression progress statuses through to chat platforms. The
@@ -5316,6 +5346,7 @@ class TurnRunner:
             ctx.source.platform,
             event_type,
             message,
+            diagnostic_status="all" if ctx._diagnostic_status_enabled else "off",
         )
         if prepared_message is None:
             logger.debug(
@@ -5839,7 +5870,12 @@ class TurnRunner:
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = _stream_delta_cb
         agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
-        agent.status_callback = ctx._status_callback_sync if ctx._diagnostic_status_enabled else None
+        # Always wire the callback. Recovery-class statuses (empty-after-tools
+        # nudge, thinking-only prefill) are filtered in
+        # ``_prepare_gateway_status_message`` when diagnostic_status is off;
+        # lifecycle and warning events including terminal-failure statuses
+        # still deliver.
+        agent.status_callback = ctx._status_callback_sync
         # Credits / out-of-band notices (usage bands, depletion, restored).
         # Messaging has no persistent status bar, so each notice is a
         # standalone push: render to a single plaintext line and deliver via
@@ -28652,7 +28688,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # run_sync extracted to TurnRunner.run_sync (bound method; the
         # executor call below is unchanged).  Its closed-over locals travel
         # on turn_ctx; `nonlocal message` rebinds became ctx.message writes.
-        run_sync = turn_runner.run_sync        
+        run_sync = turn_runner.run_sync
+        
         # Start progress message sender if enabled. Gate on needs_progress_queue
         # (tool_progress OR thinking_progress), not tool_progress alone: the
         # sender drains BOTH tool-progress lines and _thinking scratch bubbles.

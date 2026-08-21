@@ -375,4 +375,3 @@ class TestDiagnosticStatus:
             config = {"display": {"platforms": {"telegram": {"diagnostic_status": val}}}}
             result = resolve_display_setting(config, "telegram", "diagnostic_status")
             assert result == "off", f"val={val!r} → {result!r}"
->>>>>>> ebfca2119 (fix(gateway): add diagnostic_status display setting to gate status_callback)

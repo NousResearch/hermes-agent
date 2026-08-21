@@ -750,6 +750,16 @@ class TestZaiParallelProbe:
     winner is chosen by ZAI_ENDPOINTS priority order (not completion order).
     """
 
+    @pytest.fixture(autouse=True)
+    def _stream_via_mock_post(self, monkeypatch):
+        from contextlib import nullcontext
+        from hermes_cli import auth
+
+        def _stream(_method, url, **kwargs):
+            return nullcontext(auth.httpx.post(url, **kwargs))
+
+        monkeypatch.setattr(auth.httpx, "stream", _stream)
+
     def _mock_post(self, ok):
         """Return an httpx.post replacement; `ok` maps (base_url, model) -> bool."""
         import httpx as _httpx

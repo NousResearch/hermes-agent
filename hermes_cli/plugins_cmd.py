@@ -1678,18 +1678,30 @@ def _resolve_tool_override_grant(
     if allow_tool_override is None:
         # Interactive consent. Default to NO so a blind Enter doesn't grant
         # a privileged capability, and a non-interactive stdin denies safely.
-        prompt = (
-            "[yellow]Allow this plugin to replace built-in tools "
-            "(e.g. shell_exec, write_file)?[/yellow]\n"
-            "  This is a privileged capability: an override can intercept "
-            "everything the agent routes through that tool.\n"
-            "  Grant it? [y/N] "
-        )
-        try:
-            answer = console.input(prompt).strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            answer = ""
-        allow_tool_override = answer in {"y", "yes"}
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            # Non-interactive stdout: the prompt would be swallowed and the
+            # process would hang indefinitely waiting for input that no one
+            # saw.  Fail closed, consistent with _run_capability_consent().
+            console.print(
+                "[yellow]Non-interactive session: tool-override capability "
+                "NOT granted (fail closed).[/yellow] Re-run "
+                f"`hermes plugins enable {key} --allow-tool-override` in an "
+                "interactive terminal to grant this."
+            )
+            allow_tool_override = False
+        else:
+            prompt = (
+                "[yellow]Allow this plugin to replace built-in tools "
+                "(e.g. shell_exec, write_file)?[/yellow]\n"
+                "  This is a privileged capability: an override can intercept "
+                "everything the agent routes through that tool.\n"
+                "  Grant it? [y/N] "
+            )
+            try:
+                answer = console.input(prompt).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            allow_tool_override = answer in {"y", "yes"}
 
     plugin_id = key
     _set_plugin_entry_flag(plugin_id, "allow_tool_override", allow_tool_override)

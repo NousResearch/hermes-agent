@@ -821,3 +821,82 @@ def test_portable_manifest_is_visible_to_plugin_cli(tmp_path):
         "Portable test plugin",
         "portable.test",
     )
+
+
+# ── _resolve_tool_override_grant isatty guard (#89600) ───────────────────
+
+
+class TestResolveToolOverrideGrantIsattyGuard:
+    """_resolve_tool_override_grant must not call console.input() on a
+    non-interactive stdout/stdin (issue #89600).
+
+    Without the fix the function called console.input() unconditionally,
+    which swallowed the prompt when stdout was redirected while leaving
+    stdin attached — causing hermes plugins enable to hang indefinitely.
+    """
+
+    def test_non_interactive_denies_without_prompt(self, tmp_path, monkeypatch):
+        """When stdout or stdin is not a TTY, the grant must be denied
+        immediately (fail-closed) without calling console.input()."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+        from hermes_cli.plugins_cmd import _resolve_tool_override_grant
+
+        console = MagicMock()
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch("sys.stdout") as mock_stdout,
+            patch("hermes_cli.plugins_cmd._set_plugin_entry_flag") as mock_set,
+        ):
+            mock_stdin.isatty.return_value = False
+            mock_stdout.isatty.return_value = False
+
+            _resolve_tool_override_grant(console, "my-plugin", None)
+
+        # Must NOT block waiting for user input
+        console.input.assert_not_called()
+        # Must persist the denial to config
+        mock_set.assert_called_once_with("my-plugin", "allow_tool_override", False)
+        # Must print an informative non-interactive message
+        assert console.print.called
+        printed = " ".join(
+            str(a) for call in console.print.call_args_list for a in call.args
+        )
+        assert "Non-interactive" in printed or "non-interactive" in printed.lower()
+
+    def test_interactive_prompts_user(self, tmp_path, monkeypatch):
+        """When stdin and stdout are both TTYs, the function asks interactively."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+        from hermes_cli.plugins_cmd import _resolve_tool_override_grant
+
+        console = MagicMock()
+        console.input.return_value = "n"
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch("sys.stdout") as mock_stdout,
+            patch("hermes_cli.plugins_cmd._set_plugin_entry_flag") as mock_set,
+        ):
+            mock_stdin.isatty.return_value = True
+            mock_stdout.isatty.return_value = True
+
+            _resolve_tool_override_grant(console, "my-plugin", None)
+
+        console.input.assert_called_once()
+        mock_set.assert_called_once_with("my-plugin", "allow_tool_override", False)
+
+    def test_explicit_true_skips_prompt(self, tmp_path, monkeypatch):
+        """allow_tool_override=True should persist immediately, no prompt."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+        from hermes_cli.plugins_cmd import _resolve_tool_override_grant
+
+        console = MagicMock()
+        with patch("hermes_cli.plugins_cmd._set_plugin_entry_flag") as mock_set:
+            _resolve_tool_override_grant(console, "my-plugin", True)
+
+        console.input.assert_not_called()
+        mock_set.assert_called_once_with("my-plugin", "allow_tool_override", True)

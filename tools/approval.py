@@ -62,6 +62,12 @@ _approval_session_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_session_id",
     default="",
 )
+# Turn-local policy resolved by the gateway from a trusted SessionSource.
+# It intentionally never reads process-global environment state.
+_approval_mode_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "approval_mode_override",
+    default=None,
+)
 
 # Interactive-CLI flag. Concurrent ACP sessions run on a shared
 # ThreadPoolExecutor (acp_adapter/server.py), so mutating the process-global
@@ -3184,10 +3190,51 @@ def _get_approval_config() -> dict:
         return {}
 
 
+def set_current_approval_mode_override(mode: str | None) -> contextvars.Token:
+    """Bind a validated per-turn gateway approval mode override."""
+    return _approval_mode_override.set(
+        _normalize_approval_mode(mode) if mode is not None else None
+    )
+
+
+def reset_current_approval_mode_override(token: contextvars.Token) -> None:
+    """Restore the preceding turn-local approval mode."""
+    _approval_mode_override.reset(token)
+
+
+def resolve_approval_mode(
+    config: dict, platform: str, chat_id: object = None, thread_id: object = None
+) -> str:
+    """Resolve exact topic, then channel, then global approval mode safely."""
+    approvals = config.get("approvals", {}) if isinstance(config, dict) else {}
+    if not isinstance(approvals, dict):
+        return "manual"
+    channels = approvals.get("channels", {})
+    platform_channels = channels.get(platform) if isinstance(channels, dict) else None
+    if isinstance(platform_channels, dict):
+        keys = []
+        if chat_id is not None and thread_id is not None:
+            keys.append(f"{chat_id}:{thread_id}")
+        if chat_id is not None:
+            keys.append(str(chat_id))
+        for key in keys:
+            policy = platform_channels.get(key)
+            if isinstance(policy, dict) and "mode" in policy:
+                raw_mode = policy["mode"]
+                # YAML 1.1 parses bare `off` as False; accept that conventional
+                # config spelling without widening any other invalid values.
+                if raw_mode is False:
+                    return "off"
+                return _normalize_approval_mode(raw_mode)
+    return _normalize_approval_mode(approvals.get("mode", "manual"))
+
+
 def _get_approval_mode() -> str:
-    """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
-    mode = _get_approval_config().get("mode", "manual")
-    return _normalize_approval_mode(mode)
+    """Read a turn-local override first, then the global config mode."""
+    override = _approval_mode_override.get()
+    if override is not None:
+        return override
+    return _normalize_approval_mode(_get_approval_config().get("mode", "manual"))
 
 
 def is_approval_bypass_active_for_session(session_key: str) -> bool:

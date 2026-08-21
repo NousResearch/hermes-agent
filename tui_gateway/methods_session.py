@@ -48,8 +48,28 @@ def _(rid, params: dict) -> dict:
     # for a new chat can't mutate the profile default. provider is optional
     # (resolved at build).
     create_model = str(params.get("model") or "").strip()
+    create_provider = str(params.get("provider") or "").strip()
+    # Compatibility guard for older Desktop builds: they could persist the
+    # selected model while dropping its provider from session.create.  Falling
+    # back to the profile provider then routes Codex-only GPT models to an
+    # unrelated endpoint (for example OpenCode Go) and surfaces a misleading
+    # HTTP 401 "model is not supported".  Restrict the repair to Desktop and
+    # to Hermes' explicit Codex catalog so arbitrary model names still follow
+    # the configured provider exactly as before.
+    if create_model and not create_provider and source == "desktop":
+        try:
+            from hermes_cli.codex_models import DEFAULT_CODEX_MODELS
+
+            if create_model in DEFAULT_CODEX_MODELS:
+                create_provider = "openai-codex"
+        except Exception:
+            logger.debug(
+                "failed to infer provider for unqualified desktop model %s",
+                create_model,
+                exc_info=True,
+            )
     session_model_override = (
-        {"model": create_model, "provider": str(params.get("provider") or "").strip() or None}
+        {"model": create_model, "provider": create_provider or None}
         if create_model
         else None
     )

@@ -340,7 +340,8 @@ class LongPreviewAgent:
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
-        self.tool_progress_callback("tool.started", "terminal", self.LONG_CMD, {})
+        if self.tool_progress_callback:
+            self.tool_progress_callback("tool.started", "terminal", self.LONG_CMD, {})
         time.sleep(0.35)
         return {
             "final_response": "done",
@@ -677,7 +678,7 @@ def _extract_progress_preview(content: str) -> str | None:
     return None
 
 
-def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
+def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0, *, display_extra=None, source=None):
     """Shared setup for long-preview truncation tests.
 
     Returns (adapter, result) after running the agent with LongPreviewAgent.
@@ -698,7 +699,9 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     # Write config.yaml so _run_agent picks up tool_preview_length
-    config = {"display": {"tool_preview_length": preview_length}}
+    display = {"tool_preview_length": preview_length}
+    display.update(display_extra or {})
+    config = {"display": display}
     (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
 
     adapter = ProgressCaptureAdapter()
@@ -707,7 +710,7 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
-    source = SessionSource(
+    source = source or SessionSource(
         platform=Platform.TELEGRAM,
         chat_id="12345",
         chat_type="dm",
@@ -725,6 +728,38 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
         )
     )
     return adapter, result
+
+
+def test_topic_override_suppresses_progress_but_dm_keeps_it(monkeypatch, tmp_path):
+    """Topic-level quiet mode affects only the targeted Telegram forum topic."""
+    display_extra = {
+        "tool_progress": "all",
+        "channels": {
+            "telegram": {
+                "-1003703764467:1666": {"tool_progress": "off"},
+            }
+        },
+    }
+    topic_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1003703764467",
+        chat_type="group",
+        thread_id="1666",
+    )
+    topic_adapter, topic_result = _run_long_preview_helper(
+        monkeypatch, tmp_path, display_extra=display_extra, source=topic_source
+    )
+    assert topic_result["final_response"] == "done"
+    assert topic_adapter.sent == []
+
+    dm_tmp = tmp_path / "dm"
+    dm_tmp.mkdir()
+    dm_adapter, dm_result = _run_long_preview_helper(
+        monkeypatch, dm_tmp, display_extra=display_extra
+    )
+    assert dm_result["final_response"] == "done"
+    assert dm_adapter.sent
+
 
 
 def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):

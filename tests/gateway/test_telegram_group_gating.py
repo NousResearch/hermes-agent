@@ -494,6 +494,23 @@ def test_gating_forum_general_topic_normalizes_to_one():
     assert adapter2._should_process_message(general) is False
 
 
+def test_forum_message_builds_display_routable_source():
+    """A real Telegram forum update preserves chat/topic identity for display policy."""
+    adapter = _make_adapter(require_mention=False)
+    message = _forum_message(
+        chat_id=-1003703764467,
+        thread_id=1666,
+        is_topic_message=True,
+        is_forum=True,
+    )
+
+    source = adapter._source_from_message_for_auth(message)
+
+    assert source.chat_id == "-1003703764467"
+    assert source.thread_id == "1666"
+    assert source.chat_type == "forum"
+
+
 def test_bot_self_messages_are_ignored_in_dm_and_group():
     """Bot-authored messages must not re-enter as fresh user turns (issue #11905).
 

@@ -17152,6 +17152,41 @@ def test_session_create_records_ui_model_as_session_override(monkeypatch):
         server._sessions.clear()
 
 
+def test_session_create_infers_codex_provider_for_legacy_desktop_model(monkeypatch):
+    """Older Desktop clients omitted provider when restoring a Codex model."""
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    try:
+        desktop = server._methods["session.create"](
+            "r1", {"cols": 80, "source": "desktop", "model": "gpt-5.6-terra"}
+        )
+        desktop_session = server._sessions[desktop["result"]["session_id"]]
+        assert desktop_session["model_override"] == {
+            "model": "gpt-5.6-terra",
+            "provider": "openai-codex",
+        }
+
+        # Explicit clients and non-Desktop sessions keep their supplied/inherited
+        # provider behavior unchanged.
+        explicit = server._methods["session.create"](
+            "r2",
+            {
+                "cols": 80,
+                "source": "desktop",
+                "model": "gpt-5.6-terra",
+                "provider": "custom:codex-compatible",
+            },
+        )
+        assert server._sessions[explicit["result"]["session_id"]]["model_override"]["provider"] == "custom:codex-compatible"
+
+        tui = server._methods["session.create"](
+            "r3", {"cols": 80, "source": "tui", "model": "gpt-5.6-terra"}
+        )
+        assert server._sessions[tui["result"]["session_id"]]["model_override"]["provider"] is None
+    finally:
+        server._sessions.clear()
+
+
 @pytest.mark.parametrize("service_tier_override", ["priority", ""])
 def test_start_agent_build_passes_session_model_override(
     monkeypatch, service_tier_override

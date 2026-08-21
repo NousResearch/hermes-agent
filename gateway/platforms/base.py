@@ -4087,28 +4087,20 @@ class BasePlatformAdapter(ABC):
         """
         return False
 
-    def _get_ephemeral_system_ttl_default(self) -> int:
-        """Read ``display.ephemeral_system_ttl`` from config.
-
-        Returns the TTL in seconds to use when an :class:`EphemeralReply`
-        does not specify one explicitly.  ``0`` (the default) disables
-        auto-deletion.  Non-fatal if config is unreadable.
-        """
+    def _get_ephemeral_system_ttl_default(self, source: Optional[SessionSource] = None) -> int:
+        """Resolve the global or exact-channel EphemeralReply TTL safely."""
         try:
             from hermes_cli.config import load_config_readonly as _load_config
+            from gateway.display_config import resolve_display_setting
+            cfg = _load_config()
+            platform = source.platform.value if source and source.platform else ""
+            return int(resolve_display_setting(
+                cfg, platform, "ephemeral_system_ttl", 0,
+                chat_id=getattr(source, "chat_id", None),
+                thread_id=getattr(source, "thread_id", None),
+                parent_id=getattr(source, "parent_chat_id", None),
+            ))
         except Exception:
-            return 0
-        try:
-            cfg = _load_config()  # read-only: .get() only, never mutated
-        except Exception:
-            return 0
-        display = cfg.get("display", {}) if isinstance(cfg, dict) else {}
-        if not isinstance(display, dict):
-            return 0
-        raw = display.get("ephemeral_system_ttl", 0)
-        try:
-            return int(raw)
-        except (TypeError, ValueError):
             return 0
 
     def _schedule_ephemeral_delete(
@@ -5480,7 +5472,9 @@ class BasePlatformAdapter(ABC):
         lowered = error.lower()
         return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
 
-    def _unwrap_ephemeral(self, response: Any) -> Tuple[Optional[str], int]:
+    def _unwrap_ephemeral(
+        self, response: Any, source: Optional[SessionSource] = None
+    ) -> Tuple[Optional[str], int]:
         """Unwrap a handler response into (text, ttl_seconds).
 
         Accepts a plain string, ``None``, or an :class:`EphemeralReply`.
@@ -5494,7 +5488,7 @@ class BasePlatformAdapter(ABC):
             ttl = response.ttl_seconds
             if ttl is None:
                 try:
-                    ttl = int(self._get_ephemeral_system_ttl_default())
+                    ttl = int(self._get_ephemeral_system_ttl_default(source))
                 except Exception:
                     ttl = 0
             if ttl and ttl > 0 and type(self).delete_message is BasePlatformAdapter.delete_message:
@@ -5997,7 +5991,7 @@ class BasePlatformAdapter(ABC):
 
         try:
             response = await self._message_handler(event)
-            _text, _eph_ttl = self._unwrap_ephemeral(response)
+            _text, _eph_ttl = self._unwrap_ephemeral(response, event.source)
             # Send the response BEFORE cancelling the old task so the send
             # cannot be affected by task-cancellation side effects (race
             # condition fix — issue #18912).  Previously the send happened
@@ -6137,7 +6131,7 @@ class BasePlatformAdapter(ABC):
                 try:
                     _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                     response = await self._message_handler(event)
-                    _text, _eph_ttl = self._unwrap_ephemeral(response)
+                    _text, _eph_ttl = self._unwrap_ephemeral(response, event.source)
                     if _text:
                         _r = await self._send_with_retry(
                             chat_id=event.source.chat_id,
@@ -6190,7 +6184,7 @@ class BasePlatformAdapter(ABC):
                             event.source, _reply_anchor_for_event(event)
                         )
                         response = await self._message_handler(event)
-                        _text, _eph_ttl = self._unwrap_ephemeral(response)
+                        _text, _eph_ttl = self._unwrap_ephemeral(response, event.source)
                         if _text:
                             _r = await self._send_with_retry(
                                 chat_id=event.source.chat_id,
@@ -6348,7 +6342,7 @@ class BasePlatformAdapter(ABC):
             # downstream extract_media / text-processing logic sees a plain
             # string, and remember the TTL + platform capability so the
             # post-send block can schedule the deletion.
-            response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+            response, _ephemeral_ttl = self._unwrap_ephemeral(response, event.source)
 
             # Send response if any.  A None/empty response is normal when
             # streaming already delivered the text (already_sent=True) or

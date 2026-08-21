@@ -68,6 +68,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # (Slack's default), and costs no extra API calls — the existing typing
     # refresh cadence just renders different text.
     "live_status": "full",
+    # System notices returned as EphemeralReply use this TTL when no explicit
+    # TTL is attached. 0 keeps the historical permanent-message behavior.
+    "ephemeral_system_ttl": 0,
 }
 
 # ---------------------------------------------------------------------------
@@ -189,26 +192,35 @@ def resolve_display_setting(
     platform_key: str,
     setting: str,
     fallback: Any = None,
+    *,
+    chat_id: Any = None,
+    thread_id: Any = None,
+    parent_id: Any = None,
 ) -> Any:
-    """Resolve a display setting with per-platform override support.
+    """Resolve a display setting for a platform and optional channel/topic.
 
-    Parameters
-    ----------
-    user_config : dict
-        The full parsed config.yaml dict.
-    platform_key : str
-        Platform config key (e.g. ``"telegram"``, ``"slack"``).  Use
-        ``_platform_config_key(source.platform)`` from gateway/run.py.
-    setting : str
-        Display setting name (e.g. ``"tool_progress"``, ``"show_reasoning"``).
-    fallback : Any
-        Fallback value when the setting isn't found anywhere.
-
-    Returns
-    -------
-    The resolved value, or *fallback* if nothing is configured.
+    Resolution order: exact ``display.channels.<platform>.<chat>:<thread>``,
+    channel-wide ``display.channels.<platform>.<chat>``, per-platform,
+    global, built-in platform and global defaults.  ``parent_id`` is a final
+    channel lookup fallback for adapters with separate parent channels.
     """
     display_cfg = user_config.get("display") or {}
+
+    channels = display_cfg.get("channels") or {}
+    platform_channels = channels.get(platform_key) if isinstance(channels, dict) else None
+    if isinstance(platform_channels, dict):
+        lookup_keys: list[str] = []
+        if chat_id is not None and thread_id is not None:
+            lookup_keys.append(f"{chat_id}:{thread_id}")
+        for identifier in (chat_id, parent_id):
+            if identifier is not None:
+                key = str(identifier)
+                if key not in lookup_keys:
+                    lookup_keys.append(key)
+        for key in lookup_keys:
+            channel_cfg = platform_channels.get(key)
+            if isinstance(channel_cfg, dict) and setting in channel_cfg:
+                return _normalise(setting, channel_cfg[setting])
 
     # 1. Explicit per-platform override (display.platforms.<platform>.<key>)
     platforms = display_cfg.get("platforms") or {}
@@ -285,6 +297,11 @@ def _normalise(setting: str, value: Any) -> Any:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
+    if setting == "ephemeral_system_ttl":
+        try:
+            return max(0, min(3600, int(value)))
+        except (TypeError, ValueError):
+            return 0
     if setting == "live_status":
         # Tri-state: "full" (verb + preview), "verb" (verb only), "off".
         if value is True:

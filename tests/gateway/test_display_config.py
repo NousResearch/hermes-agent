@@ -34,6 +34,103 @@ class TestResolveDisplaySetting:
         }
         assert resolve_display_setting(config, "telegram", "tool_progress") == "new"
 
+    def test_topic_override_wins_without_affecting_dm(self):
+        """A Telegram forum topic can be quiet while the DM remains transparent."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "tool_progress": "all",
+                "channels": {
+                    "telegram": {
+                        "-1003703764467:1666": {
+                            "tool_progress": "off",
+                            "interim_assistant_messages": False,
+                        }
+                    }
+                },
+            }
+        }
+        assert resolve_display_setting(
+            config, "telegram", "tool_progress", chat_id="-1003703764467", thread_id="1666"
+        ) == "off"
+        assert resolve_display_setting(
+            config, "telegram", "tool_progress", chat_id="457500237"
+        ) == "all"
+
+    def test_channel_override_falls_back_from_topic_to_chat(self):
+        """A channel-wide setting applies when the topic has no exact override."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "channels": {"telegram": {"-1003703764467": {"tool_progress": "new"}}}
+            }
+        }
+        assert resolve_display_setting(
+            config, "telegram", "tool_progress", chat_id="-1003703764467", thread_id="1666"
+        ) == "new"
+
+    def test_channel_override_falls_back_to_parent_chat(self):
+        """Thread adapters may have a distinct parent channel identity."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"channels": {"discord": {"parent": {"tool_progress": "off"}}}}}
+
+        assert resolve_display_setting(
+            config,
+            "discord",
+            "tool_progress",
+            chat_id="thread",
+            thread_id="message",
+            parent_id="parent",
+        ) == "off"
+
+    def test_yaml_topic_mapping_disables_all_quiet_display_surfaces(self):
+        """The persisted YAML form is a mapping and affects only its exact topic."""
+        import yaml
+        from gateway.display_config import resolve_display_setting
+
+        config = yaml.safe_load(
+            '''
+            display:
+              tool_progress: all
+              channels:
+                telegram:
+                  "-1003703764467:1666":
+                    tool_progress: off
+                    interim_assistant_messages: false
+                    long_running_notifications: false
+                    busy_ack_detail: false
+                    live_status: off
+            '''
+        )
+        topic_policy = config["display"]["channels"]["telegram"]["-1003703764467:1666"]
+        assert isinstance(topic_policy, dict)
+        topic_kwargs = {"chat_id": "-1003703764467", "thread_id": "1666"}
+        assert resolve_display_setting(config, "telegram", "tool_progress", **topic_kwargs) == "off"
+        assert resolve_display_setting(config, "telegram", "interim_assistant_messages", **topic_kwargs) is False
+        assert resolve_display_setting(config, "telegram", "long_running_notifications", **topic_kwargs) is False
+        assert resolve_display_setting(config, "telegram", "busy_ack_detail", **topic_kwargs) is False
+        assert resolve_display_setting(config, "telegram", "live_status", **topic_kwargs) == "off"
+        assert resolve_display_setting(
+            config, "telegram", "tool_progress", chat_id="-1003703764467", thread_id="130"
+        ) == "all"
+
+    def test_string_topic_policy_is_ignored_without_crashing(self):
+        """A legacy JSON string is not mistaken for a structured channel policy."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "tool_progress": "all",
+                "channels": {"telegram": {"-1003703764467:1666": '{"tool_progress":"off"}'}},
+            }
+        }
+        assert resolve_display_setting(
+            config, "telegram", "tool_progress", chat_id="-1003703764467", thread_id="1666"
+        ) == "all"
+
 
     def test_platform_override_only_affects_that_platform(self):
         """Other platforms are unaffected by a specific platform override."""

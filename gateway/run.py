@@ -6103,7 +6103,10 @@ class TurnRunner:
         # to the user immediately.
         from tools.approval import (
             register_gateway_notify,
+            reset_current_approval_mode_override,
             reset_current_session_key,
+            resolve_approval_mode,
+            set_current_approval_mode_override,
             set_current_session_key,
             unregister_gateway_notify,
         )
@@ -6357,6 +6360,13 @@ class TurnRunner:
 
         _approval_session_key = ctx.session_key or ""
         _approval_session_token = set_current_session_key(_approval_session_key)
+        _approval_mode = resolve_approval_mode(
+            ctx.user_config,
+            ctx.source.platform.value if ctx.source.platform else "",
+            ctx.source.chat_id,
+            getattr(ctx.source, "thread_id", None),
+        )
+        _approval_mode_token = set_current_approval_mode_override(_approval_mode)
         register_gateway_notify(_approval_session_key, _approval_notify_sync)
         try:
             # If _prepare_inbound_message_text buffered image paths for native
@@ -6425,6 +6435,7 @@ class TurnRunner:
                 _clear_clarify_session(_approval_session_key)
             except Exception:
                 pass
+            reset_current_approval_mode_override(_approval_mode_token)
             reset_current_session_key(_approval_session_token)
         ctx.result_holder[0] = result
 
@@ -28116,10 +28127,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # display.<key> global, then built-in platform defaults.
         from gateway.display_config import resolve_display_setting
 
+        # Resolve all turn-visible display surfaces against the concrete chat/topic.
+        # This lets a shared Telegram forum topic stay clean without weakening
+        # the owner's DM visibility or changing other Telegram channels.
+        def _resolve_turn_display(setting: str, fallback: Any = None) -> Any:
+            return resolve_display_setting(
+                user_config,
+                platform_key,
+                setting,
+                fallback,
+                chat_id=source.chat_id,
+                thread_id=source.thread_id,
+                parent_id=source.parent_chat_id,
+            )
+
         # Apply tool preview length config (0 = no limit)
         try:
             from agent.display import set_tool_preview_max_len
-            _tpl = resolve_display_setting(user_config, platform_key, "tool_preview_length", 0)
+            _tpl = _resolve_turn_display("tool_preview_length", 0)
             set_tool_preview_max_len(int(_tpl) if _tpl else 0)
         except Exception:
             pass
@@ -28127,20 +28152,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Apply friendly tool labels config (default on) — per-platform aware
         try:
             from agent.display import set_friendly_tool_labels
-            _ftl = resolve_display_setting(user_config, platform_key, "friendly_tool_labels", True)
+            _ftl = _resolve_turn_display("friendly_tool_labels", True)
             set_friendly_tool_labels(bool(_ftl))
         except Exception:
             pass
 
         # Tool progress mode — resolved per-platform with env var fallback
-        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
+        _resolved_tp = _resolve_turn_display("tool_progress")
         _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
         _display_cfg = display_config if isinstance(display_config, dict) else {}
         _platforms_cfg = _display_cfg.get("platforms") or {}
         _platform_cfg = _platforms_cfg.get(platform_key) or {}
+        _channels_cfg = _display_cfg.get("channels") or {}
+        _channel_cfg = _channels_cfg.get(platform_key) if isinstance(_channels_cfg, dict) else None
+        _channel_keys = []
+        if source.chat_id is not None and source.thread_id is not None:
+            _channel_keys.append(f"{source.chat_id}:{source.thread_id}")
+        _channel_keys.extend(
+            str(value) for value in (source.chat_id, source.parent_chat_id) if value is not None
+        )
+        _channel_tool_progress_configured = any(
+            isinstance(_channel_cfg, dict)
+            and isinstance(_channel_cfg.get(key), dict)
+            and "tool_progress" in _channel_cfg[key]
+            for key in _channel_keys
+        )
         _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
         _tool_progress_configured = (
             "tool_progress" in _display_cfg
+            or _channel_tool_progress_configured
             or (
                 isinstance(_platform_cfg, dict)
                 and "tool_progress" in _platform_cfg
@@ -28156,7 +28196,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else (_resolved_tp or _env_tp or "all")
         )
         # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
-        progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
+        progress_grouping = _resolve_turn_display("tool_progress_grouping") or "accumulate"
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         _generic_status_recent: List[str] = []
         _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
@@ -28180,7 +28220,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     and not _has_platform_display_override(user_config, platform_key, setting)
                 ):
                     return "off"
-            value = resolve_display_setting(user_config, platform_key, setting, default)
+            value = _resolve_turn_display(setting, default)
             if isinstance(value, str) and value.strip().lower() == "generic":
                 return "generic" if allow_generic else "off"
             return "raw" if bool(value) else "off"
@@ -28209,9 +28249,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # there. Rendering rides the existing _keep_typing refresh: the
         # callback only stores a phrase on the adapter, costing zero extra
         # platform API calls.
-        _live_status_mode = resolve_display_setting(
-            user_config, platform_key, "live_status", "full"
-        )
+        _live_status_mode = _resolve_turn_display("live_status", "full")
         _live_status_adapter = self._adapter_for_source(source)
         if not getattr(_live_status_adapter, "supports_status_text", False):
             _live_status_adapter = None

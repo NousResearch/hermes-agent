@@ -243,6 +243,105 @@ class TestMentionGating:
         await self._poll_with(adapter, _event("e1", content="hey @Chip can you help?", created_at=10))
         assert len(adapter._dispatched) == 1
 
+    @pytest.mark.asyncio
+    async def test_reply_to_mentioned_message_dispatches_without_another_mention(self, adapter):
+        await self._poll_with(
+            adapter,
+            _event("e1", content="@Chip can you help?", created_at=10),
+            _tagged_event("e2", CHANNEL, content="please continue", reply_to="e1", created_at=11),
+        )
+
+        assert [message["message_id"] for message in adapter._dispatched] == ["e1", "e2"]
+
+    @pytest.mark.asyncio
+    async def test_out_of_order_reply_dispatches_after_its_mentioned_parent_arrives(self, adapter):
+        state = adapter._channel_state[CHANNEL]
+        reply = _tagged_event("e2", CHANNEL, content="please continue", reply_to="e1", created_at=11)
+        mention = _event("e1", content="@Chip can you help?", created_at=10)
+
+        await adapter._handle_event(CHANNEL, state, reply)
+        assert adapter._dispatched == []
+
+        await adapter._handle_event(CHANNEL, state, mention)
+
+        assert [message["message_id"] for message in adapter._dispatched] == ["e1", "e2"]
+
+    @pytest.mark.asyncio
+    async def test_pending_reply_keeps_poll_cursor_behind_possible_parent(self, adapter):
+        cli = _ScriptedCli()
+        cli.script(
+            "messages", "get",
+            [_tagged_event("e2", CHANNEL, content="please continue", reply_to="e1", created_at=20)],
+        )
+        cli.script("messages", "get", [_event("e1", content="@Chip can you help?", created_at=10)])
+        adapter._run_cli = cli
+
+        await adapter._poll_channel(CHANNEL)
+        await adapter._poll_channel(CHANNEL)
+
+        second_poll_args, _ = cli.calls[1]
+        if "--since" in second_poll_args:
+            assert int(second_poll_args[second_poll_args.index("--since") + 1]) <= 10
+        assert [message["message_id"] for message in adapter._dispatched] == ["e1", "e2"]
+
+    @pytest.mark.asyncio
+    async def test_expired_pending_reply_does_not_rewind_poll_cursor(self, adapter, monkeypatch):
+        adapter._channel_state[CHANNEL]["last_ts"] = 100
+        monkeypatch.setattr(_buzz_mod.time, "monotonic", lambda: 0)
+        adapter._defer_thread_reply(
+            CHANNEL,
+            "e2",
+            _tagged_event("e2", CHANNEL, content="please continue", reply_to="e1", created_at=20),
+        )
+        monkeypatch.setattr(_buzz_mod.time, "monotonic", lambda: 61)
+        cli = _ScriptedCli()
+        adapter._run_cli = cli
+
+        await adapter._poll_channel(CHANNEL)
+
+        args, _ = cli.calls[0]
+        assert args[args.index("--since") + 1] == "100"
+
+    @pytest.mark.asyncio
+    async def test_deferred_reply_chain_drains_without_recursion(self, adapter):
+        state = adapter._channel_state[CHANNEL]
+        for index in range(500, 1, -1):
+            await adapter._handle_event(
+                CHANNEL,
+                state,
+                _tagged_event(
+                    f"e{index}",
+                    CHANNEL,
+                    content="continue",
+                    reply_to=f"e{index - 1}",
+                    created_at=index,
+                ),
+            )
+
+        await adapter._handle_event(CHANNEL, state, _event("e1", content="@Chip start", created_at=1))
+
+        assert [message["message_id"] for message in adapter._dispatched] == [
+            f"e{index}" for index in range(1, 501)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_thread_require_mention_keeps_replies_gated(self):
+        adapter = _make_adapter({"thread_require_mention": True})
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        await self._poll_with(
+            adapter,
+            _event("e1", content="@Chip can you help?", created_at=10),
+            _tagged_event("e2", CHANNEL, content="please continue", reply_to="e1", created_at=11),
+        )
+
+        assert [message["message_id"] for message in adapter._dispatched] == ["e1"]
 
     @pytest.mark.asyncio
     async def test_allowlist_blocks_unauthorized(self, adapter):

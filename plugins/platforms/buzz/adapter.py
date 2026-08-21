@@ -25,6 +25,7 @@ Configuration in config.yaml::
             cli_path: ""               # path to the buzz binary (default: PATH, then ~/bin/buzz)
             credentials_file: ""       # JSON file holding the nsec (fallback for BUZZ_PRIVATE_KEY)
             allowed_users: []          # empty = allow all; entries are hex pubkeys or npubs
+            thread_require_mention: false  # continue replies after an @mention
 
 Or via environment variables (overrides config.yaml):
     BUZZ_RELAY_URL, BUZZ_CHANNELS, BUZZ_HOME_CHANNEL, BUZZ_POLL_INTERVAL,
@@ -92,6 +93,10 @@ _CHAT_KIND = 9
 _FETCH_LIMIT = 50
 # Bound on the per-channel de-dupe set (events, not bytes).
 _SEEN_CAP = 500
+# When a reply reaches us before its parent, briefly rewind inbound cursors so
+# the next poll / WebSocket reconnect can retrieve that parent too.
+_PENDING_REPLY_LOOKBACK_SECONDS = 60
+_PENDING_REPLY_MAX_AGE_SECONDS = 60
 # Re-run DM discovery (``dms list`` plus the channels-list fallback) every
 # N poll sweeps to pick up conversations opened mid-run.
 _DM_DISCOVERY_EVERY = 5
@@ -392,6 +397,13 @@ class BuzzAdapter(BasePlatformAdapter):
             _rm_cfg = _rm_raw
         self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
 
+        # When false (the default), a direct reply to a message in a thread
+        # started by an @mention continues to reach the agent without another
+        # @mention. Set true in bot-heavy channels to keep strict mention
+        # gating on every thread reply.
+        _trm_cfg = extra.get("thread_require_mention", False)
+        self.thread_require_mention = str(_trm_cfg).strip().lower() not in ("false", "0", "no", "off")
+
         # Inbound transport: "auto" (WebSocket with poll fallback, default),
         # "websocket" (require WS; fail connect when it can't authenticate),
         # or "poll" (CLI polling only). Env (BUZZ_TRANSPORT) overrides
@@ -435,6 +447,16 @@ class BuzzAdapter(BasePlatformAdapter):
         # classification (see _may_reclassify_as_dm).
         self._channel_meta: Dict[str, dict] = {}
         self._user_names: Dict[str, str] = {}
+        # channel_id -> bounded LRU of events in threads entered by an
+        # explicit @mention. Both user and bot event ids are recorded so a
+        # reply chain remains active regardless of which message is replied to.
+        self._mentioned_thread_events: Dict[str, OrderedDict[str, None]] = {}
+        # channel_id -> bounded LRU of unmentioned direct replies received
+        # before their parent @mention (Nostr delivery is not ordered).
+        self._pending_thread_replies: Dict[
+            str, OrderedDict[str, Tuple[dict, float]]
+        ] = {}
+        self._draining_pending_threads: set[str] = set()
         self._poll_count = 0
 
     @property
@@ -595,6 +617,9 @@ class BuzzAdapter(BasePlatformAdapter):
                 pass
         self._poll_task = None
         self._channel_state = {}
+        self._mentioned_thread_events = {}
+        self._pending_thread_replies = {}
+        self._draining_pending_threads = set()
         self._poll_count = 0
 
     # ── Sending ───────────────────────────────────────────────────────────
@@ -628,6 +653,8 @@ class BuzzAdapter(BasePlatformAdapter):
             # Belt-and-braces echo suppression: the poll loop already skips
             # our own pubkey, but marking the id seen makes de-dupe explicit.
             self._mark_seen(str(chat_id), str(event_id))
+            if reply_target and reply_target in self._mentioned_thread_events.get(str(chat_id), {}):
+                self._remember_mentioned_thread_event(str(chat_id), str(event_id))
         return SendResult(
             success=bool(data.get("accepted", True)),
             message_id=str(event_id) if event_id else None,
@@ -681,8 +708,9 @@ class BuzzAdapter(BasePlatformAdapter):
                 "--file", str(local),
                 "--content", "-",
             ]
-            if reply_to:
-                args += ["--reply-to", str(reply_to)]
+            reply_target = reply_to or (metadata or {}).get("thread_id")
+            if reply_target:
+                args += ["--reply-to", str(reply_target)]
             code, out, err = await self._run_cli(args, input_text=caption or "")
             if code != 0:
                 return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
@@ -693,6 +721,8 @@ class BuzzAdapter(BasePlatformAdapter):
             event_id = data.get("event_id")
             if event_id:
                 self._mark_seen(str(chat_id), str(event_id))
+                if reply_target and reply_target in self._mentioned_thread_events.get(str(chat_id), {}):
+                    self._remember_mentioned_thread_event(str(chat_id), str(event_id))
             return SendResult(
                 success=bool(data.get("accepted", True)),
                 message_id=str(event_id) if event_id else None,
@@ -793,6 +823,9 @@ class BuzzAdapter(BasePlatformAdapter):
     async def _send_channel_subscription(self, websocket, subscription_id: str, channel_id: str) -> None:
         state = self._channel_state.get(channel_id) or {}
         since = max(int(state.get("last_ts") or time.time()) - 1, 0)
+        pending_since = self._pending_reply_since_for(channel_id)
+        if pending_since is not None:
+            since = min(since, pending_since)
         request = [
             "REQ",
             subscription_id,
@@ -881,8 +914,17 @@ class BuzzAdapter(BasePlatformAdapter):
                                 channel_id = subscriptions.get(subscription_id)
                                 state = self._channel_state.get(channel_id or "")
                                 if channel_id and state is not None:
+                                    pending_since_before = self._pending_reply_since_for(channel_id)
                                     await self._handle_event(channel_id, state, event)
                                     self._trim_seen(state)
+                                    pending_since_after = self._pending_reply_since_for(channel_id)
+                                    if pending_since_after != pending_since_before:
+                                        # A child can arrive before its parent. Replace this
+                                        # live subscription immediately so the rewind is not
+                                        # deferred until a reconnect.
+                                        await self._send_channel_subscription(
+                                            websocket, subscription_id, channel_id
+                                        )
                             elif message[0] == "CLOSED":
                                 detail = message[-1] if len(message) > 2 else "subscription closed"
                                 raise ConnectionError(str(detail))
@@ -991,10 +1033,14 @@ class BuzzAdapter(BasePlatformAdapter):
         if state is None:
             return
         args = ["messages", "get", "--channel", channel_id, "--limit", str(_FETCH_LIMIT)]
-        if state["last_ts"]:
+        since = state["last_ts"]
+        pending_since = self._pending_reply_since_for(channel_id)
+        if pending_since is not None:
+            since = min(since, pending_since)
+        if since:
             # Nostr `since` is inclusive: same-second events are re-fetched
             # and de-duped by id below.
-            args += ["--since", str(state["last_ts"])]
+            args += ["--since", str(since)]
         code, out, err = await self._run_cli(args)
         if code != 0:
             logger.debug(
@@ -1005,13 +1051,16 @@ class BuzzAdapter(BasePlatformAdapter):
             await self._handle_event(channel_id, state, event)
         self._trim_seen(state)
 
-    async def _handle_event(self, channel_id: str, state: dict, event: dict) -> None:
+    async def _handle_event(
+        self, channel_id: str, state: dict, event: dict, *, already_seen: bool = False
+    ) -> None:
         """De-dupe, filter, and dispatch a single ``messages get`` event."""
         event_id = str(event.get("id") or "")
         created_at = int(event.get("created_at") or 0)
-        if not event_id or event_id in state["seen"]:
+        if not event_id or (not already_seen and event_id in state["seen"]):
             return
-        state["seen"][event_id] = None
+        if not already_seen:
+            state["seen"][event_id] = None
         state["last_ts"] = max(state["last_ts"], created_at)
 
         if int(event.get("kind") or 0) != _CHAT_KIND:
@@ -1030,17 +1079,35 @@ class BuzzAdapter(BasePlatformAdapter):
         self._maybe_latch_dm(channel_id, state, event)
 
         is_dm = state["chat_type"] == "dm"
-        # In shared channels, respond only when addressed — unless
-        # require_mention is disabled, in which case respond to every message.
-        # DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_mentioned(content):
-            return
-
+        is_mentioned = self._is_mentioned(content)
+        reply_to_event_id = self._reply_to_event_id(event)
+        in_mentioned_thread = (
+            bool(reply_to_event_id)
+            and reply_to_event_id in self._mentioned_thread_events.get(channel_id, {})
+        )
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
         # BUZZ_ALLOW_ALL_USERS centrally as well; empty list = no filter here).
         if self._allowed_pubkeys and pubkey not in self._allowed_pubkeys:
             logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
             return
+
+        # In shared channels, respond only when addressed — unless
+        # require_mention is disabled, or this is a direct reply in a thread
+        # the agent entered through an @mention. DMs always dispatch. A direct
+        # reply whose parent has not arrived is retained briefly: Nostr relay
+        # delivery does not guarantee parent-before-child ordering.
+        if (
+            not is_dm
+            and self.require_mention
+            and not is_mentioned
+            and (self.thread_require_mention or not in_mentioned_thread)
+        ):
+            if not self.thread_require_mention and reply_to_event_id:
+                self._defer_thread_reply(channel_id, event_id, event)
+            return
+
+        if not is_dm and (is_mentioned or in_mentioned_thread):
+            self._remember_mentioned_thread_event(channel_id, event_id)
 
         # Strip a leading @mention so slash commands (@Chip /whoami ->
         # /whoami) and clean prompts are recognized. DM messages often still
@@ -1057,6 +1124,8 @@ class BuzzAdapter(BasePlatformAdapter):
             message_id=event_id,
             created_at=created_at,
         )
+        if not is_dm and (is_mentioned or in_mentioned_thread):
+            await self._dispatch_pending_thread_replies(channel_id, state)
 
     # ── DM classification (issue #68871) ──────────────────────────────────
     #
@@ -1209,6 +1278,81 @@ class BuzzAdapter(BasePlatformAdapter):
         if state is not None:
             state["seen"][event_id] = None
             self._trim_seen(state)
+
+    @staticmethod
+    def _reply_to_event_id(event: dict) -> Optional[str]:
+        """Return the direct reply target from Buzz's Nostr ``e`` tag."""
+        tags = event.get("tags")
+        if not isinstance(tags, list):
+            return None
+        for tag in tags:
+            if (
+                isinstance(tag, (list, tuple))
+                and len(tag) >= 4
+                and tag[0] == "e"
+                and tag[3] == "reply"
+                and tag[1]
+            ):
+                return str(tag[1])
+        return None
+
+    def _remember_mentioned_thread_event(self, channel_id: str, event_id: str) -> None:
+        """Record one event in an @mentioned reply tree with a bounded LRU."""
+        events = self._mentioned_thread_events.setdefault(channel_id, OrderedDict())
+        events[event_id] = None
+        events.move_to_end(event_id)
+        while len(events) > _SEEN_CAP:
+            events.popitem(last=False)
+
+    def _defer_thread_reply(self, channel_id: str, event_id: str, event: dict) -> None:
+        """Keep an out-of-order direct reply until its parent arrives."""
+        pending = self._pending_thread_replies.setdefault(channel_id, OrderedDict())
+        pending[event_id] = (event, time.monotonic() + _PENDING_REPLY_MAX_AGE_SECONDS)
+        pending.move_to_end(event_id)
+        while len(pending) > _SEEN_CAP:
+            pending.popitem(last=False)
+
+    def _pending_reply_since_for(self, channel_id: str) -> Optional[int]:
+        """Prune expired replies and return the cursor needed to find parents."""
+        pending = self._pending_thread_replies.get(channel_id)
+        if not pending:
+            return None
+        now = time.monotonic()
+        for event_id, (_event, deadline) in list(pending.items()):
+            if deadline <= now:
+                pending.pop(event_id)
+        if not pending:
+            self._pending_thread_replies.pop(channel_id, None)
+            return None
+        return min(
+            max(int(event.get("created_at") or 0) - _PENDING_REPLY_LOOKBACK_SECONDS, 0)
+            for event, _deadline in pending.values()
+        )
+
+    async def _dispatch_pending_thread_replies(self, channel_id: str, state: dict) -> None:
+        """Dispatch pending replies whose parents are now in an active thread."""
+        if channel_id in self._draining_pending_threads:
+            return
+        self._draining_pending_threads.add(channel_id)
+        try:
+            self._pending_reply_since_for(channel_id)
+            pending = self._pending_thread_replies.get(channel_id)
+            while pending:
+                ready_event_id = next(
+                    (
+                        event_id
+                        for event_id, (event, _deadline) in pending.items()
+                        if self._reply_to_event_id(event) in self._mentioned_thread_events.get(channel_id, {})
+                    ),
+                    None,
+                )
+                if ready_event_id is None:
+                    return
+                event, _deadline = pending.pop(ready_event_id)
+                await self._handle_event(channel_id, state, event, already_seen=True)
+            self._pending_thread_replies.pop(channel_id, None)
+        finally:
+            self._draining_pending_threads.discard(channel_id)
 
     async def _dispatch_message(
         self,

@@ -440,6 +440,11 @@ class WhatsAppBehaviorMixin:
             return False
         if not self._is_authorized_group_sender(data):
             return False
+        # A free-response chat is still observation-aware, but every authorized
+        # inbound message takes the normal dispatch path instead of being stored
+        # as ambient-only context.
+        if chat_id in self._whatsapp_free_response_chats():
+            return False
         return not self._message_has_native_bot_mention(data)
 
     def _message_matches_mention_patterns(self, data: Dict[str, Any]) -> bool:
@@ -475,6 +480,11 @@ class WhatsAppBehaviorMixin:
             if not self._is_group_allowed(chat_id):
                 return False
             if self._whatsapp_observe_unmentioned_group_messages():
+                # Per-chat free-response override: a configured group keeps
+                # observation for context but dispatches every authorized
+                # message without requiring a native mention.
+                if chat_id in self._whatsapp_free_response_chats():
+                    return True
                 return self._message_has_native_bot_mention(data)
         else:
             sender_id = str(data.get("senderId") or data.get("from") or "")

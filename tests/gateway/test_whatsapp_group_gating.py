@@ -105,7 +105,7 @@ def test_observe_mode_dispatches_only_trusted_native_mentions():
     adapter = _make_adapter(
         require_mention=True,
         mention_patterns=[r"^zero\b"],
-        free_response_chats=["120363001234567890@g.us"],
+        free_response_chats=["120363999999999999@g.us"],
         group_policy="open",
         observe_unmentioned_group_messages=True,
     )
@@ -119,6 +119,37 @@ def test_observe_mode_dispatches_only_trusted_native_mentions():
     assert adapter._should_process_message(
         _group_message("hello", mentionedIds=["15551230000@s.whatsapp.net"])
     ) is True
+
+
+@pytest.mark.asyncio
+async def test_observe_mode_free_response_chat_dispatches_without_mention():
+    adapter = _make_adapter(
+        require_mention=True,
+        free_response_chats=["120363001234567890@g.us"],
+        group_policy="open",
+        observe_unmentioned_group_messages=True,
+    )
+
+    # The configured free-response group dispatches every authorized message.
+    free_response = _group_message("no mention here")
+    assert adapter._should_process_message(free_response) is True
+    assert adapter._should_observe_unmentioned_group_message(free_response) is False
+    event = await adapter._build_message_event(free_response)
+    assert event is not None
+    assert "_whatsapp_observed_only" not in event.metadata
+    await adapter._dispatch_or_observe_inbound_event(event)
+    adapter.__dict__["_enqueue_text_event"].assert_called_once_with(event)
+    adapter._session_store.append_to_transcript.assert_not_called()
+
+    # Other groups still require the trusted native mention.
+    other = _group_message("no mention here", chatId="120363888888888888@g.us")
+    assert adapter._should_process_message(other) is False
+    mentioned = _group_message(
+        "hello",
+        chatId="120363888888888888@g.us",
+        mentionedIds=["15551230000@s.whatsapp.net"],
+    )
+    assert adapter._should_process_message(mentioned) is True
 
 
 def test_observe_mode_matches_device_qualified_bot_id():

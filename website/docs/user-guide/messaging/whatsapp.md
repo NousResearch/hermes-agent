@@ -148,7 +148,7 @@ gateway:
         group_sessions_per_user: false
 ```
 
-When enabled, plain-text `@name` strings, wake-word regexes, slash commands, quoted replies, and free-response chat exemptions do not invoke the agent. Only WhatsApp's native mention metadata does. Authorization and group allowlists are checked before a message is retained; normal gateway authorization still controls who may invoke the agent.
+When enabled, plain-text `@name` strings, wake-word regexes, slash commands, and quoted replies do not invoke the agent. Only WhatsApp's native mention metadata does — except for chats listed in `free_response_chats`, which keep observation-backed context while dispatching every authorized message without a mention. Authorization and group allowlists are checked before a message is retained; normal gateway authorization still controls who may invoke the agent.
 
 Then start the gateway:
 

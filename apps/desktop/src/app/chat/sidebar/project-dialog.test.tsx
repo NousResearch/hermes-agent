@@ -1,8 +1,14 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type * as Nanostores from 'nanostores'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ProjectDialog } from './project-dialog'
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  createProject.mockResolvedValue({ id: 'p_created' })
+  pickProjectFolder.mockResolvedValue('/Users/test/my-folder')
+})
 
 afterEach(cleanup)
 
@@ -35,16 +41,20 @@ vi.mock('@/i18n', () => ({
 
 // $projectDialog is a real nanostore atom in the app; recreate it here so
 // useStore behaves identically without pulling in the rest of the projects
-// store (backend calls, project list, etc.) which is irrelevant to the Tip fix.
+// store (backend calls, project list, etc.) which is irrelevant to the dialog
+// interactions under test.
 // vi.mock factories are hoisted above the rest of the file, so the atom must
 // be created inside vi.hoisted to exist by the time the factory runs.
-const { $projectDialog } = vi.hoisted(() => {
+const { $projectDialog, createProject, enterProject, pickProjectFolder } = vi.hoisted(() => {
   const { atom } = require('nanostores') as typeof Nanostores
 
   return {
     $projectDialog: atom<{ mode: 'create' | 'rename' | 'add-folder'; name?: string; projectId?: string } | null>({
       mode: 'create'
-    })
+    }),
+    createProject: vi.fn(),
+    enterProject: vi.fn(),
+    pickProjectFolder: vi.fn()
   }
 })
 
@@ -52,9 +62,10 @@ vi.mock('@/store/projects', () => ({
   $projectDialog,
   addProjectFolder: vi.fn(),
   closeProjectDialog: vi.fn(),
-  createProject: vi.fn(),
+  createProject,
+  enterProject,
   generateProjectIdea: vi.fn(),
-  pickProjectFolder: vi.fn(async () => '/Users/test/my-folder'),
+  pickProjectFolder,
   renameProject: vi.fn()
 }))
 
@@ -69,6 +80,39 @@ vi.mock('@/lib/project-idea-templates', () => ({
 const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
 
 describe('ProjectDialog', () => {
+  it('creates from the folder basename and enters the created project when the name is empty', async () => {
+    render(<ProjectDialog />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }))
+
+    await screen.findByDisplayValue('my-folder')
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => {
+      expect(createProject).toHaveBeenCalledWith({
+        folders: ['/Users/test/my-folder'],
+        idea: undefined,
+        name: 'my-folder',
+        use: true
+      })
+      expect(enterProject).toHaveBeenCalledWith('p_created')
+    })
+  })
+
+  it('keeps an explicit project name when a folder is selected', async () => {
+    render(<ProjectDialog />)
+
+    fireEvent.change(screen.getByPlaceholderText('Project name'), { target: { value: 'My project' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }))
+
+    await screen.findByRole('button', { name: 'Remove folder' })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => {
+      expect(createProject).toHaveBeenCalledWith(expect.objectContaining({ name: 'My project' }))
+    })
+  })
+
   it('wraps the "shuffle idea" button in a Tip', () => {
     render(<ProjectDialog />)
 

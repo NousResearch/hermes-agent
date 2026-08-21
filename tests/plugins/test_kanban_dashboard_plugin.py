@@ -515,6 +515,99 @@ def test_dispatch_dry_run(client):
     assert isinstance(body, dict)
 
 
+def test_dispatch_passes_max_in_progress_from_config(client, monkeypatch):
+    """Dashboard nudge must honour kanban.max_in_progress (and friends).
+
+    Regression: POST /dispatch used to default max_spawn=8 and omit the
+    board-wide / per-profile caps, so a UI nudge could push running count
+    past kanban.max_in_progress even though the gateway tick respected it.
+    """
+    import sys
+
+    fake_config = {
+        "kanban": {
+            "max_in_progress": 3,
+            "max_in_progress_per_profile": 2,
+            "max_spawn": 5,
+            "default_assignee": "researcher",
+        }
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: fake_config)
+
+    captured: dict = {}
+
+    def fake_dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        return kb.DispatchResult()
+
+    monkeypatch.setattr(kb, "dispatch_once", fake_dispatch_once)
+    # The plugin module binds `kanban_db` at import time — patch that alias too.
+    plugin_mod = sys.modules.get("hermes_dashboard_plugin_kanban_test")
+    assert plugin_mod is not None
+    monkeypatch.setattr(plugin_mod.kanban_db, "dispatch_once", fake_dispatch_once)
+
+    r = client.post("/api/plugins/kanban/dispatch?dry_run=true")
+    assert r.status_code == 200
+    assert captured.get("max_in_progress") == 3
+    assert captured.get("max_in_progress_per_profile") == 2
+    assert captured.get("max_spawn") == 5  # from config when ?max= omitted
+    assert captured.get("default_assignee") == "researcher"
+    assert captured.get("dry_run") is True
+
+
+def test_dispatch_max_query_overrides_config_max_spawn(client, monkeypatch):
+    """?max=N overrides kanban.max_spawn but must still pass max_in_progress."""
+    import sys
+
+    fake_config = {
+        "kanban": {
+            "max_in_progress": 3,
+            "max_spawn": 10,
+        }
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: fake_config)
+
+    captured: dict = {}
+
+    def fake_dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        return kb.DispatchResult()
+
+    monkeypatch.setattr(kb, "dispatch_once", fake_dispatch_once)
+    plugin_mod = sys.modules.get("hermes_dashboard_plugin_kanban_test")
+    assert plugin_mod is not None
+    monkeypatch.setattr(plugin_mod.kanban_db, "dispatch_once", fake_dispatch_once)
+
+    r = client.post("/api/plugins/kanban/dispatch?dry_run=true&max=2")
+    assert r.status_code == 200
+    assert captured.get("max_spawn") == 2
+    assert captured.get("max_in_progress") == 3
+
+
+def test_dispatch_max_zero_means_no_spawns(client, monkeypatch):
+    """?max=0 must reach dispatch_once as 0 (block spawns), not None/unlimited."""
+    import sys
+
+    fake_config = {"kanban": {"max_in_progress": 3, "max_spawn": 10}}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: fake_config)
+
+    captured: dict = {}
+
+    def fake_dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        return kb.DispatchResult()
+
+    monkeypatch.setattr(kb, "dispatch_once", fake_dispatch_once)
+    plugin_mod = sys.modules.get("hermes_dashboard_plugin_kanban_test")
+    assert plugin_mod is not None
+    monkeypatch.setattr(plugin_mod.kanban_db, "dispatch_once", fake_dispatch_once)
+
+    r = client.post("/api/plugins/kanban/dispatch?dry_run=true&max=0")
+    assert r.status_code == 200
+    assert captured.get("max_spawn") == 0
+    assert captured.get("max_in_progress") == 3
+
+
 # ---------------------------------------------------------------------------
 # Triage column (new v1 status)
 # ---------------------------------------------------------------------------

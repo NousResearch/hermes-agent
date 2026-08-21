@@ -2278,17 +2278,90 @@ def get_task_log(
 # Dispatch nudge (optional quick-path so the UI doesn't wait 60 s)
 # ---------------------------------------------------------------------------
 
+def _coerce_positive_int(value: Any) -> Optional[int]:
+    """Return int(value) when it is an integer >= 1, else None."""
+    if value is None:
+        return None
+    try:
+        ival = int(value)
+    except (TypeError, ValueError):
+        return None
+    return ival if ival >= 1 else None
+
+
+def _dispatch_concurrency_from_config() -> dict[str, Any]:
+    """Load kanban concurrency knobs for the dashboard nudge path.
+
+    Mirrors ``hermes_cli.kanban._cmd_dispatch`` and the gateway-embedded
+    dispatcher so ``POST /dispatch`` cannot bypass
+    ``kanban.max_in_progress`` / ``max_in_progress_per_profile`` (the old
+    nudge defaulted ``max=8`` and passed only ``max_spawn``, so a board
+    capped at 3 could still jump to 8 running after one UI nudge).
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(kanban_cfg, dict):
+            kanban_cfg = {}
+    except Exception:
+        return {
+            "max_in_progress": None,
+            "max_in_progress_per_profile": None,
+            "max_spawn": None,
+            "default_assignee": None,
+        }
+    return {
+        "max_in_progress": _coerce_positive_int(kanban_cfg.get("max_in_progress")),
+        "max_in_progress_per_profile": _coerce_positive_int(
+            kanban_cfg.get("max_in_progress_per_profile")
+        ),
+        "max_spawn": _coerce_positive_int(kanban_cfg.get("max_spawn")),
+        "default_assignee": (kanban_cfg.get("default_assignee") or "").strip() or None,
+    }
+
+
 @router.post("/dispatch")
 def dispatch(
     dry_run: bool = Query(False),
-    max_n: int = Query(8, alias="max"),
+    max_n: Optional[int] = Query(None, alias="max"),
     board: Optional[str] = Query(None),
 ):
+    """Nudge one dispatcher tick (skip the 60 s wait).
+
+    Honours the same concurrency config as the gateway / CLI:
+
+    - ``kanban.max_in_progress`` — board-wide running cap
+    - ``kanban.max_in_progress_per_profile`` — per-assignee cap
+    - ``kanban.max_spawn`` — per-tick spawn budget (overridden by ``?max=``)
+    - ``kanban.default_assignee`` — fallback for unassigned ready tasks
+
+    ``?max=N`` is an explicit per-tick spawn budget (same as
+    ``hermes kanban dispatch --max N``); it does **not** bypass
+    ``max_in_progress``.
+    """
     board = _resolve_board(board)
+    caps = _dispatch_concurrency_from_config()
+    # Explicit ?max= wins over config max_spawn (same as CLI --max). Pass the
+    # integer through — including 0, which means "spawn nothing this tick" —
+    # rather than coercing non-positive values to None (unlimited).
+    if max_n is not None and max_n < 0:
+        raise HTTPException(
+            status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="max must be >= 0",
+        )
+    max_spawn = max_n if max_n is not None else caps["max_spawn"]
     conn = _conn(board=board)
     try:
         result = kanban_db.dispatch_once(
-            conn, dry_run=dry_run, max_spawn=max_n, board=board,
+            conn,
+            dry_run=dry_run,
+            max_spawn=max_spawn,
+            max_in_progress=caps["max_in_progress"],
+            max_in_progress_per_profile=caps["max_in_progress_per_profile"],
+            default_assignee=caps["default_assignee"],
+            board=board,
         )
         # DispatchResult is a dataclass.
         try:

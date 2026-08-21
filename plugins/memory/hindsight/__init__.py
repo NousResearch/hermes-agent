@@ -1693,8 +1693,19 @@ class HindsightMemoryProvider(MemoryProvider):
             self._config.get("retain_assistant_prefix") or os.environ.get("HINDSIGHT_RETAIN_ASSISTANT_PREFIX", "Assistant")
         ).strip() or "Assistant"
 
-        # Retain controls
-        self._auto_retain = self._config.get("auto_retain", True)
+        # Agent context: gate auto-retention to primary (user-facing) sessions.
+        # Non-primary contexts (cron, subagent, flush) must not retain into the
+        # shared memory bank. Mirror supermemory's write gate pattern (#72779).
+        self._agent_context = str(kwargs.get("agent_context", "")).strip()
+        if self._agent_context in {"cron", "flush", "subagent"}:
+            logger.debug(
+                "Hindsight auto-retain disabled for agent_context=%s",
+                self._agent_context,
+            )
+            self._auto_retain = False
+        else:
+            self._auto_retain = self._config.get("auto_retain", True)
+
         self._retain_every_n_turns = max(1, int(self._config.get("retain_every_n_turns", 1)))
         self._retain_context = self._config.get("retain_context", "conversation between Hermes Agent and the User")
 

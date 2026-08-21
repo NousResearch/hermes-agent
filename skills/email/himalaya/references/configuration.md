@@ -11,29 +11,22 @@ display-name = "Your Name"
 default = true
 
 # IMAP backend for reading emails
-backend.type = "imap"
-backend.host = "imap.example.com"
-backend.port = 993
-backend.encryption.type = "tls"
-backend.login = "user@example.com"
-backend.auth.type = "password"
-backend.auth.raw = "your-password"
+imap.server = "imap.example.com:993"
+imap.sasl.plain.username = "user@example.com"
+imap.sasl.plain.password.raw = "your-password"
 
 # SMTP backend for sending emails
-message.send.backend.type = "smtp"
-message.send.backend.host = "smtp.example.com"
-message.send.backend.port = 587
-message.send.backend.encryption.type = "start-tls"
-message.send.backend.login = "user@example.com"
-message.send.backend.auth.type = "password"
-message.send.backend.auth.raw = "your-password"
+smtp.server = "smtp.example.com:587"
+smtp.starttls = true
+smtp.sasl.plain.username = "user@example.com"
+smtp.sasl.plain.password.raw = "your-password"
 
-# Folder aliases — required whenever server folder names differ
-# from himalaya's canonical names. See "Folder Aliases" below.
-folder.aliases.inbox = "INBOX"
-folder.aliases.sent = "Sent"
-folder.aliases.drafts = "Drafts"
-folder.aliases.trash = "Trash"
+# Mailbox aliases — required whenever server folder names differ
+# from himalaya's canonical names. See "Mailbox Aliases" below.
+mailbox.alias.inbox = "INBOX"
+mailbox.alias.sent = "Sent"
+mailbox.alias.drafts = "Drafts"
+mailbox.alias.trash = "Trash"
 ```
 
 ## Password Options
@@ -41,23 +34,18 @@ folder.aliases.trash = "Trash"
 ### Raw password (testing only, not recommended)
 
 ```toml
-backend.auth.raw = "your-password"
+imap.sasl.plain.password.raw = "your-password"
+# smtp.sasl.plain.password.raw = "your-password"
 ```
 
 ### Password from command (recommended)
 
 ```toml
-backend.auth.cmd = "pass show email/imap"
-# backend.auth.cmd = "security find-generic-password -a user@example.com -s imap -w"
+imap.sasl.plain.password.cmd = "pass show email/imap"
+# imap.sasl.plain.password.cmd = "security find-generic-password -a user@example.com -s imap -w"
 ```
 
-### System keyring (requires keyring feature)
-
-```toml
-backend.auth.keyring = "imap-example"
-```
-
-Then run `himalaya account configure <account>` to store the password.
+Then run `himalaya` to set up an account (the wizard prints a ready-to-save TOML config).
 
 ## Gmail Configuration
 
@@ -67,31 +55,24 @@ email = "you@gmail.com"
 display-name = "Your Name"
 default = true
 
-backend.type = "imap"
-backend.host = "imap.gmail.com"
-backend.port = 993
-backend.encryption.type = "tls"
-backend.login = "you@gmail.com"
-backend.auth.type = "password"
-backend.auth.cmd = "pass show google/app-password"
+imap.server = "imap.gmail.com:993"
+imap.sasl.plain.username = "you@gmail.com"
+imap.sasl.plain.password.raw = "app-password"
 
-message.send.backend.type = "smtp"
-message.send.backend.host = "smtp.gmail.com"
-message.send.backend.port = 587
-message.send.backend.encryption.type = "start-tls"
-message.send.backend.login = "you@gmail.com"
-message.send.backend.auth.type = "password"
-message.send.backend.auth.cmd = "pass show google/app-password"
+smtp.server = "smtp.gmail.com:587"
+smtp.starttls = true
+smtp.sasl.plain.username = "you@gmail.com"
+smtp.sasl.plain.password.raw = "app-password"
 
 # Gmail folder mapping. Without these, save-to-Sent fails after
 # SMTP delivery succeeds (Gmail's Sent folder is `[Gmail]/Sent Mail`,
 # not `Sent`), and `himalaya message send` exits non-zero. Any
 # caller that retries on that error will re-run SMTP — duplicate
 # emails to recipients. Always include this block for Gmail.
-folder.aliases.inbox = "INBOX"
-folder.aliases.sent = "[Gmail]/Sent Mail"
-folder.aliases.drafts = "[Gmail]/Drafts"
-folder.aliases.trash = "[Gmail]/Trash"
+mailbox.alias.inbox = "INBOX"
+mailbox.alias.sent = "[Gmail]/Sent Mail"
+mailbox.alias.drafts = "[Gmail]/Drafts"
+mailbox.alias.trash = "[Gmail]/Trash"
 ```
 
 **Note:** Gmail requires an App Password if 2FA is enabled.
@@ -103,62 +84,47 @@ folder.aliases.trash = "[Gmail]/Trash"
 email = "you@icloud.com"
 display-name = "Your Name"
 
-backend.type = "imap"
-backend.host = "imap.mail.me.com"
-backend.port = 993
-backend.encryption.type = "tls"
-backend.login = "you@icloud.com"
-backend.auth.type = "password"
-backend.auth.cmd = "pass show icloud/app-password"
+imap.server = "imap.mail.me.com:993"
+imap.sasl.plain.username = "you@icloud.com"
+imap.sasl.plain.password.raw = "app-password"
 
-message.send.backend.type = "smtp"
-message.send.backend.host = "smtp.mail.me.com"
-message.send.backend.port = 587
-message.send.backend.encryption.type = "start-tls"
-message.send.backend.login = "you@icloud.com"
-message.send.backend.auth.type = "password"
-message.send.backend.auth.cmd = "pass show icloud/app-password"
+smtp.server = "smtp.mail.me.com:587"
+smtp.starttls = true
+smtp.sasl.plain.username = "you@icloud.com"
+smtp.sasl.plain.password.raw = "app-password"
 ```
 
 **Note:** Generate an app-specific password at appleid.apple.com
 
-## Folder Aliases
+## Mailbox Aliases
 
-Map himalaya's canonical folder names (`inbox`, `sent`, `drafts`,
-`trash`) to whatever the server actually calls them. Use the
-v1.2.0 `folder.aliases.X` syntax (plural, dotted keys, directly
-under `[accounts.NAME]`):
+Map himalaya's canonical mailbox names (`inbox`, `sent`, `drafts`,
+`trash`) to whatever the server actually calls them:
 
 ```toml
 [accounts.default]
 # ... other account config ...
 
-folder.aliases.inbox = "INBOX"
-folder.aliases.sent = "Sent"
-folder.aliases.drafts = "Drafts"
-folder.aliases.trash = "Trash"
+mailbox.alias.inbox = "INBOX"
+mailbox.alias.sent = "Sent"
+mailbox.alias.drafts = "Drafts"
+mailbox.alias.trash = "Trash"
 ```
 
-The equivalent TOML sub-section form also works in v1.2.0:
+The equivalent TOML sub-section form also works:
 
 ```toml
-[accounts.default.folder.aliases]
+[accounts.default.mailbox.aliases]
 inbox = "INBOX"
 sent = "Sent"
 drafts = "Drafts"
 trash = "Trash"
 ```
 
-> **Don't use the singular `alias` form.** Pre-v1.2.0 docs showed
-> `[accounts.NAME.folder.alias]` (singular). v1.2.0 silently
-> ignores that sub-section — TOML parses without error, but the
-> alias resolver never reads it. Every lookup then falls through
-> to the canonical name. On Gmail (where `sent` is actually
-> `[Gmail]/Sent Mail`) this means save-to-Sent fails *after* SMTP
-> delivery succeeds, and `himalaya message send` exits non-zero.
-> Any caller (agent, script, user) that retries on that error
-> code will re-run the send — including SMTP — producing duplicate
-> emails to recipients. Always use `folder.aliases.X` (plural).
+> **Note on v2.0.0 change.** Himalaya v2.0.0 renamed `folder.aliases.*`
+> to `mailbox.alias.*`. If you are upgrading from v1.x, update your
+> config accordingly — the old `folder.aliases.*` keys are ignored by
+> v2.0.0.
 
 ## Multiple Accounts
 
@@ -184,21 +150,19 @@ himalaya --account work envelope list
 ```toml
 [accounts.local]
 email = "user@example.com"
-
-backend.type = "notmuch"
-backend.db-path = "~/.mail/.notmuch"
+# Config structure for notmuch differs — see himalaya docs.
 ```
 
 ## OAuth2 Authentication (for providers that support it)
 
 ```toml
-backend.auth.type = "oauth2"
-backend.auth.client-id = "your-client-id"
-backend.auth.client-secret.cmd = "pass show oauth/client-secret"
-backend.auth.access-token.cmd = "pass show oauth/access-token"
-backend.auth.refresh-token.cmd = "pass show oauth/refresh-token"
-backend.auth.auth-url = "https://provider.com/oauth/authorize"
-backend.auth.token-url = "https://provider.com/oauth/token"
+# IMAP SASL OAuth2
+imap.sasl.oauth2.client-id = "your-client-id"
+imap.sasl.oauth2.client-secret.cmd = "pass show oauth/client-secret"
+imap.sasl.oauth2.access-token.cmd = "pass show oauth/access-token"
+imap.sasl.oauth2.refresh-token.cmd = "pass show oauth/refresh-token"
+imap.sasl.oauth2.auth-url = "https://provider.com/oauth/authorize"
+imap.sasl.oauth2.token-url = "https://provider.com/oauth/token"
 ```
 
 ## Additional Options

@@ -284,6 +284,48 @@ async def test_slash_command_registration_stays_under_discord_limit(adapter):
     assert len(registered_plugins) < 200, "cap did not drop any overflow commands"
 
 
+@pytest.mark.asyncio
+async def test_plugin_commands_precede_generated_builtins_at_discord_cap(adapter):
+    """Explicit plugin commands survive generated built-in overflow.
+
+    Native commands remain first, and the consolidated /skill command still
+    gets its reserved final slot. This reproduces the Discord picker symptom
+    where a valid user plugin command (for example /krieger) vanished once
+    generated gateway commands filled the 100-command application cap.
+    """
+    from hermes_cli.commands import CommandDef
+
+    generated_builtins = [
+        CommandDef(f"generated{i:03d}", "Generated built-in", "Info")
+        for i in range(200)
+    ]
+    krieger = {
+        "krieger": {
+            "handler": lambda _a: "ok",
+            "description": "Run the Krieger plugin command",
+            "args_hint": "",
+            "plugin": "krieger",
+        }
+    }
+
+    with patch("hermes_cli.commands.COMMAND_REGISTRY", generated_builtins), \
+         patch("hermes_cli.commands._is_gateway_available", return_value=True), \
+         patch("hermes_cli.commands._resolve_config_gates", return_value={}), \
+         patch("hermes_cli.plugins.get_plugin_commands", return_value=krieger), \
+         patch(
+             "hermes_cli.commands.discord_skill_commands_by_category",
+             return_value=({"tools": [("demo", "Demo skill", "/demo")]}, [], 0),
+         ):
+        adapter._register_slash_commands()
+
+    tree_names = set(adapter._client.tree.commands)
+    for native in ("status", "stop", "new", "model", "help"):
+        assert native in tree_names
+    assert "krieger" in tree_names
+    assert "skill" in tree_names
+    assert len(tree_names) <= 100
+
+
 # ------------------------------------------------------------------
 # _handle_thread_create_slash — success, session dispatch, failure
 # ------------------------------------------------------------------

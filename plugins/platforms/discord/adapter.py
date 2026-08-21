@@ -6046,12 +6046,45 @@ class DiscordAdapter(BasePlatformAdapter):
         slot_cap = _DISCORD_MAX_APP_COMMANDS - 1
         dropped_over_cap = 0
         try:
-            from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
+            already_registered = {cmd.name for cmd in tree.get_commands()}
+        except Exception:
+            pass
 
-            try:
-                already_registered = {cmd.name for cmd in tree.get_commands()}
-            except Exception:
-                pass
+        # ── Plugin-registered slash commands ──
+        # Plugins register via PluginContext.register_command(); we mirror
+        # those into Discord's native slash picker so users get the same
+        # autocomplete UX as for built-in commands. Explicit user plugin
+        # commands take priority over lower-priority generated built-ins, so
+        # they remain reachable when Discord's 100-command cap is full.
+        try:
+            from hermes_cli.commands import _iter_plugin_command_entries
+
+            for plugin_name, plugin_desc, plugin_args_hint in _iter_plugin_command_entries():
+                discord_name = plugin_name.lower()[:32]
+                if discord_name in already_registered:
+                    continue
+                if len(already_registered) >= slot_cap:
+                    dropped_over_cap += 1
+                    continue
+                auto_cmd = _build_auto_slash_command(
+                    plugin_name,
+                    plugin_desc,
+                    plugin_args_hint,
+                )
+                try:
+                    tree.add_command(auto_cmd)
+                    already_registered.add(discord_name)
+                except Exception:
+                    # Silently skip commands that fail registration (e.g.
+                    # name conflict with a subcommand group).
+                    pass
+        except Exception as e:
+            logger.warning(
+                "Discord auto-register from plugin commands failed: %s", e
+            )
+
+        try:
+            from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
 
             config_overrides = _resolve_config_gates()
 
@@ -6084,38 +6117,6 @@ class DiscordAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             logger.warning("Discord auto-register from COMMAND_REGISTRY failed: %s", e)
-
-        # ── Plugin-registered slash commands ──
-        # Plugins register via PluginContext.register_command(); we mirror
-        # those into Discord's native slash picker so users get the same
-        # autocomplete UX as for built-in commands. No per-platform plugin
-        # API needed — plugin commands are platform-agnostic.
-        try:
-            from hermes_cli.commands import _iter_plugin_command_entries
-
-            for plugin_name, plugin_desc, plugin_args_hint in _iter_plugin_command_entries():
-                discord_name = plugin_name.lower()[:32]
-                if discord_name in already_registered:
-                    continue
-                if len(already_registered) >= slot_cap:
-                    dropped_over_cap += 1
-                    continue
-                auto_cmd = _build_auto_slash_command(
-                    plugin_name,
-                    plugin_desc,
-                    plugin_args_hint,
-                )
-                try:
-                    tree.add_command(auto_cmd)
-                    already_registered.add(discord_name)
-                except Exception:
-                    # Silently skip commands that fail registration (e.g.
-                    # name conflict with a subcommand group).
-                    pass
-        except Exception as e:
-            logger.warning(
-                "Discord auto-register from plugin commands failed: %s", e
-            )
 
         # Register skills under a single /skill command group with category
         # subcommand groups.  This uses 1 top-level slot instead of N,

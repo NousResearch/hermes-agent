@@ -435,6 +435,109 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               ''
           );
 
+        # ── How the backend waits for its bind target ────────────────────
+        # The backend binds to `host` immediately by default. A unit that
+        # starts at boot can lose the race against the daemon that supplies
+        # the address, such as tailscaled. `backend.waitFor` puts a poll in
+        # front of the bind. This check proves three properties: the default
+        # keeps the direct command line, each wait mode makes a launcher that
+        # polls and then execs hermes, and the assertions reject a
+        # configuration that cannot work.
+        backend-bind-wait =
+          let
+            execOf =
+              settings:
+              (evalNixosModule ({ enable = true; } // settings)).config.systemd.services.hermes-backend.serviceConfig.ExecStart;
+
+            direct = execOf { backend.mode = "serve"; };
+
+            hostnameWait = execOf {
+              backend = {
+                mode = "serve";
+                host = "host.example.ts.net";
+                waitFor = "hostname";
+              };
+            };
+
+            interfaceWait = execOf {
+              backend = {
+                mode = "dashboard";
+                waitFor = "interface";
+                interfaceName = "tailscale0";
+                waitTimeout = 30;
+              };
+            };
+
+            # The launcher is a store path. Read it to see what it runs.
+            hostnameScript = builtins.readFile hostnameWait;
+            interfaceScript = builtins.readFile interfaceWait;
+
+            evalFails =
+              settings:
+              !(builtins.tryEval (
+                lib.deepSeq
+                  (evalNixosModule ({ enable = true; } // settings)).config.system.build.toplevel.drvPath
+                  true
+              )).success;
+
+            failures =
+              # The default must not change.
+              lib.optional (!lib.hasInfix "bin/hermes serve --host 127.0.0.1" direct)
+                "without waitFor the backend must exec hermes directly, got: ${direct}"
+              ++ lib.optional (lib.hasInfix "hermes-backend-launch" direct)
+                "without waitFor the backend must not use the launcher"
+
+              # The hostname mode polls the resolver, then binds the name.
+              ++ lib.optional (!lib.hasInfix "hermes-backend-launch" hostnameWait)
+                "waitFor = hostname must run the launcher, got: ${hostnameWait}"
+              ++ lib.optional (!lib.hasInfix "getent hosts" hostnameScript)
+                "the hostname launcher must poll with getent"
+              ++ lib.optional (!lib.hasInfix "host.example.ts.net" hostnameScript)
+                "the hostname launcher must poll for backend.host"
+              ++ lib.optional (!lib.hasInfix "exec " hostnameScript)
+                "the launcher must exec hermes, so that it keeps the MainPID"
+              ++ lib.optional (!lib.hasInfix ''--host "$_target"'' hostnameScript)
+                "the launcher must bind the address that the poll resolved"
+
+              # The interface mode reads an address off the interface.
+              ++ lib.optional (!lib.hasInfix "tailscale0" interfaceScript)
+                "the interface launcher must poll backend.interfaceName"
+              ++ lib.optional (!lib.hasInfix "_timeout=30" interfaceScript)
+                "the launcher must use backend.waitTimeout"
+              ++ lib.optional (!lib.hasInfix "bin/hermes dashboard" interfaceScript)
+                "the launcher must keep backend.mode"
+
+              # The assertions reject what cannot work.
+              ++
+                lib.optional
+                  (!evalFails {
+                    backend = {
+                      mode = "serve";
+                      waitFor = "interface";
+                    };
+                  })
+                  "an assertion must reject waitFor = interface without interfaceName"
+              ++
+                lib.optional
+                  (!evalFails {
+                    backend = {
+                      mode = "serve";
+                      interfaceName = "tailscale0";
+                    };
+                  })
+                  "an assertion must reject interfaceName without waitFor = interface";
+          in
+          pkgs.runCommand "hermes-backend-bind-wait" { } (
+            if failures != [ ] then
+              throw "backend bind wait check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+            else
+              ''
+                echo "PASS: backend bind wait (default, hostname, interface)"
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
+
         # ── How .env is built ────────────────────────────────────────────
         # This check runs the real script that both modules use to build
         # $HERMES_HOME/.env. The important property is that a second run
@@ -523,6 +626,9 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 host = "127.0.0.1";
                 port = 9119;
                 extraArgs = [ ];
+                waitFor = null;
+                interfaceName = null;
+                waitTimeout = 120;
               };
             };
             sentinel = "--hermes-nix-argv-probe";
@@ -555,8 +661,8 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             }
 
             check "gateway"   ${probe (common.gatewayArgv (cfgFor "none"))}
-            check "serve"     ${probe (common.backendArgv (cfgFor "serve"))}
-            check "dashboard" ${probe (common.backendArgv (cfgFor "dashboard"))}
+            check "serve"     ${probe (common.backendArgv { inherit pkgs; cfg = cfgFor "serve"; })}
+            check "dashboard" ${probe (common.backendArgv { inherit pkgs; cfg = cfgFor "dashboard"; })}
 
             mkdir -p $out
             echo "ok" > $out/result

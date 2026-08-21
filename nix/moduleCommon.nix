@@ -540,6 +540,70 @@ let
             header that is different from the address that the server bound
             to. This is a defence against DNS rebinding. Bind to the name or
             the address that your clients use.
+
+            If the name or the address is not available when the unit starts,
+            set `waitFor` as well.
+          '';
+        };
+
+        waitFor = mkOption {
+          type = types.nullOr (
+            types.enum [
+              "hostname"
+              "interface"
+            ]
+          );
+          default = null;
+          description = ''
+            Wait for the bind target before the backend starts.
+
+            The backend binds to `host` immediately by default. The bind fails
+            when the target is not ready, because uvicorn cannot bind a name
+            that does not resolve, or an address that no interface holds. A
+            unit that starts at boot can lose this race against the daemon
+            that supplies the target, such as tailscaled or a VPN client.
+
+            A systemd user unit cannot order itself after a system unit.
+            `After=` and `Requires=` are silent no-ops across that boundary.
+            Thus the wait is a poll, and not a dependency.
+
+            The values are:
+
+            - `null` — bind immediately. `Restart=on-failure` retries the unit
+              until the target is ready.
+            - `"hostname"` — poll until `host` resolves, then bind to `host`.
+              Use this for a name, such as a Tailscale MagicDNS name.
+            - `"interface"` — poll until `interfaceName` has an IPv4 address,
+              then bind to that address. Use this when the address changes,
+              and a name for it does not exist.
+
+            CAUTION: The `"interface"` value ignores `host`. The unit binds to
+            the address of the interface.
+          '';
+          example = "hostname";
+        };
+
+        interfaceName = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = ''
+            The interface to take the bind address from.
+
+            This option is necessary when `waitFor` is `"interface"`, and it
+            has no effect for the other values.
+          '';
+          example = "tailscale0";
+        };
+
+        waitTimeout = mkOption {
+          type = types.ints.positive;
+          default = 120;
+          description = ''
+            The time in seconds to wait for the bind target.
+
+            The unit stops with an error after this time. It does not bind to
+            a different address, because a fallback address can expose the
+            backend more widely than you intend.
           '';
         };
 
@@ -783,19 +847,103 @@ let
     ]
     ++ cfg.extraArgs;
 
-  backendArgv =
-    cfg:
+  # The command line of the backend, without the wait.
+  backendCommand =
+    cfg: host:
     [
       "${effectivePackage cfg}/bin/hermes"
       cfg.backend.mode
       "--host"
-      cfg.backend.host
+      host
       "--port"
       (toString cfg.backend.port)
       # CAUTION: A service must not try to open a browser when it starts.
       "--no-open"
     ]
     ++ cfg.backend.extraArgs;
+
+  # The launcher that waits for the bind target, then starts the backend.
+  #
+  # `exec` on the last line keeps hermes as the MainPID of the unit. No shell
+  # stays in the cgroup, and the restart logic of systemd sees the real
+  # process.
+  backendLauncher =
+    { pkgs, cfg }:
+    # The bind address is known only at start time, but escapeShellArgs quotes
+    # each argument. Thus the command line is built with a placeholder, and the
+    # placeholder becomes the shell variable after the quoting.
+    pkgs.writeShellScript "hermes-backend-launch" (
+      builtins.replaceStrings [ "@HOST@" ] [ ''"$_target"'' ] ''
+        set -euo pipefail
+
+        _timeout=${toString cfg.backend.waitTimeout}
+        _waited=0
+
+        ${
+          if cfg.backend.waitFor == "hostname" then
+            ''
+              _target=${lib.escapeShellArg cfg.backend.host}
+              _how="hostname"
+
+              while :; do
+                if ${pkgs.getent}/bin/getent hosts "$_target" >/dev/null 2>&1; then
+                  break
+                fi
+
+                if [ "$_waited" -ge "$_timeout" ]; then
+                  echo "hermes-backend: '$_target' did not resolve after ''${_timeout}s. The unit stops." >&2
+                  exit 1
+                fi
+
+                if [ "$_waited" = 0 ]; then
+                  echo "hermes-backend: waits for '$_target' to resolve..." >&2
+                fi
+                ${pkgs.coreutils}/bin/sleep 2
+                _waited=$(( _waited + 2 ))
+              done
+            ''
+          else
+            ''
+              _iface=${lib.escapeShellArg cfg.backend.interfaceName}
+              _how="interface $_iface"
+
+              while :; do
+                _target="$(${pkgs.iproute2}/bin/ip -4 -oneline addr show dev "$_iface" 2>/dev/null \
+                             | ${pkgs.gawk}/bin/awk '{print $4}' \
+                             | ${pkgs.coreutils}/bin/cut -d/ -f1 \
+                             | ${pkgs.coreutils}/bin/head -n1 || true)"
+
+                if [ -n "''${_target:-}" ]; then
+                  break
+                fi
+
+                if [ "$_waited" -ge "$_timeout" ]; then
+                  echo "hermes-backend: interface '$_iface' had no IPv4 address after ''${_timeout}s. The unit stops." >&2
+                  echo "hermes-backend: a fallback address can expose the backend more widely than you intend." >&2
+                  exit 1
+                fi
+
+                if [ "$_waited" = 0 ]; then
+                  echo "hermes-backend: waits for an IPv4 address on '$_iface'..." >&2
+                fi
+                ${pkgs.coreutils}/bin/sleep 2
+                _waited=$(( _waited + 2 ))
+              done
+            ''
+        }
+
+        echo "hermes-backend: binds to $_target:${toString cfg.backend.port} (from $_how)" >&2
+
+        exec ${lib.escapeShellArgs (backendCommand cfg "@HOST@")}
+      ''
+    );
+
+  backendArgv =
+    { pkgs, cfg }:
+    if cfg.backend.waitFor == null then
+      backendCommand cfg cfg.backend.host
+    else
+      [ "${backendLauncher { inherit pkgs cfg; }}" ];
 
   backendDescription =
     cfg:
@@ -884,6 +1032,20 @@ let
       }
     ];
 
+  # The backend wait needs an interface name when it polls an interface.
+  backendBindAssertions =
+    { cfg, optionPath }:
+    [
+      {
+        assertion = cfg.backend.waitFor != "interface" || cfg.backend.interfaceName != null;
+        message = "${optionPath}.backend.interfaceName must be set when backend.waitFor is \"interface\".";
+      }
+      {
+        assertion = cfg.backend.waitFor == "interface" || cfg.backend.interfaceName == null;
+        message = "${optionPath}.backend.interfaceName has no effect unless backend.waitFor is \"interface\".";
+      }
+    ];
+
   # The subdirectories of HERMES_HOME that both modules make.
   stateSubdirs = [
     "cron"
@@ -896,6 +1058,7 @@ in
 {
   inherit
     backendArgv
+    backendBindAssertions
     backendDescription
     deepConfigType
     effectivePackage

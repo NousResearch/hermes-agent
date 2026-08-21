@@ -423,7 +423,14 @@ function groupChatSyncEntryKey(entry) {
     String(entry?.from?.kind || ''),
     String(entry?.from?.name || ''),
     String(entry?.from?.source || ''),
-    String(entry?.thread || ''),
+    // Threadless entries (pre-thread rooms, older Desktop builds) get
+    // SYNTHETIC `legacy-N` ids from assignLegacyThreads. Those ids are
+    // position-derived — not stable across a gateway round-trip (the
+    // projection copy may be threadless or numbered differently). Collapse
+    // the whole synthetic family to one bucket, or the merge duplicates
+    // every id-less entry — shifting watermarks and manufacturing phantom
+    // member turns that re-submit into busy sessions.
+    String(entry?.thread || 'legacy').replace(/^legacy-\d+$/, 'legacy'),
     String(entry?.text || '')
   ])
 }
@@ -549,7 +556,14 @@ function mergeRemoteGroupChatSnapshotIntoRooms(
     )
 
     for (const entry of projected.log) {
-      entries.set(groupChatSyncEntryKey(entry), entry)
+      const key = groupChatSyncEntryKey(entry)
+      // The projection is COMPACT (truncated text, no images). When the same
+      // entry exists locally, the local rich copy is authoritative — merging
+      // the compact twin over it would strip attachments and retrigger
+      // watermark deltas for members that already saw it (phantom rounds).
+      if (!entries.has(key)) {
+        entries.set(key, entry)
+      }
     }
     if (!preserved.has(name)) {
       if (remoteRevision > localRevision) {

@@ -11,7 +11,12 @@ const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf
 function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approvalUntilResumeCall, conflictOnce = false, deferredTimers = false } = {}) {
   const values = new Map()
   const atom = initial => {
-    const slot = { get: () => values.get(slot), set: value => values.set(slot, value) }
+    const slot = { get: () => values.get(slot), set: value => {
+      if (process.env.TRACE_ATOM && value && typeof value === 'object' && value.Grind) {
+        console.error('ATOM SET Grind stranded=', JSON.stringify(value.Grind.stranded), new Error().stack.split('\n').slice(2,5).join(' | '))
+      }
+      values.set(slot, value)
+    } }
     values.set(slot, initial)
     return slot
   }

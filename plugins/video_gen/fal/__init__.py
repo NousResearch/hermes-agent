@@ -37,6 +37,11 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
     # ─── Cheap / fast tier ─────────────────────────────────────────────
     "ltx-2.3": _family("LTX 2.3 (22B)", "~30-60s", "cheap", "22B model with native audio generation. Affordable.",  # docs expose no enums
                        "fal-ai/ltx-2.3-22b/text-to-video", "fal-ai/ltx-2.3-22b/image-to-video", audio=True, negative=True, seed=True),
+    # Fast endpoints: duration is an integer enum (6..20 even) — snapped, sent as JSON int; i2v ladders 720p→2160p; no `seed` key.
+    "ltx-2.5": _family("LTX 2.5", "~30-90s", "cheap", "Lightricks open-source audio-video model. Native audio, up to 20s / 4K (i2v), camera-motion presets.",
+                       "lightricks/ltx-2.5/text-to-video/fast", "lightricks/ltx-2.5/image-to-video/fast", duration_int=True, aspect_ratios=("16:9", "9:16"),
+                       resolutions=("720p", "1080p", "1440p", "2160p"), resolution_aliases={"2k": "1440p", "4k": "2160p"},
+                       durations=(6, 8, 10, 12, 14, 16, 18, 20), audio=True),
     "pixverse-v6": _family("Pixverse v6", "~30-90s", "cheap", "Affordable. Negative prompts. 1-15s durations.", "fal-ai/pixverse/v6/text-to-video",
                            "fal-ai/pixverse/v6/image-to-video", resolutions=("360p", "540p", "720p", "1080p"), durations=(1, 15), audio=True, negative=True, seed=True),
     "seedance-2.0-mini": _family("Seedance 2.0 Mini", "~30-90s", "cheap", "ByteDance. Faster/cheaper Seedance tier, audio + lip-sync, 4-15s.",
@@ -89,6 +94,11 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
     "kling-v3-4k": _family("Kling v3 4K", "~120-300s", "premium", "4K output, native audio (Chinese/English), 3-15s.", "fal-ai/kling-video/v3/4k/text-to-video",
                            "fal-ai/kling-video/v3/4k/image-to-video", image_param_key="start_image_url", aspect_ratios=("16:9", "9:16", "1:1"),
                            durations=(3, 15), audio=True, negative=True, seed=True),
+    # Kling O3: t2v declares aspect_ratio, i2v derives it from the image; string duration 3-15; generate_audio is a real toggle
+    # (default off, audio-on costs more); no resolution or seed keys in the O3 schema.
+    "kling-o3": _family("Kling O3 (Standard)", "~60-180s", "premium", "Kuaishou frontier. Multi-shot native storytelling, optional audio, 3-15s.",
+                        "fal-ai/kling-video/o3/standard/text-to-video", "fal-ai/kling-video/o3/standard/image-to-video",
+                        image_drop_keys=("aspect_ratio",), aspect_ratios=("16:9", "9:16", "1:1"), durations=(3, 15), audio=True),
     # Wan 3.0: i2v takes `start_image_url`; both modalities accept aspect_ratio (schema default "adaptive" is left to the endpoint);
     # integer duration 2-30 (None = smart duration); the audio toggle key is `audio`, not `generate_audio`; `seed` on both endpoints.
     "wan-3.0": _family("Wan 3.0", "~60-180s", "premium", "Alibaba latest gen. 2-30s clips, native audio, up to 1080p, lip-sync.",
@@ -99,8 +109,12 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
                              "alibaba/wan-3.0-prime/text-to-video", "alibaba/wan-3.0-prime/image-to-video", image_param_key="start_image_url",
                              duration_int=True, audio_param_key="audio", aspect_ratios=("16:9", "4:3", "1:1", "3:4", "9:16"),
                              resolutions=("480p", "720p", "1080p"), durations=(2, 30), audio=True, seed=True),
-    "happy-horse": _family("Happy Horse 1.0", "~60-120s", "premium", "Alibaba. New model, sparse public docs — conservative defaults.",
-                           "alibaba/happy-horse/text-to-video", "alibaba/happy-horse/image-to-video", audio_native=True, seed=True),
+    # v1.1 publishes the full schema: integer duration 3-15, nine aspect ratios (t2v only — i2v follows the image), 720p/1080p,
+    # `seed` on both endpoints, audio always on (no generate_audio key).
+    "happy-horse": _family("Happy Horse 1.1", "~60-120s", "premium", "Alibaba flagship. 1080p, native audio + multilingual lip-sync, 3-15s, nine aspect ratios.",
+                           "alibaba/happy-horse/v1.1/text-to-video", "alibaba/happy-horse/v1.1/image-to-video", duration_int=True,
+                           image_drop_keys=("aspect_ratio",), aspect_ratios=("16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "9:21", "5:4", "4:5"),
+                           resolutions=("720p", "1080p"), durations=(3, 15), audio_native=True, seed=True),
 }
 
 DEFAULT_MODEL = "pixverse-v6"  # cheap, both modalities, sane defaults
@@ -321,7 +335,7 @@ class FALVideoGenProvider(VideoGenProvider):
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {"name": "FAL", "badge": "paid", "env_vars": [{"key": "FAL_KEY", "prompt": "FAL.ai API key", "url": "https://fal.ai/dashboard/keys"}],
-                "tag": "LTX, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 3.0/4K, Wan 3.0, Happy Horse, Grok Imagine, "
+                "tag": "LTX 2.3/2.5, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 3.0/4K/O3, Wan 3.0, Happy Horse, Grok Imagine, "
                        "Gemini Omni — text-to-video & image-to-video"}
 
     def capabilities(self) -> Dict[str, Any]:

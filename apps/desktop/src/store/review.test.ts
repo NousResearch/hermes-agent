@@ -8,6 +8,7 @@ import {
   $reviewDiff,
   $reviewDiffLoading,
   $reviewFiles,
+  $reviewGitRoot,
   $reviewIsRepo,
   $reviewLoading,
   $reviewMaxChurn,
@@ -89,6 +90,7 @@ beforeEach(() => {
   // Reset stores touched across tests.
   $reviewOpen.set(false)
   $reviewFiles.set([])
+  $reviewGitRoot.set(null)
   $reviewLoading.set(false)
   $reviewIsRepo.set(true)
   $reviewDiff.set(null)
@@ -177,6 +179,32 @@ describe('refreshReview', () => {
     expect($reviewFiles.get()).toEqual([])
     expect($reviewIsRepo.get()).toBe(true)
     expect($reviewLoading.get()).toBe(false)
+  })
+
+  it('resolves git root and executes review list and diff using git root when cwd is subdirectory', async () => {
+    const review = stubReview({
+      diff: vi.fn(async () => 'subdir diff'),
+      list: vi.fn(async () => ({ files: [file('src/a.ts')] }))
+    })
+    const gitRoot = vi.fn(async () => '/top-level-repo')
+
+    ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = {
+      gitRoot,
+      git: { review },
+      openExternal: vi.fn()
+    }
+
+    $currentCwd.set('/top-level-repo/workspaces/subdir')
+    $reviewOpen.set(true)
+
+    await refreshReview()
+
+    expect(gitRoot).toHaveBeenCalledWith('/top-level-repo/workspaces/subdir')
+    expect($reviewGitRoot.get()).toBe('/top-level-repo')
+    expect(review.list).toHaveBeenCalledWith('/top-level-repo', 'uncommitted', null)
+
+    await selectReviewFile(file('src/a.ts'))
+    expect(review.diff).toHaveBeenCalledWith('/top-level-repo', 'src/a.ts', 'uncommitted', null, false)
   })
 })
 

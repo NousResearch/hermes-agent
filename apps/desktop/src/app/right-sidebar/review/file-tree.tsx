@@ -33,6 +33,7 @@ import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
 import {
   $reviewFiles,
+  $reviewGitRoot,
   $reviewLoading,
   $reviewOpen,
   $reviewScopeCwd,
@@ -78,9 +79,9 @@ function absolutePath(relative: string): string {
     return relative
   }
 
-  const cwd = reviewRepoCwd()?.replace(/[\\/]+$/, '')
+  const root = $reviewGitRoot.get()?.trim() || reviewRepoCwd()?.replace(/[\\/]+$/, '')
 
-  return cwd ? `${cwd}/${relative}` : relative
+  return root ? `${root}/${relative}` : relative
 }
 
 // Fast, layout-aware row: `layout` slides siblings when one is inserted/removed

@@ -375,3 +375,107 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
+# ---------------------------------------------------------------------------
+# #85387 — the read-side sensitive guard must also apply to WRITE endpoints.
+# upload / upload-stream / mkdir / delete must fail closed on .env,
+# config.yaml, credential stores and credential directory trees.
+# ---------------------------------------------------------------------------
+
+
+def test_sensitive_paths_blocked_on_upload(forced_files_client):
+    """#85387: /api/files/upload must not create or overwrite sensitive files."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    for name in (".env", "config.yaml", "auth.json", "credentials"):
+        target = root / name
+        resp = client.post(
+            "/api/files/upload",
+            json={"path": str(target), "data_url": "data:text/plain;base64,RVZJTD0x"},
+        )
+        assert resp.status_code == 403, name
+        assert not target.exists(), f"sensitive file was created: {name}"
+
+    # A credential-directory component (mcp-tokens/<server>.json) is blocked too.
+    nested = root / "mcp-tokens" / "github.json"
+    resp = client.post(
+        "/api/files/upload",
+        json={"path": str(nested), "data_url": "data:text/plain;base64,e30="},
+    )
+    assert resp.status_code == 403
+    assert not nested.exists()
+
+    # Regular files still upload fine.
+    ok = root / "notes.txt"
+    resp = client.post(
+        "/api/files/upload",
+        json={"path": str(ok), "data_url": "data:text/plain;base64,aGk="},
+    )
+    assert resp.status_code == 200
+    assert ok.read_text() == "hi"
+
+
+def test_sensitive_paths_blocked_on_stream_upload(forced_files_client):
+    """#85387: the multipart /api/files/upload-stream path is blocked as well."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    target = root / ".env"
+    resp = client.post(
+        "/api/files/upload-stream",
+        files={"file": ("evil.env", b"EVIL=1", "text/plain")},
+        data={"path": str(target), "overwrite": "true"},
+    )
+    assert resp.status_code == 403
+    assert not target.exists()
+    # No temp upload artifact was left behind.
+    assert [p.name for p in root.iterdir() if ".upload" in p.name] == []
+
+    ok = root / "streamed.txt"
+    resp = client.post(
+        "/api/files/upload-stream",
+        files={"file": ("streamed.txt", b"hello", "text/plain")},
+        data={"path": str(ok), "overwrite": "true"},
+    )
+    assert resp.status_code == 200
+    assert ok.read_text() == "hello"
+
+
+def test_sensitive_paths_blocked_on_mkdir(forced_files_client):
+    """#85387: mkdir must not create directories that collide with sensitive paths."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    for name in (".env", "mcp-tokens", "pairing"):
+        target = root / name
+        resp = client.post("/api/files/mkdir", json={"path": str(target)})
+        assert resp.status_code == 403, name
+        assert not target.exists(), f"sensitive dir was created: {name}"
+
+    ok = root / "workdir"
+    assert client.post("/api/files/mkdir", json={"path": str(ok)}).status_code == 200
+    assert ok.is_dir()
+
+
+def test_sensitive_paths_blocked_on_delete(forced_files_client):
+    """#85387: delete (a destructive write) must refuse sensitive paths."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    env_file = root / ".env"
+    env_file.write_text("SECRET_KEY=abc123")
+
+    resp = client.request(
+        "DELETE", "/api/files", json={"path": str(env_file), "recursive": False}
+    )
+    assert resp.status_code == 403
+    assert env_file.exists(), "sensitive file was deleted"
+
+    # Deleting an ordinary file still works.
+    plain = root / "plain.txt"
+    plain.write_text("data")
+    assert client.request(
+        "DELETE", "/api/files", json={"path": str(plain), "recursive": False}
+    ).status_code == 200
+    assert not plain.exists()
+
+

@@ -2029,10 +2029,10 @@ def _is_sensitive_path(path: Path) -> bool:
     the canonical guards cover as directory trees but a basename-only check
     would miss.
 
-    Read-side only: this guards list/read/download (the #57505 exfil surface).
-    The write endpoints (upload/mkdir/delete) are a separate threat class
-    handled by the write-path checks; extending this guard to them is out of
-    scope for this fix.
+    Guards both directions: reads (list/read/download — the #57505 exfil
+    surface) and writes (upload / upload-stream / mkdir / delete — #85387),
+    where ``_resolve_managed_path(for_write=True)`` applies the same check so
+    the write endpoints can never create, overwrite, or destroy these files.
     """
     if _is_sensitive_filename(path.name):
         return True
@@ -2402,6 +2402,14 @@ def _resolve_managed_path(
         resolved = parent / candidate.name
     else:
         resolved = _canonical_path(candidate, require_exists=not for_write)
+
+    # Fail-closed: the write endpoints (upload / upload-stream / mkdir /
+    # delete) must never create, overwrite, or destroy the same files the
+    # read side treats as secret (.env, config.yaml, credential stores).
+    # Check the symlink-resolved path so a link pointing at a sensitive
+    # target is caught too (#85387).
+    if for_write and _is_sensitive_path(resolved):
+        raise HTTPException(status_code=403, detail="Cannot write to a sensitive path")
 
     if root is not None and not _path_is_under(root, resolved):
         raise HTTPException(status_code=403, detail="Path outside managed files root")
@@ -2821,7 +2829,7 @@ async def create_managed_directory(payload: ManagedDirectoryCreate, request: Req
 
 @app.delete("/api/files")
 async def delete_managed_file(payload: ManagedFileDelete, request: Request):
-    policy, target, display_path = _resolve_managed_path(payload.path, request)
+    policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
     if policy.locked_root is not None and target == policy.locked_root:
         raise HTTPException(status_code=400, detail="Cannot delete the managed files root")
     if target.parent == target:

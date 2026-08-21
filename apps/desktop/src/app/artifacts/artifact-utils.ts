@@ -1,3 +1,4 @@
+import { sessionTitle } from '@/lib/chat-runtime'
 import { mediaExternalUrl, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
@@ -51,7 +52,9 @@ const PRODUCER_TOOL_ARTIFACT_KEY_RE =
 const SCREENSHOT_PATH_RE = /Screenshot path:\s*([^\r\n<>]+)/gi
 
 function artifactSessionTitle(session: SessionInfo): string {
-  return session.title?.trim() || session.preview?.trim() || 'Untitled session'
+  // Delegate to the shared session-title resolver so untitled sessions get the
+  // same deterministic `model · day/time` label everywhere (see #80542).
+  return sessionTitle(session)
 }
 
 function normalizeValue(value: string): string {

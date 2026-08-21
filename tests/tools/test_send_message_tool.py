@@ -630,8 +630,9 @@ class TestMatrixMediaLiveAdapterReuse:
         ]
 
     def test_live_adapter_not_available_falls_back_to_ephemeral(self, tmp_path):
-        """When _gateway_runner_ref returns None, the ephemeral adapter
-        path (connect + disconnect) is used as before."""
+        """When _gateway_runner_ref returns None AND no gateway process is
+        running, the ephemeral adapter path (connect + disconnect) is used
+        as before."""
         doc_path = tmp_path / "doc.pdf"
         doc_path.write_bytes(b"%PDF-1.4")
 
@@ -660,7 +661,9 @@ class TestMatrixMediaLiveAdapterReuse:
 
         with patch(
             "gateway.run._gateway_runner_ref", return_value=None
-        ), patch.dict(sys.modules, {"plugins.platforms.matrix.adapter": fake_module}):
+        ), patch.dict(sys.modules, {"plugins.platforms.matrix.adapter": fake_module}), patch(
+            "tools.send_message_tool._gateway_process_running", return_value=False
+        ):
             result = asyncio.run(
                 _send_matrix_via_adapter(
                     SimpleNamespace(enabled=True, token="tok", extra={}),
@@ -675,6 +678,88 @@ class TestMatrixMediaLiveAdapterReuse:
             ("connect",),
             ("send", "!room:example.com", "report attached"),
             ("send_document", "!room:example.com", str(doc_path)),
+            ("disconnect",),
+        ]
+
+    def test_ephemeral_refused_while_gateway_process_running(self, tmp_path):
+        """No live adapter ref but a gateway PROCESS is running: the ephemeral
+        MatrixAdapter must NOT be constructed. A second OlmMachine on the
+        shared crypto store races the gateway's OTK claims and account-pickle
+        saves — the E2EE split brain behind permanently undecryptable
+        messages (UTD, #46310). The send fails loudly instead of silently
+        corrupting E2EE state."""
+        constructed = []
+
+        class MustNotConstruct:
+            def __init__(self, _config):
+                constructed.append(("constructed",))
+                raise AssertionError("ephemeral MatrixAdapter must not be constructed while a gateway runs")
+
+        fake_module = SimpleNamespace(MatrixAdapter=MustNotConstruct)
+
+        with patch(
+            "gateway.run._gateway_runner_ref", return_value=None
+        ), patch.dict(sys.modules, {"plugins.platforms.matrix.adapter": fake_module}), patch(
+            "tools.send_message_tool._gateway_process_running", return_value=True
+        ):
+            result = asyncio.run(
+                _send_matrix_via_adapter(
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "!room:example.com",
+                    "report attached",
+                )
+            )
+
+        assert "error" in result and result["error"], "send must fail loudly, not succeed"
+        assert "refused" in result["error"].lower()
+        assert constructed == [], "ephemeral MatrixAdapter was constructed despite the running gateway"
+
+    def test_ephemeral_guard_fails_open_without_status_module(self, tmp_path):
+        """If the gateway.status probe itself is unavailable (import or probe
+        error), the guard must fail OPEN to the historical ephemeral path —
+        the guard exists to protect a running gateway, and with no evidence
+        of one there is nothing to protect."""
+        calls = []
+
+        class EphemeralAdapter:
+            def __init__(self, _config):
+                pass
+
+            async def connect(self):
+                calls.append(("connect",))
+                return True
+
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send", chat_id, message))
+                return SimpleNamespace(success=True, message_id="$txt")
+
+            async def disconnect(self):
+                calls.append(("disconnect",))
+
+        fake_module = SimpleNamespace(MatrixAdapter=EphemeralAdapter)
+
+        def _raise():
+            raise RuntimeError("probe unavailable")
+
+        # Patch the detector the REAL helper consults, so the test exercises
+        # the helper's own fail-open except-clause (not a mocked-away guard).
+        with patch(
+            "gateway.run._gateway_runner_ref", return_value=None
+        ), patch.dict(sys.modules, {"plugins.platforms.matrix.adapter": fake_module}), patch(
+            "gateway.status.get_running_pid", side_effect=_raise
+        ):
+            result = asyncio.run(
+                _send_matrix_via_adapter(
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "!room:example.com",
+                    "standalone cli send",
+                )
+            )
+
+        assert result["success"] is True
+        assert calls == [
+            ("connect",),
+            ("send", "!room:example.com", "standalone cli send"),
             ("disconnect",),
         ]
 

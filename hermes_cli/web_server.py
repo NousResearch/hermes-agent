@@ -262,6 +262,22 @@ def _parent_start_markers_match(actual: str, expected: str) -> bool:
 # when the same module is used across TestClient instances or uvicorn reloads.
 # ---------------------------------------------------------------------------
 
+def _gateway_process_running() -> bool:
+    """True when a gateway process is running for the current profile.
+
+    Uses the same verified detector as ``hermes cron status`` (PID file +
+    runtime lock + start-time/cmdline match), so a stale PID file left by
+    a crashed gateway does not count. Patchable at module level so tests
+    stay hermetic on machines that legitimately run a gateway.
+    """
+    try:
+        from gateway.status import get_running_pid
+
+        return get_running_pid() is not None
+    except Exception:
+        return False
+
+
 def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
     """Tick the cron scheduler from inside the desktop dashboard backend.
 
@@ -275,12 +291,36 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     the ``cron/.tick.lock`` file lock, so this never double-fires alongside a
     real gateway on the same HERMES_HOME — whichever process grabs the lock
     first wins the tick.
+
+    But winning the tick is only safe when no gateway is running. The gateway
+    delivers through its live platform adapters (E2EE-capable); this backend
+    has none, so any fire it wins from the lock race falls back to standalone
+    per-platform sends. For Matrix that path boots a second OlmMachine on the
+    same crypto store and device id — the split brain whose racing OTK claims
+    and account-pickle saves corrupt E2EE state and permanently drop megolm
+    key shares (recipients see UTD; #46310). The lock serializes ticks; it
+    does not hand the fire to the better-equipped process, so dispatch is
+    gated here instead: while a gateway process owns this profile, leave due
+    jobs untouched for its ticker. If the gateway dies, the gate opens on a
+    later tick and this backend fires them itself (failover, not defer-only).
     """
-    from cron.scheduler_provider import resolve_cron_scheduler
+    from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
 
     provider = resolve_cron_scheduler()
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
-    provider.start(stop_event, interval=interval)
+
+    # External providers own their remote scheduling contract (fires arrive
+    # via the api-server webhook, which resolves live adapters) — only the
+    # in-process ticker polls the local store, so only it gets the gate.
+    # Mirrors the isinstance guard gateway/run.py uses for can_dispatch.
+    if isinstance(provider, InProcessCronScheduler):
+        provider.start(
+            stop_event,
+            interval=interval,
+            can_dispatch=lambda: not _gateway_process_running(),
+        )
+    else:
+        provider.start(stop_event, interval=interval)
 
 
 def _warm_gateway_module() -> None:

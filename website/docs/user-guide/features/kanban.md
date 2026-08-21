@@ -256,6 +256,84 @@ hermes kanban create "nightly ops review" \
     --json
 ```
 
+### Bounded code evolution
+
+`hermes kanban improve` launches an opt-in source-code improvement campaign
+using the board's existing worktree, goal-loop, attachment, and review
+machinery. It is designed for a reproduced bug or measured regression — not an
+open-ended instruction to "make the code better."
+
+Campaign execution currently requires Linux child-subreaper containment or
+Windows Job Objects. macOS and other POSIX hosts may inspect a dry-run contract,
+but launch fails closed before creating a task because Hermes has no supported
+kernel process-tree containment implementation for those hosts.
+
+Start with a dry run so you can inspect the frozen contract without creating a
+task:
+
+```bash
+hermes kanban improve "Make retry ordering deterministic" \
+    --evidence "tests/test_retries.py reproduces nondeterministic ordering" \
+    --success-metric "The frozen retry regression gate exits zero" \
+    --repo /absolute/path/to/repo \
+    --project hermes-agent \
+    --assignee coder \
+    --reviewer reviewer \
+    --allow src/retries.py \
+    --allow tests/test_retries.py \
+    --gate "scripts/run_tests.sh tests/test_retries.py" \
+    --dry-run \
+    --json
+```
+
+Remove `--dry-run` to create the campaign. The repository must be clean, both
+profiles must already exist, and the reviewer must differ from the implementer.
+The success metric is mandatory and becomes part of the immutable contract.
+The named first-class Project must already exist and its primary repository
+must exactly match `--repo` (inspect available Projects with
+`hermes project list`).
+Every `--allow` value is a repository-relative file or directory. Each
+`--gate` is parsed into an argument vector and executed directly — it is not a
+shell pipeline, so use a script when a gate needs `&&`, pipes, or redirection.
+An existing directory authorizes its subtree; an existing file (or a path that
+does not exist yet) authorizes that exact path only. Symlinked scopes are
+rejected.
+
+The launcher captures the exact Project, base commit, tree, and Git common
+directory; creates the task in `blocked` while it stores the frozen contract and a
+standalone verifier as attachments; then releases the fully initialized task to
+`ready`. The worker gets the `hermes-code-evolution` skill automatically and
+runs in a linked worktree with a hard runtime, turn, and retry budget. The
+external verifier rejects base drift, evaluator tampering, out-of-scope paths,
+changed symlinks, junctions, hardlinks, special files, empty candidates, and
+failed or timed-out gates. Every verifier invocation also
+requires the original contract SHA-256 printed in the task body, so rewriting
+both attachment files cannot establish a new trust anchor.
+The verifier fingerprints the candidate before and after the quality gates and
+rejects any **net** candidate mutation that remains at the final snapshot.
+Frozen gates must be non-mutating. Under the documented trusted-local-user
+boundary, snapshot comparison cannot prove that a gate never changed and then
+restored the same bytes; such transient mutation is prohibited but requires an
+OS sandbox or filesystem tracing to prevent mechanically.
+
+Through supported worker-tool, CLI, and database lifecycle paths, the
+implementation profile cannot finish the card or substitute another reviewer.
+The shared database transition primitives used by worker tools and the CLI
+revalidate the frozen attachments, require ownership of the active run, rerun
+the external verifier, and retain its machine-generated JSON report after
+standard secret redaction. The frozen reviewer also inspects and reruns the
+attached verifier independently.
+
+Approval marks the Kanban task done; it does **not** commit, push, merge, deploy,
+restart Hermes, or modify a live installation. Those remain separate
+human-controlled actions.
+
+This is an application-level guard, not an OS security sandbox. Kanban uses a
+trusted-local-user model: a local operator can still override state through raw
+SQLite or filesystem mutation, and a worker process runs under that same OS
+identity. Campaign instructions prohibit those bypasses; use a separately
+permissioned container or host when the candidate itself is adversarial.
+
 ### Bulk CLI verbs
 
 All the lifecycle verbs accept multiple ids so you can clean up a batch

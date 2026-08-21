@@ -144,6 +144,7 @@ EXPECTED_CONSOLE_COMMANDS = {
     ("kanban", "boards", "rename"),
     ("kanban", "boards", "set-workdir"),
     ("kanban", "create"),
+    ("kanban", "improve"),
     ("kanban", "list"),
     ("kanban", "show"),
     ("kanban", "assign"),

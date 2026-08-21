@@ -514,6 +514,15 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
 # Handlers
 # ---------------------------------------------------------------------------
 
+def _code_evolution_completion_error(kb, conn, task) -> Optional[str]:
+    """Require a code-evolution card to pass through a claimed review run."""
+    if task is None:
+        return None
+    from hermes_cli import code_evolution as ce
+
+    return ce.completion_policy_error(conn, task)
+
+
 def _handle_show(args: dict, **kw) -> str:
     """Read a task's full state: task row, parents, children, comments,
     runs (attempt history), and the last N events."""
@@ -752,6 +761,9 @@ def _handle_complete(args: dict, **kw) -> str:
             # Only enforce when a judge is actually reachable — see
             # _goal_judge_available for why an unavailable judge fails open.
             task = kb.get_task(conn, tid)
+            evolution_error = _code_evolution_completion_error(kb, conn, task)
+            if evolution_error is not None:
+                return tool_error(evolution_error)
             rejection = _goal_mode_handoff_rejection(
                 task,
                 (summary or result or "").strip(),
@@ -765,12 +777,15 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"and keep this task alive."
                 )
 
+            transition_errors: list[str] = []
             try:
                 ok = kb.complete_task(
                     conn, tid,
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
+                    board=board,
+                    failure_reasons=transition_errors,
                 )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(
@@ -800,8 +815,10 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"created_cards=[] to skip the card-claim check entirely."
                 )
             if not ok:
+                detail = transition_errors[0] if transition_errors else None
                 return tool_error(
-                    f"could not complete {tid} (unknown id or already terminal)"
+                    f"could not complete {tid}: "
+                    f"{detail or 'unknown id or already terminal'}"
                 )
             run = kb.latest_run(conn, tid)
             return _ok(task_id=tid, run_id=run.id if run else None)
@@ -937,6 +954,23 @@ def _handle_request_review(args: dict, **kw) -> str:
         kb, conn = _connect(board=board)
         try:
             task = kb.get_task(conn, tid)
+            from hermes_cli import code_evolution as ce
+            from hermes_cli.profiles import normalize_profile_name
+
+            contract = ce.load_frozen_task_contract(conn, task)
+            if contract is not None:
+                frozen_reviewer = contract["reviewer"]
+                requested_reviewer = (
+                    normalize_profile_name(str(reviewer))
+                    if reviewer is not None
+                    else None
+                )
+                if requested_reviewer not in {None, frozen_reviewer}:
+                    return tool_error(
+                        "code-evolution campaigns must use frozen reviewer "
+                        f"{frozen_reviewer!r}; got {requested_reviewer!r}"
+                    )
+                reviewer = frozen_reviewer
             rejection = _goal_mode_handoff_rejection(task, summary)
             if rejection is not None:
                 return tool_error(
@@ -951,6 +985,7 @@ def _handle_request_review(args: dict, **kw) -> str:
                 reviewer=reviewer,
                 expected_run_id=_worker_run_id(tid),
                 with_reason=True,
+                board=board,
             )
             if not ok:
                 detail = fail_reason or "unknown id or not in running/ready"

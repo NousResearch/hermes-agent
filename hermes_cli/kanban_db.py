@@ -5359,6 +5359,8 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True,
+    board: Optional[str] = None,
+    failure_reasons: Optional[list[str]] = None,
 ) -> bool:
     """Transition ``running|ready|blocked|review -> done`` and record ``result``.
 
@@ -5397,6 +5399,62 @@ def complete_task(
     # final write transaction below to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
+
+    task = get_task(conn, task_id)
+    if task is not None and "hermes-code-evolution" in (task.skills or []):
+        try:
+            from hermes_cli import code_evolution
+
+            policy_error = code_evolution.completion_policy_error(conn, task)
+            run_owned = (
+                expected_run_id is not None
+                and task.current_run_id is not None
+                and int(expected_run_id) == int(task.current_run_id)
+            )
+            verifier_error = (
+                code_evolution.enforce_frozen_task_verifier(
+                    conn,
+                    task,
+                    phase="review",
+                    board=board,
+                )
+                if policy_error is None and run_owned
+                else None
+            )
+        except Exception:
+            _log.exception(
+                "failed to validate frozen code-evolution completion policy for %s",
+                task_id,
+            )
+            if failure_reasons is not None:
+                failure_reasons.append("frozen code-evolution validation failed")
+            return False
+        if policy_error is not None:
+            _log.warning("refusing code-evolution completion for %s: %s", task_id, policy_error)
+            if failure_reasons is not None:
+                failure_reasons.append(policy_error)
+            return False
+        if not run_owned:
+            _log.warning(
+                "refusing code-evolution completion for %s without ownership "
+                "of current review run %s",
+                task_id,
+                task.current_run_id,
+            )
+            if failure_reasons is not None:
+                failure_reasons.append(
+                    "code-evolution completion requires ownership of the active review run"
+                )
+            return False
+        if verifier_error is not None:
+            _log.warning(
+                "refusing code-evolution completion for %s: %s",
+                task_id,
+                verifier_error,
+            )
+            if failure_reasons is not None:
+                failure_reasons.append(verifier_error)
+            return False
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -6497,6 +6555,7 @@ def request_review(
     expected_run_id: Optional[int] = None,
     force: bool = False,
     with_reason: bool = False,
+    board: Optional[str] = None,
 ):
     """Transition implementation work into the first-class review phase.
 
@@ -6523,6 +6582,56 @@ def request_review(
 
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
+    task = get_task(conn, task_id)
+    if task is not None and "hermes-code-evolution" in (task.skills or []):
+        try:
+            from hermes_cli import code_evolution
+
+            contract = code_evolution.load_frozen_task_contract(conn, task)
+        except Exception:
+            _log.exception(
+                "failed to validate frozen code-evolution reviewer for %s",
+                task_id,
+            )
+            return _ret(False, "frozen code-evolution contract validation failed")
+        if contract is None:
+            return _ret(False, "frozen code-evolution contract is missing")
+        frozen_reviewer = contract["reviewer"]
+        requested_reviewer = (
+            _canonical_assignee(reviewer) if reviewer is not None else None
+        )
+        if requested_reviewer not in {None, frozen_reviewer}:
+            return _ret(
+                False,
+                "code-evolution review must use frozen reviewer "
+                f"{frozen_reviewer!r}; got {requested_reviewer!r}",
+            )
+        reviewer = frozen_reviewer
+        if (
+            expected_run_id is None
+            or task.current_run_id is None
+            or int(expected_run_id) != int(task.current_run_id)
+        ):
+            return _ret(
+                False,
+                "code-evolution review handoff requires ownership of the "
+                "active implementation run",
+            )
+        try:
+            verifier_error = code_evolution.enforce_frozen_task_verifier(
+                conn,
+                task,
+                phase="implementation",
+                board=board,
+            )
+        except Exception:
+            _log.exception(
+                "failed to execute frozen code-evolution verifier for %s",
+                task_id,
+            )
+            return _ret(False, "frozen code-evolution verifier execution failed")
+        if verifier_error is not None:
+            return _ret(False, verifier_error)
     with write_txn(conn):
         if not _parents_satisfied(conn, task_id):
             return _ret(False, "parent dependencies are not satisfied")

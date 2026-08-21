@@ -401,6 +401,90 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
+    # --- improve ---
+    p_improve = sub.add_parser(
+        "improve",
+        help="Launch a bounded, worktree-isolated code-evolution campaign",
+        description=(
+            "Freeze an evidence-backed improvement contract, attach an external "
+            "verifier, and create a goal-mode Kanban task that must finish in "
+            "independent review. The source repository must be clean."
+        ),
+    )
+    p_improve.add_argument("objective", help="Concrete code improvement to achieve")
+    p_improve.add_argument(
+        "--evidence",
+        required=True,
+        help="Reproduced failure, benchmark, or other falsifiable evidence",
+    )
+    p_improve.add_argument(
+        "--success-metric",
+        required=True,
+        help="Measurable condition that defines campaign success",
+    )
+    p_improve.add_argument(
+        "--repo",
+        default=".",
+        help="Git repository to improve (default: current directory)",
+    )
+    p_improve.add_argument(
+        "--project",
+        required=True,
+        help="Existing first-class Project id or slug anchored to --repo",
+    )
+    p_improve.add_argument(
+        "--assignee",
+        required=True,
+        help="Existing profile that implements the change",
+    )
+    p_improve.add_argument(
+        "--reviewer",
+        required=True,
+        help="Different existing profile that independently reviews the change",
+    )
+    p_improve.add_argument(
+        "--allow",
+        action="append",
+        required=True,
+        dest="allowed_paths",
+        help="Repository-relative file or directory the worker may change (repeatable)",
+    )
+    p_improve.add_argument(
+        "--gate",
+        action="append",
+        required=True,
+        dest="quality_gates",
+        help=(
+            "Exact no-shell command to run as a quality gate (repeatable). "
+            "Quote the whole command when it has arguments."
+        ),
+    )
+    p_improve.add_argument(
+        "--gate-timeout",
+        type=int,
+        default=900,
+        help="Timeout in seconds for each frozen quality gate (default: 900)",
+    )
+    p_improve.add_argument(
+        "--goal-max-turns",
+        type=int,
+        default=20,
+        help="Maximum implementation goal-loop turns (default: 20)",
+    )
+    p_improve.add_argument(
+        "--max-runtime",
+        default="2h",
+        help="Hard worker runtime cap, e.g. 30m or 2h (default: 2h)",
+    )
+    p_improve.add_argument("--priority", type=int, default=0)
+    p_improve.add_argument("--created-by", default=None)
+    p_improve.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the frozen contract plan without creating a task",
+    )
+    p_improve.add_argument("--json", action="store_true", help="Emit JSON output")
+
     # --- swarm ---
     p_swarm = sub.add_parser(
         "swarm",
@@ -1108,6 +1192,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         handlers = {
             "init":     _cmd_init,
             "create":   _cmd_create,
+            "improve":  _cmd_improve,
             "swarm":    _cmd_swarm,
             "list":     _cmd_list,
             "ls":       _cmd_list,
@@ -1183,6 +1268,7 @@ def _profile_author() -> str:
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init",
     "create",
+    "improve",
     "swarm",
     "assign",
     "reclaim",
@@ -1536,6 +1622,79 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
         counts = entry["counts"] or {}
         count_str = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "(idle)"
         print(f"{entry['name']:20s}  {on_disk:8s}  {count_str}")
+    return 0
+
+
+def _cmd_improve(args: argparse.Namespace) -> int:
+    """Freeze and launch a bounded code-evolution campaign."""
+    from hermes_cli import code_evolution as ce
+
+    try:
+        max_runtime = _parse_duration(args.max_runtime)
+        if max_runtime is None or max_runtime <= 0:
+            raise ce.CodeEvolutionError("max runtime must be positive")
+        prepared = ce.prepare_contract(
+            repository=args.repo,
+            project=args.project,
+            objective=args.objective,
+            evidence=args.evidence,
+            success_metric=args.success_metric,
+            allowed_paths=tuple(args.allowed_paths),
+            quality_gates=tuple(
+                (command, args.gate_timeout) for command in args.quality_gates
+            ),
+            assignee=args.assignee,
+            reviewer=args.reviewer,
+            goal_max_turns=args.goal_max_turns,
+            max_runtime_seconds=max_runtime,
+        )
+        result = ce.launch_campaign(
+            prepared,
+            board=getattr(args, "board", None),
+            priority=args.priority,
+            created_by=args.created_by or _profile_author(),
+            dry_run=args.dry_run,
+        )
+    except (ce.CodeEvolutionError, OSError, ValueError) as exc:
+        print(f"kanban improve: {exc}", file=sys.stderr)
+        return 2
+
+    payload = {
+        "contract_id": result.contract_id,
+        "contract_sha256": result.contract_sha256,
+        "task_id": result.task_id,
+        "status": result.status,
+        "created": result.created,
+        "dry_run": result.dry_run,
+        "repository": prepared.payload["repository"],
+        "project_id": prepared.payload["project_id"],
+        "project_slug": prepared.payload["project_slug"],
+        "base_commit": prepared.payload["base_commit"],
+        "base_tree": prepared.payload["base_tree"],
+        "assignee": prepared.payload["assignee"],
+        "reviewer": prepared.payload["reviewer"],
+        "success_metric": prepared.payload["success_metric"],
+        "allowed_paths": prepared.payload["allowed_paths"],
+        "quality_gates": prepared.payload["quality_gates"],
+        "budgets": prepared.payload["budgets"],
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
+        return 0
+
+    if result.dry_run:
+        print(f"Dry run: frozen contract {result.contract_id}")
+        print(f"  sha256:  {result.contract_sha256}")
+        print(f"  base:    {prepared.payload['base_commit']}")
+        print(f"  repo:    {prepared.payload['repository']}")
+        print("No Kanban task was created.")
+    else:
+        verb = "Created" if result.created else "Reused"
+        print(f"{verb} code-evolution task {result.task_id}")
+        print(f"  contract: {result.contract_id} ({result.contract_sha256})")
+        print(f"  status:   {result.status}")
+        print(f"  reviewer: {prepared.payload['reviewer']}")
+        print("The task is isolated in a worktree and must stop in review.")
     return 0
 
 
@@ -2244,6 +2403,41 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str) -> Opti
     return reason if verdict != "done" else None
 
 
+def _code_evolution_transition_error(
+    conn,
+    task: Optional[kb.Task],
+    *,
+    phase: str,
+    reviewer: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Enforce frozen review identity before DB-owned verification."""
+    if task is None or "hermes-code-evolution" not in (getattr(task, "skills", None) or []):
+        return None, reviewer
+    try:
+        from hermes_cli import code_evolution
+        from hermes_cli.profiles import normalize_profile_name
+
+        contract = code_evolution.load_frozen_task_contract(conn, task)
+        if contract is None:
+            return "frozen code-evolution contract is missing", reviewer
+        if phase == "review":
+            policy_error = code_evolution.completion_policy_error(conn, task)
+            if policy_error is not None:
+                return policy_error, reviewer
+        else:
+            requested = normalize_profile_name(reviewer) if reviewer is not None else None
+            frozen = contract["reviewer"]
+            if requested not in {None, frozen}:
+                return (
+                    "code-evolution review must use frozen reviewer "
+                    f"{frozen!r}; got {requested!r}"
+                ), reviewer
+            reviewer = frozen
+    except Exception as exc:
+        return f"frozen code-evolution validation failed: {exc}", reviewer
+    return None, reviewer
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids = list(args.task_ids or [])
@@ -2279,6 +2473,19 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             # to every terminal handoff so request-review cannot bypass the
             # acceptance contract that protects complete.
             task = kb.get_task(conn, tid)
+            evolution_error, _ = _code_evolution_transition_error(
+                conn,
+                task,
+                phase="review",
+            )
+            if evolution_error is not None:
+                print(
+                    f"kanban: code-evolution completion of {tid} rejected: "
+                    f"{evolution_error}",
+                    file=sys.stderr,
+                )
+                failed.append(tid)
+                continue
             rejection = _goal_mode_handoff_rejection(
                 task,
                 (summary or args.result or "").strip(),
@@ -2292,15 +2499,22 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 failed.append(tid)
                 continue
 
+            transition_errors: list[str] = []
             if not kb.complete_task(
                 conn, tid,
                 result=args.result,
                 summary=summary,
                 metadata=metadata,
                 expected_run_id=_worker_run_id_for(tid),
+                failure_reasons=transition_errors,
             ):
                 failed.append(tid)
-                print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
+                detail = transition_errors[0] if transition_errors else None
+                print(
+                    f"cannot complete {tid}: "
+                    f"{detail or 'unknown id or terminal state'}",
+                    file=sys.stderr,
+                )
             else:
                 print(f"Completed {tid}")
     return 0 if not failed else 1
@@ -2432,8 +2646,22 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
             return 2
     reviewer = getattr(args, "reviewer", None)
     with kb.connect_closing() as conn:
+        task = kb.get_task(conn, tid)
+        evolution_error, reviewer = _code_evolution_transition_error(
+            conn,
+            task,
+            phase="implementation",
+            reviewer=reviewer,
+        )
+        if evolution_error is not None:
+            print(
+                f"kanban: code-evolution review handoff of {tid} rejected: "
+                f"{evolution_error}",
+                file=sys.stderr,
+            )
+            return 1
         rejection = _goal_mode_handoff_rejection(
-            kb.get_task(conn, tid),
+            task,
             summary or "",
         )
         if rejection is not None:

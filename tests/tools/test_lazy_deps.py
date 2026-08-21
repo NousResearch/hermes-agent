@@ -239,6 +239,25 @@ class TestIsSatisfiedVersionAware:
         assert ld._is_satisfied(spec) is True
         assert ld.feature_missing("tool.trace_upload") == ()
 
+    def test_newer_than_exact_pin_counts_as_satisfied(self, monkeypatch):
+        """#80390: an installed version NEWER than an exact pin satisfies the
+        pin-as-floor, so ensure() must not force-downgrade a working newer
+        hindsight-client back to the pinned 0.6.1."""
+        monkeypatch.setitem(
+            ld.LAZY_DEPS, "memory.hindsight", ("hindsight-client==0.6.1",)
+        )
+        self._fake_version(monkeypatch, {"hindsight-client": "0.8.3"})
+        assert ld._is_satisfied("hindsight-client==0.6.1") is True
+        assert ld.feature_missing("memory.hindsight") == ()
+        assert ld.is_available("memory.hindsight") is True
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail(
+                "pip must not be called: newer hindsight-client satisfies the pin"
+            ),
+        )
+        ld.ensure("memory.hindsight", prompt=False)  # no exception, no pip
+
     @pytest.mark.parametrize(
         ("feature", "installed_versions", "expected_repairs"),
         [

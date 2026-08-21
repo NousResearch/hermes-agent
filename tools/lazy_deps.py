@@ -592,9 +592,11 @@ def _is_satisfied(spec: str) -> bool:
 
     Checks both presence AND version. If the package is installed at a
     version outside the spec's range, returns False so the caller will
-    upgrade/downgrade to the pinned version. This is what makes
-    ``hermes update`` propagate pin bumps in :data:`LAZY_DEPS` to already-
-    installed backends instead of silently leaving stale versions in place.
+    upgrade to the pinned version. This is what makes ``hermes update``
+    propagate pin bumps in :data:`LAZY_DEPS` to already-installed backends
+    instead of silently leaving stale versions in place. An installed
+    version NEWER than an exact pin counts as satisfied — the pin is a
+    floor, and we never force-downgrade a working newer client (#80390).
 
     If ``packaging`` is unavailable for any reason (it's a transitive of
     pip so this should never happen), we fall back to a presence-only check
@@ -625,10 +627,27 @@ def _is_satisfied(spec: str) -> bool:
         return True
 
     try:
-        return Version(installed) in SpecifierSet(spec_tail)
+        installed_v = Version(installed)
+        if installed_v in SpecifierSet(spec_tail):
+            return True
     except (InvalidSpecifier, InvalidVersion, Exception):
         # Malformed spec or installed version we can't parse — don't churn.
         return True
+
+    # An exact pin is a floor, not a ceiling. If the installed version is
+    # NEWER than the pinned version it is importable and satisfies the pin
+    # as a minimum, so do not force-downgrade it back to the pin on every
+    # retain. Pin bumps still propagate: an installed version BELOW the pin
+    # is not satisfied and gets upgraded. (#80390: hindsight-client pinned
+    # ==0.6.1 was re-installed as a downgrade on every retain because the
+    # user had a newer, working 0.8.x client installed.)
+    if spec_tail.startswith("=="):
+        try:
+            return installed_v > Version(spec_tail[2:])
+        except (InvalidVersion, Exception):
+            return True
+
+    return False
 
 
 def _is_present(spec: str) -> bool:

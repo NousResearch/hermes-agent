@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
+import type { CancelRunOptions } from '@/app/types'
 import type { HermesGateway } from '@/hermes'
 
 import type { DroppedFile } from '../hooks/use-composer-actions'
@@ -41,7 +42,7 @@ export interface ChatBarProps {
   queueSessionKey?: string | null
   sessionId?: string | null
   cwd?: string | null
-  onCancel: () => Promise<void> | void
+  onCancel: (options?: CancelRunOptions) => Promise<void> | void
   onAddContextRef?: (refText: string, label?: string, detail?: string) => void
   onAddUrl?: (url: string) => void
   onAttachImageBlob?: (blob: Blob) => Promise<boolean | void> | boolean | void

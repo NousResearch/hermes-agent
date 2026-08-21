@@ -3,10 +3,16 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import { reconcileClientTurnState } from '@/app/session/turn-state'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { deleteSession, getAllSessionMessages, getLatestSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import {
+  type ChatMessage,
+  type GatewayEventPayload,
+  preserveLocalAssistantErrors,
+  toChatMessages
+} from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { setSessionYolo } from '@/lib/yolo-session'
@@ -1315,32 +1321,57 @@ export function useSessionActions({
             ? resumed.turn_started_at * 1000
             : null
 
-        updateSessionState(
+        const turnSnapshot: GatewayEventPayload = { ...(resumed.info ?? {}) }
+
+        if (Object.hasOwn(resumed, 'running')) {
+          turnSnapshot.running = resumed.running
+        }
+
+        if (Object.hasOwn(resumed, 'turn_generation')) {
+          turnSnapshot.turn_generation = resumed.turn_generation
+        }
+
+        if (Object.hasOwn(resumed, 'turn_origin')) {
+          turnSnapshot.turn_origin = resumed.turn_origin
+        }
+
+        if (Object.hasOwn(resumed, 'turn_state_revision')) {
+          turnSnapshot.turn_state_revision = resumed.turn_state_revision
+        }
+
+        const resumedState = updateSessionState(
           resumed.session_id,
-          state => ({
-            ...state,
-            ...(runtimeInfo ?? {}),
-            messages: messagesForView,
-            busy: resumedRunning,
-            awaitingResponse: resumedRunning && !recoveredInFlightTail,
-            // Backend reported this turn running at resume time — live proof.
-            turnLive: state.turnLive || resumedRunning,
-            needsInput: pendingApproval || pendingClarify || state.needsInput,
-            adoptedRunningTurn: state.adoptedRunningTurn || resumedRunning,
-            ...(inFlightRecovery.applied
-              ? {
-                  sawAssistantPayload: true,
-                  // Point live deltas at the recovered row when the backend is
-                  // still mid-turn; a settled recovery keeps the stream idle.
-                  streamId: resumedRunning ? inFlightRecovery.streamId : null,
-                  turnStartedAt: resumedRunning ? (inFlightRecovery.turnStartedAt ?? resumedTurnStartedAt) : null
-                }
-              : {
-                  turnStartedAt: resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null
-                })
-          }),
+          state => {
+            const reconciled = reconcileClientTurnState(state, turnSnapshot, 'snapshot')
+            const turnState = reconciled.accepted ? reconciled.state : state
+
+            return {
+              ...turnState,
+              ...(runtimeInfo ?? {}),
+              messages: messagesForView,
+              busy: resumedRunning,
+              awaitingResponse: reconciled.accepted ? turnState.busy : resumedRunning && !recoveredInFlightTail,
+              // Backend reported this turn running at resume time — live proof.
+              turnLive: state.turnLive || resumedRunning,
+              needsInput: pendingApproval || pendingClarify || state.needsInput,
+              adoptedRunningTurn: state.adoptedRunningTurn || resumedRunning,
+              ...(inFlightRecovery.applied
+                ? {
+                    sawAssistantPayload: true,
+                    // Point live deltas at the recovered row when the backend is
+                    // still mid-turn; a settled recovery keeps the stream idle.
+                    streamId: resumedRunning ? inFlightRecovery.streamId : null,
+                    turnStartedAt: resumedRunning ? (inFlightRecovery.turnStartedAt ?? resumedTurnStartedAt) : null
+                  }
+                : {
+                    turnStartedAt: resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null
+                  })
+            }
+          },
           storedSessionId
         )
+
+        resumedRunning = Boolean(resumedState.busy)
 
         // updateSessionState stages its view sync through requestAnimationFrame.
         // Commit the final, already-reconciled transcript now so resume has one

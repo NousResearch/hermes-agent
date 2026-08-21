@@ -46,7 +46,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli.sqlite_runtime import (
     is_sqlite_wal_reset_vulnerable as _is_sqlite_wal_reset_vulnerable,
 )
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, TypeVar
 
 from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _BRANCH_CHILD_SQL,
@@ -9289,6 +9289,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         compression_lock_holder: Optional[str] = None,
         turn_lease_holder: Optional[str] = None,
         turn_lease_ttl_seconds: float = 300.0,
+        deferred_notification_ids: Optional[Iterable[str]] = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -9344,6 +9345,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         num_tool_calls = 0
         if tool_calls is not None:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
+        adoption_ids = sorted(
+            {str(event_id) for event_id in (deferred_notification_ids or ()) if event_id}
+        )
 
         def _do(conn):
             self._check_transcript_write_guards(
@@ -9384,6 +9388,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 ),
             )
             msg_id = cursor.lastrowid
+            if adoption_ids:
+                adopted_at = time.time()
+                conn.executemany(
+                    """INSERT OR IGNORE INTO deferred_notification_adoptions
+                       (event_id, session_id, message_id, adopted_at)
+                       VALUES (?, ?, ?, ?)""",
+                    (
+                        (event_id, session_id, msg_id, adopted_at)
+                        for event_id in adoption_ids
+                    ),
+                )
 
             # Update counters
             if num_tool_calls > 0:
@@ -9814,8 +9829,25 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     self._encode_display_metadata(msg.get("display_metadata")),
                 ),
             )
-            if isinstance(msg, dict) and cur.lastrowid is not None:
-                msg["_row_id"] = cur.lastrowid
+            msg_id = cur.lastrowid
+            if isinstance(msg, dict) and msg_id is not None:
+                msg["_row_id"] = msg_id
+            # Handle deferred notification adoptions (batch path — mirrors
+            # append_message's adoption logic for turn-flush batches).
+            adoption_ids = sorted(
+                {str(event_id) for event_id in (msg.get("deferred_notification_ids") or ()) if event_id}
+            )
+            if adoption_ids:
+                adopted_at = time.time()
+                conn.executemany(
+                    """INSERT OR IGNORE INTO deferred_notification_adoptions
+                       (event_id, session_id, message_id, adopted_at)
+                       VALUES (?, ?, ?, ?)""",
+                    (
+                        (event_id, session_id, msg_id, adopted_at)
+                        for event_id in adoption_ids
+                    ),
+                )
             inserted += 1
             if tool_calls is not None:
                 tool_calls_total += (

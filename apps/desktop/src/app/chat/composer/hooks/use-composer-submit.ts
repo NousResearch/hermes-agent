@@ -9,6 +9,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
 import { hasMcpSetupRequest, skipMcpSetupRequest } from '@/store/mcp-setup'
 import { hasBlockingPromptRequest } from '@/store/prompts'
+import type { TurnOrigin } from '@/types/hermes'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
@@ -41,6 +42,7 @@ interface UseComposerSubmitArgs {
   sessionId: string | null | undefined
   setComposerText: (value: string) => void
   stashAt: (scope: string | null, text?: string, attachments?: ComposerAttachment[]) => void
+  turnOrigin: TurnOrigin | null
 }
 
 /**
@@ -75,7 +77,8 @@ export function useComposerSubmit({
   queuedPrompts,
   sessionId,
   setComposerText,
-  stashAt
+  stashAt,
+  turnOrigin
 }: UseComposerSubmitArgs) {
   const paneVisible = usePaneVisible()
   const scope = useComposerScope()
@@ -202,6 +205,16 @@ export function useComposerSubmit({
         triggerHaptic('submit')
         clearDraft()
         dispatchSubmit(text)
+      } else if (turnOrigin === 'notification' && payloadPresent) {
+        // A background completion must never absorb a foreground prompt as a
+        // correction. Queue the user's draft, then interrupt only the
+        // notification; preserving busy makes the existing settle-edge drain
+        // dispatch the queued user turn after that notification unwinds.
+        const queued = queueCurrentDraft()
+
+        if (queued) {
+          void Promise.resolve(onCancel({ preserveBusyUntilSettled: true }))
+        }
       } else if (!compacting && !blockingPrompt && !attachments.length && text.trim()) {
         // Cursor-style stop-and-correct: interrupt the live turn and redirect
         // it with this text. redirect() preserves the shown reasoning/work; if

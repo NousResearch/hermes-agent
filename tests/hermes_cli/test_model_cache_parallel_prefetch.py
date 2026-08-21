@@ -208,10 +208,9 @@ class TestPrefetchIntegration:
 
         with patch.object(model_switch, "_collect_authed_provider_slugs", side_effect=mock_collect), \
              patch.object(model_switch, "_prefetch_provider_models_parallel") as prefetch:
-            try:
-                model_switch.list_authenticated_providers()
-            except Exception:
-                pass  # we only care about the prefetch call
+            # Do not swallow TypeError: a signature mismatch on the collect
+            # mock previously hid that prefetch never ran.
+            model_switch.list_authenticated_providers()
             captured_slugs = prefetch.call_args[0][0] if prefetch.called else []
 
         assert prefetch.called
@@ -228,10 +227,7 @@ class TestPrefetchIntegration:
 
         with patch.object(model_switch, "_collect_authed_provider_slugs", side_effect=mock_collect), \
              patch.object(model_switch, "_prefetch_provider_models_parallel") as prefetch:
-            try:
-                model_switch.list_authenticated_providers()
-            except Exception:
-                pass
+            model_switch.list_authenticated_providers()
 
         prefetch.assert_not_called()
 

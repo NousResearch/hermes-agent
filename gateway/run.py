@@ -882,6 +882,14 @@ def render_notice_line(notice) -> str:
     return str(getattr(notice, "text", "") or "").strip()
 
 
+def _reply_to_for_thread_metadata(metadata: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Return the reply anchor only for explicit thread-aware sends."""
+    if not metadata or not metadata.get("reply_in_thread"):
+        return None
+    reply_to = metadata.get("reply_to_message_id")
+    return str(reply_to) if reply_to else None
+
+
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
     """Route a status message through adapter.send_or_update_status when supported.
 
@@ -892,7 +900,8 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
         return await sender(chat_id, status_key, content, metadata=metadata)
-    return await adapter.send(chat_id, content, metadata=metadata)
+    reply_to = (metadata or {}).get("reply_to_message_id") if (metadata or {}).get("reply_in_thread") else None
+    return await adapter.send(chat_id, content, reply_to=reply_to, metadata=metadata)
 
 
 def _approval_send_outcome(future, timeout: float) -> str:
@@ -23692,8 +23701,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> Optional[Dict[str, Any]]:
         """Build thread metadata for synthetic sends that only have routing state."""
         if thread_id is None:
+            if platform == Platform.FEISHU and reply_to_message_id is not None:
+                return {
+                    "reply_in_thread": True,
+                    "reply_to_message_id": str(reply_to_message_id),
+                }
             return None
         metadata: Dict[str, Any] = {"thread_id": thread_id}
+        if platform == Platform.FEISHU and reply_to_message_id is not None:
+            metadata["reply_in_thread"] = True
+            metadata["reply_to_message_id"] = str(reply_to_message_id)
         if self._is_telegram_dm_topic_target(
             platform,
             chat_id,
@@ -28440,15 +28457,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         _progress_metadata = (
             self._thread_metadata_for_source(source, event_message_id)
-            if _progress_thread_id == source.thread_id
-            else self._thread_metadata_for_target(
-                source.platform,
-                source.chat_id,
-                _progress_thread_id,
-                chat_type=getattr(source, "chat_type", None),
-                reply_to_message_id=event_message_id,
+            if source.platform == Platform.FEISHU
+            else (
+                self._thread_metadata_for_source(source, event_message_id)
+                if _progress_thread_id == source.thread_id
+                else self._thread_metadata_for_target(
+                    source.platform,
+                    source.chat_id,
+                    _progress_thread_id,
+                    chat_type=getattr(source, "chat_type", None),
+                    reply_to_message_id=event_message_id,
+                )
             )
-        ) if _progress_thread_id else None
+        ) if (source.platform == Platform.FEISHU or _progress_thread_id) else None
         if _progress_metadata is None and _relay_prospective_thread_id:
             # No real thread yet, but the connector will auto-thread on the
             # reply anchor; carry it so progress joins that thread.
@@ -28466,7 +28487,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _progress_reply_to = (
             event_message_id
             if (
-                source.platform in (Platform.FEISHU, Platform.MATTERMOST)
+                source.platform == Platform.FEISHU
+                and event_message_id
+            )
+            or (
+                source.platform == Platform.MATTERMOST
                 and source.thread_id
                 and event_message_id
             )
@@ -28570,15 +28595,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self._adapter_for_source(source)
         _status_chat_id = source.chat_id
-        if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
-            # Feishu topics only keep messages inside the topic when they are
-            # sent via the reply API with reply_in_thread=true. Status/interim,
-            # approval, and stream-consumer paths usually only receive metadata,
-            # so carry the triggering message id as a Feishu-specific fallback.
+        if source.platform == Platform.FEISHU and event_message_id:
+            # Feishu status, interim, and stream-consumer sends must use the
+            # same trigger anchor as tool progress, even before a thread ID
+            # exists, so the first visible message creates the task thread.
             _status_thread_metadata: Optional[Dict[str, Any]] = {
-                "thread_id": _progress_thread_id,
+                "reply_in_thread": True,
                 "reply_to_message_id": event_message_id,
             }
+            if source.thread_id:
+                _status_thread_metadata["thread_id"] = source.thread_id
         else:
             _status_thread_metadata = (
                 self._thread_metadata_for_source(source, event_message_id)
@@ -28873,6 +28899,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _notify_res = await _notify_adapter.send(
                             source.chat_id,
                             _heartbeat_text,
+                            reply_to=_reply_to_for_thread_metadata(_status_thread_metadata),
                             metadata=_interim_metadata(_non_conversational_metadata(_status_thread_metadata, platform=source.platform)),
                         )
                         if getattr(_notify_res, "success", False) and getattr(

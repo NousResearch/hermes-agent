@@ -4822,9 +4822,13 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
         effective_reply_to = reply_to
-        if not effective_reply_to and metadata and metadata.get("thread_id"):
+        if (
+            not effective_reply_to
+            and metadata
+            and (metadata.get("thread_id") or metadata.get("reply_in_thread"))
+        ):
             effective_reply_to = metadata.get("reply_to_message_id")
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        reply_in_thread = bool((metadata or {}).get("thread_id") or (metadata or {}).get("reply_in_thread"))
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,
@@ -5013,12 +5017,15 @@ class FeishuAdapter(BasePlatformAdapter):
                 if active_reply_to and not self._response_succeeded(response):
                     code = getattr(response, "code", None)
                     if code in _FEISHU_REPLY_FALLBACK_CODES:
-                        if (metadata or {}).get("thread_id"):
+                        if (
+                            (metadata or {}).get("thread_id")
+                            or (metadata or {}).get("reply_in_thread")
+                        ):
                             logger.warning(
-                                "[Feishu] Reply to %s failed in thread %s (code %s — message withdrawn/missing); "
+                                "[Feishu] Reply to %s failed for threaded delivery %s (code %s — message withdrawn/missing); "
                                 "skipping top-level fallback to avoid creating a new topic",
                                 active_reply_to,
-                                (metadata or {}).get("thread_id"),
+                                (metadata or {}).get("thread_id") or "live reply",
                                 code,
                             )
                             return response

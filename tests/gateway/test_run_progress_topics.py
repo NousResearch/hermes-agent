@@ -59,6 +59,31 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class ApprovalCaptureAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.FEISHU):
+        super().__init__(platform=platform)
+        self.approvals = []
+
+    async def send_exec_approval(
+        self,
+        chat_id,
+        command,
+        session_key,
+        description="dangerous command",
+        metadata=None,
+        **kwargs,
+    ) -> SendResult:
+        self.approvals.append(
+            {
+                "chat_id": chat_id,
+                "command": command,
+                "session_key": session_key,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id="approval-1")
+
+
 class DiscordProgressCaptureAdapter(ProgressCaptureAdapter):
     """Capture sends while exercising Discord's real preview formatter."""
 
@@ -222,6 +247,23 @@ class FakeAgent:
             time.sleep(0.35)
             cb("tool.started", "browser_navigate", "https://example.com", {})
             time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class ApprovalNotifyAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        import tools.approval as approval
+
+        notify = approval._gateway_notify_cbs["agent:main:feishu:dm:oc_chat"]
+        assert callable(notify)
+        notify({"command": "rm -rf /tmp/example", "description": "test approval"})
         return {
             "final_response": "done",
             "messages": [],
@@ -1002,8 +1044,9 @@ async def _run_with_agent(
     platform=Platform.TELEGRAM,
     chat_id="-1001",
     chat_type="group",
-    thread_id="17585",
+    thread_id: str | None = "17585",
     adapter_cls=ProgressCaptureAdapter,
+    event_message_id=None,
     user_id=None,
     scope_id=None,
 ):
@@ -1053,8 +1096,45 @@ async def _run_with_agent(
         source=source,
         session_id=session_id,
         session_key=session_key,
+        event_message_id=event_message_id,
     )
     return adapter, result
+
+
+@pytest.mark.asyncio
+async def test_feishu_live_root_approval_carries_thread_anchor(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ApprovalNotifyAgent,
+        session_id="sess-feishu-root-approval",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=ApprovalCaptureAdapter,
+        event_message_id="om_trigger",
+    )
+
+    assert result["final_response"] == "done"
+    assert isinstance(adapter, ApprovalCaptureAdapter)
+    assert adapter.approvals == [
+        {
+            "chat_id": "oc_chat",
+            "command": "rm -rf /tmp/example",
+            "session_key": "agent:main:feishu:dm:oc_chat",
+            "metadata": {
+                "reply_in_thread": True,
+                "reply_to_message_id": "om_trigger",
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -1925,3 +2005,39 @@ class TestSlackReplyInThreadProgressRouting:
             event_message_id="1700000000.000100",
             reply_in_thread=False,
         ) is None
+
+
+@pytest.mark.asyncio
+async def test_feishu_status_metadata_keeps_live_origin_anchor():
+    from gateway.run import GatewayRunner, _send_or_update_status_coro
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    metadata = runner._thread_metadata_for_target(
+        Platform.FEISHU,
+        "oc_chat",
+        None,
+        chat_type="dm",
+        reply_to_message_id="om_trigger",
+    )
+    adapter = ProgressCaptureAdapter(platform=Platform.FEISHU)
+
+    await _send_or_update_status_coro(
+        adapter,
+        "oc_chat",
+        "status-key",
+        "Working…",
+        metadata,
+    )
+
+    assert metadata == {
+        "reply_in_thread": True,
+        "reply_to_message_id": "om_trigger",
+    }
+    assert adapter.sent == [
+        {
+            "chat_id": "oc_chat",
+            "content": "Working…",
+            "reply_to": "om_trigger",
+            "metadata": metadata,
+        }
+    ]

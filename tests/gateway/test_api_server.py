@@ -35,6 +35,7 @@ from gateway.platforms.api_server import (
     _hermes_version,
     _redact_api_error_text,
     _request_agent_overrides,
+    _turn_usage_fields,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -355,6 +356,65 @@ def auth_adapter():
 # ---------------------------------------------------------------------------
 
 
+class TestTurnUsageFields:
+    """The turn's usage block: the cumulative cost counters, plus the gauge
+    numbers (context_tokens / context_window) a remote client cannot compute
+    from them."""
+
+    def test_reports_cost_counters_and_compressor_numbers(self):
+        agent = types.SimpleNamespace(
+            session_prompt_tokens=1200,
+            session_completion_tokens=300,
+            session_total_tokens=1500,
+            context_compressor=types.SimpleNamespace(
+                last_prompt_tokens=35019, context_length=1050000
+            ),
+        )
+        assert _turn_usage_fields(agent) == {
+            "input_tokens": 1200,
+            "output_tokens": 300,
+            "total_tokens": 1500,
+            "context_tokens": 35019,
+            "context_window": 1050000,
+        }
+
+    def test_compression_sentinel_clamps_to_zero(self):
+        """The Codex runtime parks last_prompt_tokens at -1 right after a
+        compression; the status bar shows 0, so the API must too."""
+        agent = types.SimpleNamespace(
+            context_compressor=types.SimpleNamespace(
+                last_prompt_tokens=-1, context_length=272000
+            )
+        )
+        assert _turn_usage_fields(agent)["context_tokens"] == 0
+
+    def test_missing_compressor_is_zeroed(self):
+        assert _turn_usage_fields(types.SimpleNamespace()) == {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "context_tokens": 0,
+            "context_window": 0,
+        }
+
+    def test_non_numeric_attributes_are_zeroed(self):
+        agent = types.SimpleNamespace(
+            session_prompt_tokens=None,
+            session_completion_tokens=None,
+            session_total_tokens=None,
+            context_compressor=types.SimpleNamespace(
+                last_prompt_tokens=None, context_length="unknown"
+            ),
+        )
+        assert _turn_usage_fields(agent) == {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "context_tokens": 0,
+            "context_window": 0,
+        }
+
+
 class TestAgentExecution:
     @pytest.mark.asyncio
     async def test_run_agent_uses_session_id_as_task_id(self, adapter):
@@ -363,6 +423,8 @@ class TestAgentExecution:
         mock_agent.session_prompt_tokens = 1
         mock_agent.session_completion_tokens = 2
         mock_agent.session_total_tokens = 3
+        mock_agent.context_compressor.last_prompt_tokens = 17915
+        mock_agent.context_compressor.context_length = 272000
 
         model_options = {"reasoning": {"enabled": False}, "fast": False}
         with patch.object(adapter, "_create_agent", return_value=mock_agent) as mock_create_agent:
@@ -381,7 +443,13 @@ class TestAgentExecution:
         # here doesn't set an explicit session_id string so the guard skips
         # the annotation — header will fall back to the provided session_id.
         assert result["final_response"] == "ok"
-        assert usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+        assert usage == {
+            "input_tokens": 1,
+            "output_tokens": 2,
+            "total_tokens": 3,
+            "context_tokens": 17915,
+            "context_window": 272000,
+        }
         create_kwargs = mock_create_agent.call_args.kwargs
         assert create_kwargs["requested_model"] == "MiniMax-M3"
         assert create_kwargs["requested_provider"] == "minimax"

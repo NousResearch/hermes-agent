@@ -201,7 +201,15 @@ async def test_run_agent_registers_active_run_id_for_steering(adapter, monkeypat
     )
 
     assert result["session_id"] == "request-session"
-    assert usage == {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    assert usage == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        # FakeAgent carries no context_compressor, and the gauge fields read 0
+        # for "unknown" rather than being omitted.
+        "context_tokens": 0,
+        "context_window": 0,
+    }
     assert observed == {"registered": True, "task_id": "request-session"}
     assert "run_steer_test" not in adapter._active_run_agents
 

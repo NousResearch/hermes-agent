@@ -899,6 +899,49 @@ def _clear_turn_process_ownership(agent: Any) -> None:
     agent._gateway_turn_process_epoch = None
 
 
+def _turn_usage_fields(agent: Any) -> Dict[str, int]:
+    """The ``usage`` block of a finished turn: what it cost, how full it is.
+
+    ``input_tokens``/``output_tokens``/``total_tokens`` are cumulative over
+    every API call the turn made, so they answer "what did this turn cost",
+    not "how full is the context" — a long tool-using turn reports several
+    times the window. Remote clients that draw the same gauge as ``/context``
+    and the TUI status bar need two more numbers, the ones those read:
+
+    * ``context_tokens`` — ``last_prompt_tokens``, the prompt size of the
+      most recent model call. It is measured *at that call*, not at
+      usage-report time: tool results appended after it, and any compression
+      that ran mid-turn, are not reflected. That is deliberate parity with
+      ``agent/context_breakdown.py``'s ``measured_used``, which feeds
+      ``/context`` and the status bar from the same attribute — a client
+      drawing that gauge should read this field the same way, as the fill as
+      of the last model call. Compression parks the attribute at 0 (or the
+      Codex runtime's ``-1`` sentinel); both clamp to 0 here, exactly as the
+      status bar shows them.
+    * ``context_window`` — the compressor's resolved ``context_length``, the
+      denominator that same code divides by. ``/api/model/info`` cannot
+      stand in for it: that route lives on the dashboard server, not here.
+
+    The two context fields are 0 when the agent exposes no compressor, so a
+    client can tell "unknown" from a genuinely empty context.
+    """
+    compressor = getattr(agent, "context_compressor", None)
+
+    def _as_int(value: Any) -> int:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    return {
+        "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+        "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+        "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+        "context_tokens": _as_int(getattr(compressor, "last_prompt_tokens", 0)),
+        "context_window": _as_int(getattr(compressor, "context_length", 0)),
+    }
+
+
 def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") -> tuple[Any, Optional["web.Response"]]:
     """Parse and normalize session chat ``message`` / ``input`` like chat completions."""
     user_message = body.get("message") or body.get("input")
@@ -7236,11 +7279,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         conversation_history=conversation_history,
                         task_id=effective_task_id,
                     )
-                    usage = {
-                        "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                        "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                        "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-                    }
+                    usage = _turn_usage_fields(agent)
                     # Include the effective session ID in the result so callers
                     # (e.g. X-Hermes-Session-Id header) can track compression-
                     # triggered session rotations. (#16938)
@@ -7761,11 +7800,7 @@ class APIServerAdapter(BasePlatformAdapter):
                                         clear_session_vars(session_tokens)
                                     except Exception:
                                         pass
-                        u = {
-                            "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                            "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                            "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-                        }
+                        u = _turn_usage_fields(agent)
                         return r, u
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)

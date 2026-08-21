@@ -132,7 +132,7 @@ class TestTurnRunner:
             session_key="test-session-key",
             user_config={},
             AIAgent=_ExhaustedAgent,
-            resolve_display_setting=lambda *_args: False,
+            resolve_display_setting=lambda *_args, **_kwargs: False,
             _run_still_current=lambda: True,
             _hooks_ref=SimpleNamespace(loaded_hooks=False),
         )

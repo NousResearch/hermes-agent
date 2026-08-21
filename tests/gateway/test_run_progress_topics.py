@@ -1163,6 +1163,99 @@ async def test_retryable_overflow_edit_keeps_editable_bubble_identity(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_group_chat_type_override_suppresses_interim_commentary(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-quiet-telegram-group",
+        config_data={
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "interim_assistant_messages": True,
+                        "chat_types": {
+                            "group": {"interim_assistant_messages": False},
+                        },
+                    },
+                },
+            },
+            "streaming": {"enabled": False},
+        },
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_group_override_does_not_suppress_dm_commentary(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-verbose-telegram-dm",
+        config_data={
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "interim_assistant_messages": True,
+                        "chat_types": {
+                            "group": {"interim_assistant_messages": False},
+                        },
+                    },
+                },
+            },
+            "streaming": {"enabled": False},
+        },
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
+
+
+@pytest.mark.asyncio
+async def test_chat_type_does_not_override_process_global_tool_preview_length(
+    monkeypatch, tmp_path
+):
+    """Concurrent chat scopes must not mutate the process-global preview cap."""
+    from agent import display as agent_display
+
+    applied = []
+    monkeypatch.setattr(agent_display, "set_tool_preview_max_len", applied.append)
+
+    _, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-global-preview-length",
+        config_data={
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "tool_preview_length": 90,
+                        "chat_types": {
+                            "group": {"tool_preview_length": 5},
+                        },
+                    },
+                },
+            },
+            "streaming": {"enabled": False},
+        },
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+
+    assert result["final_response"] == "done"
+    assert applied == [90]
+
+
+@pytest.mark.asyncio
 async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,

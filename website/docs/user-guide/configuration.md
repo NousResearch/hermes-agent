@@ -1960,7 +1960,7 @@ Example footer appended to a Telegram/Discord/Slack reply:
 
 Only the **final** message of a turn gets the footer; interim updates stay clean.
 
-### Per-platform progress overrides
+### Per-platform and per-chat-type progress overrides
 
 Different platforms have different verbosity needs. Use `display.platforms` to set per-platform modes:
 
@@ -1971,10 +1971,26 @@ display:
     signal:
       tool_progress: 'off'    # Signal cannot currently display tool-progress bubbles
     telegram:
-      tool_progress: verbose  # detailed progress on Telegram
+      tool_progress: verbose  # detailed progress on Telegram by default
+      chat_types:
+        group:
+          tool_progress: 'off'
+          interim_assistant_messages: false
+          long_running_notifications: false
+        dm:
+          tool_progress: verbose
     slack:
       tool_progress: 'off'    # quiet in shared Slack workspace
 ```
+
+Chat-type overrides use two canonical scopes: `dm` and `group`. Gateway values `direct` and `private` normalize to `dm`; `forum`, `supergroup`, `channel`, and `thread` normalize to `group`. This makes a `group` override cover shared Telegram forums and other adapters that expose different shared-chat labels. Resolution is most-specific first:
+
+1. `display.platforms.<platform>.chat_types.<chat_type>.<setting>`
+2. `display.platforms.<platform>.<setting>`
+3. `display.<setting>`
+4. built-in platform and global defaults
+
+This lets one bot stay verbose in DMs while sending only final answers in shared groups. The gateway applies chat-type overrides to per-turn visibility and delivery settings such as `tool_progress`, `interim_assistant_messages`, `thinking_progress`, `long_running_notifications`, `show_reasoning`, `streaming`, `cleanup_progress`, and busy-status detail. Process-global formatter settings such as `tool_preview_length` are rejected inside `chat_types`; they retain their existing platform/global behavior so this feature does not add a finer-grained concurrent-state race.
 
 Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
 

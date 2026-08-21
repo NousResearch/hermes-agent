@@ -51,6 +51,189 @@ class TestResolveDisplaySetting:
         assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
 
 
+class TestChatTypeOverrides:
+    """Per-chat-type display overrides refine platform settings."""
+
+    def test_chat_type_override_wins_over_platform_and_global(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "tool_progress": "all",
+                "platforms": {
+                    "telegram": {
+                        "tool_progress": "new",
+                        "chat_types": {
+                            "dm": {"tool_progress": "verbose"},
+                            "group": {"tool_progress": "off"},
+                        },
+                    },
+                },
+            }
+        }
+
+        assert (
+            resolve_display_setting(
+                config,
+                "telegram",
+                "tool_progress",
+                chat_type="dm",
+            )
+            == "verbose"
+        )
+        assert (
+            resolve_display_setting(
+                config,
+                "telegram",
+                "tool_progress",
+                chat_type="group",
+            )
+            == "off"
+        )
+
+    def test_missing_chat_type_override_falls_back_to_platform(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "tool_progress": "new",
+                        "chat_types": {"dm": {"tool_progress": "verbose"}},
+                    },
+                },
+            }
+        }
+
+        assert (
+            resolve_display_setting(
+                config,
+                "telegram",
+                "tool_progress",
+                chat_type="group",
+            )
+            == "new"
+        )
+        assert resolve_display_setting(config, "telegram", "tool_progress") == "new"
+
+    def test_chat_type_overrides_are_normalised(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "thinking_progress": True,
+                        "chat_types": {
+                            "dm": {
+                                "show_reasoning": "true",
+                                "cleanup_progress": "true",
+                                "thinking_progress": "false",
+                            },
+                        },
+                    },
+                },
+            }
+        }
+
+        assert (
+            resolve_display_setting(
+                config,
+                "telegram",
+                "show_reasoning",
+                chat_type="private",
+            )
+            is True
+        )
+        assert (
+            resolve_display_setting(
+                config,
+                "telegram",
+                "cleanup_progress",
+                chat_type="Direct",
+            )
+            is True
+        )
+        assert (
+            resolve_display_setting(
+                config,
+                "telegram",
+                "thinking_progress",
+                chat_type="dm",
+            )
+            is False
+        )
+
+
+    def test_shared_chat_aliases_fall_back_to_group_override(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "tool_progress": "all",
+                        "chat_types": {
+                            "group": {"tool_progress": "off"},
+                        },
+                    },
+                },
+            }
+        }
+
+        for chat_type in ("forum", "supergroup", "channel", "thread"):
+            assert (
+                resolve_display_setting(
+                    config,
+                    "telegram",
+                    "tool_progress",
+                    chat_type=chat_type,
+                )
+                == "off"
+            ), chat_type
+
+
+    def test_process_global_formatter_settings_ignore_chat_type_overrides(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "tool_preview_length": 90,
+                        "friendly_tool_labels": True,
+                        "chat_types": {
+                            "group": {
+                                "tool_preview_length": 5,
+                                "friendly_tool_labels": False,
+                            },
+                        },
+                    },
+                },
+            }
+        }
+
+        assert (
+            resolve_display_setting(
+                config,
+                "telegram",
+                "tool_preview_length",
+                chat_type="group",
+            )
+            == 90
+        )
+        assert (
+            resolve_display_setting(
+                config,
+                "telegram",
+                "friendly_tool_labels",
+                True,
+                chat_type="group",
+            )
+            is True
+        )
+
+
 # ---------------------------------------------------------------------------
 # Backward compatibility: tool_progress_overrides
 # ---------------------------------------------------------------------------

@@ -45,6 +45,55 @@ class TestMattermostDisplayHygiene:
         ) is True
 
 
+    def test_mattermost_chat_type_opt_in_can_enable_interim_messages(self):
+        """A chat-type override counts as an explicit Mattermost opt-in."""
+        user_config = {
+            "display": {
+                "platforms": {
+                    "mattermost": {
+                        "chat_types": {
+                            "group": {"interim_assistant_messages": True},
+                        },
+                    },
+                },
+            }
+        }
+
+        assert _resolve_gateway_display_bool(
+            user_config,
+            "mattermost",
+            "interim_assistant_messages",
+            default=False,
+            platform=Platform.MATTERMOST,
+            require_platform_override_for={Platform.MATTERMOST},
+            chat_type="group",
+        ) is True
+
+    def test_mattermost_null_chat_type_override_is_not_an_explicit_opt_in(self):
+        """A null scoped value must not expose scratch thinking via global fallback."""
+        user_config = {
+            "display": {
+                "thinking_progress": True,
+                "platforms": {
+                    "mattermost": {
+                        "chat_types": {
+                            "group": {"thinking_progress": None},
+                        },
+                    },
+                },
+            }
+        }
+
+        assert _resolve_gateway_display_bool(
+            user_config,
+            "mattermost",
+            "thinking_progress",
+            default=False,
+            platform=Platform.MATTERMOST,
+            require_platform_override_for={Platform.MATTERMOST},
+            chat_type="group",
+        ) is False
+
     def test_global_thinking_progress_still_applies_to_other_platforms(self):
         """The Mattermost guard must not silently neuter Telegram/other chats."""
         user_config = {"display": {"thinking_progress": True}}

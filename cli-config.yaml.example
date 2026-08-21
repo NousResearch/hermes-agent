@@ -1537,7 +1537,21 @@ display:
   # long_running_notifications STAY ON so the user has real signal between
   # turn start and final answer (mid-turn assistant commentary + a single
   # edit-in-place "⏳ Working — N min" heartbeat). Override under
-  # display.platforms.telegram.
+  # display.platforms.telegram. A chat-type override is more specific than its
+  # platform default, so one bot can stay verbose in DMs and quiet in groups:
+  #   display:
+  #     platforms:
+  #       telegram:
+  #         chat_types:
+  #           group:
+  #             tool_progress: off
+  #             interim_assistant_messages: false
+  #             long_running_notifications: false
+  #           dm:
+  #             tool_progress: all
+  # Canonical scopes are dm and group. direct/private resolve to dm;
+  # forum/supergroup/channel/thread resolve to group. Process-global knobs
+  # such as tool_preview_length are ignored inside chat_types.
 
   # Auto-cleanup of temporary progress bubbles after the final response lands.
   # On platforms that support message deletion (currently Telegram), this

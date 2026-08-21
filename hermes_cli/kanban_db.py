@@ -10616,6 +10616,15 @@ def _resolve_hermes_argv() -> list[str]:
     return _module_hermes_argv()
 
 
+def _merge_worker_path(current: str, defaults: str, *, pathsep: str = os.pathsep) -> str:
+    """Append missing baseline search directories without reordering PATH."""
+    entries = current.split(pathsep) if current else []
+    for entry in defaults.split(pathsep):
+        if entry and entry not in entries:
+            entries.append(entry)
+    return pathsep.join(entries)
+
+
 def _worker_terminal_timeout_env(
     max_runtime_seconds: Optional[int],
     current_timeout: Optional[str],
@@ -10734,6 +10743,13 @@ def _default_spawn(
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
+    if not _IS_WINDOWS:
+        # A gateway started by a service manager can have a PATH containing the
+        # Hermes shim but no system directories. The absolute shim then starts,
+        # yet its `realpath` / `dirname` bootstrap commands exit 127 before the
+        # worker reaches Python. Keep operator entries first and add only the
+        # POSIX baseline directories; no login shell should be needed.
+        env["PATH"] = _merge_worker_path(env.get("PATH", ""), os.defpath)
     # The dispatcher is detached from every conversation. Its worker must never
     # inherit routing mirrored by a previous gateway turn, even before the first
     # session binds ContextVars in this process.

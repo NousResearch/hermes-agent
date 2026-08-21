@@ -1142,6 +1142,17 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
 # ---------------------------------------------------------------------------
 
 
+def test_merge_worker_path_preserves_custom_order_and_adds_missing_defaults():
+    """A service PATH keeps its entries while workers regain baseline tools."""
+    merged = kb._merge_worker_path(
+        "/home/user/.local/bin:/usr/bin",
+        "/bin:/usr/bin:/usr/local/bin",
+        pathsep=":",
+    )
+
+    assert merged == "/home/user/.local/bin:/usr/bin:/bin:/usr/local/bin"
+
+
 def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeypatch):
     """When the shim is not on PATH, fall back to `python -m hermes_cli.main`.
 

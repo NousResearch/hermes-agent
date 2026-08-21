@@ -23338,7 +23338,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         loop = asyncio.get_running_loop()
         try:
-            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
+            from tools.mcp_tool import (
+                shutdown_mcp_servers, discover_mcp_tools, classify_reload_diff,
+                _servers, _lock,
+            )
 
             # Capture old server names before shutdown
             with _lock:
@@ -23355,9 +23358,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             with _lock:
                 connected_servers = set(_servers.keys())
 
-            added = connected_servers - old_servers
-            removed = old_servers - connected_servers
-            reconnected = connected_servers & old_servers
+            # "Removed" must mean "gone from config", not "not connected right
+            # now". A server still reconnecting when the diff runs is neither,
+            # and this set is also injected into every cached session's history
+            # — telling the model its tools were deleted when they arrive
+            # seconds later via the late-binding refresh.
+            _diff = classify_reload_diff(old_servers, connected_servers)
+            added = _diff["added"]
+            removed = _diff["removed"]
+            reconnected = _diff["reconnected"]
 
             lines = [t("gateway.reload_mcp.header")]
             if reconnected:

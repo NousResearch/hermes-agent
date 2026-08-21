@@ -5545,6 +5545,51 @@ def _load_mcp_config() -> Dict[str, dict]:
 
 
 # ---------------------------------------------------------------------------
+# Reload diff
+# ---------------------------------------------------------------------------
+
+
+def classify_reload_diff(before: Set[str], after: Set[str]) -> Dict[str, Set[str]]:
+    """Classify a reload's server churn against the CONFIG, not just live sockets.
+
+    ``before``/``after`` are the connected-server names on either side of a
+    reload. Deriving "removed" from those alone answers "was connected, isn't
+    now", which is not what the label claims: a server whose reconnect is still
+    in flight when the diff runs is still in ``config.yaml`` and connects
+    moments later, but gets reported — and injected into the model's history —
+    as ``Removed``.
+
+    ``removed`` therefore means "no longer configured", and a configured server
+    that simply isn't connected yet comes back under ``not_connected`` so
+    callers can say so instead of claiming it was deleted.
+    ``_load_mcp_config`` deliberately does not apply the ``enabled`` filter, so
+    a server switched off in config stays out of ``removed`` too.
+
+    Falls back to the connection-only answer if the config cannot be read —
+    the pre-existing behaviour, never an exception through a reload path.
+    """
+    added = set(after) - set(before)
+    reconnected = set(after) & set(before)
+    dropped = set(before) - set(after)
+    try:
+        configured = set(_load_mcp_config())
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("reload diff could not read MCP config: %s", exc)
+        return {
+            "added": added,
+            "reconnected": reconnected,
+            "removed": dropped,
+            "not_connected": set(),
+        }
+    return {
+        "added": added,
+        "reconnected": reconnected,
+        "removed": dropped - configured,
+        "not_connected": dropped & configured,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Server connection helper
 # ---------------------------------------------------------------------------
 

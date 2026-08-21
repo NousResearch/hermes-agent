@@ -3361,68 +3361,50 @@ function AvatarPicker({ shape, color, image, onShape, onColor, onImage, generate
 // ── pet tab: attach a petdex companion that lives beside the avatar ─────────
 
 // A petdex "spritesheet" is the FULL animation sheet (1536×1872 webp, ~2MB;
-// 8×9 grid of 192×208 frames). Using it as an <img> both downloads megabytes
-// per tile and shows the whole sheet squashed. Extract frame 0 once per slug
-// via canvas, downscale to 96px, and cache the data URL. Concurrency-capped
-// so opening the tab doesn't fire dozens of 2MB fetches at once.
-const PET_FRAME_W = 192
-const PET_FRAME_H = 208
-const petFrameCache = new Map()
-let petFetchActive = 0
-const petFetchQueue = []
+// 8×9 grid of 192×208 frames). Cropping frame 0 client-side means downloading
+// megabytes per tile from the CDN — and it CANNOT work for locally hatched
+// pets (generator-created, absent from the petdex manifest, so pet.gallery
+// hands the picker an EMPTY spritesheetUrl). The backend pet.thumb RPC crops
+// + downsamples frame 0 server-side and returns a small PNG data URI: it reads
+// the installed sheet off disk for local pets and the petdex CDN (host-
+// validated) for not-yet-installed ones, disk-caching per slug. One path that
+// serves every pet, same-origin + authenticated through the gateway.
+const petThumbCache = new Map()
 
-function pumpPetQueue() {
-  while (petFetchActive < 4 && petFetchQueue.length) {
-    const job = petFetchQueue.shift()
-    petFetchActive++
-    job().finally(() => {
-      petFetchActive--
-      pumpPetQueue()
-    })
-  }
-}
-
-function petFrameIcon(spriteUrl) {
-  if (!spriteUrl) {
+function petThumbIcon(slug, spriteUrl) {
+  if (!slug) {
     return Promise.resolve(null)
   }
 
-  if (!petFrameCache.has(spriteUrl)) {
-    petFrameCache.set(
-      spriteUrl,
-      new Promise(resolve => {
-        petFetchQueue.push(async () => {
-          try {
-            const resp = await fetch(spriteUrl, { signal: AbortSignal.timeout(15000) })
-            const blob = await resp.blob()
-            // Crop frame 0 during decode — never materialize the full sheet.
-            const bitmap = await createImageBitmap(blob, 0, 0, PET_FRAME_W, PET_FRAME_H)
-            const canvas = document.createElement('canvas')
-            canvas.width = 96
-            canvas.height = 104
-            canvas.getContext('2d').drawImage(bitmap, 0, 0, 96, 104)
-            bitmap.close()
-            resolve(canvas.toDataURL('image/png'))
-          } catch {
-            petFrameCache.delete(spriteUrl)
-            resolve(null)
-          }
-        })
-        pumpPetQueue()
+  if (!petThumbCache.has(slug)) {
+    const pending = host
+      .request('pet.thumb', { slug, url: spriteUrl || '' })
+      .then(result => {
+        if (result?.ok && result.dataUri) {
+          return result.dataUri
+        }
+        // Fail-open, and never cache a failure: a transient backend error
+        // must not poison the tile for the rest of the session.
+        petThumbCache.delete(slug)
+        return null
       })
-    )
+      .catch(() => {
+        petThumbCache.delete(slug)
+        return null
+      })
+    petThumbCache.set(slug, pending)
   }
 
-  return petFrameCache.get(spriteUrl)
+  return petThumbCache.get(slug)
 }
 
-/** One pet tile image: frame 0 only, resolved lazily through the cache. */
-function PetThumb({ spriteUrl, size = 40 }) {
+/** One pet tile image: server-cropped frame 0, resolved lazily + cached. */
+function PetThumb({ slug, spriteUrl, size = 40 }) {
   const [icon, setIcon] = useState(null)
 
   useEffect(() => {
     let alive = true
-    petFrameIcon(spriteUrl).then(url => {
+    petThumbIcon(slug, spriteUrl).then(url => {
       if (alive) {
         setIcon(url)
       }
@@ -3430,7 +3412,7 @@ function PetThumb({ spriteUrl, size = 40 }) {
     return () => {
       alive = false
     }
-  }, [spriteUrl])
+  }, [slug, spriteUrl])
 
   if (!icon) {
     return jsx('div', {
@@ -3548,11 +3530,12 @@ function PetTab({ image, onImage }) {
                         selectedSlug === pet.slug && 'ring-1 ring-(--ui-accent)'
                       ),
                       onClick: () => {
-                        // The pet IS the profile picture: extract frame 0
-                        // and hand it to the dialog as the avatar image.
+                        // The pet IS the profile picture: ask the backend for
+                        // a server-cropped frame-0 thumb (works for local-only
+                        // pets too — those have no spritesheet URL at all).
                         // Persisted when the user hits Save.
                         setSelectedSlug(pet.slug)
-                        void petFrameIcon(pet.spritesheetUrl).then(icon => {
+                        void petThumbIcon(pet.slug, pet.spritesheetUrl).then(icon => {
                           if (icon) {
                             onImage(icon)
                           } else {
@@ -3562,7 +3545,7 @@ function PetTab({ image, onImage }) {
                         })
                       },
                       children: [
-                        jsx(PetThumb, { spriteUrl: pet.spritesheetUrl, size: 40 }),
+                        jsx(PetThumb, { slug: pet.slug, spriteUrl: pet.spritesheetUrl, size: 40 }),
                         jsx('span', {
                           className: 'w-full truncate text-center text-[0.6rem] text-(--ui-text-tertiary)',
                           children: pet.displayName

@@ -4807,6 +4807,7 @@ class TurnRunner:
         progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
         delivered_progress_lines = []  # Last content confirmed visible in that bubble
         progress_msg_id = None   # ID of the current progress message to edit
+        pending_ambiguous_edit = None  # Exact (message_id, payload, tentative lines)
         can_edit = ctx.progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
         _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
         _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
@@ -4903,8 +4904,9 @@ class TurnRunner:
             return result
 
         def _progress_edit_was_too_long(result) -> bool:
-            if getattr(result, "error_kind", None) == "too_long":
-                return True
+            error_kind = getattr(result, "error_kind", None)
+            if error_kind is not None:
+                return error_kind == "too_long"
             return classify_send_error(
                 None,
                 getattr(result, "error", "") or "",
@@ -4920,6 +4922,31 @@ class TurnRunner:
             ):
                 shared += 1
             return progress_lines[shared:]
+
+        def _drop_attempted_progress_send(
+            *, sent_all: bool, attempted_line=None
+        ) -> None:
+            """Remove a non-idempotent send once its outcome can be ambiguous."""
+            nonlocal progress_msg_id, progress_lines, delivered_progress_lines
+            progress_msg_id = None
+            if sent_all:
+                progress_lines = []
+                delivered_progress_lines = []
+            elif progress_lines and progress_lines[-1] == attempted_line:
+                progress_lines.pop()
+                shared = 0
+                shared_limit = min(
+                    len(progress_lines), len(delivered_progress_lines)
+                )
+                while (
+                    shared < shared_limit
+                    and progress_lines[shared] == delivered_progress_lines[shared]
+                ):
+                    shared += 1
+                delivered_progress_lines = delivered_progress_lines[:shared]
+            if not progress_lines:
+                ctx.last_progress_msg[0] = None
+                ctx.repeat_count[0] = 0
 
         async def _start_fresh_progress_bubbles(lines: list) -> bool:
             """Send pending lines as new bubbles and keep the newest editable."""
@@ -4944,18 +4971,63 @@ class TurnRunner:
                 try:
                     result = await _send_progress_text(_progress_text(group))
                 except asyncio.CancelledError:
+                    # The adapter call was entered, so this non-idempotent group
+                    # may have reached the wire before cancellation interrupted
+                    # its ACK wait.  Keep only groups never attempted.
+                    progress_msg_id = None
+                    delivered_progress_lines = []
+                    progress_lines = [
+                        line
+                        for remaining_group in groups[index + 1 :]
+                        for line in remaining_group
+                    ]
+                    if not progress_lines:
+                        ctx.last_progress_msg[0] = None
+                        ctx.repeat_count[0] = 0
                     raise
                 except Exception:
-                    # Adapter exceptions are equivalent to an unacknowledged
-                    # send. Shared state already contains this group and the
-                    # ordered tail, so bounded callers can retry exactly once.
+                    # An untyped exception may have happened after this
+                    # non-idempotent send reached the wire. Never replay the
+                    # attempted group; retain only groups not yet attempted.
                     logger.warning(
-                        "[%s] Progress continuation send raised; retaining pending tail",
+                        "[%s] Progress continuation send raised with unknown "
+                        "outcome; suppressing duplicate retry",
                         getattr(adapter, "name", "unknown"),
                         exc_info=True,
                     )
+                    progress_msg_id = None
+                    delivered_progress_lines = []
+                    progress_lines = [
+                        line
+                        for remaining_group in groups[index + 1 :]
+                        for line in remaining_group
+                    ]
+                    if not progress_lines:
+                        ctx.last_progress_msg[0] = None
+                        ctx.repeat_count[0] = 0
                     return False
                 if not result.success:
+                    # The frame reached the relay wire but its ACK was lost.
+                    # This group may already be visible, so never replay it as a
+                    # non-idempotent send. Retain only groups that were not yet
+                    # attempted; do not mark the ambiguous group as delivered.
+                    if getattr(result, "ambiguous", False):
+                        logger.warning(
+                            "[%s] Progress continuation outcome is ambiguous; "
+                            "suppressing duplicate retry",
+                            getattr(adapter, "name", "unknown"),
+                        )
+                        progress_msg_id = None
+                        delivered_progress_lines = []
+                        progress_lines = [
+                            line
+                            for remaining_group in groups[index + 1 :]
+                            for line in remaining_group
+                        ]
+                        if not progress_lines:
+                            ctx.last_progress_msg[0] = None
+                            ctx.repeat_count[0] = 0
+                        return False
                     # The old full bubble is no longer a viable edit target.
                     # Keep the unsent tail ready for the normal fresh-send path.
                     progress_msg_id = None
@@ -5013,6 +5085,103 @@ class TurnRunner:
                 return await _flush_fresh_progress_with_retry(pending)
             return await _start_fresh_progress_bubbles(pending)
 
+        async def _settle_pending_ambiguous_edit() -> bool:
+            """Retry an ACK-lost edit without changing its identity or payload."""
+            nonlocal pending_ambiguous_edit, delivered_progress_lines
+            if pending_ambiguous_edit is None:
+                return True
+            message_id, payload, tentative_lines = pending_ambiguous_edit
+            try:
+                result = await _edit_progress_message(message_id, payload)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "[%s] Pending progress edit retry raised with unknown outcome",
+                    getattr(adapter, "name", "unknown"),
+                    exc_info=True,
+                )
+                return False
+            if result.success:
+                delivered_progress_lines = list(tentative_lines)
+                pending_ambiguous_edit = None
+                return True
+            logger.warning(
+                "[%s] Pending progress edit remains unresolved; retaining exact payload",
+                getattr(adapter, "name", "unknown"),
+            )
+            return False
+
+        async def _settle_progress_edit_during_drain() -> bool:
+            """Finish one pending edit safely before a cancellation boundary."""
+            nonlocal delivered_progress_lines, pending_ambiguous_edit
+            if not (can_edit and progress_lines and progress_msg_id):
+                return True
+            if pending_ambiguous_edit is not None:
+                if not await _settle_pending_ambiguous_edit():
+                    # The stable retry remains unknown. Freeze its tentative
+                    # boundary and suppress every non-idempotent fallback.
+                    pending_ambiguous_edit = None
+                    return True
+
+            full_text = _progress_text(progress_lines)
+            saw_ambiguous = False
+            result = None
+            try:
+                result = await _edit_progress_message(progress_msg_id, full_text)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # An edit is idempotent, so an unknown first outcome can be
+                # retried once against the same message identity and payload.
+                saw_ambiguous = True
+                logger.warning(
+                    "[%s] Progress drain edit raised with unknown outcome",
+                    getattr(adapter, "name", "unknown"),
+                    exc_info=True,
+                )
+
+            saw_ambiguous = saw_ambiguous or bool(
+                getattr(result, "ambiguous", False)
+            )
+            if result is None or (
+                not result.success
+                and (saw_ambiguous or getattr(result, "retryable", False))
+            ):
+                try:
+                    result = await _edit_progress_message(progress_msg_id, full_text)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning(
+                        "[%s] Progress drain edit retry raised with unknown outcome",
+                        getattr(adapter, "name", "unknown"),
+                        exc_info=True,
+                    )
+                    return True
+                saw_ambiguous = saw_ambiguous or bool(
+                    getattr(result, "ambiguous", False)
+                )
+
+            if result.success:
+                delivered_progress_lines = list(progress_lines)
+                return True
+            if saw_ambiguous:
+                logger.warning(
+                    "[%s] Progress drain edit remained ambiguous; "
+                    "suppressing fresh fallback",
+                    getattr(adapter, "name", "unknown"),
+                )
+                return True
+            if _progress_edit_was_too_long(result):
+                await _continue_progress_after_too_long(retry_failed_send=True)
+                return not _undelivered_progress_lines()
+
+            pending = _undelivered_progress_lines()
+            if pending:
+                await _flush_fresh_progress_with_retry(pending)
+            return not _undelivered_progress_lines()
+
         async def _roll_progress_overflow_if_needed() -> bool:
             """Start fresh editable progress bubbles before a bubble exceeds limit.
 
@@ -5021,7 +5190,10 @@ class TurnRunner:
                 intact for a later retry.  In either case the caller should skip
                 the normal send/edit path for this tick.
                 """
-            nonlocal progress_msg_id, progress_lines, delivered_progress_lines, can_edit
+            nonlocal progress_msg_id, progress_lines, delivered_progress_lines, can_edit, pending_ambiguous_edit
+            if pending_ambiguous_edit is not None:
+                if not await _settle_pending_ambiguous_edit():
+                    return True
             if not progress_lines or not can_edit:
                 return False
             groups = _split_progress_groups(progress_lines)
@@ -5032,6 +5204,21 @@ class TurnRunner:
             if progress_msg_id is not None:
                 result = await _edit_progress_message(progress_msg_id, first_text)
                 if not result.success:
+                    if getattr(result, "ambiguous", False):
+                        pending_ambiguous_edit = (
+                            progress_msg_id,
+                            first_text,
+                            list(groups[0]),
+                        )
+                        # The edit may already be visible. This tentative
+                        # boundary prevents a later fallback from replaying it.
+                        delivered_progress_lines = list(groups[0])
+                        logger.warning(
+                            "[%s] Progress overflow edit outcome is ambiguous; "
+                            "retaining exact edit payload",
+                            getattr(adapter, "name", "unknown"),
+                        )
+                        return True
                     if _progress_edit_was_too_long(result):
                         logger.info(
                             "[%s] Progress bubble hit the platform edit limit; "
@@ -5108,16 +5295,21 @@ class TurnRunner:
                     # order. Mirrors GatewayStreamConsumer.on_segment_break
                     # on the content side. (Issue: tool + content
                     # linearization regression after PR #7885.)
-                    pending = _undelivered_progress_lines()
-                    if pending:
-                        await _flush_fresh_progress_with_retry(pending)
-                        if _undelivered_progress_lines():
-                            # Both bounded attempts failed. Keep the exact tail
-                            # pending so a later tick or cancellation drain can
-                            # retry it instead of silently discarding progress.
-                            ctx.last_progress_msg[0] = None
-                            ctx.repeat_count[0] = 0
-                            continue
+                    boundary_settled = True
+                    if can_edit and progress_lines and progress_msg_id:
+                        boundary_settled = await _settle_progress_edit_during_drain()
+                    else:
+                        pending = _undelivered_progress_lines()
+                        if pending:
+                            await _flush_fresh_progress_with_retry(pending)
+                            boundary_settled = not _undelivered_progress_lines()
+                    if not boundary_settled:
+                        # Both bounded attempts failed. Keep the exact tail
+                        # pending so a later tick or cancellation drain can
+                        # retry it instead of silently discarding progress.
+                        ctx.last_progress_msg[0] = None
+                        ctx.repeat_count[0] = 0
+                        continue
                     progress_msg_id = None
                     progress_lines = []
                     delivered_progress_lines = []
@@ -5126,6 +5318,20 @@ class TurnRunner:
                     continue
                 else:
                     msg = raw
+                    if pending_ambiguous_edit is not None:
+                        if not await _settle_pending_ambiguous_edit():
+                            progress_lines.append(msg)
+                            continue
+                    if not can_edit and _undelivered_progress_lines():
+                        # Preserve FIFO order after a definite fallback-send
+                        # failure: settle the retained head before a later line
+                        # is allowed to become visible.
+                        await _flush_fresh_progress_with_retry(
+                            _undelivered_progress_lines()
+                        )
+                        if _undelivered_progress_lines():
+                            progress_lines.append(msg)
+                            continue
                     progress_lines.append(msg)
 
                 if await _roll_progress_overflow_if_needed():
@@ -5157,6 +5363,21 @@ class TurnRunner:
                     result = await _edit_progress_message(progress_msg_id, full_text)
                     if not result.success:
                         _err = (getattr(result, "error", "") or "").lower()
+                        if getattr(result, "ambiguous", False):
+                            pending_ambiguous_edit = (
+                                progress_msg_id,
+                                full_text,
+                                list(progress_lines),
+                            )
+                            delivered_progress_lines = list(progress_lines)
+                            # Editing the same message is idempotent. Keep its
+                            # exact identity and payload for the next retry.
+                            logger.warning(
+                                "[%s] Progress edit outcome is ambiguous; "
+                                "retaining exact edit payload",
+                                getattr(adapter, "name", "unknown"),
+                            )
+                            continue
                         # A full-bubble rejection means this message is simply
                         # out of room; editing itself still works on a fresh one.
                         if _progress_edit_was_too_long(result):
@@ -5188,12 +5409,61 @@ class TurnRunner:
                                 _last_edit_ts = time.monotonic()
                             else:
                                 can_edit = False
-                            _flood_result = await adapter.send(
-                                chat_id=ctx.source.chat_id,
-                                content=msg,
-                                reply_to=ctx._progress_reply_to,
-                                metadata=ctx._progress_metadata,
-                            )
+                            fallback_lines = _undelivered_progress_lines() or [msg]
+                            try:
+                                _flood_result = await adapter.send(
+                                    chat_id=ctx.source.chat_id,
+                                    content=_progress_text(fallback_lines),
+                                    reply_to=ctx._progress_reply_to,
+                                    metadata=ctx._progress_metadata,
+                                )
+                            except asyncio.CancelledError:
+                                # The fallback is non-idempotent and may already
+                                # be visible. Freeze the complete attempted tail.
+                                _drop_attempted_progress_send(sent_all=True)
+                                can_edit = False
+                                raise
+                            except Exception:
+                                # An untyped exception may follow a successful
+                                # write. Freeze the attempted fallback instead
+                                # of replaying a possibly-visible tail.
+                                _drop_attempted_progress_send(sent_all=True)
+                                can_edit = False
+                                logger.warning(
+                                    "[%s] Progress fallback send raised with "
+                                    "unknown outcome; suppressing duplicate retry",
+                                    getattr(adapter, "name", "unknown"),
+                                    exc_info=True,
+                                )
+                                continue
+                            if (
+                                not _flood_result.success
+                                and getattr(_flood_result, "ambiguous", False)
+                            ):
+                                # Any of ``fallback_lines`` may have landed.
+                                # Never replay the old visible prefix or this tail.
+                                progress_msg_id = None
+                                progress_lines = []
+                                delivered_progress_lines = []
+                                can_edit = False
+                                ctx.last_progress_msg[0] = None
+                                ctx.repeat_count[0] = 0
+                            elif _flood_result.success:
+                                if can_edit and _flood_result.message_id:
+                                    # Continue editing the fresh fallback bubble,
+                                    # whose ledger contains only what it rendered.
+                                    progress_msg_id = _flood_result.message_id
+                                    progress_lines = list(fallback_lines)
+                                    delivered_progress_lines = list(fallback_lines)
+                                else:
+                                    # Visible but not safely editable. Freeze both
+                                    # the old bubble and the complete fallback tail.
+                                    progress_msg_id = None
+                                    progress_lines = []
+                                    delivered_progress_lines = []
+                                    can_edit = False
+                                    ctx.last_progress_msg[0] = None
+                                    ctx.repeat_count[0] = 0
                             if (
                                 ctx._cleanup_progress
                                 and getattr(_flood_result, "success", False)
@@ -5203,27 +5473,42 @@ class TurnRunner:
                     else:
                         delivered_progress_lines = list(progress_lines)
                 else:
-                    if can_edit:
-                        # First tool: send all accumulated text as new message
-                        full_text = "\n".join(progress_lines)
+                    sent_all = can_edit
+                    content_to_send = "\n".join(progress_lines) if sent_all else msg
+                    try:
                         result = await adapter.send(
                             chat_id=ctx.source.chat_id,
-                            content=full_text,
+                            content=content_to_send,
                             reply_to=ctx._progress_reply_to,
                             metadata=ctx._progress_metadata,
                         )
-                    else:
-                        # Editing unsupported: send just this line
-                        result = await adapter.send(
-                            chat_id=ctx.source.chat_id,
-                            content=msg,
-                            reply_to=ctx._progress_reply_to,
-                            metadata=ctx._progress_metadata,
+                    except asyncio.CancelledError:
+                        _drop_attempted_progress_send(
+                            sent_all=sent_all, attempted_line=msg
+                        )
+                        raise
+                    except Exception:
+                        # Entering adapter.send() makes an untyped exception
+                        # ACK-ambiguous. Remove only this attempted payload so
+                        # later progress cannot replay it.
+                        _drop_attempted_progress_send(
+                            sent_all=sent_all, attempted_line=msg
+                        )
+                        logger.warning(
+                            "[%s] Progress send raised with unknown outcome; "
+                            "suppressing duplicate retry",
+                            getattr(adapter, "name", "unknown"),
+                            exc_info=True,
+                        )
+                        continue
+                    if not result.success and getattr(result, "ambiguous", False):
+                        _drop_attempted_progress_send(
+                            sent_all=sent_all, attempted_line=msg
                         )
                     if result.success:
                         if result.message_id:
-                            progress_msg_id = result.message_id
                             if can_edit:
+                                progress_msg_id = result.message_id
                                 delivered_progress_lines = list(progress_lines)
                             if ctx._cleanup_progress:
                                 ctx._cleanup_msg_ids.append(str(result.message_id))
@@ -5235,6 +5520,13 @@ class TurnRunner:
                             delivered_progress_lines = []
                             ctx.last_progress_msg[0] = None
                             ctx.repeat_count[0] = 0
+                        if not can_edit:
+                            # Separate mode posts only ``msg`` as its own bubble.
+                            # Remove that confirmed-visible line from the pending
+                            # buffer so a later content reset cannot replay it.
+                            _drop_attempted_progress_send(
+                                sent_all=False, attempted_line=msg
+                            )
 
                 _last_edit_ts = time.monotonic()
 
@@ -5260,23 +5552,20 @@ class TurnRunner:
                             # the current progress bubble and start a fresh
                             # one for any tool lines that arrived after.
                             await _roll_progress_overflow_if_needed()
+                            boundary_settled = True
                             if can_edit and progress_lines and progress_msg_id:
-                                _pending_text = _progress_text(progress_lines)
-                                try:
-                                    _pending_result = await _edit_progress_message(
-                                        progress_msg_id, _pending_text
-                                    )
-                                    if (
-                                        not _pending_result.success
-                                        and _progress_edit_was_too_long(_pending_result)
-                                    ):
-                                        await _continue_progress_after_too_long(
-                                            retry_failed_send=True
-                                        )
-                                except Exception:
-                                    pass
-                            elif can_edit and progress_lines:
-                                await _flush_fresh_progress_with_retry()
+                                boundary_settled = (
+                                    await _settle_progress_edit_during_drain()
+                                )
+                            elif progress_lines:
+                                await _flush_fresh_progress_with_retry(
+                                    _undelivered_progress_lines()
+                                )
+                                boundary_settled = not _undelivered_progress_lines()
+                            if not boundary_settled:
+                                # Preserve the exact tail for the final drain
+                                # rather than clearing it at this reset marker.
+                                continue
                             progress_msg_id = None
                             progress_lines = []
                             delivered_progress_lines = []
@@ -5291,22 +5580,11 @@ class TurnRunner:
                 if can_edit and progress_lines and progress_msg_id:
                     await _roll_progress_overflow_if_needed()
                 if can_edit and progress_lines and progress_msg_id:
-                    full_text = _progress_text(progress_lines)
-                    try:
-                        _final_progress_result = await _edit_progress_message(
-                            progress_msg_id, full_text
-                        )
-                        if (
-                            not _final_progress_result.success
-                            and _progress_edit_was_too_long(_final_progress_result)
-                        ):
-                            await _continue_progress_after_too_long(
-                                retry_failed_send=True
-                            )
-                    except Exception:
-                        pass
-                elif can_edit and progress_lines:
-                    await _flush_fresh_progress_with_retry()
+                    await _settle_progress_edit_during_drain()
+                elif progress_lines:
+                    await _flush_fresh_progress_with_retry(
+                        _undelivered_progress_lines()
+                    )
                 return
             except Exception as e:
                 logger.error("Progress message error: %s", e)
@@ -5640,6 +5918,11 @@ class TurnRunner:
                             on_missing_cursor="raise",
                         )
                     )
+
+                    async def _wait_for_progress_before_final_delivery() -> None:
+                        if ctx._progress_finalization_ready is not None:
+                            await ctx._progress_finalization_ready.wait()
+
                     _stream_consumer = GatewayStreamConsumer(
                         adapter=_adapter,
                         chat_id=ctx.source.chat_id,
@@ -5651,6 +5934,9 @@ class TurnRunner:
                             else None
                         ),
                         on_before_finalize=_pause_typing_before_finalize,
+                        on_before_final_delivery=(
+                            _wait_for_progress_before_final_delivery
+                        ),
                         initial_reply_to_id=ctx.event_message_id,
                         run_still_current=ctx._run_still_current,
                     )
@@ -28735,6 +29021,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         turn_ctx.tools_holder = tools_holder
         turn_ctx.stream_consumer_holder = stream_consumer_holder
         turn_ctx.streaming_tts_consumer_holder = streaming_tts_consumer_holder
+        turn_ctx._progress_finalization_ready = asyncio.Event()
         
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_running_loop()
@@ -28843,6 +29130,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         progress_task = None
         if needs_progress_queue:
             progress_task = asyncio.create_task(send_progress_messages())
+
+        progress_drain_complete = False
+
+        async def _drain_progress_before_finalization() -> None:
+            """Boundedly drain progress once, then release streamed finalization."""
+            nonlocal progress_drain_complete
+            if progress_drain_complete:
+                return
+            progress_drain_complete = True
+            try:
+                if progress_task:
+                    progress_task.cancel()
+                    completed = await self._await_adapter_cleanup_with_timeout(
+                        progress_task, _PROGRESS_FINALIZE_TIMEOUT
+                    )
+                    if not completed:
+                        logger.warning(
+                            "Timed out after %.1fs finalizing progress; continuing turn cleanup",
+                            _PROGRESS_FINALIZE_TIMEOUT,
+                        )
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug(
+                    "progress task failed during turn cleanup",
+                    exc_info=True,
+                )
+            finally:
+                turn_ctx._progress_finalization_ready.set()
+
+        if progress_task is None:
+            progress_drain_complete = True
+            turn_ctx._progress_finalization_ready.set()
 
         # Start the tool-call log writer when tool_progress == "log".
         log_task = None
@@ -29447,6 +29767,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             result = result_holder[0]
             adapter = self._adapter_for_source(source)
 
+            # run_sync may already have signalled the stream consumer's finish
+            # queue. Its pre-finalize barrier holds the visible final edit until
+            # every bounded progress retry has either landed or timed out.
+            await _drain_progress_before_finalization()
+
             # Finalize the streaming-TTS consumer (#60671).
             #
             # finish() is called from the outer event-loop thread (not the
@@ -29786,12 +30111,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Stop progress sender, interrupt monitor, and notification task
-            if progress_task:
-                progress_task.cancel()
             if log_task:
                 log_task.cancel()
             interrupt_monitor.cancel()
             _notify_task.cancel()
+
+            await _drain_progress_before_finalization()
 
             # Wait for stream consumer to finish its final edit
             if stream_task:
@@ -29847,20 +30172,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._update_runtime_status("draining")
             
             # Wait for cancelled tasks
-            for task in [progress_task, log_task, interrupt_monitor, tracking_task, _notify_task]:
+            for task in [log_task, interrupt_monitor, tracking_task, _notify_task]:
                 if task:
                     try:
-                        if task is progress_task:
-                            completed = await self._await_adapter_cleanup_with_timeout(
-                                task, _PROGRESS_FINALIZE_TIMEOUT
-                            )
-                            if not completed:
-                                logger.warning(
-                                    "Timed out after %.1fs finalizing progress; continuing turn cleanup",
-                                    _PROGRESS_FINALIZE_TIMEOUT,
-                                )
-                        else:
-                            await task
+                        await task
                     except asyncio.CancelledError:
                         pass
                     except Exception:

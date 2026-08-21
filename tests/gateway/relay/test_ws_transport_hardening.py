@@ -83,7 +83,13 @@ async def test_read_loop_exit_fails_pending_futures_promptly():
     fake.drop.set()
 
     result = await asyncio.wait_for(send_task, timeout=2.0)
-    assert result == {"success": False, "error": "relay transport connection lost"}
+    assert result == {
+        "success": False,
+        "error": "relay transport connection lost",
+        "ambiguous": True,
+        "retryable": True,
+        "error_kind": "transient",
+    }
     assert t._pending == {}
     await t._reader
 
@@ -277,7 +283,13 @@ async def test_read_loop_without_socket_still_fails_pending():
     await t._read_loop()  # must not raise
 
     assert fut.done()
-    assert fut.result() == {"success": False, "error": "relay transport connection lost"}
+    assert fut.result() == {
+        "success": False,
+        "error": "relay transport connection lost",
+        "ambiguous": True,
+        "retryable": True,
+        "error_kind": "transient",
+    }
     assert t._pending == {}
 
 

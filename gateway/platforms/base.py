@@ -2494,6 +2494,10 @@ class SendResult:
     # ``None`` (unset / not classified).  Producers should set this via
     # :func:`classify_send_error`.
     error_kind: Optional[str] = None
+    # True when a non-idempotent outbound operation reached the wire but its
+    # acknowledgement was lost, so delivery may already have happened. Callers
+    # must not retry such a result unless the operation itself is idempotent.
+    ambiguous: bool = False
 
 
 # Machine-readable send-failure categories.  Kept platform-neutral so every
@@ -2576,7 +2580,6 @@ def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> s
     if (
         "message_too_long" in blob
         or "msg_too_long" in blob
-        or "too long" in blob
         or "message is too long" in blob
     ):
         return "too_long"
@@ -5563,6 +5566,11 @@ class BasePlatformAdapter(ABC):
         if result.success:
             return result
 
+        # A non-idempotent send with an unknown ACK outcome may already be
+        # visible. Ambiguity dominates retry and formatting classifications.
+        if result.ambiguous:
+            return result
+
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
 
@@ -5595,6 +5603,8 @@ class BasePlatformAdapter(ABC):
                 )
                 if result.success:
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
+                    return result
+                if result.ambiguous:
                     return result
                 error_str = result.error or ""
                 if result.retry_after is not None:

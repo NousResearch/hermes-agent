@@ -123,6 +123,30 @@ class TestSendWithRetryNetworkRetry:
         assert not result.success
         assert len(adapter._send_calls) == 1
 
+    @pytest.mark.asyncio
+    async def test_ambiguous_result_is_never_retried_or_fallback_sent(self):
+        """An ACK-lost non-idempotent send may already be visible."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(
+                success=False,
+                error="relay transport connection lost",
+                ambiguous=True,
+                retryable=True,
+                error_kind="transient",
+            ),
+            SendResult(success=True, message_id="duplicate"),
+        ]
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry(
+                "chat1", "hello", max_retries=2, base_delay=0
+            )
+
+        assert result.ambiguous is True
+        mock_sleep.assert_not_called()
+        assert adapter._send_calls == [("chat1", "hello")]
+
 
 # ---------------------------------------------------------------------------
 # _send_with_retry — all retries exhausted → user notification

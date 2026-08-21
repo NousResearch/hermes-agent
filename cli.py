@@ -5492,6 +5492,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._approval_lock = threading.Lock()
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
+        self._free_text_state = None
+        self._free_text_deadline = 0
         self._model_picker_state = None
         # Armed when a bare `/resume` prints the recent-sessions list so the
         # very next bare numeric input (e.g. `3`) resolves to that session.
@@ -10433,6 +10435,91 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         return result[0]
 
+    def _prompt_free_text_modal(self, title: str, prompt: str, timeout: float = 120) -> str | None:
+        """Prompt for free text through the prompt_toolkit composer.
+
+        Thread-safe from the slash-worker daemon thread: the modal is set up on
+        ``self._app.loop`` via ``call_soon_threadsafe`` and the Enter binding
+        submits the typed buffer text (mirrors ``_secret_state``). Falls back
+        to ``_prompt_text_input`` when no app is running.
+
+        Returns the typed text (stripped), ``None`` on cancel/ESC/empty.
+        """
+        import queue
+        import threading
+        import time as _time
+
+        if not getattr(self, "_app", None):
+            return self._prompt_text_input(f"{prompt} ")
+
+        app_loop = getattr(self._app, "loop", None)
+        response_queue = queue.Queue()
+
+        def _setup() -> None:
+            self._capture_modal_input_snapshot()
+            self._free_text_state = {
+                "title": title,
+                "prompt": prompt,
+                "response_queue": response_queue,
+            }
+            self._free_text_deadline = _time.monotonic() + timeout
+            try:
+                self._app.current_buffer.reset()
+            except Exception:
+                pass
+            self._invalidate()
+
+        def _teardown() -> None:
+            self._free_text_state = None
+            self._free_text_deadline = 0
+            self._restore_modal_input_snapshot()
+            self._invalidate()
+
+        def _run_on_app_loop(fn) -> bool:
+            if threading.current_thread() is threading.main_thread() or app_loop is None:
+                fn()
+                return True
+            ready = threading.Event()
+
+            def _wrapped() -> None:
+                try:
+                    fn()
+                finally:
+                    ready.set()
+
+            try:
+                app_loop.call_soon_threadsafe(_wrapped)
+            except Exception:
+                return False
+            return ready.wait(timeout=5)
+
+        if not _run_on_app_loop(_setup):
+            return self._prompt_text_input(f"{prompt} ")
+
+        try:
+            while True:
+                try:
+                    value = response_queue.get(timeout=1)
+                    _run_on_app_loop(_teardown)
+                    value = (value or "").strip()
+                    return value or None
+                except queue.Empty:
+                    if self._free_text_deadline and _time.monotonic() > self._free_text_deadline:
+                        break
+        finally:
+            if self._free_text_state is not None:
+                _run_on_app_loop(_teardown)
+        return None
+
+    def _submit_free_text_response(self, value: str | None) -> None:
+        state = self._free_text_state
+        if not state:
+            return
+        state["response_queue"].put(value)
+        self._free_text_state = None
+        self._free_text_deadline = 0
+        self._invalidate()
+
     def _run_interactive_spec(self, spec: dict, command_name: str = "") -> object:
         """Recursive nested-menu engine for plugin interactive results.
 
@@ -10472,7 +10559,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # 2) handler with a free-text prompt: collect text, then run.
             prompt = action.get("prompt")
             if prompt:
-                text = self._prompt_text_input(prompt)
+                text = self._prompt_free_text_modal(command_name, prompt)
                 if text is None:
                     return  # Esc / empty
                 if handler is not None:
@@ -10572,6 +10659,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         if self._app and in_main_thread:
             from prompt_toolkit.application import run_in_terminal
+
             was_visible = self._status_bar_visible
             self._status_bar_visible = False
             self._app.invalidate()
@@ -12534,7 +12622,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             get_plugin_manager(),
                             base_cmd.lstrip("/"),
                             user_args,
-                            session_id=str(getattr(self, "session_id", "") or ""),
+                            session_id=str(getattr(self, "session_id", "") or "") or None,
                             platform=str(getattr(self, "platform", None) or "cli"),
                         )
                         if result:
@@ -17679,6 +17767,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         *,
         sudo_widget,
         secret_widget,
+        free_text_widget,
         approval_widget,
         slash_confirm_widget=None,
         clarify_widget,
@@ -17706,6 +17795,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 Window(height=0),
                 sudo_widget,
                 secret_widget,
+                free_text_widget,
                 approval_widget,
                 slash_confirm_widget,
                 clarify_widget,
@@ -18071,6 +18161,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if self._secret_state:
                 text = event.app.current_buffer.text
                 self._submit_secret_response(text)
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
+            # --- Free-text prompt (interactive menu engine): submit typed text ---
+            if self._free_text_state:
+                text = event.app.current_buffer.text
+                self._submit_free_text_response(text)
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
@@ -20176,6 +20274,35 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             filter=Condition(lambda: cli_ref._secret_state is not None),
         )
 
+        def _get_free_text_display():
+            state = cli_ref._free_text_state
+            if not state:
+                return []
+            title = state.get("title") or "Input"
+            prompt = state.get("prompt") or "Enter text:"
+            body = "Type your input below, then press Enter. ESC or Ctrl+C to cancel."
+            content_lines = [prompt, body]
+            box_width = _panel_box_width(title, content_lines)
+            lines = []
+            lines.append(('class:sudo-border', '╭─ '))
+            lines.append(('class:sudo-title', title))
+            lines.append(('class:sudo-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
+            _append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', prompt, box_width)
+            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
+            _append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', body, box_width)
+            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
+            lines.append(('class:sudo-border', '╰' + ('─' * box_width) + '╯\n'))
+            return lines
+
+        free_text_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_free_text_display),
+                wrap_lines=True,
+            ),
+            filter=Condition(lambda: cli_ref._free_text_state is not None),
+        )
+
         # --- Dangerous command approval: display widget ---
 
         def _get_approval_display():
@@ -20388,6 +20515,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._build_tui_layout_children(
                     sudo_widget=sudo_widget,
                     secret_widget=secret_widget,
+                    free_text_widget=free_text_widget,
                     approval_widget=approval_widget,
                     slash_confirm_widget=slash_confirm_widget,
                     clarify_widget=clarify_widget,

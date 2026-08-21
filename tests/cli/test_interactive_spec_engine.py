@@ -220,3 +220,52 @@ def test_esc_exits_cleanly():
     spec = {"title": "Peers", "items": [{"label": "x", "value": "x1"}]}
     cli._run_interactive_spec(spec, "peers")
     assert printed == [], printed
+
+
+def test_prompt_actions_route_through_free_text_modal():
+    """Prompt actions use _prompt_free_text_modal (works from daemon thread)."""
+    import cli as cli_mod
+    from cli import HermesCLI
+    import types
+
+    cli = HermesCLI.__new__(HermesCLI)
+    picks = [0, 0]  # item 0, action 0
+    prompts = ["modal text"]
+
+    printed = []
+    called_with = {}
+
+    def fake_picker(self, title, items, default_index=0):
+        return picks.pop(0) if picks else None
+
+    def fake_free_text(self, title, prompt):
+        called_with["title"] = title
+        called_with["prompt"] = prompt
+        return prompts.pop(0) if prompts else None
+
+    def fake_cprint(text):
+        printed.append(text)
+
+    cli._run_curses_picker = types.MethodType(fake_picker, cli)
+    cli._prompt_free_text_modal = types.MethodType(fake_free_text, cli)
+    cli_mod._cprint = fake_cprint
+
+    def handler(value, text=None):
+        return f"Created {value} with {text}"
+
+    spec = {
+        "title": "Groups",
+        "items": [
+            {
+                "label": "Create group",
+                "value": "create",
+                "actions": [
+                    {"key": "c", "label": "Create", "handler": handler,
+                     "prompt": "New group name:"},
+                ],
+            },
+        ],
+    }
+    cli._run_interactive_spec(spec, "groups")
+    assert called_with.get("prompt") == "New group name:", called_with
+    assert any("Created create with modal text" in p for p in printed), printed

@@ -8,6 +8,12 @@ CHANGE DETECTED" block (capped unified diff + new output) is injected into the p
 failure → an ERROR, never a change, and the stored hash is left untouched. State:
 ``job["monitor_state"]`` in jobs.json (hash + last_changed_at) and
 ``OUTPUT_DIR/<job_id>/monitor_last_output.txt`` (for the diff).
+
+The default commit boundary is detection time. Jobs with
+``monitor_commit_policy="after_delivery"`` defer the hash/snapshot commit until the agent finishes
+AND delivery succeeds, so a failed run re-offers the same observation instead of consuming it. Such
+a job may return the exact marker ``[MONITOR_RETRY]`` to suppress delivery and leave the prior hash
+intact.
 """
 
 from __future__ import annotations
@@ -15,6 +21,8 @@ from __future__ import annotations
 import difflib
 import hashlib
 import logging
+import os
+import uuid
 from dataclasses import dataclass
 from typing import Optional
 
@@ -39,6 +47,8 @@ class MonitorOutcome:
     first_run: bool = False
     context_block: Optional[str] = None
     error: Optional[str] = None
+    new_hash: Optional[str] = None
+    output: Optional[str] = None
 
 
 def hash_monitor_output(output: str) -> str:
@@ -74,13 +84,25 @@ def _read_last_output(job_id: str) -> str:
     return ""
 
 
+def _write_last_output_strict(job_id: str, output: str) -> None:
+    path = _snapshot_path(job_id)
+    from cron.jobs import _ensure_cron_dir
+
+    _ensure_cron_dir(path.parent)
+    temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temp_path.write_text(output, encoding="utf-8")
+        os.replace(temp_path, path)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _write_last_output(job_id: str, output: str) -> None:
     try:
-        from cron.jobs import _ensure_cron_dir
-
-        path = _snapshot_path(job_id)
-        _ensure_cron_dir(path.parent)
-        path.write_text(output, encoding="utf-8")
+        _write_last_output_strict(job_id, output)
     except Exception as exc:
         logger.warning("Monitor: failed to persist last output for %r: %s", job_id, exc)
 
@@ -125,8 +147,10 @@ def job_has_monitor(job: dict) -> bool:
 def check_monitor(job: dict) -> MonitorOutcome:
     """Run the monitor source and decide whether the agent should run.
 
-    On change (or first run) the new hash + snapshot are persisted BEFORE the agent runs — detection
-    time is the state boundary, so a failed agent run doesn't re-alert on the same content forever.
+    By default, on change (or first run) the new hash + snapshot are persisted BEFORE the agent
+    runs — detection time is the state boundary, so a failed agent run doesn't re-alert on the same
+    content forever. ``monitor_commit_policy='after_delivery'`` instead returns the new hash/output
+    to the scheduler for a downstream commit once the agent AND delivery both succeeded.
     On failure nothing is persisted.
     """
     job_id = str(job.get("id") or "")
@@ -163,8 +187,16 @@ def check_monitor(job: dict) -> MonitorOutcome:
             f"### Diff (previous → current)\n\n```diff\n{diff}\n```\n\n" + current
         )
 
-    _persist_monitor_state(job_id, new_hash, output)
-    return MonitorOutcome(ok=True, changed=True, first_run=first_run, context_block=context_block)
+    if job.get("monitor_commit_policy") != "after_delivery":
+        _persist_monitor_state(job_id, new_hash, output)
+    return MonitorOutcome(
+        ok=True,
+        changed=True,
+        first_run=first_run,
+        context_block=context_block,
+        new_hash=new_hash,
+        output=output,
+    )
 
 
 def _persist_monitor_state(job_id: str, new_hash: str, output: str) -> None:
@@ -183,3 +215,45 @@ def _persist_monitor_state(job_id: str, new_hash: str, output: str) -> None:
         )
     except Exception as exc:
         logger.warning("Monitor: failed to persist state for %r: %s", job_id, exc)
+
+
+def commit_monitor_state(job_id: str, new_hash: str, output: str) -> None:
+    """Commit a deferred monitor observation after downstream success."""
+    if not new_hash:
+        raise ValueError("new_hash is required to commit monitor state")
+    from cron.jobs import _hermes_now, update_job
+
+    snapshot_path = _snapshot_path(job_id)
+    old_snapshot_exists = snapshot_path.exists()
+    old_output = (
+        snapshot_path.read_text(encoding="utf-8") if old_snapshot_exists else ""
+    )
+    _write_last_output_strict(job_id, output)
+
+    def rollback_snapshot() -> None:
+        if old_snapshot_exists:
+            _write_last_output_strict(job_id, old_output)
+        else:
+            snapshot_path.unlink(missing_ok=True)
+
+    try:
+        updated = update_job(
+            job_id,
+            {
+                "monitor_state": {
+                    "last_output_hash": new_hash,
+                    "last_changed_at": _hermes_now().isoformat(),
+                }
+            },
+        )
+        if updated is None:
+            raise RuntimeError(f"monitor job {job_id!r} disappeared during commit")
+    except Exception:
+        try:
+            rollback_snapshot()
+        except Exception:
+            logger.exception(
+                "Monitor: failed to roll back snapshot for %r after hash commit failure",
+                job_id,
+            )
+        raise

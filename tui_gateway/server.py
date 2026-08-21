@@ -1793,6 +1793,8 @@ def _compute_host_turn_frame(
         "reasoning_config_override": session.get("create_reasoning_override"),
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session),
+        "pty_user_id": session.get("pty_user_id"),
+        "pty_provider": session.get("pty_provider"),
         "attached_images": attached_images,
         "queued_prompt_generation": queued_prompt_generation,
     }
@@ -2368,6 +2370,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 # id — pass it through so the upgrade continues that session
                 # instead of starting a fresh one under the same key.
                 kw = {"session_db": session_db}
+                if current.get("pty_user_id"):
+                    kw["pty_user_id"] = current["pty_user_id"]
                 if resume_sid := current.get("resume_session_id"):
                     kw["session_id"] = resume_sid
                 kw["platform_override"] = _session_source(current)
@@ -6861,6 +6865,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
             session["session_key"],
             session_id=session["session_key"],
             platform_override=_session_source(session),
+            pty_user_id=session.get("pty_user_id"),
         )
     finally:
         _clear_session_context(tokens)
@@ -7031,6 +7036,7 @@ def _make_agent(
     reasoning_config_override: dict | None = None,
     service_tier_override: str | None = None,
     platform_override: str | None = None,
+    pty_user_id: str | None = None,
 ):
     # AC-4 test seam: dead unless explicitly armed by the isolated certify
     # harness. Both inline and compute-host paths construct through _make_agent,
@@ -7042,6 +7048,8 @@ def _make_agent(
         return synthetic
 
     from run_agent import AIAgent
+
+    pty_user_id = str(pty_user_id or os.environ.get("HERMES_TUI_USER_ID") or "").strip() or None
 
     # MCP tool discovery runs in a background daemon thread at startup so a
     # dead server can't freeze the shell.  The agent snapshots its tool list
@@ -7205,6 +7213,7 @@ def _make_agent(
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         fallback_model=_load_fallback_model(),
+        user_id=pty_user_id,
         **_agent_cbs(sid),
     )
 
@@ -7219,6 +7228,8 @@ def _init_session(
     session_db=None,
     source: str | None = None,
     profile_home: str | None = None,
+    pty_user_id: str | None = None,
+    pty_provider: str | None = None,
 ):
     now = time.time()
     with _sessions_lock:
@@ -7246,6 +7257,8 @@ def _init_session(
             # launch profile. SessionBranch copies the parent's value so the
             # child stays on the same state.db.
             "profile_home": profile_home,
+            "pty_user_id": pty_user_id,
+            "pty_provider": pty_provider,
             # Per-session model override set by an in-session /model switch.
             # Honored on rebuild (/new, resume) so a switch in THIS session
             # never leaks into siblings via process-global env vars.
@@ -8580,6 +8593,8 @@ def _deferred_session_record(
     lazy: bool = False,
     model_override=None,
     resume_runtime_overrides: dict | None = None,
+    pty_user_id: str | None = None,
+    pty_provider: str | None = None,
 ) -> dict:
     """A live-session record whose AIAgent is built later (lazy watch / cold
     resume) — _init_session's shape minus the agent."""
@@ -8607,6 +8622,8 @@ def _deferred_session_record(
         "model_override": model_override,
         "pending_title": None,
         "profile_home": str(profile_home) if profile_home is not None else None,
+        "pty_user_id": pty_user_id,
+        "pty_provider": pty_provider,
         "resume_runtime_overrides": resume_runtime_overrides,
         "resume_session_id": session_key,
         "running": False,

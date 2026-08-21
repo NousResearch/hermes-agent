@@ -348,7 +348,6 @@ def test_base_gateway_replies_to_triggering_message_for_telegram_forum_topic():
     assert _reply_anchor_for_event(event) == "9001"
 
 
->>>>>>> 94716204f (fix(telegram): quote-reply triggering message in forum topics)
 @pytest.mark.asyncio
 async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegram_dm_topic(monkeypatch, tmp_path):
     """GatewayRunner's duplicate thread metadata must match the base helper."""
@@ -556,7 +555,6 @@ async def test_send_created_private_topic_uses_message_thread_without_anchor():
 
 
 @pytest.mark.asyncio
->>>>>>> 94716204f (fix(telegram): quote-reply triggering message in forum topics)
 async def test_created_private_topic_thread_not_found_fails_without_root_fallback():
     """Created private-topic sends must not retry into All Messages on stale thread IDs."""
     adapter = _make_adapter()

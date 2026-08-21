@@ -78,6 +78,13 @@ class TestFreeRuntime:
         assert rt is not None
         assert rt["base_url"] == "https://opencode.ai/zen/v1"
 
+    def test_go_ox_alpha_free_does_not_heal_to_zen(self):
+        """ox-alpha-free is a KEYED Go-subscription model despite its -free
+        suffix (Zen doesn't serve it; Go 401s anonymous). Membership in the
+        verified keyless catalog — not the suffix — gates the heal."""
+        assert opencode_zen_free_runtime("opencode-go", "ox-alpha-free") is None
+        assert opencode_zen_free_runtime("opencode-zen", "ox-alpha-free") is None
+
     def test_paid_model_returns_none(self):
         assert opencode_zen_free_runtime("opencode-zen", "claude-sonnet-5") is None
 

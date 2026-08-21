@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-21T03:50:21Z",
+  "updated_at": "2026-08-21T11:29:05Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -162,11 +162,15 @@
           "description": "free"
         },
         {
-          "id": "poolside/laguna-m.1:free",
+          "id": "z-ai/glm-5.2:free",
           "description": "free"
         },
         {
-          "id": "tencent/hy3:free",
+          "id": "poolside/laguna-s-2.1:free",
+          "description": "free"
+        },
+        {
+          "id": "poolside/laguna-xs-2.1:free",
           "description": "free"
         },
         {
@@ -178,7 +182,7 @@
           "description": "free"
         },
         {
-          "id": "inclusionai/ring-2.6-1t:free",
+          "id": "nvidia/nemotron-3.5-lightning:free",
           "description": "free"
         }
       ]

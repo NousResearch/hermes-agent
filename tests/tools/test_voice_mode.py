@@ -564,6 +564,7 @@ class TestWhisperHallucinationFilter:
 
 class TestPlayAudioFile:
     @pytest.mark.linux_only
+    @pytest.mark.real_audio_playback
     def test_play_wav_via_sounddevice(self, monkeypatch, sample_wav):
         np = pytest.importorskip("numpy")
         # Linux-gated rather than faking a non-macOS platform: on macOS WAV
@@ -600,6 +601,7 @@ class TestMacOSAudioOutputPolicy:
     and `afplay` only resolves on a real macOS host."""
 
     @pytest.mark.macos_only
+    @pytest.mark.real_audio_playback
     def test_play_audio_file_skips_sounddevice_on_macos(self, monkeypatch, sample_wav):
         """On macOS, WAV playback must not import sounddevice; it routes to afplay."""
 
@@ -695,7 +697,13 @@ class TestCleanupTempRecordings:
 # ============================================================================
 
 class TestPlayBeep:
+    @pytest.mark.linux_only
     def test_beep_calls_sounddevice_play(self, mock_sd):
+        """sounddevice is only the beep path off Darwin — see
+        _sounddevice_output_allowed(). On macOS play_beep routes through
+        _play_int16_via_tempfile -> play_audio_file -> afplay before mock_sd
+        is ever consulted (#88898); that arm is covered separately by
+        test_play_beep_routes_through_afplay_on_macos."""
         np = pytest.importorskip("numpy")
 
         from tools.voice_mode import play_beep
@@ -1391,6 +1399,7 @@ class TestWSL2PowerShellFallback:
             return next(it)
         return _side_effect
 
+    @pytest.mark.real_audio_playback
     def test_powershell_pipeline_preserves_real_exit_status(self, sample_wav):
         """Regression (review of #63768): the shell pipeline must preserve
         the (ffmpeg && powershell) exit status past the unconditional
@@ -1440,6 +1449,7 @@ class TestWSL2PowerShellFallback:
             "Shell pipeline must preserve the real exit status past cleanup: " + sh_script
         )
 
+    @pytest.mark.real_audio_playback
     def test_wsl2_unique_temp_filename(self, monkeypatch, tmp_path, sample_wav):
         """Two concurrent calls must use different temp WAV filenames."""
         from unittest.mock import patch, MagicMock
@@ -1485,6 +1495,7 @@ class TestWSL2PowerShellFallback:
             "Concurrent TTS calls must use unique temp WAV filenames"
         )
 
+    @pytest.mark.real_audio_playback
     def test_non_wsl_skips_powershell_fallback(self, monkeypatch, sample_wav):
         """On non-WSL Linux, the PowerShell player must not be inserted."""
         from unittest.mock import patch, MagicMock

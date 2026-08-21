@@ -1633,6 +1633,11 @@ def play_audio_file(file_path: str) -> bool:
     Returns:
         ``True`` if playback succeeded, ``False`` otherwise.
     """
+    # Process-wide kill switch (#88898): headless/agent/CI contexts can set
+    # this once instead of relying on every entry point being mocked.
+    if os.environ.get("HERMES_TTS_NO_PLAYBACK", "").strip() == "1":
+        return False
+
     # Ref-count real speaker output for the whole call so the thinking-sound
     # loop (and any other ambient cue) knows audio is flowing right now.
     mark_audio_output_active(True)

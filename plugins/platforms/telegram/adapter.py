@@ -8141,7 +8141,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     timeout=30.0,
                     event_hooks={"response": [_ssrf_redirect_guard]},
                 ) as client:
-                    resp = await client.get(image_url)
+                    # The bare httpx default UA ("python-httpx/x") is served
+                    # 403 by CDNs with basic bot detection (e.g.
+                    # upload.wikimedia.org). Match the UA the shared media
+                    # fetcher in gateway/platforms/base.py already sends so
+                    # the fallback can download what send-by-URL could not
+                    # (#89260).
+                    resp = await client.get(
+                        image_url,
+                        headers={
+                            "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
+                            "Accept": "image/*,*/*;q=0.8",
+                        },
+                    )
                     resp.raise_for_status()
                     image_data = resp.content
 

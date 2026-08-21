@@ -55,7 +55,7 @@ def _stub_download(monkeypatch, size: int):
         async def __aexit__(self, *exc):
             return False
 
-        async def get(self, url):
+        async def get(self, url, **kwargs):
             return _Resp()
 
     import tools.url_safety as url_safety
@@ -104,3 +104,62 @@ async def test_send_image_upload_fallback_uses_media_read_timeout(adapter, monke
     upload = calls[1]
     assert isinstance(upload["photo"], (bytes, bytearray))
     assert upload["read_timeout"] == tg._MEDIA_SEND_READ_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_send_image_upload_fallback_sends_browser_like_user_agent(
+    adapter, monkeypatch
+):
+    """The byte-upload fallback must not download with the bare httpx default
+    UA: CDNs with basic bot detection (e.g. upload.wikimedia.org) serve the
+    "python-httpx/x" UA a 403 while the URL worked from Telegram only
+    seconds before, so the image silently degraded to a text link (#89260).
+    The fallback must send the same UA the shared media fetcher in
+    gateway/platforms/base.py sends."""
+    seen = {}
+
+    class _Resp:
+        content = b"x" * 512
+
+        def raise_for_status(self):
+            return None
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, headers=None, **kwargs):
+            seen["url"] = url
+            seen["headers"] = headers or {}
+            return _Resp()
+
+    import tools.url_safety as url_safety
+
+    monkeypatch.setattr(
+        url_safety, "create_ssrf_safe_async_client", lambda **kw: _Client()
+    )
+    calls = []
+
+    async def _photo(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise RuntimeError("webpage_media_empty: URL send refused")
+        msg = MagicMock()
+        msg.message_id = 3
+        return msg
+
+    adapter._bot.send_photo = AsyncMock(side_effect=_photo)
+
+    result = await adapter.send_image(
+        "123", "https://upload.wikimedia.org/wikipedia/commons/x/x.jpg", caption="c"
+    )
+
+    assert result.success and len(calls) == 2
+    ua = seen["headers"].get("User-Agent", "")
+    assert ua.startswith("Mozilla/5.0"), (
+        f"fallback downloaded with a bot-detected User-Agent: {ua!r}"
+    )
+    assert "python-httpx" not in ua

@@ -30788,10 +30788,28 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             profile_homes = _multiplex_profile_homes(runner.config)
             if profile_homes:
                 cron_start_kwargs["profile_homes"] = profile_homes
+                # Per-profile adapter registries, so a secondary profile's job
+                # is DELIVERED BY ITS OWN BOT. Scoping the store alone is not
+                # enough: a cron delivery target carries platform + chat_id and
+                # no profile, and on Telegram every bot serving the same human
+                # sees the same chat_id (the user's own id) — so a job handed
+                # the primary's registry silently goes out from the primary's
+                # bot. The active profile keeps `runner.adapters`; secondaries
+                # get theirs from `runner._profile_adapters`.
+                from hermes_cli.profiles import get_active_profile_name
+
+                _active = get_active_profile_name() or "default"
+                _registries: Dict[str, Any] = {_active: runner.adapters}
+                for _name, _amap in getattr(runner, "_profile_adapters", {}).items():
+                    if _amap:
+                        _registries[_name] = _amap
+                cron_start_kwargs["profile_adapters"] = _registries
                 logger.info(
-                    "Cron scheduler will tick %d profile(s) under multiplex: %s",
+                    "Cron scheduler will tick %d profile(s) under multiplex: %s "
+                    "(own adapter registry for: %s)",
                     len(profile_homes),
                     [p[0] if isinstance(p, tuple) else p for p in profile_homes],
+                    sorted(_registries),
                 )
         except Exception as exc:
             logger.warning(

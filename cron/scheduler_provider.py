@@ -511,6 +511,7 @@ class InProcessCronScheduler(CronScheduler):
         interval=60,
         can_dispatch=None,
         profile_homes=None,
+        profile_adapters=None,
     ):
         import logging
         from cron.scheduler import tick as cron_tick
@@ -530,6 +531,14 @@ class InProcessCronScheduler(CronScheduler):
         # only the process-global HERMES_HOME (the default profile) is ticked.
         # Heartbeats and recovery are also scoped per profile so `hermes cron
         # status` reflects liveness for every profile independently.
+        #
+        # ``profile_adapters`` maps profile name -> that profile's own adapter
+        # registry. Ticking the right STORE is not enough: delivery resolves an
+        # adapter from the registry it is handed, and a cron delivery target
+        # carries only platform + chat_id (no profile). Two profiles serving the
+        # same human on Telegram share a chat_id — it is the user's own id — so
+        # a secondary profile's job handed the primary's registry is delivered
+        # by the PRIMARY's bot. See _start_multiplex.
         if profile_homes:
             self._start_multiplex(
                 stop_event,
@@ -538,6 +547,7 @@ class InProcessCronScheduler(CronScheduler):
                 loop=loop,
                 interval=interval,
                 can_dispatch=can_dispatch,
+                profile_adapters=profile_adapters,
             )
             return
 
@@ -609,6 +619,7 @@ class InProcessCronScheduler(CronScheduler):
         loop=None,
         interval=60,
         can_dispatch=None,
+        profile_adapters=None,
     ):
         """Tick every served profile's cron store when multiplex_profiles is on.
 
@@ -634,6 +645,36 @@ class InProcessCronScheduler(CronScheduler):
             len(profile_homes),
             [p[0] if isinstance(p, tuple) else p for p in profile_homes],
         )
+
+        def _adapters_for(profile_name):
+            """This profile's OWN adapter registry, falling back to the primary's.
+
+            Scoping the cron STORE per profile is not enough to deliver from the
+            right bot. A cron delivery target carries platform + chat_id only —
+            no profile (see cron/scheduler.py::_resolve_single_delivery_target)
+            — and delivery resolves an adapter out of whatever registry it is
+            handed (gateway/delivery.py::resolve_delivery_transport). On
+            Telegram a private chat reports the user's own id as chat.id, so
+            every bot serving that human shares one chat_id: a secondary
+            profile's job handed the primary's registry is delivered by the
+            PRIMARY's bot, silently.
+
+            Falls back to ``adapters`` when the profile has no registry of its
+            own (its adapters failed to connect, or the caller is an older
+            gateway that passes no mapping) — delivering from the primary is
+            wrong-bot but recoverable; delivering nothing loses the output.
+            """
+            if not profile_name or not profile_adapters:
+                return adapters
+            own = profile_adapters.get(profile_name)
+            if own:
+                return own
+            logger.debug(
+                "No adapter registry for profile '%s'; cron delivery falls back "
+                "to the primary registry (delivery may come from the wrong bot)",
+                profile_name,
+            )
+            return adapters
 
         # Recovery + initial heartbeat for every profile.
         for entry in profile_homes:
@@ -661,13 +702,14 @@ class InProcessCronScheduler(CronScheduler):
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
                     for entry in profile_homes:
+                        name = entry[0] if isinstance(entry, tuple) else None
                         home = entry[1] if isinstance(entry, tuple) else entry
                         home_token = set_hermes_home_override(str(home))
                         try:
                             with use_cron_store(home):
                                 cron_tick(
                                     verbose=False,
-                                    adapters=adapters,
+                                    adapters=_adapters_for(name),
                                     loop=loop,
                                     sync=False,
                                     can_dispatch=can_dispatch,

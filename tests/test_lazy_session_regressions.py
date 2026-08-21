@@ -343,26 +343,24 @@ class TestGatewaySurfacesNullResponse:
         assert "send it again" in lowered or "try again" in lowered
 
     def test_end_turn_tool_batch_synthetic_empty_is_silent(self):
-        """Synthetic ``(empty)`` should still stay silent for end_turn batches."""
+        """Helper closer ``(empty)`` stays silent without the failure sentinel."""
         from gateway.run import _normalize_empty_agent_response
+        from run_agent import AIAgent
+
+        closer = AIAgent._build_empty_assistant_placeholder()
+        assert closer.get("_empty_terminal_sentinel") is not True
 
         agent_result = {
-            "final_response": "(empty)",
+            "final_response": closer["content"],
             "api_calls": 2,
             "partial": False,
             "interrupted": False,
             "turn_exit_reason": "end_turn_tool_batch",
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": "(empty)",
-                    "_empty_terminal_sentinel": True,
-                }
-            ],
+            "messages": [closer],
         }
 
         response = _normalize_empty_agent_response(
-            agent_result, "(empty)", history_len=5,
+            agent_result, closer["content"], history_len=5,
         )
 
         assert response == ""

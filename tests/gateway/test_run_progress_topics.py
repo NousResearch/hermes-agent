@@ -1182,7 +1182,6 @@ async def test_retryable_overflow_edit_keeps_editable_bubble_identity(monkeypatc
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_run_agent_empty_final_preserves_turn_exit_reason(monkeypatch, tmp_path):
     """Regression (#18765 / silent handover): empty ``final_response`` with no
     failure metadata must reach the normal return path so ``turn_exit_reason``
@@ -1227,6 +1226,7 @@ async def test_run_agent_empty_final_preserves_turn_exit_reason(monkeypatch, tmp
     assert result.get("failed") is False
 
 
+@pytest.mark.asyncio
 async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,

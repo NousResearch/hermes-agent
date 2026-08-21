@@ -19026,7 +19026,13 @@ def start_server(
     # (idle timeout ~100s) where half-open IS a real failure mode, so keep the
     # ping at 20/20 to detect it promptly and stay under the tunnel's idle
     # window.
-    _is_loopback = host in ("127.0.0.1", "localhost", "::1")
+    # Wildcard hosts (0.0.0.0, ::) are also treated as "local" for ping
+    # purposes — the user binds to all interfaces for LAN access, but GIL
+    # stalls from agent work still block the event loop and trigger false
+    # disconnects via ws_ping. Disabling the keepalive on wildcard binds
+    # avoids this at the cost of slower half-open detection, which is
+    # acceptable on a trusted LAN.
+    _is_loopback = host in ("127.0.0.1", "localhost", "::1", "0.0.0.0", "::")
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
         # proxy_headers defaults to False so _ws_client_is_allowed sees

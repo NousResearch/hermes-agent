@@ -141,7 +141,7 @@ def test_start_server_enables_ws_ping_for_half_open_detection(monkeypatch):
     # without requiring a registered provider (a real public bind would raise
     # SystemExit here). The ping window keys off the host, not the auth flag.
     monkeypatch.setattr(web_server, "should_require_auth", lambda *a, **k: False)
-    web_server.start_server(host="0.0.0.0", port=0, open_browser=False)
+    web_server.start_server(host="198.51.100.1", port=0, open_browser=False)
 
     assert captured["ws_ping_interval"] and captured["ws_ping_interval"] > 0
     assert captured["ws_ping_timeout"] and captured["ws_ping_timeout"] > 0

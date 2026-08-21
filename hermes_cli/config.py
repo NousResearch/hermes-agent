@@ -3267,6 +3267,17 @@ def read_raw_config() -> Dict[str, Any]:
                 data = fast_safe_load(f) or {}
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
+            # Serve the last-known-good cached raw config when the file
+            # has become unreadable (broken YAML, permission error,
+            # transient I/O failure).  Returning {} here would let a
+            # read_raw_config() → mutate → save_config() round-trip
+            # silently overwrite the corrupted file with only the
+            # caller's single-section mutation, losing every other
+            # config section.  The same guard _load_config_impl uses
+            # for the expanded/merged config path.
+            cached = _RAW_CONFIG_CACHE.get(path_key)
+            if cached is not None:
+                return copy.deepcopy(cached[2])
             return {}
 
         if not isinstance(data, dict):

@@ -242,12 +242,14 @@ _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # save_config() + migrate_config() write via atomic_yaml_write which
 # produces a fresh inode, so stat() sees a new mtime_ns and the next
 # load repopulates automatically — no explicit invalidation hook.
-# Cached tuple is (user_mtime_ns, user_size, managed_mtime_ns, managed_size,
-# merged_value, env_ref_snapshot) — the managed-file signature is folded in so
-# editing the managed-scope config.yaml invalidates the cache (see
-# managed_scope), and the env snapshot invalidates it when a referenced ${VAR}
-# changes value (late .env load, in-process rotation — #58514).
-_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str, Optional[str]]]] = {}
+# Cached tuple is (signature, merged_value, env_ref_snapshot). The signature
+# folds in config.yaml, the managed-scope config, and user-declared include
+# files. The env snapshot also invalidates cached ${VAR} expansions after a
+# late .env load or in-process credential rotation (#58514).
+_LOAD_CONFIG_CACHE: Dict[
+    str,
+    Tuple[Tuple[Any, ...], Dict[str, Any], Dict[str, Optional[str]]],
+] = {}
 # (path, mtime_ns, size) -> cached raw yaml dict. Same pattern as
 # _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
 # the user's on-disk values without defaults merged in.
@@ -260,6 +262,7 @@ _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 # calls read_raw_config. Also covers mutation of the module-level cache
 # dicts above.
 _CONFIG_LOCK = threading.RLock()
+_CONFIG_INCLUDE_KEYS = ("include", "includes")
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
@@ -2013,6 +2016,10 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "unauthorized_dm_behavior",  # top-level form read by gateway/config.py
     "signal",            # Signal settings bridged to env vars by gateway/config.py
     "timeouts",          # unified timeout resolution section (agent/deadline.py, #85125)
+    # Fork (bbad163343, restauré 17/08 après perte au merge upstream v0.20.1) :
+    # profils de config inclus depuis config.yaml — voir _resolve_config_includes.
+    "include",           # single include file (profil actif : config-*.yaml)
+    "includes",          # list form of the same
 }
 _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 
@@ -2602,6 +2609,128 @@ def _deep_merge(base: dict, override: dict) -> dict:
             continue
         else:
             result[key] = value
+    return result
+
+
+def _without_config_include_keys(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy without root-level include declarations."""
+    return {k: copy.deepcopy(v) for k, v in config.items() if k not in _CONFIG_INCLUDE_KEYS}
+
+
+def _iter_config_include_values(config: Dict[str, Any]) -> List[Any]:
+    """Return root-level include values in declaration order."""
+    values: List[Any] = []
+    for key in _CONFIG_INCLUDE_KEYS:
+        raw = config.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, list):
+            values.extend(raw)
+        else:
+            values.append(raw)
+    return values
+
+
+def _resolve_config_include_path(config_path: Path, raw: Any) -> Optional[Path]:
+    if not isinstance(raw, str) or not raw.strip():
+        logger.warning("Ignoring non-string config include entry in %s: %r", config_path, raw)
+        return None
+    rendered = os.path.expandvars(os.path.expanduser(raw.strip()))
+    path = Path(rendered)
+    if not path.is_absolute():
+        path = config_path.parent / path
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def _read_config_yaml(path: Path) -> Dict[str, Any]:
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data if isinstance(data, dict) else {}
+
+
+def _merge_config_includes(
+    config_path: Path,
+    config: Dict[str, Any],
+    *,
+    seen: Optional[Set[Path]] = None,
+) -> Tuple[Dict[str, Any], Tuple[Tuple[str, int, int], ...]]:
+    """Merge user-declared include files, then overlay ``config``.
+
+    Includes are relative to the file that declares them. Earlier includes are
+    lower priority than later includes, and the declaring file always wins. The
+    returned signature is used by ``load_config()`` cache invalidation.
+    """
+    seen = set(seen or ())
+    merged: Dict[str, Any] = {}
+    signatures: List[Tuple[str, int, int]] = []
+    for raw_include in _iter_config_include_values(config):
+        include_path = _resolve_config_include_path(config_path, raw_include)
+        if include_path is None:
+            continue
+        if include_path in seen:
+            logger.warning("Skipping recursive config include %s from %s", include_path, config_path)
+            continue
+        try:
+            st = include_path.stat()
+        except FileNotFoundError:
+            logger.warning("Config include %s referenced by %s does not exist", include_path, config_path)
+            continue
+        except OSError as e:
+            logger.warning("Config include %s referenced by %s is unreadable: %s", include_path, config_path, e)
+            continue
+        signatures.append((str(include_path), st.st_mtime_ns, st.st_size))
+        try:
+            include_config = _read_config_yaml(include_path)
+        except Exception as e:
+            _warn_config_parse_failure(include_path, e)
+            continue
+        include_merged, include_sig = _merge_config_includes(
+            include_path,
+            include_config,
+            seen=seen | {include_path},
+        )
+        signatures.extend(include_sig)
+        merged = _deep_merge(merged, include_merged)
+    merged = _deep_merge(merged, _without_config_include_keys(config))
+    return merged, tuple(signatures)
+
+
+def _strip_included_config_values(
+    config: Dict[str, Any],
+    included: Dict[str, Any],
+    *,
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None,
+) -> Dict[str, Any]:
+    """Remove values that came only from include files before saving main config.
+
+    If a caller actually changed an included value, the value no longer equals
+    the include baseline and is kept as a normal main-file override.
+    """
+    preserve_keys = set(preserve_keys or ())
+
+    def _strip(value: Any, baseline: Any, path: Tuple[str, ...]) -> Any:
+        if path in preserve_keys:
+            return copy.deepcopy(value)
+        if isinstance(value, dict):
+            baseline_dict = baseline if isinstance(baseline, dict) else {}
+            out: Dict[str, Any] = {}
+            for key, child in value.items():
+                stripped = _strip(child, baseline_dict.get(key), path + (key,))
+                if stripped is not None:
+                    out[key] = stripped
+            return out if out else None
+        if baseline is not None and value == baseline:
+            return None
+        return copy.deepcopy(value)
+
+    result: Dict[str, Any] = {}
+    for key, value in config.items():
+        stripped = _strip(value, included.get(key), (key,))
+        if stripped is not None:
+            result[key] = stripped
     return result
 
 
@@ -3636,86 +3765,74 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         except OSError:
             managed_sig = (0, 0)
 
-        # Combined cache signature: user file + managed file. None only when the
-        # user config is absent AND no managed file exists (nothing to cache on).
+        user_config: Dict[str, Any] = {}
+        include_sig: Tuple[Tuple[str, int, int], ...] = ()
+        user_config_parse_ok = True
         if user_sig is not None:
-            cache_sig: Optional[Tuple[int, int, int, int]] = (
+            try:
+                user_config = _read_config_yaml(config_path)
+                user_config, include_sig = _merge_config_includes(config_path, user_config)
+            except Exception as e:
+                user_config_parse_ok = False
+                # Wording contract (codex#31188 port) : dire à l'utilisateur si
+                # on sert la config précédemment chargée ou les défauts.
+                _warn_config_parse_failure(
+                    config_path,
+                    e,
+                    fallback=(
+                        "last-known-good"
+                        if _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key) is not None
+                        else "defaults"
+                    ),
+                )
+
+        # Combined cache signature: user file + managed file + include files.
+        # None only when the user config is absent AND no managed file exists
+        # (nothing to cache on).
+        if user_sig is not None:
+            cache_sig: Optional[Tuple[Any, ...]] = (
                 user_sig[0],
                 user_sig[1],
                 managed_sig[0],
                 managed_sig[1],
+                include_sig,
             )
         elif managed_sig != (0, 0):
-            cache_sig = (0, 0, managed_sig[0], managed_sig[1])
+            cache_sig = (0, 0, managed_sig[0], managed_sig[1], ())
         else:
             cache_sig = None
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
+        if cached is not None and cache_sig is not None and cached[0] == cache_sig:
             # File signatures match, but the cached expansion is only valid if
-            # every ${VAR} it was expanded against still has the same value.
-            # Without this, a load_config() that ran before load_hermes_dotenv()
-            # pins unexpanded literals (e.g. auxiliary.<task>.api_key) for the
-            # life of the process (#58514).
-            env_snapshot = cached[5] if len(cached) > 5 else {}
-            if all(os.environ.get(k) == v for k, v in env_snapshot.items()):
-                return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
+            # every ${VAR} it used still has the same value (#58514).
+            env_snapshot = cached[2]
+            if all(os.environ.get(key) == value for key, value in env_snapshot.items()):
+                return copy.deepcopy(cached[1]) if want_deepcopy else cached[1]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
-        if user_sig is not None:
-            try:
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = fast_safe_load(f) or {}
+        if user_sig is not None and user_config_parse_ok:
+            if "max_turns" in user_config:
+                agent_user_config = dict(user_config.get("agent") or {})
+                if agent_user_config.get("max_turns") is None:
+                    agent_user_config["max_turns"] = user_config["max_turns"]
+                user_config["agent"] = agent_user_config
+                user_config.pop("max_turns", None)
+            config = _deep_merge(config, user_config)
+        elif user_sig is not None:
+            # A malformed root file must not silently drop every user override.
+            # Keep serving the last-known-good value until the signature changes.
+            lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
+            if lkg is not None:
+                from typing import cast as _cast
 
-                if "max_turns" in user_config:
-                    agent_user_config = dict(user_config.get("agent") or {})
-                    if agent_user_config.get("max_turns") is None:
-                        agent_user_config["max_turns"] = user_config["max_turns"]
-                    user_config["agent"] = agent_user_config
-                    user_config.pop("max_turns", None)
-
-                config = _deep_merge(config, user_config)
-            except Exception as e:
-                # Last-known-good fallback (port of openai/codex#31188's
-                # invariant: a parse failure in a policy/config file must not
-                # silently replace the effective policy with an empty/default
-                # one). Falling through to DEFAULT_CONFIG here drops EVERY user
-                # override — including security-critical ``approvals.deny``
-                # rules, which are supposed to block commands even under yolo.
-                # A long-running gateway whose user mid-edits config.yaml into
-                # broken YAML would silently lose those rules on the next load.
-                # Within a running process we still have the last successfully
-                # loaded config — keep serving it until the file is fixed.
-                # Fresh processes with no last-known-good keep the existing
-                # DEFAULT_CONFIG fallback.
-                lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
-                _warn_config_parse_failure(
-                    config_path,
-                    e,
-                    fallback="last-known-good" if lkg is not None else "defaults",
+                lkg_copy: Dict[str, Any] = _cast(
+                    Dict[str, Any], _expand_env_vars(copy.deepcopy(lkg))
                 )
-                if lkg is not None:
-                    # save_config() stores the pre-expansion normalized dict
-                    # (env-ref templates preserved); the load path stores the
-                    # expanded one. Expand defensively — idempotent when the
-                    # stored value is already expanded.
-                    from typing import cast as _cast
-                    lkg_copy: Dict[str, Any] = _cast(
-                        Dict[str, Any], _expand_env_vars(copy.deepcopy(lkg))
-                    )
-                    if cache_sig is not None:
-                        # Cache under the corrupt file's signature (empty env
-                        # snapshot: always valid) so repeated loads don't
-                        # re-parse the broken file; fixing the file changes the
-                        # signature and triggers a normal reload.
-                        _empty_env: Dict[str, Optional[str]] = {}
-                        _LOAD_CONFIG_CACHE[path_key] = (
-                            cache_sig[0], cache_sig[1],
-                            cache_sig[2], cache_sig[3],
-                            lkg_copy, _empty_env,
-                        )
-                    return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
+                if cache_sig is not None:
+                    _LOAD_CONFIG_CACHE[path_key] = (cache_sig, lkg_copy, {})
+                return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
 
         normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
         expanded = _expand_env_vars(normalized)
@@ -3741,19 +3858,13 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             expanded = _deep_merge(expanded, managed_expanded)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:
-            # Cache stores a separate deepcopy so subsequent ``load_config()``
-            # (deepcopy=True) callers can mutate freely without affecting the
-            # cached value, and ``load_config_readonly()`` (deepcopy=False)
-            # callers all see the same stable cached object. The cached tuple is
-            # (user_mtime, user_size, managed_mtime, managed_size, value,
-            # env_ref_snapshot). The snapshot records the environment values
-            # this expansion was made against so later loads can detect env
-            # drift (late .env load, in-process rotation) — see cache hit above.
+            # Cache stores a separate deepcopy so mutable callers cannot affect
+            # it, plus the environment values used for ${VAR} expansion.
             cached_copy = copy.deepcopy(expanded)
             env_snapshot = _env_ref_snapshot(normalized)
             if managed_config:
                 _env_ref_snapshot(managed_config, env_snapshot)
-            _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot)
+            _LOAD_CONFIG_CACHE[path_key] = (cache_sig, cached_copy, env_snapshot)
             # On the readonly path return the same cached object subsequent
             # calls will see — keeps "two readonly calls return the same
             # object" invariant that callers may rely on for identity checks.
@@ -3900,6 +4011,14 @@ def save_config(
         )
         if merge_existing and _raw_for_paths:
             config = _merge_partial_save(_raw_for_paths, config)
+        include_declarations = {
+            key: _raw_for_paths[key]
+            for key in _CONFIG_INCLUDE_KEYS
+            if isinstance(_raw_for_paths, dict) and key in _raw_for_paths
+        }
+        included_config: Dict[str, Any] = {}
+        if include_declarations:
+            included_config, _ = _merge_config_includes(config_path, include_declarations)
         # ----------------------------------------------------------------
 
         current_normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
@@ -3924,6 +4043,15 @@ def save_config(
             effective_preserve_keys.update(explicit_raw_paths)
         if preserve_keys:
             effective_preserve_keys.update(preserve_keys)
+
+        if included_config:
+            normalized = _strip_included_config_values(
+                normalized,
+                _normalize_root_model_keys(_normalize_max_turns_config(included_config)),
+                preserve_keys=effective_preserve_keys,
+            )
+        for key, value in include_declarations.items():
+            normalized[key] = copy.deepcopy(value)
 
         if strip_defaults and effective_preserve_keys:
             # _preserve_env_ref_templates may return Any; cast for type-checker.

@@ -2079,3 +2079,123 @@ class TestCredentialPoolQueryLocking:
             inner.release()
 
         assert done.wait(timeout=2.0), f"{method}() did not complete after lock release"
+
+def test_exhausted_402_without_reset_at_recovers_after_short_ttl(tmp_path, monkeypatch):
+    """A 402-exhausted entry with no provider reset timestamp recovers after its TTL.
+
+    Regression for the status-specific 402 cooldown (2 min, vs 1 h for 429):
+    billing errors carry no provider ``last_error_reset_at``, so
+    ``_exhausted_until`` must fall back to ``last_status_at + _exhausted_ttl(code)``
+    for the entry to ever re-enter rotation.  Verify the entry stays
+    unavailable *before* ``EXHAUSTED_TTL_402_SECONDS`` elapses, becomes
+    selectable again *after* it elapses, and — at the same age — a
+    429-exhausted sibling is still benched (proving the short TTL is 402-only).
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # Prevent auto-seeding from Codex CLI tokens on the host
+    monkeypatch.setattr(
+        "hermes_cli.auth._import_codex_cli_tokens",
+        lambda: None,
+    )
+
+    from agent.credential_pool import EXHAUSTED_TTL_402_SECONDS, load_pool
+
+    def _write_entry(error_code: int, status_at_age: float) -> None:
+        _write_auth_store(
+            tmp_path,
+            {
+                "version": 1,
+                "credential_pool": {
+                    "openai-codex": [
+                        {
+                            "id": "cred-1",
+                            "label": "billing",
+                            "auth_type": "oauth",
+                            "priority": 0,
+                            "source": "manual:device_code",
+                            "access_token": "tok-1",
+                            "refresh_token": "rt-1",
+                            "last_status": "exhausted",
+                            "last_status_at": time.time() - status_at_age,
+                            "last_error_code": error_code,
+                            "last_error_reason": (
+                                "billing_exhausted"
+                                if error_code == 402
+                                else "rate_limit_exceeded"
+                            ),
+                            # Deliberately NO last_error_reset_at: the pool
+                            # must derive the cooldown from last_status_at
+                            # plus the status-specific TTL.
+                        }
+                    ]
+                },
+            },
+        )
+
+    # --- Before the 402 TTL elapses: the entry stays unavailable. ---
+    _write_entry(402, status_at_age=EXHAUSTED_TTL_402_SECONDS - 30)
+    pool = load_pool("openai-codex")
+    assert pool.has_available() is False
+    assert pool.select() is None
+
+    # --- After the 402 TTL elapses: the entry becomes selectable again. ---
+    _write_entry(402, status_at_age=EXHAUSTED_TTL_402_SECONDS + 30)
+    pool = load_pool("openai-codex")
+    assert pool.has_available() is True
+    selected = pool.select()
+    assert selected is not None
+    assert selected.id == "cred-1"
+    # The cooldown was actually cleared, not just skipped: the entry is
+    # reset to STATUS_OK on disk so it stays usable across pool reloads.
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["openai-codex"][0]
+    assert persisted["last_status"] == "ok"
+    assert persisted.get("last_error_code") is None
+
+    # --- Same age, but exhausted with 429: still benched (1 h TTL). ---
+    # Two entries so the pool is NOT sole-credential: upstream's
+    # sole-credential path shortens transient throttles for a lone key,
+    # which would mask the 429/402 distinction. With a sibling entry the
+    # 429 keeps its full 1-hour bench — proving the short TTL is 402-only.
+    def _write_two_429_entries(status_at_age: float) -> None:
+        _write_auth_store(
+            tmp_path,
+            {
+                "version": 1,
+                "credential_pool": {
+                    "openai-codex": [
+                        {
+                            "id": "cred-1",
+                            "label": "billing",
+                            "auth_type": "oauth",
+                            "priority": 0,
+                            "source": "manual:device_code",
+                            "access_token": "tok-1",
+                            "refresh_token": "rt-1",
+                            "last_status": "exhausted",
+                            "last_status_at": time.time() - status_at_age,
+                            "last_error_code": 429,
+                            "last_error_reason": "rate_limit_exceeded",
+                        },
+                        {
+                            "id": "cred-2",
+                            "label": "billing-2",
+                            "auth_type": "oauth",
+                            "priority": 1,
+                            "source": "manual:device_code",
+                            "access_token": "tok-2",
+                            "refresh_token": "rt-2",
+                            "last_status": "exhausted",
+                            "last_status_at": time.time() - status_at_age,
+                            "last_error_code": 429,
+                            "last_error_reason": "rate_limit_exceeded",
+                        },
+                    ]
+                },
+            },
+        )
+
+    _write_two_429_entries(status_at_age=EXHAUSTED_TTL_402_SECONDS + 30)
+    pool = load_pool("openai-codex")
+    assert pool.has_available() is False
+    assert pool.select() is None

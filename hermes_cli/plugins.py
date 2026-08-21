@@ -229,7 +229,8 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "skip",    "reason": "..."}  -> drop message (no reply)
     #   {"action": "rewrite", "text": "..."}    -> replace event.text, continue
     #   {"action": "allow"}  /  None             -> normal dispatch
-    # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
+    # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store,
+    #   session_key: str, agent_busy_before: bool.
     "pre_gateway_dispatch",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,

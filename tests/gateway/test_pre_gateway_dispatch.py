@@ -163,6 +163,36 @@ async def test_hook_receives_agent_busy_before_when_busy(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_hook_receives_session_key(monkeypatch):
+    """The pre_gateway_dispatch hook receives a session_key kwarg matching
+    _session_key_for_source(source), so plugins can correlate the inbound
+    source with the slot that session_is_busy() will inspect."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+
+    seen = {}
+
+    def _fake_hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            seen["session_key"] = kwargs.get("session_key", "MISSING")
+            return [dict(action="allow")]
+        return []
+
+    async def _capture(event, source, _quick_key, _run_generation):
+        return "ok"
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    runner._handle_message_with_agent = _capture  # noqa: SLF001
+
+    event = _make_event("hi")
+    expected_key = runner._session_key_for_source(event.source)
+    await runner._handle_message(event)
+    assert seen.get("session_key") == expected_key
+
+
+@pytest.mark.asyncio
 async def test_hook_receives_agent_busy_before_when_idle(monkeypatch):
     """When the session is idle, agent_busy_before is False."""
     _clear_auth_env(monkeypatch)

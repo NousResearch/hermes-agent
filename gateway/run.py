@@ -16588,6 +16588,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # object.__new__ without __init__ (pitfall #17), and the
                     # hook must not fail dispatch over a missing attribute.
                     session_store=getattr(self, "session_store", None),
+                    session_key=_quick_key,
                     agent_busy_before=_agent_busy_before,
                 )
             except Exception as _hook_exc:

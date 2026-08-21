@@ -1216,7 +1216,14 @@ def check_memory_requirements() -> bool:
 def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str, Any]]:
     """Return a shared validation error for an invalid or disabled target."""
     if target not in {"memory", "user"}:
-        return {"success": False, "error": f"Invalid memory target '{target}'."}
+        from tools.registry import _bound_error_text
+
+        return {
+            "success": False,
+            "error": _bound_error_text(
+                f"Invalid memory target '{target}'. Use 'memory' or 'user'."
+            ),
+        }
     if store.target_enabled(target):
         return None
     label = "USER.md" if target == "user" else "MEMORY.md"

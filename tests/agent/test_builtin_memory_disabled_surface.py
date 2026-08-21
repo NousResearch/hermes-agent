@@ -220,6 +220,26 @@ class TestIndependentStoreWriteGates:
         assert result["success"] is False
         assert result["target"] == "memory"
 
+    def test_invalid_target_error_is_bounded_and_carries_recovery_hint(self, hermes_home):
+        """Model-supplied target is interpolated into the error: it must stay
+        capped at the shared tool_error bound and keep the recovery hint."""
+        from tools.memory_tool import memory_tool
+        from tools.registry import _MAX_TOOL_ERROR_CHARS
+
+        store = self._store(memory_enabled=True, user_profile_enabled=True)
+        result = json.loads(
+            memory_tool(action="add", target="x" * 10_000, content="fact", store=store)
+        )
+
+        assert result["success"] is False
+        assert len(result["error"]) <= _MAX_TOOL_ERROR_CHARS + 32
+
+        short = json.loads(
+            memory_tool(action="add", target="bogus", content="fact", store=store)
+        )
+        assert short["success"] is False
+        assert "Use 'memory' or 'user'" in short["error"]
+
 
 class TestExternalProviderSurvivesBuiltinDisable:
     """Dropping the built-in tool must not drop the external provider's tools.

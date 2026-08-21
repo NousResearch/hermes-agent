@@ -728,6 +728,23 @@ def init_agent(
         from hermes_cli.providers import nous_api_mode
 
         agent.api_mode = nous_api_mode(agent.model)
+    elif agent.provider in {"kimi-coding", "kimi-coding-cn"}:
+        # Kimi Coding Plan endpoints (api.kimi.com/coding and the CN
+        # equivalent) speak the Anthropic Messages protocol, not OpenAI
+        # chat.completions — the OpenAI-wire overlay declaration only
+        # applies to legacy Moonshot-platform keys that resolve to
+        # api.moonshot.ai. Direct AIAgent construction bypasses
+        # ``resolve_runtime_provider`` (which already routes this via
+        # ``host_mandated_api_mode``), so without this branch a
+        # chat.completions request is sent against /coding and hangs forever
+        # in the header read — no error, so fallback never engages (#85446).
+        from agent.auxiliary_client import _endpoint_speaks_anthropic_messages
+
+        agent.api_mode = (
+            "anthropic_messages"
+            if _endpoint_speaks_anthropic_messages(agent.base_url or "")
+            else "chat_completions"
+        )
     else:
         # Host-mandated wire check — LAST, so the elif chain's provider-slug
         # rewrites (e.g. api.anthropic.com → provider="anthropic", #63425)

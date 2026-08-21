@@ -179,8 +179,13 @@ def build_keepalive_http_client(
             max_connections=100,
             keepalive_expiry=20.0,
         )
-        # Generous read=None for SSE streaming endpoints.
-        timeout = httpx.Timeout(connect=15.0, read=None, write=15.0, pool=10.0)
+        # Fail-closed read timeout: a provider that accepts the connection
+        # and never sends response headers must surface as an error instead
+        # of blocking forever in httpcore's header read (#85446). Per-request
+        # timeouts (``httpx.Timeout`` passed to ``client.send`` / the OpenAI
+        # SDK) still override this client default; this is the upper bound
+        # for any call path that omits one.
+        timeout = httpx.Timeout(connect=15.0, read=300.0, write=15.0, pool=10.0)
 
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client

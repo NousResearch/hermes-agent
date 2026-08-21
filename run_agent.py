@@ -5129,10 +5129,15 @@ class AIAgent:
                 keepalive_expiry=20.0,
             )
 
-            # Timeouts: generous read=None for SSE streaming endpoints.
+            # Fail-closed read timeout: a provider that accepts the
+            # connection and never sends response headers must surface as an
+            # error instead of blocking forever in httpcore's header read
+            # (#85446). Per-request timeouts (passed through the OpenAI SDK)
+            # still override this client default; this is the upper bound
+            # for any call path that omits one.
             _timeout = _httpx.Timeout(
                 connect=15.0,
-                read=None,
+                read=300.0,
                 write=15.0,
                 pool=10.0,
             )

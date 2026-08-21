@@ -19,6 +19,7 @@ These tests pin the two halves of the fix:
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -50,6 +51,11 @@ PARTIAL_POSITIVE = [
     "[SILENT]",
     "SILENT",
     "sil",
+    "{",
+    '{"action"',
+    '{"action": "NO_',
+    '{"action":"\\u004e\\u004f_',
+    '{\n  "action": "NO_REPLY"\n}',
 ]
 
 # Buffers that have already diverged from every marker → stream normally.
@@ -63,7 +69,29 @@ PARTIAL_NEGATIVE = [
     "The NO_REPLY token means silence",      # marker mentioned mid-prose
     "x" * 65,                                # over the 64-char cap
     "silence is golden",                     # 'SILENCE...' is not a marker prefix
+    '{"action":"NO_REPLY","reason"',
+    '{"message"',
+    '{"action":"NOPE',
+    '{"action":null',
+    '\u00a0{"action":"NO_REPLY"}',
+    '{"action":"NO_REPLY"}\u2028',
+    '{"message":"NO_REPLY"}',
+    (" " * 257) + '{"action":"NO_REPLY"}',
 ]
+
+
+@pytest.mark.parametrize("text", PARTIAL_POSITIVE)
+def test_partial_silence_marker_positive(text):
+    assert is_partial_silence_marker(text) is True
+
+
+@pytest.mark.parametrize("text", PARTIAL_NEGATIVE)
+def test_partial_silence_marker_negative(text):
+    assert is_partial_silence_marker(text) is False
+
+
+def test_partial_silence_marker_none_safe():
+    assert is_partial_silence_marker(None) is False
 
 
 def test_partial_predicate_agrees_with_exact_on_full_markers():
@@ -109,6 +137,39 @@ def _sent_and_edited(adapter):
 
 class TestStreamedSilenceSuppression:
     @pytest.mark.asyncio
+    async def test_json_no_reply_envelope_is_fully_suppressed(self):
+        """A one-key JSON silence envelope never reaches the platform."""
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_1",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
+        )
+        consumer.on_delta('{\n  "action": "NO_REPLY"\n}')
+        consumer.finish()
+        await consumer.run()
+
+        assert _sent_and_edited(adapter) == []
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is False
+
+    @pytest.mark.asyncio
+    async def test_json_no_reply_unicode_escape_stream_is_fully_suppressed(self):
+        """An escaped action value stays hidden while its JSON is incomplete."""
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_1",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
+        )
+        consumer.on_delta('{"action":"\\u004e\\u004f_')
+        consumer.on_delta('REPLY"}')
+        consumer.finish()
+        await consumer.run()
+
+        assert _sent_and_edited(adapter) == []
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is False
+
+    @pytest.mark.asyncio
     async def test_no_reply_only_stream_is_fully_suppressed(self):
         """A stream whose entire content is NO_REPLY sends nothing visible."""
         adapter = _make_adapter()
@@ -152,5 +213,27 @@ class TestStreamedSilenceSuppression:
         adapter.delete_message.assert_awaited_once_with("chat_1", "preview_1")
         assert consumer.final_content_delivered is False
         assert consumer.already_sent is False
+
+    @pytest.mark.asyncio
+    async def test_json_prefix_is_held_until_it_diverges(self):
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
+        )
+        consumer.on_delta('{"action":"NO_')
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.03)
+
+        assert _sent_and_edited(adapter) == []
+
+        consumer.on_delta('REPLY","reason":"visible"}')
+        consumer.finish()
+        await task
+
+        assert '{"action":"NO_REPLY","reason":"visible"}' in "".join(
+            _sent_and_edited(adapter)
+        )
 
 

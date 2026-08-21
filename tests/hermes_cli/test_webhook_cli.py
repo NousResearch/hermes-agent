@@ -66,6 +66,43 @@ class TestSubscribe:
         secret = _load_subscriptions()["s"]["secret"]
         assert len(secret) > 20
 
+    def test_rejects_unknown_delivery_target(self, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="bad", deliver="telegram/all"
+        ))
+
+        out = capsys.readouterr().out
+        assert "Unknown delivery target 'telegram/all'" in out
+        assert "bad" not in _load_subscriptions()
+
+    @pytest.mark.parametrize("target", ["log", "github_comment", "telegram"])
+    def test_accepts_known_delivery_target(self, target):
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="valid", deliver=target
+        ))
+
+        assert _load_subscriptions()["valid"]["deliver"] == target
+
+    def test_accepts_registered_plugin_delivery_target(self, monkeypatch):
+        discovered = False
+
+        def discover_plugin():
+            nonlocal discovered
+            discovered = True
+
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", discover_plugin)
+        monkeypatch.setattr(
+            "gateway.platform_registry.platform_registry.is_registered",
+            lambda target: discovered and target == "custom_chat",
+        )
+
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="plugin", deliver="custom_chat"
+        ))
+
+        assert _load_subscriptions()["plugin"]["deliver"] == "custom_chat"
+
 
 class TestList:
 
@@ -78,6 +115,23 @@ class TestList:
         assert "2 webhook" in out
         assert "a" in out
         assert "b" in out
+
+    def test_marks_persisted_unknown_delivery_target_invalid(self, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        _save_subscriptions({
+            "broken": {
+                "secret": "dynamic-secret",
+                "prompt": "test",
+                "deliver": "telegram/all",
+            }
+        })
+
+        webhook_command(_make_args(webhook_action="list"))
+
+        out = capsys.readouterr().out
+        assert "Deliver: telegram/all (INVALID)" in out
+        assert "--deliver telegram --deliver-chat-id <CHAT_ID>" in out
+        assert "broken" in _load_subscriptions()
 
 
 class TestRemove:
@@ -152,4 +206,3 @@ class TestWebhookEnabledGate:
         )
         import hermes_cli.webhook as wh_mod
         assert wh_mod._is_webhook_enabled() is False
-

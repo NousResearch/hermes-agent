@@ -107,6 +107,19 @@ _BUILTIN_DELIVER_PLATFORMS = {
     "feishu", "wecom", "wecom_callback", "weixin", "bluebubbles",
     "qqbot", "yuanbao",
 }
+_SPECIAL_DELIVER_TARGETS = {"log", "github_comment"}
+
+
+def is_known_delivery_target(deliver_type: str) -> bool:
+    """Return whether a webhook delivery target can be dispatched."""
+    if deliver_type in _SPECIAL_DELIVER_TARGETS or deliver_type in _BUILTIN_DELIVER_PLATFORMS:
+        return True
+    try:
+        from gateway.platform_registry import platform_registry
+
+        return platform_registry.is_registered(deliver_type)
+    except Exception:
+        return False
 
 # Default bind host. ``None`` tells aiohttp/asyncio's ``create_server`` to bind
 # BOTH address families (IPv4 + IPv6) — the portable dual-stack default.
@@ -382,16 +395,8 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
-        # Cross-platform delivery — any platform with a gateway adapter.
-        # Check both built-in names and plugin-registered platforms.
-        _is_known_platform = deliver_type in _BUILTIN_DELIVER_PLATFORMS
-        if not _is_known_platform:
-            try:
-                from gateway.platform_registry import platform_registry
-                _is_known_platform = platform_registry.is_registered(deliver_type)
-            except Exception:
-                pass
-        if self.gateway_runner and _is_known_platform:
+        # Cross-platform delivery — any built-in or plugin gateway adapter.
+        if self.gateway_runner and is_known_delivery_target(deliver_type):
             return await self._deliver_cross_platform(
                 deliver_type, content, delivery
             )
@@ -546,6 +551,17 @@ class WebhookAdapter(BasePlatformAdapter):
                         "is only allowed on loopback hosts. Current host: '%s'.",
                         k,
                         self._host,
+                    )
+                    continue
+                deliver = v.get("deliver", "log")
+                if not is_known_delivery_target(deliver):
+                    logger.warning(
+                        "[webhook] Dynamic route '%s' skipped: unknown delivery "
+                        "target '%s'. Update it with: hermes webhook subscribe %s "
+                        "--deliver telegram --deliver-chat-id <CHAT_ID>",
+                        k,
+                        deliver,
+                        k,
                     )
                     continue
                 new_dynamic[k] = v

@@ -137,6 +137,21 @@ def _require_webhook_enabled() -> bool:
     return False
 
 
+def _is_known_delivery_target(delivery_target: str) -> bool:
+    from gateway.platforms.webhook import is_known_delivery_target
+
+    if is_known_delivery_target(delivery_target):
+        return True
+
+    try:
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+    except Exception:
+        return False
+    return is_known_delivery_target(delivery_target)
+
+
 def webhook_command(args):
     """Entry point for 'hermes webhook' subcommand."""
     sub = getattr(args, "webhook_action", None)
@@ -165,6 +180,15 @@ def _cmd_subscribe(args):
         print(f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores.")
         return
 
+    delivery_target = args.deliver or "log"
+    if not _is_known_delivery_target(delivery_target):
+        print(
+            f"Error: Unknown delivery target '{delivery_target}'. "
+            "Use a platform name such as 'telegram'; pass its chat ID "
+            "separately with --deliver-chat-id."
+        )
+        return
+
     subs = _load_subscriptions()
     is_update = name in subs
 
@@ -177,7 +201,7 @@ def _cmd_subscribe(args):
         "secret": secret,
         "prompt": args.prompt or "",
         "skills": [s.strip() for s in args.skills.split(",")] if args.skills else [],
-        "deliver": args.deliver or "log",
+        "deliver": delivery_target,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
@@ -236,6 +260,9 @@ def _cmd_list(args):
     for name, route in subs.items():
         events = ", ".join(route.get("events", [])) or "(all)"
         deliver = route.get("deliver", "log")
+        invalid_delivery = not _is_known_delivery_target(deliver)
+        if invalid_delivery:
+            deliver = f"{deliver} (INVALID)"
         if route.get("deliver_only"):
             deliver = f"{deliver} (direct — no agent)"
         desc = route.get("description", "")
@@ -245,6 +272,11 @@ def _cmd_list(args):
         print(f"    URL:     {base_url}/webhooks/{name}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
+        if invalid_delivery:
+            print(
+                f"    Fix:     hermes webhook subscribe {name} --deliver telegram "
+                "--deliver-chat-id <CHAT_ID>"
+            )
         if route.get("script"):
             print(f"    Script:  {route['script']}")
         print()

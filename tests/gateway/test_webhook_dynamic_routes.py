@@ -41,6 +41,24 @@ class TestDynamicRouteLoading:
         assert "my-hook" in adapter._routes
         assert "static" in adapter._routes
 
+    def test_skips_route_with_unknown_delivery_target(self, tmp_path, caplog):
+        subs = {
+            "broken": {
+                "secret": "dynamic-secret",
+                "prompt": "test",
+                "deliver": "telegram/all",
+            }
+        }
+        (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(json.dumps(subs))
+
+        adapter = _make_adapter()
+        adapter._reload_dynamic_routes()
+
+        assert "broken" not in adapter._routes
+        assert "broken" not in adapter._dynamic_routes
+        assert "unknown delivery target 'telegram/all'" in caplog.text.lower()
+        assert "--deliver telegram --deliver-chat-id" in caplog.text
+
 
 class TestDynamicRouteSecretValidation:
     """Empty/missing secrets must be rejected during hot-reload.
@@ -83,5 +101,4 @@ class TestDynamicRouteSecretValidation:
         adapter = _make_adapter()  # global secret set
         adapter._reload_dynamic_routes()
         assert "valid" in adapter._routes
-
 

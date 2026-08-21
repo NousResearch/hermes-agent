@@ -1934,6 +1934,159 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     return reaped
 
 
+def _cmdline_matches_watchdog_ppid(cmdline: str, old_gateway_pid: int) -> bool:
+    """Return whether ``cmdline`` is an ``mcp_stdio_watchdog.py`` invocation
+    pinned to ``old_gateway_pid`` via its ``--ppid`` argument.
+
+    Token-exact match on the ``--ppid`` value — a substring check would
+    wrongly match e.g. ``--ppid 4242`` against ``old_gateway_pid=42420``
+    (and ``--ppid 42420`` against ``old_gateway_pid=4242``). Never raises:
+    a malformed or truncated ``--ppid`` (missing or non-integer value) is
+    treated as a non-match.
+    """
+    if "mcp_stdio_watchdog.py" not in cmdline:
+        return False
+    tokens = cmdline.split()
+    for i, token in enumerate(tokens):
+        if token == "--ppid":
+            if i + 1 >= len(tokens):
+                return False
+            try:
+                return int(tokens[i + 1]) == old_gateway_pid
+            except ValueError:
+                return False
+    return False
+
+
+def _scan_mcp_watchdog_pids(old_gateway_pid: int) -> list[int]:
+    """Find live ``mcp_stdio_watchdog.py`` PIDs still pinned to
+    ``old_gateway_pid`` via ``--ppid``.
+
+    POSIX-only — watchdog-wrapping never happens on Windows (see
+    ``tools/mcp_tool.py::_wrap_command_with_watchdog``). Tries ``/proc``
+    first (works in Docker without procps installed), falling back to
+    ``ps -A -o pid=,command=`` where ``/proc`` doesn't exist — notably
+    macOS, which has no ``/proc`` at all.
+    """
+    if os.name != "posix":
+        return []
+    pids: list[int] = []
+    my_pid = os.getpid()
+
+    found_via_proc = False
+    if os.path.isdir("/proc"):
+        try:
+            for entry in os.listdir("/proc"):
+                if not entry.isdigit():
+                    continue
+                pid = int(entry)
+                if pid == my_pid:
+                    continue
+                try:
+                    with open(f"/proc/{pid}/cmdline", "rb") as _f:
+                        cmdline = _f.read().decode("utf-8", errors="replace")
+                except (OSError, PermissionError):
+                    continue
+                cmdline = cmdline.replace("\x00", " ")
+                if _cmdline_matches_watchdog_ppid(cmdline, old_gateway_pid):
+                    pids.append(pid)
+            found_via_proc = True
+        except Exception:
+            pass
+
+    if found_via_proc:
+        return pids
+
+    try:
+        # Plain "-o command=" (no "eww") — verified against a real macOS ps:
+        # under capture_output (non-tty) it already prints the full argv
+        # unmangled, and mixing dash-style (-A) with old-style bare flags
+        # (eww) is rejected outright on current macOS ("ps: illegal argument:
+        # eww") rather than just being ignored, which would have made this
+        # scan silently find nothing on the one platform it exists for.
+        result = subprocess.run(
+            ["ps", "-A", "-o", "pid=,command="],
+            capture_output=True,
+            text=True, encoding='utf-8', errors='replace',
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    for line in result.stdout.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split(None, 1)
+        if len(parts) != 2:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        if pid == my_pid:
+            continue
+        if _cmdline_matches_watchdog_ppid(parts[1], old_gateway_pid):
+            pids.append(pid)
+    return pids
+
+
+def _reap_mcp_watchdog_children(old_gateway_pid: int, timeout: float = 8.0) -> int:
+    """SIGTERM (never SIGKILL) any MCP watchdog still pinned to
+    ``old_gateway_pid``, once a manual ``gateway restart`` has confirmed the
+    old gateway process itself is dead (#87906).
+
+    The watchdog spawns the real MCP command in its own process group
+    specifically so the watchdog's own death doesn't orphan it — cleanup of
+    that child only happens through the watchdog's SIGTERM/SIGINT handler
+    (``tools/mcp_stdio_watchdog.py::_forward_shutdown``), which killpg's the
+    real child's group. SIGKILL-ing the watchdog directly would bypass that
+    handler and orphan the real MCP child — the exact bug this fix exists to
+    prevent — so a watchdog still alive after ``timeout`` is logged and left
+    alone rather than escalated; it self-heals via its own getppid() poll
+    once its old parent is fully gone.
+
+    Returns the number of watchdog PIDs confirmed gone within ``timeout``.
+    """
+    if os.name != "posix":
+        return 0
+    if old_gateway_pid is None or old_gateway_pid <= 0:
+        return 0
+
+    from gateway.status import _pid_exists
+
+    pids = _scan_mcp_watchdog_pids(old_gateway_pid)
+    if not pids:
+        return 0
+
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            logger.warning("Permission denied signaling MCP watchdog PID %s", pid)
+            continue
+
+    deadline = time.monotonic() + timeout
+    survivors = list(pids)
+    while survivors and time.monotonic() < deadline:
+        survivors = [p for p in survivors if _pid_exists(p)]
+        if survivors:
+            time.sleep(0.2)
+
+    if survivors:
+        logger.warning(
+            "MCP watchdog PID(s) %s (spawned by old gateway PID %s) still alive "
+            "after %.1fs; leaving them alone rather than SIGKILL (would orphan "
+            "their real MCP child) — they self-heal once fully parentless",
+            survivors, old_gateway_pid, timeout,
+        )
+
+    return len(pids) - len(survivors)
+
+
 def stop_profile_gateway() -> bool:
     """Stop only the gateway for the current profile (HERMES_HOME-scoped).
 
@@ -8158,10 +8311,22 @@ def _gateway_command_inner(args):
                 sys.exit(1)
 
             # Manual restart: stop only this profile's gateway
+            from gateway.status import get_running_pid
+            old_pid = get_running_pid()  # capture before stop_profile_gateway() clears the pidfile
+
             if stop_profile_gateway():
                 print("✓ Stopped gateway for this profile")
 
             _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+
+            if old_pid:
+                try:
+                    reaped = _reap_mcp_watchdog_children(old_pid)
+                except Exception as exc:
+                    logger.debug("MCP watchdog reap after gateway restart failed: %s", exc)
+                    reaped = 0
+                if reaped:
+                    print(f"✓ Reaped {reaped} orphaned MCP watchdog process(es) from the old gateway")
 
             # Start fresh
             print("Starting gateway...")

@@ -151,12 +151,52 @@ _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     # User-authored project trees — never sweep empty directories
     # inside these (#75403).
     "patches", "projects", "skins", "themes", "contributors",
+    # Runtime / persistent state trees that must never be auto-cleaned:
+    # the isolated Chrome profile, vendored dependencies, benchmark
+    # fixtures, and user plans are all durable user data.  Missing from
+    # the blacklist, quick()'s empty-dir sweep recursed into them and
+    # rmdir'd runtime state (e.g. browser-profile/Default/blob_storage).
+    "browser-profile", "vendor", "benchmarks", "plans",
 })
+
+# The union of every top-level tree under HERMES_HOME that is durable user
+# data and must never be auto-categorised, auto-tracked, or deleted.  Shared
+# by guess_category() (auto-tracking) and quick() (deletion + empty-dir
+# sweep) so the two never drift.
+#
+# NOTE: ``cron`` / ``cronjobs`` are intentionally NOT here: they have a
+# dedicated rule in guess_category() (only the disposable ``output/``
+# subtree is tracked as cron-output), and the empty-dir sweep protects the
+# whole tree via _EMPTY_DIR_PROTECTED_TOP_LEVEL.  Moving them here would
+# make guess_category() return None for cron/output/* and break cron-output
+# cleanup.
+_PROTECTED_TOP_LEVEL = frozenset(
+    _EMPTY_DIR_PROTECTED_TOP_LEVEL
+    - {"cron", "cronjobs"}
+    | {
+        "config.yaml", ".env", "USER.md", "MEMORY.md", "SOUL.md",
+        "auth.json",
+    }
+)
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
     ".git", "node_modules", "venv", ".venv",
     "site-packages", "__pycache__",
 })
+
+# Auto-cleanup is opt-in for cache paths.  Cache contains durable binaries,
+# indexes, and downloaded state, so only tool-owned ephemeral subtrees may be
+# classified as temp.  Keep this path-component based for platform stability.
+_MANAGED_EPHEMERAL_CACHE_ROOTS = frozenset({
+    ("cache", "vision", "temp_vision_images"),
+    ("cache", "video", "temp_video_files"),
+})
+
+
+def _is_managed_ephemeral_path(rel: Path) -> bool:
+    """Return whether a HERMES_HOME-relative path is plugin-owned temporary data."""
+    parts = rel.parts
+    return any(parts[:len(root)] == root for root in _MANAGED_EPHEMERAL_CACHE_ROOTS)
 
 
 # Paths under $HERMES_HOME that must NEVER be deleted by quick(),
@@ -272,12 +312,12 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
         cat = item["category"]
         size = item["size"]
 
-        # Re-validate stale "cron-output" entries (fixes #37721).
-        if cat == "cron-output":
-            re_cat = guess_category(p)
-            if re_cat != "cron-output":
-                # Stale entry — would be skipped by quick(); omit from
-                # dry-run output too.
+        # Re-validate every auto-delete category so dry-run and quick() share
+        # the same ownership boundary.  Legacy tracking may point at a path
+        # that is now protected or outside HERMES_HOME.
+        if cat in ("test", "temp", "cron-output"):
+            re_cat = guess_category(p) if is_safe_path(p) else None
+            if re_cat != cat:
                 continue
 
         if cat == "test":
@@ -323,34 +363,24 @@ def quick() -> Dict[str, Any]:
 
         age = (now - datetime.fromisoformat(item["timestamp"])).days
 
-        # ---- stale-state migration (fixes #37721) ----
-        # Old tracked.json entries may carry a "cron-output" category for
-        # paths that are NOT under cron/output/ (e.g. cron/jobs.json).
-        # guess_category() was fixed in #34840, but existing entries are
-        # never re-validated.  Re-classify here so stale entries for cron
-        # control-plane state are not deleted.
-        if cat == "cron-output":
-            re_cat = guess_category(p)
-            if re_cat != "cron-output":
+        # ---- stale-state migration (fixes #37721, #75403) ----
+        # Old tracked.json entries may carry a category for paths that are
+        # no longer auto-manageable: cron control-plane state (cron-output
+        # for cron/jobs.json, #37721), or files that now live under a
+        # protected project/persistent tree (test, #75403).  guess_category()
+        # was tightened in those fixes, but existing entries are never
+        # re-validated.  Re-run today's classification before ANY deletion:
+        # if the path is now protected — or outside HERMES_HOME entirely —
+        # skip and drop the stale entry so it never blocks again.
+        if cat in ("test", "temp", "cron-output"):
+            if is_safe_path(p):
+                re_cat = guess_category(p)
+            else:
+                re_cat = None
+            if re_cat != cat:
                 _log(
-                    f"SKIP stale cron-output entry: {p} "
-                    f"(re-classified as {re_cat!r})"
-                )
-                # Drop the stale entry — it was misclassified.
-                continue
-
-        # ---- stale-state migration for 'test' category (fixes #75403) ----
-        # Old tracked.json entries may carry a "test" category for paths
-        # that are now under protected project directories (patches/,
-        # projects/, etc.).  guess_category() was tightened in the fix for
-        # #75403, but existing entries are never re-validated.  Re-classify
-        # here so stale entries for protected paths are not deleted.
-        if cat == "test":
-            re_cat = guess_category(p)
-            if re_cat != "test":
-                _log(
-                    f"SKIP stale test entry: {p} "
-                    f"(re-classified as {re_cat!r} — under protected tree)"
+                    f"SKIP stale {cat} entry: {p} "
+                    f"(re-classified as {re_cat!r} — no longer auto-manageable)"
                 )
                 continue
 
@@ -572,21 +602,16 @@ def guess_category(path: Path) -> Optional[str]:
     if not is_safe_path(path):
         return None
 
-    # Skip the state dir itself, logs, memory files, sessions, config.
+    # Skip the state dir itself, logs, memory files, sessions, config, and
+    # every durable user-data tree (shared _PROTECTED_TOP_LEVEL so
+    # auto-tracking can never drift from the empty-dir sweep's guard list).
     hermes_home = get_hermes_home()
     try:
         rel = path.resolve().relative_to(hermes_home)
         top = rel.parts[0] if rel.parts else ""
-        if top in {
-            "disk-cleanup", "logs", "memories", "sessions", "config.yaml",
-            "skills", "plugins", ".env", "USER.md", "MEMORY.md", "SOUL.md",
-            "auth.json", "hermes-agent",
-            # User-authored and project trees — never auto-delete files
-            # inside these just because they happen to be named test_* or
-            # tmp_* (#75403, also #32164, #37721).
-            "patches", "projects", "skins", "themes", "contributors",
-            "profiles", "backups", "optional-skills",
-        }:
+        if _is_managed_ephemeral_path(rel):
+            return "temp"
+        if top in _PROTECTED_TOP_LEVEL:
             return None
         if top == "cron" or top == "cronjobs":
             # Only files under the disposable ``output/`` subtree are

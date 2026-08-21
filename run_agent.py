@@ -7673,6 +7673,15 @@ class AIAgent:
             "qwen/qwen3",
             "tencent/hy3",
             "xiaomi/",
+            # NVIDIA is allowlisted per-model, not as a family: this gate was
+            # introduced (3f0f4a04a) precisely because NVIDIA-via-OpenRouter
+            # 400'd on reasoning extra_body. Nemotron reasoning models default
+            # thinking ON and were verified to accept the OpenRouter
+            # reasoning toggle ({"enabled": false} → 0 reasoning tokens,
+            # reporter-tested in #75386); other nvidia/ slugs stay gated
+            # until individually verified. Prefix form covers the ":free"
+            # routing suffix.
+            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
 

@@ -77,6 +77,108 @@ class TestDirectAliases:
         assert aliases["mymodel"].provider == "custom"
         assert aliases["mymodel"].base_url == "https://example.com/v1"
 
+    def test_direct_alias_key_env_loaded_from_config(self, monkeypatch):
+        """A model_alias entry with key_env carries it into the DirectAlias.
+
+        Regression for #83847: _load_direct_aliases used to read only model,
+        provider and base_url, silently dropping a user-specified key_env.
+        """
+        mock_config = {
+            "model_aliases": {
+                "glm-flash": {
+                    "model": "glm-4.7-flash",
+                    "provider": "custom",
+                    "base_url": "https://open.bigmodel.cn/api/paas/v4",
+                    "key_env": "ZHIPU_VELOS_KEY",
+                }
+            }
+        }
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: mock_config,
+        )
+
+        from hermes_cli.model_switch import _load_direct_aliases
+        aliases = _load_direct_aliases()
+
+        assert "glm-flash" in aliases
+        assert aliases["glm-flash"].model == "glm-4.7-flash"
+        assert aliases["glm-flash"].provider == "custom"
+        assert aliases["glm-flash"].base_url == "https://open.bigmodel.cn/api/paas/v4"
+        assert aliases["glm-flash"].key_env == "ZHIPU_VELOS_KEY"
+
+    def test_direct_alias_key_env_resolved_from_secret_scope(self, monkeypatch):
+        """A model_alias with key_env resolves its API key via the per-profile
+        secret scope at switch time, not a raw os.environ read (#83847).
+
+        Before the fix the override block fell back to the literal
+        "no-key-required" placeholder (or OPENAI_API_KEY), causing a 401.
+        """
+        from unittest.mock import patch
+
+        import hermes_cli.model_switch as ms
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+        from hermes_cli.model_switch import DirectAlias, switch_model
+
+        alias = DirectAlias(
+            model="glm-4.7-flash",
+            provider="custom",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            key_env="ZHIPU_VELOS_KEY",
+        )
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {"glm-flash": alias})
+        monkeypatch.setattr(ms, "_ensure_direct_aliases", lambda: None)
+
+        accepted = {
+            "accepted": True,
+            "persist": True,
+            "recognized": True,
+            "message": None,
+        }
+        token = set_secret_scope({"ZHIPU_VELOS_KEY": "scoped-secret-key"})
+        try:
+            with patch(
+                "hermes_cli.model_switch.resolve_alias",
+                return_value=("custom", "glm-4.7-flash", "glm-flash"),
+            ), patch(
+                "hermes_cli.model_switch.list_provider_models",
+                return_value=[],
+            ), patch(
+                "hermes_cli.model_switch.normalize_model_for_provider",
+                side_effect=lambda model, provider: model,
+            ), patch(
+                "hermes_cli.models.validate_requested_model",
+                return_value=accepted,
+            ), patch(
+                "hermes_cli.models.detect_provider_for_model",
+                return_value=None,
+            ), patch(
+                "hermes_cli.model_switch.get_model_info",
+                return_value=None,
+            ), patch(
+                "hermes_cli.model_switch.get_model_capabilities",
+                return_value=None,
+            ), patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value={
+                    "api_key": "",
+                    "base_url": "",
+                    "api_mode": "",
+                },
+            ):
+                result = switch_model(
+                    raw_input="glm-flash",
+                    current_provider="openrouter",
+                    current_model="old-model",
+                    current_base_url="",
+                )
+        finally:
+            reset_secret_scope(token)
+
+        assert result.success
+        assert result.api_key == "scoped-secret-key"
+        assert result.base_url == "https://open.bigmodel.cn/api/paas/v4"
+
     def test_direct_alias_resolved_before_catalog(self, monkeypatch):
         """Direct aliases take priority over models.dev catalog lookup."""
         from hermes_cli.model_switch import DirectAlias, resolve_alias

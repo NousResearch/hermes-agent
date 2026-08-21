@@ -517,6 +517,7 @@ class DirectAlias(NamedTuple):
     model: str
     provider: str
     base_url: str
+    key_env: str = ""
 
 
 # Built-in direct aliases (can be extended via config.yaml model_aliases:)
@@ -560,9 +561,11 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                 model = entry.get("model", "")
                 provider = entry.get("provider", "custom")
                 base_url = entry.get("base_url", "")
+                key_env = entry.get("key_env", "")
                 if model:
                     merged[name.strip().lower()] = DirectAlias(
                         model=model, provider=provider, base_url=base_url,
+                        key_env=key_env,
                     )
 
         # --- model.aliases (string-based format, from config set) ---
@@ -2018,7 +2021,15 @@ def switch_model(
                     validation_headers = {}
                     suppress_ollama_headers = True
                     api_key = "no-key-required"
-            if not api_key:
+            # A direct alias may reference its own key env var (e.g.
+            # ``key_env: ZHIPU_VELOS_KEY``). Resolve it through the
+            # per-profile secret scope — never a raw os.environ read — and
+            # only fall back to the "no-key-required" placeholder when the
+            # alias declares neither an inline api_key nor a key_env.
+            _alias_key = _scoped_key_env(_da.key_env) if _da.key_env else ""
+            if not api_key and _alias_key:
+                api_key = _alias_key
+            elif not api_key and not _da.key_env:
                 api_key = "no-key-required"
 
     # --- Resolve api_mode from the final (provider, base_url) before validation ---

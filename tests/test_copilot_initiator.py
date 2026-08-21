@@ -52,7 +52,7 @@ def _make_agent(monkeypatch, base_url, api_mode="chat_completions"):
 
 def _inject(agent, api_kwargs):
     """Mirror the injection block in agent/conversation_loop.py."""
-    if getattr(agent, "_is_user_initiated_turn", False) and agent._is_copilot_url():
+    if getattr(agent, "_is_user_initiated_turn", False) and getattr(agent, "_is_copilot_url", lambda: False)():
         _xh = dict(api_kwargs.get("extra_headers") or {})
         _xh["x-initiator"] = "user"
         api_kwargs["extra_headers"] = _xh

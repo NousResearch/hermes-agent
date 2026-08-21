@@ -1830,6 +1830,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    channel_summary: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
@@ -1932,6 +1933,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_channel_summary = channel_summary if isinstance(channel_summary, bool) else None
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
     normalized_monitor_script = str(monitor_script).strip() if isinstance(monitor_script, str) else None
     normalized_monitor_script = normalized_monitor_script or None
@@ -2042,6 +2044,18 @@ def create_job(
     # global cron.mirror_delivery config, default off).
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
+    # Same conditional-persist rule for the channel-summary opt-in: absent key
+    # = pre-feature behavior (fixed handoff-label seed on continuable-thread
+    # deliveries, no [SUMMARY] extraction or prompt hint). Like its
+    # prerequisite sibling attach_to_session, this is deliberately NOT wired
+    # through the REST/dashboard/CLI create surfaces — none of them expose
+    # the continuable-jobs family today (CronJobCreate, the gateway
+    # /api/jobs whitelist, and `hermes cron create` all omit
+    # attach_to_session), and exposing a summary toggle whose prerequisite
+    # cannot be set there would be worse than none. Expose the family
+    # together when those surfaces grow.
+    if normalized_channel_summary is not None:
+        job["channel_summary"] = normalized_channel_summary
     # Same conditional-persist rule for the per-job reasoning effort pin:
     # absent key = job follows config resolution (pre-feature behavior).
     if normalized_reasoning_effort is not None:

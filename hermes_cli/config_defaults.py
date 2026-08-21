@@ -2535,7 +2535,10 @@ DEFAULT_CONFIG = {
         # and the agent has it in context (no "what is Task #2?" amnesia).
         # Default False preserves the historical isolation guarantee (cron
         # deliveries live only in the cron job's own session). Per-job
-        # `attach_to_session` overrides this for a single job.
+        # `attach_to_session` overrides this for a single job. A continuable
+        # job can additionally set per-job `channel_summary` to replace the
+        # dedicated thread's channel-root label with an agent-written 1-2
+        # line summary of the run (see the cronjob tool).
         #
         # Behaviour is THREAD-PREFERRED, scoped to the job's origin chat:
         #   - Thread-capable platforms (Telegram forum/DM topics, Discord

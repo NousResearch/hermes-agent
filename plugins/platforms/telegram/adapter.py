@@ -3670,13 +3670,18 @@ class TelegramAdapter(BasePlatformAdapter):
         self,
         parent_chat_id: str,
         name: str,
+        seed_text: Optional[str] = None,
     ) -> Optional[str]:
         """Create a forum topic for a session handoff.
 
         Works for DM topics (Bot API 9.4+, requires user to enable Topics
         in their chat with the bot) and forum supergroups. Returns the
         ``message_thread_id`` as a string, or ``None`` on failure.
+
+        ``seed_text`` is accepted for signature parity and ignored — forum
+        topics are channel-level constructs with no seed message.
         """
+        del seed_text  # unused: topics have no seed message
         try:
             chat_id_int = int(parent_chat_id)
         except (TypeError, ValueError):

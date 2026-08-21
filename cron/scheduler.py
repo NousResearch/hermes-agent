@@ -581,6 +581,91 @@ def _is_cron_silence_response(text: str) -> bool:
 
     return is_autonomous_silence_response(text)
 
+
+# Channel-summary marker recognized in cron output (per-job
+# ``channel_summary: true``).  First-line-anchored ONLY — unlike the [SILENT]
+# sentinel there is no last-line variant, because the summary must be
+# separable from the body it summarizes.  Guardrails: past 2 lines / 400
+# chars the "summary" is a report, and the channel-root line falls back to
+# the fixed handoff label rather than flooding the channel the feature
+# exists to keep tidy.
+_CRON_SUMMARY_MARKER_RE = re.compile(r"^\[summary\]:?[ \t]*", re.IGNORECASE)
+_CRON_SUMMARY_MAX_LINES = 2
+_CRON_SUMMARY_MAX_CHARS = 400
+
+
+def _extract_cron_summary(text: str) -> tuple[Optional[str], str]:
+    """Split a ``[SUMMARY]``-led cron response into (summary, body).
+
+    The summary is the marker line's remainder plus following lines up to the
+    first blank line.  Extraction is NON-destructive: only the marker token is
+    removed and the summary text stays as the opening line(s) of the returned
+    body, so every lane that delivers the body whole (flat delivery, fan-out
+    targets, transcript mirror, last_output) loses nothing when the dedicated
+    thread does not open.
+
+    Returns ``(None, text)`` untouched when no marker leads the response, and
+    ``(None, body-with-marker-stripped)`` when the marker is present but the
+    block breaks the line/char guardrails — the agent's text still delivers,
+    just without a lifted root line.
+    """
+    body = text or ""
+    lead = body.lstrip()
+    m = _CRON_SUMMARY_MARKER_RE.match(lead)
+    if not m:
+        return None, body
+    rest = lead[m.end():]
+    block_lines: List[str] = []
+    for line in rest.splitlines():
+        if not line.strip():
+            break
+        block_lines.append(line.strip())
+    summary = "\n".join(block_lines).strip()
+    if (
+        not summary
+        or len(block_lines) > _CRON_SUMMARY_MAX_LINES
+        or len(summary) > _CRON_SUMMARY_MAX_CHARS
+    ):
+        return None, rest
+    return summary, rest
+
+
+def _cron_silence_suppresses_delivery(job: dict, text: str) -> bool:
+    """True when a cron final response should be suppressed as silent.
+
+    Wraps :func:`_is_cron_silence_response` with the channel-summary
+    carve-out: a leading ``[SUMMARY]`` marker affirmatively declares
+    deliverable content, so a stray trailing ``[SILENT]`` (the hint forbids
+    combining the markers, but models do pattern-match adjacent
+    instructions) must not swallow the report — a visible stray marker in
+    the brief beats invisible loss. The carve-out keys on MARKER PRESENCE
+    plus substantive body, not on the summary passing the line/char
+    guardrails — an over-limit summary block still fronts a real report,
+    and a format miss must not turn into data loss. A marker-led response
+    whose body is nothing but silence tokens (e.g. "[SUMMARY]\\n\\n[SILENT]")
+    stays suppressed. Non-summary responses, including the documented
+    "why-quiet note\\n\\n[SILENT]" pattern, keep the exact pre-existing
+    suppression.
+
+    Shared by the delivery gate and the usage-audit ``response_silent``
+    classifier so the two cannot drift.
+    """
+    if not _is_cron_silence_response(text):
+        return False
+    if not job.get("channel_summary"):
+        return True
+    if not _CRON_SUMMARY_MARKER_RE.match((text or "").lstrip()):
+        return True
+    # Marker-led: deliver iff the marker-stripped body has substance beyond
+    # a trailing standalone silence token.
+    body_lines = _extract_cron_summary(text)[1].splitlines()
+    for i in range(len(body_lines) - 1, -1, -1):
+        if body_lines[i].strip():
+            if _is_cron_silence_response(body_lines[i]):
+                body_lines = body_lines[:i]
+            break
+    return not any(line.strip() for line in body_lines)
+
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
 # The tick function submits jobs here and returns immediately so the ticker
@@ -1748,6 +1833,7 @@ def _open_continuable_cron_thread(
     adapter,
     chat_id: str,
     loop,
+    seed_text: Optional[str] = None,
 ) -> Optional[str]:
     """Open a dedicated thread for a continuable cron job (thread-preferred).
 
@@ -1756,6 +1842,12 @@ def _open_continuable_cron_thread(
     return is the caller's signal to fall back to the origin-DM mirror, the same
     open-thread-or-fallback shape as ``GatewayRunner._process_handoff``. Reuses
     the shipped ``adapter.create_handoff_thread``; no new adapter surface.
+
+    ``seed_text`` (channel-summary jobs) replaces the platform's fixed
+    seed-message body where the thread anchor IS a posted message (Slack;
+    Discord's seed fallback; relay connectors that honor the additive
+    ``seed_text`` op field). Platforms whose threads have no seed message
+    ignore it — the thread ``name`` still carries the job identity there.
     """
     create_thread = getattr(adapter, "create_handoff_thread", None)
     if not callable(create_thread) or loop is None:
@@ -1765,11 +1857,39 @@ def _open_continuable_cron_thread(
     try:
         from agent.async_utils import safe_schedule_threadsafe
 
-        coro = create_thread(str(chat_id), thread_name)
+        used_seed_kwarg = False
+        try:
+            if seed_text:
+                coro = create_thread(str(chat_id), thread_name, seed_text=seed_text)
+                used_seed_kwarg = True
+            else:
+                coro = create_thread(str(chat_id), thread_name)
+        except TypeError:
+            # Out-of-tree adapter predating the ``seed_text`` kwarg (bind-time
+            # TypeError, no coroutine created): retry the original 2-arg call
+            # so the thread still opens, just with the fixed label seed.
+            coro = create_thread(str(chat_id), thread_name)
         future = safe_schedule_threadsafe(coro, loop)  # type: ignore[arg-type]
         if future is None:
             return None
-        new_thread_id = future.result(timeout=30)
+        try:
+            new_thread_id = future.result(timeout=30)
+        except TypeError:
+            # A *args/**kwargs-forwarding wrapper around a legacy 2-arg
+            # implementation binds ``seed_text`` fine and raises only when the
+            # coroutine actually runs — same degradation contract as the
+            # bind-time retry above: open the thread with the fixed label
+            # rather than losing it. Gated on the seed kwarg so a genuine
+            # adapter TypeError on a 2-arg call still reaches the outer
+            # handler.
+            if not used_seed_kwarg:
+                raise
+            future = safe_schedule_threadsafe(
+                create_thread(str(chat_id), thread_name), loop
+            )  # type: ignore[arg-type]
+            if future is None:
+                return None
+            new_thread_id = future.result(timeout=30)
         return str(new_thread_id) if new_thread_id else None
     except Exception as e:
         logger.debug(
@@ -2685,6 +2805,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
+    # Channel-summary jobs (per-job ``channel_summary: true``): lift the
+    # agent's leading ``[SUMMARY]`` line(s) so the continuable-thread seed —
+    # the channel-root message — can carry a real TL;DR instead of the fixed
+    # handoff label.  Extraction is non-destructive (see
+    # ``_extract_cron_summary``): the body keeps the summary as its opening
+    # line(s), so lanes where no dedicated thread opens (flat delivery,
+    # fan-out targets, mirror text, pinned origin threads) deliver the full
+    # text unchanged apart from the stripped marker token.  Gated on the
+    # per-job flag so every other job's content is byte-identical.
+    summary_text: Optional[str] = None
+    if job.get("channel_summary"):
+        summary_text, content = _extract_cron_summary(content)
+
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
     # in config.yaml for clean output.
@@ -2722,6 +2855,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from gateway.media_policy import apply_media_policy_env
 
     apply_media_policy_env(user_cfg)
+
+    # The lifted summary heads for a raw seed-message post
+    # (create_handoff_thread bypasses the adapter send pipeline where MEDIA
+    # tags are normally extracted), so run the same extraction here and DROP
+    # the paths — the body copy below still owns attachment delivery; the
+    # seed only displays text. Without this, a MEDIA: line inside the summary
+    # block would print a raw local filesystem path at the channel root. A
+    # summary that was only a tag collapses to None and the thread opens
+    # with the fixed handoff label.
+    if summary_text:
+        _, summary_text = BasePlatformAdapter.extract_media(summary_text)
+        summary_text = (summary_text or "").strip() or None
 
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     requested_media = [(str(p), v) for p, v in media_files]
@@ -2974,6 +3119,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         ):
             new_thread_id = _open_continuable_cron_thread(
                 job, runtime_adapter, chat_id, loop,
+                seed_text=summary_text,
             )
             if new_thread_id:
                 # Route THIS delivery into the new thread now (the send needs the
@@ -4146,6 +4292,20 @@ def _build_job_prompt(
         "Never combine [SILENT] with content — either report your "
         "findings normally, or say [SILENT] and nothing more.]\n\n"
     )
+    # Channel-summary jobs get the [SUMMARY] format taught in the same
+    # bracketed style as [SILENT] above; every other job's hint stays
+    # byte-identical.  Delivery-side handling: _extract_cron_summary /
+    # _deliver_result.
+    if job.get("channel_summary"):
+        cron_hint += (
+            "[CHANNEL SUMMARY: This job posts a short channel line with the "
+            "full report threaded under it, and YOU write that line. Begin "
+            "your final response with \"[SUMMARY] <one or two short "
+            "sentences>\" followed by a blank line, then the full report. "
+            "Keep the summary a genuine TL;DR of this run's findings. "
+            "If there is nothing to report, respond [SILENT] as above — "
+            "never combine [SUMMARY] with [SILENT].]\n\n"
+        )
     prompt = cron_hint + prompt
     if skills is None:
         legacy = job.get("skill")
@@ -6045,6 +6205,13 @@ def run_job(
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
+        # channel_summary jobs: persist the marker-stripped body (summary
+        # lines retained — extraction is non-destructive) so context_from /
+        # continuity consumers of the saved output never re-ingest the raw
+        # [SUMMARY] control token. Delivery does its own extraction from the
+        # raw final_response below.
+        if final_response and job.get("channel_summary"):
+            logged_response = _extract_cron_summary(final_response)[1]
         
         output = f"""# Cron Job: {job_name}
 
@@ -6065,7 +6232,13 @@ def run_job(
 
         # Emit one JSONL line per fire for usage audit.
         _audit_duration_ms = int((time.monotonic() - _audit_t_start) * 1000)
-        _audit_response_silent = _is_cron_silence_response(final_response or "")
+        # Classified via the shared predicate so a [SUMMARY]-led response
+        # with a stray [SILENT] — which the delivery gate delivers — is not
+        # recorded as a silent run (audit consumers equate silent with
+        # not-delivered).
+        _audit_response_silent = _cron_silence_suppresses_delivery(
+            job, final_response or ""
+        )
         _write_usage_audit({
             "ts": _utcnow_iso_ms(),
             "job_id": job_id,
@@ -6686,8 +6859,17 @@ def _run_one_job_body(
             # #46917).  Keeps the intentional bracketed-prefix / trailing-line
             # tolerance the cron contract relies on.
             if should_deliver and success and _is_cron_silence_response(deliver_content):
-                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                should_deliver = False
+                if _cron_silence_suppresses_delivery(job, deliver_content):
+                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                    should_deliver = False
+                else:
+                    # channel_summary carve-out — rationale in
+                    # _cron_silence_suppresses_delivery.
+                    logger.info(
+                        "Job '%s': [SUMMARY]-led response carries a stray %s "
+                        "marker — delivering anyway",
+                        job["id"], SILENT_MARKER,
+                    )
 
             if should_deliver and _fire_claim_ownership_lost():
                 should_deliver = False

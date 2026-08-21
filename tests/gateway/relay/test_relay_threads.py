@@ -84,6 +84,46 @@ async def test_create_handoff_thread_routes_thread_create():
     assert action["op"] == "thread_create"
     assert action["chat_id"] == "chan1"
     assert action["thread_name"] == "fix the build"
+    # No seed passed -> the additive field must be ABSENT, not null/empty
+    # (contract-safe for connectors predating it).
+    assert "seed_text" not in action
+
+
+@pytest.mark.asyncio
+async def test_create_handoff_thread_seed_text_rides_the_op():
+    """A cron channel-summary seed rides thread_create as an additive field,
+    stripped on the wire."""
+    adapter, stub = _adapter()
+
+    async def send_outbound(action, *, platform=None):
+        stub.sent.append(action)
+        return {"success": True, "thread_id": "th88"}
+
+    stub.send_outbound = send_outbound  # type: ignore[method-assign]
+    thread_id = await adapter.create_handoff_thread(
+        "chan1", "Daily Brief", seed_text="  All 3 feeds healthy.  "
+    )
+    assert thread_id == "th88"
+    action = stub.sent[-1]
+    assert action["op"] == "thread_create"
+    assert action["seed_text"] == "All 3 feeds healthy."
+
+
+@pytest.mark.asyncio
+async def test_create_handoff_thread_blank_seed_text_omits_the_key():
+    """Whitespace-only seed collapses to absent — the connector's fixed
+    label applies, same as no seed at all."""
+    adapter, stub = _adapter()
+    await adapter.create_handoff_thread("chan1", "Daily Brief", seed_text="   ")
+    assert stub.sent[-1]["op"] == "thread_create"
+    assert "seed_text" not in stub.sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_create_handoff_thread_caps_seed_text():
+    adapter, stub = _adapter()
+    await adapter.create_handoff_thread("chan1", "n", seed_text="x" * 2500)
+    assert stub.sent[-1]["seed_text"] == "x" * 2000
 
 
 # ── rename_thread (semantic rename) ──────────────────────────────────────

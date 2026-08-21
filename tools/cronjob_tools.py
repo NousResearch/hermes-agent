@@ -671,6 +671,12 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    # Explicit booleans only — an absent key means "default" (global config /
+    # feature off) and must not render as false.
+    if isinstance(job.get("attach_to_session"), bool):
+        result["attach_to_session"] = job["attach_to_session"]
+    if isinstance(job.get("channel_summary"), bool):
+        result["channel_summary"] = job["channel_summary"]
     stored_refs = job.get("context_from") or []
     if isinstance(stored_refs, str):
         stored_refs = [stored_refs]
@@ -1211,6 +1217,7 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    channel_summary: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
@@ -1312,6 +1319,7 @@ def cronjob(
                     workdir=_normalize_optional_job_value(workdir),
                     no_agent=_no_agent,
                     attach_to_session=attach_to_session,
+                    channel_summary=channel_summary,
                     monitor_script=_normalize_optional_job_value(monitor_script),
                     monitor_url=_normalize_optional_job_value(monitor_url),
                     # reasoning_effort reaches here from the CLI
@@ -1590,6 +1598,8 @@ def cronjob(
                 updates["enabled_toolsets"] = enabled_toolsets or None
             if attach_to_session is not None:
                 updates["attach_to_session"] = bool(attach_to_session)
+            if channel_summary is not None:
+                updates["channel_summary"] = bool(channel_summary)
             if workdir is not None:
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
@@ -1760,6 +1770,10 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
                 "type": "boolean",
                 "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
             },
+            "channel_summary": {
+                "type": "boolean",
+                "description": "When True, the job's agent is instructed to begin its final response with \"[SUMMARY] <1-2 short lines>\" then a blank line, then the full report. On deliveries that open a dedicated thread (see attach_to_session / cron.mirror_delivery) whose anchor is a posted seed message — Slack, and relay-fronted Slack — the summary becomes the short channel-root message and the full report lands in its thread, keeping busy channels tidy. On thread surfaces with no seed message (Telegram topics, Discord direct threads) and on flat deliveries, the marker is stripped and the summary simply leads the report body (inside the standard 'Cronjob Response' wrapper unless cron.wrap_response is false), so nothing is lost. Most useful for verbose recurring jobs delivering to a Slack channel, combined with attach_to_session=true. Default: false."
+            },
         },
         "required": ["action"]
     }
@@ -1818,6 +1832,12 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        # attach_to_session was declared in CRONJOB_SCHEMA but never read from
+        # the model's arguments here, so agent-set values were silently
+        # dropped — fixed alongside the channel_summary flag that depends on
+        # it.
+        attach_to_session=args.get("attach_to_session"),
+        channel_summary=args.get("channel_summary"),
         monitor_script=args.get("monitor_script"),
         monitor_url=args.get("monitor_url"),
         task_id=kw.get("task_id"),

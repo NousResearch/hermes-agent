@@ -399,7 +399,7 @@ The gateway calls the transport with action dicts. Source of truth:
 | `send_media` | `chat_id`, `media_kind`, `source_url`, `content?` (caption), `filename?`, `reply_to?`, `metadata?` | `{success: bool, message_id?, error?}` |
 | `prompt` | `chat_id`, `prompt_kind`, `prompt_id`, `content` (the question), `options[]{id,label,style?}`, `timeout_s?`, `reply_to?`, `metadata?` | `{success: bool, message_id?, error?}` |
 | `react` | `chat_id`, `message_id`, `emoji`, `remove?`, `metadata?` | `{success: bool, error?}` |
-| `thread_create` | `chat_id` (parent), `thread_name`, `message_id?` (anchor), `metadata?` | `{success: bool, thread_id?, error?}` |
+| `thread_create` | `chat_id` (parent), `thread_name`, `message_id?` (anchor), `seed_text?`, `metadata?` | `{success: bool, thread_id?, error?}` |
 | `thread_rename` | `chat_id` (parent), `message_id` (the THREAD id), `thread_name`, `only_if_current_name?`, `metadata?` | `{success: bool, error?}` |
 
 `get_chat_info(chat_id)` is a separate proxied call returning at least
@@ -498,7 +498,18 @@ LLM-title semantic renames. `thread_create`: Discord posts a channel thread
 `createForumTopic` (topic id returned); Slack posts a NAMED seed root
 message and returns its `ts` (threads there are message-anchored — an
 explicit `message_id` anchor is echoed back verbatim). The created id rides
-`SendResult.thread_id`. `thread_rename`: Discord PATCHes the thread channel;
+`SendResult.thread_id`. `seed_text?` (additive, cron channel-summary
+deliveries): where the created thread is anchored to a posted seed message
+(Slack), the connector SHOULD use it as the seed body in place of the named
+label — rendered through the same outbound text hygiene it applies to
+`send` content: seed bodies carry unsanitized model output, so platform
+broadcast mentions MUST be neutralized exactly as on the send lane (Slack:
+escape `<!channel>`/`<!here>`/`<!everyone>`, cf. the native adapter's
+`format_message`; Discord: suppress `@everyone`/`@here` via
+`allowed_mentions`). Platforms whose threads have no seed message, and
+connectors that predate the field, ignore it — the gateway falls back
+gracefully either way.
+`thread_rename`: Discord PATCHes the thread channel;
 Telegram `editForumTopic`. The **`only_if_current_name` no-clobber guard**
 is the native adapters' human-rename-wins semantics, enforced
 CONNECTOR-side: Discord reads the current name first and no-ops (structured

@@ -276,6 +276,83 @@ class TestHandoffThread:
         adapter._get_client = lambda *_a, **_kw: client
         assert asyncio.run(adapter.create_handoff_thread("C_GEN", "review")) is None
 
+    # ── seed_text (cron channel-summary deliveries) ────────────────────────
+
+    def _seed_client(self, make_response):
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock(
+            return_value=make_response({"ok": True, "ts": "1700000000.000200"})
+        )
+        return client
+
+    @response_shape
+    def test_seed_text_becomes_the_seed_body(self, make_response):
+        """A channel-summary line replaces the fixed handoff label verbatim."""
+        adapter = _make_adapter()
+        client = self._seed_client(make_response)
+        adapter._get_client = lambda *_a, **_kw: client
+        thread_id = asyncio.run(
+            adapter.create_handoff_thread(
+                "C_GEN", "Daily Brief", seed_text="All 3 feeds healthy."
+            )
+        )
+        assert thread_id == "1700000000.000200"
+        assert client.chat_postMessage.call_args.kwargs["text"] == "All 3 feeds healthy."
+
+    @response_shape
+    def test_without_seed_text_the_fixed_label_seeds(self, make_response):
+        adapter = _make_adapter()
+        client = self._seed_client(make_response)
+        adapter._get_client = lambda *_a, **_kw: client
+        asyncio.run(adapter.create_handoff_thread("C_GEN", "review"))
+        assert (
+            client.chat_postMessage.call_args.kwargs["text"]
+            == ":thread: Hermes handoff — *review*"
+        )
+
+    @response_shape
+    def test_blank_seed_text_falls_back_to_label(self, make_response):
+        adapter = _make_adapter()
+        client = self._seed_client(make_response)
+        adapter._get_client = lambda *_a, **_kw: client
+        asyncio.run(
+            adapter.create_handoff_thread("C_GEN", "review", seed_text="  \n ")
+        )
+        assert (
+            client.chat_postMessage.call_args.kwargs["text"]
+            == ":thread: Hermes handoff — *review*"
+        )
+
+    @response_shape
+    def test_broadcast_mentions_in_seed_text_are_escaped(self, make_response):
+        """REGRESSION: seed_text is agent output headed for a raw
+        chat_postMessage (bypassing format_message), so a channel-summary
+        line must not be able to ping @channel/@here/@everyone. Only the
+        leading "<" of the special mention is entity-escaped."""
+        adapter = _make_adapter()
+        client = self._seed_client(make_response)
+        adapter._get_client = lambda *_a, **_kw: client
+        asyncio.run(
+            adapter.create_handoff_thread(
+                "C_GEN", "Daily Brief", seed_text="<!channel> deploy is down"
+            )
+        )
+        text = client.chat_postMessage.call_args.kwargs["text"]
+        assert "&lt;!channel>" in text
+        assert "<!channel>" not in text
+        assert "deploy is down" in text
+
+    @response_shape
+    def test_seed_text_capped_at_2000(self, make_response):
+        """Defensive cap only — the cron caller enforces a tighter limit."""
+        adapter = _make_adapter()
+        client = self._seed_client(make_response)
+        adapter._get_client = lambda *_a, **_kw: client
+        asyncio.run(
+            adapter.create_handoff_thread("C_GEN", "review", seed_text="x" * 3000)
+        )
+        assert client.chat_postMessage.call_args.kwargs["text"] == "x" * 2000
+
 
 # ── standalone (out-of-process cron/send_message) delivery ─────────────────
 

@@ -453,6 +453,33 @@ explicit other-chat deliveries) are never made continuable. The mirror is
 written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
 the conversation history alternation-safe across all model providers.
 
+#### Agent-written channel summary (`channel_summary`)
+
+On thread-preferred deliveries the channel-root line is normally a fixed label
+(`Hermes handoff — <job name>`). For verbose jobs in busy channels you can make
+that line an **agent-written TL;DR of the run** instead: set `channel_summary:
+true` on the job (via the `cronjob` tool) alongside `attach_to_session`.
+
+The job's agent is then instructed to begin its final response with
+`[SUMMARY] <one or two short lines>` followed by a blank line and the full
+report. At delivery time the summary becomes the short channel-root message and
+the full report lands in its thread.
+
+The channel-root replacement applies where the dedicated thread is anchored
+to a posted seed message: Slack (native and relay-fronted). On thread
+surfaces with no seed message — Telegram topics, Discord's directly-created
+threads — there is no channel-root line to replace; the summary simply
+leads the brief inside the thread.
+
+The extraction is deliberately lossless: the summary stays as the opening
+line(s) of the full report, and only the `[SUMMARY]` marker is stripped. So on
+any lane where no dedicated thread opens — flat deliveries, fan-out targets, a
+job pinned to an existing thread, gateway offline — the complete text is
+delivered exactly as before, just led by its TL;DR (still inside the standard
+`Cronjob Response:` wrapper when `cron.wrap_response` is enabled — pair with
+`wrap_response: false` for the tidiest output). A missing or overlong
+summary (more than 2 lines / 400 chars) falls back to the fixed label.
+
 #### Flat, in-channel continuation (Slack)
 
 The thread-preferred behaviour above mints a dedicated thread on every

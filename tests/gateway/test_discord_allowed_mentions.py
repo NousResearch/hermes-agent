@@ -118,3 +118,68 @@ def test_env_var_opts_back_into_everyone(monkeypatch):
     assert am.replied_user is True
 
 
+# ── handoff-thread seed message (cron channel-summary seed_text) ────────────
+
+import asyncio  # noqa: E402
+
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+
+
+class _FakeSeedMessage:
+    async def create_thread(self, **kwargs):
+        return SimpleNamespace(id=777)
+
+
+class _FakeParentChannel:
+    """Text-channel double WITHOUT create_thread, so create_handoff_thread
+    takes the seed-message fallback path; records every send() call."""
+
+    def __init__(self):
+        self.send_calls = []
+
+    async def send(self, content, **kwargs):
+        self.send_calls.append((content, kwargs))
+        return _FakeSeedMessage()
+
+
+def _make_handoff_adapter(parent):
+    adapter = object.__new__(DiscordAdapter)
+    client = MagicMock()
+    client.get_channel = lambda pid: parent
+    adapter._client = client
+    return adapter
+
+
+class TestHandoffSeedMentionSuppression:
+    """REGRESSION: seed_text is model output posted raw on the seed-message
+    fallback — a per-send AllowedMentions override must pin @everyone/@here
+    and role pings off regardless of the env-overridable client default.
+    The fixed-label send keeps the legacy no-kwarg call untouched."""
+
+    def test_seed_text_send_pins_safe_allowed_mentions(self):
+        parent = _FakeParentChannel()
+        adapter = _make_handoff_adapter(parent)
+        thread_id = asyncio.run(
+            adapter.create_handoff_thread(
+                "123", "Daily Brief", seed_text="@everyone 3 alerts fired."
+            )
+        )
+        assert thread_id == "777"
+        (content, kwargs), = parent.send_calls
+        assert content == "@everyone 3 alerts fired."
+        am = kwargs["allowed_mentions"]
+        assert am.everyone is False
+        assert am.roles is False
+        assert am.users is True
+        assert am.replied_user is False
+
+    def test_label_send_keeps_legacy_call_without_allowed_mentions(self):
+        parent = _FakeParentChannel()
+        adapter = _make_handoff_adapter(parent)
+        thread_id = asyncio.run(adapter.create_handoff_thread("123", "Daily Brief"))
+        assert thread_id == "777"
+        (content, kwargs), = parent.send_calls
+        assert content == "\U0001f9f5 Hermes handoff: **Daily Brief**"
+        assert kwargs == {}
+
+

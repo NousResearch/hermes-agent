@@ -2435,6 +2435,7 @@ def _collect_authed_provider_slugs(
     models_dev_data: dict,
     curated: dict[str, list[str]],
     excluded: list[str],
+    _pool_cache: Optional[Dict[str, Any]] = None,
 ) -> list[str]:
     """Quick-scan which providers have credentials, without fetching model lists.
 
@@ -2506,7 +2507,9 @@ def _collect_authed_provider_slugs(
                 )
                 if raw_pool_present:
                     has_creds = _credential_pool_is_usable(
-                        hermes_id, raw_pool_present=True
+                        hermes_id,
+                        raw_pool_present=True,
+                        _pool_cache=_pool_cache,
                     )
             except Exception:
                 pass
@@ -2553,7 +2556,9 @@ def _collect_authed_provider_slugs(
                 pass
         if not has_creds:
             try:
-                if _credential_pool_is_usable(hermes_slug):
+                if _credential_pool_is_usable(
+                    hermes_slug, _pool_cache=_pool_cache
+                ):
                     has_creds = True
             except Exception:
                 pass
@@ -2582,7 +2587,9 @@ def _collect_authed_provider_slugs(
                 pass
         if not _cp_has_creds:
             try:
-                if _credential_pool_is_usable(_cp.slug):
+                if _credential_pool_is_usable(
+                    _cp.slug, _pool_cache=_pool_cache
+                ):
                     _cp_has_creds = True
             except Exception:
                 pass
@@ -2822,7 +2829,7 @@ def list_authenticated_providers(
     _prefetch_slugs: list[str] = []
     if not refresh:
         _prefetch_slugs = _collect_authed_provider_slugs(
-            data, curated, excluded_providers or []
+            data, curated, excluded_providers or [], _pool_cache=_pool_cache
         )
     if len(_prefetch_slugs) > 3:
         try:

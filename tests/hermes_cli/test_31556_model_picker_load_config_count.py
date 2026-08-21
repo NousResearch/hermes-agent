@@ -67,6 +67,8 @@ def _patched_counters(monkeypatch):
 
     def counting_load_pool(provider):
         counts["load_pool"] += 1
+        counts.setdefault("load_pool_per_provider", {}).setdefault(provider, 0)
+        counts["load_pool_per_provider"][provider] += 1
         return real_load_pool(provider)
 
     monkeypatch.setattr(hc, "load_config", counting_load_config)
@@ -110,10 +112,13 @@ def test_list_authenticated_providers_reuses_pool_per_provider(
     providers = list_authenticated_providers()
     assert isinstance(providers, list)
 
-    # Pre-fix: 70+ load_pool calls. Post-fix: one per distinct provider
-    # checked (empty auth store still has to inspect the built-in roster).
-    assert counts["load_pool"] <= 45, (
-        f"load_pool called {counts['load_pool']}x — "
+    # Pre-fix: every section re-loaded the same provider's pool (up to 6x per
+    # provider on the current roster). Post-fix: each distinct provider is
+    # loaded exactly once per call, regardless of roster size.
+    per_provider = counts["load_pool_per_provider"]
+    repeats = {p: c for p, c in per_provider.items() if c > 1}
+    assert not repeats, (
+        f"providers loaded more than once per call: {repeats} — "
         "regression reintroduces repeated pool seeding per provider"
     )
 

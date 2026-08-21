@@ -8051,6 +8051,27 @@ def cmd_gui(args: argparse.Namespace):
             sys.exit(1)
         else:
             print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
+            stale_app = _stale_installed_macos_desktop_app(packaged_executable)
+            if stale_app is not None:
+                built_app = packaged_executable.parents[2]
+                staged = stale_app.parent / f"{stale_app.name}.new"
+                print(
+                    f"  ⚠ Your installed {stale_app} is older than this build and was "
+                    "NOT replaced."
+                )
+                print(
+                    "    Launching it from Finder/Dock will run the stale app. The supported "
+                    "way to update is `hermes update` (the in-app updater stages a fresh bundle "
+                    "and swaps it after exit)."
+                )
+                print(
+                    "    To replace it manually, stage the new bundle then swap it in "
+                    "(replacement-safe — avoids merging into a stale bundle):"
+                )
+                print(
+                    f"      rm -rf '{staged}' && cp -R '{built_app}' '{staged}' && "
+                    f"rm -rf '{stale_app}' && mv '{staged}' '{stale_app}'"
+                )
         return
 
     if source_mode:

@@ -1391,3 +1391,29 @@ class TestApiServerEnvOverride:
         assert config.platforms[Platform.API_SERVER].enabled is False
         # The key is still wired through for the shared listener.
         assert config.platforms[Platform.API_SERVER].extra.get("key") == api_server_key
+
+
+class TestHomeAssistantEnvOverride:
+    def test_env_token_does_not_reenable_explicitly_disabled_homeassistant(self):
+        """A multiplex secondary profile can keep HASS_TOKEN for HA tools while
+        explicitly disabling the Home Assistant messaging adapter.
+        """
+        config = GatewayConfig(
+            platforms={
+                Platform.HOMEASSISTANT: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+            },
+        )
+
+        with patch.dict(
+            os.environ,
+            {"HASS_TOKEN": "ha-token", "HASS_URL": "http://homeassistant:8123"},
+            clear=True,
+        ):
+            _apply_env_overrides(config)
+
+        assert config.platforms[Platform.HOMEASSISTANT].enabled is False
+        assert config.platforms[Platform.HOMEASSISTANT].token == "ha-token"
+        assert config.platforms[Platform.HOMEASSISTANT].extra.get("url") == "http://homeassistant:8123"

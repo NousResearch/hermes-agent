@@ -198,6 +198,32 @@ class TestEntityIdValidation:
             None,
         )
 
+    @patch("tools.homeassistant_tool._async_call_service", new_callable=AsyncMock)
+    def test_call_service_accepts_entity_id_array(self, mock_call_service):
+        mock_call_service.return_value = {"success": True}
+        result = json.loads(_handle_call_service({
+            "domain": "light",
+            "service": "turn_off",
+            "entity_id": ["light.bedroom", "light.kitchen"],
+        }))
+        assert result["result"]["success"] is True
+        mock_call_service.assert_awaited_once_with(
+            "light", "turn_off", ["light.bedroom", "light.kitchen"], None
+        )
+
+    @patch("tools.homeassistant_tool._async_call_service", new_callable=AsyncMock)
+    def test_call_service_normalizes_comma_separated_entity_ids(self, mock_call_service):
+        mock_call_service.return_value = {"success": True}
+        result = json.loads(_handle_call_service({
+            "domain": "light",
+            "service": "turn_off",
+            "entity_id": "light.bedroom, light.kitchen",
+        }))
+        assert result["result"]["success"] is True
+        mock_call_service.assert_awaited_once_with(
+            "light", "turn_off", ["light.bedroom", "light.kitchen"], None
+        )
+
 
 # ---------------------------------------------------------------------------
 # String-data deserialization (XML tool calling workaround)

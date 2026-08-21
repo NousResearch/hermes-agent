@@ -2154,11 +2154,19 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if hass_token:
         if Platform.HOMEASSISTANT not in config.platforms:
             config.platforms[Platform.HOMEASSISTANT] = PlatformConfig()
-        config.platforms[Platform.HOMEASSISTANT].enabled = True
-        config.platforms[Platform.HOMEASSISTANT].token = hass_token
+        # A secondary multiplex profile may need HASS_TOKEN for the built-in
+        # Home Assistant toolset while explicitly disabling the HA messaging
+        # adapter to avoid consuming the same credential twice. Mirror the API
+        # server's explicit-disable semantics: env presence wires the token
+        # through but must not override platforms.homeassistant.enabled: false.
+        hass_config = config.platforms[Platform.HOMEASSISTANT]
+        hass_explicit = bool(hass_config.extra.get("_enabled_explicit", False))
+        if not hass_explicit or hass_config.enabled:
+            hass_config.enabled = True
+        hass_config.token = hass_token
         hass_url = getenv("HASS_URL")
         if hass_url:
-            config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
+            hass_config.extra["url"] = hass_url
 
     # Email
     email_addr = getenv("EMAIL_ADDRESS")

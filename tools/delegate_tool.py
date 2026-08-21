@@ -328,6 +328,31 @@ def steer_subagent(
         agent = record.get("agent")
         if agent is None:
             return False
+        # A delegated pi (native RPC) child may be blocked on an
+        # extension_ui_request. Route the steer text to the oldest pending
+        # question first — that IS the answer — before falling back to the
+        # normal next-request injection.
+        try:
+            from agent.pi_rpc_client import answer_oldest_pending_question, pending_questions, _registry_lock
+            import time
+
+            # If no question is registered yet, wait up to 2 seconds for one
+            # to appear — the child may have just sent the request but the
+            # parent hasn't registered it yet. This avoids the race where a
+            # steer sent immediately after the question marker is seen bypasses
+            # into the child instead of answering the question.
+            if not pending_questions:
+                deadline = time.time() + 2.0
+                while time.time() < deadline:
+                    time.sleep(0.05)
+                    with _registry_lock:
+                        if pending_questions:
+                            break
+            if answer_oldest_pending_question(text):
+                logger.debug("steer routed to pending pi question for %s", subagent_id)
+                return True
+        except Exception as exc:
+            logger.debug("pi question routing unavailable: %s", exc)
         try:
             return bool(agent.steer(text))
         except Exception as exc:

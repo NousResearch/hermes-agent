@@ -60,8 +60,29 @@ def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
 
 
 def _resolve_command() -> str:
+    # Re-read .env at call time so changing HERMES_COPILOT_ACP_COMMAND
+    # applies to the next delegation without a gateway restart.
+    env_val = os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
+    if not env_val:
+        for candidate in (
+            Path(os.path.expanduser("~/.hermes/.env")),
+            Path(os.path.expanduser("~/.hermes/hermes-agent/.env")),
+        ):
+            try:
+                if not candidate.is_file():
+                    continue
+                for line in candidate.read_text().splitlines():
+                    line = line.strip()
+                    if line.startswith("HERMES_COPILOT_ACP_COMMAND="):
+                        env_val = line.split("=", 1)[1].strip().strip("'\"")
+                        if env_val:
+                            break
+                if env_val:
+                    break
+            except OSError:
+                continue
     return (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
+        env_val
         or os.getenv("COPILOT_CLI_PATH", "").strip()
         or "copilot"
     )

@@ -141,7 +141,7 @@ async def _async_get_state(entity_id: str) -> Dict[str, Any]:
 
 
 def _build_service_payload(
-    entity_id: Optional[str] = None,
+    entity_id: Optional[str | list[str]] = None,
     data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build the JSON payload for a HA service call."""
@@ -178,7 +178,7 @@ def _parse_service_response(
 async def _async_call_service(
     domain: str,
     service: str,
-    entity_id: Optional[str] = None,
+    entity_id: Optional[str | list[str]] = None,
     data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Call a Home Assistant service."""
@@ -271,8 +271,23 @@ def _handle_call_service(args: dict, **kw) -> str:
         )
 
     entity_id = args.get("entity_id")
-    if entity_id and not _ENTITY_ID_RE.match(entity_id):
-        return tool_error(f"Invalid entity_id format: {entity_id}")
+    if isinstance(entity_id, str):
+        # Be forgiving of the common LLM form "light.a, light.b": normalize it
+        # to Home Assistant's native entity_id array instead of forcing another
+        # model/tool correction round.
+        if "," in entity_id:
+            entity_id = [item.strip() for item in entity_id.split(",") if item.strip()]
+        elif not _ENTITY_ID_RE.match(entity_id):
+            return tool_error(f"Invalid entity_id format: {entity_id}")
+    if isinstance(entity_id, list):
+        if not entity_id:
+            entity_id = None
+        else:
+            invalid = [item for item in entity_id if not isinstance(item, str) or not _ENTITY_ID_RE.match(item)]
+            if invalid:
+                return tool_error(f"Invalid entity_id format: {', '.join(map(str, invalid))}")
+    elif entity_id is not None and not isinstance(entity_id, str):
+        return tool_error("entity_id must be a string or list of strings")
 
     data = args.get("data")
     if isinstance(data, str):
@@ -450,9 +465,13 @@ HA_CALL_SERVICE_SCHEMA = {
                 ),
             },
             "entity_id": {
-                "type": "string",
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                ],
                 "description": (
-                    "Target entity ID (e.g. 'light.living_room'). "
+                    "Target entity ID or array of entity IDs. Use one array for multi-device actions "
+                    "so Home Assistant can execute them in a single service call. "
                     "Some services (like scene.turn_on) may not need this."
                 ),
             },

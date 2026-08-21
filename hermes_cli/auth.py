@@ -305,6 +305,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "pi-rpc": ProviderConfig(
+        id="pi-rpc",
+        name="Pi (native JSONL RPC)",
+        auth_type="external_process",
+        inference_base_url="pi://rpc",
+        base_url_env_var="",  # fixed internal marker; not configurable
+    ),
     "gemini": ProviderConfig(
         id="gemini",
         name="Google AI Studio",
@@ -7381,6 +7388,28 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
             provider=provider_id,
             code="invalid_provider",
         )
+
+    if provider_id == "pi-rpc":
+        # Pi speaks its native JSONL RPC protocol directly — no ACP bridge,
+        # no Copilot CLI env vars. The client builds its own argv
+        # (``pi --mode rpc --no-session``); command/args are resolved for
+        # liveness only.
+        command = os.getenv("HERMES_PI_BIN", "").strip() or "pi"
+        resolved_command = shutil.which(command)
+        if not resolved_command:
+            raise AuthError(
+                f"Could not find the pi binary '{command}'. Install pi or set HERMES_PI_BIN.",
+                provider=provider_id,
+                code="missing_pi_binary",
+            )
+        return {
+            "provider": provider_id,
+            "api_key": "pi-rpc",
+            "base_url": "pi://rpc",
+            "command": resolved_command,
+            "args": ["--mode", "rpc", "--no-session"],
+            "source": "process",
+        }
 
     base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
     if not base_url:

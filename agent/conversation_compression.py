@@ -407,15 +407,16 @@ def _capture_authoritative_cooldown_under_lease(
         values = vars(compressor)
         session_db = values.get("_session_db")
         session_id = values.get("_session_id")
-        raw_reader = (
-            getattr(
-                type(session_db), "get_compression_failure_cooldown_row", None
-            )
-            if session_db is not None
-            else None
-        )
         if session_db is None or not session_id:
             # Unbound compressors have no durable row to mutate or restore.
+            return None, None
+        missing = object()
+        raw_reader = getattr(
+            type(session_db),
+            "get_compression_failure_cooldown_row",
+            missing,
+        )
+        if raw_reader is missing:
             return None, None
         if not callable(raw_reader):
             return False, None

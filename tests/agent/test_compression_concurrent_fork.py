@@ -1091,6 +1091,97 @@ class SessionDB:
     return namespace["SessionDB"]
 
 
+def test_legacy_session_db_without_raw_cooldown_api_preserves_compression_compatibility(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale pre-cooldown SessionDB must not turn compression into a no-op."""
+    import hermes_state
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "LEGACY_COOLDOWN_COMPATIBILITY"
+    db.create_session(session_id, source="test")
+    agent = _build_agent_with_db(db, session_id, stub_compressor=False)
+
+    legacy_session_db_class = _make_legacy_session_db_class()
+    legacy_db = legacy_session_db_class(db)
+    monkeypatch.setattr(hermes_state, "SessionDB", legacy_session_db_class)
+    agent._session_db = legacy_db
+    agent.context_compressor._session_db = legacy_db
+    agent.context_compressor._session_id = session_id
+    agent._compression_feasibility_checked = True
+    agent.compression_in_place = True
+    agent._cached_system_prompt = "sys"
+
+    expected = [
+        {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+        {"role": "user", "content": "tail"},
+    ]
+    compress_spy = MagicMock(return_value=copy.deepcopy(expected))
+    agent.context_compressor.compress = compress_spy
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    compressed, _prompt = agent._compress_context(
+        messages,
+        "sys",
+        approx_tokens=120_000,
+    )
+
+    assert compressed == expected
+    compress_spy.assert_called_once()
+    assert db.get_compression_lock_holder(session_id) is None
+    assert _count_children(db, session_id) == 0
+
+
+def _raise_raw_cooldown_error(_db, _session_id):
+    raise RuntimeError("simulated raw cooldown read failure")
+
+
+@pytest.mark.parametrize(
+    "raw_reader",
+    [None, _raise_raw_cooldown_error],
+    ids=["noncallable", "read-error"],
+)
+def test_malformed_raw_cooldown_api_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw_reader,
+) -> None:
+    """A present but malformed cooldown API is not legacy version skew."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "NONCALLABLE_COOLDOWN_API"
+    db.create_session(session_id, source="test")
+    agent = _build_agent_with_db(db, session_id, stub_compressor=False)
+    agent._compression_feasibility_checked = True
+    agent.compression_in_place = True
+    agent._cached_system_prompt = "sys"
+
+    monkeypatch.setattr(
+        SessionDB,
+        "get_compression_failure_cooldown_row",
+        raw_reader,
+    )
+    compress_spy = MagicMock(
+        return_value=[
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+    )
+    agent.context_compressor.compress = compress_spy
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    compressed, _prompt = agent._compress_context(
+        messages,
+        "sys",
+        approx_tokens=120_000,
+    )
+
+    assert compressed is messages
+    compress_spy.assert_not_called()
+    assert db.get_compression_lock_holder(session_id) is None
+    assert _count_children(db, session_id) == 0
+
+
 class _NominalSessionDBImpostor:
     """A proxy that spoofs names but lacks the real SessionDB source contract."""
 

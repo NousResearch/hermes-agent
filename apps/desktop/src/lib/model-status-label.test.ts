@@ -5,10 +5,12 @@ import { reasoningEffortLabel } from './reasoning-effort'
 
 describe('model-status-label', () => {
   it('formats display names consistently', () => {
-    expect(displayModelName('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8')
-    expect(displayModelName('openai/gpt-5.5-fast')).toBe('GPT-5.5')
-    expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('Deepseek V4 Pro')
+    expect(displayModelName('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8 Fast')
+    expect(displayModelName('openai/gpt-5.5-fast')).toBe('GPT-5.5 Fast')
+    expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('Deepseek V4 Pro Thinking')
     expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
+    // A base model and its variant must NEVER share a display label (#88597).
+    expect(displayModelName('claude-opus-5')).not.toBe(displayModelName('claude-opus-5-thinking'))
   })
 
   it('strips trailing date-pin snapshots from the display name', () => {
@@ -28,6 +30,18 @@ describe('model-status-label', () => {
     expect(formatModelStatusLabel('openai/gpt-5.5', { fastMode: true, reasoningEffort: 'high' })).toBe(
       'GPT-5.5 · Fast High'
     )
+  })
+
+  it('keeps variant tags disambiguating in the status label without doubling Fast (#88597)', () => {
+    // The reporter's exact case: base vs -thinking must differ in the pill.
+    expect(formatModelStatusLabel('claude-opus-5')).toBe('Opus 5 · Med')
+    expect(formatModelStatusLabel('claude-opus-5-thinking')).toBe('Opus 5 Thinking · Med')
+    // A -fast variant already says Fast in its name; the pill must not
+    // repeat it as a session-state part.
+    expect(formatModelStatusLabel('openai/gpt-5.5-fast')).toBe('GPT-5.5 Fast · Med')
+    // The param-driven fast flag still appends when the model id has no
+    // -fast suffix.
+    expect(formatModelStatusLabel('openai/gpt-5.5', { fastMode: true })).toBe('GPT-5.5 · Fast Med')
   })
 
   it('falls back to the profile default effort, then to medium', () => {

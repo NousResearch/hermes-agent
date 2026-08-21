@@ -90,9 +90,12 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
   return { name: prettifyBase(base) || model.trim() || 'No model', tag }
 }
 
-/** Friendly one-line model name for menus and the status bar. */
+/** Friendly one-line model name for menus and the status bar.
+ *  The variant tag is part of the name: `…-4.8` vs `…-4.8-thinking` must
+ *  not collapse to the same label on any surface (#88597). */
 export function displayModelName(model: string): string {
-  return modelDisplayParts(model).name
+  const { name, tag } = modelDisplayParts(model)
+  return tag ? `${name} ${tag}` : name
 }
 
 /** Status bar trigger label — model name plus the live session state (effort/fast).
@@ -102,17 +105,20 @@ export function formatModelStatusLabel(
   model: string,
   options?: { defaultEffort?: string; fastMode?: boolean; reasoningEffort?: string }
 ): string {
-  const name = displayModelName(model)
+  const { name, tag } = modelDisplayParts(model)
+  const label = tag ? `${name} ${tag}` : name
 
   if (!model.trim()) {
-    return name
+    return label
   }
 
   const parts: string[] = []
 
   // Fast is shown when the speed=fast param is on (options.fastMode) OR the
-  // active model is a `…-fast` variant (fast via a separate model id).
-  if (options?.fastMode || /-fast$/i.test(modelBaseId(model))) {
+  // active model is a `…-fast` variant (fast via a separate model id). The
+  // variant's tag is already in the name above, so only the param-driven
+  // case pushes a second Fast — never both (#88597).
+  if (options?.fastMode || (/-fast$/i.test(modelBaseId(model)) && tag !== 'Fast')) {
     parts.push('Fast')
   }
 
@@ -120,5 +126,5 @@ export function formatModelStatusLabel(
   // glance, not just when non-default.
   parts.push(reasoningEffortLabel(options?.reasoningEffort || options?.defaultEffort || DEFAULT_REASONING_EFFORT))
 
-  return `${name} · ${parts.join(' ')}`
+  return `${label} · ${parts.join(' ')}`
 }

@@ -2376,6 +2376,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # off means no callback is installed, so mid-turn commentary never leaves the agent.
         if not resolve_display_setting(user_config, "api_server", "interim_assistant_messages", True):
             interim_assistant_callback = None
+        # Mirror the messaging-platform agent build (GatewayRunner
+        # _run_background_task_inner): agent.disabled_toolsets is a
+        # per-profile denial policy, and skipping it here silently
+        # re-enables toolsets the routed profile explicitly disabled —
+        # e.g. delegation removed as an operational/safety measure
+        # (#91415). Applies to every api_server deployment, not just
+        # multiplexed ones.
+        from agent.skill_utils import parse_config_string_list
+
+        agent_cfg = user_config.get("agent") or {}
+        disabled_toolsets = parse_config_string_list(agent_cfg.get("disabled_toolsets")) or None
+
         max_iterations = _current_max_iterations()
         if room_dispatch is not None:
             from gateway.hosted_room_execution_policy import RoomExecutionPolicy
@@ -2390,7 +2402,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "model": model, **runtime_kwargs, **_checkpoint_agent_kwargs(user_config),
             "max_iterations": max_iterations, "quiet_mode": True, "verbose_logging": False,
             "ephemeral_system_prompt": ephemeral_system_prompt or None,
-            "enabled_toolsets": enabled_toolsets, "session_id": session_id,
+            "enabled_toolsets": enabled_toolsets, "disabled_toolsets": disabled_toolsets,
+            "session_id": session_id,
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,
             "tool_progress_callback": tool_progress_callback,

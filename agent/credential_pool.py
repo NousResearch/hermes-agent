@@ -2959,8 +2959,8 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     if provider == "openrouter":
         # Prefer ~/.hermes/.env over os.environ
         token = _get_env_prefer_dotenv("OPENROUTER_API_KEY")
+        source = "env:OPENROUTER_API_KEY"
         if token:
-            source = "env:OPENROUTER_API_KEY"
             if _is_source_suppressed(provider, source):
                 return changed, active_sources
             active_sources.add(source)
@@ -2975,6 +2975,14 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
                     base_url=OPENROUTER_BASE_URL,
                 ),
             )
+        else:
+            # Env var absent: podar entries stale do pool com essa source.
+            # Sem isso, entry zumbi fica pra sempre (re-seed nao acontece
+            # mas a entry antiga nao some). Ver INCIDENTE-AUTH-JSON-REWRITE.
+            stale = [e for e in entries if e.source == source]
+            if stale:
+                entries[:] = [e for e in entries if e.source != source]
+                changed = True
         return changed, active_sources
 
     pconfig = PROVIDER_REGISTRY.get(provider)

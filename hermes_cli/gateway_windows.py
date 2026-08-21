@@ -9,9 +9,9 @@ dropper when Scheduled Task creation is denied (locked-down corporate boxes).
 Design notes
 ------------
 * ``schtasks /Create /SC ONLOGON /RL LIMITED`` means the task runs at the
-  CURRENT USER's next logon without any elevation prompt. Manual starts and
-  install ``--start-now`` use the direct hidden-console launcher instead
-  of ``schtasks /Run`` so start/restart behavior is consistent.
+  CURRENT USER's next logon without any elevation prompt. Once registered,
+  manual starts route through ``schtasks /Run`` so the Task Scheduler remains
+  the single supervisor and IgnoreNew continues to enforce one instance.
 * We write a shared ``gateway.cmd`` wrapper plus a console-less ``gateway.vbs``
   launcher. Scheduled Task and Startup-folder persistence both route through
   VBS/wscript; immediate manual starts route through direct ``subprocess`` spawn.
@@ -494,7 +494,7 @@ def _build_gateway_vbs_script(
     lines = [
         f"' {_TASK_DESCRIPTION}",
         "Option Explicit",
-        "Dim sh, env, existing_pp",
+        "Dim sh, env, existing_pp, exitCode",
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({_quote_vbs_string('HERMES_HOME')}) = {_quote_vbs_string(hermes_home)}",
@@ -510,10 +510,10 @@ def _build_gateway_vbs_script(
         f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {_quote_vbs_string(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async. The
-        # console python's one console is created hidden and inherited by all
-        # descendants, so nothing ever flashes.
-        f"sh.Run {_quote_vbs_string(command_line)}, 0, False",
+        # Window style 0 = hidden. Waiting keeps wscript.exe as the Task
+        # Scheduler-owned supervisor and propagates the worker exit code.
+        f"exitCode = sh.Run({_quote_vbs_string(command_line)}, 0, True)",
+        "WScript.Quit exitCode",
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -570,7 +570,7 @@ def _write_task_script() -> Path:
     vbs_content = _build_gateway_vbs_script(python_path, working_dir, hermes_home, profile_arg)
     vbs_path = script_path.with_suffix(".vbs")
     vbs_tmp = vbs_path.with_name(vbs_path.name + ".tmp")
-    vbs_tmp.write_text(vbs_content, encoding="utf-8", newline="")
+    vbs_tmp.write_text(vbs_content, encoding="utf-16", newline="")
     vbs_tmp.replace(vbs_path)
     return script_path
 
@@ -1115,8 +1115,12 @@ def install(
             if running_pids:
                 print(f"✓ Gateway already running (PID: {', '.join(map(str, running_pids))})")
             else:
-                pid = _spawn_detached()
-                _report_gateway_start(f"direct spawn (PID {pid})")
+                code, stdout, stderr = _exec_schtasks(["/Run", "/TN", task_name])
+                if code != 0:
+                    raise RuntimeError(
+                        (stderr or stdout or "failed to run Scheduled Task").strip()
+                    )
+                _report_gateway_start(f"Scheduled Task {task_name}")
         else:
             print("ℹ Gateway not started now.")
             print("  Start manually with: hermes gateway start")
@@ -1197,11 +1201,13 @@ def _report_gateway_start(via: str) -> None:
     if pids:
         print(f"✓ Gateway started via {via} (PID: {', '.join(map(str, pids))})")
     else:
-        print(f"⚠ Launched gateway via {via}, but no process detected after 6s.")
+        message = f"Launched gateway via {via}, but no process detected after 6s."
+        print(f"⚠ {message}")
         print("  Check the log for startup errors:")
         from hermes_cli.config import get_hermes_home
         print(f"    type {Path(get_hermes_home())}\\logs\\gateway.log")
         print(f"    type {Path(get_hermes_home())}\\logs\\gateway-stdio.log")
+        raise RuntimeError(message)
 
 
 def _print_next_steps() -> None:
@@ -1511,9 +1517,15 @@ def start() -> None:
             print("  If a UAC prompt opened, approve it, then run: hermes gateway start")
             return
 
-    # Manual starts use the same console-less direct spawn path as restart()
-    # and install --start-now. Scheduled Task / Startup entries are only login
-    # persistence mechanisms.
+    if task_installed:
+        task_name = get_task_name()
+        code, stdout, stderr = _exec_schtasks(["/Run", "/TN", task_name])
+        if code != 0:
+            raise RuntimeError((stderr or stdout or "failed to run Scheduled Task").strip())
+        _report_gateway_start(f"Scheduled Task {task_name}")
+        return
+
+    # Startup-folder fallback has no persistent supervisor to trigger on demand.
     pid = _spawn_detached()
     _report_gateway_start(f"direct spawn (PID {pid})")
 

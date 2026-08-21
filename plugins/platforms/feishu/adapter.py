@@ -1499,8 +1499,12 @@ class FeishuAdapter(BasePlatformAdapter):
     # Lifecycle — init / settings / connect / disconnect
     # =========================================================================
 
-    def __init__(self, config: PlatformConfig):
-        super().__init__(config, Platform.FEISHU)
+    def __init__(
+        self,
+        config: PlatformConfig,
+        platform: Platform = Platform.FEISHU,
+    ):
+        super().__init__(config, platform)
 
         self._settings = self._load_settings(config.extra or {})
         self._apply_settings(self._settings)
@@ -5618,6 +5622,7 @@ async def _standalone_send(
     thread_id=None,
     media_files=None,
     force_document=False,
+    platform: Optional[Platform] = None,
 ):
     """Out-of-process Feishu/Lark delivery via the adapter's send pipeline.
 
@@ -5631,7 +5636,8 @@ async def _standalone_send(
 
     media_files = media_files or []
     try:
-        adapter = FeishuAdapter(pconfig)
+        logical_platform = platform or Platform.FEISHU
+        adapter = FeishuAdapter(pconfig, logical_platform)
         domain_name = getattr(adapter, "_domain_name", "feishu")
         domain = FEISHU_DOMAIN if domain_name != "lark" else LARK_DOMAIN
         adapter._client = adapter._build_lark_client(domain)
@@ -5664,7 +5670,7 @@ async def _standalone_send(
             return {"error": "No deliverable text or media remained after processing MEDIA tags"}
         return {
             "success": True,
-            "platform": "feishu",
+            "platform": logical_platform.value,
             "chat_id": chat_id,
             "message_id": last_result.message_id,
         }

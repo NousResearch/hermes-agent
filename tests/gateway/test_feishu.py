@@ -2467,3 +2467,78 @@ class TestChatLockEviction(unittest.TestCase):
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
 
 
+class TestStandaloneSendPlatformIdentity(unittest.TestCase):
+    def test_real_adapter_constructor_accepts_logical_platform(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        enterprise = SimpleNamespace(value="feishu_enterprise")
+        config = PlatformConfig(enabled=True, extra={})
+
+        adapter = FeishuAdapter(config, enterprise)
+
+        self.assertEqual(adapter.platform, enterprise)
+
+    def test_standalone_send_defaults_to_feishu_platform(self):
+        from gateway.config import Platform, PlatformConfig
+        from plugins.platforms.feishu import adapter as feishu_adapter
+
+        captured = {}
+
+        class _FakeAdapter:
+            def __init__(self, config, platform=None):
+                captured["platform"] = platform
+                self._domain_name = "feishu"
+
+            def _build_lark_client(self, _domain):
+                return object()
+
+            async def send(self, _chat_id, _message, metadata=None):
+                return SimpleNamespace(success=True, error=None, message_id="m-personal")
+
+        config = PlatformConfig(enabled=True, extra={"app_id": "cli_test", "app_secret": "test-secret"})
+        with patch.object(feishu_adapter, "_load_lark_oapi", return_value=True), patch.object(
+            feishu_adapter, "FeishuAdapter", _FakeAdapter
+        ):
+            result = asyncio.run(
+                feishu_adapter._standalone_send(config, "oc_personal", "hello")
+            )
+
+        self.assertEqual(captured["platform"], Platform.FEISHU)
+        self.assertEqual(result["platform"], "feishu")
+
+    def test_standalone_send_preserves_explicit_logical_platform(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu import adapter as feishu_adapter
+
+        enterprise = SimpleNamespace(value="feishu_enterprise")
+        captured = {}
+
+        class _FakeAdapter:
+            def __init__(self, config, platform=None):
+                captured["platform"] = platform
+                self._domain_name = "feishu"
+
+            def _build_lark_client(self, _domain):
+                return object()
+
+            async def send(self, _chat_id, _message, metadata=None):
+                return SimpleNamespace(success=True, error=None, message_id="m-enterprise")
+
+        config = PlatformConfig(enabled=True, extra={"app_id": "cli_test", "app_secret": "test-secret"})
+        with patch.object(feishu_adapter, "_load_lark_oapi", return_value=True), patch.object(
+            feishu_adapter, "FeishuAdapter", _FakeAdapter
+        ):
+            result = asyncio.run(
+                feishu_adapter._standalone_send(
+                    config,
+                    "oc_enterprise",
+                    "hello",
+                    platform=enterprise,
+                )
+            )
+
+        self.assertEqual(captured["platform"], enterprise)
+        self.assertEqual(result["platform"], "feishu_enterprise")
+
+

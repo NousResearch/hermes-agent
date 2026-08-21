@@ -314,6 +314,103 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "cmd.exe" not in xml_seen["text"]
 
 
+def test_start_uses_registered_scheduled_task_instead_of_direct_spawn(monkeypatch):
+    calls = []
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda args: calls.append(tuple(args)) or (0, "SUCCESS", ""),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_spawn_detached",
+        lambda *_args, **_kwargs: pytest.fail("registered task must own the gateway"),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_report_gateway_start",
+        lambda via: calls.append(("report", via)),
+    )
+
+    gateway_windows.start()
+
+    assert calls[0] == ("/Run", "/TN", "Hermes_Gateway")
+    assert calls[1][0] == "report"
+    assert "Scheduled Task" in calls[1][1]
+
+
+def test_install_start_now_uses_newly_registered_task(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: True)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(
+        gateway_windows,
+        "_write_task_script",
+        lambda: tmp_path / "Hermes_Gateway.cmd",
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_install_scheduled_task",
+        lambda _name, _path: (True, "installed"),
+    )
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda args: calls.append(tuple(args)) or (0, "SUCCESS", ""),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_spawn_detached",
+        lambda *_args, **_kwargs: pytest.fail("install must start through scheduler"),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_report_gateway_start",
+        lambda via: calls.append(("report", via)),
+    )
+    monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: None)
+
+    gateway_windows.install(start_now=True, start_on_login=True)
+
+    assert calls[0] == ("/Run", "/TN", "Hermes_Gateway")
+    assert calls[1][0] == "report"
+
+
+def test_report_gateway_start_raises_when_worker_never_becomes_ready(monkeypatch):
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda: [])
+
+    with pytest.raises(RuntimeError, match="no process detected"):
+        gateway_windows._report_gateway_start("Scheduled Task Hermes_Gateway")
+
+
+def test_write_task_script_uses_utf16_bom_for_unicode_vbs(monkeypatch, tmp_path):
+    import hermes_cli.config as config
+
+    script_path = tmp_path / "服务目录" / "Hermes_Gateway.cmd"
+    script_path.parent.mkdir()
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
+    monkeypatch.setattr(config, "get_hermes_home", lambda: tmp_path / "王明宇")
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", tmp_path / "项目")
+    monkeypatch.setattr(gateway, "get_python_path", lambda: str(tmp_path / "环境" / "python.exe"))
+    monkeypatch.setattr(gateway, "_profile_arg", lambda _home: "")
+
+    gateway_windows._write_task_script()
+
+    raw = script_path.with_suffix(".vbs").read_bytes()
+    assert raw.startswith((b"\xff\xfe", b"\xfe\xff"))
+    decoded = raw.decode("utf-16")
+    assert "王明宇" in decoded
+    assert "项目" in decoded
+
+
 def test_gateway_vbs_script_is_console_less(monkeypatch):
     """The .vbs launcher must avoid cmd.exe entirely and Run pythonw hidden
     (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A)."""
@@ -333,7 +430,8 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert "pythonw.exe" in content
     assert "hermes_cli.main" in content
     assert "gateway run" in content
-    assert ", 0, False" in content  # hidden window, detached/async
+    assert ", 0, True)" in content  # hidden window, wait for supervised child
+    assert "WScript.Quit exitCode" in content
     for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
         assert var in content
     assert "--profile" in content and "work" in content

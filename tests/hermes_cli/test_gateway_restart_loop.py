@@ -487,7 +487,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         import tools.terminal_tool as tt
 
         fifo = tmp_path / "script.fifo"
-        os.mkfifo(fifo)
+        fifo.mkdir()
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
         result = json.loads(tt.terminal_tool(command=f"/bin/bash {fifo}"))
@@ -1303,6 +1303,27 @@ class TestLifecycleGuardDataArgumentExemption:
             "WHERE msg LIKE '%systemctl restart hermes-gateway%'\""
         )
         check_gateway_lifecycle(prompt, str(script))
+
+
+def test_remote_nested_relative_script_uses_remote_posix_directory():
+    from cron.lifecycle_guard import contains_gateway_lifecycle_command_or_referenced_script
+
+    calls = []
+    scripts = {
+        "/remote/outer.sh": "#!/bin/bash\n/bin/bash inner.sh\n",
+        "/remote/inner.sh": "#!/bin/bash\nhermes gateway restart\n",
+    }
+
+    def read_remote(path):
+        calls.append(path)
+        return scripts.get(path)
+
+    assert contains_gateway_lifecycle_command_or_referenced_script(
+        "/bin/bash /remote/outer.sh",
+        cwd="/remote",
+        read_remote_script=read_remote,
+    )
+    assert calls == ["/remote/outer.sh", "/remote/inner.sh"]
 
 
 class TestLifecycleGuardNeverRaises:

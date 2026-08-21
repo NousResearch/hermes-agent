@@ -40,7 +40,7 @@ import os
 import re
 import shlex
 import stat
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
@@ -108,6 +108,7 @@ _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
 _CONTROL_CHARS = frozenset(";&|()")
+_WINDOWS_UNQUOTED_PATH = re.compile(r"(^|[\s=])([A-Za-z]:\\[^\s;&|()]*)")
 
 
 # Directory names that sit directly under a `Library` path component and
@@ -181,6 +182,11 @@ def _iter_command_segments(command: str) -> Iterator[list[str]]:
     """Yield shell-tokenized command segments, honoring quotes and comments."""
     normalized = command.replace("\\\n", "")
     for line in normalized.splitlines() or [normalized]:
+        if os.name == "nt":
+            line = _WINDOWS_UNQUOTED_PATH.sub(
+                lambda match: match.group(1) + match.group(2).replace("\\", "/"),
+                line,
+            )
         try:
             lexer = shlex.shlex(
                 line,
@@ -360,6 +366,8 @@ def _resolve_terminal_script_path(candidate: str, cwd: Optional[str]) -> Optiona
     path = _expand_candidate_path(candidate)
     if path is None:
         return None
+    if candidate == "/dev/null":
+        return path
     if not path.is_absolute():
         try:
             path = Path(cwd or Path.cwd()) / path
@@ -477,13 +485,17 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, flags)
-    except (OSError, ValueError):
-        # OSError: unreadable / missing / over-long paths. ValueError: an
-        # embedded NUL byte in *path* itself — a binary's decoded bytes
-        # tokenized into a bogus script path by the recursion (#77703). A
-        # guarded read must never crash the guard, so treat either as
-        # "nothing to scan" (mirrors the resolve() ValueError guard below).
+    except ValueError:
         return None, False
+    except OSError:
+        normalized_path = str(path).replace("\\", "/")
+        if normalized_path == "/dev/null":
+            return None, True
+        try:
+            metadata = path.lstat()
+        except (OSError, ValueError):
+            return None, False
+        return None, not stat.S_ISREG(metadata.st_mode)
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
@@ -600,6 +612,7 @@ def _contains_unsafe_gateway_action(
             continue
         visited.add(resolved)
         script_text, unsafe = _read_referenced_script(script_path)
+        remote_path: Optional[str] = None
         if unsafe:
             return True
         if script_text is None and read_remote_script is not None:
@@ -607,8 +620,11 @@ def _contains_unsafe_gateway_action(
             # The callback's output crosses the same trust boundary as a
             # local read — sanitize it identically before it enters the
             # recursion (binary skip + size fail-closed).
+            remote_path = str(script_path)
+            if os.name == "nt" and not script_path.drive and remote_path.startswith("\\"):
+                remote_path = remote_path.replace("\\", "/")
             script_text, unsafe = _sanitize_remote_script_text(
-                read_remote_script(str(script_path))
+                read_remote_script(remote_path)
             )
             if unsafe:
                 return True
@@ -616,7 +632,11 @@ def _contains_unsafe_gateway_action(
             continue
         # Relative references inside a script resolve against that script's
         # directory, not the original command's cwd.
-        script_dir = _resolve_script_directory(str(resolved)) or cwd
+        script_dir = (
+            str(PurePosixPath(remote_path).parent)
+            if remote_path is not None and script_text is not None
+            else (_resolve_script_directory(str(resolved)) or cwd)
+        )
         if _contains_unsafe_gateway_action(
             script_text,
             cwd=script_dir,
@@ -699,6 +719,8 @@ def _resolve_script_path(script_path: str) -> Optional[Path]:
     raw = _expand_candidate_path(script_path)
     if raw is None:
         return None
+    if script_path == "/dev/null":
+        return raw
     if raw.is_absolute():
         return raw
     try:

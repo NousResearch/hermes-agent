@@ -680,9 +680,15 @@ def _classify_removed_skills(
         parsed_calls.append(args)
 
     # Build a set of "destination" skill names: anything still present after
-    # the run plus anything newly added this run. A removed skill being
-    # referenced from one of these is the consolidation signal.
-    destinations = set(after_names) | set(added or [])
+    # the run, anything newly added this run, plus anything created/modified
+    # during the run per the tool calls (a same-run-created umbrella may not
+    # survive into the after snapshot). A removed skill being referenced from
+    # one of these is the consolidation signal.
+    destinations = (
+        set(after_names)
+        | set(added or [])
+        | _same_run_skill_targets(tool_calls)
+    )
 
     for name in removed:
         if not name:
@@ -886,6 +892,57 @@ def _extract_absorbed_into_declarations(
     return out
 
 
+def _same_run_skill_targets(tool_calls: List[Dict[str, Any]]) -> Set[str]:
+    """Names of skills created/modified during this run, from tool calls.
+
+    A ``skill_manage`` call with a mutating action (``create``,
+    ``write_file``, ``patch``, ``edit``) only succeeds if the target skill
+    exists at call time — it was created earlier in this run, or it already
+    existed. Either way the target is a real, surviving skill, so it is a
+    valid consolidation destination even when the post-run ``after_names``
+    snapshot misses it (the umbrella was created and consumed entirely
+    within the run, or the snapshot omits brand-new skills).
+
+    Without this seed, a same-run-created umbrella is absent from
+    ``destinations``, every ``absorbed_into=<umbrella>`` delete declaration
+    fails the ``into_claim in destinations`` check in
+    ``_reconcile_classification``, and the model's authoritative
+    consolidation is downgraded to a prune (#76588).
+    """
+    targets: Set[str] = set()
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        if tc.get("name") != "skill_manage":
+            continue
+        raw = tc.get("arguments") or ""
+        args: Dict[str, Any] = {}
+        if isinstance(raw, dict):
+            args = raw
+        elif isinstance(raw, str):
+            try:
+                args = json.loads(raw)
+            except Exception:
+                # Truncated JSON (the report truncates long argument
+                # payloads): fall back to a targeted regex so a truncated
+                # `create`/`write_file` call still seeds its target.
+                m = re.search(
+                    r'"action"\s*:\s*"(?:create|write_file|patch|edit)"', raw
+                )
+                n = re.search(r'"name"\s*:\s*"([^"]+)"', raw)
+                if m and n:
+                    targets.add(n.group(1))
+                continue
+        if not isinstance(args, dict):
+            continue
+        if args.get("action") not in ("create", "write_file", "patch", "edit"):
+            continue
+        name = args.get("name")
+        if isinstance(name, str) and name.strip():
+            targets.add(name.strip())
+    return targets
+
+
 def _reconcile_classification(
     removed: List[str],
     heuristic: Dict[str, List[Dict[str, Any]]],
@@ -903,8 +960,9 @@ def _reconcile_classification(
       pruned. ``into != ""`` but target doesn't exist → hallucination; fall
       through to the usual signals.
     - Model-declared consolidation wins when its ``into`` target exists
-      in ``destinations`` (survived or newly-created). This gives the
-      model authority over intent + rationale.
+      in ``destinations`` (survived, newly-created, or created earlier in
+      this same run per the tool calls — see ``_same_run_skill_targets``).
+      This gives the model authority over intent + rationale.
     - Model-declared consolidation whose ``into`` target does NOT exist is
       downgraded: the model hallucinated an umbrella. We prefer the
       heuristic's finding for that skill, or fall back to pruned.
@@ -1059,7 +1117,7 @@ def _build_rename_summary(
         tool_calls=tool_calls,
     )
     model_block = _parse_structured_summary(model_final)
-    destinations = set(after_names) | set(added)
+    destinations = set(after_names) | set(added) | _same_run_skill_targets(tool_calls)
     absorbed_declarations = _extract_absorbed_into_declarations(tool_calls)
     classification = _reconcile_classification(
         removed=removed,
@@ -1147,6 +1205,18 @@ def _write_run_report(
     after_names = set(after_by_name.keys())
     removed = sorted(before_names - after_names)   # archived during this run
     added = sorted(after_names - before_names)     # new skills this run
+    # A skill created and consumed entirely within this run (umbrella
+    # created, sources absorbed, umbrella kept) may not survive into the
+    # after snapshot — or the snapshot may omit brand-new skills. Seed
+    # `added` from the run's tool calls so the report reliably reflects
+    # every skill the model created, not just the snapshot diff (#76588).
+    added = sorted(
+        set(added)
+        | (
+            _same_run_skill_targets(llm_meta.get("tool_calls", []) or [])
+            - before_names
+        )
+    )
     before_by_name = {r.get("name"): r for r in before_report if isinstance(r, dict)}
 
     # State transitions between the two snapshots (e.g. active -> stale)
@@ -1184,7 +1254,11 @@ def _write_run_report(
         tool_calls=llm_meta.get("tool_calls", []) or [],
     )
     model_block = _parse_structured_summary(llm_meta.get("final", "") or "")
-    destinations = set(after_names) | set(added or [])
+    destinations = (
+        set(after_names)
+        | set(added or [])
+        | _same_run_skill_targets(llm_meta.get("tool_calls", []) or [])
+    )
     # Authoritative signal: extract per-delete `absorbed_into` declarations
     # from this run's tool calls. These beat both the YAML summary block and
     # the substring heuristic — the model is telling us directly, at the

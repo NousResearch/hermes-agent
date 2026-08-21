@@ -5255,6 +5255,15 @@ def run_conversation(
                             provider=agent.provider,
                             api_mode=agent.api_mode,
                         )
+                        from agent.conversation_compression import (
+                            apply_context_engine_compression_budget,
+                        )
+
+                        apply_context_engine_compression_budget(
+                            agent,
+                            _reduced_ctx,
+                            reason="long_context_tier",
+                        )
                         # Context probing flags — only set on built-in
                         # compressor (plugin engines manage their own).
                         if hasattr(compressor, "_context_probed"):
@@ -5820,6 +5829,13 @@ def run_conversation(
                         # confirmed. Keep the probe flags as a best-effort
                         # post-success retry if this write cannot complete.
                         save_context_length(agent.model, agent.base_url, new_ctx)
+                        from agent.conversation_compression import (
+                            apply_context_engine_compression_budget,
+                        )
+
+                        apply_context_engine_compression_budget(
+                            agent, new_ctx, reason="provider_context_limit"
+                        )
                         # Context probing flags — only set on built-in
                         # compressor (plugin engines manage their own).  This
                         # value came from the provider, so it is safe to cache.

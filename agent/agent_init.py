@@ -2103,6 +2103,10 @@ def init_agent(
         )
     except Exception:
         pass
+    # Retain the host policy for an explicitly budget-aware external engine.
+    # Existing engines continue to own their thresholds because they decline
+    # the optional handoff below.
+    agent._compression_threshold_percent = compression_threshold
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
@@ -2229,6 +2233,11 @@ def init_agent(
                 compression_threshold_tokens = None
         except (TypeError, ValueError):
             compression_threshold_tokens = None
+    # Retain the complete host policy for budget-aware external engines. These
+    # mirrors let runtime context changes reproduce ContextCompressor's
+    # override/cap calculation without taking ownership of legacy engines.
+    agent._compression_model_thresholds = compression_model_thresholds
+    agent._compression_threshold_tokens_cap = compression_threshold_tokens
     # In-place compaction: when True, compress_context() rewrites the message
     # list + rebuilds the system prompt WITHOUT rotating the session id (no
     # parent_session_id chain, no `name #N` renumber). See #38763 and
@@ -2717,6 +2726,17 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
+        from agent.conversation_compression import apply_context_engine_compression_budget
+
+        if not apply_context_engine_compression_budget(
+            agent,
+            _plugin_ctx_len,
+            threshold_percent=compression_threshold,
+            reason="model_init",
+        ):
+            # Legacy engines retain #44439 behavior: their policy is private,
+            # so a host-side Codex threshold notice would be misleading.
+            agent._compression_threshold_autoraised = None
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:

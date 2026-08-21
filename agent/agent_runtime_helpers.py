@@ -1635,6 +1635,13 @@ def restore_primary_runtime(agent) -> bool:
             provider=rt["compressor_provider"],
             api_mode=rt.get("compressor_api_mode", ""),
         )
+        from agent.conversation_compression import apply_context_engine_compression_budget
+
+        apply_context_engine_compression_budget(
+            agent,
+            rt["compressor_context_length"],
+            reason="primary_runtime_restore",
+        )
 
         # ── Rebind and re-select the primary credential pool ──
         # A cross-provider fallback attaches the fallback provider's pool. The
@@ -2946,6 +2953,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
             provider=agent.provider,
             api_mode=agent.api_mode,
+        )
+        from agent.conversation_compression import apply_context_engine_compression_budget
+
+        apply_context_engine_compression_budget(
+            agent, new_context_length, reason="model_switch"
         )
 
     # ── Re-resolve reasoning_config from per-model override ──

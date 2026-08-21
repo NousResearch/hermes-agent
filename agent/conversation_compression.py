@@ -79,6 +79,94 @@ from agent.session_activity import ActivityProvenance, normalize_activity_proven
 
 logger = logging.getLogger(__name__)
 
+
+def _set_context_engine_compression_budget(
+    compressor: Any,
+    context_capacity: int,
+    trigger_tokens: int,
+    *,
+    reason: str,
+) -> bool:
+    """Apply a host budget only when an engine explicitly accepts it."""
+    setter = getattr(compressor, "set_compression_budget", None)
+    if not callable(setter):
+        return False
+    try:
+        return setter(context_capacity, trigger_tokens, reason=reason) is True
+    except Exception:
+        logger.warning("Context engine rejected host compression budget", exc_info=True)
+        return False
+
+
+def _canonical_context_engine_compression_budget(
+    agent: Any,
+    compressor: Any,
+    context_length: int,
+    threshold_percent: float | None = None,
+) -> tuple[int, int]:
+    """Compute the same usable capacity and trigger as ContextCompressor."""
+    from agent.context_compressor import ContextCompressor
+
+    configured_threshold = threshold_percent
+    if configured_threshold is None:
+        configured_threshold = getattr(agent, "_compression_threshold_percent", None)
+    if not isinstance(configured_threshold, (int, float)):
+        configured_threshold = getattr(compressor, "threshold_percent", None)
+
+    max_tokens = ContextCompressor._coerce_max_tokens(getattr(agent, "max_tokens", None))
+    context_capacity = context_length - (max_tokens or 0)
+    if context_capacity <= 0:
+        context_capacity = context_length
+
+    if not isinstance(configured_threshold, (int, float)):
+        return context_capacity, getattr(compressor, "threshold_tokens", context_length)
+    # Match ContextCompressor construction/update_model exactly: resolve the
+    # longest per-model override against the host's configured base before
+    # applying the small-window floor.
+    from agent.context_compressor import resolve_model_threshold
+
+    model_thresholds = getattr(agent, "_compression_model_thresholds", None)
+    if not isinstance(model_thresholds, dict):
+        model_thresholds = getattr(compressor, "model_thresholds", None)
+    base_threshold = resolve_model_threshold(
+        str(getattr(agent, "model", "")), model_thresholds, float(configured_threshold)
+    )
+    trigger_tokens = ContextCompressor._compute_threshold_tokens(
+        context_length,
+        ContextCompressor._effective_threshold_percent(context_length, base_threshold),
+        max_tokens,
+    )
+    # compression.threshold_tokens is an absolute cap applied after all ratio
+    # adjustments and is clamped to the raw model window, just as
+    # ContextCompressor._apply_threshold_tokens_cap does.
+    if hasattr(agent, "_compression_threshold_tokens_cap"):
+        threshold_cap = agent._compression_threshold_tokens_cap
+    else:
+        threshold_cap = getattr(compressor, "threshold_tokens_cap", None)
+    threshold_cap = ContextCompressor._coerce_threshold_tokens_cap(threshold_cap)
+    if threshold_cap is not None:
+        trigger_tokens = min(trigger_tokens, min(threshold_cap, context_length))
+    return context_capacity, trigger_tokens
+
+
+def apply_context_engine_compression_budget(
+    agent: Any,
+    context_length: int,
+    *,
+    threshold_percent: float | None = None,
+    reason: str,
+) -> bool:
+    """Deliver Hermes' runtime budget to an opt-in external context engine."""
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None or not isinstance(context_length, int) or context_length <= 0:
+        return False
+    context_capacity, trigger_tokens = _canonical_context_engine_compression_budget(
+        agent, compressor, context_length, threshold_percent
+    )
+    return _set_context_engine_compression_budget(
+        compressor, context_capacity, trigger_tokens, reason=reason
+    )
+
 # Terminal compression outcomes published by host/hygiene timeout or cooldown
 # writers. Detached heartbeat workers must not clobber these back to
 # agent.compression after cancel (otherwise timeout is unobservable). Observing

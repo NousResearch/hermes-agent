@@ -2787,6 +2787,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 provider=agent.provider,
                 api_mode=agent.api_mode,
             )
+            from agent.conversation_compression import apply_context_engine_compression_budget
+
+            apply_context_engine_compression_budget(
+                agent, fb_context_length, reason="fallback_model"
+            )
 
         # Re-resolve reasoning_config for the new fallback model (Closes #21256).
         # Shared chokepoint: per-model override > global reasoning_effort

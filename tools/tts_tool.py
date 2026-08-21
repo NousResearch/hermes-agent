@@ -3290,7 +3290,7 @@ def _text_to_speech_single(
             except ImportError:
                 return json.dumps({
                     "success": False,
-                    "error": "ElevenLabs provider selected but 'elevenlabs' package not installed. Run: pip install elevenlabs"
+                    "error": "ElevenLabs provider selected but 'elevenlabs' package not installed. Run: uv pip install --python <hermes-venv>/bin/python3 elevenlabs (the uv-managed venv has no bare pip)"
                 }, ensure_ascii=False)
             logger.info("Generating speech with ElevenLabs...")
             _generate_elevenlabs(text, file_str, tts_config)

@@ -237,3 +237,41 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     assert "Active:       2 session(s)" in output
     assert "Last activity:" in output
     assert "1m ago" in output
+
+
+def test_show_status_flags_missing_tts_provider_sdk(monkeypatch, capsys, tmp_path):
+    """#90610: a configured TTS provider whose SDK is missing must be flagged
+    in status — the ElevenLabs API-key row alone shows ✓ while every voice
+    reply silently degrades to text."""
+    import tools.tts_tool as tts_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        tts_mod, "_load_tts_config", lambda: {"provider": "elevenlabs"}
+    )
+    monkeypatch.setattr(tts_mod, "check_tts_requirements", lambda: False)
+
+    show_status(SimpleNamespace(all=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert "TTS" in output
+    assert "elevenlabs not runnable" in output
+    assert "SDK/prerequisites are installed" in output
+
+
+def test_show_status_no_tts_warning_without_explicit_provider(
+    monkeypatch, capsys, tmp_path
+):
+    """The free Edge default is nobody's setup contract: with no explicit
+    tts.provider configured, status must not print a TTS readiness line even
+    when the edge runtime happens to be unavailable."""
+    import tools.tts_tool as tts_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(tts_mod, "_load_tts_config", lambda: {})
+    monkeypatch.setattr(tts_mod, "check_tts_requirements", lambda: False)
+
+    show_status(SimpleNamespace(all=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert "not runnable" not in output

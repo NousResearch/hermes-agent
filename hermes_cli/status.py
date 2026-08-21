@@ -8,10 +8,13 @@ import os
 import sys
 import time
 import importlib.util
+import logging
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+
+logger = logging.getLogger(__name__)
 
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
@@ -217,6 +220,31 @@ def show_status(args):
     anthropic_value = get_anthropic_key()
     anthropic_display = redact_key(anthropic_value)
     print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
+
+    # TTS readiness (#90610): the provider row above only proves an API key
+    # resolved — the selected provider's SDK must also be importable, or
+    # every voice reply silently degrades to text (the failure is swallowed
+    # by the gateway auto-TTS path). Surface that mismatch here. Only check
+    # when a provider was explicitly configured: the free Edge default is
+    # not part of anyone's setup contract.
+    try:
+        from tools.tts_tool import _load_tts_config, check_tts_requirements
+
+        _tts_provider = (_load_tts_config().get("provider") or "").strip()
+        if _tts_provider and not check_tts_requirements():
+            # check_tts_requirements() can fail for any prerequisite (SDK,
+            # ffmpeg for some providers, ...), not just a missing SDK —
+            # name the general cause so the line cannot misdiagnose the
+            # remediation (review on #90610).
+            print(
+                f"  {'TTS':<12}  {check_mark(False)} "
+                f"{_tts_provider} not runnable — check that its "
+                "SDK/prerequisites are installed; voice replies silently "
+                "degrade to text"
+            )
+    except Exception:
+        # The status probe must never fail the whole report.
+        logger.debug("TTS status probe failed", exc_info=True)
 
     # =========================================================================
     # Auth Providers (OAuth)
